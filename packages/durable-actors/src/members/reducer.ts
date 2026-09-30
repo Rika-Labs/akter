@@ -1,6 +1,6 @@
 import { Schema, type Result } from "effect"
 import type { ActorState } from "../state/migration.ts"
-import type { DeclaredError, Member, ValueSchema } from "./command.ts"
+import { type DeclaredError, member, type Member, type ValueSchema } from "./command.ts"
 
 type Fields = Readonly<Record<string, ValueSchema>>
 
@@ -100,15 +100,14 @@ const reducer = (
   | Reducer<string, Fields, ValueSchema, Schema.Void, ReadonlyArray<DeclaredError>>
   | Reducer<string, Fields, ValueSchema, Schema.Struct<Fields>, ReadonlyArray<DeclaredError>> => {
   const { state, reduce, commutative } = options
-  const input = options.input ?? Schema.Void
 
   if (commutative === undefined)
     return {
-      kind: "reducer",
-      tag,
-      input,
-      output: Schema.Struct(state.fields),
-      errors: options.errors ?? [],
+      ...member("reducer")(tag, {
+        input: options.input,
+        output: Schema.Struct(state.fields),
+        errors: options.errors,
+      }),
       state,
       reduce,
       commutative,
@@ -118,11 +117,7 @@ const reducer = (
     throw new Error(`Commutative reducer ${tag} cannot declare errors`)
 
   return {
-    kind: "reducer",
-    tag,
-    input,
-    output: Schema.Void,
-    errors: [],
+    ...member("reducer")(tag, { input: options.input, output: Schema.Void }),
     state,
     reduce,
     commutative,

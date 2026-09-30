@@ -5,10 +5,24 @@ import { SqlClient } from "effect/unstable/sql"
  * The role tenant-scoped transactions run as when row-level security is on.
  * Undefined, they run as the connecting role, which the policies exempt.
  */
-export const TenantScope = Context.Reference<{ readonly role: string | undefined }>(
-  "durable-actors/TenantScope",
-  { defaultValue: () => ({ role: undefined }) },
-)
+export const TenantScope = Context.Reference<{
+  readonly role: string | undefined
+  readonly adoption: AdoptionScope | undefined
+}>("durable-actors/TenantScope", {
+  defaultValue: () => ({ role: undefined, adoption: undefined }),
+})
+
+/**
+ * The writer role a runtime takes for turns of actor types that own an
+ * enforced adopted table, and the types that do. The turn binds the role and
+ * its tenant together, as row-level security does, because the framework
+ * tables' `durable_tenant` policies bind every role that does not bypass them. `enforced` fills as each
+ * type registers, before any turn runs.
+ */
+export interface AdoptionScope {
+  readonly role: string
+  readonly enforced: Set<string>
+}
 
 /**
  * The settings that bind the rest of a transaction to `tenant`: its role and
@@ -197,5 +211,32 @@ export const checkOwnedTable = Effect.fnUntraced(function* (
     return yield* refuse(`role ${role} owns ${schema}.${table}, so no policy binds it`)
 
   if (!found.writable)
+    return yield* refuse(`role ${role} cannot read and write ${schema}.${table}; grant it`)
+})
+
+/**
+ * Refuses an adopted table `role` cannot use. An adopted table carries no
+ * `durable_tenant` policy unless the application added one, so only the
+ * privileges are checked: `role` reads it, and writes it when the runtime does.
+ */
+export const checkAdoptedTable = Effect.fnUntraced(function* (
+  schema: string,
+  table: string,
+  role: string,
+  writable: boolean,
+) {
+  const sql = yield* SqlClient.SqlClient
+
+  const [found] = yield* sql<{ readable: boolean; writable: boolean }>`
+    SELECT has_table_privilege(${role}, c.oid, 'SELECT') AS readable,
+      has_table_privilege(${role}, c.oid, 'INSERT') AND has_table_privilege(${role}, c.oid, 'UPDATE')
+        AND has_table_privilege(${role}, c.oid, 'DELETE') AS writable
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ${schema} AND c.relname = ${table}`
+
+  if (found?.readable !== true)
+    return yield* refuse(`role ${role} cannot read ${schema}.${table}; grant it`)
+
+  if (writable && !found.writable)
     return yield* refuse(`role ${role} cannot read and write ${schema}.${table}; grant it`)
 })

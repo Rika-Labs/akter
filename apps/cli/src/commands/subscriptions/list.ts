@@ -1,60 +1,50 @@
 import { Effect, Option, Schema } from "effect"
-import { UsageError } from "../workflows/check.ts"
-import { operatorRequest, parseOperatorFlags } from "../operator/request.ts"
+import { Command, Flag } from "effect/unstable/cli"
+import { operatorCommand, operatorFlags, operatorRequest, tenant } from "../operator/request.ts"
 
-export const USAGE =
-  "Usage: durable subscriptions list --lagging --url <runner> --tenant <tenant> [--min-attempts <n>] [--limit <n>] [--token-env <name>] [--json]"
+const count = (name: string, maximum: number, description: string) =>
+  Flag.Int(name).pipe(
+    Flag.filter(
+      (value) => value >= 1 && value <= maximum,
+      () => `an integer from 1 to ${maximum}`,
+    ),
+    Flag.optional,
+    Flag.withDescription(description),
+  )
 
-const Count = (maximum: number) =>
-  Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum }))
+const flags = {
+  lagging: Flag.Boolean("lagging").pipe(
+    Flag.withDescription(
+      "List the rows whose deliveries keep failing; the only listing, so required",
+    ),
+  ),
+  tenant,
+  minAttempts: count(
+    "min-attempts",
+    1_000_000,
+    "Only rows with at least this many failed attempts",
+  ),
+  limit: count("limit", 1000, "At most this many rows, 1 to 1000"),
+  ...operatorFlags,
+}
 
-const decodeAttempts = Schema.decodeUnknownOption(Count(1_000_000))
-
-const decodeLimit = Schema.decodeUnknownOption(Count(1000))
-
-/** Parses the arguments after `subscriptions list`. */
-export const parseList = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const parsed = yield* parseOperatorFlags({
-      args,
-      valued: ["--min-attempts", "--limit"],
-      switches: ["--lagging"],
-    })
-
-    if (parsed.positional.length > 0)
-      return yield* UsageError.make({ message: "list takes flags only" })
-
-    if (!parsed.switches.has("--lagging"))
-      return yield* UsageError.make({ message: "--lagging is required: it is the only listing" })
-
-    if (parsed.tenant === undefined)
-      return yield* UsageError.make({ message: "--tenant is required" })
-
-    const minAttempts = parsed.flags.get("--min-attempts")
-    const limit = parsed.flags.get("--limit")
-
-    if (minAttempts !== undefined && Option.isNone(decodeAttempts(minAttempts)))
-      return yield* UsageError.make({ message: "--min-attempts must be a positive integer" })
-
-    if (limit !== undefined && Option.isNone(decodeLimit(limit)))
-      return yield* UsageError.make({ message: "--limit must be an integer from 1 to 1000" })
-
-    return { ...parsed, tenant: parsed.tenant, minAttempts, limit }
-  })
+/** Parsed arguments of `subscriptions list`. */
+export type ListOptions = Command.Command.Config.Infer<typeof flags>
 
 /** Lists the rows whose deliveries keep failing, through the first runner named. */
 export const list = ({
   options,
   token,
 }: {
-  readonly options: Effect.Success<ReturnType<typeof parseList>>
+  readonly options: ListOptions
   readonly token: string | undefined
 }) => {
   const params = new URLSearchParams({ tenant: options.tenant })
 
-  if (options.minAttempts !== undefined) params.set("minAttempts", options.minAttempts)
+  if (Option.isSome(options.minAttempts))
+    params.set("minAttempts", String(options.minAttempts.value))
 
-  if (options.limit !== undefined) params.set("limit", options.limit)
+  if (Option.isSome(options.limit)) params.set("limit", String(options.limit.value))
 
   return operatorRequest({
     url: options.urls[0]!,
@@ -90,3 +80,12 @@ export const formatLagging = (answer: Schema.Json) =>
           ])
           .join("\n"),
   )
+
+/** `durable subscriptions list --lagging`: the rows whose deliveries keep failing. */
+export const listCommand = Command.make("list", flags, (options) =>
+  operatorCommand({ options, request: list, format: formatLagging }),
+).pipe(
+  Command.withDescription(
+    "List subscription rows whose deliveries keep failing, with their lag and last error",
+  ),
+)

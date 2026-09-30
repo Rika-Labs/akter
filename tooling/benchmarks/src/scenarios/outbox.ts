@@ -2,17 +2,7 @@ import { Deferred, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Sender } from "../probe/contract.ts"
 import { deliveries } from "../probe/layer.ts"
-import { type CaseResult, measure, type Scenario } from "../scenario.ts"
-
-const databaseNow = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-
-  const [row] = yield* sql<{
-    readonly now: string
-  }>`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
-
-  return Number(row!.now)
-}).pipe(Effect.orDie)
+import { type CaseResult, databaseNow, measure, type Scenario } from "../scenario.ts"
 
 /** Registers `id` so the sink's handler can report its delivery; returns the wait for it. */
 const expect = (id: string) =>
@@ -54,7 +44,7 @@ const scanMeanMs = (result: CaseResult) =>
  *
  * Each drain operation waits for one delivery, and its window runs from the
  * due time to the last delivery, so throughput is deliveries per second. The
- * quick profile's counts are the ones the statement gate checks.
+ * context.quick profile's counts are the ones the statement gate checks.
  */
 export const outbox: Scenario = {
   name: "outbox",
@@ -63,7 +53,6 @@ export const outbox: Scenario = {
   multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
       let next = 0
 
@@ -93,8 +82,8 @@ export const outbox: Scenario = {
                 instruments,
                 workers,
                 ...(workers === 1
-                  ? { operations: quick ? 100 : 1000 }
-                  : { durationMs: quick ? 2000 : 10_000 }),
+                  ? { operations: context.quick ? 100 : 1000 }
+                  : { durationMs: context.quick ? 2000 : 10_000 }),
                 operation: (index) => send(senders[index % workers]!),
                 listStatements: workers === 1,
               })
@@ -102,7 +91,7 @@ export const outbox: Scenario = {
           ),
         )
 
-      const backlog = quick ? 2000 : 20_000
+      const backlog = context.quick ? 2000 : 20_000
 
       results.push(
         yield* context.withRuntime({}, (instruments) =>
@@ -112,7 +101,7 @@ export const outbox: Scenario = {
             const waits = yield* Effect.forEach(ids, expect)
             const sender = yield* Sender.get("backlog")
             const started = yield* databaseNow
-            const dueAt = started + (quick ? 15_000 : 30_000)
+            const dueAt = started + (context.quick ? 15_000 : 30_000)
 
             yield* Effect.forEach(
               Array.from({ length: backlog / batch }, (_, index) =>
@@ -145,7 +134,7 @@ export const outbox: Scenario = {
         ),
       )
 
-      for (const sleepers of quick ? [10_000, 100_000] : [10_000, 100_000, 1_000_000])
+      for (const sleepers of context.quick ? [10_000, 100_000] : [10_000, 100_000, 1_000_000])
         results.push(
           yield* context.withRuntime({}, (instruments) =>
             Effect.gen(function* () {
@@ -158,7 +147,7 @@ export const outbox: Scenario = {
                 parameters: { sleepingTimers: sleepers, workers: 1 },
                 instruments,
                 workers: 1,
-                operations: quick ? 100 : 1000,
+                operations: context.quick ? 100 : 1000,
                 operation: () => send(sender),
                 listStatements: true,
               })

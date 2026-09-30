@@ -177,7 +177,7 @@ const inboxLog = Effect.fnUntraced(function* (to: string) {
 export const receivedBodies = (to: string) =>
   inboxLog(to).pipe(Effect.map((log) => log.map(({ body }) => body)))
 
-export interface PlanNode {
+interface PlanNode {
   readonly "Node Type": string
   readonly "Relation Name"?: string | undefined
   readonly "Index Name"?: string | undefined

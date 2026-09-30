@@ -3,7 +3,7 @@ import { Cause, Effect, Exit, Layer, Option, Result, Schema } from "effect"
 import { Headers, HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, Intent, Unauthorized, User } from "../../index.ts"
-import type { InternalActors } from "../../handles/actors.ts"
+import type { InternalActors } from "../../runtime/actors.ts"
 import type { ContentStore } from "../../handles/content.ts"
 import type { RuntimeControl } from "../../runtime/drain.ts"
 import { childId, parseChildId } from "../../identity/child.ts"
@@ -329,6 +329,47 @@ const served = Effect.fnUntraced(function* (tenant: string) {
       return { status: response.status, body: text === "" ? undefined : yield* decodeJson(text) }
     }).pipe(Effect.orDie)
 })
+
+export interface PlacementWorkload {
+  readonly create: Effect.Effect<void, never, Actors | ActorTest>
+  readonly wake: Effect.Effect<void, never, Actors | ActorTest>
+}
+
+/**
+ * Two halves of one workload over the placement actors, for the single-shard
+ * statement check: `create` builds an order, a shipment, and a label; `wake`
+ * runs after a restart and touches every path a placed turn takes: a wake, a
+ * due-work delivery, both family group reads, a mint, and a report back.
+ */
+export const placementWorkload: PlacementWorkload = {
+  create: Effect.gen(function* () {
+    const test = yield* ActorTest
+    const order = yield* Order.get("o-shard-1")
+    yield* order.Place()
+    yield* order.Ship({ shipment: "s-1", carrier: "ups", later: false })
+    yield* test.advance(0)
+    yield* (yield* Label.get(Label.idOf(Shipment.idOf("o-shard-1", "s-1"), "l-1"))).Print()
+  }).pipe(Effect.orDie),
+  wake: Effect.gen(function* () {
+    const test = yield* ActorTest
+    const order = yield* Order.get("o-shard-1")
+    const woken = yield* order.Ship({ shipment: "s-2", carrier: "dhl", later: false })
+    yield* test.advance(0)
+
+    const child = yield* shipment(woken)
+    yield* child.Report(order.ref.id)
+    yield* child.Carrier()
+    yield* child.ShipmentFamily()
+    yield* order.OrderFamily()
+    yield* (yield* Label.get(Label.idOf(Shipment.idOf("o-shard-1", "s-1"), "l-1"))).Print()
+
+    const fresh = yield* Order.get("o-shard-2")
+    yield* fresh.Place()
+    yield* fresh.MintParcel()
+    yield* test.advance("2 hours")
+    yield* order.Acknowledged()
+  }).pipe(Effect.orDie),
+}
 
 /** Placement cases: rows of a family share their root's routing key, family reads use one snapshot, and a build that changes placement is refused. */
 export const placementConformance: ReadonlyArray<ConformanceCase> = [

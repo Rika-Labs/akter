@@ -4,9 +4,11 @@ import {
   ActorUnavailable,
   Reason,
   TransportError,
+  type Unauthorized,
   withRetryAfter,
 } from "../errors/actor.ts"
 import type { DeclaredError } from "../members/command.ts"
+import type { OfflineStoreError } from "./offline/store.ts"
 
 /** A response as the client reads it: status, headers, and the raw body text. */
 export interface Reply {
@@ -17,8 +19,18 @@ export interface Reply {
   readonly sentAt: number
 }
 
-/** What a call rejects with: a declared application error or a typed framework failure. */
-export type Failure = ActorError | DeclaredError["Type"]
+/**
+ * What a call rejects with: a declared application error, a typed framework
+ * failure, or, on a client with an offline store, the store's own failure.
+ */
+export type Failure = ActorError | OfflineStoreError | DeclaredError["Type"]
+
+/** The `Unauthorized` codes a credential provider answers, which a fresh credential can resolve. */
+export const CREDENTIAL_CODES: ReadonlySet<Unauthorized["code"]> = new Set([
+  "missing_credentials",
+  "invalid_credentials",
+  "expired",
+])
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
@@ -71,6 +83,19 @@ export const networkFailure = () =>
 /** A response or message the client could not decode; not retryable. */
 export const undecodableFailure = () =>
   transportFailure(TransportError.make({ code: "decode", retryable: false }))
+
+/** Succeeds once `signal` aborts, at once when it already has; never without a signal. */
+export const aborted = (signal: AbortSignal | undefined) =>
+  Effect.callback<void>((resume) => {
+    if (signal === undefined) return
+
+    if (signal.aborted) return resume(Effect.void)
+
+    const onAbort = () => resume(Effect.void)
+    signal.addEventListener("abort", onAbort, { once: true })
+
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort))
+  })
 
 /** A status a proxy or gateway may answer before any runner saw the request. */
 const isRetryableStatus = (status: number) => status >= 500 || status === 429 || status === 408

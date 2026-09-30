@@ -27,13 +27,8 @@ import {
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
-import {
-  Executed,
-  Outcome,
-  type RegisteredCommand,
-  type Registration,
-  Request,
-} from "../../handles/actors.ts"
+import { Executed, Outcome, Request } from "../request.ts"
+import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
@@ -111,10 +106,16 @@ const SINGLETON_WAKE_INTERVAL = Duration.seconds(1)
  * Cluster's lifetime of one entity, shared by every handler a defect restart
  * rebuilds within it.
  */
-const entityScope = () =>
-  Effect.serviceOption(
-    Context.Service<Scope.Scope>("effect/cluster/internal/CurrentActivationScope"),
-  )
+const entityScope = Effect.serviceOption(
+  Context.Service<Scope.Scope>("effect/cluster/internal/CurrentActivationScope"),
+).pipe(
+  Effect.flatMap(
+    Option.match({
+      onNone: () => Effect.die(new Error("Cluster provided no entity scope")),
+      onSome: Effect.succeed,
+    }),
+  ),
+)
 
 /**
  * The current handler's scope within each entity scope.
@@ -133,6 +134,20 @@ const restarts = new WeakMap<Scope.Scope, number>()
  */
 const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 
+/**
+ * What a runner knows of one activation when a delivery to it times out: the
+ * handlers Cluster has built for it and whether one is being built, the
+ * worker's phase, the commands waiting in its mailbox and in its current
+ * batch, and whether an in-place restart is running.
+ */
+export interface ActivationDiagnosis {
+  readonly handlers: number
+  readonly building: boolean
+  readonly worker: "none" | "idle" | "turn" | "workflow kick" | "restarting"
+  readonly mailbox: number
+  readonly batch: number
+}
+
 /** A command in an activation's mailbox and the caller waiting on its reply. */
 interface Waiting {
   readonly request: Request
@@ -149,6 +164,54 @@ interface Waiting {
 }
 
 /**
+ * Runs a batch under its logs and span: a lone command's turn span, a child
+ * of its caller's span, or a batch span linked to every caller's span.
+ */
+const withinTurnSpan =
+  (batch: ReadonlyArray<Waiting>) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+    const { request } = batch[0]!
+    const { ref } = request
+    const lone = batch.length === 1
+
+    return effect.pipe(
+      Effect.annotateLogs(
+        lone
+          ? {
+              actor: ref.actor,
+              id: ref.id,
+              tenant: ref.tenant,
+              command: request.command,
+              commandId: request.commandId,
+            }
+          : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
+      ),
+      Effect.withSpan(
+        lone ? SpanNames.turn(ref.actor, request.command) : SpanNames.batch(ref.actor),
+        {
+          kind: lone ? "server" : "internal",
+          attributes: lone
+            ? requestAttributes(request)
+            : {
+                "actor.tenant": ref.tenant,
+                "actor.id": ref.id,
+                "batch.size": batch.length,
+              },
+          parent: lone ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan) : undefined,
+          links: lone
+            ? []
+            : batch.flatMap(({ context }) => {
+                const span = Context.getOrUndefined(context, Tracer.ParentSpan)
+
+                return span === undefined ? [] : [{ span, attributes: {} }]
+              }),
+        },
+        { captureStackTrace: false },
+      ),
+    )
+  }
+
+/**
  * Defects that say nothing about the command: the activation restarts and
  * the caller retries the same id.
  */
@@ -158,37 +221,72 @@ const retryable = (cause: Cause.Cause<unknown>) => {
   return Schema.is(RetryTurn)(defect) || (SqlError.isSqlError(defect) && defect.isRetryable)
 }
 
-const commandEntities = new Map<string, ReturnType<typeof makeCommandEntity>>()
-
 /**
- * Sharding keeps one RPC client per entity object, by identity, until the
- * runtime closes; a fresh entity per command would retain a client per command.
+ * One entity definition per actor type name, created on first use. Sharding
+ * keeps one RPC client per entity object, by identity, until the runtime
+ * closes; a fresh entity per call would retain a client per call.
  */
-/** The command entity definition for an actor type, created once per name. */
-export const commandEntity = (name: string) => {
-  const cached = commandEntities.get(name)
+const oncePerName = <A>(make: (name: string) => A) => {
+  const made = new Map<string, A>()
 
-  if (cached !== undefined) return cached
+  return (name: string) => {
+    const cached = made.get(name)
 
-  const entity = makeCommandEntity(name)
-  commandEntities.set(name, entity)
+    if (cached !== undefined) return cached
 
-  return entity
+    const entity = make(name)
+    made.set(name, entity)
+
+    return entity
+  }
 }
 
-const connectionEntities = new Map<string, ReturnType<typeof connectionsEntity>>()
+/** The command entity definition for an actor type, created once per name. */
+export const commandEntity = oncePerName(makeCommandEntity)
 
 /** The connection entity definition for an actor type, created once per name. */
-export const connectionEntity = (name: string) => {
-  const cached = connectionEntities.get(name)
+export const connectionEntity = oncePerName(connectionsEntity)
 
-  if (cached !== undefined) return cached
+/**
+ * Writes a singleton's missing cron ticks, then keeps its default tenant's
+ * instance awake: one keeper re-wakes it every `SINGLETON_WAKE_INTERVAL`, or
+ * half the idle time if shorter, so it moves to a survivor with its shard.
+ */
+const keepSingletonAwake = Effect.fnUntraced(function* (
+  registration: Registration,
+  entity: ReturnType<typeof commandEntity>,
+  services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>,
+) {
+  const sharding = yield* Sharding.Sharding
 
-  const entity = connectionsEntity(name)
-  connectionEntities.set(name, entity)
+  const ref = ActorRef.make({
+    tenant: registration.tenant,
+    actor: registration.name,
+    id: "singleton",
+  })
 
-  return entity
-}
+  yield* bootstrapTicks(
+    routingKey({ ref, placement: registration.placement }),
+    ref,
+    registration.cron,
+  ).pipe(Effect.provideContext(services), Effect.orDie)
+  const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
+  const client = (yield* sharding.makeClient(entity))(address)
+
+  const wakeInterval = Duration.min(
+    SINGLETON_WAKE_INTERVAL,
+    Duration.millis(registration.policy.idleMs / 2),
+  )
+
+  yield* sharding.registerSingleton(
+    registration.name,
+    client.Wake().pipe(
+      Effect.timeoutOrElse({ duration: wakeInterval, orElse: () => Effect.void }),
+      Effect.catchCause((cause) => Effect.logDebug("Singleton wake failed", cause)),
+      Effect.repeat(Schedule.spaced(wakeInterval)),
+    ),
+  )
+})
 
 /**
  * Registers an actor type's command entity with Cluster and starts its
@@ -276,10 +374,66 @@ export const registerActor = Effect.fnUntraced(function* (
   )
 
   const resident = new Map<string, number>()
+  const building = new Set<string>()
+
+  const workers = new Map<string, () => Pick<ActivationDiagnosis, "worker" | "mailbox" | "batch">>()
 
   const lease = registration.singleton
     ? Option.getOrUndefined(yield* Effect.serviceOption(ShardLease))
     : undefined
+
+  /**
+   * Counts a handler of `entityId` as resident until its scope closes; a
+   * rebuilt handler can overlap its predecessor, hence the count.
+   */
+  const residentWhile = (entityId: string) =>
+    Effect.acquireRelease(
+      Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
+        Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
+        Effect.andThen(Metric.modify(activations, 1)),
+      ),
+      () =>
+        Effect.sync(() => {
+          const left = resident.get(entityId)! - 1
+
+          if (left === 0) resident.delete(entityId)
+          else resident.set(entityId, left)
+        }).pipe(Effect.andThen(Metric.modify(activations, -1))),
+    )
+
+  /** Counts what a committed batch wrote. */
+  const countWritten = (done: Done) =>
+    Effect.gen(function* () {
+      yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
+      yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+      yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+      yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+      yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
+    })
+
+  /**
+   * Records a deterministic defect in the defect log under its turn span's
+   * name and trace, and marks the span's outcome.
+   */
+  const recordDefect = (request: Request, cause: Cause.Cause<unknown>) =>
+    Effect.gen(function* () {
+      const span = yield* Effect.currentSpan.pipe(Effect.option)
+
+      yield* defects.record({
+        span: SpanNames.turn(request.ref.actor, request.command),
+        traceId: Option.isSome(span) ? span.value.traceId : "",
+        spanId: Option.isSome(span) ? span.value.spanId : "",
+        atMs: yield* Clock.currentTimeMillis,
+        tenant: request.ref.tenant,
+        actorType: request.ref.actor,
+        actorId: request.ref.id,
+        command: request.command,
+        commandId: request.commandId,
+        trigger: triggerOf(request),
+        cause: Cause.pretty(Cause.die(Cause.squash(cause))),
+      })
+      yield* Effect.annotateCurrentSpan({ "turn.outcome": "defect" })
+    })
 
   const leaseLostDefect = RetryTurn.make({
     message: "Singleton runner no longer holds its shard lock",
@@ -290,22 +444,18 @@ export const registerActor = Effect.fnUntraced(function* (
   const register = sharding.registerEntity(
     entity,
     Effect.gen(function* () {
-      const activation = yield* entityScope().pipe(
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.die(new Error("Cluster provided no entity scope")),
-            onSome: Effect.succeed,
-          }),
-        ),
-      )
+      const activation = yield* entityScope
 
       const rebuilt = restarts.get(activation)
 
       restarts.set(activation, rebuilt === undefined ? 0 : rebuilt + 1)
 
-      if (rebuilt !== undefined) yield* Effect.sleep(restartDelay(rebuilt))
-
       const { entityId } = yield* Entity.CurrentAddress
+
+      building.add(entityId)
+      yield* Effect.addFinalizer(() => Effect.sync(() => building.delete(entityId)))
+
+      if (rebuilt !== undefined) yield* Effect.sleep(restartDelay(rebuilt))
       const [tenant, id] = yield* decodeEntityId(entityId).pipe(Effect.orDie)
 
       const superseded = handlerScopes.get(activation)
@@ -332,19 +482,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
       handlerScopes.set(activation, handler)
 
-      yield* Effect.acquireRelease(
-        Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
-          Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
-          Effect.andThen(Metric.modify(activations, 1)),
-        ),
-        () =>
-          Effect.sync(() => {
-            const left = resident.get(entityId)! - 1
-
-            if (left === 0) resident.delete(entityId)
-            else resident.set(entityId, left)
-          }).pipe(Effect.andThen(Metric.modify(activations, -1))),
-      ).pipe(Scope.provide(handler))
+      yield* residentWhile(entityId).pipe(Scope.provide(handler))
 
       const start = Effect.gen(function* () {
         const scope = yield* Scope.fork(handler)
@@ -387,6 +525,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
       const waiting: Array<Waiting> = []
       const ready = Latch.makeUnsafe(false)
+      let phase: ActivationDiagnosis["worker"] = "idle"
       const alone = aloneAfterFailure.get(activation) ?? new Set<string>()
       aloneAfterFailure.set(activation, alone)
 
@@ -405,6 +544,7 @@ export const registerActor = Effect.fnUntraced(function* (
             const kicked = yield* kickedExecution({ request, outcome: exit.value.outcome })
 
             if (kicked !== undefined) {
+              phase = "workflow kick"
               current.engine ??= yield* activationEngine({
                 registration,
                 ref: request.ref,
@@ -414,6 +554,7 @@ export const registerActor = Effect.fnUntraced(function* (
                 deliveryMs: policy.deliveryMs,
               })
               yield* current.engine.kick(kicked.executionId, kicked.interrupt)
+              phase = "turn"
             }
           }
         }
@@ -449,6 +590,7 @@ export const registerActor = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           const failures = restarts.get(activation) ?? 0
 
+          phase = "restarting"
           restarts.set(activation, failures + 1)
           yield* Scope.close(current.scope, Exit.void)
           yield* Effect.sleep(restartDelay(failures))
@@ -531,11 +673,7 @@ export const registerActor = Effect.fnUntraced(function* (
             "turn.outcome": labels[0]!,
           })
 
-        yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
-        yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
-        yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
-        yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
-        yield* count(Metrics.outboxStaged, { kind: "effect" }, done.written.effects)
+        yield* countWritten(done)
 
         if (owner.hasProgress) {
           for (const [index, settled] of done.settled.entries())
@@ -567,7 +705,6 @@ export const registerActor = Effect.fnUntraced(function* (
         (batch: ReadonlyArray<Waiting>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) => {
           const { request } = batch[0]!
-          const { ref } = request
           const lone = batch.length === 1
 
           return Effect.flatMap(Clock.currentTimeMillis, (started) =>
@@ -596,24 +733,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
                     const deterministic = !retryable(exit.cause)
 
-                    if (deterministic) {
-                      const span = yield* Effect.currentSpan.pipe(Effect.option)
-
-                      yield* defects.record({
-                        span: SpanNames.turn(ref.actor, request.command),
-                        traceId: Option.isSome(span) ? span.value.traceId : "",
-                        spanId: Option.isSome(span) ? span.value.spanId : "",
-                        atMs: yield* Clock.currentTimeMillis,
-                        tenant: ref.tenant,
-                        actorType: ref.actor,
-                        actorId: ref.id,
-                        command: request.command,
-                        commandId: request.commandId,
-                        trigger: triggerOf(request),
-                        cause: Cause.pretty(Cause.die(Cause.squash(exit.cause))),
-                      })
-                      yield* Effect.annotateCurrentSpan({ "turn.outcome": "defect" })
-                    }
+                    if (deterministic) yield* recordDefect(request, exit.cause)
 
                     yield* count(
                       Metrics.turns,
@@ -631,41 +751,7 @@ export const registerActor = Effect.fnUntraced(function* (
                   yield* record(Metrics.turnDuration, typeAttributes, elapsed)
                 }),
               ),
-              Effect.annotateLogs(
-                lone
-                  ? {
-                      actor: ref.actor,
-                      id: ref.id,
-                      tenant: ref.tenant,
-                      command: request.command,
-                      commandId: request.commandId,
-                    }
-                  : { actor: ref.actor, id: ref.id, tenant: ref.tenant },
-              ),
-              Effect.withSpan(
-                lone ? SpanNames.turn(ref.actor, request.command) : SpanNames.batch(ref.actor),
-                {
-                  kind: lone ? "server" : "internal",
-                  attributes: lone
-                    ? requestAttributes(request)
-                    : {
-                        "actor.tenant": ref.tenant,
-                        "actor.id": ref.id,
-                        "batch.size": batch.length,
-                      },
-                  parent: lone
-                    ? Context.getOrUndefined(batch[0]!.context, Tracer.ParentSpan)
-                    : undefined,
-                  links: lone
-                    ? []
-                    : batch.flatMap(({ context }) => {
-                        const span = Context.getOrUndefined(context, Tracer.ParentSpan)
-
-                        return span === undefined ? [] : [{ span, attributes: {} }]
-                      }),
-                },
-                { captureStackTrace: false },
-              ),
+              withinTurnSpan(batch),
             ),
           )
         }
@@ -742,6 +828,8 @@ export const registerActor = Effect.fnUntraced(function* (
 
       yield* Effect.gen(function* () {
         while (true) {
+          phase = "idle"
+          taken = []
           yield* ready.await
           const batch = resolve(takeBatch({ waiting, alone }))
 
@@ -749,6 +837,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
           if (batch.length === 0) continue
 
+          phase = "turn"
           taken = [...batch]
 
           if (Exit.isFailure(current.activated)) {
@@ -792,6 +881,16 @@ export const registerActor = Effect.fnUntraced(function* (
             )
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
+
+      const diagnose = () => ({ worker: phase, mailbox: waiting.length, batch: taken.length })
+
+      workers.set(entityId, diagnose)
+      building.delete(entityId)
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (workers.get(entityId) === diagnose) workers.delete(entityId)
+        }),
+      )
 
       return entity.of({
         Wake: () =>
@@ -891,34 +990,25 @@ export const registerActor = Effect.fnUntraced(function* (
 
   if (owner.hasStreams) yield* owner.watchStreams.pipe(Effect.forkScoped)
 
-  if (registration.singleton) {
-    const ref = ActorRef.make({
-      tenant: registration.tenant,
-      actor: registration.name,
-      id: "singleton",
-    })
+  if (registration.singleton) yield* keepSingletonAwake(registration, entity, services)
 
-    yield* bootstrapTicks(routingKeyOf(ref), ref, registration.cron).pipe(
-      Effect.provideContext(services),
-      Effect.orDie,
-    )
-    const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
-    const client = (yield* sharding.makeClient(entity))(address)
-
-    const wakeInterval = Duration.min(
-      SINGLETON_WAKE_INTERVAL,
-      Duration.millis(registration.policy.idleMs / 2),
-    )
-
-    yield* sharding.registerSingleton(
-      registration.name,
-      client.Wake().pipe(
-        Effect.timeoutOrElse({ duration: wakeInterval, orElse: () => Effect.void }),
-        Effect.catchCause((cause) => Effect.logDebug("Singleton wake failed", cause)),
-        Effect.repeat(Schedule.spaced(wakeInterval)),
-      ),
-    )
+  return {
+    isResident: (entityId: string) => resident.has(entityId),
+    owner,
+    /** This type's view of one activation, for a delivery that timed out. */
+    diagnose: (entityId: string): ActivationDiagnosis => ({
+      handlers: resident.get(entityId) ?? 0,
+      building: building.has(entityId),
+      ...(workers.get(entityId)?.() ?? { worker: "none", mailbox: 0, batch: 0 }),
+    }),
+    /** Activations of this type being rebuilt or restarted in place now. */
+    restarting: () => [
+      ...new Set([
+        ...building,
+        ...[...workers].flatMap(([entityId, diagnose]) =>
+          diagnose().worker === "restarting" ? [entityId] : [],
+        ),
+      ]),
+    ],
   }
-
-  return { isResident: (entityId: string) => resident.has(entityId), owner }
 })

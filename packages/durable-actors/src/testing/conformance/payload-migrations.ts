@@ -18,7 +18,7 @@ import {
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, RetentionGap, UnknownCursor, User } from "../../index.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import type { PayloadMigrations } from "../../members/payload.ts"
 import {
   checkPayloads,
@@ -490,6 +490,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               [21, "payload_versions"],
               [22, "parent_placement"],
               [23, "operator_audit"],
+              [24, "adoption"],
             ])
           }).pipe(Effect.provideContext(client))
         }),

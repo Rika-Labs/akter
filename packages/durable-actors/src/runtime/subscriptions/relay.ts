@@ -1,18 +1,13 @@
 import { DateTime, Effect, Match, Result, Schema } from "effect"
-import { SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError, type Statement } from "effect/unstable/sql"
 import { SubscriptionFailure } from "../../errors/subscription.ts"
-import { SqlClient, type Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
-import {
-  Outcome,
-  type RegisteredSubscription,
-  Request,
-  type SubscriptionEnvelope,
-} from "../../handles/actors.ts"
+import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"
+import { type RegisteredSubscription } from "../members.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decompress, type Placement, routingKey } from "../storage/codec.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
-import { TurnHooks } from "../turn/hooks.ts"
+import { TurnHooks, type TurnPoint } from "../turn/hooks.ts"
 import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
 import { candidates, outboxNow } from "../turn/relay.ts"
 import { deliveryCommandId } from "./identity.ts"
@@ -32,7 +27,7 @@ export interface LocalSubscription {
 }
 
 /** Tuning for subscription work: concurrency, lease, and backoff bounds. */
-export interface SubscriptionSettings {
+interface SubscriptionSettings {
   /** Feed expansions, control registrations, and subscription deliveries each run this many at once. */
   readonly concurrency: number
   /** Matching events one claimed subscription row delivers before it settles. */
@@ -161,6 +156,8 @@ const encodePayload = Schema.encodeEffect(
 
 const decodeStrings = Schema.decodeEffect(StringsJson)
 
+const decodeJson = Schema.decodeEffect(JsonText)
+
 /** How subscription work can fail; the relay logs it and the row's lease or backoff retries it. */
 export type SubscriptionError = SqlError.SqlError | Schema.SchemaError | SubscriptionFailure
 
@@ -231,13 +228,18 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   const { settings } = options
   const now = () => outboxNow({ sql, offsetMillis: clock.offsetMillis() })
 
-  const sourceWhere = (alias: string, key: bigint, tenant: string, type: string, id: string) =>
-    sql`${sql(alias)}.routing_key = ${key} AND ${sql(alias)}.tenant_id = ${tenant}
-      AND ${sql(alias)}.source_type = ${type} AND ${sql(alias)}.source_id = ${id}`
+  const sourceWhere = (alias: string, key: bigint, source: ActorRef) =>
+    sql`${sql(alias)}.routing_key = ${key} AND ${sql(alias)}.tenant_id = ${source.tenant}
+      AND ${sql(alias)}.source_type = ${source.actor} AND ${sql(alias)}.source_id = ${source.id}`
 
-  const eventsOf = (alias: string, key: bigint, tenant: string, type: string, id: string) =>
-    sql`${sql(alias)}.routing_key = ${key} AND ${sql(alias)}.tenant_id = ${tenant}
-      AND ${sql(alias)}.actor_type = ${type} AND ${sql(alias)}.actor_id = ${id}`
+  const eventsOf = (alias: string, key: bigint, source: ActorRef) =>
+    sql`${sql(alias)}.routing_key = ${key} AND ${sql(alias)}.tenant_id = ${source.tenant}
+      AND ${sql(alias)}.actor_type = ${source.actor} AND ${sql(alias)}.actor_id = ${source.id}`
+
+  /** When a claim of the row aliased `alias` ends: one lease, or its backoff once that is longer. */
+  const leaseEnd = (alias: string) =>
+    sql`${now()} + greatest(${settings.claimLeaseMs()}::bigint,
+      least(1000 * power(2, least(${sql(alias)}.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint`
 
   const outboxClaim = (kind: "feed" | "control", now: Statement.Fragment, limit: number) => {
     const probe = 4 * limit
@@ -257,9 +259,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         FOR UPDATE OF o SKIP LOCKED
       ),
       ${claimed} AS (
-        UPDATE actor_outbox o SET attempts = o.attempts + 1,
-          due_at_ms = ${now} + greatest(${settings.claimLeaseMs()}::bigint,
-            least(1000 * power(2, least(o.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint
+        UPDATE actor_outbox o SET attempts = o.attempts + 1, due_at_ms = ${leaseEnd("o")}
         FROM ${locked} c
         WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
         RETURNING jsonb_build_object('kind', o.kind, 'routing_key', o.routing_key::text,
@@ -271,8 +271,8 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       )`
   }
 
-  const subscribedValues = (local: ReadonlyArray<LocalSubscription>) =>
-    sql.csv(
+  const subscribed = (local: ReadonlyArray<LocalSubscription>) =>
+    sql`subscribed (subscriber_type, subscription, known) AS (VALUES ${sql.csv(
       local.map(
         ({ subscriberType, subscription }) =>
           sql`(${subscriberType}::text, ${subscription.tag}::text, ${textArray({
@@ -280,7 +280,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             values: [...subscription.events, ...subscription.retired],
           })})`,
       ),
-    )
+    )})`
 
   const claimedRow = sql`jsonb_build_object('kind', 'subscription', 'routing_key', s.routing_key::text,
     'tenant_id', s.tenant_id, 'source_type', s.source_type, 'source_id', s.source_id,
@@ -313,11 +313,8 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     if (slots.subscription > 0) {
       const probe = 4 * slots.subscription
-      const lease = settings.claimLeaseMs()
 
-      parts.push(sql`subscribed (subscriber_type, subscription, known) AS (
-            VALUES ${subscribedValues(local)}
-          ),
+      parts.push(sql`${subscribed(local)},
           subscription_candidates AS (
             SELECT s.* FROM generate_series(-128, 127) AS b(bucket)
             CROSS JOIN (SELECT DISTINCT subscriber_type FROM subscribed) AS t
@@ -346,9 +343,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             FOR UPDATE OF s SKIP LOCKED
           ),
           subscription_claimed AS (
-            UPDATE actor_subscriptions s SET attempts = s.attempts + 1,
-              due_at_ms = ${now()} + greatest(${lease}::bigint,
-                least(1000 * power(2, least(s.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint
+            UPDATE actor_subscriptions s SET attempts = s.attempts + 1, due_at_ms = ${leaseEnd("s")}
             FROM subscription_locked c
             WHERE s.routing_key = c.routing_key AND s.tenant_id = c.tenant_id
               AND s.source_type = c.source_type AND s.source_id = c.source_id
@@ -362,11 +357,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     return results.length === 0 ? undefined : { parts, results }
   }
 
-  const decode = (work: string) =>
-    Schema.decodeEffect(JsonText)(work).pipe(
-      Effect.map((row) => row as SubscriptionWork),
-      Effect.orDie,
-    )
+  const decode = (work: string) => Effect.orDie(decodeJson(work)) as Effect.Effect<SubscriptionWork>
 
   const placementKey = Effect.fnUntraced(function* (ref: ActorRef) {
     const placement = yield* options.placementOf(ref.actor)
@@ -388,12 +379,9 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           ON CONFLICT (routing_key, tenant_id, source_type, source_id, event)
           DO UPDATE SET rows = actor_subscription_tags.rows + 1`.pipe(Effect.asVoid)
 
-  const removeTags = Effect.fnUntraced(function* (
-    key: bigint,
-    source: ActorRef,
-    tags: ReadonlyArray<string>,
-  ) {
-    for (const tag of tags) {
+  /** Takes one row's tags, as the JSON its statement returned, out of the tag summary. */
+  const removeTags = Effect.fnUntraced(function* (key: bigint, source: ActorRef, events: string) {
+    for (const tag of yield* decodeStrings(events)) {
       const where = sql`routing_key = ${key} AND tenant_id = ${source.tenant}
         AND source_type = ${source.actor} AND source_id = ${source.id} AND event = ${tag}`
 
@@ -417,12 +405,12 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       Effect.gen(function* () {
         const [gone] = yield* sql<{ active: boolean; events: string }>`
           DELETE FROM actor_subscriptions s
-          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)}
+          WHERE ${sourceWhere("s", key, source)}
             AND s.subscriber_type = ${row.subscriber_type} AND s.subscription = ${row.subscription}
             AND s.subscriber_id = ${row.subscriber_id} AND s.epoch = ${row.epoch}
           RETURNING s.active, to_jsonb(s.events)::text AS events`
 
-        if (gone?.active === true) yield* removeTags(key, source, yield* decodeStrings(gone.events))
+        if (gone?.active === true) yield* removeTags(key, source, gone.events)
       }),
     )
 
@@ -445,15 +433,13 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     for (;;) {
       const free = local.length === 0 ? 0 : Math.max(0, yield* handoff.free)
-      const lease = settings.claimLeaseMs()
 
       const leasable =
         free === 0
           ? sql`leasable AS MATERIALIZED (
               SELECT NULL::text AS subscriber_type, NULL::text AS subscription,
                 NULL::text AS subscriber_id WHERE false)`
-          : sql`subscribed (subscriber_type, subscription, known) AS (
-              VALUES ${subscribedValues(local)}),
+          : sql`${subscribed(local)},
             leasable AS MATERIALIZED (
               SELECT p.subscriber_type, p.subscription, p.subscriber_id
               FROM page p JOIN subscribed m ON m.subscriber_type = p.subscriber_type
@@ -464,7 +450,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
                 -- source's whole event log for every row of the page.
                 AND EXISTS (
                   SELECT 1 FROM actor_events e
-                  WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
+                  WHERE ${eventsOf("e", key, source)}
                     AND e.sequence > p.delivered AND e.sequence <= head.h
                     AND e.event = ANY(p.events) OFFSET 0)
               LIMIT ${free})`
@@ -473,18 +459,15 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         AND (s.subscriber_type, s.subscription, s.subscriber_id)
           <= (SELECT subscriber_type, subscription, subscriber_id FROM last)`
 
-      const leaseEnd = sql`(${now()} + greatest(${lease}::bigint,
-        least(1000 * power(2, least(s.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint)`
-
       const [page] = yield* sql<{ rows: number; last: string | null; leased: string | null }>`
         WITH head AS (
           SELECT event_sequence AS h FROM actor_generations g
-          WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}),
+          WHERE ${eventsOf("g", key, source)}),
         page AS MATERIALIZED (
           SELECT s.subscriber_type, s.subscription, s.subscriber_id, s.due_at_ms, s.marked,
             s.delivered, s.events
           FROM actor_subscriptions s
-          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND s.active
+          WHERE ${sourceWhere("s", key, source)} AND s.active
             AND (s.subscriber_type, s.subscription, s.subscriber_id) > (${after[0]!}, ${after[1]!}, ${after[2]!})
           ORDER BY s.subscriber_type, s.subscription, s.subscriber_id
           LIMIT ${EXPANSION_PAGE}),
@@ -496,9 +479,9 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         -- row another runner claimed meanwhile is left to the marking below.
         leased AS (
           UPDATE actor_subscriptions s SET marked = greatest(s.marked, head.h),
-            due_at_ms = ${leaseEnd}, attempts = s.attempts + 1
+            due_at_ms = ${leaseEnd("s")}, attempts = s.attempts + 1
           FROM leasable l, head
-          WHERE ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND ${inPage}
+          WHERE ${sourceWhere("s", key, source)} AND ${inPage}
             AND s.subscriber_type = l.subscriber_type AND s.subscription = l.subscription
             AND s.subscriber_id = l.subscriber_id AND s.due_at_ms IS NULL
           RETURNING s.subscriber_type, s.subscription, s.subscriber_id, ${claimedRow}::text AS work),
@@ -508,14 +491,14 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           FROM head
           WHERE NOT EXISTS (SELECT 1 FROM leased x WHERE x.subscriber_type = s.subscriber_type
               AND x.subscription = s.subscription AND x.subscriber_id = s.subscriber_id)
-            AND ${sourceWhere("s", key, source.tenant, source.actor, source.id)} AND s.active
+            AND ${sourceWhere("s", key, source)} AND s.active
             AND ${inPage} AND s.marked < head.h
             -- A row due and unclaimed since its last settle reads through the
             -- head when it is claimed, so it needs no write.
             AND NOT (s.due_at_ms IS NOT NULL AND s.due_at_ms <= ${now()} AND s.attempts = 0)
             AND (s.due_at_ms IS NOT NULL OR EXISTS (
                 SELECT 1 FROM actor_events e
-                WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
+                WHERE ${eventsOf("e", key, source)}
                   AND e.sequence > s.delivered AND e.sequence <= head.h AND e.event = ANY(s.events)))
           RETURNING 1)
         SELECT (SELECT count(*) FROM page)::int AS rows,
@@ -536,15 +519,17 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     yield* options.wake
   })
 
-  /** Delivers one subscription delivery and answers how it settled. */
+  /** Delivers one subscription delivery from `source` and answers how it settled. */
   const deliverOne = Effect.fnUntraced(function* (
     subscriber: ActorRef,
     handler: string,
     source: ActorRef,
-    envelope: SubscriptionEnvelope,
+    delivery: Omit<SubscriptionEnvelope, "sourceType" | "sourceId">,
     issuedAt: number,
     value: typeof WireDelivery.Type,
   ) {
+    const envelope = { ...delivery, sourceType: source.actor, sourceId: source.id }
+
     const commandId = yield* deliveryCommandId({
       subscriber,
       envelope,
@@ -567,9 +552,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   const failure = (outcome: Result.Result<Outcome, ActorError>): string | undefined => {
     if (Result.isFailure(outcome)) return outcome.failure.reason._tag
 
-    if (Outcome.guards.Defect(outcome.success)) return String(outcome.success.cause)
-
-    return undefined
+    return Outcome.guards.Defect(outcome.success) ? String(outcome.success.cause) : undefined
   }
 
   /**
@@ -588,7 +571,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const epoch = BigInt(change.epoch)
     yield* hooks.at("afterClaim", hookRequest(source, "$control", row.intent_id))
     const key = yield* placementKey(source)
-    const pk = sourceWhere("s", key, source.tenant, source.actor, source.id)
+    const pk = sourceWhere("s", key, source)
 
     const target = sql`${pk} AND s.subscriber_type = ${subscriber.actor}
       AND s.subscription = ${row.command} AND s.subscriber_id = ${subscriber.id}`
@@ -600,7 +583,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
         const [generation] = yield* sql<{ head: string }>`
           SELECT event_sequence::text AS head FROM actor_generations g
-          WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)} FOR SHARE`
+          WHERE ${eventsOf("g", key, source)} FOR SHARE`
 
         const head = BigInt(generation!.head)
 
@@ -621,8 +604,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         if (existing !== undefined && BigInt(existing.epoch) >= epoch)
           return refused && BigInt(existing.epoch) === epoch && !existing.active
 
-        if (existing?.active === true)
-          yield* removeTags(key, source, yield* decodeStrings(existing.events))
+        if (existing?.active === true) yield* removeTags(key, source, existing.events)
 
         if (change.op === "remove" || refused) {
           yield* sql`INSERT INTO actor_subscriptions (routing_key, tenant_id, source_type, source_id,
@@ -650,7 +632,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             ${row.command}, ${subscriber.id}, x.events, ${epoch}, true, ${delivered},
             ${Number(key >> 56n)},
             CASE WHEN EXISTS (SELECT 1 FROM actor_events e
-                WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
+                WHERE ${eventsOf("e", key, source)}
                   AND e.sequence > ${delivered} AND e.sequence <= ${head} AND e.event = ANY(x.events))
               THEN ${now()} END
           FROM (SELECT ${textArray({ sql, values: change.events })} AS events) AS x
@@ -675,8 +657,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         source,
         {
           subscription: row.command,
-          sourceType: source.actor,
-          sourceId: source.id,
           epoch: change.epoch,
           kind: "rejected",
           position: change.start,
@@ -738,19 +718,28 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const source = { tenant: row.tenant_id, actor: row.source_type, id: row.source_id }
     const key = BigInt(row.routing_key)
 
-    const pk = sql`${sourceWhere("s", key, source.tenant, source.actor, source.id)}
+    const pk = sql`${sourceWhere("s", key, source)}
       AND s.subscriber_type = ${row.subscriber_type} AND s.subscription = ${row.subscription}
       AND s.subscriber_id = ${row.subscriber_id}`
 
     const held = () => sql`${pk} AND s.epoch = ${row.epoch} AND s.due_at_ms = ${claim.lease}`
+    const name = `${row.subscriber_type}.${row.subscription}`
 
-    yield* hooks.at("afterClaim", hookRequest(source, row.subscription, row.subscriber_id))
+    const lostClaim = (step: "delivery" | "settle") =>
+      Effect.logWarning(`Subscription ${step} lost its claim`).pipe(
+        Effect.annotateLogs({ subscription: name }),
+      )
+
+    const at = (point: TurnPoint) =>
+      hooks.at(point, hookRequest(source, row.subscription, row.subscriber_id))
+
+    yield* at("afterClaim")
 
     const backOff = (progress: bigint, cause: string) =>
       Effect.gen(function* () {
         yield* Effect.logWarning("Subscription delivery failed; retrying with backoff").pipe(
           Effect.annotateLogs({
-            subscription: `${row.subscriber_type}.${row.subscription}`,
+            subscription: name,
             source: `${source.actor}/${source.id}`,
             tenant: source.tenant,
             cause,
@@ -777,15 +766,15 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       payload_version: number | null
       emitted_at_ms: string | null
     }>`SELECT (SELECT event_sequence::text FROM actor_generations g
-          WHERE ${eventsOf("g", key, source.tenant, source.actor, source.id)}) AS head,
+          WHERE ${eventsOf("g", key, source)}) AS head,
         (SELECT min(o.sequence)::text FROM actor_events o
-          WHERE ${eventsOf("o", key, source.tenant, source.actor, source.id)}) AS oldest,
+          WHERE ${eventsOf("o", key, source)}) AS oldest,
         e.sequence::text AS sequence, e.event, e.command_id, e.value, e.payload_version,
         e.emitted_at_ms::text AS emitted_at_ms
       FROM (VALUES (1)) AS one (x)
       LEFT JOIN LATERAL (
         SELECT sequence, event, command_id, value, payload_version, emitted_at_ms FROM actor_events e
-        WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
+        WHERE ${eventsOf("e", key, source)}
           AND e.sequence > ${BigInt(row.delivered)}
           AND e.event = ANY(${textArray({ sql, values: subscription.events })})
         ORDER BY e.sequence LIMIT ${settings.batch}) e ON true`
@@ -823,7 +812,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       if (Outcome.guards.Acknowledged(settled) && settled.reason === "NotCreated")
         yield* Effect.logInfo("Subscription event skipped: the subscriber is not created").pipe(
           Effect.annotateLogs({
-            subscription: `${row.subscriber_type}.${row.subscription}`,
+            subscription: name,
             cursor: String(position),
           }),
         )
@@ -838,13 +827,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           SET due_at_ms = greatest(s.due_at_ms, ${(yield* databaseTime) + settings.claimLeaseMs()})
           WHERE ${held()} RETURNING s.due_at_ms::text AS due_at_ms`
 
-      if (renewed.length === 0) {
-        yield* Effect.logWarning("Subscription delivery lost its claim").pipe(
-          Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
-        )
-
-        return false
-      }
+      if (renewed.length === 0) return yield* lostClaim("delivery").pipe(Effect.as(false))
 
       claim.lease = BigInt(renewed[0]!.due_at_ms)
 
@@ -872,10 +855,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           WHERE ${held()}
           RETURNING s.gap_at_ms::text AS at, s.gap_through::text AS through`
 
-      if (gap === undefined)
-        return yield* Effect.logWarning("Subscription delivery lost its claim").pipe(
-          Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
-        )
+      if (gap === undefined) return yield* lostClaim("delivery")
 
       const through = BigInt(gap.through)
       continuous = through === resumeAfter
@@ -883,7 +863,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       if (subscription.routed === "id") {
         yield* Effect.logWarning("Subscription gap without a recipient").pipe(
           Effect.annotateLogs({
-            subscription: `${row.subscriber_type}.${row.subscription}`,
+            subscription: name,
             source: `${source.actor}/${source.id}`,
             after: String(progress),
             resumeAfter: String(through),
@@ -902,8 +882,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           source,
           {
             subscription: row.subscription,
-            sourceType: source.actor,
-            sourceId: source.id,
             epoch: row.epoch,
             kind: "gap",
             position: String(through),
@@ -953,8 +931,6 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         source,
         {
           subscription: row.subscription,
-          sourceType: source.actor,
-          sourceId: source.id,
           epoch: row.epoch,
           kind: "event",
           position: event.sequence!,
@@ -964,7 +940,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           subscription: row.subscription,
           source,
           cursor: event.sequence!,
-          event: yield* Schema.decodeEffect(JsonText)(value),
+          event: yield* decodeJson(value),
           commandId: event.command_id!,
           timestamp: DateTime.formatIso(DateTime.makeUnsafe(Number(event.emitted_at_ms))),
         }),
@@ -976,15 +952,15 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const delivered =
       continuous && events.length < settings.batch ? (head > progress ? head : progress) : progress
 
-    yield* hooks.at("beforeSettle", hookRequest(source, row.subscription, row.subscriber_id))
+    yield* at("beforeSettle")
 
     const [pending] = yield* sql<{ due: boolean }>`SELECT EXISTS (
         SELECT 1 FROM actor_events e
-        WHERE ${eventsOf("e", key, source.tenant, source.actor, source.id)}
+        WHERE ${eventsOf("e", key, source)}
           AND e.sequence > ${delivered} AND e.event = ANY(${textArray({ sql, values: subscription.events })})
       ) AS due`
 
-    yield* hooks.at("afterSettleSnapshot", hookRequest(source, row.subscription, row.subscriber_id))
+    yield* at("afterSettleSnapshot")
 
     const settle = sql<{ added: string }>`
       WITH old AS (SELECT s.events FROM actor_subscriptions s WHERE ${held()}),
@@ -1010,10 +986,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       }),
     )
 
-    if (!settled)
-      return yield* Effect.logWarning("Subscription settle lost its claim").pipe(
-        Effect.annotateLogs({ subscription: `${row.subscriber_type}.${row.subscription}` }),
-      )
+    if (!settled) return yield* lostClaim("settle")
 
     yield* count(Metrics.relayDelivered, { kind: "subscription" }, 1)
     yield* count(
@@ -1128,7 +1101,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             yield* removeTags(
               BigInt(row.routing_key),
               { tenant: row.tenant_id, actor: row.source_type, id: row.source_id },
-              yield* decodeStrings(row.events),
+              row.events,
             )
 
         return gone.length

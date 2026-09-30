@@ -1,7 +1,7 @@
 import { Effect, Match, Option, Predicate, Queue, Schema, Stream } from "effect"
 import type { ActorError } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
-import type { InternalActors } from "../../handles/actors.ts"
+import type { InternalActors } from "../../runtime/actors.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import type { HeldConnection } from "../../runtime/connections/holder.ts"
 import { FEED_MEMBER, FeedFrame } from "../../runtime/connections/protocol.ts"
@@ -73,7 +73,7 @@ const recoverable = (error: ActorError) =>
   ["SlowConsumer", "OwnerLost", "ActorUnavailable"].includes(error.reason.cause)
 
 /** What a feed reads and who reads it. */
-export interface FeedOptions {
+interface FeedOptions {
   readonly actors: InternalActors["Service"]
   /** The actor whose committed events the feed serves. */
   readonly ref: ActorRef

@@ -5,7 +5,7 @@ import { CleanupHooks } from "../turn/hooks.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
 
 /** One actor type's retention horizons, in milliseconds on the framework clock, and whether it has workflows to sweep. */
-export interface RetentionPolicy {
+interface RetentionPolicy {
   readonly actorType: string
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
@@ -29,6 +29,9 @@ export const receiptMarginMs = (horizon: {
   readonly deliveryMs: number
   readonly retryWindowMs: number
 }) => Math.max(horizon.keepReceiptsMs - horizon.retryWindowMs, horizon.deliveryMs)
+
+/** One sweep batch: rows it deleted and the newest age it took. */
+type Pruned = { readonly count: number; readonly last?: string | null }
 
 /** Rows deleted by a sweep, by kind. */
 export interface Swept {
@@ -95,10 +98,30 @@ export const sweep = Effect.fnUntraced(function* (
         ),
       )
 
-    let from = "0"
+    /** Runs `prune` in batches, each from the age the previous one reached, until one deletes nothing. */
+    const pruneAll = Effect.fnUntraced(function* (
+      prune: (from: string) => Effect.Effect<ReadonlyArray<Pruned>, SqlError.SqlError>,
+      metric?: typeof Metrics.receiptsPruned,
+    ) {
+      let from = "0"
+      let total = 0
 
-    for (;;) {
-      const [pruned] = yield* batch(sql<{ count: number; last: string | null }>`
+      for (;;) {
+        const [pruned] = yield* batch(prune(from))
+        total += pruned!.count
+
+        if (metric !== undefined)
+          yield* count(metric, { actor_type: policy.actorType }, pruned!.count)
+
+        if (pruned!.count === 0) return total
+        from = pruned!.last ?? from
+        yield* hooks.afterBatch
+        yield* Effect.yieldNow
+      }
+    })
+
+    receipts += yield* pruneAll(
+      (from) => sql<{ count: number; last: string | null }>`
         WITH doomed AS (
           SELECT r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id, r.expires_at_ms
           FROM actor_receipts r
@@ -118,21 +141,12 @@ export const sweep = Effect.fnUntraced(function* (
             AND r.actor_type = d.actor_type AND r.actor_id = d.actor_id AND r.command_id = d.command_id
           RETURNING 1)
         SELECT count(*)::integer AS count, (SELECT max(expires_at_ms)::text FROM doomed) AS last
-        FROM gone`)
+        FROM gone`,
+      Metrics.receiptsPruned,
+    )
 
-      receipts += pruned!.count
-      yield* count(Metrics.receiptsPruned, { actor_type: policy.actorType }, pruned!.count)
-
-      if (pruned!.count === 0) break
-      from = pruned!.last ?? from
-      yield* hooks.afterBatch
-      yield* Effect.yieldNow
-    }
-
-    from = "0"
-
-    for (;;) {
-      const [pruned] = yield* batch(sql<{ count: number; last: string | null }>`
+    events += yield* pruneAll(
+      (from) => sql<{ count: number; last: string | null }>`
         WITH picked AS (
           SELECT routing_key, tenant_id, actor_type, actor_id, sequence, emitted_at_ms FROM actor_events
           WHERE actor_type = ${policy.actorType} AND emitted_at_ms >= ${from}::bigint
@@ -165,23 +179,15 @@ export const sweep = Effect.fnUntraced(function* (
             AND e.actor_type = u.actor_type AND e.actor_id = u.actor_id AND e.sequence <= u.last
           RETURNING 1)
         SELECT count(*)::integer AS count, (SELECT max(emitted_at_ms)::text FROM picked) AS last
-        FROM gone`)
+        FROM gone`,
+      Metrics.eventsPruned,
+    )
 
-      events += pruned!.count
-      yield* count(Metrics.eventsPruned, { actor_type: policy.actorType }, pruned!.count)
+    if (policy.workflows) {
+      const workflowCutoff = now - policy.keepWorkflowsMs
 
-      if (pruned!.count === 0) break
-      from = pruned!.last ?? from
-      yield* hooks.afterBatch
-      yield* Effect.yieldNow
-    }
-
-    const workflowCutoff = now - policy.keepWorkflowsMs
-
-    for (;;) {
-      if (!policy.workflows) break
-
-      const [pruned] = yield* batch(sql<{ count: number }>`
+      workflows += yield* pruneAll(
+        () => sql<{ count: number }>`
         WITH doomed AS (
           SELECT routing_key, execution_id FROM actor_workflow_executions
           WHERE actor_type = ${policy.actorType} AND status = 'finished'
@@ -193,16 +199,9 @@ export const sweep = Effect.fnUntraced(function* (
           DELETE FROM actor_workflow_executions x USING doomed d
           WHERE x.routing_key = d.routing_key AND x.execution_id = d.execution_id
           RETURNING 1)
-        SELECT count(*)::integer AS count FROM gone`)
+        SELECT count(*)::integer AS count FROM gone`,
+      )
 
-      workflows += pruned!.count
-
-      if (pruned!.count === 0) break
-      yield* hooks.afterBatch
-      yield* Effect.yieldNow
-    }
-
-    if (policy.workflows)
       yield* batch(sql`
         DELETE FROM actor_workflow_manifests m
         WHERE m.actor_type = ${policy.actorType}
@@ -211,6 +210,7 @@ export const sweep = Effect.fnUntraced(function* (
           AND NOT EXISTS (SELECT 1 FROM actor_workflow_executions x
             WHERE x.actor_type = m.actor_type AND x.workflow = m.workflow
               AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
+    }
   }
 
   return { receipts, events, workflows } satisfies Omit<Swept, "contents">

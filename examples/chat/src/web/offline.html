@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat · offline queue</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      main {
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+        overflow-wrap: anywhere;
+      }
+      .meta {
+        color: GrayText;
+        font-size: 0.875rem;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        border: 1px solid #8884;
+        border-radius: 0.5rem;
+        min-height: 3rem;
+      }
+      li {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid #8882;
+      }
+      li:last-child {
+        border-bottom: none;
+      }
+      form {
+        display: flex;
+        gap: 0.5rem;
+      }
+      input {
+        flex: 1;
+        padding: 0.5rem;
+        font: inherit;
+      }
+      button {
+        padding: 0.5rem 0.9rem;
+        font: inherit;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Room <span data-testid="room"></span></h1>
+      <p class="meta">
+        signed in as <strong data-testid="user"></strong> · queue
+        <span data-testid="queue-ready">loading</span>
+      </p>
+      <form data-testid="post">
+        <input data-testid="body" placeholder="Say something" autocomplete="off" />
+        <button type="submit">Post</button>
+      </form>
+      <h2>Waiting to be delivered</h2>
+      <ul data-testid="queue"></ul>
+    </main>
+    <script type="module" src="/offline.js"></script>
+  </body>
+</html>

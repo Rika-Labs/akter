@@ -685,6 +685,45 @@ Not covered:
 
 With 10 samples, p99 is not meaningful.
 
+### M4 exit rehearsal: drain, failover, and restore on the served chat room (#306)
+
+`CHAT_BACKEND=postgres bun --bun node_modules/vitest/vitest.mjs run --root . examples/chat/src/rehearsal`, on Dallen's MacBook Pro (Apple silicon, Docker Desktop) with load averages of 20–60 from other worktrees. Each run prints one `REHEARSAL` line. The drill is [`examples/chat/src/rehearsal/deployment.test.ts`](../../examples/chat/src/rehearsal/deployment.test.ts), and it runs in the chat package's `test:integration` script.
+
+**Setup.** The T10 pair: a Postgres 18.6 primary with a synchronous standby in Docker, behind the drill's TCP endpoint. The chat room (`RoomLive`, with its moderation effect, feed, blobs and idle timer) runs on three `ActorTest.cluster` runners. Each runner has its own HTTP listener serving `Actor.serve({ actors: [Room] })` over that runner's runtime, as three processes behind a load balancer would. Six clients post to twelve rooms. Each post takes an id from `/command-ids`, goes only to a listener whose `/ready` answers 200, and is retried under the same idempotency key until it is acknowledged.
+
+**One run, in order:**
+
+1. **Deploy.** All three `/ready` answer 200, and the clients post.
+2. **Drain a runner under load.** `RuntimeControl.drain({ deadline: "20 seconds" })` on runner 0. Its `/ready` answers 503 `draining`/`drained`. Its listener is removed, it shuts down gracefully, and the others keep serving. It then restarts and rejoins.
+3. **Fail over the Postgres primary.** Replies are held until the primary shows a committed `Post` no client has heard of. Then SIGKILL, `pg_promote()` on the standby, and the endpoint moves to it. The clients keep posting until 60 more are acknowledged, then stop. Every acknowledged id and every receipt the old primary showed is on the promoted primary, and receipts, `chat_messages` rows and `MessagePosted` events each number exactly the posts sent, with no event twice.
+4. **Back up, keep serving, restore.** The runners stop, and the database is copied whole (the stopped-copy backup of [backup and restore](../operations/04-backup-restore.md)). A new deployment serves about 50 more posts, then stops. A deployment on the backup holds exactly phase one. Every client then retries every post of both phases under its original key: all answer 200. The phase-two posts, which the backup lost, run once each, and the phase-one posts replay without a handler run. Receipts, rows and events equal all posts, with no event twice. After the framework clock moves past the 24-hour retry window, every retry is refused with `CommandExpired`.
+
+| Run | Phase-one posts | Drain outcome, time, interrupted | In flight at drain | Commit-unknown | Kill to `pg_promote()` | Kill to first ack after | Slowest post | Posts lost after restore (re-run on retry) | Lost / repeated |
+| --- | --------------: | -------------------------------- | -----------------: | -------------: | ---------------------: | ----------------------: | -----------: | -----------------------------------------: | --------------- |
+| 1   |             510 | clean, 45.5 s, 0 / 0             |                  1 |              1 |                 1.31 s |                  1.97 s |      11.04 s |                                         47 | 0 / 0           |
+| 2   |           2,669 | clean, 101.4 s, 0 / 0            |                  4 |              2 |                 0.21 s |                  0.32 s |       3.68 s |                                         47 | 0 / 0           |
+| 3   |           1,107 | clean, 9.9 s, 0 / 0              |                  2 |              1 |                 0.21 s |                  0.31 s |       1.57 s |                                         48 | 0 / 0           |
+
+- **No command ran twice or got lost** in any run: through the drain, the failover and the restore, each acknowledged post has one receipt, one row and one `MessagePosted` event, and the restored deployment converges to one of each after client retries.
+- **Commit-unknown posts resolve through receipts.** Every post that committed on the primary while its reply was held was later acknowledged to its client under the same id.
+- **External calls.** The moderation effect of a phase-one post reached the stand-in provider more than once in 4–7 posts per run (runs 2 and 3; run 1 did not check), always under one idempotency key: effect retries after the failover, which a provider honouring the key answers once. A phase-two post the restore lost is moderated again under a new effect id when its client retries, which is the reconciliation case step 5 of [backup and restore](../operations/04-backup-restore.md#restore-procedure) describes.
+- **Drain time exceeded its deadline while reporting clean.** The drain call took 9.9–101.4 s against a 20 s deadline, with nothing interrupted. The machine was heavily loaded and the time includes the harness's dispatch to runner 0, so this is not yet a drain defect; [#423](https://github.com/Rika-Labs/durable-actors/issues/423) tracks it. The clients saw no failures during it: other runners served every post.
+- These are single-machine numbers under unrelated load, not targets. The failover recovery times agree with T10's (0.31–1.97 s here, 0.36–1.11 s there).
+
+### SSE event feeds (M3.3, #293)
+
+The `sse` scenario ([`4822780-m3.3-sse`](../../benchmarks/results/2026-09-29-4822780-m3.3-sse-postgres.json), full profile, one run) serves an actor's `Pinged` events as an SSE feed through `Actor.serve` on a `Bun.serve` listener over loopback HTTP/1.1, and reads them with the Promise client's `handle.events`. It ran on an Apple M5 Max (18 cores, 128 GiB) with Bun 1.4.2, with the benchmark client, the runtime, and the HTTP server in one process and Postgres 18.6 at `BENCH_DATABASE_URL` on the same Mac. That Mac was shared with other work, so treat the tails as noisy.
+
+| Case                                             | Rate   | p50 / p95 / p99 ms    | Stmts/op |
+| ------------------------------------------------ | ------ | --------------------- | -------- |
+| feed-live-1 (command to its event on one feed)   | 42.7/s | 11.4 / 90.1 / 180.8   | 7.07     |
+| feed-live-64 (command to its event on 64 feeds)  | 57.0/s | 13.1 / 40.6 / 93.6    | 7.02     |
+| feed-replay-5000 (a new feed reads 5,000 events) | 8.1/s  | 124.2 / 147.9 / 165.9 | 45.15    |
+
+- **Live delivery** is timed from a command's call until every open feed holds its event. With 64 open feeds on the actor, p50 rose from 11.4 to 13.1 ms, and the command's cost stayed at 7 statements: the owner broadcasts a committed feed event to the feed rows without more database work per feed. The one-feed p95 (90 ms) is above the 64-feed p95 (41 ms) in this run, which was not repeated, so the tails say little about feed count.
+- **Replay** reads committed events from `actor_events` in pages of 256 without waking the actor: 5,000 events took a median of 124 ms (about 40,000 events per second) and 45 statements per replay, about 20 pages plus the request's own statements.
+- No case had errors. This covers loopback HTTP/1.1 only: it does not measure TLS, HTTP/2, or a feed that lags behind the owner's live buffer.
+
 ### M2 close: statements per operation against the baseline
 
 The M2 exit criterion "statements per operation match T2's baseline" was checked on 2026-09-30 against the `Statements` workflow's artifacts from 20 runs on 2026-09-29 (pull requests and pushes to `main`, each a `ci` profile run on Postgres 18.6 on a 4-vCPU CI runner), and against the latest run on `main`, which passed. The baseline is `benchmarks/baselines/statements.json` at `29d7397`; the gate fails a case that moves by more than its tolerance in either direction.

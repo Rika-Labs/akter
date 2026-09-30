@@ -1,59 +1,39 @@
-import { Effect } from "effect"
-import { UsageError } from "../workflows/check.ts"
-import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
+import { Argument, Command, Flag } from "effect/unstable/cli"
+import {
+  actorFlag,
+  encodeJson,
+  operatorCommand,
+  operatorFlags,
+  operatorRequest,
+  reason,
+  tenant,
+} from "../operator/request.ts"
 
-/** Usage text for `durable dead-letters`. */
-export const USAGE = [
-  'Usage: durable dead-letters retry <effectId> --actor <Type>/<id> --url <runner> --tenant <tenant> --reason "<why>" [--provider-checked] [--token-env <name>] [--json]',
-  '       durable dead-letters discard <effectId> --actor <Type>/<id> --url <runner> --tenant <tenant> --reason "<why>" [--token-env <name>] [--json]',
-].join("\n")
+const flags = {
+  effectId: Argument.String("effectId").pipe(
+    Argument.withDescription("The dead-lettered effect's id"),
+  ),
+  actor: actorFlag({
+    name: "actor",
+    description: "The actor that performed the effect, as <Type>/<id>",
+  }),
+  tenant,
+  reason,
+  ...operatorFlags,
+}
 
-/** Parses the arguments after `dead-letters retry` or `dead-letters discard`. */
-export const parseRepair = ({
-  action,
-  args,
-}: {
+/** Parsed arguments of `dead-letters retry` or `dead-letters discard`. */
+export type RepairOptions = Command.Command.Config.Infer<typeof flags> & {
   readonly action: "retry" | "discard"
-  readonly args: ReadonlyArray<string>
-}) =>
-  Effect.gen(function* () {
-    const flags = yield* parseOperatorFlags({
-      args,
-      valued: ["--actor", "--reason"],
-      switches: action === "retry" ? ["--provider-checked"] : [],
-    })
-
-    const effectId = flags.positional[0]
-
-    if (effectId === undefined || flags.positional.length > 1)
-      return yield* UsageError.make({ message: "Name one effect id" })
-
-    const actor = yield* parseActor(flags.flags.get("--actor"))
-    const reason = flags.flags.get("--reason")
-
-    if (flags.tenant === undefined)
-      return yield* UsageError.make({ message: "--tenant is required" })
-
-    if (reason === undefined || reason.length === 0 || reason.length > 500)
-      return yield* UsageError.make({ message: "--reason is required, up to 500 characters" })
-
-    return {
-      ...flags,
-      ...actor,
-      action,
-      effectId,
-      reason,
-      tenant: flags.tenant,
-      providerChecked: flags.switches.has("--provider-checked"),
-    }
-  })
+  readonly providerChecked: boolean
+}
 
 /** Retries or discards one dead letter; the runner records it in the operator audit log. */
 export const repair = ({
   options,
   token,
 }: {
-  readonly options: Effect.Success<ReturnType<typeof parseRepair>>
+  readonly options: RepairOptions
   readonly token: string | undefined
 }) =>
   operatorRequest({
@@ -64,15 +44,44 @@ export const repair = ({
       options.action === "retry"
         ? {
             tenant: options.tenant,
-            actorType: options.actorType,
-            actorId: options.actorId,
+            actorType: options.actor.actorType,
+            actorId: options.actor.actorId,
             reason: options.reason,
             providerChecked: options.providerChecked,
           }
         : {
             tenant: options.tenant,
-            actorType: options.actorType,
-            actorId: options.actorId,
+            actorType: options.actor.actorType,
+            actorId: options.actor.actorId,
             reason: options.reason,
           },
   })
+
+/** `durable dead-letters retry <effectId>`: runs a dead-lettered effect again, printing the runner's JSON answer. */
+export const retryCommand = Command.make(
+  "retry",
+  {
+    ...flags,
+    providerChecked: Flag.Boolean("provider-checked").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription(
+        "Confirm the provider never applied an ambiguous attempt, so running it again is safe",
+      ),
+    ),
+  },
+  (options) =>
+    operatorCommand({
+      options: { ...options, action: "retry" as const },
+      request: repair,
+      format: encodeJson,
+    }),
+).pipe(Command.withDescription("Run a dead-lettered effect again"))
+
+/** `durable dead-letters discard <effectId>`: settles a dead letter without running it, printing the runner's JSON answer. */
+export const discardCommand = Command.make("discard", flags, (options) =>
+  operatorCommand({
+    options: { ...options, action: "discard" as const, providerChecked: false },
+    request: repair,
+    format: encodeJson,
+  }),
+).pipe(Command.withDescription("Settle a dead-lettered effect without running it"))

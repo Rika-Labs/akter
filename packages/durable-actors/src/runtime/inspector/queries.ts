@@ -1,5 +1,6 @@
 import { Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
+import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { decompress } from "../storage/codec.ts"
 
 /**
@@ -21,7 +22,7 @@ export const decodeText = (text: string | null): Decoded | null => {
 }
 
 /** Decodes a zstd-compressed JSON `bytea` column such as state, an event, or a step exit. */
-const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
+export const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
   if (bytes === null) return null
 
   let text: string
@@ -39,39 +40,32 @@ const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
 export const MAX_LIMIT = 500
 
 /** Every read below is scoped to `tenant`, which comes from the authenticated principal only. */
-export interface Page {
+interface Page {
   readonly tenant: string
   readonly limit: number
 }
 
 /** The `(actor type, actor id)` pair that names an actor within a tenant. */
-export interface ActorIdentity {
+interface ActorIdentity {
   readonly actorType: string
   readonly actorId: string
 }
 
 /**
- * Runs `effect` in a read-only, repeatable-read transaction, so every read in
- * it sees one snapshot and Postgres refuses any write it could attempt. The
- * transaction names `tenant`, so when row-level security owns the views they
- * return no other tenant's rows, whatever a read's own filter says.
+ * Runs `effect` in a read-only snapshot that names `tenant`, so when
+ * row-level security owns the views they return no other tenant's rows,
+ * whatever a read's own filter says.
  */
 export const readOnly =
   (tenant: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-
-      return yield* sql.withTransaction(
-        sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
-          Effect.andThen(sql`SELECT set_config('durable.tenant', ${tenant}, true)`),
-          Effect.andThen(effect),
-        ),
-      )
-    })
+    Effect.flatMap(
+      SqlClient.SqlClient,
+      (sql) => sql`SELECT set_config('durable.tenant', ${tenant}, true)`,
+    ).pipe(Effect.andThen(effect), inReadOnlySnapshot)
 
 /** The view catalog and the tenant's row counts. */
-export interface Overview {
+interface Overview {
   readonly tenant: string
   readonly views: ReadonlyArray<{ readonly view: string; readonly version: number }>
   readonly counts: {
@@ -113,7 +107,7 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
   })
 
 /** One actor in a listing, with its placement and current generation. */
-export interface ActorRow extends ActorIdentity {
+interface ActorRow extends ActorIdentity {
   readonly placement: string | null
   readonly generation: number
   readonly created: boolean
@@ -125,7 +119,7 @@ interface StoredActor extends ActorRow {
 }
 
 /** One keyset page of actors, optionally of a single type. */
-export interface ActorsPage extends Page {
+interface ActorsPage extends Page {
   readonly actorType?: string | undefined
   /** Keyset cursor: the last actor of the previous page. */
   readonly after?: ActorIdentity | undefined
@@ -318,7 +312,7 @@ const STEP_COLUMNS = `execution_id AS "executionId", step, attempt::int AS attem
   started_at_ms::float8 AS "startedAtMs", settled_at_ms::float8 AS "settledAtMs"`
 
 /** The actor whose detail to read, with the row limit for each list in it. */
-export interface ActorPage extends Page, ActorIdentity {}
+interface ActorPage extends Page, ActorIdentity {}
 
 /**
  * One actor as the inspector shows it, read through the actor's routing key:
@@ -478,7 +472,7 @@ export const deadLetters = ({ tenant, limit }: Page) =>
   })
 
 /** A tenant-wide page of workflow executions. */
-export interface WorkflowsPage extends Page {
+interface WorkflowsPage extends Page {
   /** `open` is every execution not yet finished. */
   readonly status: "open" | "all"
 }

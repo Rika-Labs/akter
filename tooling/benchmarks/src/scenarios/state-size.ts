@@ -56,12 +56,11 @@ export const stateSize: Scenario = {
     "State growing toward the default maxStateBytes (65,536): rewrite the blob every turn, hold it while touching a counter, and wake an actor that stores it.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const operations = quick ? 50 : 500
-      const sleepers = quick ? 20 : 100
+      const operations = context.quick ? 50 : 500
+      const sleepers = context.quick ? 20 : 100
       const results: Array<CaseResult> = []
 
-      for (const bytes of quick ? [256, 16_384] : SIZES) {
+      for (const bytes of context.quick ? [256, 16_384] : SIZES) {
         const blobs = Array.from({ length: 8 }, (_, index) => text(bytes, bytes + index))
         const stored = codec(`{"blob":"${blobs[0]!}","count":1}`)
 

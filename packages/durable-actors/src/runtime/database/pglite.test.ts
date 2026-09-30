@@ -11,7 +11,7 @@ import { Database } from "../index.ts"
 import { orderCapped } from "../turn/outbox.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
-import type { InternalActors } from "../../handles/actors.ts"
+import type { InternalActors } from "../actors.ts"
 import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
 
 const harness = ManagedRuntime.make(BunFileSystem.layer)
@@ -202,6 +202,7 @@ describe("PGlite migrations", () => {
             { migration_id: 21 },
             { migration_id: 22 },
             { migration_id: 23 },
+            { migration_id: 24 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

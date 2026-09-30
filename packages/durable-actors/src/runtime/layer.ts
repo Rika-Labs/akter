@@ -6,14 +6,12 @@ import {
   Semaphore,
   Context,
   Crypto,
-  Deferred,
   Duration,
   Effect,
   Fiber,
   Layer,
   Option,
   Result,
-  Schedule,
   Schema,
   Stream,
 } from "effect"
@@ -32,59 +30,40 @@ import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
   ActorError,
   ActorUnavailable,
-  InvalidInput,
-  NotCreated,
   Unauthorized,
   Timeout,
   MailboxFull,
   RunnerAtCapacity,
-  SessionEnded,
 } from "../errors/actor.ts"
-import {
-  Actors,
-  type EffectRegistration,
-  type Executed,
-  InternalActors,
-  Outcome,
-  type QueryRegistration,
-  type Registration,
-  type WorkflowStatus,
-  type Request,
-} from "../handles/actors.ts"
+import { Actors } from "../handles/actors.ts"
+import { type EffectRegistration, type QueryRegistration, type Registration } from "./members.ts"
+import type { Executed, Request } from "./request.ts"
+import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
-import { caughtUp, ReadReplica, replicaLayer } from "./database/replica.ts"
-import { checkRowLevelSecurity, TenantScope, withTenant } from "./database/tenancy.ts"
+import { ReadReplica, replicaLayer } from "./database/replica.ts"
+import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./effects/isolation.ts"
 import { pglite } from "./database/pglite.ts"
-import {
-  commandEntity,
-  connectionEntity,
-  encodeEntityId,
-  registerActor,
-} from "./entity/register.ts"
+import { commandEntity, connectionEntity, encodeEntityId } from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
-import { StreamFailed, StreamItem } from "./connections/protocol.ts"
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
-import type { ReadSet } from "./connections/reads.ts"
-import { watchStream } from "./connections/watch.ts"
-import { replayEvents } from "./events/replay.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
-import { decompress, routingKey } from "./storage/codec.ts"
-import { checkPlacement, recordedPlacement } from "./storage/placements.ts"
-import { CleanupHooks, TurnHooks } from "./turn/hooks.ts"
+import { routingKey } from "./storage/codec.ts"
+import { recordedPlacement } from "./storage/placements.ts"
+import { TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
+import { seedRuntime } from "./operators/seed.ts"
 import { count, Metrics } from "./telemetry/metrics.ts"
-import { databaseSampler, TelemetrySampler } from "./telemetry/sampler.ts"
-import { OutboxRuntime, textArray } from "./turn/outbox.ts"
-import { turnConnections } from "./turn/pipeline.ts"
+import { TelemetrySampler } from "./telemetry/sampler.ts"
+import { TurnConnections, turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import {
   type LocalSubscription,
@@ -92,32 +71,27 @@ import {
   subscriptionRelay,
 } from "./subscriptions/relay.ts"
 import type { Placement } from "./storage/codec.ts"
-import { sweep } from "./storage/retention.ts"
-import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
-import {
-  DEFAULT_WRITER_WINDOW_MS,
-  dropWriters,
-  findPayloadProblems,
-  formatPayloadProblem,
-  recordPayloadVersions,
-  refreshWriters,
-} from "./payloads/versions.ts"
+import { DEFAULT_WRITER_WINDOW_MS, refreshWriters } from "./payloads/versions.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
-import { decodeResult, RECOVERY_MS } from "./workflows/engine.ts"
 import { ExecutionTarget, INTERRUPT, RESUME } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
 import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
 import { ContentStore } from "../handles/content.ts"
-import { type AnyBlob, isContent } from "../members/blob.ts"
+import { isContent } from "../members/blob.ts"
 import { type GrantKey, grantKeys } from "./content/grant.ts"
 import { MAX_CONTENT_BYTES, tenantContent } from "./content/store.ts"
 import { ContentHooks } from "./turn/hooks.ts"
-import { bindTables, checkTables, rowsDatabase } from "./turn/rows.ts"
+import { bindTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { checkReceipt } from "./turn/receipt.ts"
-import { type Readiness, RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
+import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
+import { eventFeeds } from "./feeds.ts"
+import { committedReads } from "./queries.ts"
+import { servingReadiness } from "./readiness.ts"
+import { actorRegistration } from "./registration.ts"
+import { startSweeps } from "./sweeps.ts"
 
 /** Configuration for `Actors.layer`: authorization, actor and effect layers, timing, retention, and row-level security. */
 export interface Options {
@@ -246,6 +220,18 @@ export interface Options {
   readonly rowLevelSecurity?: {
     readonly role: string
   }
+  /**
+   * The writer role of enforced adopted tables. A turn of an actor type that
+   * owns one runs as `role`, which the table's guard trigger admits and every
+   * other login is refused, so it needs read and write on every framework and
+   * owned table and must own none of them. This login must be able to `SET
+   * ROLE` to it. Set together with `rowLevelSecurity`, both must name the same
+   * role, because a turn takes one role. The runtime refuses to start an
+   * enforced table without it.
+   */
+  readonly adoption?: {
+    readonly role: string
+  }
 }
 
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }))
@@ -288,32 +274,8 @@ export class RunnerWiring extends Context.Service<
   }
 >()("@durable-actors/core/runtime/layer/RunnerWiring") {}
 
-/** How long registering a source waits for the subscriber types routing from it to register. */
-const ROUTED_SUBSCRIBER_WAIT_MS = 5000
-
-/** How often a subscriber checks that a stream's owner on another runner is alive. */
-const OWNER_CHECK_INTERVAL = "1 second"
-
-const activationEnded = () =>
-  ActorError.make({ reason: SessionEnded.make({ cause: "ActivationEnded", resync: false }) })
-
-/** Watch reruns one runner runs at once; another waits for a place. */
-const WATCH_RERUNS = 64
-
 /** How long a progress send may take before it is given up as a lost frame. */
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
-
-/** Shardings whose telemetry sampler is registered; Cluster allows one per name. */
-const sampled = new WeakSet<Sharding.Sharding["Service"]>()
-
-/** Pause between retention sweeps. */
-const CLEANUP_INTERVAL = "1 minute"
-
-/** How long readiness waits for the database before it reports storage unavailable. */
-const READINESS_STORAGE_TIMEOUT = "2 seconds"
-
-/** How long readiness reuses its last storage answer. */
-const READINESS_CACHE = "1 second"
 
 /**
  * Builds the runtime: migrates and checks the database, registers every actor,
@@ -369,6 +331,8 @@ const READINESS_CACHE = "1 second"
  *   retry like any delivery failure; it is not a defect.
  */
 export const layer = (options: Options) => {
+  const enforcedTypes = new Set<string>()
+
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
@@ -443,6 +407,7 @@ export const layer = (options: Options) => {
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const diagnostics: Parameters<typeof actorRegistration>[0]["diagnostics"] = new Map()
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
@@ -602,32 +567,6 @@ export const layer = (options: Options) => {
         yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
       })
 
-      /**
-       * Refuses a layer that can't read every payload version the database
-       * may hold, as a placement or workflow mismatch is refused. `writes`
-       * names the actor type whose turns the layer runs, for the removed-class check.
-       */
-      const checkPayloadVersions = Effect.fnUntraced(function* (
-        name: string,
-        declarations: ReadonlyArray<PayloadDeclaration>,
-        writes?: { readonly actorType: string; readonly events: ReadonlyArray<string> },
-      ) {
-        const problems = yield* findPayloadProblems(
-          declarations,
-          writes === undefined ? [] : [writes],
-        ).pipe(Effect.provideContext(services), Effect.orDie)
-
-        if (problems.length > 0)
-          return yield* Effect.die(
-            new Error(
-              [
-                `Actor ${name} cannot read every stored payload version; deploy refused`,
-                ...problems.map(formatPayloadProblem),
-              ].join("\n"),
-            ),
-          )
-      })
-
       const refreshing = Semaphore.makeUnsafe(1)
 
       const refreshPayloadWriters = Effect.gen(function* () {
@@ -661,80 +600,6 @@ export const layer = (options: Options) => {
 
       const entityId = (ref: ActorRef) => encodeEntityId([ref.tenant, ref.id]).pipe(Effect.orDie)
 
-      const recordRouted = Effect.fnUntraced(function* (registration: Registration) {
-        const sql = yield* SqlClient.SqlClient
-
-        const routed = registration.subscriptions.filter(
-          (declared) => declared.routed !== undefined,
-        )
-
-        for (const declared of routed)
-          yield* sql`INSERT INTO actor_routed_subscriptions (source_type, subscriber_type, subscription)
-            VALUES (${declared.sourceType}, ${registration.name}, ${declared.tag})
-            ON CONFLICT DO NOTHING`
-
-        yield* sql`DELETE FROM actor_routed_subscriptions
-          WHERE subscriber_type = ${registration.name}
-            AND NOT (source_type, subscription) IN (
-              SELECT * FROM unnest(${textArray({ sql, values: routed.map((declared) => declared.sourceType) })},
-                ${textArray({ sql, values: routed.map((declared) => declared.tag) })}))`
-      })
-
-      /**
-       * A publishing turn creates a routed subscription's source-side rows
-       * only from the routed declarations its runner registers, so a runner
-       * that serves a source without a subscriber type routing from it would
-       * lose those events silently. Registering the source fails instead.
-       * Layers of one runtime register concurrently, so the subscriber gets
-       * a short window to register first.
-       */
-      const requireRoutedSubscribers = Effect.fnUntraced(function* (sourceType: string) {
-        const sql = yield* SqlClient.SqlClient
-
-        const missing = Effect.map(
-          sql<{ subscriber_type: string; subscription: string }>`
-            SELECT subscriber_type, subscription FROM actor_routed_subscriptions
-            WHERE source_type = ${sourceType}`,
-          (rows) =>
-            rows.filter(
-              (row) =>
-                row.subscriber_type !== sourceType && !registrations.has(row.subscriber_type),
-            ),
-        )
-
-        for (let waited = 0; waited < ROUTED_SUBSCRIBER_WAIT_MS; waited += 100) {
-          if ((yield* missing).length === 0) return
-          yield* Effect.sleep("100 millis")
-        }
-
-        const unregistered = yield* missing
-
-        if (unregistered.length > 0)
-          return yield* Effect.die(
-            new Error(
-              `Actor ${sourceType} is registered without the subscriber types that route from it (${unregistered
-                .map((row) => `${row.subscriber_type}.${row.subscription}`)
-                .join(", ")}); register their layers on every runner that serves ${sourceType}`,
-            ),
-          )
-      })
-
-      const declaresContent = (registration: { readonly blobs: ReadonlyArray<AnyBlob> }) =>
-        registration.blobs.some(isContent)
-
-      const requireContent = (name: string) =>
-        content === undefined
-          ? Effect.die(new Error(`Actor ${name} declares content; give the runtime content.keys`))
-          : Effect.void
-
-      const recordContentTurn = Effect.fnUntraced(function* (registration: Registration) {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`INSERT INTO actor_content_types (actor_type, turn_ms)
-          VALUES (${registration.name}, ${registration.policy.executionMs})
-          ON CONFLICT (actor_type) DO UPDATE
-          SET turn_ms = greatest(actor_content_types.turn_ms, EXCLUDED.turn_ms)`
-      })
-
       const databaseNow = databaseTime.pipe(
         Effect.provideContext(services),
         Effect.catchIf(SqlError.isSqlError, (cause) =>
@@ -750,6 +615,36 @@ export const layer = (options: Options) => {
       })
 
       const publicActors = Actors.of({ mintCommandId })
+
+      /**
+       * Logs what this runner knows of a delivery's target when the delivery
+       * waits out `deliveryTimeout`: the target activation's handlers, worker
+       * phase, mailbox and batch, the turn pool's leased and waiting sessions,
+       * and any other activation on the runner being rebuilt or restarted, so
+       * a stall names its cause from one log line.
+       */
+      const deliveryTimedOut = (request: Request, address: string) =>
+        Effect.gen(function* () {
+          const target = diagnostics.get(request.ref.actor)
+          const turns = Option.getOrUndefined(yield* Effect.serviceOption(TurnConnections))
+
+          yield* Effect.logWarning("Delivery timed out").pipe(
+            Effect.annotateLogs({
+              actor: request.ref.actor,
+              id: request.ref.id,
+              tenant: request.ref.tenant,
+              command: request.command,
+              commandId: request.commandId,
+              activation: target?.diagnose(address),
+              turnSessions: turns?.sessions(),
+              restarting: [...diagnostics].flatMap(([actor, { restarting }]) =>
+                restarting()
+                  .filter((entityId) => actor !== request.ref.actor || entityId !== address)
+                  .map((entityId) => `${actor}:${entityId}`),
+              ),
+            }),
+          )
+        })
 
       const dispatch = Effect.fnUntraced(
         function* (request: Request, external: boolean) {
@@ -867,14 +762,17 @@ export const layer = (options: Options) => {
             Effect.timeoutOrElse({
               duration: registration.policy.deliveryMs,
               orElse: () =>
-                Effect.fail(
-                  ActorError.make({
-                    reason:
-                      rejectedAtCapacity && !isResident()
-                        ? RunnerAtCapacity.make({})
-                        : Timeout.make({ commandId: request.commandId }),
-                  }),
-                ),
+                rejectedAtCapacity && !isResident()
+                  ? Effect.fail(ActorError.make({ reason: RunnerAtCapacity.make({}) }))
+                  : deliveryTimedOut(request, address).pipe(
+                      Effect.andThen(
+                        Effect.fail(
+                          ActorError.make({
+                            reason: Timeout.make({ commandId: request.commandId }),
+                          }),
+                        ),
+                      ),
+                    ),
             }),
           )
         },
@@ -1041,114 +939,21 @@ export const layer = (options: Options) => {
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
-      const cleanupHooks = yield* CleanupHooks
-
-      const cleanup = Effect.suspend(() =>
-        refreshPayloadWriters.pipe(
-          Effect.orDie,
-          Effect.andThen(
-            sweep(
-              Array.from(registrations.values(), ({ name, policy }) => ({
-                actorType: name,
-                keepReceiptsMs: policy.keepReceiptsMs,
-                keepEventsMs: policy.keepEventsMs,
-                holdEventsMs: policy.holdEventsMs,
-                deliveryMs: policy.deliveryMs,
-                keepWorkflowsMs: policy.keepWorkflowsMs,
-                workflows: sweepsWorkflows.has(name),
-              })),
-              retryWindowMs,
-            ).pipe(
-              Effect.tap(() =>
-                Effect.forEach(
-                  [...registrations.values()],
-                  (registration) =>
-                    subscriptions.cleanupRemoved(
-                      registration.name,
-                      registration.subscriptions.map((declared) => declared.tag),
-                    ),
-                  { discard: true },
-                ),
-              ),
-            ),
-          ),
-          Effect.flatMap((swept) =>
-            Effect.map(
-              content === undefined ? Effect.succeed(0) : content.sweep(false),
-              (contents) => ({ ...swept, contents }),
-            ),
-          ),
-        ),
-      ).pipe(
-        Effect.provideContext(services),
-        Effect.provideService(FrameworkClock, frameworkClock),
-        Effect.provideService(CleanupHooks, cleanupHooks),
-      )
-
-      yield* Effect.sleep(writerWindowMs / 2).pipe(
-        Effect.andThen(
-          refreshPayloadWriters.pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.interrupt
-                : Effect.logWarning("Payload writer refresh failed", cause),
-            ),
-          ),
-        ),
-        Effect.forever,
-        Effect.forkIn(scope),
-      )
-
-      yield* Effect.addFinalizer(() =>
-        dropWriters(runtimeId).pipe(
-          Effect.provideContext(services),
-          Effect.catchCause((cause) => Effect.logWarning("Payload writer rows not dropped", cause)),
-        ),
-      )
-
-      const sweeping = cleanupHooks.periodic
-        ? yield* Effect.sleep(CLEANUP_INTERVAL).pipe(
-            Effect.andThen(
-              cleanup.pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.interrupt
-                    : Effect.logWarning("Retention cleanup failed", cause),
-                ),
-              ),
-            ),
-            Effect.forever,
-            Effect.forkIn(scope),
-          )
-        : undefined
-
-      const sampler = databaseSampler()
-
-      const sample = Effect.suspend(() =>
-        sampler(
-          Array.from(registrations.values(), ({ name, policy }) => ({
-            actorType: name,
-            keepEventsMs: policy.keepEventsMs,
-            holdEventsMs: policy.holdEventsMs,
-          })),
-        ),
-      ).pipe(
-        Effect.provideContext(services),
-        Effect.provideService(FrameworkClock, frameworkClock),
-        Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.interrupt
-            : Effect.logWarning("Telemetry sampling failed", cause),
-        ),
-      )
-
-      if (!sampled.has(sharding)) {
-        sampled.add(sharding)
-        yield* sharding.registerSingleton(
-          "durable-actors/telemetry",
-          Effect.sleep(sampleEveryMs).pipe(Effect.andThen(sample), Effect.forever),
-        )
-      }
+      const { cleanup, sweeping, sample } = yield* startSweeps({
+        registrations,
+        sweepsWorkflows,
+        retryWindowMs,
+        subscriptions,
+        content,
+        services,
+        frameworkClock,
+        refreshPayloadWriters,
+        writerWindowMs,
+        runtimeId,
+        sampleEveryMs,
+        sharding,
+        scope,
+      })
 
       const routed = (sourceType: string) =>
         localSubscriptions().flatMap(({ subscriberType, subscription }) =>
@@ -1165,157 +970,21 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
+        tenantScope: yield* TenantScope,
       })
 
-      const reruns = Semaphore.makeUnsafe(WATCH_RERUNS)
-
-      const actorExists = Effect.fnUntraced(
-        function* (ref: ActorRef) {
-          const registration = registrations.get(ref.actor)
-
-          if (registration === undefined)
-            return yield* ActorError.make({
-              reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-            })
-
-          const sql = yield* SqlClient.SqlClient
-
-          const rows = yield* sql`
-            SELECT 1 FROM actor_generations
-            WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
-              AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
-            withTenant(ref.tenant),
-          )
-
-          return rows.length > 0
-        },
-        Effect.provideContext(services),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      )
-
-      /**
-       * Reads committed rows on the caller's node: no activation, no generation
-       * fence, no receipt, and no command id. No statement timeout bounds the
-       * reads, whether they run on the pool or, with row-level security, in a
-       * transaction bound to the tenant on the server that answers; a read past
-       * `commandTimeout` is interrupted, which cancels its statement on the
-       * server. The event head is read with state in one statement and every
-       * replay stops at it, so state and events describe one moment; state counts
-       * only alongside its generation row, which carries the head, and a failed
-       * replay read is unavailability, not a deterministic query defect. Owned
-       * tables and blobs are read through the primary's pools, so a type that
-       * declares them reads its state there too. A replica answers only once it
-       * has replayed `minVersion`; one that is behind or failing hands the read
-       * to the primary. A query result is released only to a caller still
-       * allowed once the handler returned. A watch's rerun passes `reads` and
-       * skips both checks, because its session was authorized at open and is
-       * reauthorized on its bound, and the recorder fills `reads`.
-       */
-      const readQuery = Effect.fnUntraced(
-        function* (request: Request, minVersion?: string, reads?: ReadSet) {
-          const registration = queryRegistrations.get(request.ref.actor)
-          const query = registration?.queries.get(request.command)
-
-          if (registration === undefined || query === undefined)
-            return yield* ActorError.make({
-              reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
-            })
-
-          if (reads === undefined) yield* allow(request, "query")
-          const key = routingKey({ ref: request.ref, placement: registration.placement })
-
-          const read = (client: SqlClient.SqlClient) =>
-            Effect.gen(function* () {
-              const rows = yield* client<{
-                head: string | null
-                key: string | null
-                value: Uint8Array | null
-              }>`
-                SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
-                FROM actor_generations
-                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                UNION ALL
-                SELECT NULL, key, value
-                FROM actor_state
-                WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                  AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
-
-              let head: string | undefined
-              const state: Array<readonly [string, string]> = []
-
-              for (const row of rows)
-                if (row.head !== null) head = row.head
-                else state.push([row.key!, decompress(row.value!)])
-
-              if (head === undefined) state.length = 0
-
-              const cursor = head ?? "0"
-
-              const outcome = yield* query.run(
-                request,
-                state,
-                cursor,
-                (tag, after, limit) =>
-                  replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
-                    Effect.catchIf(SqlError.isSqlError, Effect.die),
-                    Effect.provideService(SqlClient.SqlClient, client),
-                    Effect.provideContext(services),
-                  ),
-                reads,
-              )
-
-              if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
-                return yield* outcome.cause
-
-              return outcome
-            }).pipe(
-              withTenant(request.ref.tenant),
-              Effect.provideService(SqlClient.SqlClient, client),
-            )
-
-          const replicated =
-            replica !== undefined &&
-            registration.tables.length === 0 &&
-            registration.blobs.length === 0
-
-          const outcome = yield* Effect.gen(function* () {
-            if (!replicated) return yield* read(primary)
-
-            if (minVersion !== undefined) {
-              const ready = yield* caughtUp(replica, minVersion).pipe(
-                Effect.catchIf(SqlError.isSqlError, () => Effect.succeed(false)),
-              )
-
-              if (!ready) return yield* read(primary)
-            }
-
-            return yield* read(replica).pipe(
-              Effect.catchIf(SqlError.isSqlError, () => read(primary)),
-            )
-          }).pipe(
-            Effect.timeoutOrElse({
-              duration: registration.timeoutMs,
-              orElse: () =>
-                Effect.fail(
-                  ActorError.make({ reason: Timeout.make({ commandId: request.commandId }) }),
-                ),
-            }),
-          )
-
-          if (reads === undefined) yield* allow(request, "query")
-
-          return outcome
-        },
-        Effect.provideContext(services),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      )
+      const seeding = seedRuntime({
+        services,
+        clock: frameworkClock,
+        outbox,
+        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
+        wake: relay.wake,
+        tenantScope: yield* TenantScope,
+      })
 
       const internalActors = InternalActors.of({
+        seed: seeding,
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>
           deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
@@ -1338,329 +1007,52 @@ export const layer = (options: Options) => {
           (registrations.get(actor) ?? queryRegistrations.get(actor))?.blobs.map(
             (blob) => blob.name,
           ) ?? [],
-        register: Effect.fnUntraced(function* (registration: Registration) {
-          if (registrations.has(registration.name))
-            return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
-          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-
-          if (declaresContent(registration)) {
-            yield* requireContent(registration.name)
-            yield* recordContentTurn(registration).pipe(
-              Effect.provideContext(services),
-              Effect.orDie,
-            )
-          }
-
-          yield* checkTables(
-            registration.name,
-            registration.tables,
-            options.rowLevelSecurity?.role,
-          ).pipe(Effect.provideContext(services), Effect.orDie)
-
-          for (const table of registration.tables) checked.add(table)
-
-          if (
-            registration.workflows.size > 0 &&
-            registration.policy.keepWorkflowsMs < retryWindowMs
-          )
-            return yield* Effect.die(
-              new Error(
-                `Actor ${registration.name} keepWorkflows is shorter than the retry window`,
-              ),
-            )
-
-          if (
-            registration.workflows.size > 0 &&
-            retryWindowMs - registration.policy.deliveryMs <= RECOVERY_MS
-          )
-            yield* Effect.logWarning(
-              `Actor ${registration.name}: the retry window minus deliveryTimeout is at most the ${RECOVERY_MS / 1000}-second workflow recovery interval, so an activity whose runner dies fails with ActivityOutcomeUnknown instead of rerunning its actor calls`,
-            )
-
-          const { incompatibilities, retained } = yield* acceptWorkflows({
-            name: registration.name,
-            workflows: Array.from(registration.workflows.values(), ({ member }) => member),
-          }).pipe(Effect.provideContext(services), Effect.orDie)
-
-          if (incompatibilities.length > 0)
-            return yield* Effect.die(
-              new Error(
-                [
-                  `Actor ${registration.name} workflows are incompatible with open executions; deploy refused`,
-                  ...incompatibilities.map(formatIncompatibility),
-                ].join("\n"),
-              ),
-            )
-
-          yield* checkPayloadVersions(registration.name, registration.payloads, {
-            actorType: registration.name,
-            events: registration.payloads
-              .filter((declared) => declared.writes && declared.kind === "event")
-              .map((declared) => declared.tag),
-          })
-
-          yield* recordPayloadVersions(registration.payloads).pipe(
-            Effect.provideContext(services),
-            Effect.provideService(FrameworkClock, frameworkClock),
-            Effect.orDie,
-          )
-
-          for (const declared of registration.payloads)
-            if (declared.writes) writerDeclarations.push(declared)
-          yield* refreshPayloadWriters.pipe(Effect.orDie)
-
-          yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
-          yield* requireRoutedSubscribers(registration.name).pipe(
-            Effect.provideContext(services),
-            Effect.orDie,
-          )
-
-          for (const declared of registration.subscriptions)
-            if (declared.routed === undefined)
-              yield* subscriptions
-                .widen(registration.name, declared)
-                .pipe(Effect.provideContext(services), Effect.orDie)
-
-          registrations.set(registration.name, registration)
-
-          if (
-            registration.connections.size > 0 ||
-            registration.feeds.size > 0 ||
-            registration.watches.size > 0
-          )
-            heldTypes.set(registration.name, heldType(registration))
-
-          if (retained) sweepsWorkflows.add(registration.name)
-
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              registrations.delete(registration.name)
-              residency.delete(registration.name)
-              owners.delete(registration.name)
-              heldTypes.delete(registration.name)
-              sweepsWorkflows.delete(registration.name)
-            }),
-          )
-
-          const { isResident, owner } = yield* registerActor(
-            registration,
-            transport,
-            options.authorize,
-            gate,
-            writable,
-          ).pipe(
-            Effect.provideService(DefectLog, defectLog),
-            Effect.provideContext(services),
-            Effect.provideService(OutboxRuntime, outbox),
-          )
-
-          residency.set(registration.name, isResident)
-          owners.set(registration.name, owner)
+        ...actorRegistration({
+          registrations,
+          queryRegistrations,
+          effectRegistrations,
+          residency,
+          diagnostics,
+          owners,
+          heldTypes,
+          heldType,
+          sweepsWorkflows,
+          checked,
+          services,
+          frameworkClock,
+          content,
+          retryWindowMs,
+          tableRole: options.rowLevelSecurity?.role,
+          adoptionRole: options.adoption?.role,
+          enforcedTypes,
+          writerDeclarations,
+          refreshPayloadWriters,
+          subscriptions,
+          transport,
+          authorize: options.authorize,
+          gate,
+          writable,
+          defectLog,
+          outbox,
         }),
-        registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
-          if (queryRegistrations.has(registration.name))
-            return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
-          yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
-
-          if (declaresContent(registration)) yield* requireContent(registration.name)
-
-          yield* checkTables(
-            registration.name,
-            registration.tables,
-            options.rowLevelSecurity?.role,
-          ).pipe(Effect.provideContext(services), Effect.orDie)
-
-          for (const table of registration.tables) checked.add(table)
-          yield* checkPayloadVersions(registration.name, registration.payloads)
-          queryRegistrations.set(registration.name, registration)
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              queryRegistrations.delete(registration.name)
-            }),
-          )
+        ...committedReads({
+          registrations,
+          queryRegistrations,
+          services,
+          allow,
+          primary,
+          replica,
+          holder,
         }),
-        registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
-          if (effectRegistrations.has(registration.name))
-            return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
-          yield* checkPayloadVersions(registration.name, registration.payloads)
-          effectRegistrations.set(registration.name, registration)
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              effectRegistrations.delete(registration.name)
-            }),
-          )
+        ...eventFeeds({
+          registrations,
+          services,
+          allow,
+          sharding,
+          entityId,
+          frameworkClock,
+          transport,
         }),
-        exists: actorExists,
-        readFeed: Effect.fnUntraced(
-          function* (
-            ref: ActorRef,
-            tags: ReadonlyArray<string>,
-            after: string | undefined,
-            limit: number,
-          ) {
-            const registration = registrations.get(ref.actor)
-
-            if (registration === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-              })
-
-            const key = routingKey({ ref, placement: registration.placement })
-            const sql = yield* SqlClient.SqlClient
-
-            const events = yield* Effect.gen(function* () {
-              const [row] = yield* sql<{ head: string }>`
-                SELECT event_sequence::text AS head FROM actor_generations
-                WHERE routing_key = ${key} AND tenant_id = ${ref.tenant}
-                  AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
-
-              if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
-
-              return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
-            }).pipe(withTenant(ref.tenant))
-
-            return yield* Effect.forEach(events, (event) =>
-              registration.upcastEvent(event.tag, event.version, event.value).pipe(
-                Effect.map((value) => ({
-                  cursor: event.cursor,
-                  tag: event.tag,
-                  commandId: event.commandId,
-                  value,
-                  timestampMs: event.timestampMs,
-                })),
-              ),
-            )
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        ),
-        query: (request, minVersion) => readQuery(request, minVersion),
-        watch: (request, { minVersion, expiresAt }) =>
-          Effect.gen(function* () {
-            const registration = registrations.get(request.ref.actor)
-            const query = queryRegistrations.get(request.ref.actor)?.queries.get(request.command)
-
-            if (registration === undefined || query === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Query not registered") }),
-              })
-
-            if (!query.watch)
-              return yield* ActorError.make({
-                reason: InvalidInput.make({ code: "not_watchable" }),
-              })
-
-            if (!(yield* actorExists(request.ref)))
-              return yield* ActorError.make({ reason: NotCreated.make({}) })
-
-            return yield* watchStream({
-              holder,
-              request,
-              minIntervalMs: registration.policy.watch.minIntervalMs,
-              reconcileMs: registration.policy.watch.reconcileMs,
-              minVersion,
-              expiresAt,
-              rerun: (version, reads) =>
-                reruns.withPermit(Effect.suspend(() => readQuery(request, version(), reads))),
-            })
-          }),
-        subscribe: (request) =>
-          Stream.unwrap(
-            Effect.gen(function* () {
-              const registration = registrations.get(request.ref.actor)
-
-              if (registration === undefined || !registration.streams.has(request.command))
-                return yield* ActorError.make({
-                  reason: ActorUnavailable.make({ cause: new Error("Stream not registered") }),
-                })
-
-              yield* allow(request, "stream")
-
-              const client = (yield* sharding.makeClient(connectionEntity(request.ref.actor)))(
-                yield* entityId(request.ref),
-              )
-
-              const authorizedUntil =
-                (yield* Clock.currentTimeMillis) +
-                frameworkClock.offsetMillis() +
-                registration.policy.reauthorizeMs
-
-              const started = yield* Deferred.make<{ owner: string; ownerEpoch: string }>()
-              const lost = yield* Deferred.make<never, ActorError>()
-              let owner: { owner: string; ownerEpoch: string } | undefined
-
-              yield* Deferred.await(started).pipe(
-                Effect.flatMap(({ owner, ownerEpoch }) =>
-                  owner === transport.holder
-                    ? Effect.never
-                    : transport.ping(owner, ownerEpoch).pipe(
-                        Effect.repeat({
-                          schedule: Schedule.spaced(OWNER_CHECK_INTERVAL),
-                          while: (alive) => alive,
-                        }),
-                        Effect.andThen(Deferred.fail(lost, activationEnded())),
-                      ),
-                ),
-                Effect.forkScoped,
-              )
-
-              let finished = false
-
-              return client
-                .Subscribe({
-                  member: request.command,
-                  caller: request.caller,
-                  input: request.payload,
-                  authorizedUntil,
-                })
-                .pipe(
-                  Stream.tap((item) =>
-                    Effect.gen(function* () {
-                      if (StreamItem.guards.Done(item)) finished = true
-
-                      if (!StreamItem.guards.Started(item)) return
-
-                      if (owner !== undefined) return yield* activationEnded()
-                      owner = item
-                      yield* Deferred.succeed(started, item)
-                    }),
-                  ),
-                  Stream.takeWhile((item) => !StreamItem.guards.Done(item)),
-                  Stream.filter(StreamItem.guards.Element),
-                  Stream.map((item) => item.value),
-                  Stream.concat(
-                    Stream.fromEffect(
-                      Effect.suspend(() => (finished ? Effect.void : activationEnded())),
-                    ).pipe(Stream.drain),
-                  ),
-                  Stream.interruptWhen(Deferred.await(lost)),
-                  Stream.catchCause(
-                    (cause): Stream.Stream<never, ActorError | { readonly failure: string }> => {
-                      const failure = Cause.findErrorOption(cause)
-
-                      if (Option.isSome(failure)) {
-                        if (Schema.is(ActorError)(failure.value)) return Stream.fail(failure.value)
-
-                        if (Schema.is(StreamFailed)(failure.value))
-                          return Stream.fail({ failure: failure.value.value })
-                      }
-
-                      if (Cause.hasInterruptsOnly(cause)) return Stream.fromEffect(Effect.interrupt)
-
-                      return Stream.fail(
-                        owner === undefined
-                          ? ActorError.make({
-                              reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
-                            })
-                          : activationEnded(),
-                      )
-                    },
-                  ),
-                )
-            }).pipe(Effect.provideContext(services)),
-          ),
         deliverProgress: (message) =>
           deliverProgress(message).pipe(Effect.ignoreCause, Effect.provideContext(services)),
         transport,
@@ -1670,40 +1062,6 @@ export const layer = (options: Options) => {
             entityId(ref),
             (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
           ).pipe(Effect.provideContext(services)),
-        pollWorkflow: Effect.fnUntraced(
-          function* (request: Request) {
-            const registration =
-              registrations.get(request.ref.actor) ?? queryRegistrations.get(request.ref.actor)
-
-            if (registration === undefined)
-              return yield* ActorError.make({
-                reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-              })
-
-            yield* allow(request)
-            const sql = yield* SqlClient.SqlClient
-
-            const [row] = yield* sql<{ status: string; result: Uint8Array | null }>`
-              SELECT status, result FROM actor_workflow_executions
-              WHERE routing_key = ${routingKey({ ref: request.ref, placement: registration.placement })}
-                AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-                AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant))
-
-            yield* allow(request)
-
-            if (row === undefined) return undefined
-
-            return {
-              finished: row.status === "finished",
-              result: row.result === null ? undefined : yield* decodeResult(row.result),
-            } satisfies WorkflowStatus
-          },
-          Effect.provideContext(services),
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        ),
         execute: (request) => Effect.tap(dispatch(request, true), observe),
         deliver: (request) =>
           dispatch(request, false).pipe(
@@ -1722,30 +1080,13 @@ export const layer = (options: Options) => {
           ),
       })
 
-      const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
-
-      const storage = embedded
-        ? Effect.succeed(true)
-        : yield* Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient
-
-            return yield* sql`SELECT 1`.pipe(
-              Effect.timeoutOption(READINESS_STORAGE_TIMEOUT),
-              Effect.map(Option.isSome),
-              Effect.orElseSucceed(() => false),
-            )
-          }).pipe(Effect.provideContext(services), Effect.cachedWithTTL(READINESS_CACHE))
-
-      const serving = Effect.gen(function* () {
-        if (yield* sharding.isShutdown) return { ready: false, reason: "routing" } as const
-
-        if (registrations.size + queryRegistrations.size + effectRegistrations.size === 0)
-          return { ready: false, reason: "unregistered" } as const
-
-        return (yield* storage)
-          ? ({ ready: true } as const)
-          : ({ ready: false, reason: "storage" } as const)
-      }) satisfies Effect.Effect<Readiness>
+      const { serving } = yield* servingReadiness({
+        sharding,
+        services,
+        registrations,
+        queryRegistrations,
+        effectRegistrations,
+      })
 
       const control = runtimeControl({
         gate,
@@ -1860,6 +1201,17 @@ export const layer = (options: Options) => {
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
 
+      if (
+        options.rowLevelSecurity !== undefined &&
+        options.adoption !== undefined &&
+        options.rowLevelSecurity.role !== options.adoption.role
+      )
+        return yield* Effect.die(
+          new Error(
+            `rowLevelSecurity.role ${options.rowLevelSecurity.role} and adoption.role ${options.adoption.role} must name the same role: a turn takes one role`,
+          ),
+        )
+
       if (options.rowLevelSecurity !== undefined)
         yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
 
@@ -1937,7 +1289,15 @@ export const layer = (options: Options) => {
       return runtime.pipe(
         Layer.provide(sharding),
         Layer.provide(lease),
-        Layer.provide(Layer.succeed(TenantScope, { role: options.rowLevelSecurity?.role })),
+        Layer.provide(
+          Layer.succeed(TenantScope, {
+            role: options.rowLevelSecurity?.role,
+            adoption:
+              options.adoption === undefined
+                ? undefined
+                : { role: options.adoption.role, enforced: enforcedTypes },
+          }),
+        ),
       )
     }),
   )
