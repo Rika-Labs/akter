@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Request } from "../request.ts"
-import { BATCH_CAP, MERGE_CAP, takeBatch } from "./mailbox.ts"
+import { ALONE_CAP, BATCH_CAP, markAlone, MERGE_CAP, takeBatch } from "./mailbox.ts"
 
 const waiting = (ids: ReadonlyArray<string>) =>
   ids.map((commandId) => ({
@@ -37,6 +37,27 @@ describe("takeBatch", () => {
     expect(idsOf(takeBatch({ waiting: queue, alone }))).toEqual(["c"])
     expect(idsOf(takeBatch({ waiting: queue, alone }))).toEqual(["d"])
     expect(alone.size).toBe(0)
+  })
+
+  it("keeps at most the newest ALONE_CAP ids to run alone, however many callers never retry", () => {
+    const alone = new Set<string>()
+
+    for (let failed = 0; failed < 3; failed++)
+      markAlone({
+        alone,
+        ids: Array.from({ length: ALONE_CAP }, (_, index) => `f${failed}-${index}`),
+      })
+
+    expect(alone.size).toBe(ALONE_CAP)
+    expect(alone.has(`f2-0`)).toBe(true)
+    expect(alone.has(`f1-${ALONE_CAP - 1}`)).toBe(false)
+
+    markAlone({ alone, ids: ["f2-0", "late"] })
+
+    expect(alone.size).toBe(ALONE_CAP)
+    expect([...alone].at(-1)).toBe("late")
+    expect(alone.has("f2-0")).toBe(true)
+    expect(alone.has("f2-1")).toBe(false)
   })
 
   it("stops at the first command whose queued hook has not finished", () => {
