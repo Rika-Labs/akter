@@ -153,7 +153,7 @@ const insertExecution = Effect.fnUntraced(function* (options: {
   readonly workflow: RegisteredWorkflow
   readonly executionId: string
   readonly key: string
-  readonly input: string
+  readonly payload: string
   readonly caller: Caller
   readonly after: string | null
 }) {
@@ -166,7 +166,7 @@ const insertExecution = Effect.fnUntraced(function* (options: {
     WITH x AS (INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
       workflow, workflow_key, manifest_hash, payload, caller, event_cursor, status, started_at_ms)
     SELECT ${routingKey}, ${executionId}, ${bucketOf(routingKey)}, ${ref.tenant}, ${ref.actor}, ${ref.id},
-      ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.input)},
+      ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.payload)},
       ${yield* encodeCaller(options.caller).pipe(Effect.orDie)},
       COALESCE(${options.after}::bigint, g.event_sequence),
       'running', ${now}
@@ -223,7 +223,7 @@ export const workflowCommands = ({
   const start = (
     request: Request,
     workflow: RegisteredWorkflow,
-    input: string,
+    payload: string,
     key: string,
     after: string | null,
   ) =>
@@ -242,7 +242,7 @@ export const workflowCommands = ({
         workflow,
         executionId,
         key,
-        input,
+        payload,
         caller: request.caller,
         after,
       })
@@ -269,13 +269,13 @@ export const workflowCommands = ({
     handler: false,
     run: (request) =>
       Effect.gen(function* () {
-        const payload = yield* decodeStart(request.payload).pipe(Effect.orDie)
-        const workflow = registration.workflows.get(payload.workflow)
+        const staged = yield* decodeStart(request.payload).pipe(Effect.orDie)
+        const workflow = registration.workflows.get(staged.workflow)
 
         if (workflow === undefined)
-          return yield* Effect.die(new Error(`Unregistered workflow ${payload.workflow}`))
+          return yield* Effect.die(new Error(`Unregistered workflow ${staged.workflow}`))
 
-        return yield* start(request, workflow, payload.input, payload.key, payload.after)
+        return yield* start(request, workflow, staged.input, staged.key, staged.after)
       }),
   })
 
@@ -444,7 +444,7 @@ interface LiveRun {
  *
  * Compatibility: a runner leaves an execution for a compatible one when it lacks
  * the workflow, its markers exclude the execution's, it lacks a recorded step or a
- * step of the start manifest, or it would decode a recorded result or the input
+ * step of the start manifest, or it would decode a recorded result or the payload
  * differently. Once this runner's result schemas apply to the steps still to
  * settle, its manifest becomes the execution's start manifest; a `newer` manifest
  * is one accepted after this runner's own, as when a newer deployment starts

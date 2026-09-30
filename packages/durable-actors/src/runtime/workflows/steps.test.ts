@@ -4,16 +4,16 @@ import { Actor } from "../../index.ts"
 
 class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", { sku: Schema.String }) {}
 
-class Paid extends Actor.Event<Paid>()("Paid", { amount: Schema.Int }) {}
+const Paid = Actor.event("Paid", { amount: Schema.Int })
 
 describe("workflow step constructors", () => {
   it("types Ship.step results and errors at the call site", () => {
-    const Ship = Actor.workflow("Ship", { input: { sku: Schema.String }, output: Schema.String })
+    const Ship = Actor.workflow("Ship", { payload: { sku: Schema.String }, success: Schema.String })
 
     const Reserve = Ship.step("reserve", {
-      input: Schema.String,
+      payload: Schema.String,
       success: Schema.Int,
-      errors: [OutOfStock],
+      error: OutOfStock,
     })
 
     const AwaitPaid = Ship.wait("paid", Paid)
@@ -24,14 +24,15 @@ describe("workflow step constructors", () => {
     expectTypeOf<Effect.Error<typeof run>>().toEqualTypeOf<OutOfStock>()
     expectTypeOf<Parameters<typeof Reserve.run>[0]>().toEqualTypeOf<string>()
     expectTypeOf<Effect.Success<ReturnType<typeof AwaitPaid>>>().toEqualTypeOf<
-      Option.Option<Paid>
+      Option.Option<typeof Paid.Type>
     >()
     expectTypeOf<Effect.Success<ReturnType<typeof Pick.run>>>().toEqualTypeOf<string>()
+    expectTypeOf<Effect.Error<ReturnType<typeof Pick.run>>>().toEqualTypeOf<never>()
     expect(Reserve.kind).toBe("activity")
   })
 
   it("throws on two constructors with one name, of any kind", () => {
-    const Ship = Actor.workflow("Ship", { output: Schema.String })
+    const Ship = Actor.workflow("Ship", { success: Schema.String })
     Ship.step("reserve")
 
     expect(() => Ship.step("reserve")).toThrow("already has a step named reserve")

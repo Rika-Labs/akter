@@ -8,13 +8,13 @@ export const toJson = <T extends object>(value: T) => JSON.stringify(value)
 /** What an open execution depends on: its steps, the schemas they record, and marker ranges. */
 interface Manifest {
   readonly workflow: string
-  readonly input: string
-  readonly output: string
+  readonly payload: string
+  readonly result: string
   readonly steps: ReadonlyArray<{
     readonly name: string
     readonly kind: string
     readonly fingerprint: string
-    /** The schemas of the value the step records: an activity's success and errors, a wait's event. */
+    /** The schemas of the value the step records: an activity's success and error, a wait's event. */
     readonly result: string
     readonly event: string | null
   }>
@@ -49,13 +49,15 @@ export const manifestOf = Effect.fnUntraced(function* (actorType: string, member
 
   const manifest: Manifest = {
     workflow: member.tag,
-    input: fingerprintOf([member.payload]),
-    output: fingerprintOf([member.success, member.error]),
+    payload: fingerprintOf([member.payload]),
+    result: fingerprintOf([member.success, member.error]),
     steps: [...member.registry.steps.values()].map((step) => ({
       name: step.name,
       kind: step.kind,
-      fingerprint: fingerprintOf(step.schemas),
-      result: fingerprintOf(step.kind === "activity" ? step.schemas.slice(1) : step.schemas),
+      fingerprint: fingerprintOf(
+        step.payload === undefined ? step.result : [step.payload, ...step.result],
+      ),
+      result: fingerprintOf(step.result),
       event: step.event ?? null,
     })),
     versions: member.versions,

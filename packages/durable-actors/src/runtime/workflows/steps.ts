@@ -140,9 +140,9 @@ const make = <
     const success = (stepOptions?.success ?? Schema.Void) as S
     const error = (stepOptions?.error ?? Schema.Never) as E
 
-    register({ name, kind: "activity", schemas: [payload, success, error] })
+    register({ name, kind: "activity", payload, result: [success, error] })
     const codec = exitCodec({ success, error })
-    const decodeInput = Schema.decodeUnknownEffect(payload)
+    const decodePayload = Schema.decodeUnknownEffect(payload)
     const self = identity(name, "activity")
 
     return {
@@ -152,7 +152,7 @@ const make = <
         Effect.gen(function* () {
           const steps = yield* engine
 
-          const run = Effect.suspend(() => decodeInput(value).pipe(Effect.orDie)).pipe(
+          const run = Effect.suspend(() => decodePayload(value).pipe(Effect.orDie)).pipe(
             Effect.flatMap((decoded) => execute(decoded)),
             Effect.exit,
             Effect.flatMap(codec.encode),
@@ -164,7 +164,7 @@ const make = <
   }
 
   const sleep = <const Name extends string>(name: Name): Sleep<Name> => {
-    register({ name, kind: "clock", schemas: [] })
+    register({ name, kind: "clock", result: [] })
     const self = identity(name, "clock")
 
     const call = (duration: Duration.Input) =>
@@ -184,7 +184,7 @@ const make = <
     name: Name,
     event: Ev,
   ): Wait<Name, Ev> => {
-    register({ name, kind: "wait", schemas: [event], event: event.identifier })
+    register({ name, kind: "wait", result: [event], event: event.identifier })
     const self = identity(name, "wait")
     const codec = payloadCodec({ schema: event, tag: event.identifier })
 
@@ -240,7 +240,7 @@ const make = <
   ): Race<Name, S, E> => {
     const error = (raceOptions.error ?? Schema.Never) as E
 
-    register({ name, kind: "deferred", schemas: [raceOptions.success, error] })
+    register({ name, kind: "deferred", result: [raceOptions.success, error] })
     const codec = exitCodec({ success: raceOptions.success, error })
     const self = identity(name, "deferred")
 

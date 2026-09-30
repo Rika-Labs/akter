@@ -434,30 +434,33 @@ const Quote = Schema.Number
 const Order = Schema.Struct({ id: Schema.String })
 class ShippingFailed extends Schema.TaggedError<ShippingFailed>()("ShippingFailed", {}) {}
 class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", {}) {}
-class Paid extends Actor.Event<Paid>()("Paid", { orderId: Schema.String }) {}
+const Paid = Actor.event("Paid", { orderId: Schema.String })
 declare const inventory: { readonly reserve: (order: typeof Order.Type) => Effect.Effect<string> }
-const input = { orderId: "o1", address: "1 Main St" }
+const address = "1 Main St"
 -->
 
 ```ts
 export const Ship = Actor.workflow("Ship", {
-  input: { orderId: OrderId, address: Address },
-  output: Label,
-  errors: [ShippingFailed, OutOfStock],
+  payload: { orderId: OrderId, address: Address },
+  success: Label,
+  error: Schema.Union([ShippingFailed, OutOfStock]),
   key: ({ orderId }) => orderId, // optional; defaults to the start's command id
   versions: { "fraud-check": { current: 2, min: 1 } }, // fraud-check 1 still runs "fraud"
 })
 // every step is a typed, module-level constructor with an explicit, static name
 export const Reserve = Ship.step("reserve", {
-  input: Order,
+  payload: Order,
   success: Reservation,
-  errors: [OutOfStock],
+  error: OutOfStock,
 })
 export const CoolOff = Ship.sleep("cool-off")
 export const AwaitPaid = Ship.wait("paid", Paid)
 export const FirstQuote = Ship.race("first-quote", { success: Quote })
 
-export const PlaceOrder = Actor.command("PlaceOrder", { output: Schema.String })
+export const PlaceOrder = Actor.command("PlaceOrder", {
+  payload: { orderId: OrderId, address: Address },
+  success: Schema.String,
+})
 
 export const Orders = Actor.make("Orders", {
   key: OrderId,
@@ -465,26 +468,24 @@ export const Orders = Actor.make("Orders", {
   api: { Ship, PlaceOrder },
 })
 
-export const OrdersLive = Orders.toLayer(
-  Effect.succeed({
-    Ship: Effect.fn(function* ({ orderId }) {
-      const order = { id: orderId }
-      const reservation = yield* Reserve.run(order, (o) => inventory.reserve(o))
-      yield* CoolOff("1 hour")
-      const paid = yield* AwaitPaid({ where: (e) => e.orderId === order.id, timeout: "1 day" }) // Option<Paid>
-      return reservation
-    }),
-    PlaceOrder: Effect.fn(function* () {
-      const turn = yield* Orders.Turn
-      const later = yield* Orders.intents(turn.id)
-      return yield* later.Ship(input) // in a turn: the execution id
-    }),
+export const OrdersLive = Orders.toLayer({
+  Ship: Effect.fn(function* ({ orderId }) {
+    const order = { id: orderId }
+    const reservation = yield* Reserve.run(order, (o) => inventory.reserve(o))
+    yield* CoolOff("1 hour")
+    const paid = yield* AwaitPaid({ where: (e) => e.orderId === order.id, timeout: "1 day" }) // Option<Paid>
+    return reservation
   }),
-)
+  PlaceOrder: Effect.fn(function* (payload) {
+    const turn = yield* Orders.Turn
+    const later = yield* Orders.intents(turn.id)
+    return yield* later.Ship(payload) // in a turn: the execution id
+  }),
+})
 
 const outside = Effect.gen(function* () {
   const order = yield* Orders.get("o1")
-  const run = yield* order.Ship(input) // WorkflowRun<Label, ShippingFailed | OutOfStock>
+  const run = yield* order.Ship({ orderId: "o1", address }) // WorkflowRun<Label, ShippingFailed | OutOfStock>
   yield* run.poll // Option<Workflow.Result>
   yield* run.result // waits for completion
   yield* run.interrupt // idempotent, receipted

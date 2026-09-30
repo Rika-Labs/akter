@@ -34,7 +34,7 @@ export const declaredOf = (actor: {
 })
 
 const StoredManifest = Schema.Struct({
-  input: Schema.String,
+  payload: Schema.String,
   steps: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -62,7 +62,7 @@ const sameManifest: StartVerdict = { problems: [], changed: [] }
 /**
  * The verdict on executions that started under `hash`, whose stored manifest is
  * `start` (undefined when its row is missing). A start manifest has to list
- * only steps `declared` registers as the same kind and share its input schema.
+ * only steps `declared` registers as the same kind and share its payload schema.
  * `newer` means it was accepted after `declared`: a runner then also refuses it
  * when a shared step's result schema differs, because the newer deployment may
  * record such results at any time.
@@ -96,7 +96,7 @@ export const startVerdict = ({
     return kind === entry.kind ? [] : [`step "${entry.name}" changed from ${entry.kind} to ${kind}`]
   })
 
-  if (start.input !== declared.manifest.input) problems.push("input schema changed")
+  if (start.payload !== declared.manifest.payload) problems.push("payload schema changed")
 
   if (newer)
     for (const name of changed)
