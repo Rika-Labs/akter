@@ -153,11 +153,11 @@ export type TestMessage<Server> =
   | {
       /** Executor progress: display-only, lossy, and never replayed. */
       readonly _tag: "Progress"
-      readonly effect: string
-      readonly effectId: string
+      readonly job: string
+      readonly jobId: string
       readonly attempt: number
       readonly seq: number
-      /** The frame as the effect's progress schema encodes it to JSON. */
+      /** The frame as the job's progress schema encodes it to JSON. */
       readonly frame: unknown
     }
   | Exclude<ClientMessage, { readonly _tag: "Frame" | "Progress" }>

@@ -181,7 +181,7 @@ const literalSeed = {
   stateVersion: 1,
   state: { balance: 5, memo: "literal" },
   intents: [],
-  effects: [],
+  jobs: [],
   omitted: { receipts: 0, events: 0, workflows: 0, deadLetters: 0, tableRows: 0, blobs: 0 },
 }
 
@@ -207,9 +207,9 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
             stateVersion: 1,
             state: { balance: 5, memo: "deposited 3" },
             intents: [{ target: { actor: "ExpLedger", id: "l1" }, command: "Audit", key: "audit" }],
-            effects: [
+            jobs: [
               {
-                effect: "ExpAnnounce",
+                job: "ExpAnnounce",
                 payload: { text: "deposited 3" },
                 payloadVersion: 0,
                 key: "announce",
@@ -226,10 +226,10 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           const [intent] = seed.intents
-          const [effect] = seed.effects
+          const [job] = seed.jobs
 
           expect(intent!.dueInMs > 30_000 && intent!.dueInMs <= 60_000).toBe(true)
-          expect(effect!.dueInMs > 3_500_000 && effect!.dueInMs <= 3_600_000).toBe(true)
+          expect(job!.dueInMs > 3_500_000 && job!.dueInMs <= 3_600_000).toBe(true)
 
           const text = yield* encodeJson(answer.body).pipe(Effect.orDie)
 
@@ -454,7 +454,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
               "unregistered.seed",
               {
                 ...literalSeed,
-                effects: [{ effect: "ExpMissing", payload: null, payloadVersion: 0, dueInMs: 0 }],
+                jobs: [{ job: "ExpMissing", payload: null, payloadVersion: 0, dueInMs: 0 }],
               },
             ],
             ["created.seed", { ...literalSeed, created: true }],

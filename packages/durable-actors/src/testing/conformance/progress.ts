@@ -187,14 +187,14 @@ export const progressConformance: ReadonlyArray<ConformanceCase<ProgressFixture>
           yield* test.advance(0)
           const records = yield* recordsOf("latest")
           const frames = framesOf(records)
-          const effectId = fixture.captured?.jobId
+          const jobId = fixture.captured?.jobId
 
           expect([1, 2]).toContain(frames.length)
           expect(frames.at(-1)).toEqual({ attempt: 1, seq: 3, frame: upload })
           expect(frames.map((frame) => frame.seq)).toEqual(
             frames.map((frame) => frame.seq).toSorted((a, b) => a - b),
           )
-          expect(records.every((record) => record.effectId === effectId)).toBe(true)
+          expect(records.every((record) => record.jobId === jobId)).toBe(true)
           expect(records.at(-1) && ProgressRecord.$is("ProgressClosed")(records.at(-1)!)).toBe(true)
           expect(records.at(-1)).toMatchObject({ attempt: 1 })
           expect(yield* outputsOf("latest")).toEqual(["a.mp4"])
@@ -745,7 +745,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase<Progress
           const progress = drained.flatMap((message) => {
             const found = progressOf(message)
 
-            return found === undefined ? [] : [found.effectId]
+            return found === undefined ? [] : [found.jobId]
           })
 
           expect(drained.length).toBe(1024)
@@ -801,7 +801,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase<Progress
 
           const first = progressOf(yield* nextOf(mine))
           expect(first).toMatchObject({
-            effect: "Render",
+            job: "Render",
             attempt: 1,
             seq: 1,
             frame: { percent: 10 },
@@ -958,7 +958,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase<Progress
 
           const first = yield* nextOf(mine)
 
-          expect(progressOf(first)).toMatchObject({ effect: "Render", frame: { percent: 30 } })
+          expect(progressOf(first)).toMatchObject({ job: "Render", frame: { percent: 30 } })
 
           const after = (yield* cluster.on(0)(ActorTest.use((test) => test.inspect(target))))
             .generation
