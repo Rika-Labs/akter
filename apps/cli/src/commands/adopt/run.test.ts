@@ -37,6 +37,10 @@ const options = (
   clear: false,
   sinceMs: undefined,
   batch: undefined,
+  writerRole: undefined,
+  allow: [],
+  quietMs: undefined,
+  to: undefined,
   ...rest,
 })
 
@@ -97,6 +101,50 @@ describe("durable adopt arguments", () => {
           yield* parseAdopt({ args: ["status", "--database-url", "u"], nowMs: 0 }),
         ).toMatchObject({ command: "status", entry: undefined })
 
+        expect(
+          yield* parseAdopt({
+            args: [
+              "enforce",
+              "invoices",
+              "--writer-role",
+              "durable_writer",
+              "--allow",
+              "batch_import",
+              "--allow",
+              "reports",
+              "--quiet",
+              "1d",
+              "--entry",
+              "e.ts",
+              "--database-url",
+              "u",
+            ],
+            nowMs: 0,
+          }),
+        ).toMatchObject({
+          command: "enforce",
+          table: "invoices",
+          writerRole: "durable_writer",
+          allow: ["batch_import", "reports"],
+          quietMs: 86_400_000,
+        })
+
+        expect(
+          yield* parseAdopt({
+            args: [
+              "release",
+              "invoices",
+              "--to",
+              "observe",
+              "--entry",
+              "e.ts",
+              "--database-url",
+              "u",
+            ],
+            nowMs: 0,
+          }),
+        ).toMatchObject({ command: "release", table: "invoices", to: "observe" })
+
         expect(yield* parseWindow({ flag: "--since", text: "12h" })).toBe(43_200_000)
       }),
     ))
@@ -127,6 +175,19 @@ describe("durable adopt arguments", () => {
             "--since takes a window such as 30m, 12h, or 7d",
           ],
           [["plan", "--force", ...base], "Unknown argument: --force"],
+          [["enforce", "t", ...base], "--writer-role is required"],
+          [
+            ["observe", "t", "--writer-role", "w", ...base],
+            "--writer-role, --allow, and --quiet belong to enforce",
+          ],
+          [
+            ["enforce", "t", "--writer-role", "w", "--quiet", "soon", ...base],
+            "--quiet takes a window such as 30m, 12h, or 7d",
+          ],
+          [["release", "t", ...base], "release takes --to observe"],
+          [["release", "t", "--to", "enforce", ...base], "release takes --to observe"],
+          [["plan", "--to", "observe", ...base], "--to belongs to release"],
+          [["release", ...base, "--to", "observe"], "release takes the table to release"],
         ] as const) {
           const error = yield* refused(args)
 
@@ -198,6 +259,16 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
           exitCode: 1,
         })
 
+        const unforced = yield* adopt({
+          options: options("release", { table: "cli_invoices", to: "observe" }),
+          actors,
+        })
+
+        expect(unforced).toEqual({
+          output: "public.cli_invoices is not enforced",
+          exitCode: 1,
+        })
+
         const unknown = yield* adopt({ options: options("observe", { table: "missing" }), actors })
 
         expect(unknown).toEqual({
@@ -234,12 +305,37 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
         expect(report.output).toContain("UPDATE")
         expect(report.output).toContain("2 rows")
 
+        const premature = yield* adopt({
+          options: options("enforce", {
+            table: "cli_invoices",
+            writerRole: "durable_writer",
+            quietMs: 86_400_000,
+          }),
+          actors,
+        })
+
+        expect(premature.exitCode).toBe(1)
+        expect(premature.output).toContain("public.cli_invoices cannot be enforced:")
+        expect(premature.output).toContain("2 rows of public.cli_invoices have no routing_key")
+        expect(premature.output).toContain("less than the 86400 s quiet window")
+        expect(premature.output).toContain("role durable_writer does not exist")
+
         const filled = yield* adopt({
           options: options("backfill", { table: "cli_invoices", batch: 1 }),
           actors,
         })
 
         expect(filled.output).toBe("public.cli_invoices: filled routing_key on 2 rows in 2 passes")
+
+        const unenforced = yield* adopt({
+          options: options("release", { table: "cli_invoices", to: "observe" }),
+          actors,
+        })
+
+        expect(unenforced).toEqual({
+          output: "public.cli_invoices is not enforced",
+          exitCode: 1,
+        })
 
         const status = yield* adopt({
           options: options("status", { entry: undefined }),
