@@ -983,8 +983,6 @@ const make = <
       throw new Error(
         `Actor ${name} mints its ids and cannot adopt table ${info.name}: legacy rows carry ids it never minted`,
       )
-    info.owner = name
-    info.placement = placement
   }
 
   const events = new Map<string, EventClass>()
@@ -3320,6 +3318,12 @@ const make = <
   }
 
   for (const member of Object.values(api)) checkDeclaredErrors(member)
+
+  for (const table of tables) {
+    const info = ownership(table)!
+    info.owner = name
+    info.placement = placement
+  }
 
   servedDefinitions.set(actor, served)
 
