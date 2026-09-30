@@ -42,12 +42,9 @@ Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The
 
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres:
+Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres. `src/counter/contract.ts` declares the actor's public shape:
 
-<!-- snippet file=src/counter/contract.ts -->
-
-```ts
-// src/counter/contract.ts: the actor's public shape
+```ts title="src/counter/contract.ts"
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
@@ -60,10 +57,9 @@ export const Counter = Actor.make("Counter", {
 })
 ```
 
-<!-- snippet file=src/counter/layer.ts -->
+`src/counter/layer.ts` implements the handler, which runs inside the turn's transaction:
 
-```ts
-// src/counter/layer.ts: the handler runs inside the turn's transaction
+```ts title="src/counter/layer.ts"
 import { Effect } from "effect"
 import { Counter } from "./contract.ts"
 
@@ -79,20 +75,18 @@ export const CounterLive = Counter.toLayer(
 )
 ```
 
-<!-- snippet file=src/main.ts
+`src/main.ts` wires the runtime and makes one call. `Database.pglite` keeps its files in `./.data`; use `Database.postgres` with a `DATABASE_URL` for anything beyond one process:
+
+```ts title="src/main.ts"
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Console, Effect, Layer } from "effect"
 import { Counter } from "./counter/contract.ts"
 import { CounterLive } from "./counter/layer.ts"
-const DatabaseLive = Database.pglite({ dataDir: "./.data" })
--->
 
-```ts
-// src/main.ts: runtime wiring and one call
 const live = CounterLive.pipe(
   Layer.provideMerge(Actors.layer()),
-  Layer.provide(DatabaseLive), // Database.postgres with DATABASE_URL, else Database.pglite({ dataDir })
+  Layer.provide(Database.pglite({ dataDir: "./.data" })),
   Layer.provide(BunCrypto.layer),
 )
 
