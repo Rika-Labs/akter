@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { DateTime, Deferred, Duration, Effect, Option, Predicate, Schema } from "effect"
 import { Actor, Intent } from "../../../index.ts"
 import { CurrentCaller, Tenant } from "../../../identity/caller.ts"
@@ -236,3 +237,5 @@ export const connectionsLayer = (fixture: ConnectionsFixture) =>
       },
     }),
   )
+
+export type { NodeInspectSymbol, Unify }

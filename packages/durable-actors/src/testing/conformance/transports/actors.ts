@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { DateTime, Effect, Layer, Option, Schema, Stream } from "effect"
 import { Actor, User } from "../../../index.ts"
 import { Unauthorized } from "../../../errors/actor.ts"
@@ -204,3 +205,5 @@ export const tokens = Actor.auth.make((request) =>
 )
 
 export const transportsLayer = Layer.mergeAll(socketLayer, renderLayer, feedLayer)
+
+export type { NodeInspectSymbol, Unify }

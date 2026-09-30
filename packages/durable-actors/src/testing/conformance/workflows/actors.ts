@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Deferred, Effect, Layer, Option, Schema } from "effect"
 import { WorkflowEngine } from "effect/unstable/workflow"
 import { Actor, type Caller, Intent } from "../../../index.ts"
@@ -455,3 +456,5 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
   )
 
 export const workflowsLive = (fixture: WorkflowsFixture) => Layer.mergeAll(workflowsLayer(fixture))
+
+export type { NodeInspectSymbol, Unify }

@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { User } from "../../../index.ts"
@@ -273,3 +274,5 @@ export const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: stri
     }),
     Effect.asVoid,
   )
+
+export type { NodeInspectSymbol, Unify }

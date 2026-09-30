@@ -1,3 +1,4 @@
+import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Effect, Layer, Match, Option, Predicate, Schema } from "effect"
 import { Actor, type Caller } from "../../../index.ts"
 import { Request } from "../../../handles/actors.ts"
@@ -434,3 +435,5 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
       }),
     ),
   )
+
+export type { NodeInspectSymbol, Unify }
