@@ -69,6 +69,7 @@ const fixture = (
     readonly actor?: string
     readonly baseUrl?: string
     readonly now?: () => number
+    readonly principal?: () => string
   } = {},
 ) => {
   const store = options.store ?? Offline.memory()
@@ -78,6 +79,7 @@ const fixture = (
     store,
     baseUrl: options.baseUrl ?? "/api",
     actor: options.actor ?? "Room",
+    principal: Effect.sync(options.principal ?? (() => "alice")),
     now: options.now ?? (() => NOW),
     begin: script.begin,
     failureOf,
@@ -116,6 +118,7 @@ const stored = (commandId: string, extra: Partial<QueuedCommand> = {}): QueuedCo
   commandId,
   sequence: 0,
   baseUrl: "/api",
+  principal: "alice",
   target: "/actors/Room/r1",
   member: "Post",
   body: "{}",
@@ -142,6 +145,40 @@ afterEach(() => {
 })
 
 describe("offline command queue", () => {
+  it("holds a command queued under another principal, never attempting it, and sends it once that principal is back", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        let signedIn = "alice"
+
+        const { queue, attempts, store } = fixture({
+          principal: () => signedIn,
+          steps: { a: [refuse(offline)] },
+        })
+
+        yield* Effect.promise(() => queue.ready)
+        yield* submit(queue, "a")
+        yield* until(() => attempts.length === 1)
+
+        signedIn = "bob"
+        queue.flush()
+        yield* until(() => queue.pending[0]?.status === "held")
+        yield* submit(queue, "b", "/actors/Room/r2")
+        yield* until(() => queue.pending.length === 1)
+
+        expect(attempts).toEqual(["a", "b"])
+        expect(
+          (yield* Effect.promise(() => store.entries())).map((entry) => entry.principal),
+        ).toEqual(["alice"])
+
+        signedIn = "alice"
+        queue.flush()
+        yield* until(() => queue.pending.length === 0 || attempts.length > 2)
+
+        expect(attempts.slice(2)).toEqual(["a"])
+        queue.close()
+      }),
+    ))
+
   it("sends nothing until the command is saved, then removes it once the server answers", () =>
     Effect.runPromise(
       Effect.gen(function* () {
