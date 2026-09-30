@@ -106,11 +106,18 @@ export type OrderDelivery = typeof OrderDelivery.Type
 
 const RecordOrder = Actor.command("RecordOrder", { input: OrderDelivery, errors: [Refused] })
 
+/** A customer id whose `CustomerOrders` route throws instead of returning an id. */
+export const THROWING_ROUTE = "route-throws"
+
 const CustomerOrders = Actor.subscription("CustomerOrders", {
   source: SubOrder,
   events: [OrderPlaced, OrderCancelled],
   handler: RecordOrder,
-  route: (event) => event.customerId,
+  route: (event) => {
+    if (event.customerId === THROWING_ROUTE) throw new Error("route threw")
+
+    return event.customerId
+  },
 })
 
 const CustomerJournals = Actor.subscription("CustomerJournals", {
@@ -259,6 +266,37 @@ export const SubShipment = Actor.make("SubShipment", {
   api: { ShipOrder, PlaceOrder },
   internal: { OnPayment },
   subscriptions: [PaymentUpdates],
+})
+
+/** A source whose only subscriber is `SubGated`, so its routed skips touch no other case. */
+export const SubGateOrder = Actor.make("SubGateOrder", {
+  key: Schema.String,
+  events: [OrderPlaced],
+  api: { Place },
+  policy: { subscribers: ["SubGated"] },
+})
+
+const OnGated = Actor.command("OnGated", {
+  input: Actor.Delivery({ source: SubGateOrder, events: [OrderPlaced] }),
+})
+
+const GatedOrders = Actor.subscription("GatedOrders", {
+  source: SubGateOrder,
+  events: [OrderPlaced],
+  handler: OnGated,
+  route: (event) => event.customerId,
+})
+
+const OpenGated = Actor.command("OpenGated")
+
+/** A routed subscriber that exists only once `OpenGated` creates it, so earlier deliveries skip as `NotCreated`. */
+export const SubGated = Actor.make("SubGated", {
+  key: Schema.String,
+  state: Log,
+  api: { OpenGated },
+  internal: { OnGated },
+  subscriptions: [GatedOrders],
+  policy: { createdBy: OpenGated },
 })
 
 /** One delivery as a handler logs it: `source#cursor:event`, `source~gap:after-resume`, or `source!rejected:cursor`. */
@@ -421,6 +459,21 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
         Touch: () => Effect.void,
         OnOrder: Effect.fnUntraced(function* (delivery) {
           yield* record(fixture, "SubFollower", yield* SubFollower.Turn, delivery)
+        }),
+      }),
+    ),
+    SubGateOrder.toLayer(
+      Effect.succeed({
+        Place: Effect.fnUntraced(function* ({ customerId, amount }) {
+          yield* (yield* SubGateOrder.Turn).emit(OrderPlaced.make({ customerId, amount }))
+        }),
+      }),
+    ),
+    SubGated.toLayer(
+      Effect.succeed({
+        OpenGated: () => Effect.void,
+        OnGated: Effect.fnUntraced(function* (delivery) {
+          yield* record(fixture, "SubGated", yield* SubGated.Turn, delivery).pipe(Effect.orDie)
         }),
       }),
     ),
