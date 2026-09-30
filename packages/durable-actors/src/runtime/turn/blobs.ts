@@ -127,6 +127,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
     use: (where: Effect.Success<ReturnType<typeof entry>>) => Effect.Effect<A, E>,
   ) => run(Effect.flatMap(entry(blob, name), use))
 
+  const noted = (blob: AnyBlob) => Effect.sync(() => scope.wrote?.(blob.name))
+
   const contentAccess = (blob: AnyBlob): ContentRead | ContentWrite => {
     const bound = Effect.suspend(() =>
       content === undefined
@@ -222,10 +224,12 @@ export const bindBlobs = Effect.fnUntraced(function* (
           if (!checked!.live) return yield* InvalidContentRef.make({ reason: "expired" })
 
           if (!checked!.fits) return yield* tooManyEntries
+
+          yield* noted(blob)
         }),
       detach: (name) =>
         atEntry(blob, name, (where) =>
-          Effect.asVoid(sql`DELETE FROM actor_content_refs WHERE ${where}`),
+          Effect.andThen(sql`DELETE FROM actor_content_refs WHERE ${where}`, noted(blob)),
         ),
       list,
     } satisfies ContentWrite
@@ -295,6 +299,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
               RETURNING chunk`
 
             if (written.length === 0) return yield* refused(yield* usage(where))
+            yield* noted(blob)
           }),
         ),
       append: (name, bytes) =>
@@ -318,18 +323,25 @@ export const bindBlobs = Effect.fnUntraced(function* (
                 ? oversized
                 : refused(used)
             }
+
+            yield* noted(blob)
           }),
         ),
       compact: (name) =>
         atEntry(blob, name, (where) =>
-          Effect.asVoid(sql`WITH merged AS (
-              DELETE FROM actor_blobs WHERE ${where} AND chunk > 0 RETURNING chunk, bytes)
-            UPDATE actor_blobs AS head
-            SET bytes = head.bytes || (SELECT string_agg(m.bytes, ''::bytea ORDER BY m.chunk) FROM merged AS m)
-            WHERE ${where} AND head.chunk = 0 AND EXISTS (SELECT 1 FROM merged)`),
+          Effect.andThen(
+            sql`WITH merged AS (
+                DELETE FROM actor_blobs WHERE ${where} AND chunk > 0 RETURNING chunk, bytes)
+              UPDATE actor_blobs AS head
+              SET bytes = head.bytes || (SELECT string_agg(m.bytes, ''::bytea ORDER BY m.chunk) FROM merged AS m)
+              WHERE ${where} AND head.chunk = 0 AND EXISTS (SELECT 1 FROM merged)`,
+            noted(blob),
+          ),
         ),
       delete: (name) =>
-        atEntry(blob, name, (where) => Effect.asVoid(sql`DELETE FROM actor_blobs WHERE ${where}`)),
+        atEntry(blob, name, (where) =>
+          Effect.andThen(sql`DELETE FROM actor_blobs WHERE ${where}`, noted(blob)),
+        ),
     } satisfies BlobWrite
   }
 

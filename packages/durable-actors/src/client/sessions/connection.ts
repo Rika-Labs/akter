@@ -5,7 +5,7 @@ import type { ValueSchema } from "../../members/command.ts"
 import type { AnyConnection } from "../../members/connection.ts"
 import type { ProgressEffect } from "../../members/effect.ts"
 import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../serve/frames.ts"
-import { decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
+import { aborted, decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
 
 /**
  * One effect's progress as its client receives it: the effect's tag and a
@@ -384,24 +384,13 @@ export const connect = <Server, Client>({
         ),
       )
 
-      const aborted = Effect.callback<never, Failure>((resume) => {
-        const signal = options.signal
-
-        if (signal === undefined) return
-
-        const onAbort = () => {
-          ws.close(1000)
-          resume(Effect.fail(ended("ClientClosed", false)))
-        }
-
-        if (signal.aborted) return onAbort()
-
-        signal.addEventListener("abort", onAbort, { once: true })
-
-        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
-      })
-
-      const open = yield* Effect.raceFirst(Deferred.await(opened), aborted)
+      const open = yield* Effect.raceFirst(
+        Deferred.await(opened),
+        aborted(options.signal).pipe(
+          Effect.andThen(Effect.sync(() => ws.close(1000))),
+          Effect.andThen(Effect.fail(ended("ClientClosed", false))),
+        ),
+      )
 
       const stream = Stream.fromQueue(messages).pipe(
         Stream.catch((failure) => (failure === DONE ? Stream.empty : Stream.fail(failure))),
