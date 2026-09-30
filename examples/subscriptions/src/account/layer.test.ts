@@ -86,6 +86,24 @@ const nextMonth = Effect.gen(function* () {
   yield* test.advance(DateTime.distance(now, first))
 })
 
+/**
+ * The command id of the account's pending renewal tick. Every account in this
+ * file shares one runtime, so the 1st of the month renews all of them and
+ * starts or resumes their collections in the same drain; a fault aimed at one
+ * account's renewal names its tick, or it lands on whichever turn commits first.
+ */
+const renewal = Effect.fnUntraced(function* (id: string) {
+  const sql = yield* SqlClient.SqlClient
+  const { tenant } = yield* ActorTest
+
+  const rows = yield* sql<{ intent_id: string }>`
+    SELECT intent_id FROM actor_outbox
+    WHERE tenant_id = ${tenant} AND actor_type = 'Account' AND actor_id = ${id}
+      AND timer_key LIKE '$cron:%'`
+
+  return rows[0]!.intent_id
+})
+
 /** The execution collecting an invoice, and its status. */
 const collection = Effect.fnUntraced(function* (invoiceId: string) {
   const sql = yield* SqlClient.SqlClient
@@ -209,7 +227,7 @@ it("renews on the 1st of the month from cron, once when the tick is redelivered 
       const account = yield* subscribe("a4", "tok_visa")
       yield* settled("a4", 1)
 
-      yield* test.crashNext("afterCommit")
+      yield* test.crashNext("afterCommit", { commandId: yield* renewal("a4") })
       yield* nextMonth
       yield* test.advance("1 minute")
 
