@@ -322,6 +322,17 @@
         "@types/pg": "8.23.1",
       },
     },
+    "packages/python-client": {
+      "name": "@durable-actors/python-client",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@durable-actors/core": "workspace:*",
+        "vitest": "catalog:",
+      },
+    },
     "packages/react": {
       "name": "@durable-actors/react",
       "dependencies": {
@@ -644,6 +655,8 @@
     "@durable-actors/oxlint": ["@durable-actors/oxlint@workspace:tooling/oxlint"],
 
     "@durable-actors/postgres": ["@durable-actors/postgres@workspace:packages/postgres"],
+
+    "@durable-actors/python-client": ["@durable-actors/python-client@workspace:packages/python-client"],
 
     "@durable-actors/react": ["@durable-actors/react@workspace:packages/react"],
 
