@@ -880,6 +880,17 @@ Ten runs with the start gate from [#219](https://github.com/Rika-Labs/durable-ac
 
 Ten runs on 2026-09-29: 0 lost and 0 duplicated operations every time, and 1–3 commit-unknown commands per run, all resolved through their receipts. Promotion took 0.20–0.31 s. Recovery, from the kill to every runner committing again, was 0.37–0.42 s in 2 runs and 30.09–30.13 s in 8: in those 8 a command waited out its caller's 30-second `deliveryTimeout`, because Cluster dropped a command re-sent after a defect restart when its turn died again before the restart completed ([#243](https://github.com/Rika-Labs/durable-actors/issues/243)). With the fix, which restarts the activation in place and answers a retryable turn failure as `ActorUnavailable` instead of dying, ten more runs on 2026-09-30 (a 4-vCPU cloud VM) recovered in 0.36–0.90 s (p50 0.47 s), promotion took 0.21–0.25 s, and no operation was slower than 1.11 s, with 0 lost and 0 duplicated operations and 1–3 commit-unknown commands per run. See [performance](03-performance.md#failure-drill-ii-postgres-primary-failover-t10). The drill runs table shard leases (`shardLockDisableAdvisory: true`), as T7 does, so shard ownership by session advisory locks across a failover is not covered.
 
+### M4 exit rehearsal on the served chat room (#306)
+
+[`examples/chat/src/rehearsal/rehearsal.test.ts`](../../examples/chat/src/rehearsal/rehearsal.test.ts), in the chat package's `test:integration` script (skipped on PGlite), needs Docker. It runs the exit test of [M4](../milestones/M4.md) as one sequence against one database: the chat room served through `Actor.serve` on three runners, each with its own HTTP listener, under load from HTTP clients that retry under their idempotency keys.
+
+- `operates the served chat room through a drain, a Postgres failover, and a restore with no command lost or repeated`:
+  - drain: runner 0's `/ready` turns 503 during `drain`, the drain reports `clean` or `deadline-expired`, and the runner shuts down, restarts, and rejoins while the others serve;
+  - failover: the T10 synchronous pair and endpoint; every commit-unknown post is later acknowledged, every acknowledged id and every receipt the old primary showed is on the promoted primary, and receipts, `chat_messages` rows and `MessagePosted` events each equal the posts sent, with no event repeated;
+  - restore: a stopped whole-database copy; the restored deployment holds exactly the posts before the backup; every client retry under its original key is acknowledged, the lost posts run once and the rest replay; receipts, rows and events equal every post; past the retry window every retry is refused `CommandExpired`; each phase-one post's provider calls carry one idempotency key.
+
+Three passing runs on 2026-09-30 ([performance](03-performance.md#m4-exit-rehearsal-drain-failover-and-restore-on-the-served-chat-room-306)): 0 lost and 0 repeated each time. Not covered: an online `pg_dump` or point-in-time backup in the same sequence (each is rehearsed on its own in `crash/drills/online-restore.test.ts`), and runners as separate OS processes (they are `ActorTest.cluster` runners in one process, with separate runtimes, pools, and HTTP listeners).
+
 ### Chat on three runners (M2.11)
 
 [`examples/chat/src/room/cluster.test.ts`](../../examples/chat/src/room/cluster.test.ts) runs the chat example's own contract and handlers on `ActorTest.cluster` with three runners against a fresh Postgres database (`test:integration`; skipped on PGlite):
