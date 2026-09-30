@@ -86,10 +86,10 @@ export const watch: Scenario = {
     "Query watch fan-out: a commit reaching 1, 100, and 1,000 watches of one actor, and 100 actors with a watch each, warm; and a commit that wakes a hibernated actor with one watch. Latency runs from the command to every watcher holding the new result; statements per commit include every rerun.",
   run: (context) =>
     Effect.gen(function* () {
-      const operations = context.profile === "quick" ? 50 : 300
+      const operations = context.quick ? 50 : 300
       const results: Array<CaseResult> = []
 
-      for (const fanout of context.profile === "quick" ? [1, 100] : [1, 100, 1000])
+      for (const fanout of context.quick ? [1, 100] : [1, 100, 1000])
         results.push(
           yield* withWatches(context, (instruments) =>
             Effect.gen(function* () {
