@@ -11,11 +11,11 @@ The backup unit is the deployment's relational database. It includes every tenan
 
 A backup must be **one mutually consistent snapshot of the whole database**. Any of these produces one:
 
-- `pg_dump --format=custom` of the database, which reads every table in one snapshot;
-- a base backup with WAL archiving, restored to a single point in time;
+- `pg_dump --format=custom` of the database, which reads every table in one snapshot, even while the runners keep committing ([rehearsed](#online-pgdump-and-point-in-time-recovery)); restore it with `pg_restore` into a new database;
+- a base backup with WAL archiving, recovered to a single point in time (`recovery_target_name`, `recovery_target_time`, or `recovery_target_lsn`, with `recovery_target_action = 'promote'`), with the recovery server started with the source server's `max_connections`;
 - a provider's volume or instance snapshot.
 
-A dump of some tables or schemas, or several dumps taken at different times, is not a backup: a receipt without the state it committed with, or an outbox row without its sender's receipt, breaks exactly-once delivery. Optional RLS is not a backup boundary.
+A dump of some tables or schemas (`--table`, `--schema`, `--exclude-table`), or several dumps taken at different times, is not a backup: a receipt without the state it committed with, or an outbox row without its sender's receipt, breaks exactly-once delivery. Optional RLS is not a backup boundary.
 
 Record with every backup: the snapshot time, the latest id in `actor_migrations`, the retry window in `actor_deployment`, each actor type's `keepReceipts` and `keepEvents`, encryption, and the RPO and RTO it serves.
 
@@ -70,7 +70,21 @@ Do not delete receipts or outbox rows to make a restore start.
 
 On Postgres, `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` covers mixed versions ([migrations](02-migrations.md#two-runtime-versions-behind-one-database)).
 
-Not rehearsed: `pg_restore` of an online `pg_dump` and point-in-time recovery, which produce the same kind of snapshot but are not run in CI; Neki; and a restore to a snapshot taken before a tenant move.
+### Online `pg_dump` and point-in-time recovery
+
+[`crash/drills/online-restore.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/drills/online-restore.test.ts) runs the same restore cases on the two other kinds of backup, on Postgres 18.6 in a Docker container that archives its WAL ([`online-restore.ts`](../../packages/durable-actors/src/testing/conformance/crash/drills/online-restore.ts)). It runs in `test:integration` and needs Docker.
+
+- **Online `pg_dump`, restored with `pg_restore`.** `pg_dump --format=custom` of the database, then `createdb` and `pg_restore --no-owner --exit-on-error` into a new database the restored runtime starts on. The three restore cases above pass on it, plus `restores one consistent snapshot of a database whose turns keep committing during the backup`: six vaults keep committing deposits, each with a pending transfer, while the dump is taken. The restored database holds, for every vault, a state equal to its receipts (no receipt without its state, and no state without its receipt), so it is one snapshot; every command acknowledged before the dump began replays its original reply without running its handler; the deposits acknowledged after the dump finished are absent; and each pending transfer is delivered once.
+- **Point-in-time recovery.** A `pg_basebackup` taken before the drill's database existed, plus the archived WAL, recovered with `recovery_target_name` to a restore point (`pg_create_restore_point`) taken while the runtime is stopped, then promoted. The same four cases pass on it. `recovers to a named restore point holding exactly the commits before it` writes three vaults in three phases with restore points between them, and recovers to each point in a server of its own: the first holds only the first phase, with the transfer staged in that phase still pending and delivered once after the restore; the second holds the first two phases; each vault's state and receipt count match, and the next deposit after each recovery lands on the recovered total.
+
+What the drill showed:
+
+- **The recovery server needs the source server's connection limits.** A base backup records `max_connections` of the server it came from, and a server recovering from it refuses to start with a lower value. The first version of the drill started the recovery server with the default and it failed to start; it now passes the source's value.
+- **Name the restore point, then archive its segment.** The drill calls `pg_switch_wal()` after `pg_create_restore_point` and waits until `pg_stat_archiver.last_archived_wal` reaches the segment that holds the point, so recovery finds it in the archive. Do the same before relying on a restore point: WAL that was never archived cannot be recovered.
+
+Timings from three full runs of the drill file on a heavily loaded Mac (load average 20 to 60 in the first two), which include starting each recovery server and replaying the archive: the four cases took 1.5 to 2.9 s each on `pg_dump` and `pg_restore`, and 6 to 27 s each on point-in-time recovery, with `recovers to a named restore point...` taking 11, 29 and 64 s because it starts three recovery servers. These are not an RTO for a production database; measure yours.
+
+Not rehearsed: recovery to a `recovery_target_time` or LSN (only named restore points), a base backup taken while runners were committing (the drill's base backup precedes its data, and the online-dump case covers committing turns), a provider's volume snapshots, Neki, and a restore to a snapshot taken before a tenant move.
 
 ## Limits
 
