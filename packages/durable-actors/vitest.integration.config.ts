@@ -41,7 +41,7 @@ export default defineConfig({
             `${testing}/conformance/crash/**/*.test.ts`,
             `${testing}/conformance/neki/backend.test.ts`,
             "packages/durable-actors/src/runtime/database/migrations.test.ts",
-            "packages/durable-actors/src/runtime/database/fencing.test.ts",
+            "packages/durable-actors/src/runtime/storage/generation.test.ts",
             "packages/durable-actors/src/runtime/database/neki/session.test.ts",
           ],
           exclude: [
