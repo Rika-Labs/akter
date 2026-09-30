@@ -60,6 +60,7 @@ const optionsFor = Effect.fnUntraced(function* (url: string, kid: string) {
     requestBytes: 1024 * 1024,
     socketMessageBytes: 64 * 1024,
     socketBufferBytes: 1024 * 1024,
+    coldStartTimeout: Duration.seconds(30),
   } satisfies EdgeOptions
 })
 

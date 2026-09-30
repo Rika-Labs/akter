@@ -13,6 +13,7 @@ export const shards = {
   adoption: ["adoption"],
   capacity: ["capacity"],
   connections: ["connections"],
+  "cold-serve": ["coldServe"],
   cron: ["cron", "cronCluster"],
   drain: ["drain"],
   "effect-control": ["effectControl", "effectControlCluster"],

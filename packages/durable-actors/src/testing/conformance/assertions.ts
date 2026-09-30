@@ -241,7 +241,7 @@ const unauthorizedBody = (code: Unauthorized["code"]) =>
   actorErrorBody(ActorError.make({ reason: Unauthorized.make({ code }) }))
 
 /** A request to `HttpRoom/<id>/<member>` with a fresh command id. */
-const command = Effect.fnUntraced(function* (
+export const command = Effect.fnUntraced(function* (
   server: AssertedServer,
   id: string,
   member: string,
@@ -757,6 +757,13 @@ export interface HostedEdge {
   /** The published key set runners verify the edge's assertions with. */
   readonly keys: URL
   readonly addRunner: (runner: EdgeRunner) => Effect.Effect<void>
+  /** Unregisters a runner, as its provider does before stopping it. */
+  readonly removeRunner: (url: string) => Effect.Effect<void>
+  /**
+   * Takes the regions the edge asked a runner for since the last call, as a
+   * runner provider does: each `runner_wake` row is deleted as it is read.
+   */
+  readonly takeWakes: Effect.Effect<ReadonlyArray<string>>
   /** Issues a hosted API key for `tenant`'s `subject`. */
   readonly issueApiKey: (options: {
     readonly tenant: string
@@ -784,22 +791,26 @@ export interface ConformanceEdge {
     readonly apiKeySessionSeconds?: number
     /** The edge's signing keys; one new key when omitted. */
     readonly signingKeys?: ReadonlyArray<EdgeKey>
+    /** Whether the deployment may run with no runners; default false. */
+    readonly scaleToZero?: boolean
+    /** How long a request waits for a cold start; default 30 seconds. */
+    readonly coldStartSeconds?: number
   }) => Effect.Effect<HostedEdge, never, Scope.Scope>
 }
 
-const edgeOf = (edge: ConformanceEdge | undefined) =>
+export const edgeOf = (edge: ConformanceEdge | undefined) =>
   edge === undefined ? Effect.die(new Error("The case needs a hosted edge")) : Effect.succeed(edge)
 
 /** Sends requests to the server at `url` for the rest of the scope. */
-const clientFor = Effect.fnUntraced(function* (url: string) {
+export const clientFor = Effect.fnUntraced(function* (url: string) {
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
 
   return sendTo(client, url)
 })
 
 /** A runner in `region` that trusts `edge`, rereading its key set every second. */
-const edgeRunner = (edge: HostedEdge, region: string) =>
-  serveAsserted(
+export const edgeRunner = Effect.fnUntraced(function* (edge: HostedEdge, region: string) {
+  return yield* serveAsserted(
     Actor.auth.assertion({
       issuer: edge.issuer,
       audience: edge.deployment,
@@ -808,14 +819,15 @@ const edgeRunner = (edge: HostedEdge, region: string) =>
       refreshEvery: "1 second",
     }),
   )
+})
 
-const bearerHeaders = (key: string) => ({ authorization: `Bearer ${key}` })
+export const bearerHeaders = (key: string) => ({ authorization: `Bearer ${key}` })
 
 /**
  * A proxy in front of a runner that holds each request for the delay its
  * path's actor id names, and counts the requests that reached it.
  */
-const delayingProxy = Effect.fnUntraced(function* (target: string) {
+export const delayingProxy = Effect.fnUntraced(function* (target: string) {
   const delays = new Map<string, number>()
   const failures = new Map<string, number>()
   const arrived: Array<string> = []

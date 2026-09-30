@@ -43,6 +43,11 @@ export interface EdgeOptions {
    * runner takes them; a client past it is closed. Default 1 MiB.
    */
   readonly socketBufferBytes: number
+  /**
+   * How long a request to a scale-to-zero deployment waits for a runner to be
+   * started and to answer ready before it is refused. Default 30 seconds.
+   */
+  readonly coldStartTimeout: Duration.Duration
 }
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(SigningKey)))
@@ -88,5 +93,8 @@ export const loadOptions = Effect.gen(function* () {
     requestBytes: 1024 * 1024,
     socketMessageBytes: 64 * 1024,
     socketBufferBytes: 1024 * 1024,
+    coldStartTimeout: yield* Config.Duration("EDGE_COLD_START_TIMEOUT").pipe(
+      Config.withDefault(Duration.seconds(30)),
+    ),
   } satisfies EdgeOptions
 })

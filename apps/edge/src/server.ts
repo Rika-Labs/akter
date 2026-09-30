@@ -38,6 +38,8 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
 
   yield* revocationPush(options, keys, client)
 
+  const pool = yield* runners(options, client)
+
   const edge: Edge = {
     options,
     client,
@@ -45,7 +47,8 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
     authenticator: yield* authenticator(options),
     resolveHost: (yield* hosts(options)).resolve,
     home: (yield* directory(options)).home,
-    ready: (yield* runners(options)).ready,
+    ready: pool.ready,
+    coldStart: pool.coldStart,
   }
 
   const run = Effect.runPromiseWith(yield* Effect.context<never>())

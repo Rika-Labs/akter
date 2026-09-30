@@ -61,6 +61,13 @@ import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
 import { OperatorRuntime } from "../runtime/operators/repair.ts"
 import { exportConformance } from "./conformance/export.ts"
+import {
+  coldServeConformance,
+  coldServeEdgeConformance,
+  coldServeFixture,
+  type ColdServeFixture,
+  coldServeLayer,
+} from "./conformance/cold-serve.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
 import {
@@ -336,6 +343,7 @@ export interface ConformanceFixture {
   readonly connections: ConnectionsFixture
   readonly content: ContentFixture
   readonly drain: DrainFixture
+  readonly coldServe: ColdServeFixture
   readonly watch: WatchFixture
   executions: number
   queries: number
@@ -476,6 +484,7 @@ const makeFixture = (): ConformanceFixture => ({
   connections: connectionsFixture(),
   content: contentFixture(),
   drain: drainFixture(),
+  coldServe: coldServeFixture(),
   watch: watchFixture(),
   executions: 0,
   queries: 0,
@@ -1482,6 +1491,7 @@ export const conformanceGroups = {
   protocols: protocolsConformance,
   assertions: assertionsConformance,
   edge: edgeConformance,
+  coldServeEdge: coldServeEdgeConformance,
   client: clientConformance,
   offline: offlineConformance,
   capacity: capacityConformance,
@@ -1528,6 +1538,7 @@ export const conformanceGroups = {
   observability: observabilityConformance,
   operator: operatorConformance,
   export: exportConformance,
+  coldServe: coldServeConformance,
   placement: placementConformance,
   watch: watchConformance,
   adoption: adoptionConformance,
@@ -1611,6 +1622,7 @@ export const describeConformance = (options: {
     subscriptionsLayer(fixture.subscriptions),
     contentLayer(fixture.content),
     drainLayer(fixture.drain),
+    coldServeLayer(fixture.coldServe),
     watchLayer(fixture.watch),
   )
 

@@ -109,6 +109,9 @@ const runtimeLayer = (
     Layer.orDie,
   )
 
+/** The actor runtime every single-runner case builds, with the default residency and no subscription probes. */
+export const caseRuntime = runtimeLayer(undefined)
+
 /** What a scenario receives from the runner. */
 export interface ScenarioContext {
   readonly backend: Backend

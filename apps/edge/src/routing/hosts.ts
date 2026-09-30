@@ -2,10 +2,11 @@ import { Clock, Duration, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { EdgeOptions } from "../config.ts"
 
-/** A deployment reached by host, and its primary region. */
+/** A deployment reached by host, its primary region, and whether it may run with no runners. */
 export interface Deployment {
   readonly id: string
   readonly primaryRegion: string
+  readonly scaleToZero: boolean
 }
 
 /** The request host without its port, lowercase, as `deployment_host` stores it. */
@@ -32,7 +33,7 @@ export const hosts = Effect.fnUntraced(function* (options: EdgeOptions) {
       if (cached !== undefined && now - cached.at < pollMs) return cached.deployment
 
       const [row] = yield* sql<Deployment>`
-        SELECT d.id, d.primary_region AS "primaryRegion"
+        SELECT d.id, d.primary_region AS "primaryRegion", d.scale_to_zero AS "scaleToZero"
         FROM deployment_host h JOIN deployment d ON d.id = h.deployment_id
         WHERE h.host = ${host}
       `.pipe(Effect.orDie)

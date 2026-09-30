@@ -1,6 +1,7 @@
 import { publishedKeys } from "@durable-actors/deployments"
 import { migrate } from "@durable-actors/postgres/migrate"
 import {
+  coldServeEdgeConformance,
   type ConformanceBackend,
   type ConformanceEdge,
   describeConformance,
@@ -71,6 +72,8 @@ const startEdge = Effect.fnUntraced(function* (options: {
   readonly assertionSeconds?: number
   readonly apiKeySessionSeconds?: number
   readonly signingKeys?: ReadonlyArray<EdgeKey>
+  readonly scaleToZero?: boolean
+  readonly coldStartSeconds?: number
 }): Effect.fn.Return<HostedEdge, never, Scope.Scope | Crypto.Crypto> {
   const url = yield* createDatabase("edge").pipe(Effect.orDie)
 
@@ -88,7 +91,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
   const random = yield* Crypto.Crypto
   const deployment = `dep-${(yield* random.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`
 
-  yield* sql`INSERT INTO deployment (id, primary_region) VALUES (${deployment}, ${options.primaryRegion})`.pipe(
+  yield* sql`INSERT INTO deployment (id, primary_region, scale_to_zero) VALUES (${deployment}, ${options.primaryRegion}, ${options.scaleToZero ?? false})`.pipe(
     Effect.orDie,
   )
   yield* sql`INSERT INTO deployment_host (host, deployment_id) VALUES ('127.0.0.1', ${deployment})`.pipe(
@@ -116,6 +119,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
     requestBytes: 1024 * 1024,
     socketMessageBytes: 64 * 1024,
     socketBufferBytes: 1024 * 1024,
+    coldStartTimeout: Duration.seconds(options.coldStartSeconds ?? 30),
   }
 
   const edge = yield* makeEdge(edgeOptions).pipe(Effect.provideContext(control))
@@ -149,6 +153,15 @@ const startEdge = Effect.fnUntraced(function* (options: {
       run(
         sql`INSERT INTO deployment_runner (deployment_id, region, url, base_path) VALUES (${deployment}, ${runner.region}, ${runner.url}, ${runner.basePath ?? ""})`,
       ),
+    removeRunner: (url) =>
+      run(sql`DELETE FROM deployment_runner WHERE deployment_id = ${deployment} AND url = ${url}`),
+    takeWakes: sql<{
+      readonly region: string
+    }>`DELETE FROM runner_wake WHERE deployment_id = ${deployment} RETURNING region`.pipe(
+      Effect.map((rows) => rows.map(({ region }) => region)),
+      Effect.provideContext(control),
+      Effect.orDie,
+    ),
     issueApiKey: ({ tenant, subject }) =>
       Effect.gen(function* () {
         const key = `dak_${(yield* random.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")}`
@@ -248,6 +261,6 @@ const backend: ConformanceBackend = {
 describeConformance({
   name: "Hosted edge",
   backend,
-  cases: edgeConformance,
+  cases: [...edgeConformance, ...coldServeEdgeConformance],
   registrar: { describe, it, beforeAll, afterAll, expect, skip: (name) => it.skip(name) },
 })
