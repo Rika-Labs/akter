@@ -78,37 +78,44 @@ describe("handler layer lifetimes", () => {
       }),
     ))
 
-  it("releases what a singleton build acquired when its activation ends", async () => {
-    const opened = { open: 0, released: 0 }
-    const Lone = Actor.make("LayersLone", { key: Actor.singleton, api: { Ping } })
+  it("releases what a singleton build acquired when its activation ends", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const opened = { open: 0, released: 0 }
+        const Lone = Actor.make("LayersLone", { key: Actor.singleton, api: { Ping } })
 
-    const owned = ManagedRuntime.make(
-      Lone.toLayer(
-        Effect.gen(function* () {
-          yield* Effect.acquireRelease(
-            Effect.sync(() => (opened.open += 1)),
-            () =>
-              Effect.sync(() => {
-                opened.open -= 1
-                opened.released += 1
-              }),
-          )
+        const owned = ManagedRuntime.make(
+          Lone.toLayer(
+            Effect.gen(function* () {
+              yield* Effect.acquireRelease(
+                Effect.sync(() => (opened.open += 1)),
+                () =>
+                  Effect.sync(() => {
+                    opened.open -= 1
+                    opened.released += 1
+                  }),
+              )
 
-          return { Ping: () => Effect.succeed(opened.open) }
-        }),
-      ).pipe(Layer.provideMerge(ActorTest.layer({})), Layer.provide(BunCrypto.layer)),
-    )
+              return { Ping: () => Effect.succeed(opened.open) }
+            }),
+          ).pipe(Layer.provideMerge(ActorTest.layer({})), Layer.provide(BunCrypto.layer)),
+        )
 
-    expect(await owned.runPromise(Effect.flatMap(Lone.get(), (lone) => lone.Ping()))).toBe(1)
-    await owned.dispose()
-    expect(opened).toEqual({ open: 0, released: 1 })
-  })
+        const pinged = yield* Effect.promise(() =>
+          owned.runPromise(Effect.flatMap(Lone.get(), (lone) => lone.Ping())),
+        )
+
+        expect(pinged).toBe(1)
+        yield* Effect.promise(() => owned.dispose())
+        expect(opened).toEqual({ open: 0, released: 1 })
+      }),
+    ))
 
   it("fails an ordinary layer with its builder's typed error when the layer is built", () =>
     runtime.runPromise(
       Effect.gen(function* () {
         const Broken = Actor.make("LayersBroken", { key: Schema.String, api: { Ping } })
-        const layer = Broken.toLayer(Effect.fail(new Unconfigured()))
+        const layer = Broken.toLayer(Effect.fail(Unconfigured.make({})))
 
         expectTypeOf(layer).toEqualTypeOf<Layer.Layer<never, Unconfigured, InternalActors>>()
 
@@ -116,7 +123,7 @@ describe("handler layer lifetimes", () => {
 
         expect(
           Exit.isFailure(exit) && Option.getOrUndefined(Cause.findErrorOption(exit.cause)),
-        ).toEqual(new Unconfigured())
+        ).toEqual(Unconfigured.make({}))
       }),
     ))
 
@@ -124,7 +131,7 @@ describe("handler layer lifetimes", () => {
     runtime.runPromise(
       Effect.gen(function* () {
         const Fragile = Actor.make("LayersFragile", { key: Actor.singleton, api: { Ping } })
-        const layer = Fragile.toLayer(Effect.fail(new Unconfigured()))
+        const layer = Fragile.toLayer(Effect.fail(Unconfigured.make({})))
 
         expectTypeOf(layer).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
 
@@ -138,7 +145,7 @@ describe("handler layer lifetimes", () => {
         )
 
         expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
-        expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toEqual(new Unconfigured())
+        expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toEqual(Unconfigured.make({}))
       }),
     ))
 })

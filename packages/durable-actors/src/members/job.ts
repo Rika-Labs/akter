@@ -34,7 +34,7 @@ export type ProgressJob = AnyJob & { readonly progress: ValueSchema }
 export type ProgressOf<J extends ProgressJob> = J["progress"]["Type"]
 
 /**
- * `Actor.job`: declares a job class. `payload` holds its record fields;
+ * `JobMember.make` is `Actor.job`: declares a job class. `payload` holds its record fields;
  * `success` is the schema of the executor's return value and defaults to
  * `Schema.Void`. `progress`, when declared, is the schema of the transient
  * frames its executor may report before the result commits; they are never
@@ -49,7 +49,7 @@ export type ProgressOf<J extends ProgressJob> = J["progress"]["Type"]
  *   success: Schema.Struct({ providerId: Schema.String }),
  * })
  */
-export const job = <
+const make = <
   const Tag extends string,
   const Fields extends PayloadFields = {},
   Success extends ValueSchema = Schema.Void,
@@ -65,12 +65,15 @@ export const job = <
   },
 ): JobClass<Tag, Fields, Success, Progress> => {
   if (tag.length === 0) throw new Error("Actor.job needs a non-empty tag")
+
   const fields = options?.payload ?? ({} as Fields)
+
   const declared: Schema.Class<
     Schema.TaggedStruct<Tag, Fields>["Type"],
     Schema.TaggedStruct<Tag, Fields>,
     {}
   > = Schema.TaggedClass<Schema.TaggedStruct<Tag, Fields>["Type"]>()(tag, fields) as never
+
   declareChain({ schema: declared, label: `Job ${tag}`, fields, options })
 
   return Object.assign(declared, {
@@ -79,6 +82,9 @@ export const job = <
     progress: options?.progress as Progress,
   })
 }
+
+/** `Actor.job`; see `make`. */
+export const JobMember = { make }
 
 /**
  * The payload of an `onDeadLetter` command. `ambiguous` is true when the last

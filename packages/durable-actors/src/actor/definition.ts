@@ -1,7 +1,7 @@
 import type { Unify } from "effect"
 import type { NodeInspectSymbol } from "effect/Inspectable"
 import type { WorkflowEngine } from "effect/unstable/workflow"
-import { Context, type Effect, type Layer, type Schema, type Scope, type Stream } from "effect"
+import { Context, Effect, type Schema, type Scope, type Stream } from "effect"
 import type { CommandContext, InStream, Mintable, QueryContext } from "../contexts/command.ts"
 import type { EnqueueContext, ExecutorContext } from "../contexts/job.ts"
 import type { BroadcastContext, ConnectionContext } from "../contexts/connection.ts"
@@ -30,7 +30,6 @@ import type { AnyWorkflow } from "../members/workflow.ts"
 import type { Access } from "../policies/access.ts"
 import type { Policy } from "../policies/command.ts"
 import type { ScheduleTarget } from "../policies/schedules.ts"
-import type { InternalActors } from "../runtime/actors.ts"
 import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import type { ActorState } from "../state/migration.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -44,7 +43,13 @@ import {
   type SingletonKey,
 } from "./descriptor.ts"
 import { createOf, handleOf, intentsOf, runOfId } from "./handles.ts"
-import { type Build, handlerLayer, jobLayer, type PhaseServices, queryLayer } from "./layers.ts"
+import {
+  jobLayer,
+  ordinaryLayer,
+  type PhaseServices,
+  queryLayer,
+  singletonLayer,
+} from "./layers.ts"
 
 type StateFields = Readonly<Record<string, ValueSchema>>
 
@@ -260,7 +265,7 @@ export type StreamHandler<S extends AnyStream, R> = (
  * expiry checks, as relay deliveries do, so accepted work continues after the
  * principal that started it loses access.
  */
-type HandlerShape<Members extends MemberRecord> = {
+type Implementations<Members extends MemberRecord> = {
   readonly [K in CommandKeys<Members> | WorkflowKeys<Members>]: HandlerOf<Members[K]>
 } & {
   readonly [K in ReducerKeys<Members>]?: never
@@ -302,7 +307,7 @@ type RejectRequestReply<H, Keys> = {
  * only `W`, the actor's `X.Read`, so a handler the runtime cannot record does
  * not compile.
  */
-type QueryShape<Members extends MemberRecord, W> = {
+type QueryImplementations<Members extends MemberRecord, W> = {
   readonly [K in QueryKeys<Members>]: HandlerOf<
     Members[K],
     Members[K] extends { readonly watch: true } ? W : any
@@ -487,7 +492,7 @@ const make = <
     readonly createdBy?: CB
   },
 ) => {
-  const descriptor = compile(name, definition as Declaration)
+  const descriptor = compile({ name, declared: definition as Declaration })
 
   type Creating = [CB] extends [never] ? never : CB["tag"]
 
@@ -550,36 +555,43 @@ const make = <
     | Exclude<Needs<H, StreamKeys<All>>, Read | InStream>
     | Exclude<Needs<H, WorkflowKeys<All>>, Workflow | WorkflowEngine.WorkflowInstance | Scope.Scope>
 
-  const toLayer = <
-    const H extends HandlerShape<All> & RejectRequestReply<H, CommandKeys<All>>,
+  /** An ordinary actor's `toLayer`: the builder's failure fails the layer. */
+  const ordinaryToLayer = <
+    const H extends Implementations<All> & RejectRequestReply<H, CommandKeys<All>>,
     E = never,
     RB = never,
   >(
     build: H | Effect.Effect<H, E, RB>,
-  ) =>
-    handlerLayer(descriptor, phases, build as Build) as Layer.Layer<
-      never,
-      K extends SingletonKey ? never : E,
-      HandlerNeeds<H> | Exclude<RB, Scope.Scope> | InternalActors
-    >
+  ) => ordinaryLayer({ descriptor, phases, build, services: Effect.context<HandlerNeeds<H>>() })
 
-  const toQueryLayer = <const H extends QueryShape<Api, Read>, E = never, RB = never>(
+  /** A singleton's `toLayer`: the builder runs, and fails, per activation, not in the layer. */
+  const singletonToLayer = <
+    const H extends Implementations<All> & RejectRequestReply<H, CommandKeys<All>>,
+    E = never,
+    RB = never,
+  >(
+    build: H | Effect.Effect<H, E, RB>,
+  ) => singletonLayer({ descriptor, phases, build, services: Effect.context<HandlerNeeds<H>>() })
+
+  const toQueryLayer = <const H extends QueryImplementations<Api, Read>, E = never, RB = never>(
     build: H | Effect.Effect<H, E, RB>,
   ) =>
-    queryLayer(descriptor, phases, build as Build) as Layer.Layer<
-      never,
-      E,
-      Exclude<Needs<H, QueryKeys<Api>>, Read> | Exclude<RB, Scope.Scope> | InternalActors
-    >
+    queryLayer({
+      descriptor,
+      phases,
+      build,
+      services: Effect.context<Exclude<Needs<H, QueryKeys<Api>>, Read>>(),
+    })
 
   const toJobLayer = <const H extends Executors<Bound> & RejectDatabase<H>, E = never, RB = never>(
     build: (H | Effect.Effect<H, E, RB>) & NoDatabase<RB>,
   ) =>
-    jobLayer(descriptor, phases, build as Build) as Layer.Layer<
-      never,
-      E,
-      Exclude<Needs<H, keyof H>, Executor> | Exclude<RB, Scope.Scope> | InternalActors
-    >
+    jobLayer({
+      descriptor,
+      phases,
+      build,
+      services: Effect.context<Exclude<Needs<H, keyof H>, Executor>>(),
+    })
 
   type Id = Pl extends { readonly parent: ParentDefinition }
     ? Schema.brand<Schema.String, Name>["Type"]
@@ -655,7 +667,9 @@ const make = <
      *   }),
      * })
      */
-    toLayer,
+    toLayer: (descriptor.singleton ? singletonToLayer : ordinaryToLayer) as K extends SingletonKey
+      ? typeof singletonToLayer
+      : typeof ordinaryToLayer,
     /**
      * Implements every query in `api`, directly or from an Effect that builds
      * the handlers. Queries run on the caller's node against committed rows
@@ -722,7 +736,7 @@ const make = <
       >(descriptor.served)(options),
   }
 
-  publish(actor, descriptor)
+  publish({ definition: actor, descriptor })
 
   return actor as typeof actor &
     DefinitionWithInternal<Handle<All, Creating, BoundedMailbox>> &

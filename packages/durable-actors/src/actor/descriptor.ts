@@ -184,11 +184,11 @@ export interface Descriptor {
   readonly internal: InternalHandle
 }
 
-const descriptors = new WeakMap<object, Descriptor>()
+const descriptors = new WeakMap<WeakKey, Descriptor>()
 
 /** The descriptor of an `Actor.make` definition, or undefined for any other value. */
-export const descriptorOf = (definition: unknown): Descriptor | undefined =>
-  Predicate.isObject(definition) ? descriptors.get(definition) : undefined
+export const descriptorOf = (definition: WeakKey): Descriptor | undefined =>
+  descriptors.get(definition)
 
 const tagMatches = (api: MemberRecord, internal: MemberRecord) => {
   const tags = new Set<string>()
@@ -410,7 +410,13 @@ const compileSubscriptions = (
  * its table ownership only after the whole definition has compiled, so a
  * rejected definition leaves every registry as it was.
  */
-export const compile = (name: string, declared: Declaration): Descriptor => {
+export const compile = ({
+  name,
+  declared,
+}: {
+  readonly name: string
+  readonly declared: Declaration
+}): Descriptor => {
   NAME.make(name)
   const api = declared.api ?? {}
   const internal = declared.internal ?? {}
@@ -432,11 +438,13 @@ export const compile = (name: string, declared: Declaration): Descriptor => {
     if (isWorkflow(member)) throw new Error(`Workflow ${member.tag} must be in api`)
 
   const fields = declared.state?.fields ?? {}
+
   const policy = resolvePolicy({
     declared: declared.policy,
     createdBy: declared.createdBy,
     commands,
   })
+
   const cron = resolveSchedules({ declared: declared.schedules, commands })
   const singleton = isSingletonKey(declared.key)
   const jobs = compileJobs(declared, commands)
@@ -667,7 +675,13 @@ export const compile = (name: string, declared: Declaration): Descriptor => {
  * type. `compile` has already validated every table, so this cannot fail
  * part-way.
  */
-export const publish = (definition: object, descriptor: Descriptor) => {
+export const publish = ({
+  definition,
+  descriptor,
+}: {
+  readonly definition: WeakKey
+  readonly descriptor: Descriptor
+}) => {
   for (const table of descriptor.tables) {
     const info = ownership(table)!
     info.owner = descriptor.name

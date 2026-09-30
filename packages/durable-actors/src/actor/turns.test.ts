@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Layer, ManagedRuntime, Result, Schema } from "effect"
+import { Context, Effect, Layer, ManagedRuntime, Predicate, Result, Schema } from "effect"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actor, ActorError } from "../index.ts"
 import { ActorTest } from "../testing/actor-test.ts"
@@ -91,7 +91,7 @@ const live = Layer.mergeAll(
       const turn = yield* Order.Turn
       yield* turn.enqueue(Charge.make({ amount }))
 
-      if (amount < 0) return yield* new Refused()
+      if (amount < 0) return yield* Refused.make({})
     }),
     Paid: Effect.fn(function* ({ providerId }) {
       yield* (yield* Order.Turn).state.set({ paidWith: providerId })
@@ -131,7 +131,8 @@ const live = Layer.mergeAll(
     Tally: Effect.fn(function* (delivery) {
       const turn = yield* Customer.Turn
 
-      if (delivery._tag === "Event") yield* turn.state.set({ orders: turn.state.orders + 1 })
+      if (Predicate.isTagged(delivery, "Event"))
+        yield* turn.state.set({ orders: turn.state.orders + 1 })
     }),
   }),
   Clock.toLayer({
@@ -236,13 +237,13 @@ describe("batched reducers", () => {
         const descriptor = descriptorOf(Journal)!
         const codec = descriptor.codecs.get("Append")!
 
-        const commands = yield* turnsOf(
+        const commands = yield* turnsOf({
           descriptor,
-          Journal.Turn,
-          {},
-          Context.empty(),
-          {} as InternalActors["Service"],
-        )
+          Turn: Journal.Turn,
+          handlers: {},
+          services: Context.empty(),
+          actors: {} as InternalActors["Service"],
+        })
 
         const ref = ActorRef.make({ tenant: "t", actor: Journal.name, id: "j" })
 

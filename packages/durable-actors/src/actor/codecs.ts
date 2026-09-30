@@ -1,8 +1,27 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, type Stream } from "effect"
 import type { AnyMember, DeclaredError, ValueSchema } from "../members/command.ts"
 import { type StateMigration, VERSION_KEY } from "../state/migration.ts"
 
 type StateFields = Readonly<Record<string, ValueSchema>>
+
+/** A value some member schema decoded; the adapters pass it between codecs and handlers unchanged. */
+export type Decoded = ValueSchema["Type"]
+
+/** A declared failure: a value of some member's `error` schema. */
+export type Failure = DeclaredError["Type"]
+
+/** An actor's decoded state, keyed by field. */
+export type StateValue = Readonly<Record<string, Decoded>>
+
+/**
+ * A handler, workflow body, or executor once its layer has erased its member
+ * types: the phase adapters decode its payload, provide its services, and
+ * encode its result with the member's own codecs.
+ */
+export type Handler = (payload: Decoded) => Effect.Effect<Decoded, Failure>
+
+/** A stream member's handler once its layer has erased its member types. */
+export type StreamHandler = (payload: Decoded) => Stream.Stream<Decoded, Failure>
 
 const utf8 = new TextEncoder()
 
@@ -97,16 +116,13 @@ export const stateCodec = ({
     for (const step of migrations.slice(storedVersion)) current = yield* upcastStep(step, current)
 
     return {
-      state: (yield* decodeJsonState(current).pipe(Effect.orDie)) as Record<string, unknown>,
+      state: (yield* decodeJsonState(current).pipe(Effect.orDie)) as StateValue,
       upcast: storedVersion < version && rows.length > 0,
     }
   })
 
-  const writes = Effect.fnUntraced(function* (
-    current: Record<string, unknown>,
-    dirty: ReadonlySet<string>,
-  ) {
-    const text = yield* encode(current as typeof schema.Type).pipe(Effect.orDie)
+  const writes = Effect.fnUntraced(function* (current: StateValue, dirty: ReadonlySet<string>) {
+    const text = yield* encode(current).pipe(Effect.orDie)
 
     if (utf8.encode(text).byteLength > maxBytes)
       return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
@@ -123,10 +139,8 @@ export const stateCodec = ({
   })
 
   /** A decoded copy of `state` validated by the schema, so mutating the input cannot hide a change. */
-  const roundTrip = (state: Record<string, unknown>) =>
-    Effect.flatMap(encode(state as typeof schema.Type).pipe(Effect.orDie), (text) =>
-      decode(text).pipe(Effect.orDie),
-    ) as Effect.Effect<Record<string, unknown>>
+  const roundTrip = (state: StateValue): Effect.Effect<StateValue> =>
+    Effect.flatMap(encode(state).pipe(Effect.orDie), (text) => decode(text).pipe(Effect.orDie))
 
   const equivalences = Object.fromEntries(
     Object.entries(fields).map(([key, field]) => [key, Schema.toEquivalence(field)]),

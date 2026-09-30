@@ -7,9 +7,9 @@ import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
 import { Connection } from "./members/connection.ts"
 import { StreamMember } from "./members/stream.ts"
-import { event } from "./members/event.ts"
+import { EventMember } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
-import { Cancelled, DeadLetter, job } from "./members/job.ts"
+import { Cancelled, DeadLetter, JobMember } from "./members/job.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob, content } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
@@ -42,11 +42,11 @@ export const Actor = {
   /** Declares a workflow member and its typed step constructors. */
   workflow: WorkflowMember.make,
   /** Declares a durable event class: `const Posted = Actor.event("Posted", fields)`. */
-  event,
+  event: EventMember.make,
   /** Declares a pure state transition the server runs as an ordinary command turn; a batched one folds queued calls in order. */
   reducer: Reducer.make,
   /** Declares a job class: a request for external I/O that a turn enqueues and an executor runs after commit. */
-  job,
+  job: JobMember.make,
   /** The payload schema of a job binding's `onDeadLetter` command: `Actor.DeadLetter(J)`. */
   DeadLetter,
   /** The payload schema of a job binding's `onCancelled` command: `Actor.Cancelled(J)`. */
