@@ -1,6 +1,6 @@
 # ADR 0062: Scale-to-zero serving
 
-**Status:** proposed (2026-09-30). It gates M6.7 and is the last item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. When accepted it amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) §1, whose edge refuses a region with no ready runner, and uses [ADR 0053](0053-served-readiness-route.md)'s `GET /ready` as the edge's readiness probe.
+**Status:** accepted (2026-09-30, Dallen; proposed 2026-09-30). Waking a region for due work is a follow-up. It gates M6.7 and is the last item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. When accepted it amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) §1, whose edge refuses a region with no ready runner, and uses [ADR 0053](0053-served-readiness-route.md)'s `GET /ready` as the edge's readiness probe.
 
 **Responsibility:** decide how a served deployment runs with no runners, how the first request starts one, and what a cold runner guarantees.
 
@@ -57,5 +57,5 @@ What exists:
 
 ## Revisit when
 
-- The control plane can learn a region's next due time, so a region can be woken for due work.
+- **Follow-up: wake a region for due work.** Once the control plane can learn a region's next due time, a provider starts a runner for due timers, intents, effects, and cron ticks, not only for requests, so due work at zero is no longer late by the idle period.
 - The edge holds sockets (a gateway), so a session can outlive its runner.
