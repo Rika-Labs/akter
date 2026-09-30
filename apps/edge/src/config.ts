@@ -36,6 +36,13 @@ export interface EdgeOptions {
   readonly publicationLead: Duration.Duration
   /** The largest request body the edge forwards. Default 1 MiB. */
   readonly requestBytes: number
+  /** The largest client WebSocket message the edge accepts, as runners do. Default 64 KiB. */
+  readonly socketMessageBytes: number
+  /**
+   * The most client WebSocket bytes the edge holds for one socket before a
+   * runner takes them; a client past it is closed. Default 1 MiB.
+   */
+  readonly socketBufferBytes: number
 }
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(SigningKey)))
@@ -79,5 +86,7 @@ export const loadOptions = Effect.gen(function* () {
     pollEvery: Duration.seconds(5),
     publicationLead: Duration.minutes(5),
     requestBytes: 1024 * 1024,
+    socketMessageBytes: 64 * 1024,
+    socketBufferBytes: 1024 * 1024,
   } satisfies EdgeOptions
 })
