@@ -1,7 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
 import { Effect, Fiber, Layer, Schedule } from "effect"
-import type { Activity } from "../backend.ts"
+import type { Activity, Instruments } from "../backend.ts"
 import { load, now } from "../measure.ts"
 import { Probe } from "../probe/contract.ts"
 import { ProbeLive } from "../probe/layer.ts"
@@ -15,9 +15,7 @@ const EXPIRATION_SECONDS = 5
 const withCluster = <A, E>(
   context: ScenarioContext,
   runners: number,
-  body: (
-    instruments: Parameters<Parameters<ScenarioContext["withRuntime"]>[1]>[0],
-  ) => Effect.Effect<A, E, ActorCluster>,
+  body: (instruments: Instruments | undefined) => Effect.Effect<A, E, ActorCluster>,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -83,10 +81,9 @@ export const multiRunner: Scenario = {
     Effect.gen(function* () {
       if (context.backend.name !== "postgres") return []
 
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
-      for (const runners of quick ? [1, 2, 4] : [1, 2, 4, 8])
+      for (const runners of context.quick ? [1, 2, 4] : [1, 2, 4, 8])
         results.push(
           yield* withCluster(context, runners, (instruments) =>
             Effect.gen(function* () {
@@ -97,7 +94,7 @@ export const multiRunner: Scenario = {
                 parameters: { runners, actors: ACTORS, workers: 64, poolPerRunner: RUNNER_POOL },
                 instruments,
                 workers: 64,
-                durationMs: quick ? 3000 : 15_000,
+                durationMs: context.quick ? 3000 : 15_000,
                 operation: spread(runners),
               })
 
@@ -160,7 +157,7 @@ export const multiRunner: Scenario = {
               },
               instruments,
               workers: 16,
-              durationMs: quick ? 12_000 : 20_000,
+              durationMs: context.quick ? 12_000 : 20_000,
               operation: survivors,
             })
 

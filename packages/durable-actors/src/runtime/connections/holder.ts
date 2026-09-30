@@ -156,7 +156,7 @@ export interface HeldActorType {
 }
 
 /** What a holder needs from its runner: the transport to owners, the actor types it serves, and the authorization hook. */
-export interface HolderOptions {
+interface HolderOptions {
   readonly transport: () => Transport
   readonly actorType: (name: string) => HeldActorType | undefined
   readonly authorize: (request: {

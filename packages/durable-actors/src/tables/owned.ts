@@ -101,8 +101,20 @@ interface ColumnBuilderInternals {
 
 declare const OwnedTypeId: unique symbol
 
+declare const OwnedKeysId: unique symbol
+
+declare const ReadOnlyId: unique symbol
+
+declare const MappedColumnsId: unique symbol
+
 /** Ownership lives beside the table, keyed by the table object itself, so no other object can claim it by copying a property or symbol. */
 const owned = new WeakMap<object, Ownership>()
+
+/** How an actor type uses an owned table: `read` tables are never written by the runtime. */
+export type AdoptionAccess = "write" | "read"
+
+/** The column types an existing table's tenant and actor columns may have. */
+export type MappedKind = "text" | "uuid"
 
 /** What the framework knows about an owned table; aliases forward it. */
 export interface Ownership {
@@ -110,12 +122,32 @@ export interface Ownership {
   readonly name: string
   readonly schema: string | undefined
   readonly table: string
-  /** Business column keys, excluding ownership columns. */
+  /**
+   * The column keys of a row: business columns, and for an adopted table also
+   * its mapped tenant and actor columns, which are readable but never writable.
+   */
   readonly columns: ReadonlyArray<string>
-  /** Business primary key column keys, in key order. */
+  /**
+   * Primary key column keys, in key order. An owned table's key excludes the
+   * ownership columns it is prefixed with; an adopted table's is the physical
+   * key as it already is.
+   */
   readonly primaryKey: ReadonlyArray<string>
   /** The actor type listing this table; set once by `Actor.make`. */
   owner: string | undefined
+  /** True when the table existed before the framework and maps its own tenant and actor columns. */
+  readonly adopted: boolean
+  readonly access: AdoptionAccess
+  /** Drizzle keys of the ownership columns, which application code never reads or writes. */
+  readonly ownerKeys: ReadonlyArray<string>
+  /** SQL names of the ownership columns, in the same order as `ownerKeys`. */
+  readonly ownerColumns: ReadonlyArray<string>
+  /** The key of `routing_key`; a read-only adopted table has none. */
+  readonly routingKey: string | undefined
+  readonly tenantKey: string
+  readonly actorKey: string
+  readonly tenantKind: MappedKind
+  readonly actorKind: MappedKind
 }
 
 /**
@@ -129,18 +161,89 @@ export type OwnedTable<T extends AnyPgTable> = PgTableWithColumns<{
   columns: T["_"]["columns"] & OwnershipColumns<T["_"]["name"]>
   dialect: "pg"
   isAlias: false
-}> & { readonly [OwnedTypeId]: Ownership }
+}> & { readonly [OwnedTypeId]: Ownership; readonly [OwnedKeysId]: OwnershipKey }
+
+/** The columns of an existing table that can name its owner: any column of `T`. */
+export interface OwnerColumns<T extends AnyPgTable> {
+  readonly tenant: T["_"]["columns"][keyof T["_"]["columns"]]
+  readonly actor: T["_"]["columns"][keyof T["_"]["columns"]]
+}
+
+const routingColumn = () => ({ routing_key: bigint("routing_key", { mode: "bigint" }) })
+
+type RoutingColumn<Name extends string> = BuildColumns<Name, ReturnType<typeof routingColumn>, "pg">
+
+/**
+ * An existing table an actor type owns rows of. Its keys, constraints, and
+ * indexes are untouched; it gains one nullable `routing_key`, and the mapped
+ * tenant and actor columns are ownership columns the turn supplies.
+ */
+export type AdoptedTable<T extends AnyPgTable, Mapped> = PgTableWithColumns<{
+  name: T["_"]["name"]
+  schema: T["_"]["schema"]
+  columns: T["_"]["columns"] & RoutingColumn<T["_"]["name"]>
+  dialect: "pg"
+  isAlias: false
+}> & {
+  readonly [OwnedTypeId]: Ownership
+  readonly [OwnedKeysId]: "routing_key"
+  readonly [MappedColumnsId]: Mapped
+}
+
+/** An existing table adopted for reading only: unchanged, with no mutation methods in any turn or query. */
+export type ReadAdoptedTable<T extends AnyPgTable, Mapped> = T & {
+  readonly [OwnedTypeId]: Ownership
+  readonly [OwnedKeysId]: never
+  readonly [MappedColumnsId]: Mapped
+  readonly [ReadOnlyId]: true
+}
+
+type Same<A, B> = (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ? 1 : 2 ? true : false
+
+/**
+ * The columns of an adopted table that look like a mapped column. Types
+ * cannot tell which property a column object came from, so a column shaped
+ * exactly like the tenant or actor column is treated as possibly mapped: its
+ * insert is optional in the type, and the database refuses a missing value.
+ */
+type MappedLookalikes<T extends AnyOwnedTable> = T extends { readonly [MappedColumnsId]: infer M }
+  ? {
+      [K in keyof T["_"]["columns"] & string]: Same<T["_"]["columns"][K], M> extends true
+        ? K
+        : never
+    }[keyof T["_"]["columns"] & string]
+  : never
 
 /** Any owned table, whatever its columns. */
 export type AnyOwnedTable = AnyPgTable & { readonly [OwnedTypeId]: Ownership }
 
-type BusinessColumns<T extends AnyOwnedTable> = Omit<T["_"]["columns"], OwnershipKey>
+type OwnedKeys<T extends AnyOwnedTable> = T extends { readonly [OwnedKeysId]: infer K }
+  ? K & string
+  : OwnershipKey
 
-/** A row as application code reads it: business columns only. */
-export type Row<T extends AnyOwnedTable> = Omit<InferSelectModel<T>, OwnershipKey>
+type BusinessColumns<T extends AnyOwnedTable> = Omit<T["_"]["columns"], OwnedKeys<T>>
 
-/** A row as application code writes it: business columns only. */
-export type Insert<T extends AnyOwnedTable> = Omit<InferInsertModel<T>, OwnershipKey>
+/**
+ * A row as application code reads it: business columns only. An adopted
+ * table's row also carries its mapped tenant and actor columns, which are
+ * read-only.
+ */
+export type Row<T extends AnyOwnedTable> = Omit<InferSelectModel<T>, OwnedKeys<T>>
+
+/**
+ * A row as application code writes it: business columns only. The mapped
+ * columns of an adopted table come from the turn and are rejected when set.
+ */
+export type Insert<T extends AnyOwnedTable> = Omit<
+  InferInsertModel<T>,
+  OwnedKeys<T> | MappedLookalikes<T>
+> &
+  Partial<Pick<InferInsertModel<T>, MappedLookalikes<T> & keyof InferInsertModel<T>>>
+
+/** What a turn's `rows` returns for `T`: rows of a read-adopted table have no mutation methods. */
+export type TurnRows<T extends AnyOwnedTable> = T extends { readonly [ReadOnlyId]: true }
+  ? ScopedRead<T>
+  : ScopedRows<T>
 
 /** Drizzle's object filter over business columns; `RAW` SQL is not supported. */
 export type Filter<T extends AnyOwnedTable> = Omit<TableFilter<T, BusinessColumns<T>>, "RAW">
@@ -218,6 +321,27 @@ export interface TableAccess {
   readonly group: Group
 }
 
+/** The tables an actor type declares and how its rows are placed, as tooling that reads a definition needs them. */
+export interface DeclaredTables {
+  readonly actor: string
+  readonly placement: Placement
+  readonly tables: ReadonlyArray<AnyOwnedTable>
+}
+
+const declared = new WeakMap<WeakKey, DeclaredTables>()
+
+/** Records the tables an actor definition declares; `Actor.make` calls it once per definition. */
+export const recordDeclaredTables = (entry: {
+  readonly definition: WeakKey
+  readonly tables: DeclaredTables
+}) => {
+  declared.set(entry.definition, entry.tables)
+}
+
+/** The tables and placement of an actor definition, or undefined for any other value. */
+export const declaredTablesOf = (definition: WeakKey): DeclaredTables | undefined =>
+  declared.get(definition)
+
 /** The ownership of `table`, or undefined when it is not an owned table. */
 export const ownership = (table: PgSelectConfig["table"]): Ownership | undefined => owned.get(table)
 
@@ -226,6 +350,140 @@ const isOwned = <T extends AnyPgTable>(table: T): table is T & OwnedTable<T> =>
 
 const flatten = (config: ExtraConfig | undefined, self: ExtraColumns) =>
   (config?.(self) ?? []).flat()
+
+/** Options that adopt an existing table: the columns holding the tenant and the actor's key. */
+export interface AdoptOptions<T extends AnyPgTable, O extends OwnerColumns<T>> {
+  readonly owner: O
+  /** `"read"` adopts the table for reading only; the runtime then adds no column and no guard. */
+  readonly access?: AdoptionAccess
+}
+
+const mappedKindOf = (columnType: string): MappedKind | undefined => {
+  if (columnType === "PgText" || columnType === "PgVarchar") return "text"
+
+  return columnType === "PgUUID" ? "uuid" : undefined
+}
+
+const declaredKey = (
+  columns: Record<string, BuiltColumn>,
+  extraColumns: ExtraColumns,
+  extraConfig: ExtraConfig | undefined,
+) => {
+  const keyOf = new Map(Object.entries(columns).map(([key, column]) => [column.name, key]))
+  let composite: ReadonlyArray<string> | undefined
+
+  for (const builder of flatten(extraConfig, extraColumns))
+    if (is(builder, PrimaryKeyBuilder))
+      composite = (builder as PrimaryKeyBuilder & KeyBuilder).columns.map(
+        (column) => keyOf.get(column.name) ?? column.name,
+      )
+
+  return (
+    composite ?? Object.entries(columns).flatMap(([key, column]) => (column.primary ? [key] : []))
+  )
+}
+
+const adopt = (
+  source: AnyPgTable,
+  options: {
+    readonly owner: { readonly tenant: PgColumn; readonly actor: PgColumn }
+    readonly access?: AdoptionAccess | undefined
+  },
+): AnyOwnedTable => {
+  const internals = source as AnyPgTable & TableInternals
+  const name = internals[NameKey]
+  const columns = internals[ColumnsKey]
+  const access = options.access ?? "write"
+
+  if (access !== "write" && access !== "read")
+    throw new Error(`access of ${name} is "write" or "read"`)
+
+  const find = (column: PgColumn, role: string) => {
+    const found = Object.entries(columns).find(([, candidate]) => candidate === column)
+
+    if (found === undefined) throw new Error(`owner.${role} is not a column of ${name}`)
+
+    const kind = mappedKindOf(found[1].columnType)
+
+    if (kind === undefined)
+      throw new Error(
+        `owner.${role} of ${name} is a ${found[1].columnType} column; only text, varchar, and uuid columns can be mapped`,
+      )
+
+    return { key: found[0], column: found[1], kind }
+  }
+
+  const tenant = find(options.owner.tenant, "tenant")
+  const actor = find(options.owner.actor, "actor")
+
+  if (tenant.key === actor.key)
+    throw new Error(`owner.tenant and owner.actor of ${name} name the same column`)
+
+  for (const [key, column] of Object.entries(columns))
+    if (key === "routing_key" || column.name === "routing_key")
+      throw new Error(`Column ${key} of ${name} is reserved for ownership`)
+
+  const extraColumns = internals[ExtraColumnsKey]
+  const extraConfig = internals[ExtraConfigKey]
+  const primaryKey = declaredKey(columns, extraColumns, extraConfig)
+
+  if (access === "write" && primaryKey.length === 0)
+    throw new Error(`Owned table ${name} needs a primary key`)
+
+  let routingKey: string | undefined
+
+  if (access === "write") {
+    const builder = routingColumn().routing_key
+    const internal = builder as typeof builder & ColumnBuilderInternals
+    internal.setName("routing_key")
+    const built = internal.build(source).postBuild() as BuiltColumn
+    Object.assign(source, { routing_key: built })
+    internals[ColumnsKey] = { ...columns, routing_key: built }
+    internals[ExtraColumnsKey] = {
+      ...extraColumns,
+      routing_key: internal.buildExtraConfigColumn(source),
+    }
+    routingKey = "routing_key"
+  }
+
+  const ownerKeys = [...(routingKey === undefined ? [] : [routingKey]), tenant.key, actor.key]
+
+  const schema = internals[SchemaKey]
+
+  owned.set(source, {
+    name: schema === undefined ? name : `${schema}.${name}`,
+    schema,
+    table: name,
+    columns: Object.keys(columns).filter((key) => key !== routingKey),
+    primaryKey,
+    owner: undefined,
+    adopted: true,
+    access,
+    ownerKeys,
+    ownerColumns: ownerKeys.map((key) => internals[ColumnsKey][key]!.name),
+    routingKey,
+    tenantKey: tenant.key,
+    actorKey: actor.key,
+    tenantKind: tenant.kind,
+    actorKind: actor.kind,
+  })
+
+  if (!isOwned(source)) throw new Error(`Table ${name} did not take ownership`)
+
+  return source
+}
+
+/** What `Actor.table` returns: a new owned table, or the existing table adopted with `owner`. */
+export type Declared<
+  T extends AnyPgTable,
+  O extends OwnerColumns<T> | undefined,
+  A extends AdoptionAccess | undefined,
+> =
+  O extends OwnerColumns<T>
+    ? A extends "read"
+      ? ReadAdoptedTable<T, O["tenant"] | O["actor"]>
+      : AdoptedTable<T, O["tenant"] | O["actor"]>
+    : OwnedTable<T>
 
 /**
  * Declares an actor-owned Drizzle table. The table gains `routing_key`,
@@ -242,10 +500,28 @@ const flatten = (config: ExtraConfig | undefined, self: ExtraColumns) =>
  * into the prefixed extra config. Only btree indexes are accepted: other
  * methods cannot lead with the bigint and text ownership prefix.
  *
+ * With `owner`, adopts a table that already exists and other code writes: its
+ * `tenant` and `actor` columns, which must be text, varchar, or uuid, hold the
+ * tenant and the actor's key, and nothing else about the table changes, so
+ * foreign keys stay. A writable adopted table gains a nullable `routing_key`
+ * and starts only after `durable adopt observe`; its primary key stays global,
+ * so a key another actor already holds fails the turn. `access: "read"` maps
+ * the two columns for reading and adds nothing.
+ *
  * @example
  * const Notes = Actor.table(pgTable("notes", { id: text("id").primaryKey(), body: text("body") }))
+ * const Invoices = Actor.table(invoices, { owner: { tenant: invoices.orgId, actor: invoices.accountId } })
  */
-export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
+export const table = <
+  T extends AnyPgTable,
+  const O extends OwnerColumns<T> | undefined = undefined,
+  const A extends AdoptionAccess | undefined = undefined,
+>(
+  source: T,
+  ...adoption: readonly [] | readonly [{ readonly owner: O; readonly access?: A }]
+): Declared<T, O, A> => {
+  const options = adoption[0]
+
   if (!is(source, PgTable)) throw new Error("Actor.table takes a pgTable")
   const internals = source as T & TableInternals
   const name = internals[NameKey]
@@ -253,6 +529,9 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
   if (internals[IsAliasKey]) throw new Error(`Actor.table takes a table, not an alias: ${name}`)
 
   if (ownership(source) !== undefined) throw new Error(`Table ${name} is already owned`)
+
+  if (options !== undefined)
+    return adopt(source, options as Parameters<typeof adopt>[1]) as Declared<T, O, A>
 
   const columns = internals[ColumnsKey]
   const reserved: ReadonlyArray<string> = OWNERSHIP
@@ -265,11 +544,11 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
     throw new Error(`Owned table ${name} cannot declare foreign keys`)
 
   const extraColumns = internals[ExtraColumnsKey]
-  const declared = internals[ExtraConfigKey]
+  const extraConfig = internals[ExtraConfigKey]
   const keyOf = new Map(Object.entries(columns).map(([key, column]) => [column.name, key]))
   let composite: ReadonlyArray<string> | undefined
 
-  for (const builder of flatten(declared, extraColumns)) {
+  for (const builder of flatten(extraConfig, extraColumns)) {
     if (is(builder, ForeignKeyBuilder))
       throw new Error(`Owned table ${name} cannot declare foreign keys`)
 
@@ -309,7 +588,7 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
     const result: Array<PgTableExtraConfigValue> = []
     let primaryName: string | undefined
 
-    for (const builder of flatten(declared, self)) {
+    for (const builder of flatten(extraConfig, self)) {
       if (is(builder, PrimaryKeyBuilder)) {
         primaryName = (builder as PrimaryKeyBuilder & KeyBuilder).name
         continue
@@ -359,9 +638,18 @@ export const table = <T extends AnyPgTable>(source: T): OwnedTable<T> => {
     columns: Object.keys(columns),
     primaryKey: key,
     owner: undefined,
+    adopted: false,
+    access: "write",
+    ownerKeys: OWNERSHIP,
+    ownerColumns: OWNERSHIP,
+    routingKey: "routing_key",
+    tenantKey: "tenant_id",
+    actorKey: "actor_id",
+    tenantKind: "text",
+    actorKind: "text",
   })
 
   if (!isOwned(source)) throw new Error(`Table ${name} did not take ownership`)
 
-  return source
+  return source as Declared<T, O, A>
 }

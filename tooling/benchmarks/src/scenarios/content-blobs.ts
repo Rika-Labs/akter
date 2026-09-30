@@ -48,15 +48,14 @@ export const contentBlobs: Scenario = {
     "Shared content: deduplication of a skewed upload set, upload, attach, and read latency by size, and sweep cost per thousand candidates.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       results.push(
         yield* context.withRuntime({}, (instruments) =>
           Effect.gen(function* () {
             const size = 64 * 1024
-            const distinct = quick ? 50 : 200
-            const uploads = quick ? 500 : 2000
+            const distinct = context.quick ? 50 : 200
+            const uploads = context.quick ? 500 : 2000
 
             const result = yield* measure({
               name: "dedup-skewed",
@@ -90,7 +89,7 @@ export const contentBlobs: Scenario = {
               parameters: { size, workers: 1 },
               instruments,
               workers: 1,
-              operations: quick ? 20 : size > 1024 * 1024 ? 50 : 300,
+              operations: context.quick ? 20 : size > 1024 * 1024 ? 50 : 300,
               operation: (index) => upload(bytesOf(size, index)),
               listStatements: true,
             }),
@@ -108,7 +107,7 @@ export const contentBlobs: Scenario = {
               parameters: { workers: 1 },
               instruments,
               workers: 1,
-              operations: quick ? 300 : 3000,
+              operations: context.quick ? 300 : 3000,
               operation: (index) => shelf.Attach({ name: `f${index}`, ref }),
               listStatements: true,
             })
@@ -129,7 +128,7 @@ export const contentBlobs: Scenario = {
                 parameters: { size, workers: 1 },
                 instruments,
                 workers: 1,
-                operations: quick ? 100 : 1000,
+                operations: context.quick ? 100 : 1000,
                 operation: () => shelf.Size("file"),
                 listStatements: true,
               })
