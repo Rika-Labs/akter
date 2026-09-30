@@ -45,7 +45,7 @@ import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
-import type { ActivationCache } from "../storage/generation.ts"
+import { type ActivationCache, actorRow, fence } from "../storage/generation.ts"
 import {
   decodeStoredManifest,
   markerProblem,
@@ -87,9 +87,6 @@ const isSignal = (signal: typeof StaleRun | typeof Suspend) => (cause: Cause.Cau
 const suspended = isSignal(Suspend)
 
 const stale = isSignal(StaleRun)
-
-const owner = (sql: SqlClient.SqlClient, routingKey: bigint, ref: ActorRef) =>
-  sql`routing_key = ${routingKey} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
 const success = (value: string): BusinessResult => ({
   outcome: Outcome.cases.Success.make({ value }),
@@ -137,7 +134,7 @@ const deleteTimer = (
   ref: ActorRef,
   executionId: string,
 ) =>
-  sql`DELETE FROM actor_outbox WHERE ${owner(sql, routingKey, ref)} AND timer_key = ${timerKey(executionId)}`
+  sql`DELETE FROM actor_outbox WHERE ${actorRow({ sql, actor: { key: routingKey, ref } })} AND timer_key = ${timerKey(executionId)}`
 
 /**
  * Inserts an execution with its version markers inside the starting owner
@@ -173,7 +170,7 @@ const insertExecution = Effect.fnUntraced(function* (options: {
       ${yield* encodeCaller(options.caller).pipe(Effect.orDie)},
       COALESCE(${options.after}::bigint, g.event_sequence),
       'running', ${now}
-    FROM actor_generations g WHERE ${owner(sql, routingKey, ref)}
+    FROM actor_generations g WHERE ${actorRow({ sql, actor: { key: routingKey, ref } })}
     ON CONFLICT DO NOTHING RETURNING 1),
     m AS (INSERT INTO actor_workflow_manifests (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
       SELECT ${ref.actor}, ${workflow.member.tag}, ${manifest.hash}, ${toJson(manifest.manifest)}::jsonb, 0
@@ -503,7 +500,8 @@ export const activationEngine = (options: {
       Crypto.Crypto,
     )(yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>())
 
-    const ownerRow = owner(sql, routingKey, ref)
+    const actor = { key: routingKey, ref }
+    const ownerRow = actorRow({ sql, actor })
 
     const instanceWorkflows = new Map<string, EffectWorkflow.Any>()
 
@@ -523,10 +521,7 @@ export const activationEngine = (options: {
     const fenced = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       sql.withTransaction(
         Effect.gen(function* () {
-          const [row] = yield* sql<{ generation: string }>`
-            SELECT generation::text AS generation FROM actor_generations WHERE ${ownerRow} FOR UPDATE`
-
-          if (row === undefined || row.generation !== cache.generation)
+          if (!(yield* fence({ actor, cache, lock: "UPDATE" })))
             return yield* Effect.die(new StaleRun())
 
           return yield* effect
