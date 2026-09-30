@@ -23,6 +23,8 @@ import type {
   ConformanceEnvironment,
   ConformanceServices,
 } from "../conformance.ts"
+import { requestDigest } from "../../serve/assertion/binding.ts"
+import { claimsFor, edgeKey, signAssertion, staticAuth } from "./assertions.ts"
 import { serveHttp } from "./http.ts"
 
 const Attachments = Actor.content("attachments")
@@ -435,6 +437,85 @@ export const contentConformance: ReadonlyArray<ConformanceCase> = [
               "/actors/Document/{id}/content/{blob}/{name}/grant",
             ].map((path) => spec.text.includes(`"${path}"`)),
           ).toEqual([true, true, true])
+        }),
+      ),
+  },
+  {
+    name: "refuses a hosted assertion moved onto another content upload, download, or grant, and admits each one bound to it",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const edge = yield* edgeKey("edge-content")
+          const server = yield* serveHttp({ actors: [Document], auth: staticAuth([edge]) })
+          const doc = yield* Document.get("asserted")
+          const json = Effect.map(unique, (uuid) => encoder.encode(JSON.stringify(uuid)))
+          const ref = yield* upload(yield* json)
+
+          yield* doc.Attach({ name: "notes", ref })
+          yield* doc.Attach({ name: "other", ref: yield* upload(yield* json) })
+
+          const bound = Effect.fnUntraced(function* (
+            method: "GET" | "POST",
+            target: string,
+            body = new Uint8Array(0),
+          ) {
+            const req = yield* requestDigest({ method, target, idempotencyKey: undefined, body })
+
+            return yield* signAssertion(
+              edge,
+              yield* claimsFor({ tenant: test.tenant, subject: "alice", req }),
+            )
+          })
+
+          const notes = "/actors/Document/asserted/content/attachments/notes"
+          const other = "/actors/Document/asserted/content/attachments/other"
+          const uploaded = yield* json
+          const replaced = yield* json
+
+          const send = (
+            method: "GET" | "POST",
+            path: string,
+            assertion: string,
+            bytes?: Uint8Array,
+          ) => {
+            const headers = { "durable-assertion": assertion }
+
+            return bytes === undefined
+              ? server.send(path, { method, headers })
+              : server.send(path, { method, headers, bytes })
+          }
+
+          const contents = Effect.map(
+            sql<{ contents: number }>`SELECT count(*)::int AS contents FROM tenant_contents
+              WHERE tenant_id = ${test.tenant}`,
+            ([row]) => row!.contents,
+          ).pipe(Effect.orDie)
+
+          const before = yield* contents
+
+          const moved = [
+            yield* send("GET", other, yield* bound("GET", notes)),
+            yield* send("POST", `${other}/grant`, yield* bound("POST", `${notes}/grant`)),
+            yield* send("POST", "/content", yield* bound("POST", "/content", uploaded), replaced),
+            yield* send("POST", "/content", yield* bound("GET", notes), uploaded),
+          ]
+
+          expect(moved.map((reply) => reply.status)).toEqual([401, 401, 401, 401])
+          expect(moved.every((reply) => reply.text.includes('"code":"invalid_credentials"'))).toBe(
+            true,
+          )
+          expect(yield* contents).toBe(before)
+
+          const admitted = [
+            yield* send("GET", notes, yield* bound("GET", notes)),
+            yield* send("POST", `${notes}/grant`, yield* bound("POST", `${notes}/grant`)),
+            yield* send("POST", "/content", yield* bound("POST", "/content", uploaded), uploaded),
+          ]
+
+          expect(admitted.map((reply) => reply.status)).toEqual([200, 200, 200])
+          expect(admitted[2]!.body).toMatchObject({ size: uploaded.byteLength })
         }),
       ),
   },
