@@ -598,6 +598,20 @@ The `content-blobs` scenario ([`6b35562-m4.13-content-blobs`](../../benchmarks/r
 - **Reads** are the reference on the actor's shard and one statement for every chunk on the tenant's, plus the query's own statement.
 - **Sweep:** 1,000 candidates, half of them referenced, took 18 ms and 11 statements: the tenant list, the turn bound, and per batch of 500 a candidate read, a reference scan, and one delete of content and chunks.
 
+### Query watch (M6.2, T15)
+
+The `watch` scenario ([ADR 0055](../decisions/0055-query-observation.md)) measures a commit's reach through `watch`, in process through `ActorTest`'s holder, with `policy.watch.minInterval` of 1 ms so a rerun's own cost shows instead of the default 100 ms pause between reruns of one watch. Latency runs from the command to every watcher holding the new result; statements per commit include every rerun's reads.
+
+| Case          | What one operation does                                                           |
+| ------------- | --------------------------------------------------------------------------------- |
+| `fanout-1`    | one commit reaching 1 watch of one actor                                          |
+| `fanout-100`  | one commit reaching 100 watches of one actor                                      |
+| `fanout-1000` | one commit reaching 1,000 watches of one actor, the per-actor cap (full profile)  |
+| `actors-100`  | a commit on one of 100 actors that each hold one watch                            |
+| `cold-1`      | hibernate the actor, then a commit that wakes it and reaches its one parked watch |
+
+The warm cases and `cold-1` are reported apart. No result is recorded here yet: the scenario runs on PGlite at the quick profile, and the Postgres numbers that decide [ADR 0055](../decisions/0055-query-observation.md)'s open defaults (the per-actor cap, the 64 concurrent reruns, `minInterval`, and whether identical watchers should share a rerun) are T15's.
+
 ### Failure drills (T7)
 
 `TEST_DATABASE_URL=<url> bun --bun node_modules/vitest/vitest.mjs run packages/durable-actors/src/testing/conformance/crash/drills/runner.test.ts --disableConsoleIntercept`, repeated 10 times on branch `fix/219-drill-start-gate` (`main` at `aa8af52` plus the fix); each run prints one `DRILL` line. Postgres 18.6 installed in an Amp orb, Bun 1.4.2, one machine shared by the five runner processes and Postgres. Workload: three processes that start their operations together once all three are ready (the first holds at its 60th until the kill), then two replacements, each running sequential `Increment` + `Send` operations (the `Send` relays an `Add`); runner 1 is killed after 30 operations and runner 2 while its relay holds a claim. Shard locks expire after 3 s, relay claims after 5 s. This is a correctness drill on a shared VM, not a scale measurement.

@@ -1,4 +1,4 @@
-import { Deferred, Effect, Predicate, Schema } from "effect"
+import { Deferred, Effect, Predicate, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { SessionEnded } from "../../../errors/actor.ts"
 import { ActorTest } from "../../actor-test.ts"
@@ -117,6 +117,56 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
           expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(
             BigInt(bumped[0]!.generation) + 1n,
           )
+        }),
+      ),
+  },
+  {
+    name: "an owner deletes a dead holder's connection rows at its next delivery, and its turns still commit",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.connections,
+        { runners: 2, holdersOnly: [0] },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          const id = "connections-dead-holder"
+          const ref = (yield* cluster.on(0)(Room.get(id))).ref
+
+          const connection = yield* cluster.on(0)(
+            ActorTest.use((test) => test.connect(ref, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+
+          const rows = Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+
+            return (yield* sql<{ count: number }>`SELECT count(*)::int AS count
+              FROM actor_connections WHERE tenant_id = ${ref.tenant} AND actor_id = ${ref.id}`)[0]!
+              .count
+          }).pipe(Effect.orDie)
+
+          expect(yield* cluster.on(1)(rows)).toBe(1)
+          yield* cluster.kill(0)
+
+          yield* cluster.on(1)(Room.get(id).pipe(Effect.flatMap((room) => room.Post("after"))))
+
+          yield* cluster
+            .on(1)(rows)
+            .pipe(
+              Effect.repeat({
+                schedule: Schedule.spaced("50 millis"),
+                until: (count) => count === 0,
+              }),
+              Effect.timeoutOrElse({
+                duration: "30 seconds",
+                orElse: () => Effect.die(new Error("The dead holder's row was never deleted")),
+              }),
+            )
+          expect(yield* cluster.on(1)(posts(ref))).toBe(1)
         }),
       ),
   },

@@ -9,7 +9,7 @@ import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceEnvironment, ConformanceServices } from "../../conformance.ts"
 import { OrderDelivery, OrderPlaced, type SubscriptionsFixture, reset } from "./actors.ts"
 
-const LogState = Schema.Struct({ log: Schema.optional(Schema.Array(Schema.String)) })
+export const LogState = Schema.Struct({ log: Schema.optional(Schema.Array(Schema.String)) })
 
 export const logOf = Effect.fnUntraced(function* (actor: string, id: string) {
   const test = yield* ActorTest
@@ -166,15 +166,30 @@ export const deliveryRequest = Effect.fnUntraced(function* (options: {
   readonly cursor: string
   /** Re-encodes the delivery with a field a newer schema added. */
   readonly extra?: boolean
+  /** The subscriber type, its subscription, its handler, and the source type; `SubFollower`'s `FollowedOrders` of `SubOrder` by default. */
+  readonly route?: {
+    readonly actor: string
+    readonly subscription: string
+    readonly command: string
+    readonly source: string
+  }
 }) {
   const test = yield* ActorTest
   const internal = yield* InternalActors
-  const subscriber = { tenant: test.tenant, actor: "SubFollower", id: options.subscriber }
-  const source = { tenant: test.tenant, actor: "SubOrder", id: options.source }
+
+  const route = options.route ?? {
+    actor: "SubFollower",
+    subscription: "FollowedOrders",
+    command: "OnOrder",
+    source: "SubOrder",
+  }
+
+  const subscriber = { tenant: test.tenant, actor: route.actor, id: options.subscriber }
+  const source = { tenant: test.tenant, actor: route.source, id: options.source }
 
   const envelope: SubscriptionEnvelope = {
-    subscription: "FollowedOrders",
-    sourceType: "SubOrder",
+    subscription: route.subscription,
+    sourceType: route.source,
     sourceId: options.source,
     epoch: options.epoch,
     kind: "event",
@@ -184,12 +199,12 @@ export const deliveryRequest = Effect.fnUntraced(function* (options: {
   const [event] = yield* query(
     (sql) => sql<{ emitted_at_ms: string; command_id: string }>`
       SELECT emitted_at_ms::text AS emitted_at_ms, command_id FROM actor_events
-      WHERE tenant_id = ${test.tenant} AND actor_type = 'SubOrder' AND actor_id = ${options.source}
+      WHERE tenant_id = ${test.tenant} AND actor_type = ${route.source} AND actor_id = ${options.source}
         AND sequence = ${options.cursor}`,
   )
 
   const value = DeliveredOrder.make({
-    subscription: "FollowedOrders",
+    subscription: route.subscription,
     source,
     cursor: options.cursor,
     event: OrderPlaced.make({ customerId: "c", amount: 1 }),
@@ -200,7 +215,7 @@ export const deliveryRequest = Effect.fnUntraced(function* (options: {
   return Request.make({
     ref: subscriber,
     caller: System.make({ source: "subscription", ref: source }),
-    command: "OnOrder",
+    command: route.command,
     commandId: yield* deliveryCommandId({
       subscriber,
       envelope,

@@ -7,7 +7,7 @@ import { deliveryCommandId } from "../../../runtime/subscriptions/identity.ts"
 import { ActorTest, executeForTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { CLAIM_LEASE } from "../outbox.ts"
-import { Refused, SubFollower, SubOrder } from "./actors.ts"
+import { Refused, SubFollower, SubGated, SubGateOrder, SubOrder } from "./actors.ts"
 import {
   crashOnce,
   cursorRows,
@@ -86,6 +86,55 @@ export const subscriptionDeliveryConformance: ReadonlyArray<ConformanceCase> = [
               "OnOrder",
             ),
           ).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "acknowledges a stale routed delivery as AlreadyApplied after a NotCreated skip and a later creation",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const internal = yield* InternalActors
+          const order = yield* SubGateOrder.get("gate-order")
+          yield* order.Place({ customerId: "gate-sub", amount: 1 })
+          yield* drain
+
+          expect(handlerRuns(fixture, "SubGated/gate-sub")).toBe(0)
+          expect(yield* cursorRows("SubGated", "gate-sub")).toMatchObject([
+            { subscription: "GatedOrders", source_id: "gate-order", applied: "1" },
+          ])
+
+          yield* (yield* SubGated.get("gate-sub")).OpenGated()
+          yield* query(
+            (sql) => sql`DELETE FROM actor_receipts WHERE tenant_id = ${test.tenant}
+              AND actor_type = 'SubGated' AND actor_id = 'gate-sub' AND command = 'OnGated'`,
+          )
+
+          const stale = yield* deliveryRequest({
+            subscriber: "gate-sub",
+            source: "gate-order",
+            epoch: "0",
+            cursor: "1",
+            route: {
+              actor: "SubGated",
+              subscription: "GatedOrders",
+              command: "OnGated",
+              source: "SubGateOrder",
+            },
+          })
+
+          expect(yield* internal.deliver(stale)).toEqual(
+            Outcome.cases.Acknowledged.make({ reason: "AlreadyApplied" }),
+          )
+          expect(handlerRuns(fixture, "SubGated/gate-sub")).toBe(0)
+
+          yield* order.Place({ customerId: "gate-sub", amount: 2 })
+          yield* drain
+
+          expect(yield* logOf("SubGated", "gate-sub")).toEqual(["gate-order#2:OrderPlaced"])
         }),
       ),
   },

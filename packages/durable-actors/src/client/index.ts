@@ -6,6 +6,7 @@ export type {
   CommandOptions,
   ConnectionClient,
   StreamCall,
+  WatchCall,
   HeadersProvider,
   QueryOptions,
 } from "./make.ts"
@@ -30,6 +31,8 @@ export type {
 export type { FeedEntry, FeedOptions } from "./sessions/feed.ts"
 
 export type { StreamOptions } from "./sessions/stream.ts"
+
+export type { WatchOptions } from "./sessions/watch.ts"
 
 export type { Failure } from "./transport.ts"
 

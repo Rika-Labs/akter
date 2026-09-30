@@ -24,6 +24,7 @@ Declared application errors are thrown as their schema-defined classes. Framewor
 Commands, queries, and optimistic reducers over HTTP are implemented, and so are event feeds, streams, and connections (M3.5). No server pushes committed state yet: a handle learns committed state from each non-commutative reducer's reply and from `handle.state.reconcile(committed)`, such as with a state a query read.
 
 - **Event feeds.** `handle.events(Event, { after?, signal? })` is an `AsyncIterable` of `{ cursor, event, commandId, timestamp }` (`timestamp` in epoch milliseconds) over the actor's SSE feed, for events the actor type lists in `feeds`. It is read over `fetch`, so it sends `headers` like a command. When the response drops, goes 45 seconds without a byte (the server sends a keepalive every 15), or ends with a retryable reason, the feed reopens with `Last-Event-ID` set to the last cursor it delivered, after `retryAfter` (from the envelope or the `Retry-After` header, never sooner) or a jittered backoff. A feed ended by `Unauthorized expired` reopens once with fresh headers. It throws `RetentionGap` when events after the cursor were pruned, `UnknownCursor` for a cursor the actor never issued, and `ActorError` for any other failure, including `NotCreated` for an actor no command has created yet. `break` or `signal` closes it.
+- **Watches.** `handle.Query.watch(input?, { signal? })`, on a query declared `watch: true`, is an `AsyncIterable` of the query's decoded outputs: the current result, then the newest result after each change. It is state, not history, so it skips intermediate results and never repeats an unchanged one. A dropped connection is reopened after a jittered backoff with the greatest version any result carried as `durable-min-version` (or the client's read-your-writes token before the first result), so its first result is never older than one already delivered. It throws the query's declared error as its class or the `ActorError` that ended it when a retry cannot help (`Unauthorized`, `NotCreated`, `InvalidInput` `not_watchable`); a retryable end or an expired credential is retried once. `signal` ends the iteration.
 - **Streams.** `handle.Member(input?, { signal? })` subscribes once and is an `AsyncIterable` of the member's decoded outputs. It ends when the stream ends by itself. It throws the member's declared error as its class, or the `ActorError` that ended it (`SessionEnded` `ActivationEnded`, `SlowConsumer`, or `Unauthorized`). A response that closes without `end` throws a retryable `TransportError` `network`. Streams have no cursor, so the client never resubscribes by itself.
 - **Connections.** `handle.Member.connect(params, { signal?, onResync? })` opens a WebSocket (`ws:` or `wss:` from `baseUrl`, resolved against the page when relative) and sends the `authorization` header from `headers` in `hello`, because browsers can't set headers on a socket. It resolves once the server sent `open`, with `{ connectionId, cursor, messages, frames, send, close }`. It rejects with the member's declared `open` failure as its class, or with an `ActorError`. `messages` yields, in order:
   - `Frame { frame, cursor, event }`. Frames whose `event` the client already delivered are dropped after a resync.
@@ -120,6 +121,7 @@ Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or bra
 - `useActor(client, id)` returns `client.get(id)`, stable while `client` and `id` are.
 - `useCommand(client, (input, options) => handle.Member(input, options))` holds one user intent. `run(input)` mints a command id with `client.commandId()` before sending and passes it in `options`. `retry()` sends the same input under the same id, so a retry after a lost response or a timeout replays the receipt instead of running the command twice. `state` is `idle`, `pending`, `success` with `data`, or `error` with the failure and `expired`. `expired` is true for `CommandExpired`: `retry` cannot help, and a new `run` is a new operation. `reset()` forgets the intent.
 - `useQuery(query, deps)` runs `query({ signal })` on mount and when `deps` change. Only the latest read updates `{ data, error, loading }`; `refetch()` reads again.
+- `useWatch((options) => handle.Query.watch(input, options), deps)` follows a watched query. It returns the newest result as `data` and the `error` that ended the watch; an actor no command has created yet is asked for again until one does. `deps` is named by the caller, as for `useEffect`.
 - `useEventFeed(handle, Event, { after?, storageKey? })` follows `handle.events`. It returns the `entries` delivered since mount, the last `cursor`, the `error` that ended the feed, and `gap` when that error is `RetentionGap`, which is never skipped. With `storageKey`, each delivered cursor is written to `sessionStorage`, and a remount or reload resumes after it. A feed of an actor no command has created yet (`NotCreated`) is asked for again every 500 ms.
 - `useConnection(handle.Member, params, { onResync?, keep? })` holds one connection while mounted with the same params (compared by their JSON). It returns `status` (`connecting`, `open`, or `closed`), the latest `keep` frames (default 100), the latest `keep` executor `progress` messages (default 100; the Promise client's `Progress` messages, typed by effect as above, and display-only, so a `seq` gap within one `effectId` and `attempt` is a dropped one), the `error` that ended it, and `send`. A closed connection is not reopened by itself, because a new one is a new session.
 - `useActorState(handle)` is the handle's `state`: committed state with pending optimistic reducer inputs applied, through `useSyncExternalStore`.
@@ -128,7 +130,7 @@ The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
 
 ## Offline queue (M6.5)
 
-`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Name the database per signed-in user: commands saved under one name are delivered by any client that opens it.
+`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Each command is saved under the client's `identity`, a stable key for the signed-in user (never a credential); without one, the key is the `iss` and `sub` of an `authorization: Bearer` JWT, and an offline client with neither refuses to queue. Only the current principal's commands are sent: another's show as `held` until that user signs back in or the application discards them, so a shared device never sends one user's commands as another.
 
 <!-- snippet
 import { Offline, type PendingCommand } from "@durable-actors/core/client"
@@ -139,12 +141,16 @@ declare const render: (pending: ReadonlyArray<PendingCommand>) => void
 -->
 
 ```ts
-const rooms = Room.client({ baseUrl: "/api", offline: Offline.indexedDb(`chat:${user}`) })
+const rooms = Room.client({
+  baseUrl: "/api",
+  identity: () => user,
+  offline: Offline.indexedDb(`chat:${user}`),
+})
 const queue = rooms.offline! // undefined without `offline`
 
 queue.subscribe((pending) => render(pending)) // { commandId, target, member, input, status, failure }
 await rooms.get(RoomId.make("lobby")).Post({ body: "on a plane" }) // resolves once the server answers
-await queue.discard(commandId) // the only way to resolve an `expired` or `failed` command
+await queue.discard(commandId) // the only way to resolve an `expired`, `failed`, or `held` command
 ```
 
 - **Calls stay Promises.** A command resolves with its output once the server answers. `timeoutInMs` or `signal` stops the wait with `Timeout` carrying the command id, as always, but the command stays queued and is still delivered. A call aborted before its command was saved queues nothing.
