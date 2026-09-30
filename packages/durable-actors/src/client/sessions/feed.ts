@@ -2,7 +2,13 @@ import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import type { EventClass } from "../../members/event.ts"
-import { decodeFailure, type Failure, networkFailure, undecodableFailure } from "../transport.ts"
+import {
+  aborted,
+  decodeFailure,
+  type Failure,
+  networkFailure,
+  undecodableFailure,
+} from "../transport.ts"
 
 /** One committed event a feed delivered, with the cursor to resume after it. */
 export interface FeedEntry<E> {
@@ -51,7 +57,7 @@ interface Message {
 }
 
 /** Splits SSE text into complete messages, keeping a partial one for the next chunk. */
-export const parse = (buffer: string) => {
+const parse = (buffer: string) => {
   const blocks = buffer.replace(/\r\n?/g, "\n").split("\n\n")
   const rest = blocks.pop() ?? ""
   const messages: Array<Message> = []
@@ -77,6 +83,55 @@ export const parse = (buffer: string) => {
 
   return { messages, rest }
 }
+
+/**
+ * Reads a `200` SSE response: `next` yields the messages each chunk
+ * completes, or `undefined` once the body closes or, with `idleMs`, sends no
+ * bytes for that long. Any other status fails with `refused` of its body. The
+ * body's reader is cancelled when the scope closes.
+ */
+export const readEvents = ({
+  response,
+  refused,
+  idleMs,
+}: {
+  readonly response: Response
+  readonly refused: (text: string, status: number, headers: Headers) => Failure
+  readonly idleMs?: number
+}) =>
+  Effect.gen(function* () {
+    if (response.status !== 200) {
+      const text = yield* Effect.tryPromise({ try: () => response.text(), catch: networkFailure })
+
+      return yield* refused(text, response.status, response.headers)
+    }
+
+    if (response.body === null) return yield* undecodableFailure()
+
+    const reader = response.body.getReader()
+
+    yield* Effect.addFinalizer(() => Effect.promise(() => reader.cancel().catch(() => undefined)))
+
+    const read = Effect.tryPromise({ try: () => reader.read(), catch: networkFailure })
+    const text = new TextDecoder()
+    let buffer = ""
+
+    const next = (
+      idleMs === undefined ? Effect.asSome(read) : read.pipe(Effect.timeoutOption(idleMs))
+    ).pipe(
+      Effect.map((chunk): ReadonlyArray<Message> | undefined => {
+        if (Option.isNone(chunk) || chunk.value.done) return undefined
+
+        buffer += text.decode(chunk.value.value, { stream: true })
+        const parsed = parse(buffer)
+        buffer = parsed.rest
+
+        return parsed.messages
+      }),
+    )
+
+    return { next }
+  })
 
 const isExpired = (failure: Failure) =>
   Schema.is(ActorError)(failure) &&
@@ -124,41 +179,18 @@ export const feedStream = <E extends EventClass>({
       let authRetried = false
 
       const once = Effect.gen(function* () {
-        const response = yield* open(last, yield* Effect.abortSignal)
-
-        if (response.status !== 200) {
-          const text = yield* Effect.tryPromise({
-            try: () => response.text(),
-            catch: networkFailure,
-          })
-
-          return yield* failureOf(text, response.status, response.headers)
-        }
-
-        if (response.body === null) return yield* undecodableFailure()
-
-        const reader = response.body.getReader()
-
-        yield* Effect.addFinalizer(() =>
-          Effect.promise(() => reader.cancel().catch(() => undefined)),
-        )
-
-        const text = new TextDecoder()
-        let buffer = ""
+        const { next } = yield* readEvents({
+          response: yield* open(last, yield* Effect.abortSignal),
+          refused: failureOf,
+          idleMs: IDLE_MS,
+        })
 
         while (true) {
-          const chunk = yield* Effect.tryPromise({
-            try: () => reader.read(),
-            catch: networkFailure,
-          }).pipe(Effect.timeoutOption(IDLE_MS))
+          const messages = yield* next
 
-          if (Option.isNone(chunk) || chunk.value.done) return
+          if (messages === undefined) return
 
-          buffer += text.decode(chunk.value.value, { stream: true })
-          const parsed = parse(buffer)
-          buffer = parsed.rest
-
-          for (const message of parsed.messages) {
+          for (const message of messages) {
             if (message.id === undefined) {
               if (message.event === "end") return yield* failureOf(message.data, 0)
 
@@ -204,19 +236,4 @@ export const feedStream = <E extends EventClass>({
       Effect.catch((failure) => Queue.fail(out, failure)),
       Effect.andThen(Queue.end(out)),
     ),
-  ).pipe(
-    Stream.interruptWhen(
-      Effect.callback<void>((resume) => {
-        const signal = options.signal
-
-        if (signal === undefined) return
-
-        if (signal.aborted) return resume(Effect.void)
-
-        const onAbort = () => resume(Effect.void)
-        signal.addEventListener("abort", onAbort, { once: true })
-
-        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
-      }),
-    ),
-  )
+  ).pipe(Stream.interruptWhen(aborted(options.signal)))
