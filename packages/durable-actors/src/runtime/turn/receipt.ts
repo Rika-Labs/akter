@@ -42,15 +42,13 @@ export const checkReceipt = Effect.fnUntraced(function* (
   hash: string,
   receipt: StoredReceipt,
 ) {
-  if (receipt.caller_key !== callerKey(request.caller)) {
+  if (receipt.caller_key !== callerKey(request.caller))
     return yield* ActorError.make({ reason: Unauthorized.make({ code: "receipt_access_denied" }) })
-  }
 
-  if (receipt.command !== request.command || receipt.payload_hash !== hash) {
+  if (receipt.command !== request.command || receipt.payload_hash !== hash)
     return yield* ActorError.make({
       reason: CommandConflict.make({ commandId: request.commandId }),
     })
-  }
 
   return yield* decodeOutcome(receipt.outcome).pipe(Effect.orDie)
 })
