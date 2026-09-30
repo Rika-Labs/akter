@@ -32,7 +32,7 @@ export interface LocalSubscription {
 }
 
 /** Tuning for subscription work: concurrency, lease, and backoff bounds. */
-export interface SubscriptionSettings {
+interface SubscriptionSettings {
   /** Feed expansions, control registrations, and subscription deliveries each run this many at once. */
   readonly concurrency: number
   /** Matching events one claimed subscription row delivers before it settles. */
