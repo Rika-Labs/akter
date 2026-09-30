@@ -1150,6 +1150,92 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "workflows: replays an interrupted execution's compensation on a survivor when its runner dies mid-compensation, and records the interrupt once",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.workflows,
+        Effect.gen(function* () {
+          const engine = fixture.workflows.engine
+          const key = "compensation-kill"
+          const hold = yield* Deferred.make<void>()
+          const compensating = yield* Deferred.make<void>()
+          engine.gates.set(key, hold)
+          engine.gates.set(`compensate:${key}`, compensating)
+          engine.runs.clear()
+
+          const executionId = yield* on(
+            0,
+            Effect.gen(function* () {
+              const run = yield* (yield* EngineProbe.get(key)).Probe({
+                scenario: "compensate-block",
+                key,
+              })
+
+              return run.executionId
+            }),
+          )
+
+          yield* eventually(
+            Effect.sync(() => (engine.runs.get(`hold:${key}`) ?? 0) >= 1),
+            "the activity to start",
+          )
+          yield* on(
+            0,
+            Effect.flatMap(EngineProbe.run(Probe, executionId), (run) => run.interrupt),
+          )
+          yield* eventually(
+            Effect.sync(() => (engine.runs.get(`compensate:${key}`) ?? 0) >= 1),
+            "the compensation to start",
+          )
+
+          const survivor = yield* ActorCluster.use((cluster) =>
+            Effect.gen(function* () {
+              const ref = (yield* cluster.on(0)(EngineProbe.get(key))).ref
+              const owner = (yield* cluster.owner(ref))!
+              yield* cluster.kill(owner)
+              yield* cluster.ready
+
+              return (owner + 1) % cluster.runners
+            }),
+          )
+          yield* advance(survivor, "31 seconds")
+          yield* eventually(
+            Effect.sync(() => (engine.runs.get(`compensate:${key}`) ?? 0) >= 2),
+            "the survivor to run the compensation again",
+          )
+          yield* Deferred.succeed(compensating, undefined)
+
+          const exit = yield* on(
+            survivor,
+            Effect.flatMap(EngineProbe.run(Probe, executionId), (run) => run.result).pipe(
+              Effect.exit,
+            ),
+          )
+
+          expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
+          expect(engine.runs.get(`compensate:${key}`)).toBeGreaterThanOrEqual(2)
+
+          const rows = yield* on(
+            survivor,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+
+              return yield* sql<{ status: string; steps: number }>`SELECT status,
+                  (SELECT count(*)::int FROM actor_workflow_step
+                    WHERE execution_id = ${executionId}) AS steps
+                FROM actor_workflow_executions WHERE execution_id = ${executionId}`
+            }).pipe(Effect.orDie),
+          )
+
+          expect(rows).toEqual([{ status: "finished", steps: 0 }])
+          yield* Deferred.succeed(hold, undefined)
+        }),
+      ),
+  },
+  {
     name: "workflows: an activity whose runner is killed mid-run is rerun on a survivor with the same identity",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,

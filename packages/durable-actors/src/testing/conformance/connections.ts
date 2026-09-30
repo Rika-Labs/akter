@@ -722,6 +722,100 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "an owner deletes the rows of an earlier holder epoch at the same address, and its live connection still receives broadcasts",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-old-epoch")
+          yield* next(connection)
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`
+            INSERT INTO actor_connections (
+              routing_key, connection_id, bucket, tenant_id, actor_type, actor_id, member,
+              holder, holder_epoch, caller, session, opened_at_ms, opened_through
+            )
+            SELECT routing_key, 'connections-old-epoch-stale', bucket, tenant_id, actor_type,
+              actor_id, member, holder, 'restarted-away', caller, NULL, opened_at_ms, 0
+            FROM actor_connections WHERE connection_id = ${connection.connectionId}`.pipe(
+            Effect.orDie,
+          )
+          expect(yield* rows(room.ref)).toHaveLength(2)
+          yield* test.hibernate(room.ref)
+
+          yield* room.Post("after restart")
+          const [broadcast] = yield* next(connection)
+          expect(frameOf(broadcast)).toEqual(Said.make({ text: "after restart" }))
+
+          const left = yield* sql<{ connection_id: string }>`SELECT connection_id
+            FROM actor_connections WHERE tenant_id = ${room.ref.tenant}
+              AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id}`.pipe(Effect.orDie)
+          expect(left).toEqual([{ connection_id: connection.connectionId }])
+        }),
+      ),
+  },
+  {
+    name: "a connection's commands take ids another caller never holds, and each commits once under its own caller",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-preminted")
+          yield* next(connection)
+          yield* Room.get("connections-preminted").pipe(
+            Effect.flatMap((asBob) => asBob.Post("preminted")),
+            Actor.as(User.make({ subject: "bob" })),
+          )
+          yield* next(connection)
+
+          yield* connection.send(Say.make({ text: "preminted" }))
+          const [broadcast] = yield* next(connection)
+          expect(frameOf(broadcast)).toEqual(Said.make({ text: "preminted" }))
+
+          const sql = yield* SqlClient.SqlClient
+          const receipts = yield* sql<{ command_id: string; caller_key: string }>`
+            SELECT command_id, caller_key FROM actor_receipts WHERE tenant_id = ${room.ref.tenant}
+              AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id}
+              AND command = 'Post'`.pipe(Effect.orDie)
+
+          expect(receipts).toHaveLength(2)
+          expect(new Set(receipts.map((receipt) => receipt.command_id)).size).toBe(2)
+          expect(new Set(receipts.map((receipt) => receipt.caller_key)).size).toBe(2)
+          expect(yield* posts(room.ref)).toBe(2)
+          expect(yield* test.receiptsFor(room.ref, "Post")).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "a broadcasting turn whose connection rows cannot load commits nothing, and its retry under the same id commits once",
+    requiresIndependentConnections: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { test, room, connection } = yield* connect("connections-unloaded")
+          yield* next(connection)
+          yield* test.hibernate(room.ref)
+
+          if (environment.connect === undefined)
+            return yield* Effect.die(new Error("backend lacks independent connections"))
+
+          const lock = yield* environment.connect
+          yield* lock.query("BEGIN")
+          yield* lock.query("LOCK TABLE actor_connections IN ACCESS EXCLUSIVE MODE")
+
+          const posting = yield* room.Post("during outage").pipe(Effect.forkChild)
+          yield* Effect.sleep("3 seconds")
+          expect(yield* test.receiptsFor(room.ref, "Post")).toBe(0)
+          yield* lock.query("ROLLBACK")
+
+          yield* Fiber.join(posting)
+          expect(yield* posts(room.ref)).toBe(1)
+          expect(yield* test.receiptsFor(room.ref, "Post")).toBe(1)
+          const [broadcast] = yield* next(connection)
+          expect(frameOf(broadcast)).toEqual(Said.make({ text: "during outage" }))
+        }),
+      ),
+  },
+  {
     name: "a held connection survives the holder's liveness check whatever its routing bucket",
     run: ({ expect, environment }) =>
       environment.run(
@@ -1783,6 +1877,53 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(
             BigInt(bumped[0]!.generation) + 1n,
           )
+        }),
+      ),
+  },
+  {
+    name: "an owner deletes a dead holder's connection rows at its next delivery, and its turns still commit",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.connections,
+        { runners: 2, holdersOnly: [0] },
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          yield* cluster.ready
+          const id = "connections-dead-holder"
+          const ref = (yield* cluster.on(0)(Room.get(id))).ref
+
+          const connection = yield* cluster.on(0)(
+            ActorTest.use((test) => test.connect(ref, Live, { name: "alice" })),
+          )
+
+          yield* next(connection)
+
+          const rows = Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+
+            return (yield* sql<{ count: number }>`SELECT count(*)::int AS count
+              FROM actor_connections WHERE tenant_id = ${ref.tenant} AND actor_id = ${ref.id}`)[0]!
+              .count
+          }).pipe(Effect.orDie)
+
+          expect(yield* cluster.on(1)(rows)).toBe(1)
+          yield* cluster.kill(0)
+
+          yield* cluster.on(1)(Room.get(id).pipe(Effect.flatMap((room) => room.Post("after"))))
+
+          yield* cluster
+            .on(1)(rows)
+            .pipe(
+              Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (count) => count === 0 }),
+              Effect.timeoutOrElse({
+                duration: "30 seconds",
+                orElse: () => Effect.die(new Error("The dead holder's row was never deleted")),
+              }),
+            )
+          expect(yield* cluster.on(1)(posts(ref))).toBe(1)
         }),
       ),
   },
