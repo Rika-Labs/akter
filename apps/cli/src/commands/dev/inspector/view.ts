@@ -1,17 +1,5 @@
+import type { Inspection } from "@durable-actors/core/client"
 import { DateTime, Match } from "effect"
-import type {
-  ActorDetail,
-  ActorRow,
-  DeadLetterRow,
-  Decoded,
-  EffectRow,
-  EventRow,
-  Overview,
-  OutboxRow,
-  ReceiptRow,
-  StepRow,
-  WorkflowRow,
-} from "./schema.ts"
 
 type Child = Node | string | number | null | undefined | false
 
@@ -83,7 +71,7 @@ const due = (ms: number, now: number) =>
   )
 
 /** A decoded value as indented JSON, or why it could not be decoded. */
-export const json = (value: Decoded | null) => {
+export const json = (value: Inspection.Decoded | null) => {
   if (value === null) return h("span", { class: "muted" }, "—")
 
   if ("undecodable" in value)
@@ -133,7 +121,7 @@ const shown = (length: number, total: number) =>
 const actorLink = (row: { readonly actorType: string; readonly actorId: string }) =>
   h("a", { href: actorHref(row) }, `${row.actorType}/${row.actorId}`)
 
-const COUNTS: ReadonlyArray<readonly [keyof Overview["counts"], string, string]> = [
+const COUNTS: ReadonlyArray<readonly [keyof Inspection.Overview["counts"], string, string]> = [
   ["actors", "Actors", "#/actors"],
   ["receipts", "Receipts", "#/actors"],
   ["events", "Events", "#/actors"],
@@ -145,7 +133,7 @@ const COUNTS: ReadonlyArray<readonly [keyof Overview["counts"], string, string]>
 ]
 
 /** The tenant's row counts, one tile per view. */
-export const overviewTiles = (overview: Overview) =>
+export const overviewTiles = (overview: Inspection.Overview) =>
   h(
     "div",
     { class: "tiles" },
@@ -166,7 +154,7 @@ export const actorsView = ({
   selected,
   more,
 }: {
-  readonly actors: ReadonlyArray<ActorRow>
+  readonly actors: ReadonlyArray<Inspection.ActorRow>
   readonly types: ReadonlyArray<string>
   readonly selected: string | undefined
   readonly more: Node | null
@@ -214,7 +202,7 @@ const outcomeTone = (outcome: string | null) =>
     Match.orElse((): Tone => "plain"),
   )
 
-const receiptRow = (receipt: ReceiptRow, now: number) =>
+const receiptRow = (receipt: Inspection.ReceiptRow, now: number) =>
   h(
     "tr",
     null,
@@ -238,7 +226,7 @@ const receiptRow = (receipt: ReceiptRow, now: number) =>
     h("td", { class: "mono small" }, receipt.commandId),
   )
 
-const eventRow = (event: EventRow) =>
+const eventRow = (event: Inspection.EventRow) =>
   h(
     "li",
     { id: `event-${event.sequence}`, class: "event" },
@@ -253,7 +241,7 @@ const eventRow = (event: EventRow) =>
     json(event.value),
   )
 
-const outboxRow = (row: OutboxRow, now: number, withActor: boolean) =>
+const outboxRow = (row: Inspection.OutboxRow, now: number, withActor: boolean) =>
   h(
     "tr",
     null,
@@ -270,7 +258,7 @@ const outboxRow = (row: OutboxRow, now: number, withActor: boolean) =>
     h("td", null, due(row.dueAtMs, now)),
   )
 
-const effectRow = (row: EffectRow, now: number, withActor: boolean) =>
+const effectRow = (row: Inspection.EffectRow, now: number, withActor: boolean) =>
   h(
     "tr",
     null,
@@ -295,7 +283,7 @@ const cause = (text: string) => {
     : h("details", null, h("summary", null, first), h("pre", { class: "trace" }, rest.join("\n")))
 }
 
-const deadLetterRow = (row: DeadLetterRow, withActor: boolean) =>
+const deadLetterRow = (row: Inspection.DeadLetterRow, withActor: boolean) =>
   h(
     "tr",
     null,
@@ -308,9 +296,9 @@ const deadLetterRow = (row: DeadLetterRow, withActor: boolean) =>
     h("td", null, time(row.deadAtMs)),
   )
 
-const stepTone = (step: StepRow) => (step.exit === null ? "warn" : "good")
+const stepTone = (step: Inspection.StepRow) => (step.exit === null ? "warn" : "good")
 
-const stepRow = (step: StepRow, now: number) =>
+const stepRow = (step: Inspection.StepRow, now: number) =>
   h(
     "tr",
     null,
@@ -340,7 +328,7 @@ const statusTone = (status: string) =>
   )
 
 /** One workflow execution with its step history. */
-const workflowCard = (workflow: WorkflowRow, now: number, withActor: boolean) =>
+const workflowCard = (workflow: Inspection.WorkflowRow, now: number, withActor: boolean) =>
   h(
     "article",
     { class: "workflow" },
@@ -399,7 +387,7 @@ export const actorView = ({
   detail,
   now,
 }: {
-  readonly detail: ActorDetail
+  readonly detail: Inspection.ActorDetail
   readonly now: number
 }) => {
   const { actor, totals } = detail
@@ -521,7 +509,7 @@ export const outboxView = ({
   total,
   now,
 }: {
-  readonly rows: ReadonlyArray<OutboxRow>
+  readonly rows: ReadonlyArray<Inspection.OutboxRow>
   readonly total: number
   readonly now: number
 }) =>
@@ -542,7 +530,7 @@ export const effectsView = ({
   total,
   now,
 }: {
-  readonly rows: ReadonlyArray<EffectRow>
+  readonly rows: ReadonlyArray<Inspection.EffectRow>
   readonly total: number
   readonly now: number
 }) =>
@@ -562,7 +550,7 @@ export const deadLettersView = ({
   rows,
   total,
 }: {
-  readonly rows: ReadonlyArray<DeadLetterRow>
+  readonly rows: ReadonlyArray<Inspection.DeadLetterRow>
   readonly total: number
 }) =>
   section(
@@ -588,7 +576,7 @@ export const workflowsView = ({
   now,
   all,
 }: {
-  readonly rows: ReadonlyArray<WorkflowRow>
+  readonly rows: ReadonlyArray<Inspection.WorkflowRow>
   readonly total: number
   readonly now: number
   readonly all: boolean
