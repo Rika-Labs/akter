@@ -72,14 +72,18 @@ export const asSqlConnection = ({
   readonly connection: PgConnection.PgConnection
   readonly send: Send
 }): SqlConnection.Connection => {
-  const run = (sql: string, params: ReadonlyArray<unknown>, prepare: boolean) =>
-    send(Effect.map(connection.query(sql, params, prepare), (result) => result.rows))
+  const rows =
+    (prepare: boolean): SqlConnection.Connection["execute"] =>
+    (sql, params, transformRows) => {
+      const found = send(
+        Effect.map(connection.query(sql, params, prepare), (result) => result.rows),
+      )
+
+      return transformRows === undefined ? found : Effect.map(found, transformRows)
+    }
 
   return {
-    execute: (sql, params, transformRows) =>
-      transformRows === undefined
-        ? run(sql, params, true)
-        : Effect.map(run(sql, params, true), transformRows),
+    execute: rows(true),
     executeRaw: (sql, params) => send(connection.query(sql, params)),
     executeStream: (sql, params, transformRows) =>
       Stream.unwrap(
@@ -92,10 +96,7 @@ export const asSqlConnection = ({
       ),
     executeValues: (sql, params) => send(connection.queryValues(sql, params)),
     executeValuesUnprepared: (sql, params) => send(connection.queryValues(sql, params, false)),
-    executeUnprepared: (sql, params, transformRows) =>
-      transformRows === undefined
-        ? run(sql, params, false)
-        : Effect.map(run(sql, params, false), transformRows),
+    executeUnprepared: rows(false),
   }
 }
 

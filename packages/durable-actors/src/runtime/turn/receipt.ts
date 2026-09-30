@@ -5,10 +5,8 @@ import { callerKey } from "../../identity/caller.ts"
 
 const OutcomeJson = Schema.fromJsonString(Outcome)
 
-const encodeOutcomeJson = Schema.encodeEffect(OutcomeJson)
-
 /** Encodes an outcome to the JSON text a receipt stores. */
-export const encodeOutcome = (outcome: Outcome) => encodeOutcomeJson(outcome)
+export const encodeOutcome = Schema.encodeEffect(OutcomeJson)
 
 const decodeOutcome = Schema.decodeEffect(OutcomeJson)
 
@@ -42,15 +40,13 @@ export const checkReceipt = Effect.fnUntraced(function* (
   hash: string,
   receipt: StoredReceipt,
 ) {
-  if (receipt.caller_key !== callerKey(request.caller)) {
+  if (receipt.caller_key !== callerKey(request.caller))
     return yield* ActorError.make({ reason: Unauthorized.make({ code: "receipt_access_denied" }) })
-  }
 
-  if (receipt.command !== request.command || receipt.payload_hash !== hash) {
+  if (receipt.command !== request.command || receipt.payload_hash !== hash)
     return yield* ActorError.make({
       reason: CommandConflict.make({ commandId: request.commandId }),
     })
-  }
 
   return yield* decodeOutcome(receipt.outcome).pipe(Effect.orDie)
 })
