@@ -48,6 +48,7 @@ import { mint } from "./scenarios/mint.ts"
 import { cron } from "./scenarios/cron.ts"
 import { orders } from "./scenarios/orders.ts"
 import { embeddedPglite } from "./scenarios/embedded-pglite.ts"
+import { coldStart } from "./scenarios/cold-start.ts"
 
 /** Every scenario, in run order. A new slice adds its scenario here. */
 const SCENARIOS: ReadonlyArray<Scenario> = [
@@ -84,6 +85,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   cron,
   orders,
   embeddedPglite,
+  coldStart,
   rls,
   placement,
 ]

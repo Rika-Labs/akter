@@ -36,6 +36,11 @@ export interface EdgeOptions {
   readonly publicationLead: Duration.Duration
   /** The largest request body the edge forwards. Default 1 MiB. */
   readonly requestBytes: number
+  /**
+   * How long a request to a scale-to-zero deployment waits for a runner to be
+   * started and to answer ready before it is refused. Default 30 seconds.
+   */
+  readonly coldStartTimeout: Duration.Duration
 }
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(SigningKey)))
@@ -79,5 +84,8 @@ export const loadOptions = Effect.gen(function* () {
     pollEvery: Duration.seconds(5),
     publicationLead: Duration.minutes(5),
     requestBytes: 1024 * 1024,
+    coldStartTimeout: yield* Config.Duration("EDGE_COLD_START_TIMEOUT").pipe(
+      Config.withDefault(Duration.seconds(30)),
+    ),
   } satisfies EdgeOptions
 })

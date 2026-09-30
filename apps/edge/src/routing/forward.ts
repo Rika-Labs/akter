@@ -35,6 +35,8 @@ export interface Edge {
     tenant: string,
   ) => Effect.Effect<{ readonly region: string; readonly state: "active" | "moving" } | undefined>
   readonly ready: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
+  /** Waits for a runner of a region with none ready; empty when none answers ready in time. */
+  readonly coldStart: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
 }
 
 /**
@@ -76,7 +78,8 @@ export const unavailable = (why: string) => ActorUnavailable.make({ cause: new E
 
 /**
  * Where a principal's requests go: the ready runners of its tenant's home
- * region.
+ * region. A scale-to-zero deployment with no ready runner there waits for one
+ * to start; any other deployment is refused at once.
  *
  * A moving tenant waits; clients retry with the same command ids.
  */
@@ -93,9 +96,15 @@ export const route = Effect.fnUntraced(function* (
   const region = home?.region ?? deployment.primaryRegion
   const urls = yield* edge.ready(deployment.id, region)
 
-  if (urls.length === 0) return Result.fail(unavailable("No ready runner in the region"))
+  if (urls.length > 0) return Result.succeed({ region, urls })
 
-  return Result.succeed({ region, urls })
+  if (!deployment.scaleToZero) return Result.fail(unavailable("No ready runner in the region"))
+
+  const started = yield* edge.coldStart(deployment.id, region)
+
+  if (started.length === 0) return Result.fail(unavailable("No runner started in time"))
+
+  return Result.succeed({ region, urls: started })
 })
 
 const bodyOf = (request: Request) =>

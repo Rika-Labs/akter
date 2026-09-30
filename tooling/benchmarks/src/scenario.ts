@@ -95,7 +95,7 @@ const BENCH_CONTENT_KEY = {
   secret: Redacted.make("durable-actors benchmark content grant key only"),
 }
 
-const runtimeLayer = (
+export const runtimeLayer = (
   maxResidentActors: number | undefined,
   subscriptions?: boolean,
   rowLevelSecurity?: { readonly role: string },

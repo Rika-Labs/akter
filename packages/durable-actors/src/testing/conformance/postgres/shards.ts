@@ -12,6 +12,7 @@ import type { ConformanceGroup } from "../../conformance.ts"
 export const shards = {
   capacity: ["capacity"],
   connections: ["connections"],
+  "cold-serve": ["coldServe"],
   cron: ["cron", "cronCluster"],
   drain: ["drain"],
   "effect-control": ["effectControl", "effectControlCluster"],

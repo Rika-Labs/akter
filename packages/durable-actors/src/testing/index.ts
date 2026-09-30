@@ -54,6 +54,8 @@ export type {
 
 export { edgeConformance, edgeKey } from "./conformance/assertions.ts"
 
+export { coldServeEdgeConformance } from "./conformance/cold-serve.ts"
+
 export type { ConformanceEdge, EdgeKey, EdgeRunner, HostedEdge } from "./conformance/assertions.ts"
 
 export {

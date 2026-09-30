@@ -45,6 +45,7 @@ These run on dedicated hardware in [#66](https://github.com/Rika-Labs/durable-ac
 - **Content blobs** (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)): deduplication ratio and bytes stored for a skewed upload set, upload and attach latency, read latency, and sweep cost per thousand candidates.
 - **File-backed PGlite** (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)): turn and wake latency and throughput at several `dataDir` sizes; the largest measured size bounds the claim. Measured below under [Embedded PGlite](#embedded-pglite-m414).
 - **Cold wakes** (L.2, [ADR 0036](../decisions/0036-cold-tier.md)): latency of a cold wake against the wake-latency target plus one object GET.
+- **Scale-to-zero** (M6.7, [ADR 0062](../decisions/0062-scale-to-zero-serving.md); T15): the `cold-start` scenario reports warm served latency (`warm`) separately from cold drills. Each drill drains and stops the only runner, lets `due` intents come due with no runner (`cold-due-0`, and `cold-due-1000` in the full profile), then times the new runner's `/ready`, first answered command, and delivery of every due intent, all measured from the runner's start. The runner starts inside the benchmark process, so the platform's process boot is not included.
 
 ## M1 close (cloud VM)
 

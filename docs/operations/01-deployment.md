@@ -115,7 +115,15 @@ The edge removes `authorization` and any client `durable-assertion` before forwa
 
 WebSockets are proxied, and holders stay in runners. The edge verifies the `hello` and `reauthenticate` credentials. It replaces each with an assertion carrying the session's random `sid`, and its `cexp` is the credential's expiry. An API key has no expiry, so it gets `EDGE_API_KEY_SESSION` (default 5 minutes): that is the revocation bound of a session opened with an API key.
 
-Configuration: `EDGE_ISSUER`, `CONTROL_PLANE_DATABASE_URL`, `EDGE_SIGNING_KEYS` (a secret JSON array of Ed25519 private JWKs `{ kid, x, d }`), `PORT`, `EDGE_ASSERTION_LIFETIME` (at most 60 seconds), and `EDGE_API_KEY_SESSION`.
+Configuration: `EDGE_ISSUER`, `CONTROL_PLANE_DATABASE_URL`, `EDGE_SIGNING_KEYS` (a secret JSON array of Ed25519 private JWKs `{ kid, x, d }`), `PORT`, `EDGE_ASSERTION_LIFETIME` (at most 60 seconds), `EDGE_API_KEY_SESSION`, and `EDGE_COLD_START_TIMEOUT` (default 30 seconds).
+
+### Scale to zero
+
+Implemented (M6.7, [ADR 0062](../decisions/0062-scale-to-zero-serving.md), proposed): a deployment with `deployment.scale_to_zero` may have no runners. When a request finds no ready runner in its tenant's home region, the edge upserts a `runner_wake (deployment_id, region)` row once. It then probes each registered runner's `GET <base_path>/ready` every 100 ms, and forwards to the first that answers `200`. Concurrent requests on one edge share that wait. After `EDGE_COLD_START_TIMEOUT` with no ready runner, the edge answers `503 ActorUnavailable` with `retry-after`, and the client retries with the same command id. A deployment without the flag is refused at once, as before.
+
+A runner provider watches `runner_wake`. For each row it starts a runner, registers it in `deployment_runner` as soon as the runner has an address, and deletes the row. To scale down, it deletes the runner's `deployment_runner` row first, then sends SIGTERM so the runner drains before it exits. No provider ships yet; until the `Runners` actor exists, an operator or a platform script plays this role.
+
+At zero, nothing runs due work. Timers, intents, effects, and cron ticks that come due run on the next cold start, late but not lost; cron fires once inside `cronSkipIfOlderThan`. A deployment whose due work must run on time should keep one runner. WebSocket and SSE sessions end with their runner, and clients reconnect.
 
 At startup the edge publishes each key's public half to `edge_key`, and refuses to start if a `kid` is already published with a different public key, because a `kid` names one key for good. It signs only with a key that has been published for 5 minutes and is neither revoked nor expiring within an assertion's lifetime. Runners serve with `Actor.auth.assertion({ issuer, audience: <deployment id>, region, keys: new URL("<api>/edge/keys") })`; `apps/api` serves that key set. When an operator revokes a key (`edge_key.revoked_at`), every edge pushes a key-set refresh to each ready runner at `deployment_runner.url` (an origin such as `http://10.0.0.7:8080`, with no path) plus `base_path` (the runner's `Actor.serve` base path). A runner that doesn't accept the push is pushed again on every edge poll until it does or stops being ready, so runners refuse the key within seconds.
 
