@@ -915,7 +915,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const draining = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
           yield* takeover.reached
           expect(yield* outboxRows(other)).toMatchObject([
-            { kind: "effect", attempts: 2, ambiguous: true },
+            { kind: "job", attempts: 2, ambiguous: true },
           ])
           yield* takeover.release
           yield* Fiber.join(draining)
@@ -1023,7 +1023,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
                   RETURN NEW;
                 END $$`
               yield* sql`CREATE TRIGGER relay_record_wait AFTER UPDATE ON actor_outbox FOR EACH ROW
-                WHEN (NEW.kind = 'effect' AND NEW.last_error NOT LIKE 'Attempt % ended without%')
+                WHEN (NEW.kind = 'job' AND NEW.last_error NOT LIKE 'Attempt % ended without%')
                 EXECUTE FUNCTION relay_record_wait()`
             }),
           )
@@ -1232,7 +1232,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const [held] = yield* outboxRows(other)
           expect(ran >= 2900 && ran < 4000).toBe(true)
           expect(fixture.attempts.length).toBe(1)
-          expect(held).toMatchObject({ kind: "effect", attempts: 1, ambiguous: true })
+          expect(held).toMatchObject({ kind: "job", attempts: 1, ambiguous: true })
           expect(first!.endedAt! <= Number(held!.due) + 100).toBe(true)
 
           fixture.hook = () => Effect.void
@@ -1304,7 +1304,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.sleep("200 millis")
 
           const [row] = yield* outboxRows(0)
-          expect(row).toMatchObject({ kind: "effect", attempts: 1, ambiguous: false })
+          expect(row).toMatchObject({ kind: "job", attempts: 1, ambiguous: false })
           expect(Number(row!.due) - Number(row!.now) <= 1000).toBe(true)
         }),
       ),
@@ -1616,7 +1616,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
               payload, caller, kind, ready_at_ms)
             SELECT ((i % 256) - 128)::bigint << 56 | i, 'ghost-' || i, (i % 256) - 128, 0, 0,
-              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'effect', 0
+              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'job', 0
             FROM generate_series(1, 10000) AS i`
           yield* sql`ANALYZE actor_outbox`
 
@@ -1694,7 +1694,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
               payload, caller, kind, ready_at_ms)
             SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan-' || i, ${placed!.bucket}, 0, 0,
-              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'effect', 0
+              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'job', 0
             FROM generate_series(1, 200) AS i`
 
           yield* Effect.gen(function* () {

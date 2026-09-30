@@ -52,7 +52,7 @@ export const databaseSampler = () => {
         count(*) FILTER (WHERE attempts >= ${STUCK_ATTEMPTS})::int AS stuck
       FROM actor_outbox GROUP BY kind`
 
-    for (const kind of ["intent", "effect", "feed", "control"]) {
+    for (const kind of ["intent", "job", "feed", "control"]) {
       const row = outbox.find((found) => found.kind === kind)
 
       set(Metrics.outboxRows, { kind }, row?.rows ?? 0)

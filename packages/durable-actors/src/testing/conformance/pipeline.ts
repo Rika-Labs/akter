@@ -1099,7 +1099,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const pings = sql<{ due: string; ready: string; key: string | null }>`
             SELECT due_at_ms::text AS due, ready_at_ms::text AS ready, timer_key AS key
             FROM actor_outbox WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}
-              AND kind = 'effect' AND command = 'Ping'`
+              AND kind = 'job' AND command = 'Ping'`
 
           const before = Number((yield* clock)[0]!.now)
           expect((yield* flightsOf(probe, plain.PingLater(400))).flights).toBe(2)

@@ -217,12 +217,12 @@ const deadLetters = Effect.fnUntraced(function* (actorId: string) {
   const test = yield* ActorTest
 
   return yield* sql<{
-    effect: string
+    job: string
     attempts: number
     ambiguous: boolean
-  }>`SELECT effect, attempts, ambiguous FROM actor_dead_letters
+  }>`SELECT job, attempts, ambiguous FROM actor_dead_letters
     WHERE tenant_id = ${test.tenant} AND actor_type = 'Author' AND actor_id = ${actorId}
-    ORDER BY effect`
+    ORDER BY job`
 })
 
 const attemptsOf = (fixture: EffectsFixture, id: string) =>
@@ -252,7 +252,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
               flagged: true,
               commandId: attempt?.effectId,
               caller: System.make({
-                source: "effect",
+                source: "job",
                 ref: author.ref,
                 onBehalfOf: { subject: "alice" },
               }),
@@ -420,7 +420,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(dead[0]?.cause).toContain("ProviderDown")
           expect(yield* test.receiptsFor(author.ref, "ModerationFailed")).toBe(1)
           expect(yield* deadLetters("exhausted")).toEqual([
-            { effect: "Moderate", attempts: 2, ambiguous: false },
+            { job: "Moderate", attempts: 2, ambiguous: false },
           ])
           yield* test.advance("1 hour")
           expect((yield* authorState("exhausted")).dead.length).toBe(1)
@@ -453,8 +453,8 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           yield* author.Ping("notify")
           yield* test.advance(0)
           expect(yield* deadLetters("ambiguous")).toEqual([
-            { effect: "Moderate", attempts: 2, ambiguous: true },
-            { effect: "Notify", attempts: 1, ambiguous: true },
+            { job: "Moderate", attempts: 2, ambiguous: true },
+            { job: "Notify", attempts: 1, ambiguous: true },
           ])
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
         }),
@@ -475,7 +475,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
           expect(yield* test.receiptsFor(author.ref, "Measured")).toBe(0)
           expect(yield* deadLetters("unroutable")).toEqual([
-            { effect: "Measure", attempts: 1, ambiguous: true },
+            { job: "Measure", attempts: 1, ambiguous: true },
           ])
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
         }),
@@ -495,7 +495,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(
             yield* (yield* SqlClient.SqlClient)<{ attempts: number; final_failure: boolean }>`
               SELECT attempts, final_failure FROM actor_outbox
-              WHERE tenant_id = ${test.tenant} AND actor_id = 'unroutable-retry' AND kind = 'effect'`,
+              WHERE tenant_id = ${test.tenant} AND actor_id = 'unroutable-retry' AND kind = 'job'`,
           ).toEqual([{ attempts: 1, final_failure: true }])
           yield* test.advance("1 hour")
           const attempts = attemptsOf(fixture.effects, "unroutable-retry")
@@ -504,7 +504,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase> = [
           expect(fixture.effects.calls.get(attempts[0]!.effectId)).toBe(1)
           expect(yield* test.receiptsFor(author.ref, "Measured")).toBe(0)
           expect(yield* deadLetters("unroutable-retry")).toEqual([
-            { effect: "Measure", attempts: 1, ambiguous: true },
+            { job: "Measure", attempts: 1, ambiguous: true },
           ])
           expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
         }),

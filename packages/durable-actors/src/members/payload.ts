@@ -250,10 +250,10 @@ export const payloadCodec = <S extends ValueSchema & { readonly Type: { readonly
   }
 }
 
-/** One event or effect class an actor type reads or writes, as the startup check sees it. */
+/** One event or job class an actor type reads or writes, as the startup check sees it. */
 export interface PayloadDeclaration {
   readonly actorType: string
-  readonly kind: "event" | "effect"
+  readonly kind: "event" | "job"
   readonly tag: string
   readonly chain: PayloadChain
   /** Whether this layer writes new values of the class, so it records and heartbeats its write version. */

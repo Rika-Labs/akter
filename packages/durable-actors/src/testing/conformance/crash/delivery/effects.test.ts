@@ -15,8 +15,8 @@ describe("effect executor process death with Postgres", () => {
   afterAll(() => runtime.dispose())
 
   for (const [point, calls, row, recovered] of [
-    ["beforeExecute", 0, ["effect", 1], 1],
-    ["afterExecute", 1, ["effect", 1], 2],
+    ["beforeExecute", 0, ["job", 1], 1],
+    ["afterExecute", 1, ["job", 1], 2],
     ["beforeCommit", 1, ["intent", 1], 1],
   ] as const) {
     it(

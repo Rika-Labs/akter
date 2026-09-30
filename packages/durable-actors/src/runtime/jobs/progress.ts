@@ -15,7 +15,7 @@ export interface ProgressMessage {
   readonly ref: ActorRef
   readonly effectId: string
   readonly effect: string
-  /** The attempt number of the effect, from 1. */
+  /** The attempt number of the job, from 1. */
   readonly attempt: number
   /** Per attempt, from 1; counts the attempt's accepted `progress` calls. */
   readonly seq: number
@@ -24,7 +24,7 @@ export interface ProgressMessage {
   readonly frame: Uint8Array
 }
 
-/** Sent after an effect's terminal settle commits; no attempt of it reports again. */
+/** Sent after a job's terminal settle commits; no attempt of it reports again. */
 export interface ProgressClosed {
   readonly ref: ActorRef
   readonly effectId: string
@@ -34,16 +34,16 @@ export interface ProgressClosed {
 /**
  * Where an executor pool sends progress. Sends are fire-and-forget: there is
  * no acknowledgment or resend, and a lost message is a lost frame. Without a
- * sink, or for an effect `wants` rejects, the pool sends nothing.
+ * sink, or for a job `wants` rejects, the pool sends nothing.
  */
 export class ProgressSink extends Context.Service<
   ProgressSink,
   {
-    readonly wants: (actor: string, effect: string) => boolean
+    readonly wants: (actor: string, job: string) => boolean
     readonly send: (message: ProgressMessage) => Effect.Effect<void>
     readonly closed: (message: ProgressClosed) => Effect.Effect<void>
   }
->()("@durable-actors/core/runtime/effects/progress/ProgressSink") {}
+>()("@durable-actors/core/runtime/jobs/progress/ProgressSink") {}
 
 /**
  * Sees every message a runner's pool sends before the runtime delivers it;
@@ -53,7 +53,7 @@ export class ProgressSink extends Context.Service<
 export const ProgressTap = Context.Reference<{
   readonly send: (message: ProgressMessage) => Effect.Effect<boolean>
   readonly closed: (message: ProgressClosed) => Effect.Effect<boolean>
-}>("@durable-actors/core/runtime/effects/progress/ProgressTap", {
+}>("@durable-actors/core/runtime/jobs/progress/ProgressTap", {
   defaultValue: () => ({ send: () => Effect.succeed(true), closed: () => Effect.succeed(true) }),
 })
 
@@ -86,7 +86,7 @@ const closedSlot: ProgressSlot = {
  * to a burst of one second's worth. Closing waits on the sink at most
  * `PROGRESS_CLOSE_WAIT_MS`; a final frame still sending then finishes on its
  * own. Closing sends the last frame even if a send was interrupted, and the
- * closed message follows that attempt's last flush. Only effects that could
+ * closed message follows that attempt's last flush. Only jobs that could
  * have opened a slot are closed, and an attempt that ends without a terminal
  * settle keeps no flush (`forget`).
  */
@@ -127,8 +127,8 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
   const open = Effect.fnUntraced(function* (attempt: {
     readonly ref: ActorRef
-    readonly effectId: string
-    readonly effect: string
+    readonly jobId: string
+    readonly job: string
     readonly attempt: number
     readonly everyMs: number | undefined
     readonly leaseUntil: () => number
@@ -136,7 +136,7 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
     if (
       sink === undefined ||
       attempt.everyMs === undefined ||
-      !sink.wants(attempt.ref.actor, attempt.effect)
+      !sink.wants(attempt.ref.actor, attempt.job)
     )
       return closedSlot
     const everyMs = attempt.everyMs
@@ -151,8 +151,8 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       sink
         .send({
           ref: attempt.ref,
-          effectId: attempt.effectId,
-          effect: attempt.effect,
+          effectId: attempt.jobId,
+          effect: attempt.job,
           attempt: attempt.attempt,
           seq: frame.seq,
           leaseUntil: attempt.leaseUntil(),
@@ -209,37 +209,41 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
           ),
           detached,
           Effect.map((flush) => {
-            flushes.set(attempt.effectId, flush)
+            flushes.set(attempt.jobId, flush)
           }),
         )
       }),
     } satisfies ProgressSlot
   })
 
-  const closed = (
-    message: ProgressClosed & { readonly effect: string; readonly everyMs: number | undefined },
-  ) =>
+  const closed = (attempt: {
+    readonly ref: ActorRef
+    readonly jobId: string
+    readonly job: string
+    readonly attempt: number
+    readonly everyMs: number | undefined
+  }) =>
     Effect.suspend(() => {
-      const flush = flushes.get(message.effectId)
-      flushes.delete(message.effectId)
+      const flush = flushes.get(attempt.jobId)
+      flushes.delete(attempt.jobId)
 
       if (
         sink === undefined ||
-        message.everyMs === undefined ||
-        !sink.wants(message.ref.actor, message.effect)
+        attempt.everyMs === undefined ||
+        !sink.wants(attempt.ref.actor, attempt.job)
       )
         return Effect.void
 
       return (flush === undefined ? Effect.void : awaitBriefly(flush)).pipe(
         Effect.andThen(
-          sink.closed({ ref: message.ref, effectId: message.effectId, attempt: message.attempt }),
+          sink.closed({ ref: attempt.ref, effectId: attempt.jobId, attempt: attempt.attempt }),
         ),
         detached,
         Effect.asVoid,
       )
     })
 
-  const forget = (effectId: string) => Effect.sync(() => flushes.delete(effectId))
+  const forget = (jobId: string) => Effect.sync(() => flushes.delete(jobId))
 
   return { open, closed, forget }
 })

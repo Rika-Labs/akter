@@ -904,6 +904,68 @@ export const migrations = {
         last_error text
       )`
   }),
+  /**
+   * Staged external work is named a job everywhere it is stored: the outbox kind, keyed-job
+   * timer keys, dead-letter columns, payload-version kinds, and the inspection views. Rows keep
+   * their ids, attempts, ambiguity, and cancellation marks, so a job in flight settles under the
+   * same id. Dropping the renamed views drops any grants on them.
+   */
+  "0026_jobs": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_outbox
+        DROP CONSTRAINT actor_outbox_kind_check,
+        DROP CONSTRAINT actor_outbox_effect_ready`
+    yield* sql`DROP INDEX actor_outbox_running`
+    yield* sql`DROP INDEX actor_outbox_effect_queue`
+    yield* sql`UPDATE actor_outbox SET kind = 'job',
+        timer_key = CASE WHEN left(timer_key, 8) = '$effect:' THEN '$job:' || substr(timer_key, 9)
+          ELSE timer_key END
+      WHERE kind = 'effect'`
+    yield* sql`ALTER TABLE actor_outbox
+        ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'job', 'feed', 'control')),
+        ADD CONSTRAINT actor_outbox_job_ready CHECK (kind <> 'job' OR ready_at_ms IS NOT NULL)`
+    yield* sql`CREATE INDEX actor_outbox_running
+      ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command)
+      WHERE kind = 'job' AND running`
+    yield* sql`CREATE INDEX actor_outbox_job_queue
+      ON actor_outbox (routing_key, tenant_id, actor_type, actor_id, command, ready_at_ms, intent_id)
+      WHERE kind = 'job' AND NOT running`
+    yield* sql`ALTER TABLE actor_dead_letters RENAME COLUMN effect_id TO job_id`
+    yield* sql`ALTER TABLE actor_dead_letters RENAME COLUMN effect TO job`
+
+    for (const table of ["actor_payload_versions", "actor_payload_writers"]) {
+      yield* sql`ALTER TABLE ${sql(table)} DROP CONSTRAINT ${sql(`${table}_kind_check`)}`
+      yield* sql`UPDATE ${sql(table)} SET kind = 'job' WHERE kind = 'effect'`
+      yield* sql`ALTER TABLE ${sql(table)} ADD CONSTRAINT ${sql(`${table}_kind_check`)}
+          CHECK (kind IN ('event', 'job'))`
+    }
+
+    yield* sql`DROP VIEW durable.effects`
+    yield* sql`DROP VIEW durable.dead_letters`
+    yield* sql`CREATE VIEW durable.jobs AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+        o.intent_id AS job_id, o.command AS job, o.payload, o.caller,
+        o.attempts, o.last_error, o.ambiguous,
+        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
+        o.payload_version
+      FROM actor_outbox o
+      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+      WHERE o.kind = 'job'`
+    yield* sql`CREATE VIEW durable.dead_letters AS
+      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+        d.job_id, d.job, d.payload, d.attempts, d.cause, d.ambiguous,
+        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
+        d.payload_version
+      FROM actor_dead_letters d
+      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+    yield* sql`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
+        ('timers', 1), ('jobs', 1), ('dead_letters', 2), ('workflows', 1),
+        ('workflow_steps', 1), ('views', 1), ('contents', 1), ('content_refs', 1),
+        ('operator_audit', 1)
+      ) AS v(view_name, version)`
+  }),
 }
 
 /**

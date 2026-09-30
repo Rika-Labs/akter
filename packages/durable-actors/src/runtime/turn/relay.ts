@@ -16,9 +16,9 @@ import {
 import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request } from "../request.ts"
-import { type RegisteredEffect } from "../members.ts"
+import { type RegisteredJob } from "../members.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
-import { progressPool } from "../effects/progress.ts"
+import { progressPool } from "../jobs/progress.ts"
 import { CRON_PREFIX } from "../cron/key.ts"
 import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
@@ -52,7 +52,7 @@ export interface RelaySettings {
   readonly claimLeaseMs: () => number
   /** Cap on intent redelivery backoff. */
   readonly maxBackoffMs: number
-  /** Effect attempts running at once on this runner. */
+  /** Job attempts running at once on this runner. */
   readonly executorConcurrency: number
   /** An attempt's claim; renewed every third of it while the attempt runs. */
   readonly executorLeaseMs: number
@@ -65,11 +65,11 @@ export interface RelaySettings {
   readonly cancelCheckMs?: number | undefined
 }
 
-/** An executor this runner has, by actor type and effect tag. */
+/** An executor this runner has, by actor type and job tag. */
 interface LocalExecutor {
   readonly actor: string
-  readonly effect: string
-  readonly registered: RegisteredEffect
+  readonly job: string
+  readonly registered: RegisteredJob
 }
 
 interface ClaimedRow {
@@ -77,7 +77,7 @@ interface ClaimedRow {
    * `skipped-*` rows claim nothing; they report a probe whose candidates were
    * all taken or locked. A `work` row carries claimed subscription work in `work`.
    */
-  readonly kind: "intent" | "effect" | "skipped-intent" | "skipped-effect" | "work"
+  readonly kind: "intent" | "job" | "skipped-intent" | "skipped-job" | "work"
   readonly routing_key: string
   readonly intent_id: string
   readonly attempts: number
@@ -90,7 +90,7 @@ interface ClaimedRow {
   readonly target_id: string
   readonly command: string
   readonly payload: string
-  /** The payload version of an effect row's `payload`; 0 for every other kind. */
+  /** The payload version of a job row's `payload`; 0 for every other kind. */
   readonly payload_version: number
   readonly caller: string
   /** The claim's `due_at_ms`, which every settling write of an intent names. */
@@ -99,13 +99,13 @@ interface ClaimedRow {
   readonly scheduled_at: string
   /** Cancelled by a turn: settled with what is known, never attempted again. */
   readonly cancelled: boolean
-  /** An earlier attempt of the effect may have applied the call. */
+  /** An earlier attempt of the job may have applied the call. */
   readonly maybe_applied: boolean
   readonly candidates: number
   readonly work: string | null
 }
 
-interface ClaimedEffect extends ClaimedRow {
+interface ClaimedJob extends ClaimedRow {
   readonly exhausted: boolean
 }
 
@@ -133,7 +133,7 @@ export const candidates = ({
   only = sql.literal(""),
 }: {
   readonly sql: SqlClient.SqlClient
-  readonly kind: "intent" | "effect" | "feed" | "control"
+  readonly kind: "intent" | "job" | "feed" | "control"
   readonly now: Statement.Fragment
   readonly limit: number
   readonly only?: Statement.Fragment
@@ -158,8 +158,8 @@ interface IntentClaim {
   readonly cronActors?: ReadonlyArray<string> | undefined
 }
 
-/** Effects to claim in one statement: up to `permits`, only for local executors. */
-interface EffectClaim {
+/** Jobs to claim in one statement: up to `permits`, only for local executors. */
+interface JobClaim {
   readonly permits: number
   readonly leaseMs: number
   readonly executors: ReadonlyArray<LocalExecutor>
@@ -168,7 +168,7 @@ interface EffectClaim {
 }
 
 /**
- * Claims due intents and due effects in one autocommit statement. `now` is
+ * Claims due intents and due jobs in one autocommit statement. `now` is
  * the outbox clock: the database's statement start time plus the test
  * offset, which is never earlier than a row committed before the claim was
  * sent. A pass therefore costs one round trip whatever it claims.
@@ -177,7 +177,7 @@ interface EffectClaim {
  * moves the row's `due_at_ms` past its lease, so no runner scans it again
  * until the lease ends. An intent whose settle dies therefore waits
  * `max(lease, backoff(attempts))` instead of sorting ahead of newer work. An
- * effect with no executor on this runner is never claimed here; it stays due
+ * job with no executor on this runner is never claimed here; it stays due
  * for a runner that has one. The two kinds never share a row, so the two
  * updates are disjoint. A kind that claims nothing although its probe found
  * candidates returns one `skipped-*` row with the candidate count, so the
@@ -189,13 +189,13 @@ const claimDue = ({
   sql,
   now,
   intents,
-  effects,
+  jobs,
   subscriptions,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly now: Statement.Fragment
   readonly intents?: IntentClaim | undefined
-  readonly effects?: EffectClaim | undefined
+  readonly jobs?: JobClaim | undefined
   readonly subscriptions?: SubscriptionClaim | undefined
 }) => {
   const parts: Array<Statement.Fragment> = []
@@ -234,39 +234,39 @@ const claimDue = ({
     results.push(sql`SELECT * FROM intent_claimed`, skipped(sql, "intent"))
   }
 
-  if (effects !== undefined && effects.executors.length > 0) {
-    const { permits, leaseMs, executors, probe = 2 * permits } = effects
+  if (jobs !== undefined && jobs.executors.length > 0) {
+    const { permits, leaseMs, executors, probe = 2 * permits } = jobs
     parts.push(sql`mine (actor_type, command, max_attempts) AS (
         VALUES ${sql.csv(
           executors.map(
-            ({ actor, effect, registered }) =>
-              sql`(${actor}::text, ${effect}::text, ${registered.attempts}::int)`,
+            ({ actor, job, registered }) =>
+              sql`(${actor}::text, ${job}::text, ${registered.attempts}::int)`,
           ),
         )}
       ),
-      effect_candidates AS (
+      job_candidates AS (
         ${candidates({
           sql,
-          kind: "effect",
+          kind: "job",
           now,
           limit: probe,
           only: sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
         })}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
-      effect_locked AS (
+      job_locked AS (
         SELECT o.routing_key, o.intent_id, o.attempts AS previous, m.max_attempts
         FROM actor_outbox o
-        JOIN effect_candidates USING (routing_key, intent_id)
+        JOIN job_candidates USING (routing_key, intent_id)
         JOIN mine m ON m.actor_type = o.actor_type AND m.command = o.command
-        WHERE o.kind = 'effect' AND o.due_at_ms <= ${now}
+        WHERE o.kind = 'job' AND o.due_at_ms <= ${now}
         ORDER BY o.due_at_ms LIMIT ${permits}
         FOR UPDATE OF o SKIP LOCKED
       ),
-      effect_claimed AS (
-        ${claimEffects(sql, now, leaseMs, sql`effect_locked`, sql`(SELECT count(*) FROM effect_candidates)::int`)}
+      job_claimed AS (
+        ${claimJobs(sql, now, leaseMs, sql`job_locked`, sql`(SELECT count(*) FROM job_candidates)::int`)}
       )`)
-    results.push(sql`SELECT *, NULL::text AS work FROM effect_claimed`, skipped(sql, "effect"))
+    results.push(sql`SELECT *, NULL::text AS work FROM job_claimed`, skipped(sql, "job"))
   }
 
   if (subscriptions !== undefined) {
@@ -280,14 +280,14 @@ const claimDue = ({
         FROM (${result}) AS claimed`)
   }
 
-  if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedEffect>)
+  if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedJob>)
 
-  return sql<ClaimedEffect>`WITH ${sql.csv(parts)}
+  return sql<ClaimedJob>`WITH ${sql.csv(parts)}
     ${sql.join(" UNION ALL ", false)(results)}`
 }
 
 /**
- * Claims the effect rows `locked` names. A cancelled row is claimed only to
+ * Claims the job rows `locked` names. A cancelled row is claimed only to
  * be settled, so it keeps its attempts; any other row starts its next attempt
  * and runs, unless its last attempt already ended without an outcome or an
  * attempt's failure was final, either of which exhausts it. `maybe_applied`
@@ -295,7 +295,7 @@ const claimDue = ({
  * RETURNING sees the updated row, so exhaustion is judged on the attempts
  * before this claim.
  */
-const claimEffects = (
+const claimJobs = (
   sql: SqlClient.SqlClient,
   now: Statement.Fragment,
   leaseMs: number,
@@ -323,7 +323,7 @@ const claimEffects = (
         AND (c.previous >= c.max_attempts OR o.final_failure) AS exhausted`
 }
 
-/** One effect type of one actor whose attempts run under a per-actor cap. */
+/** One job type of one actor whose attempts run under a per-actor cap. */
 interface CappedGroup {
   readonly routing_key: string
   readonly tenant_id: string
@@ -338,7 +338,7 @@ interface DueGroup extends CappedGroup {
 }
 
 /**
- * The actors with due rows of capped effects this runner executes, oldest
+ * The actors with due rows of capped jobs this runner executes, oldest
  * first; at most `limit`. Like the uncapped probe, it reads one index range
  * per bucket and takes no locks.
  */
@@ -354,14 +354,12 @@ const cappedGroups = ({
   readonly limit: number
 }) =>
   sql<DueGroup>`WITH mine (actor_type, command) AS (
-      VALUES ${sql.csv(
-        executors.map(({ actor, effect }) => sql`(${actor}::text, ${effect}::text)`),
-      )}
+      VALUES ${sql.csv(executors.map(({ actor, job }) => sql`(${actor}::text, ${job}::text)`))}
     ),
     due AS (
       ${candidates({
         sql,
-        kind: "effect",
+        kind: "job",
         now,
         limit,
         only: sql.literal("AND (actor_type, command) IN (SELECT actor_type, command FROM mine)"),
@@ -376,7 +374,7 @@ const cappedGroups = ({
 const groupRow = (sql: SqlClient.SqlClient, group: CappedGroup) =>
   sql`o.routing_key = ${BigInt(group.routing_key)} AND o.tenant_id = ${group.tenant_id}
     AND o.actor_type = ${group.actor_type} AND o.actor_id = ${group.actor_id}
-    AND o.command = ${group.command} AND o.kind = 'effect'`
+    AND o.command = ${group.command} AND o.kind = 'job'`
 
 /** The advisory lock that serializes every runner's claims of one capped group. */
 const groupLock = (sql: SqlClient.SqlClient, group: CappedGroup) =>
@@ -388,7 +386,7 @@ const groupLock = (sql: SqlClient.SqlClient, group: CappedGroup) =>
   ])}, 0))`
 
 /**
- * Claims one capped group's effects in its own transaction, under the
+ * Claims one capped group's jobs in its own transaction, under the
  * group's advisory lock, so claims on every runner see each other's running
  * rows. It settles cancelled rows whose attempt ended, starts the oldest rows
  * by `(ready_at_ms, intent_id)` while fewer than `cap` attempts hold a live
@@ -426,7 +424,7 @@ export const claimCapped = ({
       const inGroup = groupRow(sql, group)
       yield* sql`SELECT 1 FROM actor_outbox o WHERE ${inGroup} AND o.running FOR UPDATE OF o`
 
-      return yield* sql<ClaimedEffect>`WITH live AS (
+      return yield* sql<ClaimedJob>`WITH live AS (
           SELECT count(*)::int AS n FROM actor_outbox o
           WHERE ${inGroup} AND o.running AND o.due_at_ms > ${now}
         ),
@@ -449,7 +447,7 @@ export const claimCapped = ({
           FOR UPDATE OF o SKIP LOCKED
         ),
         locked AS (SELECT * FROM settle UNION ALL SELECT * FROM next),
-        claimed AS (${claimEffects(sql, now, leaseMs, sql`locked`, sql`0`)}),
+        claimed AS (${claimJobs(sql, now, leaseMs, sql`locked`, sql`0`)}),
         deferred AS (
           UPDATE actor_outbox o SET waiting = true, running = false,
             due_at_ms = ${now} + ${leaseMs}::bigint
@@ -501,7 +499,7 @@ export const wakeWaiting = ({
   )
 
 /** One row reporting `kind`'s candidates when its claim took none of them. */
-const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "effect") => {
+const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "job") => {
   const claimed = sql.literal(`${kind}_claimed`)
   const found = sql.literal(`${kind}_candidates`)
 
@@ -531,7 +529,7 @@ export const claimIntents = ({
     sql,
     now: sql`${now}::bigint`,
     intents,
-  }) as Statement.Statement<ClaimedEffect>
+  }) as Statement.Statement<ClaimedJob>
 
 /** The widest probe, as a multiple of twice the free capacity. */
 const MAX_WIDEN = 64
@@ -544,7 +542,7 @@ const MAX_WIDEN = 64
 const widened = (
   current: number,
   rows: ReadonlyArray<ClaimedRow>,
-  kind: "intent" | "effect",
+  kind: "intent" | "job",
   capacity: number,
 ) => {
   const taken = rows.filter((row) => row.kind === kind)
@@ -553,7 +551,7 @@ const widened = (
   return taken.length < capacity && found > taken.length ? Math.min(current * 2, MAX_WIDEN) : 1
 }
 
-/** Logs a non-interrupt failure of the effect under `message` and completes with `void`; an interruption stays one. */
+/** Logs a non-interrupt failure of the job under `message` and completes with `void`; an interruption stays one. */
 const logFailure =
   (message: string) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A | void, never, R> =>
@@ -564,13 +562,13 @@ const logFailure =
 /**
  * The outbox relay of one runner among any number sharing the database. Each
  * pass claims only as many due intents as it has free delivery slots and only
- * as many effects as its executor pool has permits, then starts each one at
+ * as many jobs as its executor pool has permits, then starts each one at
  * once, so no claimed row waits locally while its lease runs down. A pass runs
  * uninterruptibly under a lock so every row a claim returns reaches a fiber
  * that can release it. A claim that saw more due candidates than it took
  * makes each freed slot claim again instead of waiting for the poll, and one
  * that left capacity free although it found more candidates doubles the next
- * probe. When both capped and uncapped effects are due, passes alternate which
+ * probe. When both capped and uncapped jobs are due, passes alternate which
  * claims first, so a steady stream of either can't take every permit.
  *
  * An intent is delivered as a direct command whose command id is the intent
@@ -582,7 +580,7 @@ const logFailure =
  * failure is a committed receipt, so only a missing receipt retries. An
  * interrupted delivery makes its row due at once.
  *
- * An effect attempt runs on the pool, outside the pass, and renews its claim
+ * A job attempt runs on the pool, outside the pass, and renews its claim
  * every `cancelCheckMs` (at most a third of the lease) while it runs, which
  * also picks up a cancellation committed on another runner; a local one
  * signals the attempt directly. The lease is measured on this runner from when
@@ -597,10 +595,10 @@ const logFailure =
  *
  * The first success of any attempt turns the row into an intent to its
  * `onSuccess` route; exhausting retries turns it into one to `onDeadLetter`.
- * The route is then delivered like any intent, so it commits once per effect
- * id however often the executor ran. A success of a capped effect waits while
+ * The route is then delivered like any intent, so it commits once per job
+ * id however often the executor ran. A success of a capped job waits while
  * a newer attempt's lease is live, so it does not free the slot early, and a
- * settled attempt of a capped effect wakes the oldest waiting row of its
+ * settled attempt of a capped job wakes the oldest waiting row of its
  * actor. Failures and dead letters name the attempt they settle, so a stale
  * attempt changes nothing, and a failure is recorded before its dead letter so
  * a failed dead-letter transaction is retried with this attempt's cause. A
@@ -609,21 +607,21 @@ const logFailure =
  * attempts left it (`maybe_applied`). A running attempt is registered before
  * the pass releases its lock and until its outcome is written, so every clock
  * jump after the claim moves its lease. A committed terminal settle closes the
- * effect's progress; a retryable one leaves it open. A dead letter is recorded
+ * job's progress; a retryable one leaves it open. A dead letter is recorded
  * even when its row's request is unreadable, since only the fault hook needs
  * the request.
  *
- * A cancelled effect is claimed only to be settled, with what is known: `Failed`
+ * A cancelled job is claimed only to be settled, with what is known: `Failed`
  * only when no attempt can have applied the call, otherwise `Unknown`,
  * because interrupting a started call does not undo it. A result `onSuccess`
- * rejects still reaches `onCancelled` if the effect was cancelled, and a
+ * rejects still reaches `onCancelled` if the job was cancelled, and a
  * success that lands after the row was cancelled is reported as the
  * cancellation's outcome. A success no settle matched is recorded as an
  * ambiguous dead letter instead of routing a second outcome. A dead letter
  * that loses to a cancellation settles the row as cancelled instead.
  *
  * Subscription work runs in its own slots, so a subscription backlog never
- * delays intents, timers, or effects; expansion work starts the rows it leased
+ * delays intents, timers, or jobs; expansion work starts the rows it leased
  * without a claim pass; `schedules` names the cron actors whose ticks this
  * runner claims. The returned handle: `run` loops passes on a jittered
  * poll and `wake`; `drain` waits for in-flight work, which may stage more,
@@ -636,7 +634,7 @@ const logFailure =
  * receipt answers a redelivery of work that did commit; `interruptAttempts`
  * interrupts running attempts and returns how many, leaving their claims and
  * `ambiguous` marks because the provider may have applied the call, so another
- * runner takes the effect over once the lease ends; `attemptsIdle` waits for
+ * runner takes the job over once the lease ends; `attemptsIdle` waits for
  * attempts to end; `extendLeases` moves running attempts' leases with a jump of
  * the outbox clock, as the renewals during that time would have, holding the
  * pass lock so no claim reads the clock between the moved leases and the jump;
@@ -706,9 +704,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
     start: startWork,
   }
 
-  const more = { intents: false, effects: false, subscriptions: false }
+  const more = { intents: false, jobs: false, subscriptions: false }
   let cappedTurn = false
-  const widen = { intents: 1, effects: 1 }
+  const widen = { intents: 1, jobs: 1 }
   let stopping = false
 
   const running = new Map<
@@ -837,8 +835,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
   })
 
   const runAttempt = Effect.fnUntraced(function* (
-    row: ClaimedEffect,
-    registered: RegisteredEffect,
+    row: ClaimedJob,
+    registered: RegisteredJob,
     claimedAt: bigint,
     claimSignal: Deferred.Deferred<void>,
   ) {
@@ -848,18 +846,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
       actor: row.actor_type,
       id: row.actor_id,
       tenant: row.tenant_id,
-      effect: row.command,
-      effectId: row.intent_id,
+      job: row.command,
+      jobId: row.intent_id,
     })
 
-    const effectRow = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
-      AND kind = 'effect'`
+    const jobRow = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
+      AND kind = 'job'`
 
-    const attemptRow = (attempts: number) => sql`${effectRow} AND attempts = ${attempts}`
+    const attemptRow = (attempts: number) => sql`${jobRow} AND attempts = ${attempts}`
 
     const settleTo = (
       route: { readonly command: string; readonly payload: string } | undefined,
-      guard: typeof effectRow,
+      guard: typeof jobRow,
     ) =>
       Effect.gen(function* () {
         const at = yield* databaseTime
@@ -885,7 +883,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       sql.withTransaction(
         Effect.gen(function* () {
           const letter = {
-            effectId: row.intent_id,
+            jobId: row.intent_id,
             attempts,
             cause,
             ambiguous,
@@ -901,12 +899,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
           )
             return false
 
-          yield* Effect.logWarning("Effect dead-lettered after its last attempt", cause).pipe(
-            annotate,
-          )
-          yield* tally(Metrics.deadLetters, { actor_type: row.actor_type, effect: row.command }, 1)
-          yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id, tenant_id, actor_type,
-              actor_id, effect, payload, payload_version, attempts, cause, ambiguous, dead_at_ms)
+          yield* Effect.logWarning("Job dead-lettered after its last attempt", cause).pipe(annotate)
+          yield* tally(Metrics.deadLetters, { actor_type: row.actor_type, job: row.command }, 1)
+          yield* sql`INSERT INTO actor_dead_letters (routing_key, job_id, tenant_id, actor_type,
+              actor_id, job, payload, payload_version, attempts, cause, ambiguous, dead_at_ms)
             VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
               ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempts},
               ${cause}, ${ambiguous}, ${yield* databaseTime})`
@@ -920,7 +916,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       )
 
     /**
-     * Settles a cancelled effect that has no result. It is `Failed` only when
+     * Settles a cancelled job that has no result. It is `Failed` only when
      * no attempt can have applied the call; otherwise `Unknown`. Without an
      * `onCancelled` route, an unknown outcome is dead-lettered as ambiguous
      * and a failed one is dropped with a log line.
@@ -932,7 +928,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
         if (registered.routesCancelled) {
           const route = yield* registered.cancelled(row.payload, row.payload_version, {
-            effectId: row.intent_id,
+            jobId: row.intent_id,
             attempts,
             outcome: { _tag: known, cause },
             ambiguous,
@@ -946,7 +942,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         const dropped = yield* settleTo(undefined, guard)
 
         if (dropped)
-          yield* Effect.logInfo("Cancelled effect dropped after a failed attempt", cause).pipe(
+          yield* Effect.logInfo("Cancelled job dropped after a failed attempt", cause).pipe(
             Effect.annotateLogs({ attempt: attempts }),
             annotate,
           )
@@ -1006,7 +1002,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     yield* hooks.at("beforeExecute", request)
 
     if ((yield* Clock.currentTimeNanos) - confirmed >= leaseNanos)
-      return yield* warnAttempt("Effect attempt outlived its lease before it started")
+      return yield* warnAttempt("Job attempt outlived its lease before it started")
 
     let signal = claimSignal
 
@@ -1031,7 +1027,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.interrupt
-              : Effect.logWarning("Effect lease renewal failed", cause).pipe(
+              : Effect.logWarning("Job lease renewal failed", cause).pipe(
                   annotate,
                   Effect.as(undefined),
                 ),
@@ -1059,8 +1055,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
     const slot = yield* progress.open({
       ref,
-      effectId: row.intent_id,
-      effect: row.command,
+      jobId: row.intent_id,
+      job: row.command,
       attempt,
       everyMs: registered.progressEveryMs,
       leaseUntil: () => lease.until,
@@ -1069,7 +1065,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     return yield* Effect.gen(function* () {
       const outcome = yield* registered
         .execute(row.payload, row.payload_version, {
-          effectId: row.intent_id,
+          jobId: row.intent_id,
           attempt,
           principal: principal(request.caller),
           ref,
@@ -1078,16 +1074,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
         })
         .pipe(
           Effect.withSpan(
-            SpanNames.effect(row.actor_type, row.command),
+            SpanNames.job(row.actor_type, row.command),
             {
               kind: "client",
               attributes: {
                 "actor.type": row.actor_type,
                 "actor.tenant": row.tenant_id,
                 "actor.id": row.actor_id,
-                "effect.name": row.command,
-                "effect.id": row.intent_id,
-                "effect.attempt": attempt,
+                "job.name": row.command,
+                "job.id": row.intent_id,
+                "job.attempt": attempt,
               },
             },
             { captureStackTrace: false },
@@ -1098,13 +1094,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
           Effect.ensuring(slot.close),
         )
 
-      if (outcome === "lost") return yield* warnAttempt("Effect attempt lost its lease")
+      if (outcome === "lost") return yield* warnAttempt("Job attempt lost its lease")
 
       if (outcome === "deadline")
-        return yield* warnAttempt("Effect attempt outlived its lease; interrupted")
+        return yield* warnAttempt("Job attempt outlived its lease; interrupted")
 
       if (outcome === "cancelled") {
-        yield* Effect.logInfo("Effect attempt interrupted by its cancellation").pipe(
+        yield* Effect.logInfo("Job attempt interrupted by its cancellation").pipe(
           Effect.annotateLogs({ attempt }),
           annotate,
         )
@@ -1117,16 +1113,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
       }) =>
         Effect.gen(function* () {
           const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
-          WHERE routing_key = ${routingKey} AND effect_id = ${row.intent_id} RETURNING 1`
+          WHERE routing_key = ${routingKey} AND job_id = ${row.intent_id} RETURNING 1`
 
-          if (late.length > 0)
-            return yield* warnAttempt("Effect succeeded after it was dead-lettered")
+          if (late.length > 0) return yield* warnAttempt("Job succeeded after it was dead-lettered")
 
           const reported = routes.cancelled?.command
 
           if (registered.routesCancelled && reported !== undefined) {
-            const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, effect_id,
-              tenant_id, actor_type, actor_id, effect, payload, payload_version, attempts, cause,
+            const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, job_id,
+              tenant_id, actor_type, actor_id, job, payload, payload_version, attempts, cause,
               ambiguous, dead_at_ms)
             SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
               ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempt},
@@ -1140,17 +1135,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 AND actor_id = ${row.actor_id} AND command_id = ${row.intent_id}
                 AND command = ${reported}
             )
-            ON CONFLICT (routing_key, effect_id) DO UPDATE SET ambiguous = true
+            ON CONFLICT (routing_key, job_id) DO UPDATE SET ambiguous = true
             RETURNING 1`
 
             if (recorded.length > 0)
-              yield* warnAttempt("Effect succeeded after its cancellation settled")
+              yield* warnAttempt("Job succeeded after its cancellation settled")
           }
         })
 
       const settleSuccess = (
         route: { readonly command: string; readonly payload: string } | undefined,
-        guard: typeof effectRow,
+        guard: typeof jobRow,
       ) =>
         registered.perActor === undefined
           ? settleTo(route, guard)
@@ -1180,7 +1175,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         if (
           yield* settleSuccess(
             outcome.success.cancelled,
-            sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
+            sql`${jobRow} AND cancelled_at_ms IS NOT NULL`,
           )
         )
           return
@@ -1190,13 +1185,13 @@ export const outboxRelay = Effect.fnUntraced(function* (
         yield* hooks.at("afterExecute", request)
         const routes = outcome.success
 
-        if (yield* settleSuccess(routes.success, sql`${effectRow} AND cancelled_at_ms IS NULL`))
-          return yield* tally(Metrics.relayDelivered, { kind: "effect" }, 1)
+        if (yield* settleSuccess(routes.success, sql`${jobRow} AND cancelled_at_ms IS NULL`))
+          return yield* tally(Metrics.relayDelivered, { kind: "job" }, 1)
 
         if (
           yield* settleSuccess(
             registered.routesCancelled ? routes.cancelled : routes.success,
-            sql`${effectRow} AND cancelled_at_ms IS NOT NULL`,
+            sql`${jobRow} AND cancelled_at_ms IS NOT NULL`,
           )
         )
           return
@@ -1250,17 +1245,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (last) return yield* exhaustUnlessCancelled(attempt, cause, ambiguous)
 
-      yield* Effect.logWarning("Effect attempt failed; retrying with backoff", cause).pipe(
+      yield* Effect.logWarning("Job attempt failed; retrying with backoff", cause).pipe(
         Effect.annotateLogs({ attempt, ambiguous }),
         annotate,
       )
-      yield* tally(Metrics.relayRetried, { kind: "effect" }, 1)
+      yield* tally(Metrics.relayRetried, { kind: "job" }, 1)
     }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })
 
   const settleAttempt = (
-    row: ClaimedEffect,
-    registered: RegisteredEffect,
+    row: ClaimedJob,
+    registered: RegisteredJob,
     claimedAt: bigint,
     claimSignal: Deferred.Deferred<void>,
   ) => {
@@ -1271,8 +1266,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
               Effect.flatMap((request) =>
                 progress.closed({
                   ref: ActorRef.make(request.ref),
-                  effectId: row.intent_id,
-                  effect: row.command,
+                  jobId: row.intent_id,
+                  job: row.command,
                   attempt: row.attempts,
                   everyMs: registered.progressEveryMs,
                 }),
@@ -1297,7 +1292,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
         )
   }
 
-  const freed = (kind: "intents" | "effects" | "subscriptions") =>
+  const freed = (kind: "intents" | "jobs" | "subscriptions") =>
     Effect.suspend(() => (more[kind] ? wakeRelay : Effect.void))
 
   const interruptible = [deliveries, ...Object.values(subscriptionWork)]
@@ -1344,7 +1339,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           const claimGroups = (limit: number) =>
             Effect.gen(function* () {
-              const claimed: Array<ClaimedEffect> = []
+              const claimed: Array<ClaimedJob> = []
               const groups = yield* cappedGroups({ sql, now, executors: capped, limit })
 
               for (const group of groups) {
@@ -1353,7 +1348,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 if (left <= 0) break
 
                 const { registered } = capped.find(
-                  ({ actor, effect }) => actor === group.actor_type && effect === group.command,
+                  ({ actor, job }) => actor === group.actor_type && job === group.command,
                 )!
 
                 claimed.push(
@@ -1398,27 +1393,27 @@ export const outboxRelay = Effect.fnUntraced(function* (
                     cronActors: [...schedules().keys()],
                   }
                 : undefined,
-            effects:
+            jobs:
               localPermits > 0 && local.length > 0
                 ? {
                     permits: localPermits,
                     leaseMs: settings.executorLeaseMs,
                     executors: local,
-                    probe: 2 * localPermits * widen.effects,
+                    probe: 2 * localPermits * widen.jobs,
                   }
                 : undefined,
             subscriptions: workSlots === undefined ? undefined : subscriptions!.claim(workSlots),
           })
 
           const intents = rows.filter((row) => row.kind === "intent")
-          const uncapped = rows.filter((row) => row.kind === "effect")
+          const uncapped = rows.filter((row) => row.kind === "job")
 
           const late =
             !cappedFirst && capped.length > 0 && localPermits - uncapped.length > 0
               ? yield* claimGroups(localPermits - uncapped.length)
               : { claimed: [], backlog: false }
 
-          const effects = [...early.claimed, ...uncapped, ...late.claimed]
+          const jobs = [...early.claimed, ...uncapped, ...late.claimed]
           const cappedBacklog = early.backlog || late.backlog
 
           if (slots > 0) {
@@ -1427,9 +1422,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
 
           if (permits > 0 && all.length > 0) {
-            more.effects =
+            more.jobs =
               cappedBacklog || (uncapped.length > 0 && uncapped[0]!.candidates > uncapped.length)
-            widen.effects = widened(widen.effects, rows, "effect", localPermits)
+            widen.jobs = widened(widen.jobs, rows, "job", localPermits)
           }
 
           let claimedWork = 0
@@ -1459,9 +1454,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
               ),
             )
 
-          for (const row of effects) {
+          for (const row of jobs) {
             const registered = all.find(
-              ({ actor, effect }) => actor === row.actor_type && effect === row.command,
+              ({ actor, job }) => actor === row.actor_type && job === row.command,
             )!.registered
 
             running.set(row.intent_id, {
@@ -1474,15 +1469,15 @@ export const outboxRelay = Effect.fnUntraced(function* (
               attempts,
               settleAttempt(row, registered, claimedAt, claimSignal).pipe(
                 Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
-                logFailure("Effect attempt crashed before it settled"),
-                Effect.ensuring(freed("effects")),
+                logFailure("Job attempt crashed before it settled"),
+                Effect.ensuring(freed("jobs")),
               ),
             )
           }
 
           return {
-            claimed: intents.length + effects.length + claimedWork,
-            backlog: more.intents || more.effects || more.subscriptions,
+            claimed: intents.length + jobs.length + claimedWork,
+            backlog: more.intents || more.jobs || more.subscriptions,
             quiet,
           }
         }),
@@ -1529,7 +1524,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           ([intentId, { routingKey, attempt, lease }]) =>
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-              AND kind = 'effect' AND attempts = ${attempt}`.pipe(
+              AND kind = 'job' AND attempts = ${attempt}`.pipe(
               Effect.tap(
                 Effect.sync(() => {
                   lease.until += millis
