@@ -394,7 +394,7 @@ export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> 
               yield* test.advance("2 minutes")
               expect(yield* test.inspect(vault.ref)).toMatchObject({
                 state: { charged: 9 },
-                effects: 0,
+                jobs: 0,
               })
             }),
           )
@@ -409,11 +409,11 @@ export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> 
               const vault = yield* vaultOf(tenant, "restore-effect")
               const restored = yield* test.inspect(vault.ref)
               expect(restored.state).toEqual({})
-              expect(restored.effects).toBe(1)
+              expect(restored.jobs).toBe(1)
               yield* test.advance("2 minutes")
               expect(yield* test.inspect(vault.ref)).toMatchObject({
                 state: { charged: 9 },
-                effects: 0,
+                jobs: 0,
               })
               expect(yield* test.receiptsFor(vault.ref, "Charged")).toBe(1)
               yield* test.advance("2 minutes")

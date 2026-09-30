@@ -264,7 +264,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           expect(yield* test.inspect(author.ref)).toMatchObject({
             receipts: 2,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           yield* test.advance("1 hour")
           expect((yield* authorState("route")).routed.length).toBe(1)
@@ -284,7 +284,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           yield* pause.reached
           yield* test.advance(0)
           expect(attemptsOf(fixture, "visibility")).toEqual([])
-          expect(yield* test.inspect(author.ref)).toMatchObject({ receipts: 0, effects: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ receipts: 0, jobs: 0 })
           yield* pause.release
           yield* Fiber.join(waiter)
           yield* test.advance(0)
@@ -305,7 +305,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           expect(Exit.isFailure(died) && Cause.pretty(died.cause)).toContain("Author defect")
           expect(yield* test.inspect(author.ref)).toMatchObject({
             receipts: 1,
-            effects: 0,
+            jobs: 0,
             outbox: 0,
           })
           yield* test.crashNext("beforeCommit")
@@ -315,7 +315,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           expect((yield* authorState("rollback")).routed.length).toBe(1)
           expect(yield* test.inspect(author.ref)).toMatchObject({
             receipts: 3,
-            effects: 0,
+            jobs: 0,
             outbox: 0,
           })
         }),
@@ -331,7 +331,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           yield* test.crashNext("afterExecute")
           yield* author.Post("twice")
           yield* test.advance(0)
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 1, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 1, outbox: 0 })
           expect((yield* authorState("twice")).routed).toEqual([])
           yield* test.advance("1 minute")
           const attempts = attemptsOf(fixture, "twice")
@@ -346,7 +346,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
             effectId,
           ])
           expect(yield* test.receiptsFor(author.ref, "Moderated")).toBe(1)
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -370,7 +370,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           expect(attemptsOf(fixture, "route-crash").length).toBe(1)
           expect((yield* authorState("route-crash")).routed.length).toBe(1)
           expect(yield* test.receiptsFor(author.ref, "Moderated")).toBe(1)
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -385,11 +385,11 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           yield* author.Post("claimed")
           yield* test.advance(0)
           expect(attemptsOf(fixture, "before-execute")).toEqual([])
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 1 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 1 })
           yield* test.advance("1 minute")
           expect(attemptsOf(fixture, "before-execute").map(({ attempt }) => attempt)).toEqual([2])
           expect((yield* authorState("before-execute")).routed.length).toBe(1)
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -424,7 +424,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           ])
           yield* test.advance("1 hour")
           expect((yield* authorState("exhausted")).dead.length).toBe(1)
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -456,7 +456,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
             { job: "Moderate", attempts: 2, ambiguous: true },
             { job: "Notify", attempts: 1, ambiguous: true },
           ])
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -477,7 +477,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           expect(yield* deadLetters("unroutable")).toEqual([
             { job: "Measure", attempts: 1, ambiguous: true },
           ])
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -506,7 +506,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           expect(yield* deadLetters("unroutable-retry")).toEqual([
             { job: "Measure", attempts: 1, ambiguous: true },
           ])
-          expect(yield* test.inspect(author.ref)).toMatchObject({ effects: 0, outbox: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ jobs: 0, outbox: 0 })
         }),
       ),
   },
@@ -524,7 +524,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           )
           yield* test.advance(0)
           expect(attemptsOf(fixture, "escape")).toEqual([])
-          expect(yield* test.inspect(author.ref)).toMatchObject({ receipts: 1, effects: 0 })
+          expect(yield* test.inspect(author.ref)).toMatchObject({ receipts: 1, jobs: 0 })
         }),
       ),
   },

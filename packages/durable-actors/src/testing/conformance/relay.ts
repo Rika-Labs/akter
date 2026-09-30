@@ -1187,7 +1187,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
     name: "keeps a newer attempt's row when an attempt that lost its lease fails late",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,

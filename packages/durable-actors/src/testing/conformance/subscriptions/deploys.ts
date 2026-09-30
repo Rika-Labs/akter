@@ -217,7 +217,7 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase<Subscr
   },
   {
     name: "keeps the tag summary exact when many subscriptions of one source change at once, and deletes counts that reach zero",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -252,9 +252,9 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase<Subscr
                 Effect.flatMap((follower) =>
                   index % 2 === 0
                     ? follower.Unfollow("crowd-order")
-                    : follower.Unfollow("crowd-order").pipe(
-                        Effect.andThen(follower.Follow({ source: "crowd-order" })),
-                      ),
+                    : follower
+                        .Unfollow("crowd-order")
+                        .pipe(Effect.andThen(follower.Follow({ source: "crowd-order" }))),
                 ),
               ),
             { concurrency: "unbounded", discard: true },

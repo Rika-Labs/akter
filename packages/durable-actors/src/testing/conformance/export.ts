@@ -417,7 +417,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
               receipts: 0,
               events: 0,
               outbox: 1,
-              effects: 1,
+              jobs: 1,
             })
 
             yield* test.advance(Duration.minutes(2))
@@ -532,7 +532,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
               receipts: 0,
               events: 0,
               outbox: 0,
-              effects: 0,
+              jobs: 0,
             })
             expect(
               (yield* sql<{ count: number }>`SELECT count(*)::int AS count FROM actor_state`)[0]!

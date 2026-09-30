@@ -680,7 +680,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           yield* eventually(
             Effect.map(
               stateOf(owner, id),
-              (inspection) => inspection.effects + inspection.outbox === 0,
+              (inspection) => inspection.jobs + inspection.outbox === 0,
             ),
             "the pending effect to run",
           )
@@ -723,7 +723,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           yield* eventually(
             Effect.map(
               stateOf(owner, id),
-              (inspection) => inspection.effects + inspection.outbox === 0,
+              (inspection) => inspection.jobs + inspection.outbox === 0,
             ),
             "the interrupted effect to be taken over",
           )

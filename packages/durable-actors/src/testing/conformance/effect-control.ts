@@ -898,7 +898,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
               ["oldest", "next"].map((intentId, index) => ({
                 routing_key: 7,
                 intent_id: intentId,
-              kind: "job",
+                kind: "job",
                 bucket: 0,
                 due_at_ms: leaseEnd,
                 scheduled_at_ms: now + index,
@@ -993,7 +993,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
             yield* sql`INSERT INTO actor_outbox ${sql.insert({
               routing_key: 8,
               intent_id: "oldest",
-            kind: "job",
+              kind: "job",
               bucket: 0,
               due_at_ms: now + 60_000,
               scheduled_at_ms: now,
@@ -1087,7 +1087,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
               ].map(({ due, ...row }, index) => ({
                 ...row,
                 routing_key: 9,
-              kind: "job",
+                kind: "job",
                 bucket: 0,
                 due_at_ms: due,
                 scheduled_at_ms: now + index,

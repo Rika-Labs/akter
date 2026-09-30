@@ -198,7 +198,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase<ProgressFixture>
           expect(records.at(-1) && ProgressRecord.$is("ProgressClosed")(records.at(-1)!)).toBe(true)
           expect(records.at(-1)).toMatchObject({ attempt: 1 })
           expect(yield* outputsOf("latest")).toEqual(["a.mp4"])
-          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, effects: 0 })
+          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, jobs: 0 })
         }),
       ),
   },
@@ -293,7 +293,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase<ProgressFixture>
           expect(framesOf(records).map((frame) => frame.attempt)).toEqual([1, 2])
           expect(closedOf(records)).toMatchObject([{ attempt: 2 }])
           expect(yield* outputsOf("dead")).toEqual([])
-          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, effects: 0 })
+          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, jobs: 0 })
         }),
       ),
   },
@@ -844,13 +844,13 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase<Progress
           const settled = yield* test.inspect(studio.ref).pipe(
             Effect.repeat({
               schedule: Schedule.spaced("20 millis"),
-              until: (inspection) => inspection.outbox === 0 && inspection.effects === 0,
+              until: (inspection) => inspection.outbox === 0 && inspection.jobs === 0,
             }),
             Effect.timeout(WAIT),
             Effect.orDie,
           )
 
-          expect(settled).toMatchObject({ outbox: 0, effects: 0 })
+          expect(settled).toMatchObject({ outbox: 0, jobs: 0 })
           expect(yield* test.receiptsFor(studio.ref, "Finished")).toBe(1)
           const sent = (yield* test.progress).filter((record) => record.ref.id === "dropped")
           expect(sent.some(ProgressRecord.$is("Progress"))).toBe(true)

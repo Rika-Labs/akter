@@ -320,7 +320,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
               receipts: 0,
               events: 0,
               outbox: 0,
-              effects: 0,
+              jobs: 0,
             })
           expect(yield* minted.Ping()).toBe("minted")
           expect(yield* named.Ping()).toBe("named")
@@ -333,7 +333,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
             receipts: 1,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
         }),
       ),
@@ -354,7 +354,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           const reject = actor.Create(false)
           const before = fixture.creates
@@ -367,7 +367,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
             receipts: 1,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           expect(yield* actor.Read().pipe(Effect.flip)).toMatchObject({
             reason: NotCreated.make({}),
@@ -629,7 +629,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
               receipts: 2,
               events: 0,
               outbox: 0,
-              effects: 0,
+              jobs: 0,
               generation: String(Number(before.generation) + 1),
             })
           }),
@@ -693,7 +693,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
             receipts: 1,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
             generation: "1",
           })
         }),

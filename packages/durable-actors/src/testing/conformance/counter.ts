@@ -138,7 +138,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           const increment = counter.Increment(7)
           expect(yield* increment).toBe(7)
@@ -150,7 +150,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 2,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
         }),
       ),
@@ -176,7 +176,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 2,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
         }),
       ),
@@ -398,7 +398,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           yield* Fiber.interrupt(waiter)
           yield* pause.release
@@ -476,7 +476,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           expect(yield* counter.Increment(4)).toBe(4)
           yield* test.invalidate(counter.ref)
@@ -577,7 +577,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
         }).pipe(
           Effect.ensuring(
@@ -606,7 +606,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 2,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
         }),
       ),
@@ -629,7 +629,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
           yield* counter.Escape()
           const escapedExit = yield* fixture.escaped.pipe(Effect.exit)
@@ -678,7 +678,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             receipts: 0,
             events: 0,
             outbox: 0,
-            effects: 0,
+            jobs: 0,
           })
         }),
       ),
@@ -1077,7 +1077,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
                   receipts: 0,
                   events: 0,
                   outbox: 0,
-                  effects: 0,
+                  jobs: 0,
                 })
                 expect(yield* counter.Increment(6)).toBe(6)
                 expect(yield* test.inspect(counter.ref)).toMatchObject({

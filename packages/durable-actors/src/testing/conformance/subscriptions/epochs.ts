@@ -125,7 +125,7 @@ export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase<Subscri
   },
   {
     name: 'fences a delivery settling after unsubscribe and resubscribe with from: "start", keeping the tag summary exact',
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
