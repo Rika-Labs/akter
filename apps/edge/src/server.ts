@@ -12,6 +12,11 @@ import { keyRing } from "./signing/keys.ts"
 import { revocationPush } from "./signing/revocation.ts"
 import { Inbound, proxySocket, type SocketData } from "./sockets/proxy.ts"
 
+const utf8 = new TextEncoder()
+
+/** The close code for a client that sends past its socket buffer. */
+const POLICY_VIOLATION = 1008
+
 const offeredFirst = (request: Request) =>
   (request.headers.get("sec-websocket-protocol") ?? "").split(",")[0]?.trim() === SUBPROTOCOL
 
@@ -78,6 +83,7 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
         session,
         upgrade,
         inbox: yield* Queue.unbounded<Inbound>(),
+        pending: 0,
       }
 
       if (server.upgrade(request, { data, headers: { "sec-websocket-protocol": SUBPROTOCOL } }))
@@ -91,14 +97,21 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
     port: options.port,
     fetch: (request, served) => run(handle(request, served)),
     websocket: {
+      maxPayloadLength: options.socketMessageBytes,
       open: (ws) => void run(proxySocket(edge, ws)),
       message: (ws, message) => {
-        Queue.offerUnsafe(
-          ws.data.inbox,
-          Inbound.Message({
-            data: Predicate.isString(message) ? message : new Uint8Array(message),
-          }),
-        )
+        const data = Predicate.isString(message) ? message : new Uint8Array(message)
+        const bytes = Predicate.isString(data) ? utf8.encode(data).byteLength : data.byteLength
+
+        ws.data.pending += bytes
+
+        if (ws.data.pending > options.socketBufferBytes) {
+          ws.close(POLICY_VIOLATION, "Client sent faster than its runner reads")
+
+          return
+        }
+
+        Queue.offerUnsafe(ws.data.inbox, Inbound.Message({ data, bytes }))
       },
       close: (ws) => {
         Queue.offerUnsafe(ws.data.inbox, Inbound.Closed())

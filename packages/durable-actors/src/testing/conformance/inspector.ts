@@ -95,17 +95,29 @@ export const inspectorLayer = Layer.mergeAll(
   ),
 )
 
-const operators = Actor.auth.make((request) =>
-  Option.match(Headers.get(request.headers, "authorization"), {
-    onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
-    onSome: (header) => {
-      const match = /^Bearer ([A-Za-z0-9._:-]+)$/.exec(header)
+/** How many requests reached the operators' provider. */
+const reached = { count: 0 }
 
-      return match === null
-        ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
-        : Effect.succeed({ tenant: match[1]!, caller: User.make({ subject: "operator" }) })
+const operators = Actor.auth.make((request) =>
+  Option.match(
+    Headers.get(request.headers, "authorization").pipe(
+      Option.map((header) => {
+        reached.count += 1
+
+        return header
+      }),
+    ),
+    {
+      onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
+      onSome: (header) => {
+        const match = /^Bearer ([A-Za-z0-9._:-]+)$/.exec(header)
+
+        return match === null
+          ? Effect.fail(Unauthorized.make({ code: "invalid_credentials" }))
+          : Effect.succeed({ tenant: match[1]!, caller: User.make({ subject: "operator" }) })
+      },
     },
-  }),
+  ),
 )
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
@@ -445,7 +457,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "inspector: reads only the authenticated principal's tenant and refuses missing credentials",
+    name: "inspector: reads only the authenticated principal's tenant, refuses missing credentials, and refuses an oversized one before its provider runs",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -508,6 +520,13 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(field(foreign.body, "reason", "code")).toBe("origin_not_allowed")
           expect(field(foreign.body, "state")).toBe(null)
           expect(yield* get("/actor?type=Inspected&id=shared", home, "self")).toEqual(shared)
+
+          const before = reached.count
+          const oversized = yield* get("/overview", "a".repeat(9 * 1024))
+
+          expect(oversized.status).toBe(413)
+          expect(field(oversized.body, "reason", "code")).toBe("too_large")
+          expect(reached.count).toBe(before)
 
           const everyone = list((yield* get("/actors?type=Inspected", abroad)).body, "actors")
           const paged: Array<Schema.Json> = []

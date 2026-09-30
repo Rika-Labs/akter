@@ -7,6 +7,7 @@ import {
   Encoding,
   Fiber,
   Layer,
+  Option,
   Schedule,
   Schema,
   type Scope,
@@ -830,6 +831,7 @@ export const delayingProxy = Effect.fnUntraced(function* (target: string) {
   const delays = new Map<string, number>()
   const failures = new Map<string, number>()
   const arrived: Array<string> = []
+  const cookies: Array<string | null> = []
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
   const context = yield* Effect.context<never>()
 
@@ -839,6 +841,7 @@ export const delayingProxy = Effect.fnUntraced(function* (target: string) {
       const body = new Uint8Array(yield* Effect.promise(() => request.arrayBuffer()))
 
       arrived.push(path)
+      cookies.push(request.headers.get("cookie"))
 
       const failing = failures.get(path) ?? 0
 
@@ -885,6 +888,8 @@ export const delayingProxy = Effect.fnUntraced(function* (target: string) {
     /** Answers the next `times` requests for `path` with 503. */
     fail: (path: string, times: number) => Effect.sync(() => failures.set(path, times)),
     arrived: Effect.sync(() => arrived.length),
+    /** The `cookie` header of each request that reached the proxy, `null` when it had none. */
+    cookies: Effect.sync(() => [...cookies]),
   }
 })
 
@@ -944,6 +949,71 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(declared.status).toBe(413)
           expect(declared.text.includes('"code":"too_large"')).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "forwards no client cookie to a runner",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({ primaryRegion: REGION })
+          const runner = yield* edgeRunner(edge, REGION)
+          const door = yield* delayingProxy(runner.url)
+
+          yield* edge.addRunner({ region: REGION, url: door.url })
+
+          const send = yield* clientFor(edge.url)
+          const tenant = yield* tenantOf
+          const key = yield* edge.issueApiKey({ tenant, subject: "alice" })
+
+          const reply = yield* send({
+            ...(yield* command(runner, "cookies", "Whoami")),
+            headers: { ...bearerHeaders(key), cookie: "session=secret-session-cookie" },
+          })
+
+          expect(reply).toMatchObject({ status: 200, body: `${tenant}/alice` })
+          expect(yield* door.cookies).toEqual([null])
+        }),
+      ),
+  },
+  {
+    name: "closes a client socket that sends a message over the frame limit, or floods past its buffer while no runner has accepted it",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({ primaryRegion: REGION })
+
+          const silent = Bun.listen({
+            hostname: "127.0.0.1",
+            port: 0,
+            socket: { data: () => undefined },
+          })
+
+          yield* Effect.addFinalizer(() => Effect.sync(() => silent.stop(true)))
+          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${silent.port}` })
+
+          const host = new URL(edge.url).host
+          const oversized = yield* socket(host, "oversized")
+
+          yield* oversized.send({ t: "hello", params: { name: "alice" } })
+          yield* oversized.sendRaw("x".repeat(70 * 1024))
+
+          expect([1006, 1009]).toContain((yield* oversized.closed).code)
+          expect(yield* oversized.poll(100)).toEqual(Option.none())
+
+          const flooding = yield* socket(host, "flooding")
+
+          yield* flooding.send({ t: "hello", params: { name: "alice" } })
+
+          for (let index = 0; index < 40; index++) yield* flooding.sendRaw("x".repeat(60 * 1024))
+
+          expect((yield* flooding.closed).code).toBe(1008)
+          expect(yield* flooding.poll(100)).toEqual(Option.none())
         }),
       ),
   },

@@ -41,7 +41,7 @@ export interface Edge {
 
 /**
  * Hop-by-hop headers, and credentials a runner must never see: it trusts only
- * the assertion.
+ * the assertion, and hosted runners read no cookie.
  */
 const DROPPED = new Set([
   "connection",
@@ -54,6 +54,7 @@ const DROPPED = new Set([
   "host",
   "content-length",
   "authorization",
+  "cookie",
   ASSERTION_HEADER,
 ])
 

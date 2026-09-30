@@ -36,6 +36,13 @@ export interface EdgeOptions {
   readonly publicationLead: Duration.Duration
   /** The largest request body the edge forwards. Default 1 MiB. */
   readonly requestBytes: number
+  /** The largest client WebSocket message the edge accepts, as runners do. Default 64 KiB. */
+  readonly socketMessageBytes: number
+  /**
+   * The most client WebSocket bytes the edge holds for one socket before a
+   * runner takes them; a client past it is closed. Default 1 MiB.
+   */
+  readonly socketBufferBytes: number
   /**
    * How long a request to a scale-to-zero deployment waits for a runner to be
    * started and to answer ready before it is refused. Default 30 seconds.
@@ -84,6 +91,8 @@ export const loadOptions = Effect.gen(function* () {
     pollEvery: Duration.seconds(5),
     publicationLead: Duration.minutes(5),
     requestBytes: 1024 * 1024,
+    socketMessageBytes: 64 * 1024,
+    socketBufferBytes: 1024 * 1024,
     coldStartTimeout: yield* Config.Duration("EDGE_COLD_START_TIMEOUT").pipe(
       Config.withDefault(Duration.seconds(30)),
     ),

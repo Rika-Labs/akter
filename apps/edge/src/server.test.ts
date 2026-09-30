@@ -117,6 +117,8 @@ const startEdge = Effect.fnUntraced(function* (options: {
     pollEvery: Duration.millis(200),
     publicationLead: Duration.zero,
     requestBytes: 1024 * 1024,
+    socketMessageBytes: 64 * 1024,
+    socketBufferBytes: 1024 * 1024,
     coldStartTimeout: Duration.seconds(options.coldStartSeconds ?? 30),
   }
 

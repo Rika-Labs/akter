@@ -16,6 +16,7 @@ const modules: Partial<Record<ConformanceGroup, string>> = {
   edge: "assertions.ts",
   coldServeEdge: "cold-serve.ts",
   content: "content-blobs.ts",
+  crossShardOutbox: "outbox-cross-shard.ts",
 }
 
 const moduleOf = (group: ConformanceGroup) =>

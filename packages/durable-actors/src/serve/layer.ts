@@ -48,7 +48,9 @@ import { RuntimeControl } from "../runtime/drain.ts"
 import {
   type AuthProvider,
   type Authenticated,
+  CREDENTIAL_BYTES,
   Credential,
+  oversizedCredential,
   readsCookies,
   withinLimits,
 } from "./auth.ts"
@@ -153,10 +155,6 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json)
 const decodeSuccess = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ value: Schema.optionalKey(Schema.Json) })),
 )
-
-const utf8 = new TextEncoder()
-
-const bytes = (value: string) => utf8.encode(value).byteLength
 
 const traceId = Effect.currentSpan.pipe(
   Effect.map((span) => span.traceId),
@@ -400,7 +398,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const scope = yield* Effect.scope
       const origins = new Set(options.origins ?? [])
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
-      const credentialBytes = options.limits?.credentialBytes ?? 8 * 1024
+      const credentialBytes = options.limits?.credentialBytes ?? CREDENTIAL_BYTES
       const contentBytes = options.limits?.contentBytes ?? MAX_CONTENT_BYTES
 
       if (
@@ -484,15 +482,13 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
       const authenticate = (request: HttpServerRequest.HttpServerRequest, credential?: string) =>
         Effect.gen(function* () {
-          const authorization = Headers.get(request.headers, "authorization")
-          const cookie = Headers.get(request.headers, "cookie")
-          const assertion = Headers.get(request.headers, ASSERTION_HEADER)
-
           if (
-            (credential !== undefined && bytes(credential) > credentialBytes) ||
-            (Option.isSome(authorization) && bytes(authorization.value) > credentialBytes) ||
-            (withCookies && Option.isSome(cookie) && bytes(cookie.value) > credentialBytes) ||
-            (withAssertion && Option.isSome(assertion) && bytes(assertion.value) > credentialBytes)
+            oversizedCredential({
+              provider: options.auth,
+              headers: request.headers,
+              limit: credentialBytes,
+              credential,
+            })
           )
             return yield* invalidInput("too_large")
 

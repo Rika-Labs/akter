@@ -3,6 +3,7 @@ import { Headers } from "effect/unstable/http"
 import type { ActorUnavailable } from "../errors/actor.ts"
 import { Unauthorized } from "../errors/actor.ts"
 import { Anonymous, User } from "../identity/caller.ts"
+import { ASSERTION_HEADER } from "./assertion/binding.ts"
 
 /** What a provider may read: headers, cookies when it asks for them, and a frame credential. Never the body. */
 export interface AuthRequest {
@@ -183,5 +184,34 @@ export const withinLimits = (authenticated: Authenticated) => {
     subject >= 1 &&
     subject <= SUBJECT_BYTES &&
     utf8.encode(JSON.stringify(authenticated.caller)).byteLength <= CALLER_BYTES
+  )
+}
+
+/** The default cap on the UTF-8 bytes of one credential a request carries. */
+export const CREDENTIAL_BYTES = 8 * 1024
+
+/**
+ * Whether a credential `provider` would read from the request is over `limit`
+ * UTF-8 bytes: the `authorization` header or a frame credential, the cookie
+ * header for a cookie provider, and `durable-assertion` for an assertion
+ * provider. Checked before the provider runs, so it never parses an oversized one.
+ */
+export const oversizedCredential = (options: {
+  readonly provider: AuthProvider<unknown>
+  readonly headers: Headers.Headers
+  readonly limit: number
+  readonly credential?: string | undefined
+}) => {
+  const over = (value: string | undefined) =>
+    value !== undefined && utf8.encode(value).byteLength > options.limit
+
+  const header = (name: string) => Option.getOrUndefined(Headers.get(options.headers, name))
+
+  return (
+    over(options.credential) ||
+    over(header("authorization")) ||
+    (readsCookies(options.provider) && over(header("cookie"))) ||
+    (options.provider.credentials.some(Credential.$is("Assertion")) &&
+      over(header(ASSERTION_HEADER)))
   )
 }

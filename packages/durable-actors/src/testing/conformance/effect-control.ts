@@ -438,6 +438,18 @@ const eventually = <E, R>(
     Effect.asVoid,
   )
 
+/**
+ * Waits until no outbox row is left. The relay commits a route's turn before
+ * it deletes the route's row, so a route can show in state while its row
+ * still exists.
+ */
+const drained = <E, R>(rows: Effect.Effect<ReadonlyArray<EffectRow>, E, R>) =>
+  eventually(
+    rows.pipe(Effect.map((left) => left.length === 0)),
+    "5 seconds",
+    "the delivered route's outbox row to be deleted",
+  )
+
 const advance = (runner: number, duration: Duration.Input) =>
   on(
     runner,
@@ -651,7 +663,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           expect((yield* stateOf("claimed")).cancelled).toMatchObject([
             { label: "claimed", outcome: "Unknown", ambiguous: true },
           ])
-          expect(yield* effectRows(sql)).toEqual([])
+          yield* drained(effectRows(sql))
         }),
       ),
   },
@@ -1325,7 +1337,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             { outcome: "Succeeded", value: "capped", ambiguous: false },
           ])
           expect(state.done ?? []).toEqual([])
-          expect(yield* query(owner, effectRows)).toEqual([])
+          yield* drained(query(owner, effectRows))
         }),
       ),
   },
@@ -1362,7 +1374,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
             { outcome: "Succeeded", value: "rejected", ambiguous: false },
           ])
           expect(state.done ?? []).toEqual([])
-          expect(yield* query(owner, effectRows)).toEqual([])
+          yield* drained(query(owner, effectRows))
           expect(fixture.attempts.length).toBe(1)
         }),
       ),

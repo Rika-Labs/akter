@@ -3,8 +3,14 @@ import { HttpRouter, type HttpServerRequest } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, User } from "../../identity/caller.ts"
-import { type AuthProvider, readsCookies, withinLimits } from "../../serve/auth.ts"
-import { undecodable } from "../../serve/wire.ts"
+import {
+  type AuthProvider,
+  CREDENTIAL_BYTES,
+  oversizedCredential,
+  readsCookies,
+  withinLimits,
+} from "../../serve/auth.ts"
+import { invalidInput, undecodable } from "../../serve/wire.ts"
 import { foundOrNotFound, operatorResponse, refuseCrossOrigin } from "./http.ts"
 import * as Queries from "./queries.ts"
 
@@ -48,7 +54,8 @@ const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
 /**
  * Serves read-only JSON over the `durable` inspection views as routes on the
  * application's `HttpRouter`. A request from another browser origin is
- * refused with `403` before its credentials are read; each other request is
+ * refused with `403` before its credentials are read, and a credential over
+ * 8 KiB with `413` before its provider runs; each other request is
  * authenticated per request, never cached, since the tenant is the one fact
  * every read trusts. Every read is filtered to the principal's tenant and runs
  * in a read-only transaction.
@@ -68,6 +75,15 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
 
       const authenticate = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
+          if (
+            oversizedCredential({
+              provider: options.auth,
+              headers: request.headers,
+              limit: CREDENTIAL_BYTES,
+            })
+          )
+            return yield* invalidInput("too_large")
+
           const authenticated = yield* options.auth
             .authenticate({
               headers: request.headers,

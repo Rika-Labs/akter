@@ -1,6 +1,7 @@
 import { Effect, Layer, Schedule, Schema, type Scope } from "effect"
 import { Actor, Actors, Intent, User } from "../../index.ts"
-import { CommandExpired } from "../../errors/actor.ts"
+import { type ActorError, CommandExpired } from "../../errors/actor.ts"
+import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type {
@@ -170,6 +171,30 @@ const accountVersion = (fixture: RestoreFixture, version: "v1" | "v2") =>
       }),
     }),
   ) as Layer.Layer<never, never, RunnerServices>
+
+/**
+ * The vault commands the online-backup drills issue, against the default
+ * tenant or against `tenant` when a runtime restored from a backup reads a
+ * vault the backed-up runtime wrote.
+ */
+export const vaults = {
+  deposit: (
+    id: string,
+    amount: number,
+    options?: { readonly tenant?: string; readonly commandId?: string },
+  ): Effect.Effect<number, ActorError, Actors> =>
+    (options?.tenant === undefined ? Vault.get(id) : vaultOf(options.tenant, id)).pipe(
+      Effect.flatMap((vault) =>
+        options?.commandId === undefined
+          ? vault.Deposit(amount)
+          : vault.Deposit(amount).pipe(Actor.commandId(options.commandId)),
+      ),
+    ),
+  transfer: (id: string, to: string, amount: number): Effect.Effect<void, ActorError, Actors> =>
+    Vault.get(id).pipe(Effect.flatMap((vault) => vault.Transfer({ to, amount }))),
+  ref: (tenant: string, id: string): Effect.Effect<ActorRef, ActorError, Actors> =>
+    vaultOf(tenant, id).pipe(Effect.map((vault) => vault.ref)),
+}
 
 const RETRY_WINDOW_MS = 60_000
 
