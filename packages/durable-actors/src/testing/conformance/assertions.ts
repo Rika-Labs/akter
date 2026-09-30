@@ -226,7 +226,8 @@ const serveAsserted = Effect.fnUntraced(function* (
   }
 })
 
-const staticAuth = (keys: ReadonlyArray<EdgeKey>) =>
+/** A runner's assertion provider trusting exactly `keys`. */
+export const staticAuth = (keys: ReadonlyArray<EdgeKey>) =>
   Actor.auth.assertion({
     issuer: ISSUER,
     audience: DEPLOYMENT,
