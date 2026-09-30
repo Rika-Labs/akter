@@ -4,8 +4,10 @@ import { CliError, Command } from "effect/unstable/cli"
 import { version } from "../package.json" with { type: "json" }
 import {
   backfillCommand,
+  enforceCommand,
   observeCommand,
   planCommand,
+  releaseCommand,
   statusCommand,
 } from "./commands/adopt/run.ts"
 import { discardCommand, retryCommand } from "./commands/dead-letters/repair.ts"
@@ -48,8 +50,15 @@ export const durable = Command.make("durable").pipe(
         ]),
         group(
           "adopt",
-          "Adopt existing tables: plan, observe legacy writers, backfill, and check status",
-          [planCommand, observeCommand, backfillCommand, statusCommand],
+          "Adopt existing tables: plan, observe legacy writers, backfill, enforce, and check status",
+          [
+            planCommand,
+            observeCommand,
+            backfillCommand,
+            enforceCommand,
+            statusCommand,
+            releaseCommand,
+          ],
         ),
       ],
     },

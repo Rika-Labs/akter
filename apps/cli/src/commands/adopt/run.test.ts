@@ -49,6 +49,9 @@ const options = (
   clear: false,
   sinceMs: undefined,
   batch: undefined,
+  writerRole: undefined,
+  allow: [],
+  quietMs: undefined,
   ...rest,
 })
 
@@ -83,6 +86,22 @@ describe("durable adopt arguments", () => {
           ...database,
         ],
         ["backfill", "invoices", "--batch", "50", "--entry", entry, ...database],
+        [
+          "enforce",
+          "invoices",
+          "--writer-role",
+          "durable_writer",
+          "--allow",
+          "batch_import",
+          "--allow",
+          "reports",
+          "--quiet",
+          "1d",
+          "--entry",
+          entry,
+          ...database,
+        ],
+        ["release", "invoices", "--to", "observe", "--entry", entry, ...database],
         ["status", ...database],
       ]) {
         const unreachable = yield* runCli(["adopt", ...args])
@@ -130,6 +149,29 @@ describe("durable adopt arguments", () => {
           'Invalid value for flag --since: "week"',
         ],
         [["plan", "--force", ...base], "UnrecognizedOption", "Unrecognized flag: --force"],
+        [["enforce", "t", ...base], "MissingOption", "Missing required flag: --writer-role"],
+        [
+          ["observe", "t", "--writer-role", "w", ...base],
+          "UnrecognizedOption",
+          "Unrecognized flag: --writer-role",
+        ],
+        [
+          ["enforce", "t", "--writer-role", "w", "--quiet", "soon", ...base],
+          "InvalidValue",
+          'Invalid value for flag --quiet: "soon"',
+        ],
+        [["release", "t", ...base], "MissingOption", "Missing required flag: --to"],
+        [
+          ["release", "t", "--to", "enforce", ...base],
+          "InvalidValue",
+          'Invalid value for flag --to: "enforce"',
+        ],
+        [["plan", "--to", "observe", ...base], "UnrecognizedOption", "Unrecognized flag: --to"],
+        [
+          ["release", ...base, "--to", "observe"],
+          "MissingArgument",
+          "Missing required argument: table",
+        ],
       ] as const) {
         const refused = yield* runCli(["adopt", ...args])
 
@@ -200,6 +242,16 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
           exitCode: 1,
         })
 
+        const unforced = yield* adopt({
+          options: options("release", { table: "cli_invoices" }),
+          actors,
+        })
+
+        expect(unforced).toEqual({
+          output: "public.cli_invoices is not enforced",
+          exitCode: 1,
+        })
+
         const unknown = yield* adopt({ options: options("observe", { table: "missing" }), actors })
 
         expect(unknown).toEqual({
@@ -239,12 +291,37 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
         expect(report.output).toContain("UPDATE")
         expect(report.output).toContain("2 rows")
 
+        const premature = yield* adopt({
+          options: options("enforce", {
+            table: "cli_invoices",
+            writerRole: "durable_writer",
+            quietMs: 86_400_000,
+          }),
+          actors,
+        })
+
+        expect(premature.exitCode).toBe(1)
+        expect(premature.output).toContain("public.cli_invoices cannot be enforced:")
+        expect(premature.output).toContain("2 rows of public.cli_invoices have no routing_key")
+        expect(premature.output).toContain("less than the 86400 s quiet window")
+        expect(premature.output).toContain("role durable_writer does not exist")
+
         const filled = yield* adopt({
           options: options("backfill", { table: "cli_invoices", batch: 1 }),
           actors,
         })
 
         expect(filled.output).toBe("public.cli_invoices: filled routing_key on 2 rows in 2 passes")
+
+        const unenforced = yield* adopt({
+          options: options("release", { table: "cli_invoices" }),
+          actors,
+        })
+
+        expect(unenforced).toEqual({
+          output: "public.cli_invoices is not enforced",
+          exitCode: 1,
+        })
 
         const status = yield* adopt({
           options: options("status", { entry: undefined }),

@@ -2,12 +2,15 @@ import {
   adoptionStatus,
   adoptionWriters,
   backfillAdoption,
+  enforceAdoption,
   formatAdoptionPlan,
   formatAdoptionStatus,
   formatBackfill,
+  formatEnforce,
   formatObservedWriter,
   observeAdoption,
   planAdoption,
+  releaseAdoption,
   type AdoptionRefused,
 } from "@durable-actors/core/runtime"
 import { BunCrypto } from "@effect/platform-bun"
@@ -18,7 +21,7 @@ import { CommandFailed, fail } from "../../failure.ts"
 import { actorsOf, entryFlags, loadEntry } from "../workflows/check.ts"
 
 /** The commands `durable adopt` runs. */
-export type AdoptCommand = "plan" | "observe" | "backfill" | "status"
+export type AdoptCommand = "plan" | "observe" | "backfill" | "enforce" | "status" | "release"
 
 /** What one `adopt` command runs with. */
 export interface AdoptOptions {
@@ -31,6 +34,9 @@ export interface AdoptOptions {
   readonly clear: boolean
   readonly sinceMs: number | undefined
   readonly batch: number | undefined
+  readonly writerRole: string | undefined
+  readonly allow: ReadonlyArray<string>
+  readonly quietMs: number | undefined
 }
 
 const UNITS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const
@@ -70,6 +76,32 @@ export const adopt = ({
           : statuses.length === 0
             ? "No table is adopted"
             : statuses.map(formatAdoptionStatus).join("\n"),
+        exitCode: 0,
+      }
+    }
+
+    if (options.command === "enforce") {
+      const enforced = yield* enforceAdoption(actors, {
+        only: options.table!,
+        writerRole: options.writerRole!,
+        allowedRoles: options.allow,
+        quietMs: options.quietMs,
+        nowMs: yield* Clock.currentTimeMillis,
+      })
+
+      return {
+        output: options.json ? printJson({ enforced }) : enforced.map(formatEnforce).join("\n"),
+        exitCode: 0,
+      }
+    }
+
+    if (options.command === "release") {
+      const released = yield* releaseAdoption(actors, { only: options.table! })
+
+      return {
+        output: options.json
+          ? printJson({ observing: released })
+          : released.map((table) => `${table} is observing again`).join("\n"),
         exitCode: 0,
       }
     }
@@ -171,6 +203,9 @@ const defaults = {
   clear: false,
   sinceMs: undefined,
   batch: undefined,
+  writerRole: undefined,
+  allow: [],
+  quietMs: undefined,
 } as const
 
 const table = (verb: string) =>
@@ -265,6 +300,53 @@ export const backfillCommand = Command.make(
       batch: Option.getOrUndefined(options.batch),
     }),
 ).pipe(Command.withDescription("Fill routing_key on an observed table's rows, in batches"))
+
+/** `durable adopt enforce <table>`: makes a backfilled table the runtime's, refusing other writers. */
+export const enforceCommand = Command.make(
+  "enforce",
+  {
+    ...entryFlags,
+    table: table("enforce"),
+    writerRole: Flag.String("writer-role").pipe(
+      Flag.withDescription("The database role the runtime writes the table as"),
+    ),
+    allow: Flag.String("allow").pipe(
+      Flag.atLeast(0),
+      Flag.withDescription("Another role still allowed to write the table; repeat for several"),
+    ),
+    quiet: Flag.String("quiet").pipe(
+      Flag.filterMap(parseWindow, () => "a window such as 30m, 12h, or 7d"),
+      Flag.optional,
+      Flag.withDescription(
+        "How long no legacy write may have been recorded before enforcing, such as 7d",
+      ),
+    ),
+  },
+  (options) =>
+    run({
+      ...defaults,
+      ...options,
+      command: "enforce",
+      quietMs: Option.getOrUndefined(options.quiet),
+    }),
+).pipe(
+  Command.withDescription(
+    "Enforce an adopted table: only the runtime's writer role and --allow roles may write it",
+  ),
+)
+
+/** `durable adopt release <table> --to observe`: returns an enforced table to observing. */
+export const releaseCommand = Command.make(
+  "release",
+  {
+    ...entryFlags,
+    table: table("release"),
+    to: Flag.Literals("to", ["observe"]).pipe(
+      Flag.withDescription("The mode to return the table to; only observe"),
+    ),
+  },
+  (options) => run({ ...defaults, ...options, command: "release" }),
+).pipe(Command.withDescription("Return an enforced table to observing"))
 
 /** `durable adopt status`: every adopted table's mode and rows left to backfill. */
 export const statusCommand = Command.make(

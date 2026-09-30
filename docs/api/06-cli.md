@@ -39,7 +39,7 @@ Develop and deploy:
   dev          Run the entry's app locally with a read-only inspector at /_durable/inspector
   workflows    Check workflow changes against open executions
   payloads     Check and clear stored event and effect payload versions
-  adopt        Adopt existing tables: plan, observe legacy writers, backfill, and check status
+  adopt        Adopt existing tables: plan, observe legacy writers, backfill, enforce, and check status
 
 Operate a running deployment:
   defects          Read recent defects from runners
@@ -171,6 +171,26 @@ FLAGS
   --batch integer          Rows per pass (default 1000)
 ```
 
+### `durable adopt enforce`
+
+Enforce an adopted table: only the runtime's writer role and --allow roles may write it
+
+```text
+USAGE
+  durable adopt enforce [flags] <table>
+
+ARGUMENTS
+  table string    The adopted table to enforce
+
+FLAGS
+  --entry file             The entry module; it exports an `actors` array of actor definitions
+  --database-url string    The application's Postgres URL
+  --json                   Print the report as JSON
+  --writer-role string     The database role the runtime writes the table as
+  --allow string           Another role still allowed to write the table; repeat for several
+  --quiet string           How long no legacy write may have been recorded before enforcing, such as 7d
+```
+
 ### `durable adopt status`
 
 Show each adopted table's mode and the rows left to backfill
@@ -182,6 +202,24 @@ USAGE
 FLAGS
   --database-url string    The application's Postgres URL
   --json                   Print the report as JSON
+```
+
+### `durable adopt release`
+
+Return an enforced table to observing
+
+```text
+USAGE
+  durable adopt release [flags] <table>
+
+ARGUMENTS
+  table string    The adopted table to release
+
+FLAGS
+  --entry file             The entry module; it exports an `actors` array of actor definitions
+  --database-url string    The application's Postgres URL
+  --json                   Print the report as JSON
+  --to choice              The mode to return the table to; only observe (choices: observe)
 ```
 
 ### `durable defects list`
