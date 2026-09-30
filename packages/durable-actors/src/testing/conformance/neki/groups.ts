@@ -40,5 +40,6 @@ export const nekiExcluded = [
   "observability",
   "operator",
   "export",
+  "watch",
   "adoption",
 ] as const satisfies ReadonlyArray<ConformanceGroup>
