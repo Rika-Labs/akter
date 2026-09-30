@@ -14,7 +14,7 @@ const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 const Tally = Actor.make("Tally", {
   key: Schema.String,
   state: Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  access: () => true,
+  access: Actor.access.public,
   api: { Add },
 })
 

@@ -59,7 +59,7 @@ The chat template also checks that a declared failure (`RoomClosed`) rolls back 
 | `src/counter/contract.ts`   | The actor: key, state schema, and `Increment` command. Clients import only this.         |
 | `src/counter/layer.ts`      | The handler. It reads and sets state through `Counter.Turn` inside one transaction.      |
 | `src/database.ts`           | Picks the database: Postgres when `DATABASE_URL` is set, otherwise PGlite in `DATA_DIR`. |
-| `src/main.ts`               | Builds the runtime with `Actors.layer`, authorizes callers, and sends one command.       |
+| `src/main.ts`               | Builds the runtime with `Actors.layer()` and sends one command as the process caller.    |
 | `src/counter/layer.test.ts` | Retry, crash, and restart tests.                                                         |
 
 Chat keeps the same shape under `src/room/`, with an owned Drizzle table, events, a reducer, queries, and a declared error. [`examples/chat`](../examples/chat) goes further, with blobs, effects, and retention.

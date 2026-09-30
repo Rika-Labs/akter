@@ -17,7 +17,7 @@ export const ServedCounter = Actor.make("ServedCounter", {
   events: [Incremented],
   state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Increment },
-  access: () => true,
+  access: Actor.access.public,
 })
 
 const CounterLive = ServedCounter.toLayer(

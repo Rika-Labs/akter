@@ -19,6 +19,7 @@ import { make as authMake, none as authNone } from "./serve/auth.ts"
 import { jwt } from "./serve/jwt.ts"
 import { assertion } from "./serve/assertion/verify.ts"
 import { serve } from "./serve/layer.ts"
+import { publicAccess } from "./policies/access.ts"
 
 /**
  * The declaration namespace of `@durable-actors/core`: one constructor per
@@ -72,6 +73,12 @@ export const Actor = {
   serve,
   /** Authentication providers for `Actor.serve`; one per served layer. */
   auth: { none: authNone, make: authMake, jwt, assertion },
+  /**
+   * Ready-made `access` policies for `Actor.make`. `public` allows every caller
+   * and kind, which opens the actor to anyone who can reach the server; use it
+   * only for demos and deliberately public actors.
+   */
+  access: { public: publicAccess },
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
   InTurn,
   /** Provided by the runtime only inside stream handlers; `read.follow` requires it. */

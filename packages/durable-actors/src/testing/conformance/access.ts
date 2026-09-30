@@ -641,7 +641,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
     timeoutMs: 60_000,
   },
   {
-    name: "answers a served request from a User or Anonymous caller with 403 access_denied by default, and lets an actor's access allow them",
+    name: "answers a served request from a User or Anonymous caller with 403 access_denied by default, and lets an actor's access, or Actor.access.public, allow them",
     run: ({ expect, environment }) => {
       const closed = ledgerOf("AccessServedClosed")
       const anonymous = ledgerOf("AccessServedPublic", ({ caller }) => isAnonymous(caller))
@@ -651,11 +651,13 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
         ({ caller }) => isUser(caller) && caller.subject === "alice",
       )
 
-      const served = [closed.Ledger, anonymous.Ledger, mine.Ledger]
+      const open = ledgerOf("AccessServedOpen", Actor.access.public)
+
+      const served = [closed.Ledger, anonymous.Ledger, mine.Ledger, open.Ledger]
 
       return deploy(
         environment,
-        Layer.mergeAll(closed.layer, anonymous.layer, mine.layer),
+        Layer.mergeAll(closed.layer, anonymous.layer, mine.layer, open.layer),
         {},
         Effect.gen(function* () {
           const { tenant } = yield* ActorTest
@@ -674,6 +676,15 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* whoami(publicServer, "AccessServedClosed")).toMatchObject({ status: 403 })
           expect(yield* whoami(publicServer, "AccessServedMine")).toMatchObject({ status: 403 })
+          expect(yield* whoami(publicServer, "AccessServedOpen")).toEqual({
+            status: 200,
+            body: "default/Anonymous/",
+          })
+          expect(yield* whoami(tokenServer, "AccessServedOpen", `${tenant}:bob`)).toEqual({
+            status: 200,
+            body: `${tenant}/User/bob`,
+          })
+
           const anonymousReply = yield* whoami(publicServer, "AccessServedPublic")
           expect(anonymousReply).toEqual({ status: 200, body: "default/Anonymous/" })
 
@@ -713,7 +724,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps internal commands System-only and off public handles when an actor's access allows everyone",
     run: ({ expect, environment }) => {
-      const { Ledger, layer } = ledgerOf("AccessInternal", () => true)
+      const { Ledger, layer } = ledgerOf("AccessInternal", Actor.access.public)
 
       return deploy(
         environment,

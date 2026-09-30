@@ -34,3 +34,10 @@ export interface AccessRequest {
  * shape, and when both exist both must allow.
  */
 export type Access = (request: AccessRequest) => boolean | Effect.Effect<boolean>
+
+/**
+ * Allows every caller every kind of request, `Anonymous` visitors under
+ * `Actor.auth.none` included. It opens the actor to anyone who can reach the
+ * server, so use it only for demos and deliberately public actors.
+ */
+export const publicAccess: Access = () => true
