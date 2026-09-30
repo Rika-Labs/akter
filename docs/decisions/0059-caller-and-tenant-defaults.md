@@ -47,6 +47,7 @@ The rule: **the transport decides who the caller is and which tenant; actors dec
 - Receipts written by in-process code carry `System({ source: "process" })` as their logical caller. A command id retried by another in-process caller reaches the same receipt, and one retried under `Actor.as(User)` does not.
 - `access` runs on every external admission and on every live-session recheck, like `authorize`. It should be quick and avoid calling other actors.
 - `ActorTest.layer` runs with the runtime's real defaults, so a test that passes `as: User` without `access` or `authorize` sees `access_denied`.
+- An HTTP route the application mounts itself, beside `Actor.serve` rather than through it, is code in the application's own process: handles it acquires call as the trusted `System({ source: "process" })` in tenant `"default"`, which `access` and `authorize` may allow everything. Such a route must authenticate its request itself and acquire handles inside `Actor.as(caller)` and `Actor.tenant(tenant)` built from the verified credential, never from request content, or serve the actor through `Actor.serve` instead.
 
 ## Evidence
 
