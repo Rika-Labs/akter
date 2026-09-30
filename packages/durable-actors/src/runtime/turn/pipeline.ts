@@ -2,6 +2,7 @@ import { PgPool, type PgConnection } from "@effect/sql-pg"
 import { Context, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import type { Scope } from "effect"
 import type { SqlConnection, SqlError } from "effect/unstable/sql"
+import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
 
 /**
  * Connections a turn leases for itself alone. Each one is multiplexed and
@@ -31,12 +32,15 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
  * The turn pool: `maxConnections` sessions, each handed to one turn at a
  * time. A concurrency of one keeps the lease exclusive while the session
  * stays unpinned.
+ *
+ * On Neki, each session first runs the Neki session settings.
  */
 export const turnConnections = (options: PgPool.Config) =>
   Layer.effect(
     TurnConnections,
     Effect.gen(function* () {
       const settings = yield* TurnPoolSettings
+      const neki = yield* NekiTurnSessions
 
       const pool = yield* PgPool.make({
         ...options,
@@ -45,7 +49,10 @@ export const turnConnections = (options: PgPool.Config) =>
         multiplexConcurrency: 1,
       })
 
-      return TurnConnections.of({ lease: pool.get, invalidate: pool.invalidate })
+      return TurnConnections.of({
+        lease: neki ? nekiLease(pool) : pool.get,
+        invalidate: pool.invalidate,
+      })
     }),
   )
 

@@ -17,7 +17,9 @@ export default defineConfig({
       ...Object.keys(shards).map((shard) => `${testing}/conformance/${shard}.test.ts`),
       `${testing}/conformance/postgres/*.test.ts`,
       `${testing}/conformance/crash/**/*.test.ts`,
+      `${testing}/conformance/neki/backend.test.ts`,
       "packages/durable-actors/src/runtime/database/migrations.test.ts",
+      "packages/durable-actors/src/runtime/database/neki/session.test.ts",
     ],
     exclude: ["**/node_modules/**", `${testing}/conformance/crash/drills/**`],
     globalSetup: [
