@@ -127,7 +127,7 @@ const COUNTS: ReadonlyArray<readonly [keyof Inspection.Overview["counts"], strin
   ["events", "Events", "#/actors"],
   ["outbox", "Outbox", "#/outbox"],
   ["timers", "Timers", "#/outbox"],
-  ["effects", "Effects", "#/effects"],
+  ["jobs", "Jobs", "#/jobs"],
   ["deadLetters", "Dead letters", "#/dead-letters"],
   ["openWorkflows", "Open workflows", "#/workflows"],
 ]
@@ -258,12 +258,12 @@ const outboxRow = (row: Inspection.OutboxRow, now: number, withActor: boolean) =
     h("td", null, due(row.dueAtMs, now)),
   )
 
-const effectRow = (row: Inspection.EffectRow, now: number, withActor: boolean) =>
+const jobRow = (row: Inspection.JobRow, now: number, withActor: boolean) =>
   h(
     "tr",
     null,
     withActor ? h("td", null, actorLink(row)) : null,
-    h("td", null, h("code", null, row.effect)),
+    h("td", null, h("code", null, row.job)),
     h("td", null, json(row.payload)),
     h("td", { class: "num" }, row.attempts),
     h("td", null, row.ambiguous ? tag("ambiguous", "warn") : tag("known")),
@@ -288,7 +288,7 @@ const deadLetterRow = (row: Inspection.DeadLetterRow, withActor: boolean) =>
     "tr",
     null,
     withActor ? h("td", null, actorLink(row)) : null,
-    h("td", null, h("code", null, row.effect)),
+    h("td", null, h("code", null, row.job)),
     h("td", null, json(row.payload)),
     h("td", { class: "num" }, row.attempts),
     h("td", null, row.ambiguous ? tag("ambiguous", "warn") : tag("known")),
@@ -378,9 +378,9 @@ const workflowCard = (workflow: Inspection.WorkflowRow, now: number, withActor: 
 
 const OUTBOX_HEADERS = ["Kind", "Target", "Payload", "Attempts", "Last error", "Due"]
 
-const EFFECT_HEADERS = ["Effect", "Payload", "Attempts", "Outcome", "Last error", "Due"]
+const JOB_HEADERS = ["Job", "Payload", "Attempts", "Outcome", "Last error", "Due"]
 
-const DEAD_LETTER_HEADERS = ["Effect", "Payload", "Attempts", "Last attempt", "Cause", "Dead at"]
+const DEAD_LETTER_HEADERS = ["Job", "Payload", "Attempts", "Last attempt", "Cause", "Dead at"]
 
 /** Everything the inspector knows about one actor. */
 export const actorView = ({
@@ -463,12 +463,12 @@ export const actorView = ({
       ),
     ),
     section(
-      "Effects",
-      shown(detail.effects.length, totals.effects),
+      "Jobs",
+      shown(detail.jobs.length, totals.jobs),
       table(
-        EFFECT_HEADERS,
-        detail.effects.map((row) => effectRow(row, now, false)),
-        "No effect in flight.",
+        JOB_HEADERS,
+        detail.jobs.map((row) => jobRow(row, now, false)),
+        "No job in flight.",
       ),
     ),
     section(
@@ -524,24 +524,24 @@ export const outboxView = ({
     ),
   )
 
-/** The tenant's effects in flight. */
-export const effectsView = ({
+/** The tenant's jobs in flight. */
+export const jobsView = ({
   rows,
   total,
   now,
 }: {
-  readonly rows: ReadonlyArray<Inspection.EffectRow>
+  readonly rows: ReadonlyArray<Inspection.JobRow>
   readonly total: number
   readonly now: number
 }) =>
   section(
-    "Effects",
+    "Jobs",
     shown(rows.length, total),
     truncated(rows.length, total),
     table(
-      ["Actor", ...EFFECT_HEADERS],
-      rows.map((row) => effectRow(row, now, true)),
-      "No effect in flight.",
+      ["Actor", ...JOB_HEADERS],
+      rows.map((row) => jobRow(row, now, true)),
+      "No job in flight.",
     ),
   )
 

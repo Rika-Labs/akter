@@ -36,16 +36,18 @@ const group = <const Subcommands extends ReadonlyArray<Command.Command.Subcomman
 
 /** The `durable` command tree. */
 export const durable = Command.make("durable").pipe(
-  Command.withDescription("Develop, deploy, and operate durable actors"),
+  Command.withDescription(
+    "Run actors locally, check a deploy against stored data, adopt existing tables, and inspect and repair a running deployment",
+  ),
   Command.withSubcommands([
     {
-      group: "Develop and deploy",
+      group: "Develop and check",
       commands: [
         devCommand,
         group("workflows", "Check workflow changes against open executions", [
           workflowsCheckCommand,
         ]),
-        group("payloads", "Check and clear stored event and effect payload versions", [
+        group("payloads", "Check and clear stored event and job payload versions", [
           payloadsCheckCommand,
           clearCommand,
         ]),
@@ -74,7 +76,7 @@ export const durable = Command.make("durable").pipe(
         inspectCommand,
         exportCommand,
         group("receipts", "Read stored command outcomes", [showCommand]),
-        group("dead-letters", "Repair dead-lettered effects; the runner audits each repair", [
+        group("dead-letters", "Repair dead-lettered jobs; the runner audits each repair", [
           retryCommand,
           discardCommand,
         ]),

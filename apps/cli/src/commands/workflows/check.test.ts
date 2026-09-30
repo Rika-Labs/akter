@@ -11,27 +11,27 @@ import { actorsOf, check, loadEntry } from "./check.ts"
 
 const deployment = (label: string | null) => {
   const Order = Actor.workflow("Order", {
-    input: { id: Schema.String },
-    output: Schema.String,
+    payload: { id: Schema.String },
+    success: Schema.String,
     key: ({ id }) => id,
   })
 
   const Pause = Order.sleep("pause")
 
   const Label =
-    label === null ? undefined : Order.step(label, { input: Schema.String, success: Schema.String })
+    label === null
+      ? undefined
+      : Order.step(label, { payload: Schema.String, success: Schema.String })
 
   const Shop = Actor.make("Shop", { key: Schema.String, api: { Order } })
 
-  const layer = Shop.toLayer(
-    Effect.succeed({
-      Order: Effect.fnUntraced(function* (input: { readonly id: string }) {
-        yield* Pause("1 minute")
+  const layer = Shop.toLayer({
+    Order: Effect.fnUntraced(function* (input: { readonly id: string }) {
+      yield* Pause("1 minute")
 
-        return Label === undefined ? input.id : yield* Label.run(input.id, Effect.succeed)
-      }),
+      return Label === undefined ? input.id : yield* Label.run(input.id, Effect.succeed)
     }),
-  )
+  })
 
   return { Shop, layer }
 }

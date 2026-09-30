@@ -10,7 +10,7 @@ import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
-const Post = Actor.command("Post", { input: Schema.String, output: Schema.Int })
+const Post = Actor.command("Post", { payload: Schema.String, success: Schema.Int })
 
 const Room = Actor.make("CliRoom", {
   key: Schema.String,
@@ -20,16 +20,14 @@ const Room = Actor.make("CliRoom", {
   api: { Post },
 })
 
-const live = Room.toLayer(
-  Effect.succeed({
-    Post: Effect.fnUntraced(function* (text: string) {
-      const turn = yield* Room.Turn
-      yield* turn.state.set({ messages: [...turn.state.messages, text] })
+const live = Room.toLayer({
+  Post: Effect.fnUntraced(function* (text: string) {
+    const turn = yield* Room.Turn
+    yield* turn.state.set({ messages: [...turn.state.messages, text] })
 
-      return turn.state.messages.length
-    }),
+    return turn.state.messages.length
   }),
-).pipe(Layer.provideMerge(ActorTest.layer()), Layer.provideMerge(BunCrypto.layer))
+}).pipe(Layer.provideMerge(ActorTest.layer()), Layer.provideMerge(BunCrypto.layer))
 
 const operators = OperatorAuth.tokens([
   {

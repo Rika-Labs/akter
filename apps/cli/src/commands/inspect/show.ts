@@ -41,7 +41,7 @@ export const ActorPage = Schema.Struct({
   ),
   deadLetters: Schema.Array(
     Inspection.DeadLetterRow.mapFields(
-      Struct.pick(["effectId", "effect", "attempts", "ambiguous", "cause"]),
+      Struct.pick(["jobId", "job", "attempts", "ambiguous", "cause"]),
     ),
   ),
   totals: Inspection.ActorDetail.fields.totals,
@@ -62,7 +62,7 @@ const shown = (value: Inspection.Decoded | null | undefined) =>
 export const formatActor = (page: typeof ActorPage.Type) =>
   [
     `${page.actor.actorType}/${page.actor.actorId}  generation ${page.actor.generation}  events through ${page.actor.lastEventSequence}`,
-    `totals  receipts ${page.totals.receipts}  events ${page.totals.events}  outbox ${page.totals.outbox}  effects ${page.totals.effects}  dead letters ${page.totals.deadLetters}  workflows ${page.totals.workflows}`,
+    `totals  receipts ${page.totals.receipts}  events ${page.totals.events}  outbox ${page.totals.outbox}  jobs ${page.totals.jobs}  dead letters ${page.totals.deadLetters}  workflows ${page.totals.workflows}`,
     "state",
     ...page.state.map(({ key, value }) => `  ${key} = ${shown(value)}`),
     "receipts (newest first)",
@@ -76,7 +76,7 @@ export const formatActor = (page: typeof ActorPage.Type) =>
           "dead letters",
           ...page.deadLetters.map(
             (letter) =>
-              `  ${letter.effectId}  ${letter.effect}  attempts ${letter.attempts}${letter.ambiguous ? "  ambiguous" : ""}  ${letter.cause.split("\n")[0] ?? ""}`,
+              `  ${letter.jobId}  ${letter.job}  attempts ${letter.attempts}${letter.ambiguous ? "  ambiguous" : ""}  ${letter.cause.split("\n")[0] ?? ""}`,
           ),
         ]),
   ].join("\n")
