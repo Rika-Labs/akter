@@ -11,6 +11,7 @@ import type { StagedOutbox } from "../handles/intents.ts"
 import type { AnyBlob } from "../members/blob.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import type { RecordedExit, StoredResult, WorkflowContext } from "../contexts/workflow.ts"
+import type { ReadSet } from "./connections/reads.ts"
 import type { AnyWorkflow } from "../members/workflow.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
 import type { Outcome, Request } from "./request.ts"
@@ -27,6 +28,11 @@ export interface BusinessResult {
   readonly outbox: StagedOutbox
   /** Frames to send to open connections once the turn commits; a declared failure sends none. */
   readonly broadcasts?: ReadonlyArray<Broadcast>
+  /** The declared tables and blobs the turn wrote; a declared failure wrote none. */
+  readonly writes?: {
+    readonly tables: ReadonlyArray<string>
+    readonly blobs: ReadonlyArray<string>
+  }
 }
 
 /** One encoded frame for a connection member's open connections. */
@@ -285,13 +291,23 @@ export interface EffectRegistration {
   readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
 
+/** One result of a watch: the query's encoded output, and the commit version its rerun waited for when there was one. */
+export interface WatchResult {
+  readonly version: string | undefined
+  readonly value: string
+}
+
 /** A query reads committed state; it never activates, fences, or receipts. */
 export interface RegisteredQuery {
+  /** Whether the member is declared `watch: true`, so its handler needs nothing but `X.Read`. */
+  readonly watch: boolean
+  /** With `reads`, the handler runs on a recording `X.Read` and fills `reads`, and no service but `X.Read` is provided. */
   readonly run: (
     request: Request,
     state: ReadonlyArray<readonly [string, string]>,
     cursor: string,
     events: EventReader,
+    reads?: ReadSet,
   ) => Effect.Effect<Outcome>
 }
 
@@ -331,6 +347,8 @@ export interface Registration {
   readonly streams: ReadonlyMap<string, RegisteredStream>
   /** Tags of the events this actor type serves as event feeds. */
   readonly feeds: ReadonlySet<string>
+  /** Tags of the queries declared `watch: true`. */
+  readonly watches: ReadonlySet<string>
   /** Workflow members with their bodies, keyed by tag. */
   readonly workflows: ReadonlyMap<string, RegisteredWorkflow>
   /** `policy.cron` entries; each is one keyed tick row per actor. */

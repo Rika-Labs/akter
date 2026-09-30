@@ -21,7 +21,14 @@ import type { Placement } from "../storage/codec.ts"
 import { type ConnectionCommands, connectionSecret } from "../../identity/connection.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { BUCKETS } from "../turn/outbox.ts"
-import { ClientMessage, type Deliver, type Delivered, HolderItem } from "./protocol.ts"
+import {
+  ClientMessage,
+  type Deliver,
+  type Delivered,
+  HolderItem,
+  isWatchMember,
+  watchedQuery,
+} from "./protocol.ts"
 import type { Transport } from "./transport.ts"
 
 /** The largest encoded inbound frame or open params a holder accepts. */
@@ -69,6 +76,8 @@ export interface HeldConnection {
   readonly send: (frame: string) => Effect.Effect<void, ActorError>
   /** Tells the holder the client finished its replay after `Resync`. */
   readonly resyncDone: Effect.Effect<void>
+  /** Whether the session is open and inside its authorization bound now, so a result read for it may still be released. */
+  readonly authorized: Effect.Effect<boolean>
   /** Waits until fewer than `MAX_INFLIGHT_FRAMES` inbound frames are in flight, or the session ended. */
   readonly writable: Effect.Effect<void>
   /**
@@ -154,8 +163,8 @@ interface HolderOptions {
     readonly caller: Caller
     readonly ref: ActorRef
     readonly command: string
-    readonly kind: "open" | "feed" | "reauthorize"
-    readonly of?: "open" | "feed"
+    readonly kind: "open" | "feed" | "watch" | "reauthorize"
+    readonly of?: "open" | "feed" | "watch"
   }) => Effect.Effect<boolean>
 }
 
@@ -669,10 +678,14 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       return { wrongEpoch: false, unknown }
     })
 
-  const retried = <A>(connection: Held, effect: Effect.Effect<A, ActorError>) =>
+  const retried = <A>(
+    connection: Held,
+    effect: Effect.Effect<A, ActorError>,
+    refused: (error: ActorError) => boolean = () => false,
+  ) =>
     effect.pipe(
       Effect.retry({
-        while: (error) => error.isRetryable && !connection.ended,
+        while: (error) => error.isRetryable && !connection.ended && !refused(error),
         schedule: Schedule.min([
           Schedule.exponential("10 millis", 2),
           Schedule.spaced("250 millis"),
@@ -829,23 +842,31 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     feed: ReadonlyArray<string> | undefined,
     kind: "first" | "reauthorize",
   ) =>
-    feed === undefined
+    isWatchMember(session.member)
       ? options.authorize({
           caller: session.caller,
           ref: session.ref,
-          command: session.member,
-          kind: kind === "first" ? "open" : "reauthorize",
-          of: kind === "first" ? undefined : "open",
+          command: watchedQuery(session.member),
+          kind: kind === "first" ? "watch" : "reauthorize",
+          of: kind === "first" ? undefined : "watch",
         })
-      : Effect.forEach(feed, (tag) =>
-          options.authorize({
+      : feed === undefined
+        ? options.authorize({
             caller: session.caller,
             ref: session.ref,
-            command: tag,
-            kind: kind === "first" ? "feed" : "reauthorize",
-            of: kind === "first" ? undefined : "feed",
-          }),
-        ).pipe(Effect.map((answers) => answers.every(Boolean)))
+            command: session.member,
+            kind: kind === "first" ? "open" : "reauthorize",
+            of: kind === "first" ? undefined : "open",
+          })
+        : Effect.forEach(feed, (tag) =>
+            options.authorize({
+              caller: session.caller,
+              ref: session.ref,
+              command: tag,
+              kind: kind === "first" ? "feed" : "reauthorize",
+              of: kind === "first" ? undefined : "feed",
+            }),
+          ).pipe(Effect.map((answers) => answers.every(Boolean)))
 
   const reauthorize = (connection: Held, at: number) =>
     Effect.gen(function* () {
@@ -1065,7 +1086,12 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       },
     })
 
-    const attempt = yield* retried(connection, openCall).pipe(Effect.forkIn(scope))
+    const attempt = yield* retried(
+      connection,
+      openCall,
+      (error) =>
+        isWatchMember(request.member) && Predicate.isTagged(error.reason, "RunnerAtCapacity"),
+    ).pipe(Effect.forkIn(scope))
 
     const abandon = Effect.gen(function* () {
       connection.ended = true
@@ -1165,6 +1191,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
             yield* push(connection, message, false)
         yield* Queue.offer(connection.wake, undefined)
       }),
+      authorized: Effect.map(now, (at) => !connection.ended && at < authorizedUntil(connection)),
       writable: Effect.gen(function* () {
         while (!connection.ended && connection.inbound.length >= MAX_INFLIGHT_FRAMES)
           yield* Queue.take(connection.drained)

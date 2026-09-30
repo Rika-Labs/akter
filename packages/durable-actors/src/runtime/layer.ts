@@ -52,7 +52,7 @@ import { type Holder, type HeldActorType, connectionHolder } from "./connections
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
 import type { Owner } from "./connections/owner.ts"
-import { FEED_MEMBER } from "./connections/protocol.ts"
+import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
 import { routingKey } from "./storage/codec.ts"
 import { recordedPlacement } from "./storage/placements.ts"
@@ -102,14 +102,23 @@ export interface Options {
     /**
      * What is being authorized: `command` for commands and reducers, `query`
      * for queries, `open` for a connection, `feed` for an event feed (with
-     * `command` set to the event tag), `reauthorize` for a live session's
+     * `command` set to the event tag), `watch` for a query watch (with
+     * `command` set to the query tag), `reauthorize` for a live session's
      * periodic check, and `content` for a content operation on the actor, with
      * `command` set to `<blob>.grant` or `<blob>.get`; hooks should deny kinds
      * they do not know.
      */
-    readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize" | "content"
-    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, or a `feed`. */
-    readonly of?: "open" | "stream" | "feed"
+    readonly kind:
+      | "command"
+      | "query"
+      | "open"
+      | "stream"
+      | "feed"
+      | "watch"
+      | "reauthorize"
+      | "content"
+    /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, or a `watch`. */
+    readonly of?: "open" | "stream" | "feed" | "watch"
   }) => Effect.Effect<boolean>
   readonly retryWindowMs?: number
   /**
@@ -491,11 +500,15 @@ export const layer = (options: Options) => {
           placement: registration.placement,
           routingKey: (ref) => routingKey({ ref, placement: registration.placement }),
           hasResync: (member) =>
-            member === FEED_MEMBER || (registration.connections.get(member)?.hasResync ?? false),
+            member === FEED_MEMBER ||
+            isWatchMember(member) ||
+            (registration.connections.get(member)?.hasResync ?? false),
           hasMember: (member) =>
             member === FEED_MEMBER
               ? registration.feeds.size > 0
-              : registration.connections.has(member),
+              : isWatchMember(member)
+                ? registration.watches.has(watchedQuery(member))
+                : registration.connections.has(member),
           channel: {
             open: (request) =>
               connectionCall(Effect.flatMap(client(request.ref), (c) => c.Open(request))),
@@ -977,6 +990,7 @@ export const layer = (options: Options) => {
           allow,
           primary,
           replica,
+          holder,
         }),
         ...eventFeeds({
           registrations,

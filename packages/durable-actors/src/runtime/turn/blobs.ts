@@ -120,6 +120,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
       Effect.orDie,
     )
 
+  const noted = (blob: AnyBlob) => Effect.sync(() => scope.wrote?.(blob.name))
+
   const contentAccess = (blob: AnyBlob): ContentRead | ContentWrite => {
     const bound = Effect.suspend(() =>
       content === undefined
@@ -218,6 +220,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
           if (!checked!.live) return yield* InvalidContentRef.make({ reason: "expired" })
 
           if (!checked!.fits) return yield* tooManyEntries
+
+          yield* noted(blob)
         }),
       detach: (name) =>
         run(
@@ -225,6 +229,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
             const where = yield* entry(blob, name)
 
             yield* sql`DELETE FROM actor_content_refs WHERE ${where}`
+            yield* noted(blob)
           }),
         ),
       list,
@@ -300,6 +305,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
               RETURNING chunk`
 
             if (written.length === 0) return yield* refused(yield* usage(where))
+            yield* noted(blob)
           }),
         ),
       append: (name, bytes) =>
@@ -324,6 +330,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
                 ? oversized
                 : refused(used)
             }
+
+            yield* noted(blob)
           }),
         ),
       compact: (name) =>
@@ -336,6 +344,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
               UPDATE actor_blobs AS head
               SET bytes = head.bytes || (SELECT string_agg(m.bytes, ''::bytea ORDER BY m.chunk) FROM merged AS m)
               WHERE ${where} AND head.chunk = 0 AND EXISTS (SELECT 1 FROM merged)`
+            yield* noted(blob)
           }),
         ),
       delete: (name) =>
@@ -344,6 +353,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
             const where = yield* entry(blob, name)
 
             yield* sql`DELETE FROM actor_blobs WHERE ${where}`
+            yield* noted(blob)
           }),
         ),
     } satisfies BlobWrite

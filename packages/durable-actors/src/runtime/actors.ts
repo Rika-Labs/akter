@@ -16,6 +16,7 @@ import type {
   QueryRegistration,
   Registration,
   StoredEvent,
+  WatchResult,
   WorkflowStatus,
 } from "./members.ts"
 
@@ -85,6 +86,25 @@ export class InternalActors extends Context.Service<
     readonly subscribe: (
       request: Request,
     ) => Stream.Stream<string, ActorError | { readonly failure: string }>
+    /**
+     * Watches a query declared `watch: true`: `request.command` is the query
+     * and `request.payload` its encoded input. The effect opens the watch at
+     * this runner's holder, which authorizes it with `kind: "watch"`, and
+     * fails `NotCreated` for an actor no command has created. The stream
+     * starts with the current result, then sends the newest result after each
+     * commit that wrote something the last run read, skipping intermediate
+     * results and results equal to the last one. A declared failure fails it
+     * with its encoding. `minVersion` is a commit version the first result
+     * reflects at least, and `expiresAt` the credential's expiry in epoch
+     * milliseconds, which ends the watch with `Unauthorized`.
+     */
+    readonly watch: (
+      request: Request,
+      options: { readonly minVersion: string | undefined; readonly expiresAt: number | undefined },
+    ) => Effect.Effect<
+      Stream.Stream<WatchResult, ActorError | { readonly failure: string }>,
+      ActorError
+    >
     /**
      * Reads one execution's status like a query: `request.command` is the
      * workflow member, `request.payload` the execution id.

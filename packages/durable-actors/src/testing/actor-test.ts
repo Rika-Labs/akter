@@ -36,6 +36,7 @@ import type { ValueSchema } from "../members/command.ts"
 import type { AnyConnection } from "../members/connection.ts"
 import { OpenRejected } from "../runtime/connections/holder.ts"
 import { ClientMessage } from "../runtime/connections/protocol.ts"
+import { WatchTap } from "../runtime/connections/watch.ts"
 import { type Actors } from "../handles/actors.ts"
 import { InternalActors } from "../runtime/actors.ts"
 import { type Outcome, type Request } from "../runtime/request.ts"
@@ -171,7 +172,7 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))
 const valueCodec = (schema: ValueSchema): Schema.Codec<{ readonly value: unknown }, string> =>
   Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema })))
 
-interface TestDefinition {
+export interface TestDefinition {
   readonly get: unknown
 }
 
@@ -302,6 +303,12 @@ export class ActorTest extends Context.Service<
      * delayed would arrive; for cases about late progress.
      */
     readonly resendProgress: (message: ProgressMessage) => Effect.Effect<void>
+    /**
+     * While `dropping` holds, this runner's owners send no `Committed` frame
+     * to query watches, as a lost broadcast would; a watch then shows a change
+     * only on its reconcile rerun.
+     */
+    readonly dropCommitted: (dropping: boolean) => Effect.Effect<void>
     /** Drops progress messages matching `predicate` between the pool and the owner. */
     readonly dropProgress: (
       predicate: (message: ProgressMessage | ProgressClosed) => boolean,
@@ -360,6 +367,7 @@ export class ActorTest extends Context.Service<
         let clockOffset = 0
         const progress: Array<ProgressRecord> = []
         let dropProgress: (message: ProgressMessage | ProgressClosed) => boolean = () => false
+        let dropCommitted = false
 
         const hooks = Layer.mergeAll(
           Layer.succeed(TurnHooks, {
@@ -375,6 +383,7 @@ export class ActorTest extends Context.Service<
               }),
           }),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
+          Layer.succeed(WatchTap, { dropsCommitted: () => dropCommitted }),
           Layer.succeed(ProgressTap, {
             send: (message) =>
               Effect.sync(() => {
@@ -717,6 +726,10 @@ export class ActorTest extends Context.Service<
               dropProgress: (predicate) =>
                 Effect.sync(() => {
                   dropProgress = predicate
+                }),
+              dropCommitted: (dropping) =>
+                Effect.sync(() => {
+                  dropCommitted = dropping
                 }),
             })
 
