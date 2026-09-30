@@ -17,6 +17,7 @@ import {
 } from "effect"
 import {
   ClusterError,
+  Entity,
   EntityId,
   MessageStorage,
   RunnerHealth,
@@ -288,6 +289,16 @@ export class RunnerWiring extends Context.Service<
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
 
 /**
+ * An entity type with no messages, registered before any actor. The cluster's
+ * idle sweep takes its interval from the first entity type registered and
+ * sleeps that long before it reads any later one, so an actor type with a
+ * 60-second `hibernateAfter` registering first held every activation for up to
+ * 30 seconds past its own `hibernateAfter`. This type's 5-second idle time, the
+ * sweep's shortest interval, makes every sweep 5 seconds apart from the start.
+ */
+const IdleSweep = Entity.make("durable-actors/IdleSweep", [])
+
+/**
  * Builds the runtime: migrates and checks the database, registers every actor,
  * effect, query, and subscription layer, and starts the relay and background
  * sweeps. The returned layer provides `RuntimeControl`, and fails to build when
@@ -415,6 +426,9 @@ export const layer = (options: Options) => {
       const crypto = yield* Crypto.Crypto
       const scope = yield* Effect.scope
       const sharding = yield* Sharding.Sharding
+      yield* sharding.registerEntity(IdleSweep, Effect.succeed(IdleSweep.of({})), {
+        maxIdleTime: "5 seconds",
+      })
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
       const diagnostics: Parameters<typeof actorRegistration>[0]["diagnostics"] = new Map()

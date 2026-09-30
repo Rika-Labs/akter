@@ -1,5 +1,8 @@
-/** The conformance ledger whose case names must exist in code. */
-export const ledgerPath = "docs/verification/01-conformance.md"
+/** The evidence documents whose case names must exist in code. */
+export const ledgerPaths = [
+  "docs/verification/01-conformance.md",
+  "docs/verification/02-failure-matrix.md",
+]
 
 const sourceRoots = ["packages/", "examples/", "apps/", "tooling/"]
 
