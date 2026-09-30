@@ -1,5 +1,5 @@
-import { Schema } from "effect"
-import type { DeclaredError, Member, ValueSchema } from "./command.ts"
+import type { Schema } from "effect"
+import { type DeclaredError, member, type Member, type ValueSchema } from "./command.ts"
 import type { ProgressEffect } from "./effect.ts"
 
 /**
@@ -34,11 +34,7 @@ const make = <
     readonly progress?: { readonly effects: ReadonlyArray<ProgressEffect> }
   },
 ): Stream<Tag, Input, Output, Errors> => ({
-  kind: "stream",
-  tag,
-  input: (options.input ?? Schema.Void) as Input,
-  output: options.output,
-  errors: (options.errors ?? []) as Errors,
+  ...member("stream")(tag, options),
   progress: options.progress,
 })
 

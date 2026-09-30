@@ -1,5 +1,5 @@
 import { Schema, SchemaAST } from "effect"
-import type { DeclaredError, Member, ValueSchema } from "./command.ts"
+import { type DeclaredError, member, type Member, type ValueSchema } from "./command.ts"
 import type { ProgressEffect } from "./effect.ts"
 
 /** Tags reserved for framework control frames, which travel in their own envelope variant. */
@@ -95,11 +95,10 @@ const make = <
           throw new Error(`Connection ${tag} frames may not use the control tag ${reserved}`)
 
   return {
-    kind: "connection",
-    tag,
-    input: (options.params ?? Schema.Void) as Params,
-    output: Schema.Void,
-    errors: (options.errors ?? []) as Errors,
+    ...member("connection")<Tag, Params, typeof Schema.Void, Errors>(tag, {
+      input: options.params,
+      errors: options.errors,
+    }),
     server: options.server,
     client: (options.client ?? Schema.Never) as Client,
     session: options.session as Session,
