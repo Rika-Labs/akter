@@ -90,6 +90,20 @@ export interface Policy<
   readonly connections?: "park" | "keepAwake"
   /** Longest time a connection runs on one authorization check, 1 second to 1 hour. Default 60 seconds. */
   readonly reauthorizeEvery?: Duration.Input
+  /** Limits on the watches of this actor's `watch: true` queries. */
+  readonly watch?: {
+    /** Watches open on one actor at once; the next fails `RunnerAtCapacity`. Default 1,000. */
+    readonly maxPerActor?: number
+    /** The least time between two reruns of one watch. Default 100 milliseconds. */
+    readonly minInterval?: Duration.Input
+    /**
+     * How often a watch reruns whether or not a commit signal arrived, so a
+     * signal lost to a broadcast gap or an owner's death, or a change no
+     * commit reports, is shown within this time. 5 seconds to 1 hour.
+     * Default 30 seconds.
+     */
+    readonly reconcileEvery?: Duration.Input
+  }
   /**
    * The actor types that may subscribe to this actor's events, by name, so
    * this definition never imports its subscribers. A subscription on any
@@ -119,6 +133,11 @@ export interface TurnPolicy {
   readonly blobMaxEntries: number
   readonly connections: "park" | "keepAwake"
   readonly reauthorizeMs: number
+  readonly watch: {
+    readonly maxPerActor: number
+    readonly minIntervalMs: number
+    readonly reconcileMs: number
+  }
   readonly keepWorkflowsMs: number
   readonly cronSkipMs: number
   readonly subscribers: ReadonlyArray<string> | undefined
@@ -128,7 +147,8 @@ export interface TurnPolicy {
 /**
  * Applies the defaults of `declared` and validates each bound: durations run
  * from 1 ms to 2^31 - 1 ms, retention horizons up to about ten years, and
- * `reauthorizeEvery` from 1 second to 1 hour. Throws when a value is out of
+ * `reauthorizeEvery` from 1 second to 1 hour, and `watch.reconcileEvery` from
+ * 5 seconds to 1 hour. Throws when a value is out of
  * range or `createdBy` is not one of `commands`.
  */
 export const resolvePolicy = (policy: {
@@ -159,6 +179,13 @@ export const resolvePolicy = (policy: {
     reauthorizeMs: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 3_600_000 })).make(
       Duration.toMillis(declared?.reauthorizeEvery ?? "60 seconds"),
     ),
+    watch: {
+      maxPerActor: Positive.make(declared?.watch?.maxPerActor ?? 1_000),
+      minIntervalMs: milliseconds(declared?.watch?.minInterval ?? "100 millis"),
+      reconcileMs: Schema.Int.check(Schema.isBetween({ minimum: 5_000, maximum: 3_600_000 })).make(
+        Duration.toMillis(declared?.watch?.reconcileEvery ?? "30 seconds"),
+      ),
+    },
     keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
     cronSkipMs: horizon(declared?.cronSkipIfOlderThan ?? "1 day"),
     subscribers: declared?.subscribers === undefined ? undefined : [...declared.subscribers],
