@@ -1,6 +1,7 @@
-import { Effect, Exit } from "effect"
+import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 
+import { UsageError } from "../workflows/check.ts"
 import { parseSkip } from "./skip.ts"
 
 const base = [
@@ -44,11 +45,15 @@ describe("durable subscriptions skip", () => {
         return base.filter((_, index) => index !== at && index !== at + 1)
       }
 
-      for (const args of [
-        without("--reason"),
-        without("--tenant"),
-        [...without("--through"), "--through", "0x2"],
-      ])
-        expect(Exit.isFailure(yield* parseSkip(args).pipe(Effect.exit))).toBe(true)
+      for (const [args, message] of [
+        [without("--reason"), "--reason is required, up to 500 characters"],
+        [without("--tenant"), "--tenant is required"],
+        [[...without("--through"), "--through", "0x2"], "--through is a positive event cursor"],
+      ] as const) {
+        const failure = yield* parseSkip(args).pipe(Effect.flip)
+
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
     }).pipe(Effect.runPromise))
 })

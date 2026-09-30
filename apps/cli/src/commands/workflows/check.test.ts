@@ -1,7 +1,7 @@
 import { Actor, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Cause, Effect, Exit, Layer, Schedule, Schema } from "effect"
+import { Effect, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { describe, expect, it } from "vitest"
 
@@ -92,33 +92,30 @@ describe("durable workflows check", () => {
         yield* parseCheck(["--entry", "./a.ts", "--database-url", "postgres://x", "--json"]),
       ).toEqual({ entry: "./a.ts", databaseUrl: "postgres://x", json: true })
 
-      const missing = yield* Effect.exit(parseCheck(["--entry", "./a.ts"]))
-      expect(Exit.isFailure(missing) && String(missing.cause)).toContain(
-        "--database-url is required",
-      )
-      const unknown = yield* Effect.exit(parseCheck(["--verbose"]))
-      expect(Exit.isFailure(unknown) && String(unknown.cause)).toContain("Unknown argument")
+      for (const [failure, message] of [
+        [yield* Effect.flip(parseCheck(["--entry", "./a.ts"])), "--database-url is required"],
+        [yield* Effect.flip(parseCheck(["--verbose"])), "Unknown argument: --verbose"],
+        [
+          yield* Effect.flip(actorsOf({ module: { Shop: Current.Shop }, entry: "./a.ts" })),
+          "./a.ts must export an `actors` array of actor definitions",
+        ],
+        [
+          yield* Effect.flip(
+            actorsOf({
+              module: { actors: [{ name: "Shop", api: { Order: { kind: "workflow" } } }] },
+              entry: "./a.ts",
+            }),
+          ),
+          "./a.ts: Shop.Order is not an Actor.workflow definition",
+        ],
+      ] as const) {
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
 
-      const absent = yield* Effect.exit(loadEntry("./does-not-exist.ts"))
-      expect(Exit.isFailure(absent) && Schema.is(UsageError)(Cause.squash(absent.cause))).toBe(true)
-      expect(Exit.isFailure(absent) && String(absent.cause)).toContain(
-        "Cannot load ./does-not-exist.ts",
-      )
-
-      const bare = yield* Effect.exit(actorsOf({ module: { Shop: Current.Shop }, entry: "./a.ts" }))
-      expect(Exit.isFailure(bare) && String(bare.cause)).toContain("must export an `actors` array")
-
-      const fake = yield* Effect.exit(
-        actorsOf({
-          module: { actors: [{ name: "Shop", api: { Order: { kind: "workflow" } } }] },
-          entry: "./a.ts",
-        }),
-      )
-
-      expect(Exit.isFailure(fake) && Schema.is(UsageError)(Cause.squash(fake.cause))).toBe(true)
-      expect(Exit.isFailure(fake) && String(fake.cause)).toContain(
-        "Shop.Order is not an Actor.workflow definition",
-      )
+      const absent = yield* Effect.flip(loadEntry("./does-not-exist.ts"))
+      expect(absent).toBeInstanceOf(UsageError)
+      expect(absent.message).toMatch(/^Cannot load \.\/does-not-exist\.ts: /)
 
       const [loaded] = yield* actorsOf({ module: { actors: [Current.Shop] }, entry: "./a.ts" })
       expect(loaded?.name).toBe("Shop")

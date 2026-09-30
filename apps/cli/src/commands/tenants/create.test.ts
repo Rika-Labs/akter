@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { migrate } from "@durable-actors/postgres/migrate"
-import { Config, Crypto, Effect, Exit, ManagedRuntime, Option, Schema } from "effect"
+import { Config, Crypto, Effect, ManagedRuntime } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { parseCreate, UsageError } from "./create.ts"
@@ -41,17 +41,18 @@ describe("durable tenants create arguments", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const refused = [
-          valid.slice(0, 7),
-          [...valid, "--force"],
-          ["bad tenant", ...valid.slice(1)],
-          [...valid.slice(0, 4), "US East", ...valid.slice(5)],
-          valid.slice(1),
-        ]
+          [valid.slice(0, 7), "--operator is required"],
+          [[...valid, "--force"], "Unknown argument: --force"],
+          [["bad tenant", ...valid.slice(1)], 'tenant "bad tenant" is not valid'],
+          [[...valid.slice(0, 4), "US East", ...valid.slice(5)], '--region "US East" is not valid'],
+          [valid.slice(1), "<tenant> is required"],
+        ] as const
 
-        for (const args of refused) {
-          const exit = yield* parseCreate(args).pipe(Effect.exit)
+        for (const [args, message] of refused) {
+          const failure = yield* parseCreate(args).pipe(Effect.flip)
 
-          expect(Option.exists(Exit.findErrorOption(exit), Schema.is(UsageError))).toBe(true)
+          expect(failure).toBeInstanceOf(UsageError)
+          expect(failure.message).toBe(message)
         }
       }),
     ))

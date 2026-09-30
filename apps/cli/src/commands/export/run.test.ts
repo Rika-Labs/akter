@@ -2,10 +2,11 @@ import { Actor, Intent, User } from "@durable-actors/core"
 import { OperatorAuth, Operators, SeedJson } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
-import { Context, Duration, Effect, Exit, FileSystem, Layer, Redacted, Schema } from "effect"
+import { Context, Duration, Effect, FileSystem, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
+import { UsageError } from "../workflows/check.ts"
 import { exportSeed, formatExport, parseExport } from "./run.ts"
 
 const Note = Actor.command("Note", { input: Schema.String })
@@ -80,13 +81,23 @@ describe("durable export", () => {
         ]),
       ).toMatchObject({ actorType: "Vault", actorId: "v/1", tenant: "t", output: "v.seed" })
 
-      for (const args of [
-        ["Vault", "--url", "u", "--tenant", "t", "--output", "f"],
-        ["Vault/v1", "--url", "u", "--output", "f"],
-        ["Vault/v1", "--url", "u", "--tenant", "t"],
-        ["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"],
-      ])
-        expect(Exit.isFailure(yield* parseExport(args).pipe(Effect.exit))).toBe(true)
+      for (const [args, message] of [
+        [
+          ["Vault", "--url", "u", "--tenant", "t", "--output", "f"],
+          "Name the actor as <Type>/<id>",
+        ],
+        [["Vault/v1", "--url", "u", "--output", "f"], "--tenant is required"],
+        [["Vault/v1", "--url", "u", "--tenant", "t"], "--output is required"],
+        [
+          ["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"],
+          "Unexpected argument: extra",
+        ],
+      ] as const) {
+        const failure = yield* parseExport(args).pipe(Effect.flip)
+
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("writes an owner-only seed file, never replaces one, and starts an actor from it in another tenant", () =>

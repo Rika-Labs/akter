@@ -2,10 +2,12 @@ import { Actor, User } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
+import { RunnerUnreachable } from "../operator/request.ts"
+import { UsageError } from "../workflows/check.ts"
 import { formatDefects, listDefects, parseList } from "./list.ts"
 
 const Break = Actor.command("Break", { input: Schema.String })
@@ -61,8 +63,17 @@ describe("durable defects list", () => {
       const long = yield* parseList({ args: ["--url", "u", "--since", "90 minutes"], nowMs: 0 })
       expect(long.sinceMs).toBe(-5_400_000)
 
-      for (const args of [[], ["--url"], ["--url", "u", "--limit", "0"], ["--url", "u", "--x"]])
-        expect(Exit.isFailure(yield* parseList({ args, nowMs: 0 }).pipe(Effect.exit))).toBe(true)
+      for (const [args, message] of [
+        [[], "--url is required"],
+        [["--url"], "--url needs a value"],
+        [["--url", "u", "--limit", "0"], "--limit must be an integer from 1 to 1000"],
+        [["--url", "u", "--x"], "Unknown argument: --x"],
+      ] as const) {
+        const failure = yield* parseList({ args, nowMs: 0 }).pipe(Effect.flip)
+
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("lists a runner's defect spans for the operator's tenant, newest last", () =>
@@ -119,10 +130,19 @@ describe("durable defects list", () => {
         "b1",
         "b2",
       ])
-      expect(Exit.isFailure(yield* read("plant-token", "other").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("plant-token", "*").pipe(Effect.exit))).toBe(true)
       expect(yield* read("plant-token", "plant", "Kettle")).toEqual([])
-      expect(Exit.isFailure(yield* read(undefined, "plant").pipe(Effect.exit))).toBe(true)
+
+      for (const [token, tenant, status] of [
+        ["plant-token", "other", 403],
+        ["plant-token", "*", 403],
+        [undefined, "plant", 401],
+      ] as const) {
+        const refused = yield* read(token, tenant).pipe(Effect.flip)
+
+        expect(refused).toBeInstanceOf(RunnerUnreachable)
+        expect(refused.url).toBe("http://runner")
+        expect(refused.message).toContain(`non 2xx status code (${status} GET`)
+      }
 
       const browse = (origin: string) =>
         web.handler(

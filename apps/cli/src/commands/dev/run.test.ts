@@ -1,10 +1,11 @@
 import { Actor, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
+import { UsageError } from "../workflows/check.ts"
 import { INSPECTOR_PATH, appOf, devRoutes, parseDev } from "./run.ts"
 
 const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
@@ -88,10 +89,14 @@ describe("durable dev", () => {
 
       expect(yield* appOf({ module: { app }, entry: "app.ts" })).toBe(app)
 
-      for (const module of [{}, { app: () => app }, { routes: app }])
-        expect(Exit.isFailure(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.exit))).toBe(
-          true,
+      for (const module of [{}, { app: () => app }, { routes: app }]) {
+        const failure = yield* appOf({ module, entry: "app.ts" }).pipe(Effect.flip)
+
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(
+          "app.ts must export `app`: a Layer of its routes that needs only the database",
         )
+      }
     }).pipe(Effect.runPromise))
 
   it("serves the app's commands and an inspector that reads only its tenant", () =>

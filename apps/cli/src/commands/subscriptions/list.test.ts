@@ -1,10 +1,12 @@
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Exit, Layer, Redacted } from "effect"
+import { Context, Effect, Layer, Redacted } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
+import { OperatorRefused } from "../operator/request.ts"
+import { UsageError } from "../workflows/check.ts"
 import { formatLagging, list, parseList } from "./list.ts"
 
 const live = ActorTest.layer({}).pipe(Layer.provideMerge(BunCrypto.layer))
@@ -44,14 +46,24 @@ describe("durable subscriptions list --lagging", () => {
         ]),
       ).toMatchObject({ urls: ["http://a"], tenant: "t", minAttempts: "3", limit: "5" })
 
-      for (const args of [
-        ["--url", "u", "--tenant", "t"],
-        ["--lagging", "--url", "u"],
-        ["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"],
-        ["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"],
-        ["--lagging", "--url", "u", "--tenant", "t", "extra"],
-      ])
-        expect(Exit.isFailure(yield* parseList(args).pipe(Effect.exit))).toBe(true)
+      for (const [args, message] of [
+        [["--url", "u", "--tenant", "t"], "--lagging is required: it is the only listing"],
+        [["--lagging", "--url", "u"], "--tenant is required"],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"],
+          "--min-attempts must be a positive integer",
+        ],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"],
+          "--limit must be an integer from 1 to 1000",
+        ],
+        [["--lagging", "--url", "u", "--tenant", "t", "extra"], "list takes flags only"],
+      ] as const) {
+        const failure = yield* parseList(args).pipe(Effect.flip)
+
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("prints each failing row with its lag, and reads only under a tenant-wide inspect grant", () =>
@@ -99,8 +111,15 @@ describe("durable subscriptions list --lagging", () => {
         "Order/o1 -> Follower.FollowedOrders/f1  delivered 1 of 3  lag 2  attempts 9\n  Error: bad payload",
       )
 
-      expect(Exit.isFailure(yield* read("actor-token").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("skip-token").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("nobody").pipe(Effect.exit))).toBe(true)
+      for (const [token, status] of [
+        ["actor-token", 403],
+        ["skip-token", 403],
+        ["nobody", 401],
+      ] as const) {
+        const refused = yield* read(token).pipe(Effect.flip)
+
+        expect(refused).toBeInstanceOf(OperatorRefused)
+        expect(refused).toMatchObject({ status })
+      }
     }).pipe(Effect.scoped, Effect.runPromise))
 })

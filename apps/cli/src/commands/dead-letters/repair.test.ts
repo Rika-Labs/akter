@@ -2,11 +2,12 @@ import { Actor, User } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { describe, expect, it } from "vitest"
 
+import { UsageError } from "../workflows/check.ts"
 import { parseRepair, repair } from "./repair.ts"
 
 class Notify extends Actor.effect<Notify>()("CliNotify", { input: { to: Schema.String } }) {}
@@ -90,34 +91,41 @@ describe("durable dead-letters", () => {
         tokenEnv: "DURABLE_OPERATOR_TOKEN",
       })
 
-      for (const args of [
-        ["e1", "--actor", "CliPager/p1", "--url", "u", "--tenant", "t"],
-        ["e1", "--url", "u", "--tenant", "t", "--reason", "r"],
-        ["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"],
-      ])
-        expect(
-          Exit.isFailure(yield* parseRepair({ action: "retry", args }).pipe(Effect.exit)),
-        ).toBe(true)
+      for (const [args, message] of [
+        [
+          ["e1", "--actor", "CliPager/p1", "--url", "u", "--tenant", "t"],
+          "--reason is required, up to 500 characters",
+        ],
+        [["e1", "--url", "u", "--tenant", "t", "--reason", "r"], "Name the actor as <Type>/<id>"],
+        [
+          ["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"],
+          "Name the actor as <Type>/<id>",
+        ],
+      ] as const) {
+        const failure = yield* parseRepair({ action: "retry", args }).pipe(Effect.flip)
 
-      expect(
-        Exit.isFailure(
-          yield* parseRepair({
-            action: "discard",
-            args: [
-              "e1",
-              "--actor",
-              "a/b",
-              "--url",
-              "u",
-              "--tenant",
-              "t",
-              "--reason",
-              "r",
-              "--provider-checked",
-            ],
-          }).pipe(Effect.exit),
-        ),
-      ).toBe(true)
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
+
+      const discard = yield* parseRepair({
+        action: "discard",
+        args: [
+          "e1",
+          "--actor",
+          "a/b",
+          "--url",
+          "u",
+          "--tenant",
+          "t",
+          "--reason",
+          "r",
+          "--provider-checked",
+        ],
+      }).pipe(Effect.flip)
+
+      expect(discard).toBeInstanceOf(UsageError)
+      expect(discard.message).toBe("Unknown argument: --provider-checked")
     }).pipe(Effect.runPromise))
 
   it("retries a dead letter through the operator routes and refuses a second repair", () =>

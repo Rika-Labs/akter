@@ -2,10 +2,11 @@ import { Actor, Actors, User } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
+import { UsageError } from "../workflows/check.ts"
 import { parseShow, showReceipt } from "../receipts/show.ts"
 import { formatInspection, inspect, parseInspect } from "./show.ts"
 
@@ -57,18 +58,24 @@ describe("durable inspect and durable receipts show", () => {
         yield* parseInspect(["Room/r/1", "--url", "http://x", "--tenant", "t", "--receipts", "5"]),
       ).toMatchObject({ actorType: "Room", actorId: "r/1", tenant: "t", limit: 5 })
 
-      for (const args of [
-        ["Room", "--url", "u", "--tenant", "t"],
-        ["Room/r1", "--url", "u"],
-        ["Room/r1", "--url", "u", "--tenant", "t", "--receipts", "0"],
-      ])
-        expect(Exit.isFailure(yield* parseInspect(args).pipe(Effect.exit))).toBe(true)
+      for (const [args, message] of [
+        [["Room", "--url", "u", "--tenant", "t"], "Name the actor as <Type>/<id>"],
+        [["Room/r1", "--url", "u"], "--tenant is required"],
+        [
+          ["Room/r1", "--url", "u", "--tenant", "t", "--receipts", "0"],
+          "--receipts must be an integer from 1 to 1000",
+        ],
+      ] as const) {
+        const failure = yield* parseInspect(args).pipe(Effect.flip)
 
-      expect(
-        Exit.isFailure(
-          yield* parseShow(["Room/r1", "--url", "u", "--tenant", "t"]).pipe(Effect.exit),
-        ),
-      ).toBe(true)
+        expect(failure).toBeInstanceOf(UsageError)
+        expect(failure.message).toBe(message)
+      }
+
+      const show = yield* parseShow(["Room/r1", "--url", "u", "--tenant", "t"]).pipe(Effect.flip)
+
+      expect(show).toBeInstanceOf(UsageError)
+      expect(show.message).toBe("Name one command id after the actor")
     }).pipe(Effect.runPromise))
 
   it("prints an actor's state and receipts, with outcomes only under receipts.read", () =>

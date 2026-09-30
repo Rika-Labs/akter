@@ -1,7 +1,7 @@
 import { Actor, type PayloadMigrations, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
 import { UsageError } from "../workflows/check.ts"
@@ -80,8 +80,9 @@ describe("durable payloads", () => {
 
   it("rejects an unknown payloads command and missing flags", () =>
     Effect.gen(function* () {
-      const unknown = yield* Effect.exit(parsePayloads(["migrate"]))
-      expect(Exit.isFailure(unknown)).toBe(true)
+      const unknown = yield* Effect.flip(parsePayloads(["migrate"]))
+      expect(unknown).toBeInstanceOf(UsageError)
+      expect(unknown.message).toBe("Unknown payloads command: migrate")
 
       const missing = yield* Effect.flip(parsePayloads(["check", "--entry", "x.ts"]))
       expect(missing).toBeInstanceOf(UsageError)
