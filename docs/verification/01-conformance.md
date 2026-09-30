@@ -892,7 +892,7 @@ Ten runs on 2026-09-29: 0 lost and 0 duplicated operations every time, and 1–3
 
 ### M4 exit rehearsal on the served chat room (#306)
 
-[`examples/chat/src/rehearsal/rehearsal.test.ts`](../../examples/chat/src/rehearsal/rehearsal.test.ts), in the chat package's `test:integration` script (skipped on PGlite), needs Docker. It runs the exit test of [M4](../milestones/M4.md) as one sequence against one database: the chat room served through `Actor.serve` on three runners, each with its own HTTP listener, under load from HTTP clients that retry under their idempotency keys.
+[`examples/chat/src/rehearsal/deployment.test.ts`](../../examples/chat/src/rehearsal/deployment.test.ts), in the chat package's `test:integration` script (skipped on PGlite), needs Docker. It runs the exit test of [M4](../milestones/M4.md) as one sequence against one database: the chat room served through `Actor.serve` on three runners, each with its own HTTP listener, under load from HTTP clients that retry under their idempotency keys.
 
 - `operates the served chat room through a drain, a Postgres failover, and a restore with no command lost or repeated`:
   - drain: runner 0's `/ready` turns 503 during `drain`, the drain reports `clean` or `deadline-expired`, and the runner shuts down, restarts, and rejoins while the others serve;
