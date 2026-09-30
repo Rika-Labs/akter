@@ -27,13 +27,8 @@ import {
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
-import {
-  Executed,
-  Outcome,
-  type RegisteredCommand,
-  type Registration,
-  Request,
-} from "../../handles/actors.ts"
+import { Executed, Outcome, Request } from "../request.ts"
+import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
@@ -551,8 +546,9 @@ export const registerActor = Effect.fnUntraced(function* (
           for (const { request } of batch) yield* (yield* TurnHooks).at("beforeFlush", request)
 
           const feeds = yield* Effect.forEach(done.committed, owner.feedBroadcasts)
+          const watches = yield* owner.watchBroadcasts(owned, done.wrote, done.version)
 
-          yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat()], done.head)
+          yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat(), ...watches], done.head)
         }
 
         for (const [index, settled] of done.settled.entries())

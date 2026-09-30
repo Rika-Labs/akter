@@ -11,7 +11,7 @@ import { Database } from "../index.ts"
 import { orderCapped } from "../turn/outbox.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
-import type { InternalActors } from "../../handles/actors.ts"
+import type { InternalActors } from "../actors.ts"
 import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
 
 const harness = ManagedRuntime.make(BunFileSystem.layer)

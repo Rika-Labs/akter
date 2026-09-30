@@ -31,9 +31,9 @@ import {
   type OpenConnection,
   type Registration,
   type StoredProgress,
-} from "../../handles/actors.ts"
+} from "../members.ts"
 import { type ActorRef, Caller, type Principal, principal } from "../../identity/caller.ts"
-import type { ConnectionCommands } from "../../identity/command.ts"
+import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
@@ -43,14 +43,20 @@ import {
   emptyActivationCache,
 } from "../turn/execute.ts"
 import {
+  Committed,
   type Deliver,
   FEED_MEMBER,
   FeedFrame,
   HolderItem,
+  isWatchMember,
   StreamFailed,
   StreamItem,
+  watchedQuery,
+  watchMember,
+  type WriteSet,
 } from "./protocol.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
+import { WatchTap } from "./watch.ts"
 
 /** Encoded bytes one connection's session may hold. */
 export const MAX_SESSION_BYTES = 16_384
@@ -308,7 +314,11 @@ export const activationOwner = ({
   readonly role: string | undefined
 }) => {
   const activations = new Map<string, Activation>()
-  const hasConnections = registration.connections.size > 0 || registration.feeds.size > 0
+
+  const hasConnections =
+    registration.connections.size > 0 ||
+    registration.feeds.size > 0 ||
+    registration.watches.size > 0
 
   const hasStreams = registration.streams.size > 0
 
@@ -332,6 +342,35 @@ export const activationOwner = ({
   }
 
   const encodeFeedFrame = Schema.encodeEffect(Schema.fromJsonString(FeedFrame))
+
+  const encodeCommitted = Schema.encodeEffect(Schema.fromJsonString(Committed))
+
+  /**
+   * The frame every watch of the actor receives after a commit, one broadcast
+   * per watchable query so each reaches its own connections. A commit that
+   * wrote nothing a query could have read sends none.
+   */
+  const watchBroadcasts = (activation: Activation, writes: WriteSet, version: string) =>
+    Effect.gen(function* () {
+      const nothing =
+        !writes.state &&
+        writes.events.length === 0 &&
+        writes.tables.length === 0 &&
+        writes.blobs.length === 0
+
+      if (nothing || registration.watches.size === 0 || (yield* WatchTap).dropsCommitted())
+        return []
+
+      if (![...(activation.rows?.values() ?? [])].some((row) => isWatchMember(row.member)))
+        return []
+
+      const frame = yield* encodeCommitted({ version, writes }).pipe(Effect.orDie)
+
+      return [...registration.watches].map((query): Broadcast => ({
+        member: watchMember(query),
+        frame,
+      }))
+    })
 
   /** A committed turn's feed events, broadcast to every open feed of the actor. */
   const feedBroadcasts = (committed: CommittedEvents) =>
@@ -855,8 +894,15 @@ export const activationOwner = ({
       request.connectionId,
       Effect.gen(function* () {
         const feed = request.member === FEED_MEMBER
+        const watch = isWatchMember(request.member)
 
-        if (feed ? registration.feeds.size === 0 : !registration.connections.has(request.member))
+        if (
+          feed
+            ? registration.feeds.size === 0
+            : watch
+              ? !registration.watches.has(watchedQuery(request.member))
+              : !registration.connections.has(request.member)
+        )
           return yield* Effect.die(new Error(`Unregistered connection ${request.member}`))
 
         yield* acquire(activation)
@@ -871,14 +917,6 @@ export const activationOwner = ({
             recovered: true,
           }
 
-        if (
-          [...activation.rows!.values()].filter((row) => row.member === request.member).length >=
-          MAX_MEMBER_CONNECTIONS
-        )
-          return yield* feed
-            ? ActorError.make({ reason: RunnerAtCapacity.make({}) })
-            : unavailable("Actor is at its connection limit for this member")
-
         const sql = yield* SqlClient.SqlClient
         const actor = yield* where(activation)
 
@@ -889,6 +927,21 @@ export const activationOwner = ({
           if (created?.created !== true)
             return yield* ActorError.make({ reason: NotCreated.make({}) })
         }
+
+        if (
+          watch &&
+          [...activation.rows!.values()].filter((row) => isWatchMember(row.member)).length >=
+            registration.policy.watch.maxPerActor
+        )
+          return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
+
+        if (
+          [...activation.rows!.values()].filter((row) => row.member === request.member).length >=
+          MAX_MEMBER_CONNECTIONS
+        )
+          return yield* feed
+            ? ActorError.make({ reason: RunnerAtCapacity.make({}) })
+            : unavailable("Actor is at its connection limit for this member")
 
         const baseline = activation.through
 
@@ -905,7 +958,7 @@ export const activationOwner = ({
         activation.rows!.set(request.connectionId, { ...row, frameSeq: 0, buffered: [] })
 
         const result = yield* (
-          feed
+          feed || watch
             ? Effect.succeed<ConnectionResult>(emptyResult)
             : run(
                 activation,
@@ -1107,7 +1160,7 @@ export const activationOwner = ({
         if (row === undefined) return
 
         const result =
-          row.member === FEED_MEMBER
+          row.member === FEED_MEMBER || isWatchMember(row.member)
             ? undefined
             : yield* run(
                 activation,
@@ -1159,7 +1212,11 @@ export const activationOwner = ({
           return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
         }
 
-        if (row.member === FEED_MEMBER || !registration.connections.get(row.member)!.hasResync)
+        if (
+          row.member === FEED_MEMBER ||
+          isWatchMember(row.member) ||
+          !registration.connections.get(row.member)!.hasResync
+        )
           return { _tag: "Replayed" as const, ...identity(activation) }
 
         return yield* Effect.gen(function* () {
@@ -1712,6 +1769,7 @@ export const activationOwner = ({
     closeProgress,
     progressClosed,
     feedBroadcasts,
+    watchBroadcasts,
     hibernate,
     subscribe,
     endStreams,

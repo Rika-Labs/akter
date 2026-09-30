@@ -21,7 +21,7 @@ import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from 
 import { principal } from "../identity/caller.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
-import type { InternalActors } from "../handles/actors.ts"
+import type { InternalActors } from "../runtime/actors.ts"
 import type { RuntimeControl } from "../runtime/drain.ts"
 import { ActorTest } from "./actor-test.ts"
 import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"
@@ -63,6 +63,12 @@ import { OperatorRuntime } from "../runtime/operators/repair.ts"
 import { exportConformance } from "./conformance/export.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
+import {
+  type WatchFixture,
+  watchConformance,
+  watchFixture,
+  watchLayer,
+} from "./conformance/watch.ts"
 import { singleShardConformance } from "./conformance/single-shard.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
@@ -94,14 +100,15 @@ import {
   drainLayer,
 } from "./conformance/drain.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
+import { connectionsConformance } from "./conformance/connections.ts"
 import {
-  connectionsConformance,
   connectionsFixture,
   type ConnectionsFixture,
   connectionsLayer,
-} from "./conformance/connections.ts"
+} from "./conformance/connections/actors.ts"
 import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
-import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
+import { transportsConformance } from "./conformance/transports.ts"
+import { transportsLayer } from "./conformance/transports/actors.ts"
 import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
@@ -146,14 +153,14 @@ import {
   progressLayer,
   type ProgressFixture,
 } from "./conformance/progress.ts"
+import { subscriptionsConformance } from "./conformance/subscriptions.ts"
+import { subscriptionsClusterConformance } from "./conformance/subscriptions/cluster.ts"
+import { subscriptionsRetentionConformance } from "./conformance/subscriptions/retention.ts"
 import {
-  subscriptionsClusterConformance,
-  subscriptionsConformance,
-  subscriptionsRetentionConformance,
   subscriptionsFixture,
   subscriptionsLayer,
   type SubscriptionsFixture,
-} from "./conformance/subscriptions.ts"
+} from "./conformance/subscriptions/actors.ts"
 import { ContentHooks, TurnHooks } from "../runtime/turn/hooks.ts"
 import { NekiTurnSessions } from "../runtime/database/neki/session.ts"
 import type { ContentStore } from "../handles/content.ts"
@@ -164,12 +171,12 @@ import {
   contentLayer,
   type ContentFixture,
 } from "./conformance/content-blobs.ts"
+import { workflowsConformance } from "./conformance/workflows.ts"
 import {
-  workflowsConformance,
   workflowsFixture,
   type WorkflowsFixture,
   workflowsLive,
-} from "./conformance/workflows.ts"
+} from "./conformance/workflows/actors.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -325,6 +332,7 @@ export interface ConformanceFixture {
   readonly connections: ConnectionsFixture
   readonly content: ContentFixture
   readonly drain: DrainFixture
+  readonly watch: WatchFixture
   executions: number
   queries: number
   captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
@@ -464,6 +472,7 @@ const makeFixture = (): ConformanceFixture => ({
   connections: connectionsFixture(),
   content: contentFixture(),
   drain: drainFixture(),
+  watch: watchFixture(),
   executions: 0,
   queries: 0,
   captured: Effect.succeed(0),
@@ -1515,6 +1524,7 @@ export const conformanceGroups = {
   operator: operatorConformance,
   export: exportConformance,
   placement: placementConformance,
+  watch: watchConformance,
   adoption: adoptionConformance,
   singleShard: singleShardConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
@@ -1594,6 +1604,7 @@ export const describeConformance = (options: {
     subscriptionsLayer(fixture.subscriptions),
     contentLayer(fixture.content),
     drainLayer(fixture.drain),
+    watchLayer(fixture.watch),
   )
 
   let store: ConformanceStore | undefined

@@ -18,7 +18,8 @@ export const checkPlacement = ({
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     const kind = placementKind(placement)
-    const parent = parentPlacement(placement)?.parent ?? null
+    const above = parentPlacement(placement)
+    const parent = above?.parent ?? null
 
     yield* sql`INSERT INTO actor_placements (actor_type, placement, encoding, parent_type)
     VALUES (${name}, ${kind}, ${PLACEMENT_ENCODING}, ${parent})
@@ -38,8 +39,6 @@ export const checkPlacement = ({
       return yield* Effect.die(
         new Error(`Actor ${name} placement differs from the deployment; migrate explicitly`),
       )
-
-    const above = parentPlacement(placement)
 
     if (above !== undefined)
       yield* checkPlacement({ name: above.parent, placement: above.placement })

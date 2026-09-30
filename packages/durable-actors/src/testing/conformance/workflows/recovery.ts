@@ -1,0 +1,208 @@
+import { Deferred, Effect, Option, Predicate } from "effect"
+import { InvalidExecutionId } from "../../../index.ts"
+import { ActorTest } from "../../actor-test.ts"
+import { ActorCluster } from "../../cluster.ts"
+import { RuntimeControl } from "../../../runtime/drain.ts"
+import type { ConformanceCase } from "../../conformance.ts"
+import { Ship, Shipper } from "./actors.ts"
+import { advance, eventually, killOwner, on, reset, suspendedRow, withCluster } from "./harness.ts"
+
+/** Redelivery, execution-id validation, eviction, owner death, and drain recovery of workflows. */
+export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "workflows: a resume whose reply is lost after commit still wakes the execution on redelivery",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const test = yield* ActorTest
+          const shipper = yield* Shipper.get("resume-replay")
+          const run = yield* shipper.Ship({ orderId: "rr1", sku: "sleep-rr" })
+          yield* suspendedRow(run.executionId)
+          yield* test.crashNext("afterCommit")
+          yield* test.advance("11 seconds")
+          expect(yield* run.result).toBe("r-sleep-rr:v2")
+          expect(fixture.workflows.runs.get("reserve:rr1")).toBe(1)
+          expect(yield* test.receiptsFor(shipper.ref, "$workflow/resume")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "workflows: a malformed, foreign, or wrong-member execution id is InvalidExecutionId",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const bad = yield* Shipper.run(Ship, "w1.nope").pipe(Effect.flip)
+          expect(bad).toBeInstanceOf(InvalidExecutionId)
+          const other = yield* Shipper.run(Ship, "x1.abc").pipe(Effect.flip)
+          expect(other).toBeInstanceOf(InvalidExecutionId)
+        }),
+      ),
+  },
+  {
+    name: "workflows: an evicted activation resumes its suspended execution without rerunning the activity",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture.workflows)
+          const test = yield* ActorTest
+          const shipper = yield* Shipper.get("evicted")
+          const run = yield* shipper.Ship({ orderId: "o8", sku: "sleep-e" })
+          yield* suspendedRow(run.executionId)
+          yield* test.invalidate(shipper.ref)
+          yield* test.advance("11 seconds")
+          const reattached = yield* Shipper.run(Ship, run.executionId)
+          expect(yield* reattached.result).toBe("r-sleep-e:v2")
+          expect(fixture.workflows.runs.get("reserve:o8")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "workflows: a killed owner's suspended execution resumes on a survivor via its relay timer",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.workflows,
+        Effect.gen(function* () {
+          const id = yield* on(
+            0,
+            Effect.gen(function* () {
+              const run = yield* (yield* Shipper.get("killed-sleep")).Ship({
+                orderId: "k1",
+                sku: "sleep-k",
+              })
+
+              return run.executionId
+            }),
+          )
+
+          yield* on(
+            0,
+            eventually(
+              Effect.gen(function* () {
+                const polled = yield* (yield* Shipper.run(Ship, id)).poll
+
+                return Option.isSome(polled) && Predicate.isTagged(polled.value, "Suspended")
+              }),
+              "the sleep to suspend",
+            ),
+          )
+          const survivor = yield* killOwner("killed-sleep")
+          yield* advance(survivor, "11 seconds")
+
+          const result = yield* on(
+            survivor,
+            Effect.gen(function* () {
+              return yield* (yield* Shipper.run(Ship, id)).result
+            }),
+          )
+
+          expect(result).toBe("r-sleep-k:v2")
+          expect(fixture.workflows.runs.get("reserve:k1")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "workflows: abandons a running execution on drain and resumes it on another runner",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.workflows,
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>()
+          fixture.workflows.blocked = gate
+
+          const id = yield* on(
+            0,
+            Effect.gen(function* () {
+              const run = yield* (yield* Shipper.get("drained-activity")).Ship({
+                orderId: "d1",
+                sku: "block",
+              })
+
+              return run.executionId
+            }),
+          )
+
+          yield* eventually(
+            Effect.sync(() => fixture.workflows.runs.get("reserve:d1") === 1),
+            "the activity to start",
+          )
+
+          const cluster = yield* ActorCluster
+          const ref = (yield* cluster.on(0)(Shipper.get("drained-activity"))).ref
+          const owner = (yield* cluster.owner(ref))!
+          const survivor = (owner + 1) % cluster.runners
+
+          expect(
+            yield* on(
+              owner,
+              RuntimeControl.use((control) => control.drain({ deadline: "5 seconds" })),
+            ),
+          ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 })
+          yield* cluster.shutdown(owner)
+          yield* cluster.ready
+          yield* advance(survivor, "31 seconds")
+
+          const result = yield* on(
+            survivor,
+            Effect.gen(function* () {
+              return yield* (yield* Shipper.run(Ship, id)).result
+            }),
+          )
+
+          expect(result).toBe("r-block:v2")
+          expect(fixture.workflows.runs.get("reserve:d1")).toBe(2)
+          yield* Deferred.succeed(gate, undefined)
+        }),
+      ),
+  },
+  {
+    name: "workflows: an activity whose runner is killed mid-run is rerun on a survivor with the same identity",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.workflows,
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>()
+          fixture.workflows.blocked = gate
+
+          const id = yield* on(
+            0,
+            Effect.gen(function* () {
+              const run = yield* (yield* Shipper.get("killed-activity")).Ship({
+                orderId: "k2",
+                sku: "block",
+              })
+
+              return run.executionId
+            }),
+          )
+
+          yield* eventually(
+            Effect.sync(() => fixture.workflows.runs.get("reserve:k2") === 1),
+            "the activity to start",
+          )
+          const survivor = yield* killOwner("killed-activity")
+          yield* advance(survivor, "31 seconds")
+
+          const result = yield* on(
+            survivor,
+            Effect.gen(function* () {
+              return yield* (yield* Shipper.run(Ship, id)).result
+            }),
+          )
+
+          expect(result).toBe("r-block:v2")
+          expect(fixture.workflows.runs.get("reserve:k2")).toBe(2)
+          yield* Deferred.succeed(gate, undefined)
+        }),
+      ),
+  },
+]
