@@ -50,7 +50,7 @@ import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Effect, Layer, Schema } from "effect"
 
-const Increment = Actor.command("Increment", { input: Schema.Int, output: Schema.Int })
+const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
 
 const Counter = Actor.make("Counter", {
   key: Schema.NonEmptyString,
@@ -58,16 +58,14 @@ const Counter = Actor.make("Counter", {
   api: { Increment },
 })
 
-const CounterLive = Counter.toLayer(
-  Effect.succeed({
-    Increment: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* Counter.Turn
-      yield* turn.state.set({ count: turn.state.count + amount })
+const CounterLive = Counter.toLayer({
+  Increment: Effect.fn(function* (amount) {
+    const turn = yield* Counter.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
 
-      return turn.state.count
-    }),
+    return turn.state.count
   }),
-)
+})
 
 const live = CounterLive.pipe(
   Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
