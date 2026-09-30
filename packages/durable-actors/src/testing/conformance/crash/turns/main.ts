@@ -6,9 +6,9 @@ import { Actors, Database } from "../../../../runtime/index.ts"
 import { decompress } from "../../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 
-const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
+const Increment = Actor.command("Increment", { payload: Schema.Finite, success: Schema.Finite })
 
-class Incremented extends Actor.Event<Incremented>()("Incremented", { count: Schema.Finite }) {}
+const Incremented = Actor.event("Incremented", { count: Schema.Finite })
 
 const Counter = Actor.make("ProcessCounter", {
   key: Schema.String,

@@ -1,192 +1,102 @@
-import {
-  Cause,
-  Clock,
-  Crypto,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  ManagedRuntime,
-  Option,
-  Schedule,
-  Schema,
-  Scope,
-  type Redacted,
-} from "effect"
+import { Effect, Layer, Logger, ManagedRuntime, Option, type Crypto, type Scope } from "effect"
+import { constVoid } from "effect/Function"
+import type { Redacted } from "effect"
 import type { HttpServer } from "effect/unstable/http"
-import { SqlClient, Statement } from "effect/unstable/sql"
-import { Actor, Actors, CurrentCaller, User } from "../index.ts"
-import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from "../errors/actor.ts"
+import { type SqlClient, Statement } from "effect/unstable/sql"
+import type { Actors } from "../index.ts"
+import { User } from "../index.ts"
 import { principal } from "../identity/caller.ts"
-import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
-import { routingKey } from "../runtime/storage/codec.ts"
 import type { InternalActors } from "../runtime/actors.ts"
 import type { RuntimeControl } from "../runtime/drain.ts"
-import { ActorTest } from "./actor-test.ts"
-import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"
-import { capacityConformance } from "./conformance/capacity.ts"
-import { reducerConformance, reducerLayer } from "./conformance/reducers.ts"
+import type { OperatorRuntime } from "../runtime/operators/repair.ts"
+import type { Request } from "../runtime/request.ts"
 import {
-  blobsConformance,
-  blobsFixture,
-  blobsLayer,
-  type BlobsFixture,
-} from "./conformance/blobs.ts"
-import {
-  tablesConformance,
-  tablesFixture,
-  tablesLayer,
-  type TablesFixture,
-} from "./conformance/tables.ts"
-import {
-  eventsConformance,
-  eventsFixture,
-  eventsLayer,
-  eventsQueryLayer,
-  type EventsFixture,
-} from "./conformance/events.ts"
-import {
-  defectRecorder,
-  foundationConformance,
-  foundationFixture,
-  foundationLayer,
-  type FoundationFixture,
-} from "./foundation.ts"
-import { heapConformance } from "./conformance/heap.ts"
-import { clientConformance } from "./conformance/client.ts"
-import { offlineConformance } from "./conformance/offline.ts"
-import { mintConformance, mintLayer } from "./conformance/mint.ts"
-import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
-import { fleetConformance } from "./conformance/fleet.ts"
-import { observabilityConformance } from "./conformance/observability.ts"
-import { OperatorRuntime } from "../runtime/operators/repair.ts"
-import { exportConformance } from "./conformance/export.ts"
-import {
-  coldServeConformance,
-  coldServeEdgeConformance,
-  coldServeFixture,
-  type ColdServeFixture,
-  coldServeLayer,
-} from "./conformance/cold-serve.ts"
-import { operatorConformance } from "./conformance/operator.ts"
-import { placementConformance, placementLayer } from "./conformance/placement.ts"
-import {
-  type WatchFixture,
-  watchConformance,
-  watchFixture,
-  watchLayer,
-} from "./conformance/watch.ts"
-import { singleShardConformance } from "./conformance/single-shard.ts"
-import { crossShardLayer, crossShardOutboxConformance } from "./conformance/outbox-cross-shard.ts"
-import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
-import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
-import {
-  retentionConformance,
-  retentionFixture,
-  type RetentionFixture,
-  retentionLayer,
-} from "./conformance/retention.ts"
-import { httpConformance, httpLayer } from "./conformance/http.ts"
-import { protocolsConformance } from "./conformance/protocols.ts"
-import {
-  restoreConformance,
-  restoreFixture,
-  type RestoreFixture,
-  restoreLayer,
-} from "./conformance/restore.ts"
-import {
-  assertionsConformance,
-  type ConformanceEdge,
-  edgeConformance,
-} from "./conformance/assertions.ts"
-import { multiRunnerConformance } from "./conformance/multi-runner.ts"
-import { simulationConformance } from "./conformance/simulation.ts"
-import {
-  drainConformance,
-  drainFixture,
-  type DrainFixture,
-  drainLayer,
-} from "./conformance/drain.ts"
-import { pipelineConformance } from "./conformance/pipeline.ts"
-import { connectionsConformance } from "./conformance/connections.ts"
-import {
-  connectionsFixture,
-  type ConnectionsFixture,
-  connectionsLayer,
-} from "./conformance/connections/actors.ts"
-import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
-import { transportsConformance } from "./conformance/transports.ts"
-import { transportsLayer } from "./conformance/transports/actors.ts"
-import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
-import { singletonConformance } from "./conformance/singleton.ts"
-import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
-import {
-  outboxConformance,
-  outboxFixture,
-  outboxLayer,
-  type OutboxFixture,
-} from "./conformance/outbox.ts"
-import { propertiesConformance, propertiesLayer } from "./conformance/properties.ts"
-import {
-  effectControlClusterConformance,
-  effectControlConformance,
-  effectControlEffects,
-  effectControlFixture,
-  effectControlLayer,
-  type EffectControlFixture,
-} from "./conformance/effect-control.ts"
-import {
-  relayClusterConformance,
-  relayConformance,
-  relayEffects,
-  relayFixture,
-  relayLayer,
-  type RelayFixture,
-} from "./conformance/relay.ts"
-import {
-  effectsConformance,
-  effectsFixture,
-  effectsLayer,
-  type EffectsFixture,
-} from "./conformance/effects.ts"
-import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
-import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
-import { accessConformance } from "./conformance/access.ts"
-import { adoptionConformance } from "./conformance/adoption.ts"
-import { rlsConformance } from "./conformance/rls.ts"
-import {
-  progressDeliveryConformance,
-  studioLayer,
-  progressConformance,
-  progressFixture,
-  progressLayer,
-  type ProgressFixture,
-} from "./conformance/progress.ts"
-import { subscriptionsConformance } from "./conformance/subscriptions.ts"
-import { subscriptionsClusterConformance } from "./conformance/subscriptions/cluster.ts"
-import { subscriptionsRetentionConformance } from "./conformance/subscriptions/retention.ts"
-import {
-  subscriptionsFixture,
-  subscriptionsLayer,
-  type SubscriptionsFixture,
-} from "./conformance/subscriptions/actors.ts"
-import { ContentHooks, TurnHooks } from "../runtime/turn/hooks.ts"
+  ContentHooks,
+  type ContentPoint,
+  TurnHooks,
+  type TurnPoint,
+} from "../runtime/turn/hooks.ts"
 import { NekiTurnSessions } from "../runtime/database/neki/session.ts"
 import type { ContentStore } from "../handles/content.ts"
 import type { Options } from "../runtime/layer.ts"
+import { ActorTest } from "./actor-test.ts"
+import type { ConformanceEdge } from "./conformance/assertions.ts"
+import { accessConformance, accessSuite } from "./conformance/access.ts"
+import { admissionConformance, admissionSuite } from "./conformance/admission.ts"
+import { adoptionConformance } from "./conformance/adoption.ts"
 import {
-  contentConformance,
-  contentFixture,
-  contentLayer,
-  type ContentFixture,
-} from "./conformance/content-blobs.ts"
+  assertionsConformance,
+  assertionsSuite,
+  edgeConformance,
+} from "./conformance/assertions.ts"
+import { batchesConformance, batchesSuite } from "./conformance/batches.ts"
+import { blobsConformance, blobsSuite } from "./conformance/blobs.ts"
+import { capacityConformance } from "./conformance/capacity.ts"
+import { clientConformance, clientSuite } from "./conformance/client.ts"
+import {
+  coldServeConformance,
+  coldServeEdgeConformance,
+  coldServeSuite,
+} from "./conformance/cold-serve.ts"
+import { connectionsConformance } from "./conformance/connections.ts"
+import { connectionsSuite } from "./conformance/connections/actors.ts"
+import { contentConformance, contentSuite } from "./conformance/content-blobs.ts"
+import { counterConformance, counterSuite } from "./conformance/counter.ts"
+import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
+import { drainConformance, drainSuite } from "./conformance/drain.ts"
+import {
+  effectControlClusterConformance,
+  effectControlConformance,
+  effectControlSuite,
+} from "./conformance/effect-control.ts"
+import { effectsConformance, effectsSuite } from "./conformance/effects.ts"
+import { eventsConformance, eventsSuite } from "./conformance/events.ts"
+import { exportConformance } from "./conformance/export.ts"
+import { fleetConformance, fleetSuite } from "./conformance/fleet.ts"
+import { heapConformance } from "./conformance/heap.ts"
+import { httpConformance, httpSuite } from "./conformance/http.ts"
+import { inspectionViewsConformance, inspectionViewsSuite } from "./conformance/inspection-views.ts"
+import { inspectorConformance, inspectorSuite } from "./conformance/inspector.ts"
+import { mintConformance, mintSuite } from "./conformance/mint.ts"
+import { multiRunnerConformance } from "./conformance/multi-runner.ts"
+import { observabilityConformance } from "./conformance/observability.ts"
+import { offlineConformance, offlineSuite } from "./conformance/offline.ts"
+import { operatorConformance } from "./conformance/operator.ts"
+import { crossShardOutboxConformance, crossShardSuite } from "./conformance/outbox-cross-shard.ts"
+import { outboxConformance, outboxSuite } from "./conformance/outbox.ts"
+import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
+import { pipelineConformance } from "./conformance/pipeline.ts"
+import { placementConformance, placementSuite } from "./conformance/placement.ts"
+import {
+  progressConformance,
+  progressDeliveryConformance,
+  progressSuite,
+} from "./conformance/progress.ts"
+import { propertiesConformance, propertiesSuite } from "./conformance/properties.ts"
+import { protocolsConformance, protocolsSuite } from "./conformance/protocols.ts"
+import { readYourWritesConformance, readYourWritesSuite } from "./conformance/read-your-writes.ts"
+import { reducerConformance, reducerSuite } from "./conformance/reducers.ts"
+import { relayClusterConformance, relayConformance, relaySuite } from "./conformance/relay.ts"
+import { restoreConformance, restoreSuite } from "./conformance/restore.ts"
+import { retentionConformance, retentionSuite } from "./conformance/retention.ts"
+import { rlsConformance } from "./conformance/rls.ts"
+import { simulationConformance } from "./conformance/simulation.ts"
+import { singleShardConformance } from "./conformance/single-shard.ts"
+import { singletonConformance } from "./conformance/singleton.ts"
+import { streamsConformance, streamsSuite } from "./conformance/streams.ts"
+import { subscriptionsConformance } from "./conformance/subscriptions.ts"
+import { subscriptionsSuite } from "./conformance/subscriptions/actors.ts"
+import { subscriptionsClusterConformance } from "./conformance/subscriptions/cluster.ts"
+import { subscriptionsRetentionConformance } from "./conformance/subscriptions/retention.ts"
+import { tablesConformance, tablesSuite } from "./conformance/tables.ts"
+import { transportsConformance } from "./conformance/transports.ts"
+import { transportsSuite } from "./conformance/transports/actors.ts"
+import { watchConformance, watchSuite } from "./conformance/watch.ts"
+import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { workflowsConformance } from "./conformance/workflows.ts"
-import {
-  workflowsFixture,
-  type WorkflowsFixture,
-  workflowsLive,
-} from "./conformance/workflows/actors.ts"
+import { workflowsSuite } from "./conformance/workflows/actors.ts"
+import { engineCases } from "./conformance/workflow-engine.ts"
+import { foundationConformance, foundationSuite } from "./foundation.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -209,7 +119,16 @@ export type ConformanceExpect = <T>(actual: T) => ConformanceMatchers
  */
 export interface ConformanceRegistrar {
   readonly describe: (name: string, body: () => void) => void
-  readonly it: (name: string, body: () => Promise<void>, timeout?: number) => void
+  /**
+   * Registers one case. A runner that aborts `signal` when the case times
+   * out or is cancelled, as Vitest does, interrupts the case's effects so
+   * their finalizers run before the next case starts.
+   */
+  readonly it: (
+    name: string,
+    body: (context: { readonly signal?: AbortSignal | undefined }) => Promise<void>,
+    timeout?: number,
+  ) => void
   readonly beforeAll: (body: () => Promise<void> | void, timeout?: number) => void
   readonly afterAll: (body: () => Promise<void> | void) => void
   readonly expect: ConformanceExpect
@@ -262,11 +181,15 @@ export interface ConformanceEnvironment {
   readonly stop: Effect.Effect<void>
   /** Restarts the current runtime against the retained database. */
   readonly restart: Effect.Effect<void>
-  /** A second database untouched by the current runtime, for isolation cases. */
+  /**
+   * A second database untouched by the current runtime, for isolation cases.
+   * Only a case that declares `requiresFreshDatabase` may open one.
+   */
   readonly freshDatabase: Effect.Effect<ConformanceDatabase>
   /**
    * Copies the retained database whole, as a backup of a stopped deployment
-   * would, into a new database no runtime has opened. Requires `stop` first.
+   * would, into a new database no runtime has opened. Requires `stop` first,
+   * and a case that declares `requiresFreshDatabase`.
    */
   readonly snapshot: Effect.Effect<ConformanceDatabase>
   /**
@@ -304,6 +227,12 @@ export interface ConformanceBackend {
   readonly neki?: boolean
   /** True when the server runs `wal_level=logical`, which fleet views need. */
   readonly logicalDecoding?: boolean
+  /**
+   * True when `open` can create further databases and snapshots; cases that
+   * declare `requiresFreshDatabase` are reported through `registrar.skip`
+   * otherwise.
+   */
+  readonly freshDatabases: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
   /**
@@ -328,32 +257,12 @@ export interface ConformanceBackend {
   }>
 }
 
-/** Mutable per-suite fixture shared by the fixture handlers and the cases. */
-export interface ConformanceFixture {
-  readonly foundation: FoundationFixture
-  readonly events: EventsFixture
-  readonly outbox: OutboxFixture
-  readonly tables: TablesFixture
-  readonly effects: EffectsFixture
-  readonly progress: ProgressFixture
-  readonly blobs: BlobsFixture
-  readonly relay: RelayFixture
-  readonly effectControl: EffectControlFixture
-  readonly retention: RetentionFixture
-  readonly restore: RestoreFixture
-  readonly workflows: WorkflowsFixture
-  readonly subscriptions: SubscriptionsFixture
-  readonly connections: ConnectionsFixture
-  readonly content: ContentFixture
-  readonly drain: DrainFixture
-  readonly coldServe: ColdServeFixture
-  readonly watch: WatchFixture
-  executions: number
-  queries: number
-  captured: Effect.Effect<number, import("../errors/actor.ts").ActorError>
-  escaped: Effect.Effect<void>
-  holdHandler: Effect.Effect<void>
-  duringQuery: Effect.Effect<unknown, import("../errors/actor.ts").ActorError>
+/**
+ * The test authorization every conformance runtime applies. The harness
+ * resets it before each case, so a case that times out holding it closed
+ * does not deny the next one.
+ */
+export interface ConformanceAccess {
   allowed: boolean
   /** Commands the test authorization refuses while `allowed` holds. */
   readonly denied: Set<string>
@@ -361,13 +270,42 @@ export interface ConformanceFixture {
   readonly revoked: Set<string>
 }
 
-export interface ConformanceContext {
-  readonly expect: ConformanceExpect
-  readonly environment: ConformanceEnvironment
-  readonly fixture: ConformanceFixture
+/**
+ * The actors and mutable fixture a group of cases owns. A registration builds
+ * each selected suite, and every suite it `uses`, once: its fixture when the
+ * registration starts and its layer into every runtime the registration
+ * builds. Suites without a fixture receive `undefined`.
+ */
+export interface ConformanceSuite<F = undefined> {
+  readonly fixture?: () => F
+  /** Declared as a method so its parameter stays bivariant and any suite fits `ConformanceSuite<unknown>`. */
+  layer?(fixture: F): Layer.Layer<never, never, ConformanceSuiteServices>
+  /** Other suites whose actors this suite's cases call. */
+  readonly uses?: ReadonlyArray<ConformanceSuite<unknown>>
+  /** Runs at every turn fault point, as the process-level `TurnHooks`. */
+  turn?(fixture: F): (point: TurnPoint, request: Request) => Effect.Effect<void>
+  /** Runs at every content-store fault point, as `ContentHooks`. */
+  content?(fixture: F): (point: ContentPoint) => Effect.Effect<void>
+  /** Receives every log line the runtimes write; conformance runtimes print none. */
+  logger?(fixture: F): Logger.Logger<unknown, void>
 }
 
-export interface ConformanceCase {
+/** Services a suite's layer may require: what `ActorTest.layer` and the backend provide. */
+export type ConformanceSuiteServices =
+  | Layer.Success<ReturnType<typeof ActorTest.layer>>
+  | Crypto.Crypto
+
+export interface ConformanceContext<F = undefined> {
+  readonly expect: ConformanceExpect
+  readonly environment: ConformanceEnvironment
+  /** The fixture of the suite that owns the case. */
+  readonly fixture: F
+  readonly access: ConformanceAccess
+  /** The fixture of a suite the case's own suite `uses`. */
+  readonly fixtureOf: <G>(suite: ConformanceSuite<G>) => G
+}
+
+export interface ConformanceCase<F = undefined> {
   readonly name: string
   /**
    * Requires `backend.independentConnections`; backends without it register
@@ -382,1177 +320,123 @@ export interface ConformanceCase {
   readonly requiresNeki?: boolean
   /** Requires a server with `wal_level=logical`; backends without one skip the case. */
   readonly requiresLogicalDecoding?: boolean
-  readonly run: (ctx: ConformanceContext) => Promise<void>
+  /**
+   * Opens `environment.freshDatabase` or `environment.snapshot`. Only a case
+   * that declares it may, and backends without `freshDatabases` skip it.
+   */
+  readonly requiresFreshDatabase?: boolean
+  /** Declared as a method so its parameter stays bivariant and any case fits `ConformanceCase<unknown>`. */
+  run(context: ConformanceContext<F>): Promise<void>
   readonly timeoutMs?: number
 }
 
-class Rejected extends Schema.TaggedError<Rejected>()("Rejected", { amount: Schema.Finite }) {}
+/** A named group's cases and the suite that owns their actors and fixture. */
+export interface ConformanceGroupCases<F = unknown> {
+  readonly suite: ConformanceSuite<F>
+  readonly cases: ReadonlyArray<ConformanceCase<F>>
+}
 
-const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
-
-const Reject = Actor.command("Reject", { input: Schema.Finite, errors: [Rejected] })
-
-const Nested = Actor.command("Nested")
-
-const Escape = Actor.command("Escape")
-
-const Hold = Actor.command("Hold")
-
-const Steal = Actor.command("Steal")
-
-class Forbidden extends Schema.TaggedError<Forbidden>()("Forbidden", { below: Schema.Finite }) {}
-
-const Count = Actor.query("Count", { output: Schema.Finite })
-
-const AtLeast = Actor.query("AtLeast", {
-  input: Schema.Finite,
-  output: Schema.Finite,
-  errors: [Forbidden],
+const group = <F>(
+  suite: ConformanceSuite<F>,
+  cases: ReadonlyArray<ConformanceCase<F>>,
+  requires?: { readonly requiresFreshDatabase: true },
+): ConformanceGroupCases => ({
+  suite,
+  cases: requires === undefined ? cases : cases.map((each) => ({ ...each, ...requires })),
 })
 
-const Counter = Actor.make("Counter", {
-  key: Schema.String,
-  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  api: { Increment, Reject, Nested, Escape, Hold, Steal, Count, AtLeast },
-})
+/** Every case of the group opens a fresh database or a snapshot. */
+const freshDatabases = { requiresFreshDatabase: true } as const
 
-const CounterReads = (fixture: ConformanceFixture) =>
-  Counter.toQueryLayer(
-    Effect.succeed({
-      Count: Effect.fnUntraced(function* () {
-        fixture.queries += 1
-        yield* fixture.duringQuery.pipe(Effect.orDie)
-
-        return (yield* Counter.Read).state.count
-      }),
-      AtLeast: Effect.fnUntraced(function* (minimum: number) {
-        const count = (yield* Counter.Read).state.count
-
-        if (count < minimum) return yield* Forbidden.make({ below: minimum })
-
-        return count
-      }),
-    }),
-  )
-
-const CounterLive = (fixture: ConformanceFixture) =>
-  Counter.toLayer(
-    Effect.succeed({
-      Increment: Effect.fnUntraced(function* (amount: number) {
-        const turn = yield* Counter.Turn
-        fixture.executions += 1
-        yield* turn.state.set({ count: turn.state.count + amount })
-
-        return turn.state.count
-      }),
-      Reject: Effect.fnUntraced(function* (amount: number) {
-        const turn = yield* Counter.Turn
-        fixture.executions += 1
-        yield* turn.state.set({ count: 999 })
-
-        return yield* Rejected.make({ amount })
-      }),
-      Nested: Effect.fnUntraced(function* () {
-        const turn = yield* Counter.Turn
-        yield* turn.state.set({ count: 99 })
-        yield* fixture.captured.pipe(Effect.orDie)
-      }),
-      Escape: Effect.fnUntraced(function* () {
-        const turn = yield* Counter.Turn
-        fixture.escaped = turn.state.set({ count: 1000 })
-        yield* turn.state.set({ count: 3 })
-      }),
-      Hold: Effect.fnUntraced(function* () {
-        const turn = yield* Counter.Turn
-        fixture.escaped = turn.state.set({ count: 1000 })
-        yield* fixture.holdHandler
-        yield* turn.state.set({ count: 3 })
-      }),
-      Steal: () => Effect.suspend(() => fixture.escaped),
-    }),
-  )
-
-const makeFixture = (): ConformanceFixture => ({
-  foundation: foundationFixture(),
-  events: eventsFixture(),
-  outbox: outboxFixture(),
-  tables: tablesFixture(),
-  effects: effectsFixture(),
-  progress: progressFixture(),
-  blobs: blobsFixture(),
-  relay: relayFixture(),
-  effectControl: effectControlFixture(),
-  retention: retentionFixture(),
-  restore: restoreFixture(),
-  workflows: workflowsFixture(),
-  subscriptions: subscriptionsFixture(),
-  connections: connectionsFixture(),
-  content: contentFixture(),
-  drain: drainFixture(),
-  coldServe: coldServeFixture(),
-  watch: watchFixture(),
-  executions: 0,
-  queries: 0,
-  captured: Effect.succeed(0),
-  escaped: Effect.void,
-  holdHandler: Effect.void,
-  duringQuery: Effect.void,
-  allowed: true,
-  denied: new Set(),
-  revoked: new Set(),
-})
-
-/** Cases written against the Counter actor defined in this file. */
-const counterConformance: ReadonlyArray<ConformanceCase> = [
-  {
-    name: "commits state and receipt, replays an identical command effect, and keeps its generation",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("replay")
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: undefined,
-            state: {},
-            receipts: 0,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-          const increment = counter.Increment(7)
-          expect(yield* increment).toBe(7)
-          expect(yield* increment).toBe(7)
-          expect(yield* counter.Increment(3)).toBe(10)
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: "1",
-            state: { count: 10 },
-            receipts: 2,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-        }),
-      ),
-  },
-  {
-    name: "rolls back declared failures and replays their class and payload without executing again",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("failure")
-          expect(yield* counter.Increment(5)).toBe(5)
-          const rejected = counter.Reject(13)
-          const before = fixture.executions
-          const first = yield* rejected.pipe(Effect.flip)
-          expect(first).toBeInstanceOf(Rejected)
-          expect(first).toEqual(Rejected.make({ amount: 13 }))
-          expect(yield* rejected.pipe(Effect.flip)).toEqual(first)
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: "1",
-            state: { count: 5 },
-            receipts: 2,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-        }),
-      ),
-  },
-  {
-    name: "deduplicates concurrent deliveries and rejects changed input or command",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("concurrent")
-          const id = yield* (yield* Actors).mintCommandId
-          const before = fixture.executions
-          expect(
-            yield* Effect.forEach(
-              [counter.Increment(11), counter.Increment(11)],
-              (call) => call.pipe(Actor.commandId(id)),
-              { concurrency: 2 },
-            ),
-          ).toEqual([11, 11])
-          expect(fixture.executions - before).toBe(1)
-          expect(
-            (yield* counter.Increment(12).pipe(Actor.commandId(id), Effect.flip)).reason._tag,
-          ).toBe("CommandConflict")
-          expect(yield* counter.Reject(11).pipe(Actor.commandId(id), Effect.flip)).toMatchObject({
-            reason: CommandConflict.make({ commandId: id }),
-          })
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 11 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "captures callers, preserves same-subject access, and never partitions deduplication by caller",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const alice = yield* Counter.get("privacy")
-          const bob = yield* Counter.get("privacy").pipe(Actor.as(User.make({ subject: "bob" })))
-          const id = yield* (yield* Actors).mintCommandId
-          expect(
-            yield* alice
-              .Increment(17)
-              .pipe(
-                Actor.commandId(id),
-                Effect.provideService(CurrentCaller, User.make({ subject: "bob" })),
-              ),
-          ).toBe(17)
-
-          const rotated = yield* Counter.get("privacy").pipe(
-            Actor.as(User.make({ subject: "alice" })),
-          )
-
-          expect(yield* rotated.Increment(17).pipe(Actor.commandId(id))).toBe(17)
-          expect(yield* bob.Increment(17).pipe(Actor.commandId(id), Effect.flip)).toMatchObject({
-            reason: Unauthorized.make({ code: "receipt_access_denied" }),
-          })
-
-          const otherTenant = yield* Counter.get("privacy").pipe(
-            Actor.tenant("other"),
-            Actor.as(User.make({ subject: "bob" })),
-          )
-
-          expect(yield* otherTenant.Increment(29).pipe(Actor.commandId(id))).toBe(29)
-          expect(yield* test.inspect(alice.ref)).toMatchObject({
-            state: { count: 17 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "recovers beforeHandler crashes with the same command and one committed transition",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("crash-beforeHandler")
-          const before = fixture.executions
-          yield* test.crashNext("beforeHandler")
-          expect(yield* counter.Increment(23)).toBe(23)
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 23 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "recovers beforeCommit crashes with the same command and one committed transition",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("crash-beforeCommit")
-          const before = fixture.executions
-          yield* test.crashNext("beforeCommit")
-          expect(yield* counter.Increment(23)).toBe(23)
-          expect(fixture.executions - before).toBe(2)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 23 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "recovers afterCommit crashes with the same command and one committed transition",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("crash-afterCommit")
-          const before = fixture.executions
-          yield* test.crashNext("afterCommit")
-          expect(yield* counter.Increment(23)).toBe(23)
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 23 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "keeps retries prompt after many crashed turns of one actor type",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-
-          for (let index = 0; index < 12; index++) {
-            yield* test.crashNext("beforeCommit")
-            yield* (yield* Counter.get(`crash-many-${index}`)).Increment(1)
-          }
-
-          yield* test.crashNext("beforeCommit")
-          const started = yield* Clock.currentTimeMillis
-          expect(yield* (yield* Counter.get("crash-many-last")).Increment(2)).toBe(2)
-          expect((yield* Clock.currentTimeMillis) - started < 2_000).toBe(true)
-        }),
-      ),
-  },
-  {
-    name: "backs off an actor whose turn dies on every attempt, and only that actor",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const crashing = yield* Counter.get("crash-always")
-
-          const elapsed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-            Effect.gen(function* () {
-              const started = yield* Clock.currentTimeMillis
-              const value = yield* effect
-
-              return { value, ms: (yield* Clock.currentTimeMillis) - started }
-            })
-
-          for (let crash = 0; crash < 5; crash++) yield* test.crashNext("beforeCommit")
-          const before = fixture.executions
-          const backedOff = yield* elapsed(crashing.Increment(1))
-          expect(backedOff.value).toBe(1)
-          expect(fixture.executions - before).toBe(6)
-          expect(backedOff.ms >= 1_500).toBe(true)
-
-          yield* test.crashNext("beforeCommit")
-          const other = yield* elapsed((yield* Counter.get("crash-always-other")).Increment(2))
-          expect(other.value).toBe(2)
-          expect(other.ms < 1_000).toBe(true)
-
-          yield* test.crashNext("beforeCommit")
-          const reset = yield* elapsed(crashing.Increment(1))
-          expect(reset.value).toBe(2)
-          expect(reset.ms < 1_000).toBe(true)
-        }),
-      ),
-  },
-  {
-    name: "does not cancel an accepted turn with its waiter",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("disconnect")
-          const pause = yield* test.pauseNext("beforeCommit")
-          const call = counter.Increment(31)
-          const waiter = yield* call.pipe(Effect.forkChild)
-          yield* pause.reached
-          yield* Fiber.interrupt(waiter)
-          yield* pause.release
-          expect(yield* call).toBe(31)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 31 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "keeps uncommitted state invisible to a second connection",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("disconnect-visibility")
-          const pause = yield* test.pauseNext("beforeCommit")
-          const call = counter.Increment(31)
-          const waiter = yield* call.pipe(Effect.forkChild)
-          yield* pause.reached
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: undefined,
-            state: {},
-            receipts: 0,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-          yield* Fiber.interrupt(waiter)
-          yield* pause.release
-          expect(yield* call).toBe(31)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 31 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "compresses state, keys rows by routing_key, and reads state once per activation",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("warm")
-          const sql = yield* SqlClient.SqlClient
-          expect(yield* counter.Increment(1)).toBe(1)
-
-          const stored = yield* sql<{ routing_key: string; magic: string }>`
-            SELECT routing_key::text AS routing_key, encode(substring(value FROM 1 FOR 4), 'hex') AS magic
-            FROM actor_state WHERE tenant_id = ${counter.ref.tenant} AND actor_id = 'warm'`
-
-          expect(stored).toEqual([
-            {
-              routing_key: String(routingKey({ ref: counter.ref, placement: "tenant" })),
-              magic: "28b52ffd",
-            },
-          ])
-
-          const statements: Array<string> = []
-
-          const recorded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-            effect.pipe(
-              Effect.provideService(Statement.CurrentTransformer, (statement) =>
-                Effect.sync(() => {
-                  statements.push(statement.compile()[0])
-
-                  return statement
-                }),
-              ),
-            )
-
-          for (const amount of [2, 3, 4]) yield* recorded(counter.Increment(amount))
-
-          expect(statements.some((text) => /INSERT INTO actor_receipts/.test(text))).toBe(true)
-
-          const stateReads = statements.filter((text) =>
-            /SELECT key, value FROM actor_state/.test(text),
-          )
-
-          expect(stateReads).toEqual([])
-          yield* test.invalidate(counter.ref)
-          statements.length = 0
-          expect(yield* recorded(counter.Increment(5))).toBe(15)
-          expect(
-            statements.filter((text) => /SELECT key, value FROM actor_state/.test(text)).length,
-          ).toBe(1)
-        }),
-      ),
-  },
-  {
-    name: "queries read committed state without activating, fencing, or receipting the actor",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("query-cold")
-          expect(yield* counter.Count()).toBe(0)
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: undefined,
-            state: {},
-            receipts: 0,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-          expect(yield* counter.Increment(4)).toBe(4)
-          yield* test.invalidate(counter.ref)
-          const generation = (yield* test.inspect(counter.ref)).generation
-          expect(yield* counter.Count()).toBe(4)
-          expect(yield* counter.AtLeast(4)).toBe(4)
-          expect(yield* counter.AtLeast(5).pipe(Effect.flip)).toEqual(Forbidden.make({ below: 5 }))
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            generation,
-            state: { count: 4 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "queries never observe a running turn's uncommitted state",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("query-isolation")
-          expect(yield* counter.Increment(2)).toBe(2)
-          const pause = yield* test.pauseNext("beforeCommit")
-          const writer = yield* counter.Increment(40).pipe(Effect.forkChild)
-          yield* pause.reached
-          expect(yield* counter.Count()).toBe(2)
-          yield* pause.release
-          expect(yield* Fiber.join(writer)).toBe(42)
-          expect(yield* counter.Count()).toBe(42)
-        }),
-      ),
-  },
-  {
-    name: "applies the caller authorization to queries",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const counter = yield* Counter.get("query-denied")
-          const before = fixture.queries
-          fixture.allowed = false
-          expect(yield* counter.Count().pipe(Effect.flip)).toMatchObject({
-            reason: Unauthorized.make({ code: "access_denied" }),
-          })
-          expect(fixture.queries).toBe(before)
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              fixture.allowed = true
-            }),
-          ),
-        ),
-      ),
-  },
-  {
-    name: "withholds a query result from a caller revoked while the handler ran",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const counter = yield* Counter.get("query-revoked")
-          expect(yield* counter.Increment(6)).toBe(6)
-
-          fixture.duringQuery = Effect.sync(() => {
-            fixture.allowed = false
-          })
-
-          const before = fixture.queries
-          expect(yield* counter.Count().pipe(Effect.flip)).toMatchObject({
-            reason: Unauthorized.make({ code: "access_denied" }),
-          })
-          expect(fixture.queries).toBe(before + 1)
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              fixture.allowed = true
-              fixture.duringQuery = Effect.void
-            }),
-          ),
-        ),
-      ),
-  },
-  {
-    name: "rejects request/reply calls from a query handler without writing",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("query-guard")
-          fixture.duringQuery = counter.Increment(100)
-          const exit = yield* counter.Count().pipe(Effect.exit)
-          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
-            "Request/reply inside a turn",
-          )
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: undefined,
-            state: {},
-            receipts: 0,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              fixture.duringQuery = Effect.void
-            }),
-          ),
-        ),
-      ),
-  },
-  {
-    name: "rejects a stale generation before rerunning the handler under new authority",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("stale")
-          expect(yield* counter.Increment(5)).toBe(5)
-          yield* test.invalidate(counter.ref)
-          const before = fixture.executions
-          expect(yield* counter.Increment(8)).toBe(13)
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: "3",
-            state: { count: 13 },
-            receipts: 2,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-        }),
-      ),
-  },
-  {
-    name: "rolls back captured request/reply misuse and rejects escaped state capabilities",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("guard")
-          fixture.captured = counter.Increment(100)
-          const exit = yield* counter.Nested().pipe(Effect.exit)
-          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
-            "Request/reply inside a turn",
-          )
-          expect(yield* test.inspect(counter.ref)).toEqual({
-            generation: undefined,
-            state: {},
-            receipts: 0,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-          yield* counter.Escape()
-          const escapedExit = yield* fixture.escaped.pipe(Effect.exit)
-          expect(Exit.isFailure(escapedExit) && Cause.pretty(escapedExit.cause)).toContain(
-            "State capability escaped its turn",
-          )
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 3 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "rejects a state setter from another still-active actor turn",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const owner = yield* Counter.get("capability-owner")
-          const thief = yield* Counter.get("capability-thief")
-          const test = yield* ActorTest
-          const ready = yield* Deferred.make<void>()
-          const release = yield* Deferred.make<void>()
-          fixture.holdHandler = Deferred.succeed(ready, undefined).pipe(
-            Effect.andThen(Deferred.await(release)),
-          )
-          const holder = yield* owner.Hold().pipe(Effect.forkChild)
-          yield* Deferred.await(ready)
-
-          const stolen = yield* thief
-            .Steal()
-            .pipe(Effect.exit, Effect.ensuring(Deferred.succeed(release, undefined)))
-
-          expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
-            "State capability escaped its turn",
-          )
-          yield* Fiber.join(holder)
-          expect(yield* test.inspect(owner.ref)).toMatchObject({
-            state: { count: 3 },
-            receipts: 1,
-          })
-          expect(yield* test.inspect(thief.ref)).toEqual({
-            generation: undefined,
-            state: {},
-            receipts: 0,
-            events: 0,
-            outbox: 0,
-            effects: 0,
-          })
-        }),
-      ),
-  },
-  {
-    name: "denies a competing caller admitted while the original failure is still uncommitted",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const alice = yield* Counter.get("caller-race")
-
-          const bob = yield* Counter.get("caller-race").pipe(
-            Actor.as(User.make({ subject: "bob" })),
-          )
-
-          const id = yield* (yield* Actors).mintCommandId
-          const committing = yield* test.pauseNext("beforeCommit")
-          const before = fixture.executions
-
-          const original = yield* alice
-            .Reject(71)
-            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
-
-          yield* committing.reached
-          const delivering = yield* test.pauseNext("beforeDelivery")
-
-          const competitor = yield* bob
-            .Reject(71)
-            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
-
-          yield* delivering.reached
-          yield* committing.release
-          expect(yield* Fiber.join(original)).toEqual(Rejected.make({ amount: 71 }))
-          yield* delivering.release
-          expect(yield* Fiber.join(competitor)).toMatchObject({
-            reason: Unauthorized.make({ code: "receipt_access_denied" }),
-          })
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(alice.ref)).toMatchObject({ state: {}, receipts: 1 })
-        }),
-      ),
-  },
-  {
-    name: "refuses to reinterpret retained identities under a changed retry window",
-    run: ({ expect, environment }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          yield* environment.stop
-          const incompatible = environment.build({ retryWindowMs: 60_001 })
-          const exit = yield* Effect.promise(() => incompatible.runPromiseExit(Effect.void))
-          yield* Effect.promise(() => incompatible.dispose())
-          yield* environment.restart
-          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
-            "differs from the deployment",
-          )
-        }),
-      ),
-  },
-  {
-    name: "revokes external access without cancelling an in-flight command or its retry",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("revoked")
-          const id = yield* (yield* Actors).mintCommandId
-          const pause = yield* test.pauseNext("beforeHandler")
-          yield* test.crashNext("beforeCommit")
-          const call = counter.Increment(37).pipe(Actor.commandId(id))
-          const waiter = yield* call.pipe(Effect.result, Effect.forkChild)
-          yield* pause.reached
-          fixture.allowed = false
-          yield* pause.release
-          const result = yield* Fiber.join(waiter)
-          expect(result).toMatchObject({
-            failure: { reason: Unauthorized.make({ code: "access_denied" }) },
-          })
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 37 },
-            receipts: 1,
-          })
-          expect(yield* counter.Increment(1).pipe(Effect.flip)).toMatchObject({
-            reason: Unauthorized.make({ code: "access_denied" }),
-          })
-          expect(yield* call.pipe(Effect.flip)).toMatchObject({
-            reason: Unauthorized.make({ code: "access_denied" }),
-          })
-          fixture.allowed = true
-          expect(yield* call).toBe(37)
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              fixture.allowed = true
-            }),
-          ),
-        ),
-      ),
-  },
-  {
-    name: "defines exact expiry boundaries and rejects invalid/future identities",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const id = "v1.1000.6000.17b3670b-3f17-4a9b-aade-037e1dd1bba8"
-          yield* checkIdentity(id, 5000, 5999)
-
-          for (const now of [6000, 6001])
-            expect(yield* checkIdentity(id, 5000, now).pipe(Effect.flip)).toMatchObject({
-              reason: CommandExpired.make({ commandId: id }),
-            })
-          expect(yield* checkIdentity(id, 5000, 999).pipe(Effect.flip)).toMatchObject({
-            reason: InvalidCommandId.make({ commandId: id, code: "future" }),
-          })
-          expect(
-            yield* checkIdentity(id.replace("6000", "7000"), 5000, 1000).pipe(Effect.flip),
-          ).toMatchObject({
-            reason: InvalidCommandId.make({
-              commandId: id.replace("6000", "7000"),
-              code: "window",
-            }),
-          })
-          const counter = yield* Counter.get("expiry-first")
-          const before = fixture.executions
-          const expired = id.replace("6000", "61000")
-          expect(
-            yield* counter.Increment(41).pipe(Actor.commandId(expired), Effect.flip),
-          ).toMatchObject({
-            reason: CommandExpired.make({ commandId: expired }),
-          })
-          expect(fixture.executions).toBe(before)
-        }),
-      ),
-  },
-  {
-    name: "canonicalizes object keys but preserves array order in payload hashes",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const first = yield* payloadHash('{"value":{"b":2,"a":[3,7]}}')
-          expect(yield* payloadHash('{"value":{"a":[3,7],"b":2}}')).toBe(first)
-          expect(yield* payloadHash('{"value":{"a":[7,3],"b":2}}')).not.toBe(first)
-        }),
-      ),
-  },
-  {
-    name: "decodes regclass so the migrator can reopen the database",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          expect(yield* sql`SELECT 128::regclass AS value`).toEqual([{ value: 128 }])
-        }),
-      ),
-  },
-  {
-    name: "recovers a declared failure beforeCommit without persisting dirty state",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("failure-beforeCommit")
-          yield* counter.Increment(19)
-          const before = fixture.executions
-          const call = counter.Reject(53)
-          yield* test.crashNext("beforeCommit")
-          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
-          expect(fixture.executions - before).toBe(2)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 19 },
-            receipts: 2,
-          })
-          yield* counter.Increment(2)
-          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 21 },
-            receipts: 3,
-          })
-        }),
-      ),
-  },
-  {
-    name: "recovers a declared failure afterCommit without persisting dirty state",
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const test = yield* ActorTest
-          const counter = yield* Counter.get("failure-afterCommit")
-          yield* counter.Increment(19)
-          const before = fixture.executions
-          const call = counter.Reject(53)
-          yield* test.crashNext("afterCommit")
-          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
-          expect(fixture.executions - before).toBe(1)
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 19 },
-            receipts: 2,
-          })
-          yield* counter.Increment(2)
-          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 21 },
-            receipts: 3,
-          })
-        }),
-      ),
-  },
-  {
-    name: "retries a real generation lock timeout without entering the handler",
-    requiresIndependentConnections: true,
-    timeoutMs: 15_000,
-    run: ({ expect, environment, fixture }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const counter = yield* Counter.get("locked")
-          const test = yield* ActorTest
-          yield* counter.Increment(2)
-
-          const connect = environment.connect
-
-          if (connect === undefined)
-            return yield* Effect.die(new Error("backend lacks independent connections"))
-
-          const lock = yield* connect
-          yield* lock.query("BEGIN")
-          yield* lock.query(
-            "SELECT generation FROM actor_generations WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3 FOR UPDATE",
-            [counter.ref.tenant, counter.ref.actor, counter.ref.id],
-          )
-
-          yield* Effect.gen(function* () {
-            const before = fixture.executions
-            const waiter = yield* counter.Increment(59).pipe(Effect.forkChild)
-
-            const waitingAttempt = lock.query("SELECT pg_stat_clear_snapshot()").pipe(
-              Effect.andThen(
-                lock.query(
-                  `SELECT pid, query_start::text AS query_start
-                  FROM pg_stat_activity
-                  WHERE datname = current_database()
-                    AND pid <> pg_backend_pid()
-                    AND wait_event_type = 'Lock'
-                    AND query LIKE '%actor_generations%FOR UPDATE%'`,
-                ),
-              ),
-              Effect.map(
-                (rows) =>
-                  rows[0] as { readonly pid: number; readonly query_start: string } | undefined,
-              ),
-            )
-
-            const first = yield* waitingAttempt.pipe(
-              Effect.repeat({
-                while: (attempt) => attempt === undefined,
-                schedule: Schedule.spaced("10 millis"),
-              }),
-              Effect.timeout("5 seconds"),
-            )
-
-            const retry = yield* waitingAttempt.pipe(
-              Effect.repeat({
-                while: (attempt) =>
-                  attempt === undefined ||
-                  (attempt.pid === first!.pid && attempt.query_start === first!.query_start),
-                schedule: Schedule.spaced("10 millis"),
-              }),
-              Effect.timeout("5 seconds"),
-            )
-
-            expect(retry).not.toEqual(first)
-            expect(fixture.executions).toBe(before)
-            expect(yield* test.inspect(counter.ref)).toMatchObject({
-              state: { count: 2 },
-              receipts: 1,
-            })
-            yield* lock.query("COMMIT")
-            expect(yield* Fiber.join(waiter)).toBe(61)
-            expect(fixture.executions - before).toBe(1)
-            expect(yield* test.inspect(counter.ref)).toMatchObject({
-              state: { count: 61 },
-              receipts: 2,
-            })
-          }).pipe(Effect.ensuring(lock.query("ROLLBACK")))
-        }),
-      ),
-  },
-  {
-    name: "completes an in-flight command past expiry but refuses the external outcome",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const counter = yield* Counter.get("expired-pending")
-          const test = yield* ActorTest
-          const pause = yield* test.pauseNext("beforeHandler")
-          yield* test.crashNext("beforeCommit")
-          const now = yield* databaseTime
-          const id = `v1.${now - 59_500}.${now + 500}.17b3670b-3f17-4a9b-aade-037e1dd1bba8`
-
-          const waiter = yield* counter
-            .Increment(67)
-            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
-
-          yield* pause.reached
-          yield* Effect.sleep("550 millis")
-          yield* pause.release
-          expect(yield* Fiber.join(waiter)).toMatchObject({
-            reason: CommandExpired.make({ commandId: id }),
-          })
-          expect(yield* test.inspect(counter.ref)).toMatchObject({
-            state: { count: 67 },
-            receipts: 1,
-          })
-        }),
-      ),
-  },
-  {
-    name: "rejects an expired identity after receipt pruning and runtime restart",
-    run: ({ expect, environment }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const saved = yield* Effect.promise(() =>
-            environment.run(
-              Effect.gen(function* () {
-                const counter = yield* Counter.get("restart")
-                const now = yield* databaseTime
-                const id = `v1.${now - 59_500}.${now + 500}.17b3670b-3f17-4a9b-aade-037e1dd1bba8`
-                expect(yield* counter.Increment(43).pipe(Actor.commandId(id))).toBe(43)
-                const sql = yield* SqlClient.SqlClient
-                yield* Effect.sleep("550 millis")
-                yield* sql`DELETE FROM actor_receipts WHERE tenant_id = ${counter.ref.tenant} AND actor_type = ${counter.ref.actor} AND actor_id = ${counter.ref.id}`
-
-                return { ref: counter.ref, id }
-              }),
-            ),
-          )
-
-          yield* environment.restart
-
-          yield* Effect.promise(() =>
-            environment.run(
-              Effect.gen(function* () {
-                const counter = yield* Counter.get(saved.ref.id).pipe(
-                  Actor.tenant(saved.ref.tenant),
-                )
-
-                expect(
-                  yield* counter.Increment(43).pipe(Actor.commandId(saved.id), Effect.flip),
-                ).toMatchObject({ reason: CommandExpired.make({ commandId: saved.id }) })
-                const test = yield* ActorTest
-                expect(yield* test.inspect(counter.ref)).toMatchObject({
-                  state: { count: 43 },
-                  receipts: 0,
-                })
-                expect(yield* counter.Increment(2)).toBe(45)
-              }),
-            ),
-          )
-        }),
-      ),
-  },
-  {
-    name: "isolates durable state between fresh layer builds",
-    run: ({ expect, environment }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const tenant = yield* Effect.promise(() =>
-            environment.run(
-              Effect.gen(function* () {
-                const counter = yield* Counter.get("isolated")
-                expect(yield* counter.Increment(4)).toBe(4)
-                const test = yield* ActorTest
-
-                return test.tenant
-              }),
-            ),
-          )
-
-          const database = yield* environment.freshDatabase
-
-          const isolated = yield* Effect.acquireRelease(
-            Effect.sync(() => environment.build({ database })),
-            (runtime) => Effect.promise(() => runtime.dispose()),
-          )
-
-          yield* Effect.promise(() =>
-            isolated.runPromise(
-              Effect.gen(function* () {
-                const counter = yield* Counter.get("isolated").pipe(Actor.tenant(tenant))
-                const test = yield* ActorTest
-                expect(yield* test.inspect(counter.ref)).toEqual({
-                  generation: undefined,
-                  state: {},
-                  receipts: 0,
-                  events: 0,
-                  outbox: 0,
-                  effects: 0,
-                })
-                expect(yield* counter.Increment(6)).toBe(6)
-                expect(yield* test.inspect(counter.ref)).toMatchObject({
-                  state: { count: 6 },
-                  receipts: 1,
-                })
-              }),
-            ),
-          )
-
-          yield* Effect.promise(() =>
-            environment.run(
-              Effect.gen(function* () {
-                const counter = yield* Counter.get("isolated").pipe(Actor.tenant(tenant))
-                const test = yield* ActorTest
-                expect(yield* test.inspect(counter.ref)).toMatchObject({
-                  state: { count: 4 },
-                  receipts: 1,
-                })
-              }),
-            ),
-          )
-        }).pipe(Effect.scoped),
-      ),
-  },
-]
+/** Cases whose own actors, if any, they build into their own runtimes or clusters. */
+const standalone: ConformanceSuite = {}
 
 /**
- * Every conformance case, grouped by the file that owns it. `describeConformance`
- * runs a subset through `cases`, so a group can run in its own Vitest file and
- * worker; `conformance` is their union and the order within a group is kept.
+ * Every suite in the registry. The single-shard case checks the routing of
+ * every statement the framework issues, so it needs every feature's actors
+ * registered, as a deployment of all of them would.
+ */
+const everySuite: ConformanceSuite = {
+  get uses() {
+    return [...new Set(allGroups.map((group) => conformanceGroups[group].suite))].filter(
+      (suite) => suite !== everySuite,
+    )
+  },
+}
+
+/**
+ * Every conformance case, grouped by the file that owns it, with the suite
+ * that owns its actors. `describeConformance` runs a subset through `groups`,
+ * so a group can run in its own Vitest file and worker; `conformance` is
+ * their union and the order within a group is kept.
  */
 export const conformanceGroups = {
-  foundation: foundationConformance,
-  access: accessConformance,
-  admission: admissionConformance,
-  http: httpConformance,
-  protocols: protocolsConformance,
-  assertions: assertionsConformance,
-  edge: edgeConformance,
-  coldServeEdge: coldServeEdgeConformance,
-  client: clientConformance,
-  offline: offlineConformance,
-  capacity: capacityConformance,
-  heap: heapConformance,
-  events: eventsConformance,
-  reducer: reducerConformance,
-  outbox: outboxConformance,
-  tables: tablesConformance,
-  effects: effectsConformance,
-  progress: progressConformance,
-  multiRunner: multiRunnerConformance,
-  simulation: simulationConformance,
-  drain: drainConformance,
-  pipeline: pipelineConformance,
-  batches: batchesConformance,
-  relay: relayConformance,
-  relayCluster: relayClusterConformance,
-  effectControl: effectControlConformance,
-  effectControlCluster: effectControlClusterConformance,
-  singleton: singletonConformance,
-  cron: cronConformance,
-  cronCluster: cronClusterConformance,
-  blobs: blobsConformance,
-  inspectionViews: inspectionViewsConformance,
-  inspector: inspectorConformance,
-  rls: rlsConformance,
-  retention: retentionConformance,
-  restore: restoreConformance,
-  workflows: workflowsConformance,
-  connections: connectionsConformance,
-  streams: streamsConformance,
-  progressDelivery: progressDeliveryConformance,
-  transports: transportsConformance,
-  workflowVersions: workflowVersionsConformance,
-  payloadMigrations: payloadMigrationsConformance,
-  subscriptions: subscriptionsConformance,
-  subscriptionsRetention: subscriptionsRetentionConformance,
-  subscriptionsCluster: subscriptionsClusterConformance,
-  content: contentConformance,
-  counter: counterConformance,
-  properties: propertiesConformance,
-  mint: mintConformance,
-  readYourWrites: readYourWritesConformance,
-  observability: observabilityConformance,
-  operator: operatorConformance,
-  export: exportConformance,
-  coldServe: coldServeConformance,
-  placement: placementConformance,
-  watch: watchConformance,
-  adoption: adoptionConformance,
-  singleShard: singleShardConformance,
-  crossShardOutbox: crossShardOutboxConformance,
-  fleet: fleetConformance,
-} satisfies Record<string, ReadonlyArray<ConformanceCase>>
+  foundation: group(foundationSuite, foundationConformance),
+  access: group(accessSuite, accessConformance, freshDatabases),
+  admission: group(admissionSuite, admissionConformance),
+  http: group(httpSuite, httpConformance),
+  protocols: group(protocolsSuite, protocolsConformance),
+  assertions: group(assertionsSuite, assertionsConformance),
+  edge: group(assertionsSuite, edgeConformance),
+  coldServeEdge: group(coldServeSuite, coldServeEdgeConformance),
+  client: group(clientSuite, clientConformance),
+  offline: group(offlineSuite, offlineConformance),
+  capacity: group(standalone, capacityConformance, freshDatabases),
+  heap: group(standalone, heapConformance, freshDatabases),
+  events: group(eventsSuite, eventsConformance),
+  reducer: group(reducerSuite, reducerConformance),
+  outbox: group(outboxSuite, outboxConformance),
+  tables: group(tablesSuite, tablesConformance),
+  effects: group(effectsSuite, effectsConformance),
+  progress: group(progressSuite, progressConformance),
+  multiRunner: group(standalone, multiRunnerConformance, freshDatabases),
+  simulation: group(standalone, simulationConformance, freshDatabases),
+  drain: group(drainSuite, drainConformance),
+  pipeline: group(standalone, pipelineConformance, freshDatabases),
+  batches: group(batchesSuite, batchesConformance),
+  relay: group(relaySuite, relayConformance),
+  relayCluster: group(relaySuite, relayClusterConformance, freshDatabases),
+  effectControl: group(effectControlSuite, effectControlConformance),
+  effectControlCluster: group(effectControlSuite, effectControlClusterConformance),
+  singleton: group(standalone, singletonConformance, freshDatabases),
+  cron: group(standalone, cronConformance, freshDatabases),
+  cronCluster: group(standalone, cronClusterConformance, freshDatabases),
+  blobs: group(blobsSuite, blobsConformance),
+  inspectionViews: group(inspectionViewsSuite, inspectionViewsConformance),
+  inspector: group(inspectorSuite, inspectorConformance),
+  rls: group(standalone, rlsConformance, freshDatabases),
+  retention: group(retentionSuite, retentionConformance),
+  restore: group(restoreSuite, restoreConformance, freshDatabases),
+  workflows: group(workflowsSuite, workflowsConformance),
+  connections: group(connectionsSuite, connectionsConformance),
+  streams: group(streamsSuite, streamsConformance),
+  progressDelivery: group(progressSuite, progressDeliveryConformance),
+  transports: group(transportsSuite, transportsConformance),
+  workflowVersions: group(standalone, workflowVersionsConformance, freshDatabases),
+  payloadMigrations: group(standalone, payloadMigrationsConformance, freshDatabases),
+  subscriptions: group(subscriptionsSuite, subscriptionsConformance),
+  subscriptionsRetention: group(subscriptionsSuite, subscriptionsRetentionConformance),
+  subscriptionsCluster: group(subscriptionsSuite, subscriptionsClusterConformance, freshDatabases),
+  content: group(contentSuite, contentConformance),
+  counter: group(counterSuite, counterConformance),
+  properties: group(propertiesSuite, propertiesConformance),
+  mint: group(mintSuite, mintConformance),
+  readYourWrites: group(readYourWritesSuite, readYourWritesConformance),
+  observability: group(standalone, observabilityConformance, freshDatabases),
+  operator: group(standalone, operatorConformance, freshDatabases),
+  export: group(standalone, exportConformance, freshDatabases),
+  coldServe: group(coldServeSuite, coldServeConformance),
+  placement: group(placementSuite, placementConformance),
+  watch: group(watchSuite, watchConformance),
+  adoption: group(standalone, adoptionConformance),
+  singleShard: group(everySuite, singleShardConformance),
+  crossShardOutbox: group(crossShardSuite, crossShardOutboxConformance),
+  fleet: group(fleetSuite, fleetConformance),
+} satisfies Record<string, ConformanceGroupCases>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
+
+const allGroups = Object.keys(conformanceGroups) as ReadonlyArray<ConformanceGroup>
 
 /**
  * The shared durable-turn conformance cases. Cases flagged
@@ -1561,7 +445,120 @@ export type ConformanceGroup = keyof typeof conformanceGroups
  * or to take a competing row lock, or a database outside the JavaScript heap
  * they measure. They never run on single-connection backends such as PGlite.
  */
-export const conformance: ReadonlyArray<ConformanceCase> = Object.values(conformanceGroups).flat()
+export const conformance: ReadonlyArray<ConformanceCase<unknown>> = allGroups.flatMap(
+  (name) => conformanceGroups[name].cases,
+)
+
+/** A backend capability a case can require, as `ConformanceCase` flags name it. */
+export type ConformanceRequirement =
+  | "independentConnections"
+  | "replica"
+  | "edge"
+  | "neki"
+  | "logicalDecoding"
+  | "freshDatabase"
+
+/** The capabilities `conformanceCase` requires, in a fixed order. */
+export const requirementsOf = (
+  conformanceCase: ConformanceCase<unknown>,
+): ReadonlyArray<ConformanceRequirement> => [
+  ...(conformanceCase.requiresIndependentConnections === true
+    ? (["independentConnections"] as const)
+    : []),
+  ...(conformanceCase.requiresReplica === true ? (["replica"] as const) : []),
+  ...(conformanceCase.requiresEdge === true ? (["edge"] as const) : []),
+  ...(conformanceCase.requiresNeki === true ? (["neki"] as const) : []),
+  ...(conformanceCase.requiresLogicalDecoding === true ? (["logicalDecoding"] as const) : []),
+  ...(conformanceCase.requiresFreshDatabase === true ? (["freshDatabase"] as const) : []),
+]
+
+/** The capabilities `backend` provides. */
+export const capabilitiesOf = (
+  backend: Pick<
+    ConformanceBackend,
+    "independentConnections" | "hasReplica" | "edge" | "neki" | "logicalDecoding" | "freshDatabases"
+  >,
+): ReadonlySet<ConformanceRequirement> =>
+  new Set<ConformanceRequirement>([
+    ...(backend.independentConnections ? (["independentConnections"] as const) : []),
+    ...(backend.hasReplica === true ? (["replica"] as const) : []),
+    ...(backend.edge === undefined ? [] : (["edge"] as const)),
+    ...(backend.neki === true ? (["neki"] as const) : []),
+    ...(backend.logicalDecoding === true ? (["logicalDecoding"] as const) : []),
+    ...(backend.freshDatabases ? (["freshDatabase"] as const) : []),
+  ])
+
+/** The backends the repository runs cases on, by the capabilities each provides. */
+const evidenceBackends = {
+  pglite: capabilitiesOf({ independentConnections: false, freshDatabases: true }),
+  postgres: capabilitiesOf({
+    independentConnections: true,
+    hasReplica: true,
+    logicalDecoding: true,
+    freshDatabases: true,
+  }),
+  neki: capabilitiesOf({ independentConnections: true, neki: true, freshDatabases: false }),
+} as const
+
+/** One registered case a verification ledger may cite, and where it can produce evidence. */
+export interface EvidenceEntry {
+  readonly name: string
+  /** The conformance group, or `workflowEngine` for the upstream differential cases. */
+  readonly group: ConformanceGroup | "workflowEngine"
+  readonly requires: ReadonlyArray<ConformanceRequirement>
+  /**
+   * For each backend, whether it runs the case or skips it by name. Postgres
+   * assumes the CI server's replica and logical decoding; the hosted edge
+   * runs only the edge groups. A listed backend is where evidence can come
+   * from, not evidence that the case passed there.
+   */
+  readonly backends: Readonly<Record<keyof typeof evidenceBackends, "runs" | "skips">>
+}
+
+/**
+ * Every case a verification ledger may cite: the conformance registry and
+ * the workflow-engine differential cases, derived from their registrations.
+ */
+export const evidenceIndex: ReadonlyArray<EvidenceEntry> = [
+  ...allGroups.flatMap((group) =>
+    conformanceGroups[group].cases.map((conformanceCase) => {
+      const requires = requirementsOf(conformanceCase)
+
+      const backends = Object.fromEntries(
+        Object.entries(evidenceBackends).map(([backend, provided]) => [
+          backend,
+          requires.every((required) => provided.has(required)) ? "runs" : "skips",
+        ]),
+      ) as EvidenceEntry["backends"]
+
+      return { name: conformanceCase.name, group, requires, backends }
+    }),
+  ),
+  ...engineCases.map(({ name }) => ({
+    name,
+    group: "workflowEngine" as const,
+    requires: [],
+    backends: { pglite: "runs", postgres: "skips", neki: "skips" } as const,
+  })),
+]
+
+/** `suites` and every suite they use, each once, dependencies first. */
+const withDependencies = (
+  suites: ReadonlyArray<ConformanceSuite<unknown>>,
+): ReadonlyArray<ConformanceSuite<unknown>> => {
+  const ordered: Array<ConformanceSuite<unknown>> = []
+
+  const visit = (suite: ConformanceSuite<unknown>) => {
+    if (ordered.includes(suite)) return
+
+    for (const used of suite.uses ?? []) visit(used)
+    ordered.push(suite)
+  }
+
+  for (const suite of suites) visit(suite)
+
+  return ordered
+}
 
 interface ConformanceStore {
   readonly database: ConformanceDatabase
@@ -1573,68 +570,70 @@ interface ConformanceStore {
 }
 
 /**
- * Registers every named conformance case against `backend`, or only
- * `cases` when given. The same case names run on every backend; cases that
- * need independent SQL connections or an edge are reported through
- * `registrar.skip` when the backend cannot provide them.
+ * Registers the named groups' cases, or every group's, against `backend`.
+ * Only the selected groups' suites, and the suites they use, build their
+ * actors and fixtures. The same case names run on every backend; a case
+ * whose requirements the backend lacks is reported through `registrar.skip`.
  *
- * Some cases stop the suite's runtime and restart it when they finish. A case
- * that times out never reaches that restart, because the test runner abandons
- * its effect instead of interrupting it, so every case starts by restarting a
- * runtime left stopped. One timed-out case then fails alone, not every case
- * after it.
+ * Each case runs under the registrar's abort signal: a timed-out or
+ * cancelled case is interrupted, its finalizers run, and the next case waits
+ * for them, then restarts a runtime the case left stopped and starts with
+ * open test authorization.
  */
 export const describeConformance = (options: {
   readonly name: string
   readonly backend: ConformanceBackend
   readonly registrar: ConformanceRegistrar
-  readonly cases?: ReadonlyArray<ConformanceCase>
-}): void => {
-  const { name, backend, registrar } = options
-  const fixture = makeFixture()
+  readonly groups?: ReadonlyArray<ConformanceGroup>
+}): void =>
+  registerConformance({
+    ...options,
+    selected: (options.groups ?? allGroups).map((group) => conformanceGroups[group]),
+  })
 
-  const live = Layer.mergeAll(
-    CounterLive(fixture),
-    CounterReads(fixture),
-    foundationLayer(fixture.foundation),
-    admissionLayer,
-    httpLayer,
-    eventsLayer(fixture.events),
-    eventsQueryLayer(fixture.events),
-    reducerLayer,
-    batchesLayer,
-    outboxLayer(fixture.outbox),
-    tablesLayer(fixture.tables),
-    effectsLayer(fixture.effects),
-    progressLayer(fixture.progress),
-    blobsLayer(fixture.blobs),
-    inspectionViewsLayer,
-    inspectorLayer,
-    relayLayer(fixture.relay),
-    relayEffects(fixture.relay),
-    effectControlLayer,
-    effectControlEffects(fixture.effectControl),
-    retentionLayer(fixture.retention),
-    restoreLayer(fixture.restore),
-    propertiesLayer,
-    workflowsLive(fixture.workflows),
-    connectionsLayer(fixture.connections),
-    streamsLayer,
-    studioLayer,
-    transportsLayer,
-    mintLayer,
-    placementLayer,
-    crossShardLayer,
-    subscriptionsLayer(fixture.subscriptions),
-    contentLayer(fixture.content),
-    drainLayer(fixture.drain),
-    coldServeLayer(fixture.coldServe),
-    watchLayer(fixture.watch),
-  )
+/** How long the next case waits for an interrupted case's finalizers before it starts anyway. */
+const SETTLE_TIMEOUT = "20 seconds"
+
+/** Registers `selected` groups; `describeConformance` passes registry groups, tests pass their own. */
+export const registerConformance = (options: {
+  readonly name: string
+  readonly backend: ConformanceBackend
+  readonly registrar: ConformanceRegistrar
+  readonly selected: ReadonlyArray<ConformanceGroupCases>
+}): void => {
+  const { name, backend, registrar, selected } = options
+  const suites = withDependencies(selected.map(({ suite }) => suite))
+  const fixtures = new Map(suites.map((suite) => [suite, suite.fixture?.()] as const))
+
+  const fixtureOf = <G>(suite: ConformanceSuite<G>): G => {
+    if (!fixtures.has(suite as ConformanceSuite<unknown>))
+      throw new Error("A conformance case read the fixture of a suite its own suite does not use")
+
+    return fixtures.get(suite as ConformanceSuite<unknown>) as G
+  }
+
+  const access: ConformanceAccess = { allowed: true, denied: new Set(), revoked: new Set() }
+
+  const turnHooks = suites.flatMap((suite) => suite.turn?.(fixtureOf(suite)) ?? [])
+  const contentHooks = suites.flatMap((suite) => suite.content?.(fixtureOf(suite)) ?? [])
+  const loggers = suites.flatMap((suite) => suite.logger?.(fixtureOf(suite)) ?? [])
+
+  let live: Layer.Layer<never, never, ConformanceSuiteServices> = Layer.empty
+
+  for (const suite of suites)
+    if (suite.layer !== undefined) live = Layer.merge(live, suite.layer(fixtureOf(suite)))
+
+  const capabilities = capabilitiesOf(backend)
 
   let store: ConformanceStore | undefined
 
   let current: ConformanceRuntime | undefined
+
+  const opened = () => {
+    if (store === undefined) throw new Error("Conformance environment is not open")
+
+    return store
+  }
 
   const environment: ConformanceEnvironment = {
     run: (effect) => {
@@ -1643,27 +642,23 @@ export const describeConformance = (options: {
 
       return current.runPromise(Effect.scoped(effect))
     },
-    build: (overrides) => {
-      const database = overrides?.database ?? store?.database
-
-      if (database === undefined) throw new Error("Conformance environment is not open")
-
-      return ManagedRuntime.make(
+    build: (overrides) =>
+      ManagedRuntime.make(
         live.pipe(
           Layer.provideMerge(
             ActorTest.layer({
-              database,
+              database: overrides?.database ?? opened().database,
               maxConnections: 6,
               replica: overrides?.replica,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>
                 Effect.sync(
                   () =>
-                    fixture.allowed &&
-                    !fixture.denied.has(request.command) &&
+                    access.allowed &&
+                    !access.denied.has(request.command) &&
                     Option.match(principal(request.caller), {
                       onNone: () => true,
-                      onSome: ({ subject }) => !fixture.revoked.has(subject),
+                      onSome: ({ subject }) => !access.revoked.has(subject),
                     }),
                 ),
               retryWindowMs: overrides?.retryWindowMs ?? 60_000,
@@ -1673,10 +668,11 @@ export const describeConformance = (options: {
                 Layer.mergeAll(
                   Layer.succeed(TurnHooks, {
                     at: (point, request) =>
-                      Effect.suspend(() => fixture.subscriptions.hook(point, request)),
+                      Effect.forEach(turnHooks, (hook) => hook(point, request), { discard: true }),
                   }),
                   Layer.succeed(ContentHooks, {
-                    at: (point) => Effect.suspend(() => fixture.content.hook(point)),
+                    at: (point) =>
+                      Effect.forEach(contentHooks, (hook) => hook(point), { discard: true }),
                   }),
                   Layer.succeed(NekiTurnSessions, backend.neki === true),
                   overrides?.observe === undefined
@@ -1693,11 +689,10 @@ export const describeConformance = (options: {
             ),
           ),
           Layer.provideMerge(backend.services),
-          Layer.provide(defectRecorder(fixture.foundation)),
+          Layer.provide(Logger.layer(loggers, { mergeWithExisting: true })),
           Layer.orDie,
         ),
-      )
-    },
+      ) as ConformanceRuntime,
     stop: Effect.suspend(() => {
       const previous = current
       current = undefined
@@ -1713,18 +708,12 @@ export const describeConformance = (options: {
         }),
       ),
     ),
-    freshDatabase: Effect.suspend(() =>
-      store === undefined
-        ? Effect.die(new Error("Conformance environment is not open"))
-        : store.freshDatabase,
-    ),
+    freshDatabase: Effect.suspend(() => opened().freshDatabase),
     snapshot: Effect.suspend(() => {
-      if (store === undefined) return Effect.die(new Error("Conformance environment is not open"))
-
       if (current !== undefined)
         return Effect.die(new Error("A snapshot needs the conformance runtime stopped"))
 
-      return store.copy(store.database)
+      return opened().copy(opened().database)
     }),
     get connect() {
       return store?.connect
@@ -1737,6 +726,45 @@ export const describeConformance = (options: {
       return backend.edge
     },
   }
+
+  /** The environment one case sees: its runs end with its signal, and only a declared case opens databases. */
+  const environmentFor = (
+    conformanceCase: ConformanceCase<unknown>,
+    signal: AbortSignal | undefined,
+  ): ConformanceEnvironment => {
+    const undeclared = Effect.die(
+      new Error(
+        `Conformance case "${conformanceCase.name}" opens a fresh database or snapshot without declaring requiresFreshDatabase`,
+      ),
+    )
+
+    return {
+      run: (effect) => {
+        if (current === undefined)
+          return Promise.reject(new Error("Conformance environment is stopped"))
+
+        return current.runPromise(Effect.scoped(effect), { signal })
+      },
+      build: environment.build,
+      stop: environment.stop,
+      restart: environment.restart,
+      freshDatabase:
+        conformanceCase.requiresFreshDatabase === true ? environment.freshDatabase : undeclared,
+      snapshot: conformanceCase.requiresFreshDatabase === true ? environment.snapshot : undeclared,
+      get connect() {
+        return environment.connect
+      },
+      get replica() {
+        return environment.replica
+      },
+      httpServer: environment.httpServer,
+      get edge() {
+        return environment.edge
+      },
+    }
+  }
+
+  let previousCase: Promise<unknown> = Promise.resolve()
 
   registrar.describe(name, () => {
     registrar.beforeAll(
@@ -1751,38 +779,61 @@ export const describeConformance = (options: {
     )
 
     registrar.afterAll(() =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          yield* environment.stop
+      previousCase.then(constVoid, constVoid).then(() =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            yield* environment.stop
 
-          if (store !== undefined) yield* store.close
+            if (store !== undefined) yield* store.close
 
-          store = undefined
-        }),
+            store = undefined
+          }),
+        ),
       ),
     )
 
-    for (const conformanceCase of options.cases ?? conformance) {
-      if (
-        (conformanceCase.requiresIndependentConnections === true &&
-          backend.independentConnections === false) ||
-        (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
-        (conformanceCase.requiresEdge === true && backend.edge === undefined) ||
-        (conformanceCase.requiresNeki === true && backend.neki !== true) ||
-        (conformanceCase.requiresLogicalDecoding === true && backend.logicalDecoding !== true)
-      ) {
-        registrar.skip(conformanceCase.name)
-        continue
-      }
+    for (const { suite, cases } of selected)
+      for (const conformanceCase of cases) {
+        if (requirementsOf(conformanceCase).some((required) => !capabilities.has(required))) {
+          registrar.skip(conformanceCase.name)
+          continue
+        }
 
-      registrar.it(
-        conformanceCase.name,
-        () =>
-          Effect.runPromise(
-            Effect.suspend(() => (current === undefined ? environment.restart : Effect.void)),
-          ).then(() => conformanceCase.run({ expect: registrar.expect, environment, fixture })),
-        conformanceCase.timeoutMs,
-      )
-    }
+        registrar.it(
+          conformanceCase.name,
+          ({ signal }) => {
+            const settled = Effect.runPromise(
+              Effect.promise(() => previousCase.then(constVoid, constVoid)).pipe(
+                Effect.timeoutOption(SETTLE_TIMEOUT),
+              ),
+            )
+
+            const running = settled
+              .then(() => {
+                access.allowed = true
+                access.denied.clear()
+                access.revoked.clear()
+
+                return Effect.runPromise(
+                  Effect.suspend(() => (current === undefined ? environment.restart : Effect.void)),
+                )
+              })
+              .then(() =>
+                conformanceCase.run({
+                  expect: registrar.expect,
+                  environment: environmentFor(conformanceCase, signal),
+                  fixture: fixtureOf(suite),
+                  access,
+                  fixtureOf,
+                }),
+              )
+
+            previousCase = running
+
+            return running
+          },
+          conformanceCase.timeoutMs,
+        )
+      }
   })
 }

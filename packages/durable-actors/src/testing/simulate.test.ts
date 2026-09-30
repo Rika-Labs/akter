@@ -5,9 +5,9 @@ import { Actor, Actors, Intent } from "../index.ts"
 import { ActorTest } from "./actor-test.ts"
 import { type SimulationFault, simulationSeeds } from "./simulate.ts"
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
-const Credit = Actor.command("Credit", { input: Schema.Int })
+const Credit = Actor.command("Credit", { payload: Schema.Int })
 
 const total = Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) })
 
@@ -21,11 +21,11 @@ const Wallet = Actor.make("SimWallet", {
 })
 
 const Pay = Actor.command("Pay", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
 const PayLater = Actor.command("PayLater", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
 const Payer = Actor.make("SimPayer", { key: Schema.String, api: { Pay, PayLater } })

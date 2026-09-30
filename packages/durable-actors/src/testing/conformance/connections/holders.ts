@@ -4,7 +4,7 @@ import { ActorError, SessionEnded, Unauthorized } from "../../../errors/actor.ts
 import { MAX_OUTBOUND_BYTES, MAX_OUTBOUND_FRAMES } from "../../../runtime/connections/holder.ts"
 import { ClientMessage } from "../../../runtime/connections/protocol.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Hello, Said, Say, receipted } from "./actors.ts"
+import { Hello, Said, Say, receipted, type ConnectionsFixture } from "./actors.ts"
 import {
   connect,
   eventually,
@@ -19,7 +19,7 @@ import {
 } from "./harness.ts"
 
 /** Holder-side generation, liveness, redelivery, and close handling of connections. */
-export const connectionHolderConformance: ReadonlyArray<ConformanceCase> = [
+export const connectionHolderConformance: ReadonlyArray<ConformanceCase<ConnectionsFixture>> = [
   {
     name: "a command and a frame that wake one parked actor together acquire one generation",
     run: ({ expect, environment }) =>

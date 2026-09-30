@@ -5,7 +5,6 @@ import {
   Config,
   Console,
   Context,
-  Crypto,
   type Duration,
   Effect,
   Exit,
@@ -15,6 +14,7 @@ import {
   ManagedRuntime,
   Match,
   Option,
+  Redacted,
   Schema,
   Stream,
 } from "effect"
@@ -27,6 +27,7 @@ import {
 } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
+import { disposableDatabase } from "@durable-actors/core/testing"
 import { afterAll, describe, expect, it } from "vitest"
 import { fakeLedger } from "../payments/ledger.ts"
 
@@ -114,7 +115,7 @@ const runtime = ManagedRuntime.make(Layer.mergeAll(BunServices.layer, FetchHttpC
 
 afterAll(() => runtime.dispose())
 
-const pglite = runtime.runSync(Config.String("ORDERS_BACKEND")) === "pglite"
+const pglite = runtime.runSync(Config.String("TEST_BACKEND")) === "pglite"
 
 describe.skipIf(pglite)("orders crash drill with Postgres", () => {
   for (const { fault, acknowledged } of FAULTS)
@@ -123,19 +124,11 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
-            const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `drill_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-            const admin = yield* Effect.acquireRelease(
-              Effect.sync(() => new Pool({ connectionString: database.href })),
-              (pool) => Effect.promise(() => pool.end()),
+            const database = new URL(
+              Redacted.value(
+                yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+              ),
             )
-
-            yield* Effect.acquireRelease(
-              Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-              () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-            )
-            database.pathname = `/${name}`
 
             const pool = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: database.href })),

@@ -10,11 +10,11 @@ import { decompress } from "../../../runtime/storage/codec.ts"
 import { FrameworkClock } from "../../../runtime/turn/admission.ts"
 import { CleanupHooks } from "../../../runtime/turn/hooks.ts"
 
-class Logged extends Actor.Event<Logged>()("Logged", { n: Schema.Int }) {}
+const Logged = Actor.event("Logged", { n: Schema.Int })
 
-const Add = Actor.command("Add", { input: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int })
 
-const Log = Actor.command("Log", { input: Schema.Int })
+const Log = Actor.command("Log", { payload: Schema.Int })
 
 const Ledger = Actor.make("CrashLedger", {
   key: Schema.String,

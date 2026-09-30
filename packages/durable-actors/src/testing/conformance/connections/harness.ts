@@ -77,7 +77,7 @@ export const connect = (id: string, name = "alice") =>
 
 /** The `Echo` executor, which every cluster runner builds. */
 const connectionsEffects = (fixture: ConnectionsFixture) =>
-  Room.toEffectLayer(
+  Room.toJobLayer(
     Effect.succeed({
       LiveEcho: ({ text }: { readonly text: string }) =>
         Effect.suspend(() => fixture.echo).pipe(Effect.as(text)),

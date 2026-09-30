@@ -13,8 +13,8 @@ import {
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent } from "../../index.ts"
-import type { Cancelled } from "../../members/effect.ts"
-import type { PerformOptions } from "../../contexts/effect.ts"
+import type { Cancelled } from "../../members/job.ts"
+import type { EnqueueOptions } from "../../contexts/job.ts"
 import type { Request } from "../../runtime/request.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import type { Options as RuntimeOptions } from "../../runtime/layer.ts"
@@ -23,14 +23,14 @@ import { wakeWaiting } from "../../runtime/jobs/attempt.ts"
 import { claimCapped } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 
 /** One executor attempt as the fake provider saw it; times are this process's clock. */
 interface ControlAttempt {
   readonly label: string
   readonly actor: string
   readonly effect: string
-  readonly effectId: string
+  readonly jobId: string
   readonly attempt: number
   readonly runner: number
   readonly startedAt: number
@@ -62,32 +62,32 @@ const reset = (fixture: EffectControlFixture) =>
 
 class ControlDown extends Schema.TaggedError<ControlDown>()("ControlDown", {}) {}
 
-class Job extends Actor.effect<Job>()("Job", {
-  input: { label: Schema.String },
+const Job = Actor.job("Job", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class Capped extends Actor.effect<Capped>()("Capped", {
-  input: { label: Schema.String },
+const Capped = Actor.job("Capped", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class Serial extends Actor.effect<Serial>()("Serial", {
-  input: { label: Schema.String },
+const Serial = Actor.job("Serial", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class Picky extends Actor.effect<Picky>()("Picky", {
-  input: { label: Schema.String },
+const Picky = Actor.job("Picky", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
 const EffectName = Schema.Literals(["Job", "Capped", "Serial", "Picky"])
 
 type EffectName = typeof EffectName.Type
 
 const Perform = Actor.command("Perform", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     effect: EffectName,
     labels: Schema.Array(Schema.String),
     keyed: Schema.optional(Schema.Boolean),
@@ -95,34 +95,34 @@ const Perform = Actor.command("Perform", {
   }),
 })
 
-const CancelEffect = Actor.command("CancelEffect", { input: Schema.Array(Schema.String) })
+const CancelEffect = Actor.command("CancelEffect", { payload: Schema.Array(Schema.String) })
 
-const PerformThenCancel = Actor.command("PerformThenCancel", { input: Schema.String })
+const PerformThenCancel = Actor.command("PerformThenCancel", { payload: Schema.String })
 
 const CancelThenRefuse = Actor.command("CancelThenRefuse", {
-  input: Schema.String,
-  errors: [ControlDown],
+  payload: Schema.String,
+  error: ControlDown,
 })
 
-const CancelThenDie = Actor.command("CancelThenDie", { input: Schema.String })
+const CancelThenDie = Actor.command("CancelThenDie", { payload: Schema.String })
 
 const CaptureCancel = Actor.command("CaptureCancel", {})
 
-const UseCaptured = Actor.command("UseCaptured", { input: Schema.String })
+const UseCaptured = Actor.command("UseCaptured", { payload: Schema.String })
 
-const Done = Actor.command("Done", { input: Schema.String })
+const Done = Actor.command("Done", { payload: Schema.String })
 
-const JobCancelled = Actor.command("JobCancelled", { input: Actor.Cancelled(Job) })
+const JobCancelled = Actor.command("JobCancelled", { payload: Actor.Cancelled(Job) })
 
-const CappedCancelled = Actor.command("CappedCancelled", { input: Actor.Cancelled(Capped) })
+const CappedCancelled = Actor.command("CappedCancelled", { payload: Actor.Cancelled(Capped) })
 
-const SerialFailed = Actor.command("SerialFailed", { input: Actor.DeadLetter(Serial) })
+const SerialFailed = Actor.command("SerialFailed", { payload: Actor.DeadLetter(Serial) })
 
 const PickyDone = Actor.command("PickyDone", {
-  input: Schema.String.check(Schema.isPattern(/^accepted$/)),
+  payload: Schema.String.check(Schema.isPattern(/^accepted$/)),
 })
 
-const PickyCancelled = Actor.command("PickyCancelled", { input: Actor.Cancelled(Picky) })
+const PickyCancelled = Actor.command("PickyCancelled", { payload: Actor.Cancelled(Picky) })
 
 const Report = Schema.Struct({
   label: Schema.String,
@@ -140,7 +140,29 @@ const Controlled = Actor.make("Controlled", {
     cancelled: Schema.Array(Report).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     letters: Schema.Array(Report).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Job, Capped, Serial, Picky],
+  jobs: {
+    Job: {
+      job: Job,
+      retry: { times: 2, backoff: { base: "1 second", max: "1 second" } },
+      onSuccess: Done,
+      onCancelled: JobCancelled,
+    },
+    Capped: {
+      job: Capped,
+      retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
+      concurrency: { perActor: 2 },
+      onSuccess: Done,
+      onCancelled: CappedCancelled,
+    },
+    Serial: {
+      job: Serial,
+      retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
+      concurrency: { perActor: 1 },
+      onSuccess: Done,
+      onDeadLetter: SerialFailed,
+    },
+    Picky: { job: Picky, retry: { times: 0 }, onSuccess: PickyDone, onCancelled: PickyCancelled },
+  },
   api: {
     Perform,
     CancelEffect,
@@ -151,32 +173,6 @@ const Controlled = Actor.make("Controlled", {
     UseCaptured,
   },
   internal: { Done, JobCancelled, CappedCancelled, SerialFailed, PickyDone, PickyCancelled },
-  policy: {
-    effects: {
-      Job: {
-        retry: { times: 2, backoff: { base: "1 second", max: "1 second" } },
-        onSuccess: Done,
-        onCancelled: JobCancelled,
-      },
-      Capped: {
-        retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
-        concurrency: { perActor: 2 },
-        onSuccess: Done,
-        onCancelled: CappedCancelled,
-      },
-      Serial: {
-        retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
-        concurrency: { perActor: 1 },
-        onSuccess: Done,
-        onDeadLetter: SerialFailed,
-      },
-      Picky: {
-        retry: { times: 0 },
-        onSuccess: PickyDone,
-        onCancelled: PickyCancelled,
-      },
-    },
-  },
 })
 
 const reportCancelled = (cancelled: Cancelled<typeof Job>) =>
@@ -188,8 +184,8 @@ const reportCancelled = (cancelled: Cancelled<typeof Job>) =>
       cancelled: [
         ...turn.state.cancelled,
         {
-          label: cancelled.effect.label,
-          effectId: cancelled.effectId,
+          label: cancelled.job.label,
+          effectId: cancelled.jobId,
           outcome: outcome._tag,
           ambiguous: cancelled.ambiguous,
           ...("value" in outcome ? { value: String(outcome.value) } : { cause: outcome.cause }),
@@ -209,36 +205,36 @@ export const effectControlLayer = Controlled.toLayer(
       for (const label of labels) {
         const instance = { Job, Capped, Serial, Picky }[effect].make({ label })
 
-        const options: Mutable<PerformOptions> = {}
+        const options: Mutable<EnqueueOptions> = {}
 
         if (keyed === true) options.key = label
 
         if (afterMs !== undefined) options.after = Duration.millis(afterMs)
-        yield* turn.perform(instance, options)
+        yield* turn.enqueue(instance, options)
       }
     }),
     CancelEffect: Effect.fnUntraced(function* (keys) {
       const turn = yield* Controlled.Turn
 
-      for (const key of keys) yield* turn.cancelEffect(key)
+      for (const key of keys) yield* turn.cancelJob(key)
     }),
     PerformThenCancel: Effect.fnUntraced(function* (label) {
       const turn = yield* Controlled.Turn
-      yield* turn.perform(Job.make({ label }), { key: label })
-      yield* turn.cancelEffect(label)
+      yield* turn.enqueue(Job.make({ label }), { key: label })
+      yield* turn.cancelJob(label)
     }),
     CancelThenRefuse: Effect.fnUntraced(function* (key) {
-      yield* (yield* Controlled.Turn).cancelEffect(key)
+      yield* (yield* Controlled.Turn).cancelJob(key)
 
       return yield* ControlDown.make({})
     }),
     CancelThenDie: Effect.fnUntraced(function* (key) {
-      yield* (yield* Controlled.Turn).cancelEffect(key)
+      yield* (yield* Controlled.Turn).cancelJob(key)
 
       return yield* Effect.die(new Error("Canceller defect"))
     }),
     CaptureCancel: Effect.fnUntraced(function* () {
-      captured = (yield* Controlled.Turn).cancelEffect
+      captured = (yield* Controlled.Turn).cancelJob
     }),
     UseCaptured: Effect.fnUntraced(function* (key) {
       if (captured !== undefined) yield* captured(key)
@@ -261,8 +257,8 @@ export const effectControlLayer = Controlled.toLayer(
         letters: [
           ...turn.state.letters,
           {
-            label: letter.effect.label,
-            effectId: letter.effectId,
+            label: letter.job.label,
+            effectId: letter.jobId,
             outcome: "DeadLetter",
             ambiguous: letter.ambiguous,
             cause: letter.cause,
@@ -283,7 +279,7 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
         label,
         actor: exec.ref.id,
         effect,
-        effectId: exec.effectId,
+        jobId: exec.jobId,
         attempt: exec.attempt,
         runner,
         startedAt: yield* Clock.currentTimeMillis,
@@ -303,7 +299,7 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
       )
     })
 
-  return Controlled.toEffectLayer(
+  return Controlled.toJobLayer(
     Effect.succeed({
       Job: ({ label }) => execute("Job", label),
       Capped: ({ label }) => execute("Capped", label),
@@ -495,10 +491,10 @@ const thrown = (build: () => void) => {
 }
 
 /** Single-runtime cases, on every backend. */
-export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
+export const effectControlConformance: ReadonlyArray<ConformanceCase<EffectControlFixture>> = [
   {
     name: "never runs a pending keyed effect cancelled by a later turn or in its own turn",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -522,7 +518,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "replaces a pending keyed effect performed again under its key",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -544,7 +540,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reports Failed when cancelled while backing off after a typed failure, and never retries",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -571,7 +567,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reports Unknown when cancelled while backing off after an attempt that may have applied",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -598,7 +594,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "interrupts a running attempt its own runner cancels and reports Unknown, never Failed",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -632,7 +628,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "interrupts at once an attempt its own runner cancels between its claim and its call",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -667,7 +663,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "dead-letters an ambiguous cancellation as ambiguous and drops a failed one without onCancelled",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -705,7 +701,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "runs one capped attempt at a time per actor, in perform order, without holding other actors back",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -753,9 +749,8 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
             expect(
               thrown(() =>
                 Actor.make("BadCap", {
-                  effects: [Job],
+                  jobs: { Job: { job: Job, concurrency: { perActor } } },
                   api: { Done },
-                  policy: { effects: { Job: { concurrency: { perActor } } } },
                 }),
               ),
             ).toContain("perActor")
@@ -764,7 +759,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "cancels nothing when the cancelling turn rolls back",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -791,7 +786,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "does nothing when cancelling an effect that already completed",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -818,7 +813,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "replaces a running keyed effect: reports the old one and runs the new one under a new id",
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -837,17 +832,17 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           const [first, second] = fixture.attempts
 
           expect(first!.interrupted).toBe(true)
-          expect(second!.effectId === first!.effectId).toBe(false)
+          expect(second!.jobId === first!.jobId).toBe(false)
           const state = yield* stateOf("rerun")
           expect(state.done).toEqual(["second"])
           expect(state.cancelled).toMatchObject([
-            { effectId: first!.effectId, outcome: "Unknown", ambiguous: true },
+            { effectId: first!.jobId, outcome: "Unknown", ambiguous: true },
           ])
         }),
       ),
   },
   {
-    name: "rejects reserved intent keys and a captured cancelEffect",
+    name: "rejects reserved intent keys and a captured cancelJob",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -867,7 +862,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
           yield* actor.CaptureCancel().pipe(Effect.orDie)
           const stolen = yield* actor.UseCaptured("k").pipe(Effect.exit)
           expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
-            "Effect capability escaped its turn",
+            "Job capability escaped its turn",
           )
         }),
       ),
@@ -875,788 +870,818 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase> = [
 ]
 
 /** Multi-runner cases: real Postgres only, each on a fresh database and cluster. */
-export const effectControlClusterConformance: ReadonlyArray<ConformanceCase> = [
-  {
-    name: "never shortens the lease of a waiting row a claim takes while a settle wakes it",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
+export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<EffectControlFixture>> =
+  [
+    {
+      name: "never shortens the lease of a waiting row a claim takes while a settle wakes it",
+      requiresIndependentConnections: true,
+      run: ({ expect, environment }) =>
+        environment.run(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
 
-          const group = {
-            routing_key: "7",
-            tenant_id: "wake-race",
-            actor_type: "Controlled",
-            actor_id: "raced",
-            command: "Serial",
-          }
-
-          const now = yield* Clock.currentTimeMillis
-          const leaseEnd = now + 60_000
-
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (7, 'wake-race', 'Controlled', 'raced')`
-
-          yield* sql`INSERT INTO actor_outbox ${sql.insert(
-            ["oldest", "next"].map((intentId, index) => ({
-              routing_key: 7,
-              intent_id: intentId,
-              kind: "job",
-              bucket: 0,
-              due_at_ms: leaseEnd,
-              scheduled_at_ms: now + index,
-              ready_at_ms: now + index,
-              waiting: true,
+            const group = {
+              routing_key: "7",
               tenant_id: "wake-race",
               actor_type: "Controlled",
               actor_id: "raced",
-              target_type: "Controlled",
-              target_id: "raced",
               command: "Serial",
-              payload: "{}",
-              caller: "{}",
-            })),
-          )}`
+            }
 
-          const locked = yield* Deferred.make<void>()
-          const release = yield* Deferred.make<void>()
+            const now = yield* Clock.currentTimeMillis
+            const leaseEnd = now + 60_000
 
-          const claim = yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* sql`SELECT 1 FROM actor_outbox
+            yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (7, 'wake-race', 'Controlled', 'raced')`
+
+            yield* sql`INSERT INTO actor_outbox ${sql.insert(
+              ["oldest", "next"].map((intentId, index) => ({
+                routing_key: 7,
+                intent_id: intentId,
+                kind: "job",
+                bucket: 0,
+                due_at_ms: leaseEnd,
+                scheduled_at_ms: now + index,
+                ready_at_ms: now + index,
+                waiting: true,
+                tenant_id: "wake-race",
+                actor_type: "Controlled",
+                actor_id: "raced",
+                target_type: "Controlled",
+                target_id: "raced",
+                command: "Serial",
+                payload: "{}",
+                caller: "{}",
+              })),
+            )}`
+
+            const locked = yield* Deferred.make<void>()
+            const release = yield* Deferred.make<void>()
+
+            const claim = yield* sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`SELECT 1 FROM actor_outbox
                   WHERE routing_key = 7 AND intent_id = 'oldest' FOR UPDATE`
-                yield* sql`UPDATE actor_outbox SET running = true, waiting = false,
+                  yield* sql`UPDATE actor_outbox SET running = true, waiting = false,
                     attempts = 1, due_at_ms = ${leaseEnd}
                   WHERE routing_key = 7 AND intent_id = 'oldest'`
-                yield* Deferred.succeed(locked, undefined)
-                yield* Deferred.await(release)
-              }),
-            )
-            .pipe(Effect.forkChild)
+                  yield* Deferred.succeed(locked, undefined)
+                  yield* Deferred.await(release)
+                }),
+              )
+              .pipe(Effect.forkChild)
 
-          yield* Deferred.await(locked)
+            yield* Deferred.await(locked)
 
-          const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
+            const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
 
-          yield* eventually(
-            Effect.gen(function* () {
-              if (wake.pollUnsafe() !== undefined) return true
+            yield* eventually(
+              Effect.gen(function* () {
+                if (wake.pollUnsafe() !== undefined) return true
 
-              const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
+                const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
                 WHERE datname = current_database()
                   AND wait_event_type = 'Lock' AND query LIKE 'UPDATE actor_outbox SET due_at_ms%'`
 
-              return blocked!.n > 0
-            }).pipe(Effect.orDie),
-            "10 seconds",
-            "the wake to finish or wait on the claim's row lock",
-          )
-          yield* Deferred.succeed(release, undefined)
-          yield* Fiber.join(claim)
-          yield* Fiber.join(wake)
+                return blocked!.n > 0
+              }).pipe(Effect.orDie),
+              "10 seconds",
+              "the wake to finish or wait on the claim's row lock",
+            )
+            yield* Deferred.succeed(release, undefined)
+            yield* Fiber.join(claim)
+            yield* Fiber.join(wake)
 
-          const rows = yield* sql<{
-            id: string
-            running: boolean
-            waiting: boolean
-            due: string
-          }>`SELECT intent_id AS id, running, waiting, due_at_ms::text AS due FROM actor_outbox
+            const rows = yield* sql<{
+              id: string
+              running: boolean
+              waiting: boolean
+              due: string
+            }>`SELECT intent_id AS id, running, waiting, due_at_ms::text AS due FROM actor_outbox
             WHERE routing_key = 7 ORDER BY intent_id`
 
-          expect(rows).toEqual([
-            { id: "next", running: false, waiting: false, due: String(now) },
-            { id: "oldest", running: true, waiting: false, due: String(leaseEnd) },
-          ])
-        }),
-      ),
-  },
-  {
-    name: "wakes the oldest waiting row only after a claim of its group has committed",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
+            expect(rows).toEqual([
+              { id: "next", running: false, waiting: false, due: String(now) },
+              { id: "oldest", running: true, waiting: false, due: String(leaseEnd) },
+            ])
+          }),
+        ),
+    },
+    {
+      name: "wakes the oldest waiting row only after a claim of its group has committed",
+      requiresIndependentConnections: true,
+      run: ({ expect, environment }) =>
+        environment.run(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
 
-          const group = {
-            routing_key: "8",
-            tenant_id: "wake-order",
-            actor_type: "Controlled",
-            actor_id: "ordered",
-            command: "Serial",
-          }
+            const group = {
+              routing_key: "8",
+              tenant_id: "wake-order",
+              actor_type: "Controlled",
+              actor_id: "ordered",
+              command: "Serial",
+            }
 
-          const now = yield* Clock.currentTimeMillis
+            const now = yield* Clock.currentTimeMillis
 
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
             VALUES (8, 'wake-order', 'Controlled', 'ordered')`
 
-          yield* sql`INSERT INTO actor_outbox ${sql.insert({
-            routing_key: 8,
-            intent_id: "oldest",
-            kind: "job",
-            bucket: 0,
-            due_at_ms: now + 60_000,
-            scheduled_at_ms: now,
-            ready_at_ms: now,
-            waiting: true,
-            tenant_id: "wake-order",
-            actor_type: "Controlled",
-            actor_id: "ordered",
-            target_type: "Controlled",
-            target_id: "ordered",
-            command: "Serial",
-            payload: "{}",
-            caller: "{}",
-          })}`
+            yield* sql`INSERT INTO actor_outbox ${sql.insert({
+              routing_key: 8,
+              intent_id: "oldest",
+              kind: "job",
+              bucket: 0,
+              due_at_ms: now + 60_000,
+              scheduled_at_ms: now,
+              ready_at_ms: now,
+              waiting: true,
+              tenant_id: "wake-order",
+              actor_type: "Controlled",
+              actor_id: "ordered",
+              target_type: "Controlled",
+              target_id: "ordered",
+              command: "Serial",
+              payload: "{}",
+              caller: "{}",
+            })}`
 
-          const locked = yield* Deferred.make<void>()
-          const release = yield* Deferred.make<void>()
+            const locked = yield* Deferred.make<void>()
+            const release = yield* Deferred.make<void>()
 
-          const claim = yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(
+            const claim = yield* sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(
                   '["wake-order","Controlled","ordered","Serial"]', 0))`
-                yield* Deferred.succeed(locked, undefined)
-                yield* Deferred.await(release)
-              }),
-            )
-            .pipe(Effect.forkChild)
+                  yield* Deferred.succeed(locked, undefined)
+                  yield* Deferred.await(release)
+                }),
+              )
+              .pipe(Effect.forkChild)
 
-          yield* Deferred.await(locked)
+            yield* Deferred.await(locked)
 
-          const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
+            const wake = yield* wakeWaiting({ sql, group, at: now }).pipe(Effect.forkChild)
 
-          yield* eventually(
-            Effect.gen(function* () {
-              const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
+            yield* eventually(
+              Effect.gen(function* () {
+                const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
                 WHERE datname = current_database()
                   AND wait_event_type = 'Lock' AND wait_event = 'advisory'`
 
-              return blocked!.n > 0
-            }).pipe(Effect.orDie),
-            "10 seconds",
-            "the wake to wait on the group's lock",
-          )
-          expect(wake.pollUnsafe()).toBe(undefined)
+                return blocked!.n > 0
+              }).pipe(Effect.orDie),
+              "10 seconds",
+              "the wake to wait on the group's lock",
+            )
+            expect(wake.pollUnsafe()).toBe(undefined)
 
-          yield* Deferred.succeed(release, undefined)
-          yield* Fiber.join(claim)
-          yield* Fiber.join(wake)
+            yield* Deferred.succeed(release, undefined)
+            yield* Fiber.join(claim)
+            yield* Fiber.join(wake)
 
-          const [row] = yield* sql<{ waiting: boolean; due: string }>`SELECT waiting,
+            const [row] = yield* sql<{ waiting: boolean; due: string }>`SELECT waiting,
             due_at_ms::text AS due FROM actor_outbox WHERE routing_key = 8 AND intent_id = 'oldest'`
 
-          expect(row).toEqual({ waiting: false, due: String(now) })
-        }),
-      ),
-  },
-  {
-    name: "never starts a younger capped row while an older attempt's lost lease is being renewed",
-    requiresIndependentConnections: true,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
+            expect(row).toEqual({ waiting: false, due: String(now) })
+          }),
+        ),
+    },
+    {
+      name: "never starts a younger capped row while an older attempt's lost lease is being renewed",
+      requiresIndependentConnections: true,
+      run: ({ expect, environment }) =>
+        environment.run(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
 
-          const group = {
-            routing_key: "9",
-            tenant_id: "claim-renew",
-            actor_type: "Controlled",
-            actor_id: "renewed",
-            command: "Serial",
-          }
-
-          const now = yield* Clock.currentTimeMillis
-          const renewedUntil = now + 60_000
-
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            VALUES (9, 'claim-renew', 'Controlled', 'renewed')`
-
-          yield* sql`INSERT INTO actor_outbox ${sql.insert(
-            [
-              { intent_id: "oldest", running: true, waiting: false, attempts: 1, due: now - 1 },
-              { intent_id: "next", running: false, waiting: true, attempts: 0, due: now + 60_000 },
-            ].map(({ due, ...row }, index) => ({
-              ...row,
-              routing_key: 9,
-              kind: "job",
-              bucket: 0,
-              due_at_ms: due,
-              scheduled_at_ms: now + index,
-              ready_at_ms: now + index,
+            const group = {
+              routing_key: "9",
               tenant_id: "claim-renew",
               actor_type: "Controlled",
               actor_id: "renewed",
-              target_type: "Controlled",
-              target_id: "renewed",
               command: "Serial",
-              payload: "{}",
-              caller: "{}",
-            })),
-          )}`
+            }
 
-          const locked = yield* Deferred.make<void>()
-          const release = yield* Deferred.make<void>()
+            const now = yield* Clock.currentTimeMillis
+            const renewedUntil = now + 60_000
 
-          const renewal = yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* sql`UPDATE actor_outbox SET due_at_ms = ${renewedUntil}
+            yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+            VALUES (9, 'claim-renew', 'Controlled', 'renewed')`
+
+            yield* sql`INSERT INTO actor_outbox ${sql.insert(
+              [
+                { intent_id: "oldest", running: true, waiting: false, attempts: 1, due: now - 1 },
+                {
+                  intent_id: "next",
+                  running: false,
+                  waiting: true,
+                  attempts: 0,
+                  due: now + 60_000,
+                },
+              ].map(({ due, ...row }, index) => ({
+                ...row,
+                routing_key: 9,
+                kind: "job",
+                bucket: 0,
+                due_at_ms: due,
+                scheduled_at_ms: now + index,
+                ready_at_ms: now + index,
+                tenant_id: "claim-renew",
+                actor_type: "Controlled",
+                actor_id: "renewed",
+                target_type: "Controlled",
+                target_id: "renewed",
+                command: "Serial",
+                payload: "{}",
+                caller: "{}",
+              })),
+            )}`
+
+            const locked = yield* Deferred.make<void>()
+            const release = yield* Deferred.make<void>()
+
+            const renewal = yield* sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`UPDATE actor_outbox SET due_at_ms = ${renewedUntil}
                   WHERE routing_key = 9 AND intent_id = 'oldest' AND attempts = 1`
-                yield* Deferred.succeed(locked, undefined)
-                yield* Deferred.await(release)
-              }),
-            )
-            .pipe(Effect.forkChild)
+                  yield* Deferred.succeed(locked, undefined)
+                  yield* Deferred.await(release)
+                }),
+              )
+              .pipe(Effect.forkChild)
 
-          yield* Deferred.await(locked)
+            yield* Deferred.await(locked)
 
-          const claim = yield* claimCapped({
-            sql,
-            now: sql`${now}::bigint`,
-            group,
-            cap: 1,
-            maxAttempts: 3,
-            permits: 1,
-            leaseMs: 60_000,
-          }).pipe(Effect.forkChild)
+            const claim = yield* claimCapped({
+              sql,
+              now: sql`${now}::bigint`,
+              group,
+              cap: 1,
+              maxAttempts: 3,
+              permits: 1,
+              leaseMs: 60_000,
+            }).pipe(Effect.forkChild)
 
-          yield* eventually(
-            Effect.gen(function* () {
-              if (claim.pollUnsafe() !== undefined) return true
+            yield* eventually(
+              Effect.gen(function* () {
+                if (claim.pollUnsafe() !== undefined) return true
 
-              const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
+                const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
                 WHERE datname = current_database() AND wait_event_type = 'Lock'`
 
-              return blocked!.n > 0
-            }).pipe(Effect.orDie),
-            "10 seconds",
-            "the claim to finish or wait on the renewal's row lock",
-          )
-          yield* Deferred.succeed(release, undefined)
-          yield* Fiber.join(renewal)
+                return blocked!.n > 0
+              }).pipe(Effect.orDie),
+              "10 seconds",
+              "the claim to finish or wait on the renewal's row lock",
+            )
+            yield* Deferred.succeed(release, undefined)
+            yield* Fiber.join(renewal)
 
-          expect((yield* Fiber.join(claim)).map(({ intent_id }) => intent_id)).toEqual([])
+            expect((yield* Fiber.join(claim)).map(({ intent_id }) => intent_id)).toEqual([])
 
-          const rows = yield* sql<{ id: string; running: boolean; due: string }>`
+            const rows = yield* sql<{ id: string; running: boolean; due: string }>`
             SELECT intent_id AS id, running, due_at_ms::text AS due FROM actor_outbox
             WHERE routing_key = 9 ORDER BY intent_id`
 
-          expect(rows).toEqual([
-            { id: "next", running: false, due: String(now + 60_000) },
-            { id: "oldest", running: true, due: String(renewedUntil) },
-          ])
-        }),
-      ),
-  },
-  {
-    name: "caps one actor's running attempts across three runners while other actors proceed",
-    requiresIndependentConnections: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        3,
-        {},
-        Effect.gen(function* () {
-          fixture.provider = (attempt) => Effect.sleep("100 millis").pipe(Effect.as(attempt.label))
-          const labels = Array.from({ length: 12 }, (_, index) => `capped-${index}`)
-          yield* on(1, perform("capped", "Capped", labels))
-          yield* on(
-            2,
-            Effect.forEach(
-              Array.from({ length: 6 }, (_, index) => `other-${index}`),
-              (id) => perform(id, "Capped", [id]),
-              { concurrency: 6, discard: true },
-            ),
-          )
-          yield* eventually(
-            on(0, stateOf("capped")).pipe(Effect.map((state) => (state.done ?? []).length === 12)),
-            "60 seconds",
-            "every capped effect",
-          )
-
-          expect(maxInFlight(fixture.attempts, "capped", "Capped") <= 2).toBe(true)
-          expect(new Set(fixture.attempts.map(({ effectId }) => effectId)).size).toBe(18)
-          expect(fixture.attempts.every(({ attempt }) => attempt === 1)).toBe(true)
-        }),
-      ),
-  },
-  {
-    name: "keeps a killed runner's capped attempt counted until its lease ends, then retries it first",
-    requiresIndependentConnections: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        3,
-        { executors: { lease: "9 seconds" } },
-        Effect.gen(function* () {
-          fixture.provider = (attempt) =>
-            attempt.label === "first" && attempt.attempt === 1
-              ? Effect.never
-              : Effect.succeed(`${attempt.label}@${attempt.attempt}`)
-          const { owner, other } = yield* ownerAndOther(yield* refOf("killed"))
-          yield* on(other, perform("killed", "Serial", ["first"]))
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          yield* on(other, perform("killed", "Serial", ["second"]))
-          const holder = fixture.attempts[0]!.runner
-          const cluster = yield* ActorCluster
-          yield* cluster.kill(holder)
-          const killedAt = yield* Clock.currentTimeMillis
-          yield* cluster.ready
-          const survivor = [owner, other, (owner + 2) % 3].find((runner) => runner !== holder)!
-
-          yield* eventually(
-            on(survivor, stateOf("killed")).pipe(
-              Effect.map((state) => (state.done ?? []).length === 2),
-            ),
-            "60 seconds",
-            "both effects",
-          )
-          const later = fixture.attempts.slice(1)
-
-          expect(later.map(({ label, attempt }) => `${label}@${attempt}`)).toEqual([
-            "first@2",
-            "second@1",
-          ])
-          expect(later.every(({ startedAt }) => startedAt >= killedAt)).toBe(true)
-          expect(maxInFlight(later, "killed", "Serial")).toBe(1)
-          expect((yield* on(survivor, stateOf("killed"))).done).toEqual(["first@2", "second@1"])
-        }),
-      ),
-  },
-  {
-    name: "frees a capped slot when an attempt loses its lease, interrupting it before the takeover starts",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { executors: SHORT_LEASE },
-        Effect.gen(function* () {
-          fixture.provider = (attempt) =>
-            attempt.attempt === 1 ? Effect.never : Effect.succeed(attempt.label)
-          fixture.hook = (point) =>
-            point === "beforeRenew" && fixture.attempts.length === 1
-              ? Effect.die(new Error("Database unreachable"))
-              : Effect.void
-          yield* on(0, perform("lost", "Serial", ["lost"]))
-          yield* eventually(
-            on(0, stateOf("lost")).pipe(Effect.map((state) => (state.done ?? []).length === 1)),
-            "30 seconds",
-            "the takeover",
-          )
-          const [first, second] = fixture.attempts
-
-          expect(first!.interrupted).toBe(true)
-          expect(first!.endedAt! <= second!.startedAt).toBe(true)
-          expect(maxInFlight(fixture.attempts, "lost", "Serial")).toBe(1)
-        }),
-      ),
-  },
-  {
-    name: "keeps a newer capped attempt's slot when an attempt that lost its lease settles late",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL, executors: SHORT_LEASE },
-        Effect.gen(function* () {
-          const held = yield* Deferred.make<void>()
-          const newer = yield* Deferred.make<void>()
-          const settling = yield* Deferred.make<void>()
-          fixture.provider = (attempt) =>
-            attempt.label === "slow" && attempt.attempt === 2
-              ? Deferred.await(newer).pipe(Effect.as("slow@2"))
-              : Effect.succeed(`${attempt.label}@${attempt.attempt}`)
-          fixture.hook = (point) =>
-            point === "afterExecute" && fixture.attempts.length === 1
-              ? Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(held)))
-              : Effect.void
-          const { owner, other } = yield* ownerAndOther(yield* refOf("overlap"))
-
-          yield* on(owner, perform("overlap", "Serial", ["slow"]))
-          yield* Deferred.await(settling)
-          expect(fixture.attempts[0]!.runner).toBe(owner)
-
-          yield* advance(other, "4 seconds").pipe(Effect.forkChild)
-          yield* eventually(
-            Effect.sync(() => fixture.attempts.length === 2),
-            "10 seconds",
-          )
-          expect(fixture.attempts[1]).toMatchObject({ runner: other, attempt: 2 })
-
-          yield* Deferred.succeed(held, undefined)
-          yield* Effect.sleep("1 second")
-          yield* on(owner, perform("overlap", "Serial", ["next"]))
-          yield* Effect.sleep("2 seconds")
-
-          expect(fixture.attempts.map(({ label }) => label)).toEqual(["slow", "slow"])
-          expect(
-            (yield* query(other, effectRows)).find(
-              (row) => row.command === "Serial" && row.running,
-            ),
-          ).toMatchObject({ attempts: 2 })
-
-          yield* Deferred.succeed(newer, undefined)
-          yield* eventually(
-            on(other, stateOf("overlap")).pipe(
-              Effect.map((state) => (state.done ?? []).length === 2),
-            ),
-            "20 seconds",
-            "both effects",
-          )
-
-          expect(maxInFlight(fixture.attempts, "overlap", "Serial")).toBe(1)
-          const { done } = yield* on(other, stateOf("overlap"))
-          expect(done!.filter((label) => label.startsWith("slow")).length).toBe(1)
-          expect(done).toContain("next@1")
-        }),
-      ),
-  },
-  {
-    name: "reaches a running attempt on another runner within cancelCheck and reports Unknown",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL, executors: { lease: "3 seconds", cancelCheck: "1 second" } },
-        Effect.gen(function* () {
-          fixture.provider = () => Effect.never
-          const { owner, other } = yield* ownerAndOther(yield* refOf("remote"))
-          yield* on(owner, perform("remote", "Job", ["remote"], { keyed: true, afterMs: 60_000 }))
-          yield* advance(other, "1 minute")
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          expect(fixture.attempts[0]!.runner).toBe(other)
-
-          const cancelledAt = yield* Clock.currentTimeMillis
-          yield* on(owner, cancel("remote", ["remote"]))
-          yield* eventually(
-            Effect.sync(() => fixture.attempts[0]!.interrupted),
-            "5 seconds",
-            "the remote interruption",
-          )
-
-          expect(fixture.attempts[0]!.endedAt! - cancelledAt <= 2500).toBe(true)
-          yield* eventually(
-            on(owner, stateOf("remote")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-          )
-          expect((yield* on(owner, stateOf("remote"))).cancelled).toMatchObject([
-            { outcome: "Unknown", ambiguous: true },
-          ])
-          expect(fixture.attempts.length).toBe(1)
-        }),
-      ),
-  },
-  {
-    name: "routes a success that finishes before the cancellation is seen to onCancelled as Succeeded",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL },
-        Effect.gen(function* () {
-          const gate = yield* Deferred.make<void>()
-          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
-          const { owner, other } = yield* ownerAndOther(yield* refOf("raced"))
-          yield* on(owner, perform("raced", "Job", ["raced"], { keyed: true, afterMs: 60_000 }))
-          yield* advance(other, "1 minute").pipe(Effect.forkChild)
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-
-          yield* on(owner, cancel("raced", ["raced"]))
-          yield* Deferred.succeed(gate, undefined)
-          yield* eventually(
-            on(owner, stateOf("raced")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-          )
-          const state = yield* on(owner, stateOf("raced"))
-
-          expect(state.cancelled).toMatchObject([
-            { outcome: "Succeeded", value: "raced", ambiguous: false },
-          ])
-          expect(state.done ?? []).toEqual([])
-        }),
-      ),
-  },
-  {
-    name: "routes a capped success that finishes before the cancellation is seen to onCancelled",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL },
-        Effect.gen(function* () {
-          const gate = yield* Deferred.make<void>()
-          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
-          const { owner, other } = yield* ownerAndOther(yield* refOf("capped-raced"))
-          yield* on(
-            owner,
-            perform("capped-raced", "Capped", ["capped"], { keyed: true, afterMs: 60_000 }),
-          )
-          yield* advance(other, "1 minute").pipe(Effect.forkChild)
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          yield* on(owner, cancel("capped-raced", ["capped"]))
-          yield* Deferred.succeed(gate, undefined)
-          yield* eventually(
-            on(owner, stateOf("capped-raced")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-          )
-          const state = yield* on(owner, stateOf("capped-raced"))
-
-          expect(state.cancelled).toMatchObject([
-            { outcome: "Succeeded", value: "capped", ambiguous: false },
-          ])
-          expect(state.done ?? []).toEqual([])
-          yield* drained(query(owner, effectRows))
-        }),
-      ),
-  },
-  {
-    name: "routes a cancelled success that onSuccess cannot accept to onCancelled as Succeeded",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL },
-        Effect.gen(function* () {
-          const gate = yield* Deferred.make<void>()
-          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
-          const { owner, other } = yield* ownerAndOther(yield* refOf("picky"))
-          yield* on(
-            owner,
-            perform("picky", "Picky", ["rejected"], { keyed: true, afterMs: 60_000 }),
-          )
-          yield* advance(other, "1 minute").pipe(Effect.forkChild)
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          yield* on(owner, cancel("picky", ["rejected"]))
-          yield* Deferred.succeed(gate, undefined)
-          yield* eventually(
-            on(owner, stateOf("picky")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-          )
-          const state = yield* on(owner, stateOf("picky"))
-
-          expect(state.cancelled).toMatchObject([
-            { outcome: "Succeeded", value: "rejected", ambiguous: false },
-          ])
-          expect(state.done ?? []).toEqual([])
-          yield* drained(query(owner, effectRows))
-          expect(fixture.attempts.length).toBe(1)
-        }),
-      ),
-  },
-  {
-    name: "records a late success after its cancellation settled as ambiguous and routes it once",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL, executors: SHORT_LEASE },
-        Effect.gen(function* () {
-          const gate = yield* Deferred.make<void>()
-          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
-          const { owner, other } = yield* ownerAndOther(yield* refOf("late"))
-
-          const renewal = yield* on(
-            owner,
-            ActorTest.use((test) => test.pauseNext("beforeRenew")),
-          )
-
-          yield* on(owner, perform("late", "Job", ["late"], { keyed: true }))
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          expect(fixture.attempts[0]!.runner).toBe(owner)
-          yield* renewal.reached
-          yield* on(other, cancel("late", ["late"]))
-
-          yield* advance(other, "4 seconds")
-          yield* eventually(
-            on(other, stateOf("late")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-          )
-          yield* Deferred.succeed(gate, undefined)
-          yield* eventually(
-            query(other, deadLetters).pipe(Effect.map((letters) => letters.length === 1)),
-            "10 seconds",
-            "the late success's record",
-          )
-          yield* renewal.release
-
-          expect(yield* query(other, deadLetters)).toMatchObject([
-            { ambiguous: true, cause: "Succeeded after it was cancelled" },
-          ])
-          const state = yield* on(other, stateOf("late"))
-          expect(state.cancelled).toMatchObject([{ outcome: "Unknown", ambiguous: true }])
-          expect(state.done ?? []).toEqual([])
-        }),
-      ),
-  },
-  {
-    name: "records a late success onSuccess cannot accept after its cancellation settled",
-    requiresIndependentConnections: true,
-    timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        { relay: NO_POLL, executors: SHORT_LEASE },
-        Effect.gen(function* () {
-          const gate = yield* Deferred.make<void>()
-          fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
-          const { owner, other } = yield* ownerAndOther(yield* refOf("late-picky"))
-
-          const renewal = yield* on(
-            owner,
-            ActorTest.use((test) => test.pauseNext("beforeRenew")),
-          )
-
-          yield* on(owner, perform("late-picky", "Picky", ["rejected"], { keyed: true }))
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          expect(fixture.attempts[0]!.runner).toBe(owner)
-          yield* renewal.reached
-          yield* on(other, cancel("late-picky", ["rejected"]))
-
-          yield* advance(other, "4 seconds")
-          yield* eventually(
-            on(other, stateOf("late-picky")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-          )
-          yield* Deferred.succeed(gate, undefined)
-          yield* eventually(
-            query(other, deadLetters).pipe(Effect.map((letters) => letters.length === 1)),
-            "10 seconds",
-            "the late success's record",
-          )
-          yield* renewal.release
-
-          expect(yield* query(other, deadLetters)).toMatchObject([
-            { ambiguous: true, cause: "Succeeded after it was cancelled" },
-          ])
-          const state = yield* on(other, stateOf("late-picky"))
-          expect(state.cancelled).toMatchObject([{ outcome: "Unknown", ambiguous: true }])
-          expect(state.done ?? []).toEqual([])
-        }),
-      ),
-  },
-  {
-    name: "gives each effect exactly one fate when cancellation races its claim",
-    requiresIndependentConnections: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        3,
-        {},
-        Effect.gen(function* () {
-          fixture.provider = (attempt) => Effect.sleep("5 millis").pipe(Effect.as(attempt.label))
-          const ids = Array.from({ length: 40 }, (_, index) => `race-${index}`)
-          yield* Effect.forEach(
-            ids,
-            (id, index) =>
-              on(
-                index % 3,
-                perform(id, "Job", [id], { keyed: true }).pipe(Effect.andThen(cancel(id, [id]))),
+            expect(rows).toEqual([
+              { id: "next", running: false, due: String(now + 60_000) },
+              { id: "oldest", running: true, due: String(renewedUntil) },
+            ])
+          }),
+        ),
+    },
+    {
+      name: "caps one actor's running attempts across three runners while other actors proceed",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 120_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          3,
+          {},
+          Effect.gen(function* () {
+            fixture.provider = (attempt) =>
+              Effect.sleep("100 millis").pipe(Effect.as(attempt.label))
+            const labels = Array.from({ length: 12 }, (_, index) => `capped-${index}`)
+            yield* on(1, perform("capped", "Capped", labels))
+            yield* on(
+              2,
+              Effect.forEach(
+                Array.from({ length: 6 }, (_, index) => `other-${index}`),
+                (id) => perform(id, "Capped", [id]),
+                { concurrency: 6, discard: true },
               ),
-            { concurrency: 8, discard: true },
-          )
-          yield* eventually(
-            query(0, (sql) =>
-              sql<{ n: number }>`SELECT count(*)::int AS n FROM actor_outbox
+            )
+            yield* eventually(
+              on(0, stateOf("capped")).pipe(
+                Effect.map((state) => (state.done ?? []).length === 12),
+              ),
+              "60 seconds",
+              "every capped effect",
+            )
+
+            expect(maxInFlight(fixture.attempts, "capped", "Capped") <= 2).toBe(true)
+            expect(new Set(fixture.attempts.map(({ jobId }) => jobId)).size).toBe(18)
+            expect(fixture.attempts.every(({ attempt }) => attempt === 1)).toBe(true)
+          }),
+        ),
+    },
+    {
+      name: "keeps a killed runner's capped attempt counted until its lease ends, then retries it first",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 120_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          3,
+          { executors: { lease: "9 seconds" } },
+          Effect.gen(function* () {
+            fixture.provider = (attempt) =>
+              attempt.label === "first" && attempt.attempt === 1
+                ? Effect.never
+                : Effect.succeed(`${attempt.label}@${attempt.attempt}`)
+            const { owner, other } = yield* ownerAndOther(yield* refOf("killed"))
+            yield* on(other, perform("killed", "Serial", ["first"]))
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            yield* on(other, perform("killed", "Serial", ["second"]))
+            const holder = fixture.attempts[0]!.runner
+            const cluster = yield* ActorCluster
+            yield* cluster.kill(holder)
+            const killedAt = yield* Clock.currentTimeMillis
+            yield* cluster.ready
+            const survivor = [owner, other, (owner + 2) % 3].find((runner) => runner !== holder)!
+
+            yield* eventually(
+              on(survivor, stateOf("killed")).pipe(
+                Effect.map((state) => (state.done ?? []).length === 2),
+              ),
+              "60 seconds",
+              "both effects",
+            )
+            const later = fixture.attempts.slice(1)
+
+            expect(later.map(({ label, attempt }) => `${label}@${attempt}`)).toEqual([
+              "first@2",
+              "second@1",
+            ])
+            expect(later.every(({ startedAt }) => startedAt >= killedAt)).toBe(true)
+            expect(maxInFlight(later, "killed", "Serial")).toBe(1)
+            expect((yield* on(survivor, stateOf("killed"))).done).toEqual(["first@2", "second@1"])
+          }),
+        ),
+    },
+    {
+      name: "frees a capped slot when an attempt loses its lease, interrupting it before the takeover starts",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { executors: SHORT_LEASE },
+          Effect.gen(function* () {
+            fixture.provider = (attempt) =>
+              attempt.attempt === 1 ? Effect.never : Effect.succeed(attempt.label)
+            fixture.hook = (point) =>
+              point === "beforeRenew" && fixture.attempts.length === 1
+                ? Effect.die(new Error("Database unreachable"))
+                : Effect.void
+            yield* on(0, perform("lost", "Serial", ["lost"]))
+            yield* eventually(
+              on(0, stateOf("lost")).pipe(Effect.map((state) => (state.done ?? []).length === 1)),
+              "30 seconds",
+              "the takeover",
+            )
+            const [first, second] = fixture.attempts
+
+            expect(first!.interrupted).toBe(true)
+            expect(first!.endedAt! <= second!.startedAt).toBe(true)
+            expect(maxInFlight(fixture.attempts, "lost", "Serial")).toBe(1)
+          }),
+        ),
+    },
+    {
+      name: "keeps a newer capped attempt's slot when an attempt that lost its lease settles late",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL, executors: SHORT_LEASE },
+          Effect.gen(function* () {
+            const held = yield* Deferred.make<void>()
+            const newer = yield* Deferred.make<void>()
+            const settling = yield* Deferred.make<void>()
+            fixture.provider = (attempt) =>
+              attempt.label === "slow" && attempt.attempt === 2
+                ? Deferred.await(newer).pipe(Effect.as("slow@2"))
+                : Effect.succeed(`${attempt.label}@${attempt.attempt}`)
+            fixture.hook = (point) =>
+              point === "afterExecute" && fixture.attempts.length === 1
+                ? Deferred.succeed(settling, undefined).pipe(Effect.andThen(Deferred.await(held)))
+                : Effect.void
+            const { owner, other } = yield* ownerAndOther(yield* refOf("overlap"))
+
+            yield* on(owner, perform("overlap", "Serial", ["slow"]))
+            yield* Deferred.await(settling)
+            expect(fixture.attempts[0]!.runner).toBe(owner)
+
+            yield* advance(other, "4 seconds").pipe(Effect.forkChild)
+            yield* eventually(
+              Effect.sync(() => fixture.attempts.length === 2),
+              "10 seconds",
+            )
+            expect(fixture.attempts[1]).toMatchObject({ runner: other, attempt: 2 })
+
+            yield* Deferred.succeed(held, undefined)
+            yield* Effect.sleep("1 second")
+            yield* on(owner, perform("overlap", "Serial", ["next"]))
+            yield* Effect.sleep("2 seconds")
+
+            expect(fixture.attempts.map(({ label }) => label)).toEqual(["slow", "slow"])
+            expect(
+              (yield* query(other, effectRows)).find(
+                (row) => row.command === "Serial" && row.running,
+              ),
+            ).toMatchObject({ attempts: 2 })
+
+            yield* Deferred.succeed(newer, undefined)
+            yield* eventually(
+              on(other, stateOf("overlap")).pipe(
+                Effect.map((state) => (state.done ?? []).length === 2),
+              ),
+              "20 seconds",
+              "both effects",
+            )
+
+            expect(maxInFlight(fixture.attempts, "overlap", "Serial")).toBe(1)
+            const { done } = yield* on(other, stateOf("overlap"))
+            expect(done!.filter((label) => label.startsWith("slow")).length).toBe(1)
+            expect(done).toContain("next@1")
+          }),
+        ),
+    },
+    {
+      name: "reaches a running attempt on another runner within cancelCheck and reports Unknown",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL, executors: { lease: "3 seconds", cancelCheck: "1 second" } },
+          Effect.gen(function* () {
+            fixture.provider = () => Effect.never
+            const { owner, other } = yield* ownerAndOther(yield* refOf("remote"))
+            yield* on(owner, perform("remote", "Job", ["remote"], { keyed: true, afterMs: 60_000 }))
+            yield* advance(other, "1 minute")
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            expect(fixture.attempts[0]!.runner).toBe(other)
+
+            const cancelledAt = yield* Clock.currentTimeMillis
+            yield* on(owner, cancel("remote", ["remote"]))
+            yield* eventually(
+              Effect.sync(() => fixture.attempts[0]!.interrupted),
+              "5 seconds",
+              "the remote interruption",
+            )
+
+            expect(fixture.attempts[0]!.endedAt! - cancelledAt <= 2500).toBe(true)
+            yield* eventually(
+              on(owner, stateOf("remote")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+            )
+            expect((yield* on(owner, stateOf("remote"))).cancelled).toMatchObject([
+              { outcome: "Unknown", ambiguous: true },
+            ])
+            expect(fixture.attempts.length).toBe(1)
+          }),
+        ),
+    },
+    {
+      name: "routes a success that finishes before the cancellation is seen to onCancelled as Succeeded",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL },
+          Effect.gen(function* () {
+            const gate = yield* Deferred.make<void>()
+            fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+            const { owner, other } = yield* ownerAndOther(yield* refOf("raced"))
+            yield* on(owner, perform("raced", "Job", ["raced"], { keyed: true, afterMs: 60_000 }))
+            yield* advance(other, "1 minute").pipe(Effect.forkChild)
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+
+            yield* on(owner, cancel("raced", ["raced"]))
+            yield* Deferred.succeed(gate, undefined)
+            yield* eventually(
+              on(owner, stateOf("raced")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+            )
+            const state = yield* on(owner, stateOf("raced"))
+
+            expect(state.cancelled).toMatchObject([
+              { outcome: "Succeeded", value: "raced", ambiguous: false },
+            ])
+            expect(state.done ?? []).toEqual([])
+          }),
+        ),
+    },
+    {
+      name: "routes a capped success that finishes before the cancellation is seen to onCancelled",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL },
+          Effect.gen(function* () {
+            const gate = yield* Deferred.make<void>()
+            fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+            const { owner, other } = yield* ownerAndOther(yield* refOf("capped-raced"))
+            yield* on(
+              owner,
+              perform("capped-raced", "Capped", ["capped"], { keyed: true, afterMs: 60_000 }),
+            )
+            yield* advance(other, "1 minute").pipe(Effect.forkChild)
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            yield* on(owner, cancel("capped-raced", ["capped"]))
+            yield* Deferred.succeed(gate, undefined)
+            yield* eventually(
+              on(owner, stateOf("capped-raced")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+            )
+            const state = yield* on(owner, stateOf("capped-raced"))
+
+            expect(state.cancelled).toMatchObject([
+              { outcome: "Succeeded", value: "capped", ambiguous: false },
+            ])
+            expect(state.done ?? []).toEqual([])
+            yield* drained(query(owner, effectRows))
+          }),
+        ),
+    },
+    {
+      name: "routes a cancelled success that onSuccess cannot accept to onCancelled as Succeeded",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL },
+          Effect.gen(function* () {
+            const gate = yield* Deferred.make<void>()
+            fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+            const { owner, other } = yield* ownerAndOther(yield* refOf("picky"))
+            yield* on(
+              owner,
+              perform("picky", "Picky", ["rejected"], { keyed: true, afterMs: 60_000 }),
+            )
+            yield* advance(other, "1 minute").pipe(Effect.forkChild)
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            yield* on(owner, cancel("picky", ["rejected"]))
+            yield* Deferred.succeed(gate, undefined)
+            yield* eventually(
+              on(owner, stateOf("picky")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+            )
+            const state = yield* on(owner, stateOf("picky"))
+
+            expect(state.cancelled).toMatchObject([
+              { outcome: "Succeeded", value: "rejected", ambiguous: false },
+            ])
+            expect(state.done ?? []).toEqual([])
+            yield* drained(query(owner, effectRows))
+            expect(fixture.attempts.length).toBe(1)
+          }),
+        ),
+    },
+    {
+      name: "records a late success after its cancellation settled as ambiguous and routes it once",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL, executors: SHORT_LEASE },
+          Effect.gen(function* () {
+            const gate = yield* Deferred.make<void>()
+            fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+            const { owner, other } = yield* ownerAndOther(yield* refOf("late"))
+
+            const renewal = yield* on(
+              owner,
+              ActorTest.use((test) => test.pauseNext("beforeRenew")),
+            )
+
+            yield* on(owner, perform("late", "Job", ["late"], { keyed: true }))
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            expect(fixture.attempts[0]!.runner).toBe(owner)
+            yield* renewal.reached
+            yield* on(other, cancel("late", ["late"]))
+
+            yield* advance(other, "4 seconds")
+            yield* eventually(
+              on(other, stateOf("late")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+            )
+            yield* Deferred.succeed(gate, undefined)
+            yield* eventually(
+              query(other, deadLetters).pipe(Effect.map((letters) => letters.length === 1)),
+              "10 seconds",
+              "the late success's record",
+            )
+            yield* renewal.release
+
+            expect(yield* query(other, deadLetters)).toMatchObject([
+              { ambiguous: true, cause: "Succeeded after it was cancelled" },
+            ])
+            const state = yield* on(other, stateOf("late"))
+            expect(state.cancelled).toMatchObject([{ outcome: "Unknown", ambiguous: true }])
+            expect(state.done ?? []).toEqual([])
+          }),
+        ),
+    },
+    {
+      name: "records a late success onSuccess cannot accept after its cancellation settled",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 90_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          { relay: NO_POLL, executors: SHORT_LEASE },
+          Effect.gen(function* () {
+            const gate = yield* Deferred.make<void>()
+            fixture.provider = (attempt) => Deferred.await(gate).pipe(Effect.as(attempt.label))
+            const { owner, other } = yield* ownerAndOther(yield* refOf("late-picky"))
+
+            const renewal = yield* on(
+              owner,
+              ActorTest.use((test) => test.pauseNext("beforeRenew")),
+            )
+
+            yield* on(owner, perform("late-picky", "Picky", ["rejected"], { keyed: true }))
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            expect(fixture.attempts[0]!.runner).toBe(owner)
+            yield* renewal.reached
+            yield* on(other, cancel("late-picky", ["rejected"]))
+
+            yield* advance(other, "4 seconds")
+            yield* eventually(
+              on(other, stateOf("late-picky")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+            )
+            yield* Deferred.succeed(gate, undefined)
+            yield* eventually(
+              query(other, deadLetters).pipe(Effect.map((letters) => letters.length === 1)),
+              "10 seconds",
+              "the late success's record",
+            )
+            yield* renewal.release
+
+            expect(yield* query(other, deadLetters)).toMatchObject([
+              { ambiguous: true, cause: "Succeeded after it was cancelled" },
+            ])
+            const state = yield* on(other, stateOf("late-picky"))
+            expect(state.cancelled).toMatchObject([{ outcome: "Unknown", ambiguous: true }])
+            expect(state.done ?? []).toEqual([])
+          }),
+        ),
+    },
+    {
+      name: "gives each effect exactly one fate when cancellation races its claim",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 120_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          3,
+          {},
+          Effect.gen(function* () {
+            fixture.provider = (attempt) => Effect.sleep("5 millis").pipe(Effect.as(attempt.label))
+            const ids = Array.from({ length: 40 }, (_, index) => `race-${index}`)
+            yield* Effect.forEach(
+              ids,
+              (id, index) =>
+                on(
+                  index % 3,
+                  perform(id, "Job", [id], { keyed: true }).pipe(Effect.andThen(cancel(id, [id]))),
+                ),
+              { concurrency: 8, discard: true },
+            )
+            yield* eventually(
+              query(0, (sql) =>
+                sql<{ n: number }>`SELECT count(*)::int AS n FROM actor_outbox
                 WHERE actor_type = 'Controlled'`.pipe(Effect.map((rows) => rows[0]!.n === 0)),
-            ),
-            "30 seconds",
-            "the outbox to settle",
-          )
+              ),
+              "30 seconds",
+              "the outbox to settle",
+            )
 
-          for (const id of ids) {
-            const state = yield* on(0, stateOf(id))
-            const ran = fixture.attempts.filter(({ actor }) => actor === id)
-            const fates = (state.done ?? []).length + (state.cancelled ?? []).length
+            for (const id of ids) {
+              const state = yield* on(0, stateOf(id))
+              const ran = fixture.attempts.filter(({ actor }) => actor === id)
+              const fates = (state.done ?? []).length + (state.cancelled ?? []).length
 
-            expect(ran.length <= 1).toBe(true)
-            expect(fates).toBe(ran.length === 0 ? 0 : 1)
-            expect((state.cancelled ?? []).every(({ outcome }) => outcome !== "Failed")).toBe(true)
-          }
-        }),
-      ),
-  },
-  {
-    name: "settles a cancelled effect whose runner was killed as ambiguous without running it",
-    requiresIndependentConnections: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { effectControl: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        3,
-        { executors: { lease: "9 seconds" } },
-        Effect.gen(function* () {
-          fixture.provider = () => Effect.never
-          const { owner, other } = yield* ownerAndOther(yield* refOf("orphan"))
-          yield* on(other, perform("orphan", "Job", ["orphan"], { keyed: true }))
-          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
-          const holder = fixture.attempts[0]!.runner
-          const cluster = yield* ActorCluster
-          yield* cluster.kill(holder)
-          yield* cluster.ready
-          const survivor = [owner, other, (owner + 2) % 3].find((runner) => runner !== holder)!
-          yield* on(survivor, cancel("orphan", ["orphan"]))
-          yield* eventually(
-            on(survivor, stateOf("orphan")).pipe(
-              Effect.map((state) => (state.cancelled ?? []).length === 1),
-            ),
-            "60 seconds",
-            "the orphan's cancellation report",
-          )
+              expect(ran.length <= 1).toBe(true)
+              expect(fates).toBe(ran.length === 0 ? 0 : 1)
+              expect((state.cancelled ?? []).every(({ outcome }) => outcome !== "Failed")).toBe(
+                true,
+              )
+            }
+          }),
+        ),
+    },
+    {
+      name: "settles a cancelled effect whose runner was killed as ambiguous without running it",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 120_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          3,
+          { executors: { lease: "9 seconds" } },
+          Effect.gen(function* () {
+            fixture.provider = () => Effect.never
+            const { owner, other } = yield* ownerAndOther(yield* refOf("orphan"))
+            yield* on(other, perform("orphan", "Job", ["orphan"], { keyed: true }))
+            yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+            const holder = fixture.attempts[0]!.runner
+            const cluster = yield* ActorCluster
+            yield* cluster.kill(holder)
+            yield* cluster.ready
+            const survivor = [owner, other, (owner + 2) % 3].find((runner) => runner !== holder)!
+            yield* on(survivor, cancel("orphan", ["orphan"]))
+            yield* eventually(
+              on(survivor, stateOf("orphan")).pipe(
+                Effect.map((state) => (state.cancelled ?? []).length === 1),
+              ),
+              "60 seconds",
+              "the orphan's cancellation report",
+            )
 
-          expect(fixture.attempts.length).toBe(1)
-          expect((yield* on(survivor, stateOf("orphan"))).cancelled).toMatchObject([
-            { outcome: "Unknown", ambiguous: true },
-          ])
-          yield* eventually(
-            query(survivor, effectRows).pipe(Effect.map((rows) => rows.length === 0)),
-            "20 seconds",
-            "the delivered route's row to be deleted",
-          )
-        }),
-      ),
-  },
-]
+            expect(fixture.attempts.length).toBe(1)
+            expect((yield* on(survivor, stateOf("orphan"))).cancelled).toMatchObject([
+              { outcome: "Unknown", ambiguous: true },
+            ])
+            yield* eventually(
+              query(survivor, effectRows).pipe(Effect.map((rows) => rows.length === 0)),
+              "20 seconds",
+              "the delivered route's row to be deleted",
+            )
+          }),
+        ),
+    },
+  ]
+
+/** Effect-control actors and the executors of runner 0. */
+export const effectControlSuite: ConformanceSuite<EffectControlFixture> = {
+  fixture: effectControlFixture,
+  layer: (fixture) => Layer.merge(effectControlLayer, effectControlEffects(fixture)),
+}

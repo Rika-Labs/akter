@@ -1,11 +1,9 @@
 import { publishedKeys } from "@durable-actors/deployments"
 import { migrate } from "@durable-actors/postgres/migrate"
 import {
-  coldServeEdgeConformance,
   type ConformanceBackend,
   type ConformanceEdge,
   describeConformance,
-  edgeConformance,
   type EdgeKey,
   edgeKey,
   type HostedEdge,
@@ -204,6 +202,7 @@ const edge: ConformanceEdge = {
 
 const backend: ConformanceBackend = {
   independentConnections: true,
+  freshDatabases: true,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   edge,
@@ -261,6 +260,6 @@ const backend: ConformanceBackend = {
 describeConformance({
   name: "Hosted edge",
   backend,
-  cases: [...edgeConformance, ...coldServeEdgeConformance],
+  groups: ["edge", "coldServeEdge"],
   registrar: { describe, it, beforeAll, afterAll, expect, skip: (name) => it.skip(name) },
 })

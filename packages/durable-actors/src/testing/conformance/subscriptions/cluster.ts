@@ -45,131 +45,134 @@ const on = <A, E, R>(runner: number, effect: Effect.Effect<A, E, R>) =>
   ActorCluster.use((cluster) => cluster.on(runner)(effect))
 
 /** Multi-runner subscription cases: subscribers wake across runners and one source's events apply in cursor order under redelivery. */
-export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase> = [
-  {
-    name: "wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder",
-    requiresIndependentConnections: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        3,
-        Effect.gen(function* () {
-          const cluster = yield* ActorCluster
-          yield* cluster.ready
-          const holder = cluster.on(0)
-          const tenant = yield* holder(ActorTest.use((test) => Effect.succeed(test.tenant)))
-          const ref = { tenant, actor: "SubSummary", id: "cross-c" }
-          yield* holder(
-            SubSummary.get("cross-c").pipe(Effect.flatMap((summary) => summary.Touch())),
-          )
-
-          const connection = yield* holder(
-            ActorTest.use((test) => test.connect(ref, Live, undefined)),
-          )
-
-          const generation = holder(
-            ActorTest.use((test) => test.inspect(ref)).pipe(
-              Effect.map(({ generation }) => BigInt(generation!)),
-            ),
-          )
-
-          const owner = yield* cluster.owner(ref)
-          expect(owner === undefined || owner === 0).toBe(false)
-          yield* cluster.on(owner!)(ActorTest.use((test) => test.hibernate(ref)))
-          const parked = yield* generation
-
-          yield* holder(
-            SubOrder.get("cross-o").pipe(
-              Effect.flatMap((order) => order.Place({ customerId: "cross-c", amount: 1 })),
-            ),
-          )
-
-          const frames = yield* connection.frames.pipe(
-            Stream.take(1),
-            Stream.runCollect,
-            Effect.timeout("30 seconds"),
-          )
-
-          expect(Array.from(frames)).toEqual(["cross-o#1:OrderPlaced"])
-          expect((yield* generation) > parked).toBe(true)
-          expect(yield* holder(logOf("SubSummary", "cross-c"))).toEqual(["cross-o#1:OrderPlaced"])
-          yield* connection.close
-        }),
-        [0],
-      ),
-  },
-  {
-    name: "applies one source's events in cursor order under redelivery and two runners",
-    requiresIndependentConnections: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
-      withCluster(
-        environment,
-        fixture,
-        2,
-        Effect.gen(function* () {
-          const followers = Array.from({ length: 8 }, (_, index) => `cluster-f${index}`)
-
-          for (const [index, id] of followers.entries())
-            yield* on(
-              index % 2,
-              Effect.flatMap(SubFollower.get(id), (f) => f.Follow({ source: "cluster-order" })),
+export const subscriptionsClusterConformance: ReadonlyArray<ConformanceCase<SubscriptionsFixture>> =
+  [
+    {
+      name: "wakes a subscriber parked on another runner and flushes the delivery's broadcast to its holder",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 120_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          3,
+          Effect.gen(function* () {
+            const cluster = yield* ActorCluster
+            yield* cluster.ready
+            const holder = cluster.on(0)
+            const tenant = yield* holder(ActorTest.use((test) => Effect.succeed(test.tenant)))
+            const ref = { tenant, actor: "SubSummary", id: "cross-c" }
+            yield* holder(
+              SubSummary.get("cross-c").pipe(Effect.flatMap((summary) => summary.Touch())),
             )
 
-          for (;;) {
-            const registered = yield* on(0, sourceRows("cluster-order"))
+            const connection = yield* holder(
+              ActorTest.use((test) => test.connect(ref, Live, undefined)),
+            )
 
-            if (registered.filter((row) => row.active).length === followers.length) break
-            yield* Effect.sleep("50 millis")
-          }
-
-          const defected = new Set<string>()
-          fixture.behave = (entry) => {
-            if (entry.includes("#2:") && !defected.has(entry)) {
-              defected.add(entry)
-
-              return "defect"
-            }
-
-            return "apply"
-          }
-
-          for (let round = 0; round < 3; round++)
-            yield* on(
-              round % 2,
-              Effect.flatMap(SubOrder.get("cluster-order"), (o) =>
-                o.Place({ customerId: "cluster-c", amount: round }),
+            const generation = holder(
+              ActorTest.use((test) => test.inspect(ref)).pipe(
+                Effect.map(({ generation }) => BigInt(generation!)),
               ),
             )
 
-          const expected = ["1", "2", "3"].map((cursor) => `cluster-order#${cursor}:OrderPlaced`)
+            const owner = yield* cluster.owner(ref)
+            expect(owner === undefined || owner === 0).toBe(false)
+            yield* cluster.on(owner!)(ActorTest.use((test) => test.hibernate(ref)))
+            const parked = yield* generation
 
-          for (;;) {
-            const logs = yield* on(0, Effect.forEach(followers, followerLog))
+            yield* holder(
+              SubOrder.get("cross-o").pipe(
+                Effect.flatMap((order) => order.Place({ customerId: "cross-c", amount: 1 })),
+              ),
+            )
 
-            if (logs.every((log) => log.length >= 3)) {
-              for (const log of logs) expect(log).toEqual(expected)
+            const frames = yield* connection.frames.pipe(
+              Stream.take(1),
+              Stream.runCollect,
+              Effect.timeout("30 seconds"),
+            )
 
-              break
-            }
+            expect(Array.from(frames)).toEqual(["cross-o#1:OrderPlaced"])
+            expect((yield* generation) > parked).toBe(true)
+            expect(yield* holder(logOf("SubSummary", "cross-c"))).toEqual(["cross-o#1:OrderPlaced"])
+            yield* connection.close
+          }),
+          [0],
+        ),
+    },
+    {
+      name: "applies one source's events in cursor order under redelivery and two runners",
+      requiresFreshDatabase: true,
+      requiresIndependentConnections: true,
+      timeoutMs: 120_000,
+      run: ({ expect, environment, fixture }) =>
+        withCluster(
+          environment,
+          fixture,
+          2,
+          Effect.gen(function* () {
+            const followers = Array.from({ length: 8 }, (_, index) => `cluster-f${index}`)
 
-            yield* Effect.sleep("100 millis")
-          }
-
-          for (const id of followers)
-            expect(
+            for (const [index, id] of followers.entries())
               yield* on(
-                0,
-                ActorTest.use((test) =>
-                  test.receiptsFor({ tenant: test.tenant, actor: "SubFollower", id }, "OnOrder"),
-                ),
-              ),
-            ).toBe(3)
+                index % 2,
+                Effect.flatMap(SubFollower.get(id), (f) => f.Follow({ source: "cluster-order" })),
+              )
 
-          expect(yield* on(0, tagMismatches)).toEqual([])
-        }).pipe(Effect.timeout("100 seconds"), Effect.orDie),
-      ),
-  },
-]
+            for (;;) {
+              const registered = yield* on(0, sourceRows("cluster-order"))
+
+              if (registered.filter((row) => row.active).length === followers.length) break
+              yield* Effect.sleep("50 millis")
+            }
+
+            const defected = new Set<string>()
+            fixture.behave = (entry) => {
+              if (entry.includes("#2:") && !defected.has(entry)) {
+                defected.add(entry)
+
+                return "defect"
+              }
+
+              return "apply"
+            }
+
+            for (let round = 0; round < 3; round++)
+              yield* on(
+                round % 2,
+                Effect.flatMap(SubOrder.get("cluster-order"), (o) =>
+                  o.Place({ customerId: "cluster-c", amount: round }),
+                ),
+              )
+
+            const expected = ["1", "2", "3"].map((cursor) => `cluster-order#${cursor}:OrderPlaced`)
+
+            for (;;) {
+              const logs = yield* on(0, Effect.forEach(followers, followerLog))
+
+              if (logs.every((log) => log.length >= 3)) {
+                for (const log of logs) expect(log).toEqual(expected)
+
+                break
+              }
+
+              yield* Effect.sleep("100 millis")
+            }
+
+            for (const id of followers)
+              expect(
+                yield* on(
+                  0,
+                  ActorTest.use((test) =>
+                    test.receiptsFor({ tenant: test.tenant, actor: "SubFollower", id }, "OnOrder"),
+                  ),
+                ),
+              ).toBe(3)
+
+            expect(yield* on(0, tagMismatches)).toEqual([])
+          }).pipe(Effect.timeout("100 seconds"), Effect.orDie),
+        ),
+    },
+  ]

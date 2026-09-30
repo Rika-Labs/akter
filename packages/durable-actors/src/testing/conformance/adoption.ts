@@ -80,22 +80,22 @@ const Line = Schema.Struct({
 })
 
 const Add = Actor.command("Add", {
-  input: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
 })
 
 const Put = Actor.command("Put", {
-  input: Schema.Array(Schema.Struct({ id: Schema.String, amount: Schema.Int })),
+  payload: Schema.Array(Schema.Struct({ id: Schema.String, amount: Schema.Int })),
 })
 
 const Bump = Actor.command("Bump", {
-  input: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
 })
 
-const Remove = Actor.command("Remove", { input: Schema.String })
+const Remove = Actor.command("Remove", { payload: Schema.String })
 
-const Lines = Actor.query("Lines", { output: Schema.Array(Line) })
+const Lines = Actor.query("Lines", { success: Schema.Array(Line) })
 
-const Find = Actor.query("Find", { input: Schema.String, output: Schema.Array(Line) })
+const Find = Actor.query("Find", { payload: Schema.String, success: Schema.Array(Line) })
 
 const Account = Actor.make("Account", {
   key: Schema.String,
@@ -103,11 +103,11 @@ const Account = Actor.make("Account", {
   api: { Add, Put, Bump, Remove, Lines, Find },
 })
 
-const Names = Actor.query("Names", { output: Schema.Array(Schema.String) })
+const Names = Actor.query("Names", { success: Schema.Array(Schema.String) })
 
-const Peek = Actor.command("Peek", { output: Schema.Array(Schema.String) })
+const Peek = Actor.command("Peek", { success: Schema.Array(Schema.String) })
 
-const Probe = Actor.command("Probe", { output: Schema.Boolean })
+const Probe = Actor.command("Probe", { success: Schema.Boolean })
 
 const Grouped = Actor.command("Grouped")
 
@@ -118,10 +118,10 @@ const Directory = Actor.make("Directory", {
 })
 
 const Ship = Actor.command("Ship", {
-  input: Schema.Struct({ id: Schema.String, label: Schema.String }),
+  payload: Schema.Struct({ id: Schema.String, label: Schema.String }),
 })
 
-const Labels = Actor.query("Labels", { output: Schema.Array(Schema.String) })
+const Labels = Actor.query("Labels", { success: Schema.Array(Schema.String) })
 
 const Carrier = Actor.make("Carrier", {
   key: Schema.String,
@@ -577,6 +577,7 @@ const invoiceIds = Effect.gen(function* () {
 export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "maps existing tenant and actor columns, reads only the actor's rows, and never shows another tenant's or actor's rows for the same business key",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, () =>
         Effect.gen(function* () {
@@ -626,6 +627,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a read-adopted table is readable in a turn and a query, has no mutation methods, and is refused by group",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, () =>
         Effect.gen(function* () {
@@ -746,7 +748,8 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
               Actor.make("Minted", {
                 tables: [mintedRows],
                 api: { Open },
-                policy: { createdBy: Open },
+
+                createdBy: Open,
               }),
             ),
           ).toContain("mints its ids and cannot adopt table conformance_minted")
@@ -755,6 +758,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses a mapping the database contradicts: plan reports it and observe changes nothing",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -806,6 +810,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses startup when an adopted table has no actor_adoptions row",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -820,6 +825,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses startup when an adopted table has no index leading with its owner columns",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -834,6 +840,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "maps uuid columns and refuses an actor id that is not a lowercase uuid",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, () =>
         Effect.gen(function* () {
@@ -860,6 +867,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "an insert or upsert on another actor's primary key fails the turn as a defect and changes nothing",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, () =>
         Effect.gen(function* () {
@@ -905,6 +913,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "observing records a second pool's writes by role, application_name, operation and rows, classes the turn's writes in_turn, and changes no outcome",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, ({ target }) =>
@@ -1012,6 +1021,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "observing still records a legacy role's write that sets durable.backfill, while the runtime's own backfill stays unrecorded",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, ({ target }) =>
@@ -1071,6 +1081,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "backfill fills every row with the key of the actor that writes it and refuses rows with NULL mapped columns",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, () =>
         Effect.gen(function* () {
@@ -1124,6 +1135,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "0024_adoption applies on PGlite and Postgres",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -1151,6 +1163,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "enforce refuses: unbackfilled rows, a legacy write inside the quiet window, a session_user seen both in and out of turns, an owner the legacy role can act as, and an incoming cascade",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -1280,6 +1293,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "enforced: a second pool, raw SQL, COPY, an updatable view, a SECURITY INVOKER function, a cascade, and TRUNCATE are rejected with 42501, and a mixed statement changes no row (A4)",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withEnforcement(environment, {}, ({ target, roles }) =>
@@ -1401,6 +1415,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "enforced: the table owner's write is rejected by the guard when privileges are granted back",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withEnforcement(environment, {}, ({ target, roles }) =>
@@ -1448,6 +1463,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "an --allow role's write passes, is recorded as allowed, and still needs routing_key",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -1511,6 +1527,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "changing either mapped column of a row is rejected for every role",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -1549,6 +1566,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "startup refuses an enforced table whose trigger is disabled, whose privileges were granted back, or whose mapping changed",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -1609,6 +1627,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "release returns an enforced table to observing: the guard is gone, privileges are back, and legacy writes are recorded again",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -1673,6 +1692,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses adoption.role and rowLevelSecurity.role when they name different roles",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {

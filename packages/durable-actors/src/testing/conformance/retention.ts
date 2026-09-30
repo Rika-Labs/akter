@@ -9,6 +9,7 @@ import type {
   ConformanceCase,
   ConformanceEnvironment,
   ConformanceServices,
+  ConformanceSuite,
 } from "../conformance.ts"
 
 export interface RetentionFixture {
@@ -20,52 +21,52 @@ export interface RetentionFixture {
 
 export const retentionFixture = (): RetentionFixture => ({ adds: 0, receives: 0 })
 
-class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
+const Noted = Actor.event("Noted", { body: Schema.String })
 
 const files = Actor.blob("files")
 
-const Note = Actor.command("Note", { input: Schema.String, output: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String, success: Schema.String })
 
 const NoteMany = Actor.command("NoteMany", {
-  input: Schema.Struct({ count: Schema.Int, bytes: Schema.Int }),
+  payload: Schema.Struct({ count: Schema.Int, bytes: Schema.Int }),
 })
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
-const Forward = Actor.command("Forward", { input: Schema.String })
+const Forward = Actor.command("Forward", { payload: Schema.String })
 
-const Receive = Actor.command("Receive", { input: Schema.String })
+const Receive = Actor.command("Receive", { payload: Schema.String })
 
 const Put = Actor.command("Put", {
-  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
 })
 
 const Grow = Actor.command("Grow", {
-  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
 })
 
-const Drop = Actor.command("Drop", { input: Schema.String })
+const Drop = Actor.command("Drop", { payload: Schema.String })
 
 /** Replaces an entry and swallows the defect, so the turn commits whatever the write left. */
 const PutCaught = Actor.command("PutCaught", {
-  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
-  output: Schema.Boolean,
+  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+  success: Schema.Boolean,
 })
 
 const Entry = Schema.Struct({ cursor: Schema.String, body: Schema.String })
 
 const History = Actor.query("History", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     after: Schema.optional(Schema.String),
     limit: Schema.optional(Schema.Finite),
   }),
-  output: Schema.Array(Entry),
-  errors: [UnknownCursor, RetentionGap],
+  success: Schema.Array(Entry),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
-const Size = Actor.query("Size", { input: Schema.String, output: Schema.Int })
+const Size = Actor.query("Size", { payload: Schema.String, success: Schema.Int })
 
-const Total = Actor.query("Total", { output: Schema.Int })
+const Total = Actor.query("Total", { success: Schema.Int })
 
 const Journal = Actor.make("Journal", {
   key: Schema.String,
@@ -79,12 +80,12 @@ const Journal = Actor.make("Journal", {
     keepEvents: "1 day",
     maxBlobBytes: 1024,
     maxBlobEntries: 3,
-    commandTimeout: "2 seconds",
+    executionTimeout: "2 seconds",
   },
 })
 
 /** The same events under a longer horizon, so one sweep applies each type's own policy. */
-const Tally = Actor.command("Tally", { input: Schema.Int, output: Schema.Int })
+const Tally = Actor.command("Tally", { payload: Schema.Int, success: Schema.Int })
 
 /** Keeps receipts for less than the retry window, so only the delivery-timeout grace holds them. */
 const Brief = Actor.make("Brief", {
@@ -234,7 +235,7 @@ const eventSequence = Effect.fnUntraced(function* (id: string) {
 }, Effect.orDie)
 
 /** Retention cases: pruning of receipts and events keeps expired ids rejected, outbox dedup intact, and sequences continuous. */
-export const retentionConformance: ReadonlyArray<ConformanceCase> = [
+export const retentionConformance: ReadonlyArray<ConformanceCase<RetentionFixture>> = [
   {
     name: "prunes receipts past keepReceipts and still rejects the expired id after pruning and restart",
     run: ({ expect, environment, fixture }) =>
@@ -242,7 +243,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("receipts")
-          const before = fixture.retention.adds
+          const before = fixture.adds
           const add = journal.Add(3)
           expect(yield* add).toBe(3)
           expect(yield* journal.Add(4)).toBe(7)
@@ -259,7 +260,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
             state: { total: 7 },
           })
           expect((yield* add.pipe(Effect.flip)).reason).toBeInstanceOf(CommandExpired)
-          expect(fixture.retention.adds - before).toBe(2)
+          expect(fixture.adds - before).toBe(2)
           expect(yield* journal.Total()).toBe(7)
         }),
       ),
@@ -293,7 +294,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
               .finally(() => first.dispose()),
           )
 
-          const adds = fixture.retention.adds
+          const adds = fixture.adds
           const second = environment.build()
 
           yield* Effect.promise(() =>
@@ -317,7 +318,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
               .finally(() => second.dispose()),
           )
 
-          expect(fixture.retention.adds).toBe(adds)
+          expect(fixture.adds).toBe(adds)
         }).pipe(Effect.ensuring(environment.restart)),
       ),
   },
@@ -330,7 +331,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           const sender = yield* Journal.get("sender")
           const receiver = yield* Journal.get("receiver")
           const bystander = yield* Journal.get("bystander")
-          const before = fixture.retention.receives
+          const before = fixture.receives
           yield* sender.Forward("receiver")
 
           const sql = yield* SqlClient.SqlClient
@@ -354,7 +355,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })
           yield* test.advance(CLAIM_LEASE)
 
-          expect(fixture.retention.receives - before).toBe(1)
+          expect(fixture.receives - before).toBe(1)
           expect(yield* receiver.Total()).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 0 })
 
@@ -578,6 +579,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rejects a retry admitted before expiry when cleanup pruned the receipt before its turn",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 20_000,
     run: ({ expect, environment, fixture }) =>
@@ -586,7 +588,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const journal = yield* Journal.get("race")
-          const before = fixture.retention.adds
+          const before = fixture.adds
           const now = yield* databaseTime
           const id = `v1.${now - 58_500}.${now + 1_500}.0c2f3a55-5b8e-4d53-9a51-1f7b3d9f0c11`
 
@@ -612,7 +614,7 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
           yield* delivering.release
           const failure = yield* Fiber.join(retry)
           expect(Schema.is(ActorError)(failure) && failure.reason).toBeInstanceOf(CommandExpired)
-          expect(fixture.retention.adds - before).toBe(1)
+          expect(fixture.adds - before).toBe(1)
           expect(yield* journal.Total()).toBe(1)
         }),
       ),
@@ -649,3 +651,9 @@ export const retentionConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Retention actors. */
+export const retentionSuite: ConformanceSuite<RetentionFixture> = {
+  fixture: retentionFixture,
+  layer: retentionLayer,
+}

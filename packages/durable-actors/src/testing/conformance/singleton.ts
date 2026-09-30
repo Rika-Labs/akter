@@ -8,12 +8,12 @@ import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 /** A tick from `loop`, committed by the activation whose loop is `by`. */
-class Ticked extends Actor.Event<Ticked>()("Ticked", { loop: Schema.String, by: Schema.String }) {}
+const Ticked = Actor.event("Ticked", { loop: Schema.String, by: Schema.String })
 
-const Tick = Actor.command("Tick", { input: Schema.String, output: Schema.Finite })
+const Tick = Actor.command("Tick", { payload: Schema.String, success: Schema.Finite })
 
 const Log = Actor.query("Log", {
-  output: Schema.Array(
+  success: Schema.Array(
     Schema.Struct({
       cursor: Schema.String,
       loop: Schema.String,

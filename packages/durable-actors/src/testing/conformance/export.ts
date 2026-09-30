@@ -25,17 +25,17 @@ const LedgerV1 = {
   memo: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
 }
 
-class Announce extends Actor.effect<Announce>()("ExpAnnounce", {
-  input: { text: Schema.String },
-}) {}
+const Announce = Actor.job("ExpAnnounce", {
+  payload: { text: Schema.String },
+})
 
-const Deposit = Actor.command("Deposit", { input: Schema.Int })
+const Deposit = Actor.command("Deposit", { payload: Schema.Int })
 
 const Audit = Actor.command("Audit")
 
 const Ledger = Actor.make("ExpLedger", {
   key: Schema.String,
-  effects: [Announce],
+  jobs: { ExpAnnounce: { job: Announce } },
   state: Actor.state(LedgerV1, {
     migrations: [
       Actor.migration(LedgerV0, LedgerV1, ({ total }) => ({ balance: total, memo: "" })),
@@ -66,7 +66,7 @@ const live = Layer.mergeAll(
           .Audit()
           .pipe(Intent.after("1 minute"), Intent.key("audit"))
 
-        yield* turn.perform(Announce.make({ text: `deposited ${amount}` }), {
+        yield* turn.enqueue(Announce.make({ text: `deposited ${amount}` }), {
           key: "announce",
           after: Duration.hours(1),
         })
@@ -76,7 +76,7 @@ const live = Layer.mergeAll(
       }),
     }),
   ),
-  Ledger.toEffectLayer(
+  Ledger.toJobLayer(
     Effect.succeed({
       ExpAnnounce: ({ text }) =>
         Effect.sync(() => {
@@ -409,7 +409,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
               receipts: 0,
               events: 0,
               outbox: 1,
-              effects: 1,
+              jobs: 1,
             })
 
             yield* test.advance(Duration.minutes(2))
@@ -522,7 +522,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
               receipts: 0,
               events: 0,
               outbox: 0,
-              effects: 0,
+              jobs: 0,
             })
             expect(
               (yield* sql<{ count: number }>`SELECT count(*)::int AS count FROM actor_state`)[0]!

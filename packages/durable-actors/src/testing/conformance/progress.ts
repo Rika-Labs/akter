@@ -12,11 +12,11 @@ import {
   Stream,
 } from "effect"
 import { Actor, type AnyConnection, User } from "../../index.ts"
-import type { ExecutorContext } from "../../contexts/effect.ts"
+import type { ExecutorContext } from "../../contexts/job.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest, ProgressRecord, type TestConnection, type TestMessage } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 
 /** What one executor attempt does after reporting its frames. */
 type ProgressStep = "ok" | "fail"
@@ -46,30 +46,30 @@ const Stage = Schema.Struct({
   note: Schema.optional(Schema.String),
 })
 
-class Transcode extends Actor.effect<Transcode>()("Transcode", {
-  input: { assetId: Schema.String },
+const Transcode = Actor.job("Transcode", {
+  payload: { assetId: Schema.String },
   success: Schema.String,
   progress: Stage,
-}) {}
+})
 
-class Import extends Actor.effect<Import>()("Import", {
-  input: { rows: Schema.Int },
+const Import = Actor.job("Import", {
+  payload: { rows: Schema.Int },
   progress: Schema.Struct({ done: Schema.Int }),
-}) {}
+})
 
-class Thumbnail extends Actor.effect<Thumbnail>()("Thumbnail", {
-  input: { assetId: Schema.String },
-}) {}
+const Thumbnail = Actor.job("Thumbnail", {
+  payload: { assetId: Schema.String },
+})
 
-const Start = Actor.command("Start", { input: Schema.String })
+const Start = Actor.command("Start", { payload: Schema.String })
 
-const Thumb = Actor.command("Thumb", { input: Schema.String })
+const Thumb = Actor.command("Thumb", { payload: Schema.String })
 
-const Transcoded = Actor.command("Transcoded", { input: Schema.String })
+const Transcoded = Actor.command("Transcoded", { payload: Schema.String })
 
 const Watch = Actor.connection("Watch", {
   server: Schema.String,
-  progress: { effects: [Transcode, Import] },
+  progress: { jobs: [Transcode, Import] },
 })
 
 const Encoder = Actor.make("Encoder", {
@@ -77,15 +77,18 @@ const Encoder = Actor.make("Encoder", {
   state: Actor.state({
     outputs: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Transcode, Import, Thumbnail],
+  jobs: {
+    Transcode: {
+      job: Transcode,
+      retry: { times: 1 },
+      onSuccess: Transcoded,
+      progressEvery: "1 minute",
+    },
+    Import: { job: Import },
+    Thumbnail: { job: Thumbnail, retry: { times: 0 } },
+  },
   api: { Start, Thumb, Watch },
   internal: { Transcoded },
-  policy: {
-    effects: {
-      Transcode: { retry: { times: 1 }, onSuccess: Transcoded, progressEvery: "1 minute" },
-      Thumbnail: { retry: { times: 0 } },
-    },
-  },
 })
 
 const EncoderState = Schema.Struct({ outputs: Schema.optional(Schema.Array(Schema.String)) })
@@ -95,10 +98,10 @@ export const progressLayer = (fixture: ProgressFixture) =>
     Encoder.toLayer(
       Effect.succeed({
         Start: Effect.fnUntraced(function* (assetId: string) {
-          yield* (yield* Encoder.Turn).perform(Transcode.make({ assetId }))
+          yield* (yield* Encoder.Turn).enqueue(Transcode.make({ assetId }))
         }),
         Thumb: Effect.fnUntraced(function* (assetId: string) {
-          yield* (yield* Encoder.Turn).perform(Thumbnail.make({ assetId }))
+          yield* (yield* Encoder.Turn).enqueue(Thumbnail.make({ assetId }))
         }),
         Transcoded: Effect.fnUntraced(function* (output: string) {
           const turn = yield* Encoder.Turn
@@ -107,7 +110,7 @@ export const progressLayer = (fixture: ProgressFixture) =>
         Watch: { open: () => Effect.void, frame: () => Effect.void },
       }),
     ),
-    Encoder.toEffectLayer(
+    Encoder.toJobLayer(
       Effect.succeed({
         Transcode: Effect.fnUntraced(function* ({ assetId }) {
           const exec = yield* Encoder.Executor
@@ -171,7 +174,7 @@ const encode = { percent: 50, stage: "encode" } as const
 
 const upload = { percent: 95, stage: "upload" } as const
 
-export const progressConformance: ReadonlyArray<ConformanceCase> = [
+export const progressConformance: ReadonlyArray<ConformanceCase<ProgressFixture>> = [
   {
     name: "sends an executor's latest progress frame before the effect settles, then closes it",
     run: ({ expect, environment, fixture }) =>
@@ -179,23 +182,23 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("latest")
-          fixture.progress.frames = [probe, encode, upload]
+          fixture.frames = [probe, encode, upload]
           yield* encoder.Start("a")
           yield* test.advance(0)
           const records = yield* recordsOf("latest")
           const frames = framesOf(records)
-          const effectId = fixture.progress.captured?.effectId
+          const effectId = fixture.captured?.jobId
 
           expect([1, 2]).toContain(frames.length)
           expect(frames.at(-1)).toEqual({ attempt: 1, seq: 3, frame: upload })
           expect(frames.map((frame) => frame.seq)).toEqual(
             frames.map((frame) => frame.seq).toSorted((a, b) => a - b),
           )
-          expect(records.every((record) => record.effectId === effectId)).toBe(true)
+          expect(records.every((record) => record.jobId === effectId)).toBe(true)
           expect(records.at(-1) && ProgressRecord.$is("ProgressClosed")(records.at(-1)!)).toBe(true)
           expect(records.at(-1)).toMatchObject({ attempt: 1 })
           expect(yield* outputsOf("latest")).toEqual(["a.mp4"])
-          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, effects: 0 })
+          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, jobs: 0 })
         }),
       ),
   },
@@ -206,18 +209,18 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("invalid")
-          const exec = () => fixture.progress.captured!
-          fixture.progress.frames = [
+          const exec = () => fixture.captured!
+          fixture.frames = [
             { percent: "half", stage: "encode" },
             { percent: 1, stage: "encode", note: "x".repeat(5000) },
             { percent: 1, stage: "mux" },
           ]
-          fixture.progress.progressFailed = false
+          fixture.progressFailed = false
           yield* encoder.Start("b")
           yield* test.advance(0)
           yield* exec().progress(Import as never, { done: 1 } as never)
 
-          expect(fixture.progress.progressFailed).toBe(false)
+          expect(fixture.progressFailed).toBe(false)
           expect(framesOf(yield* recordsOf("invalid"))).toEqual([])
           expect(closedOf(yield* recordsOf("invalid")).length).toBe(1)
           expect(yield* outputsOf("invalid")).toEqual(["b.mp4"])
@@ -231,11 +234,11 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("captured")
-          fixture.progress.frames = [probe]
+          fixture.frames = [probe]
           yield* encoder.Start("c")
           yield* test.advance(0)
           const before = (yield* recordsOf("captured")).length
-          yield* fixture.progress.captured!.progress(Transcode, upload)
+          yield* fixture.captured!.progress(Transcode, upload)
           yield* test.advance("1 minute")
 
           expect((yield* recordsOf("captured")).length).toBe(before)
@@ -252,8 +255,8 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("retry")
-          fixture.progress.frames = [encode]
-          fixture.progress.plan = ["fail"]
+          fixture.frames = [encode]
+          fixture.plan = ["fail"]
           yield* encoder.Start("d")
           yield* test.advance(0)
 
@@ -280,8 +283,8 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("dead")
-          fixture.progress.frames = [probe]
-          fixture.progress.plan = ["fail", "fail"]
+          fixture.frames = [probe]
+          fixture.plan = ["fail", "fail"]
           yield* encoder.Start("e")
           yield* test.advance(0)
           yield* test.advance("1 minute")
@@ -290,7 +293,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           expect(framesOf(records).map((frame) => frame.attempt)).toEqual([1, 2])
           expect(closedOf(records)).toMatchObject([{ attempt: 2 }])
           expect(yield* outputsOf("dead")).toEqual([])
-          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, effects: 0 })
+          expect(yield* test.inspect(encoder.ref)).toMatchObject({ outbox: 0, jobs: 0 })
         }),
       ),
   },
@@ -301,7 +304,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const encoder = yield* Encoder.get("lossy")
-          fixture.progress.frames = [probe, encode, upload]
+          fixture.frames = [probe, encode, upload]
           yield* test.dropProgress((message) => message.ref.id === "lossy")
           yield* encoder.Start("f")
           yield* test.advance(0)
@@ -327,7 +330,7 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
           const encoder = yield* Encoder.get("plain")
           yield* encoder.Thumb("g")
           yield* test.advance(0)
-          yield* fixture.progress.captured!.progress(Transcode, probe)
+          yield* fixture.captured!.progress(Transcode, probe)
 
           expect(yield* recordsOf("plain")).toEqual([])
         }),
@@ -335,11 +338,11 @@ export const progressConformance: ReadonlyArray<ConformanceCase> = [
   },
 ]
 
-class Render extends Actor.effect<Render>()("Render", {
-  input: { job: Schema.String },
+const Render = Actor.job("Render", {
+  payload: { job: Schema.String },
   success: Schema.String,
   progress: Schema.Struct({ percent: Schema.Finite }),
-}) {}
+})
 
 class Rendered extends Schema.TaggedClass<Rendered>()("Rendered", { output: Schema.String }) {}
 
@@ -365,23 +368,23 @@ const plan = (job: string, frames: ReadonlyArray<number>) =>
     return created
   })
 
-const Render_ = Actor.command("Render", { input: Schema.String })
+const Render_ = Actor.command("Render", { payload: Schema.String })
 
-const Finished = Actor.command("Finished", { input: Schema.String })
+const Finished = Actor.command("Finished", { payload: Schema.String })
 
 /** Performs Render under the job as its key, so a later turn can cancel it. */
-const RenderKeyed = Actor.command("RenderKeyed", { input: Schema.String })
+const RenderKeyed = Actor.command("RenderKeyed", { payload: Schema.String })
 
 /** Cancels the keyed Render of a job and tells `Mine` connections in the same turn. */
-const CancelRender = Actor.command("CancelRender", { input: Schema.String })
+const CancelRender = Actor.command("CancelRender", { payload: Schema.String })
 
 /** Progress for the performer's own connections only (the default audience). */
-const Mine = Actor.connection("Mine", { server: Rendered, progress: { effects: [Render] } })
+const Mine = Actor.connection("Mine", { server: Rendered, progress: { jobs: [Render] } })
 
 /** Progress for every open connection of the member. */
 const Everyone = Actor.connection("Everyone", {
   server: Rendered,
-  progress: { effects: [Render], to: "all" },
+  progress: { jobs: [Render], to: "all" },
 })
 
 /** Receives no progress: it lists no effect. */
@@ -389,24 +392,26 @@ const Quiet = Actor.connection("Quiet", { server: Rendered })
 
 /** A stream of the job's progress percentages, filtered by the effect's own input. */
 const Percent = Actor.stream("Percent", {
-  input: Schema.String,
-  output: Schema.Finite,
-  progress: { effects: [Render] },
+  payload: Schema.String,
+  success: Schema.Finite,
+  progress: { jobs: [Render] },
 })
 
 /** Receives every Render frame; each client frame `n` makes the owner send it `n` frames. */
 const Busy = Actor.connection("Busy", {
   server: Rendered,
   client: Schema.Finite,
-  progress: { effects: [Render], to: "all" },
+  progress: { jobs: [Render], to: "all" },
 })
 
 /** Broadcasts one frame to `Busy`, from a turn of whichever activation owns the actor. */
-const Announce = Actor.command("Announce", { input: Schema.String })
+const Announce = Actor.command("Announce", { payload: Schema.String })
 
 const Studio = Actor.make("Studio", {
   key: Schema.String,
-  effects: [Render],
+  jobs: {
+    Render: { job: Render, onSuccess: Finished, retry: { times: 0 }, progressEvery: "50 millis" },
+  },
   api: {
     Render: Render_,
     RenderKeyed,
@@ -419,9 +424,6 @@ const Studio = Actor.make("Studio", {
     Announce,
   },
   internal: { Finished },
-  policy: {
-    effects: { Render: { onSuccess: Finished, retry: { times: 0 }, progressEvery: "50 millis" } },
-  },
 })
 
 const handlers = { open: () => Effect.void, frame: () => Effect.void }
@@ -429,14 +431,14 @@ const handlers = { open: () => Effect.void, frame: () => Effect.void }
 const studioCommands = Studio.toLayer(
   Effect.succeed({
     Render: Effect.fnUntraced(function* (job: string) {
-      yield* (yield* Studio.Turn).perform(Render.make({ job }))
+      yield* (yield* Studio.Turn).enqueue(Render.make({ job }))
     }),
     RenderKeyed: Effect.fnUntraced(function* (job: string) {
-      yield* (yield* Studio.Turn).perform(Render.make({ job }), { key: job })
+      yield* (yield* Studio.Turn).enqueue(Render.make({ job }), { key: job })
     }),
     CancelRender: Effect.fnUntraced(function* (job: string) {
       const turn = yield* Studio.Turn
-      yield* turn.cancelEffect(job)
+      yield* turn.cancelJob(job)
       yield* turn.broadcast(Mine, Rendered.make({ output: `cancelled-${job}` }))
     }),
     Finished: Effect.fnUntraced(function* (output: string) {
@@ -467,7 +469,7 @@ const studioCommands = Studio.toLayer(
           const read = yield* Studio.Read
 
           return read.progress(Render).pipe(
-            Stream.filter((entry) => entry.effect.job === job),
+            Stream.filter((entry) => entry.job.job === job),
             Stream.map((entry) => entry.frame.percent),
           )
         }),
@@ -475,7 +477,7 @@ const studioCommands = Studio.toLayer(
   }),
 )
 
-export const studioExecutors = Studio.toEffectLayer(
+export const studioExecutors = Studio.toJobLayer(
   Effect.succeed({
     Render: Effect.fnUntraced(function* ({ job }) {
       const exec = yield* Studio.Executor
@@ -575,7 +577,7 @@ const sentFor = (id: string, count: number) =>
   })
 
 /** Progress-delivery cases: frames stay in order, drop after cancellation, and coalesce per effect for a paused client. */
-export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
+export const progressDeliveryConformance: ReadonlyArray<ConformanceCase<ProgressFixture>> = [
   {
     name: "keeps an effect's progress in order when its first frames on an activation arrive together",
     run: ({ expect, environment }) =>
@@ -743,7 +745,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           const progress = drained.flatMap((message) => {
             const found = progressOf(message)
 
-            return found === undefined ? [] : [found.effectId]
+            return found === undefined ? [] : [found.jobId]
           })
 
           expect(drained.length).toBe(1024)
@@ -799,7 +801,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
 
           const first = progressOf(yield* nextOf(mine))
           expect(first).toMatchObject({
-            effect: "Render",
+            job: "Render",
             attempt: 1,
             seq: 1,
             frame: { percent: 10 },
@@ -842,13 +844,13 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
           const settled = yield* test.inspect(studio.ref).pipe(
             Effect.repeat({
               schedule: Schedule.spaced("20 millis"),
-              until: (inspection) => inspection.outbox === 0 && inspection.effects === 0,
+              until: (inspection) => inspection.outbox === 0 && inspection.jobs === 0,
             }),
             Effect.timeout(WAIT),
             Effect.orDie,
           )
 
-          expect(settled).toMatchObject({ outbox: 0, effects: 0 })
+          expect(settled).toMatchObject({ outbox: 0, jobs: 0 })
           expect(yield* test.receiptsFor(studio.ref, "Finished")).toBe(1)
           const sent = (yield* test.progress).filter((record) => record.ref.id === "dropped")
           expect(sent.some(ProgressRecord.$is("Progress"))).toBe(true)
@@ -917,6 +919,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "delivers progress from an executor on runner C to a connection parked at holder A for an actor owned by runner B",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -955,7 +958,7 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
 
           const first = yield* nextOf(mine)
 
-          expect(progressOf(first)).toMatchObject({ effect: "Render", frame: { percent: 30 } })
+          expect(progressOf(first)).toMatchObject({ job: "Render", frame: { percent: 30 } })
 
           const after = (yield* cluster.on(0)(ActorTest.use((test) => test.inspect(target))))
             .generation
@@ -966,3 +969,9 @@ export const progressDeliveryConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Progress actors, executors and the studio. */
+export const progressSuite: ConformanceSuite<ProgressFixture> = {
+  fixture: progressFixture,
+  layer: (fixture) => Layer.merge(progressLayer(fixture), studioLayer),
+}

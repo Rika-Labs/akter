@@ -18,8 +18,8 @@ let reductions = 0
 
 const Add = Actor.reducer("Add", {
   state: TallyState,
-  input: Schema.Int,
-  errors: [Overflow],
+  payload: Schema.Int,
+  error: Overflow,
   reduce: (state, amount) => {
     reductions += 1
 

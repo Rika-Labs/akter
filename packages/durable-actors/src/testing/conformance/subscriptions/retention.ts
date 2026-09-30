@@ -2,7 +2,15 @@ import { Effect, Fiber, Schema, Stream } from "effect"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { CLAIM_LEASE } from "../outbox.ts"
-import { Live, ShipOrder, SubFollower, SubJournal, SubOrder, SubShipment } from "./actors.ts"
+import {
+  Live,
+  ShipOrder,
+  SubFollower,
+  SubJournal,
+  SubOrder,
+  SubShipment,
+  type SubscriptionsFixture,
+} from "./actors.ts"
 import {
   crashOnce,
   drain,
@@ -38,10 +46,12 @@ const journalEvents = (source: string) =>
   )
 
 /** Wake, retention holds, gaps, broadcasts, and workflow waits. */
-export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> = [
+export const subscriptionsRetentionConformance: ReadonlyArray<
+  ConformanceCase<SubscriptionsFixture>
+> = [
   {
     name: "keeps events above the lowest subscriber cursor inside the hold, then prunes past it and delivers one RetentionGap, then resumes",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -76,7 +86,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: 'reports RetentionGap first for a from: "start" subscription after pruning',
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -103,7 +113,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "counts an id-routed gap on the row and delivers a singleton-routed gap",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -137,7 +147,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "repeats a gap's id and range on redelivery after pruning advances",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -187,7 +197,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "acknowledges a RetentionGap redelivered after its receipt was pruned without running the handler again",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -239,7 +249,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "delivers a RetentionGap, never a skip, when retention prunes a claimed row's events before it reads them",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -280,7 +290,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "widens no tombstone at startup, so it gains no tag and never becomes due",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       Effect.gen(function* () {
         const tenant = yield* Effect.promise(() =>
           run(
@@ -352,7 +362,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "wakes a hibernated subscriber and commits the delivery",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -370,7 +380,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "flushes a delivery's broadcast to the parked subscriber's connection after commit, and discards it on declared failure",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -399,7 +409,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "resolves an owner wait from a subscription delivery that re-emits",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -417,7 +427,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
   },
   {
     name: "subscribes in the workflow's start turn and delivers after the start commits",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,

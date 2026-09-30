@@ -85,7 +85,7 @@ const keysFor = (message: Sent) =>
  * The rehearsal starts its own Postgres primary and synchronous standby in
  * Docker and runs three runners, so it skips where the chat tests run on PGlite.
  */
-const pglite = runtime.runSync(Config.String("CHAT_BACKEND")) === "pglite"
+const pglite = runtime.runSync(Config.String("TEST_BACKEND")) === "pglite"
 
 it.skipIf(pglite)(
   "operates the served chat room through a drain, a Postgres failover, and a restore with no command lost or repeated",

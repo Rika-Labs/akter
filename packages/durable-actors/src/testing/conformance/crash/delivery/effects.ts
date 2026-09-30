@@ -8,22 +8,23 @@ import { decompress } from "../../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 import { FrameworkClock } from "../../../../runtime/turn/admission.ts"
 
-class Moderate extends Actor.effect<Moderate>()("Moderate", {
-  input: { body: Schema.String },
+const Moderate = Actor.job("Moderate", {
+  payload: { body: Schema.String },
   success: Schema.Struct({ flagged: Schema.Boolean }),
-}) {}
+})
 
-const Post = Actor.command("Post", { input: Schema.String })
+const Post = Actor.command("Post", { payload: Schema.String })
 
-const Moderated = Actor.command("Moderated", { input: Schema.Struct({ flagged: Schema.Boolean }) })
+const Moderated = Actor.command("Moderated", {
+  payload: Schema.Struct({ flagged: Schema.Boolean }),
+})
 
 const Author = Actor.make("ProcessAuthor", {
   key: Schema.String,
   state: Actor.state({ flags: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  effects: [Moderate],
+  jobs: { Moderate: { job: Moderate, retry: { times: 3 }, onSuccess: Moderated } },
   api: { Post },
   internal: { Moderated },
-  policy: { effects: { Moderate: { retry: { times: 3 }, onSuccess: Moderated } } },
 })
 
 const runtime = Layer.unwrap(
@@ -38,7 +39,7 @@ const runtime = Layer.unwrap(
       Author.toLayer(
         Effect.succeed({
           Post: Effect.fnUntraced(function* (body: string) {
-            yield* (yield* Author.Turn).perform(Moderate.make({ body }))
+            yield* (yield* Author.Turn).enqueue(Moderate.make({ body }))
           }),
           Moderated: Effect.fnUntraced(function* ({ flagged }) {
             const turn = yield* Author.Turn
@@ -46,7 +47,7 @@ const runtime = Layer.unwrap(
           }),
         }),
       ),
-      Author.toEffectLayer(
+      Author.toJobLayer(
         Effect.succeed({
           Moderate: Effect.fnUntraced(function* ({ body }) {
             const exec = yield* Author.Executor
@@ -54,7 +55,7 @@ const runtime = Layer.unwrap(
               provider.query(
                 `INSERT INTO provider_calls (idempotency_key, calls) VALUES ($1, 1)
                  ON CONFLICT (idempotency_key) DO UPDATE SET calls = provider_calls.calls + 1`,
-                [exec.effectId],
+                [exec.jobId],
               ),
             )
 

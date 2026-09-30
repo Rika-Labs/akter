@@ -2,17 +2,17 @@ import { Deferred, Effect, Exit, Option } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { EngineProbe, OutOfStock, Ship, Shipper } from "./actors.ts"
+import { EngineProbe, OutOfStock, Ship, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { eventually, reset, suspendedRow } from "./harness.ts"
 
 /** Starts, recorded activities, durable sleeps, status, and inspection views of workflows. */
-export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowBasicConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: a live interrupt finishes well within the recovery interval",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          const engine = fixture.workflows.engine
+          const engine = fixture.engine
           const key = "live-interrupt"
           const gate = yield* Deferred.make<void>()
           engine.gates.set(key, gate)
@@ -39,7 +39,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              const gate = fixture.workflows.engine.gates.get("live-interrupt")
+              const gate = fixture.engine.gates.get("live-interrupt")
 
               if (gate !== undefined) yield* Deferred.succeed(gate, undefined)
             }),
@@ -52,7 +52,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("stable")
           const run = yield* shipper.Ship({ orderId: "o1", sku: "a" })
           expect(run.executionId.startsWith("w1.")).toBe(true)
@@ -60,7 +60,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
           const again = yield* shipper.Ship({ orderId: "o1", sku: "a" })
           expect(again.executionId).toBe(run.executionId)
           expect(yield* again.result).toBe("r-a:v2")
-          expect(fixture.workflows.runs.get("reserve:o1")).toBe(1)
+          expect(fixture.runs.get("reserve:o1")).toBe(1)
           const polled = yield* run.poll
           expect(Option.isSome(polled) && polled.value._tag).toBe("Complete")
           const reattached = yield* Shipper.run(Ship, run.executionId)
@@ -73,13 +73,13 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("failing")
           const run = yield* shipper.Ship({ orderId: "o2", sku: "none" })
           const error = yield* run.result.pipe(Effect.flip)
           expect(error).toBeInstanceOf(OutOfStock)
           expect(error).toEqual(OutOfStock.make({ sku: "none" }))
-          expect(fixture.workflows.runs.get("reserve:o2")).toBe(1)
+          expect(fixture.runs.get("reserve:o2")).toBe(1)
         }),
       ),
   },
@@ -88,7 +88,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("sleeping")
           const run = yield* shipper.Ship({ orderId: "o3", sku: "sleep" })
@@ -97,7 +97,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
           expect(Option.isSome(pending) && pending.value._tag).toBe("Suspended")
           yield* test.advance("11 seconds")
           expect(yield* run.result).toBe("r-sleep:v2")
-          expect(fixture.workflows.runs.get("reserve:o3")).toBe(1)
+          expect(fixture.runs.get("reserve:o3")).toBe(1)
         }),
       ),
   },
@@ -106,11 +106,11 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.gates.set("phases", gate)
+          fixture.gates.set("phases", gate)
           const shipper = yield* Shipper.get("phases")
           const run = yield* shipper.Watch({ mode: "phases", orderId: "phases" })
 
@@ -124,7 +124,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("6 seconds")
 
           yield* eventually(
-            Effect.sync(() => fixture.workflows.runs.get("hold:phases") === 1),
+            Effect.sync(() => fixture.runs.get("hold:phases") === 1),
             "the resumed run to reach its activity",
           )
 
@@ -136,7 +136,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("6 seconds")
           expect(yield* run.result).toBe("phases")
           expect(yield* status()).toBe("finished")
-        }).pipe(Effect.ensuring(Effect.sync(() => fixture.workflows.gates.delete("phases")))),
+        }).pipe(Effect.ensuring(Effect.sync(() => fixture.gates.delete("phases")))),
       ),
   },
   {
@@ -144,7 +144,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("inspected")

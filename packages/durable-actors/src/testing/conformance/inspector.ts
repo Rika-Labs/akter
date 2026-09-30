@@ -11,34 +11,35 @@ import { Actor, Intent, Unauthorized, User } from "../../index.ts"
 import { Inspector } from "../../runtime/index.ts"
 import * as Queries from "../../runtime/inspector/queries.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
+import { Auth } from "../../runtime/index.ts"
 
-class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
+const Noted = Actor.event("Noted", { body: Schema.String })
 
 class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {}) {}
 
 class Undeliverable extends Schema.TaggedError<Undeliverable>()("Undeliverable", {}) {}
 
-class Notify extends Actor.effect<Notify>()("Notify", { input: { body: Schema.String } }) {}
+const Notify = Actor.job("Notify", { payload: { body: Schema.String } })
 
-const Write = Actor.command("Write", { input: Schema.String })
+const Write = Actor.command("Write", { payload: Schema.String })
 
 const WriteThenReject = Actor.command("WriteThenReject", {
-  input: Schema.String,
-  errors: [Rejected],
+  payload: Schema.String,
+  error: Rejected,
 })
 
-const WriteThenDie = Actor.command("WriteThenDie", { input: Schema.String })
+const WriteThenDie = Actor.command("WriteThenDie", { payload: Schema.String })
 
 const Nudge = Actor.command("Nudge")
 
 const Settle = Actor.workflow("Settle", {
-  input: { order: Schema.String },
-  output: Schema.String,
+  payload: { order: Schema.String },
+  success: Schema.String,
   key: ({ order }) => order,
 })
 
-const Reserve = Settle.step("reserve", { input: Schema.String, success: Schema.String })
+const Reserve = Settle.step("reserve", { payload: Schema.String, success: Schema.String })
 
 const Pause = Settle.sleep("pause")
 
@@ -48,10 +49,9 @@ const Inspected = Actor.make("Inspected", {
     notes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   events: [Noted],
-  effects: [Notify],
+  jobs: { Notify: { job: Notify, retry: { times: 0 } } },
   api: { Write, WriteThenReject, WriteThenDie, Settle },
   internal: { Nudge },
-  policy: { effects: { Notify: { retry: { times: 0 } } } },
 })
 
 const write = Effect.fnUntraced(function* (body: string) {
@@ -60,7 +60,7 @@ const write = Effect.fnUntraced(function* (body: string) {
   yield* turn.emit(Noted.make({ body }))
   const self = yield* Inspected.intents(turn.id)
   yield* self.Nudge().pipe(Intent.after("1 hour"), Intent.key("nudge"))
-  yield* turn.perform(Notify.make({ body }))
+  yield* turn.enqueue(Notify.make({ body }))
 })
 
 export const inspectorLayer = Layer.mergeAll(
@@ -86,7 +86,7 @@ export const inspectorLayer = Layer.mergeAll(
       }),
     }),
   ),
-  Inspected.toEffectLayer(
+  Inspected.toJobLayer(
     Effect.succeed({
       Notify: Effect.fnUntraced(function* () {
         return yield* Undeliverable.make({})
@@ -98,7 +98,7 @@ export const inspectorLayer = Layer.mergeAll(
 /** How many requests reached the operators' provider. */
 const reached = { count: 0 }
 
-const operators = Actor.auth.make((request) =>
+const operators = Auth.make((request) =>
   Option.match(
     Headers.get(request.headers, "authorization").pipe(
       Option.map((header) => {
@@ -626,3 +626,8 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Inspector actors. */
+export const inspectorSuite: ConformanceSuite = {
+  layer: () => inspectorLayer,
+}

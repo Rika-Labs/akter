@@ -13,14 +13,14 @@ import type { Mintable } from "../../contexts/command.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import { deriveMintId } from "../../identity/mint.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { enqueue, holding, transactions } from "./batches.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
-const Open = Actor.command("Open", { input: Schema.String, errors: [Refused] })
+const Open = Actor.command("Open", { payload: Schema.String, error: Refused })
 
-const Title = Actor.command("Title", { output: Schema.String })
+const Title = Actor.command("Title", { success: Schema.String })
 
 const childState = Actor.state({
   title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -29,32 +29,34 @@ const childState = Actor.state({
 const Task = Actor.make("MintTask", {
   state: childState,
   api: { Open, Title },
-  policy: { createdBy: Open },
+
+  createdBy: Open,
 })
 
 const Note = Actor.make("MintNote", {
   state: childState,
   api: { Open, Title },
-  policy: { createdBy: Open },
+
+  createdBy: Open,
 })
 
 const Ids = Schema.Array(Schema.String)
 
-const Plan = Actor.command("Plan", { input: Schema.Int, output: Ids })
+const Plan = Actor.command("Plan", { payload: Schema.Int, success: Ids })
 
-const PlanMixed = Actor.command("PlanMixed", { output: Ids })
+const PlanMixed = Actor.command("PlanMixed", { success: Ids })
 
-const PlanLater = Actor.command("PlanLater", { output: Schema.String })
+const PlanLater = Actor.command("PlanLater", { success: Schema.String })
 
-const PlanThenRefuse = Actor.command("PlanThenRefuse", { errors: [Refused] })
+const PlanThenRefuse = Actor.command("PlanThenRefuse", { error: Refused })
 
-const PlanDelayed = Actor.command("PlanDelayed", { output: Ids })
+const PlanDelayed = Actor.command("PlanDelayed", { success: Ids })
 
-const PlanDelayedThenRefuse = Actor.command("PlanDelayedThenRefuse", { errors: [Refused] })
+const PlanDelayedThenRefuse = Actor.command("PlanDelayedThenRefuse", { error: Refused })
 
 const PlanThenDie = Actor.command("PlanThenDie")
 
-const PlanRefusedChild = Actor.command("PlanRefusedChild", { output: Schema.String })
+const PlanRefusedChild = Actor.command("PlanRefusedChild", { success: Schema.String })
 
 const MintOnly = Actor.command("MintOnly")
 
@@ -67,8 +69,8 @@ const Steal = Actor.command("Steal")
 const PlanKeyed = Actor.command("PlanKeyed")
 
 const PlanStagedFirst = Actor.command("PlanStagedFirst", {
-  input: Schema.String,
-  output: Schema.String,
+  payload: Schema.String,
+  success: Schema.String,
 })
 
 const Planner = Actor.make("MintPlanner", {
@@ -91,7 +93,7 @@ const Planner = Actor.make("MintPlanner", {
   },
 })
 
-const SoloPlan = Actor.command("SoloPlan", { output: Schema.String })
+const SoloPlan = Actor.command("SoloPlan", { success: Schema.String })
 
 const SoloPlanner = Actor.make("MintSoloPlanner", { key: Actor.singleton, api: { SoloPlan } })
 
@@ -101,7 +103,8 @@ const Job = Actor.make("MintNamedJob", {
   key: Schema.String,
   state: childState,
   api: { Open, Title },
-  policy: { createdBy: Open },
+
+  createdBy: Open,
 })
 
 const runs: Array<ReadonlyArray<string>> = []
@@ -828,9 +831,14 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
 
           const unmintable = yield* planner.MintUnmintable().pipe(Effect.exit)
           expect(Exit.isFailure(unmintable) && Cause.pretty(unmintable.cause)).toContain(
-            "turn.mint needs an unkeyed actor that declares policy.createdBy",
+            "turn.mint needs an unkeyed actor that declares createdBy",
           )
         }),
       ),
   },
 ]
+
+/** Minted-id actors. */
+export const mintSuite: ConformanceSuite = {
+  layer: () => mintLayer,
+}

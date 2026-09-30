@@ -4,7 +4,9 @@ export type { FaultOptions, TestActorOptions, TestConnection, TestMessage } from
 
 export { ActorCluster } from "./cluster.ts"
 
-export { checkMergeLaw } from "./property.ts"
+export { checkBatchLaw } from "./property.ts"
+
+export { disposableDatabase, testDatabase } from "./database.ts"
 
 export { SIMULATION_SEEDS, simulationSeeds } from "./simulate.ts"
 
@@ -35,7 +37,7 @@ export type {
 
 export type { ClusterOptions, RunnerServices } from "./cluster.ts"
 
-export { conformance, describeConformance } from "./conformance.ts"
+export { conformance, describeConformance, evidenceIndex } from "./conformance.ts"
 
 export type {
   ConformanceBackend,
@@ -45,16 +47,17 @@ export type {
   ConformanceDatabase,
   ConformanceEnvironment,
   ConformanceExpect,
-  ConformanceFixture,
+  ConformanceAccess,
+  ConformanceGroup,
+  ConformanceSuite,
+  EvidenceEntry,
   ConformanceMatchers,
   ConformanceRegistrar,
   ConformanceRuntime,
   ConformanceServices,
 } from "./conformance.ts"
 
-export { edgeConformance, edgeKey } from "./conformance/assertions.ts"
-
-export { coldServeEdgeConformance } from "./conformance/cold-serve.ts"
+export { edgeKey } from "./conformance/assertions.ts"
 
 export type { ConformanceEdge, EdgeKey, EdgeRunner, HostedEdge } from "./conformance/assertions.ts"
 

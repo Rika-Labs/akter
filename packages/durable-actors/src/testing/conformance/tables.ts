@@ -5,7 +5,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { Actor } from "../../index.ts"
 import type { AnyOwnedTable, ScopedRows } from "../../tables/owned.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 /** An owned table with a column-level key, a per-actor unique column, and an index. */
 export const notes = Actor.table(
@@ -106,32 +106,32 @@ const GroupMisuse = Schema.Literals([
 ])
 
 const Write = Actor.command("Write", {
-  input: Schema.Struct({ id: Schema.String, body: Schema.String }),
-  output: Schema.Int,
+  payload: Schema.Struct({ id: Schema.String, body: Schema.String }),
+  success: Schema.Int,
 })
 
-const Save = Actor.command("Save", { input: Note })
+const Save = Actor.command("Save", { payload: Note })
 
 const Rename = Actor.command("Rename", {
-  input: Schema.Struct({ id: Schema.String, body: Schema.String }),
+  payload: Schema.Struct({ id: Schema.String, body: Schema.String }),
 })
 
 const Promote = Actor.command("Promote", {
-  input: Schema.Struct({ atLeast: Schema.Int, rank: Schema.Int }),
+  payload: Schema.Struct({ atLeast: Schema.Int, rank: Schema.Int }),
 })
 
-const Remove = Actor.command("Remove", { input: Schema.String })
+const Remove = Actor.command("Remove", { payload: Schema.String })
 
 const Clear = Actor.command("Clear")
 
 const WriteThenReject = Actor.command("WriteThenReject", {
-  input: Schema.String,
-  errors: [NotebookRejected],
+  payload: Schema.String,
+  error: NotebookRejected,
 })
 
-const WriteThenMisuse = Actor.command("WriteThenMisuse", { input: Misuse })
+const WriteThenMisuse = Actor.command("WriteThenMisuse", { payload: Misuse })
 
-const WriteThenHold = Actor.command("WriteThenHold", { input: Schema.String })
+const WriteThenHold = Actor.command("WriteThenHold", { payload: Schema.String })
 
 const Capture = Actor.command("Capture")
 
@@ -139,16 +139,16 @@ const CaptureGroup = Actor.command("CaptureGroup")
 
 const Replay = Actor.command("Replay")
 
-const List = Actor.query("List", { output: Schema.Array(Note) })
+const List = Actor.query("List", { success: Schema.Array(Note) })
 
-const Get = Actor.query("Get", { input: Schema.String, output: Schema.Option(Note) })
+const Get = Actor.query("Get", { payload: Schema.String, success: Schema.Option(Note) })
 
 const Ranked = Actor.query("Ranked", {
-  input: Schema.Struct({ limit: Schema.Int, offset: Schema.Int }),
-  output: Schema.Array(Schema.String),
+  payload: Schema.Struct({ limit: Schema.Int, offset: Schema.Int }),
+  success: Schema.Array(Schema.String),
 })
 
-const Count = Actor.query("Count", { output: Schema.Int })
+const Count = Actor.query("Count", { success: Schema.Int })
 
 const QueryWrite = Actor.query("QueryWrite")
 
@@ -158,9 +158,9 @@ const Joined = Schema.Struct({
   label: Schema.NullOr(Schema.String),
 })
 
-const Catalog = Actor.query("Catalog", { input: Schema.Boolean, output: Schema.Array(Joined) })
+const Catalog = Actor.query("Catalog", { payload: Schema.Boolean, success: Schema.Array(Joined) })
 
-const Misgroup = Actor.query("Misgroup", { input: GroupMisuse })
+const Misgroup = Actor.query("Misgroup", { payload: GroupMisuse })
 
 /** Queries that try to smuggle SQL past validation; any rows they return must stay in scope. */
 const Smuggle = Schema.Literals([
@@ -174,11 +174,11 @@ const Smuggle = Schema.Literals([
 ])
 
 const Smuggled = Actor.query("Smuggled", {
-  input: Smuggle,
-  output: Schema.Array(Schema.String),
+  payload: Smuggle,
+  success: Schema.Array(Schema.String),
 })
 
-const Everything = Actor.query("Everything", { output: Schema.Array(Schema.String) })
+const Everything = Actor.query("Everything", { success: Schema.Array(Schema.String) })
 
 /** @internal */
 export const Notebook = Actor.make("Notebook", {
@@ -210,7 +210,7 @@ export const Notebook = Actor.make("Notebook", {
 })
 
 const Label = Actor.command("Label", {
-  input: Schema.Struct({ id: Schema.String, noteId: Schema.String, label: Schema.String }),
+  payload: Schema.Struct({ id: Schema.String, noteId: Schema.String, label: Schema.String }),
 })
 
 const Shelf = Actor.make("Shelf", { key: Schema.String, tables: [labels], api: { Label } })
@@ -510,7 +510,7 @@ const defect = (exit: Exit.Exit<unknown, unknown>) =>
 const rowsOf = (count: number) => ({ rows: { conformance_notes: count } })
 
 /** Owned-table cases: rows scope by tenant and actor for every operation, and constraint violations are defects without a receipt. */
-export const tablesConformance: ReadonlyArray<ConformanceCase> = [
+export const tablesConformance: ReadonlyArray<ConformanceCase<TablesFixture>> = [
   {
     name: "scopes owned rows by tenant and actor for every supported operation",
     run: ({ expect, environment }) =>
@@ -643,14 +643,14 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
           const notebook = yield* Notebook.get("escape")
           expect(defect(yield* notebook.QueryWrite().pipe(Effect.exit))).toContain("insert")
           yield* notebook.Capture()
-          expect(defect(yield* fixture.tables.escaped.pipe(Effect.exit))).toContain(
+          expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
             "Table capability escaped its turn",
           )
           expect(defect(yield* notebook.Replay().pipe(Effect.exit))).toContain(
             "Table capability escaped its turn",
           )
           yield* notebook.CaptureGroup()
-          expect(defect(yield* fixture.tables.escaped.pipe(Effect.exit))).toContain(
+          expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
             "Table capability escaped its turn",
           )
           expect(yield* notebook.List()).toEqual([{ id: "captured", body: "captured", rank: 0 }])
@@ -754,12 +754,12 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
           const second = yield* Notebook.get("contended-b")
           const reached = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
-          fixture.tables.hold = Deferred.succeed(reached, undefined).pipe(
+          fixture.hold = Deferred.succeed(reached, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
           )
           const holder = yield* first.WriteThenHold("same").pipe(Effect.forkChild)
           yield* Deferred.await(reached)
-          fixture.tables.hold = Effect.void
+          fixture.hold = Effect.void
 
           expect(
             yield* second.Write({ id: "same", body: "same" }).pipe(Effect.timeout("5 seconds")),
@@ -782,12 +782,12 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
           const thief = yield* Notebook.get("row-thief")
           const reached = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
-          fixture.tables.hold = Deferred.succeed(reached, undefined).pipe(
+          fixture.hold = Deferred.succeed(reached, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
           )
           const holder = yield* owner.WriteThenHold("held").pipe(Effect.forkChild)
           yield* Deferred.await(reached)
-          fixture.tables.hold = Effect.void
+          fixture.hold = Effect.void
 
           const stolen = yield* thief
             .Replay()
@@ -830,3 +830,9 @@ export const tablesConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The owned-table actors. */
+export const tablesSuite: ConformanceSuite<TablesFixture> = {
+  fixture: tablesFixture,
+  layer: tablesLayer,
+}
