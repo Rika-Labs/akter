@@ -149,6 +149,7 @@ describe("offline command queue", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         let signedIn = "alice"
+
         const { queue, attempts, store } = fixture({
           principal: () => signedIn,
           steps: { a: [refuse(offline)] },
