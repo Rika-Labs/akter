@@ -206,7 +206,7 @@ type StateOf<Fields extends StateFields> = Schema.Struct<Fields>["Type"]
 const SingletonKeySchema = Schema.TaggedStruct("Singleton", {})
 
 /** Marker for a singleton actor's `key`: one instance per tenant, resolved with `X.get()`. */
-export const singleton = SingletonKeySchema.make({})
+const singleton = SingletonKeySchema.make({})
 
 /** The type of `Actor.singleton`, the `key` of a singleton actor. */
 type SingletonKey = typeof singleton
