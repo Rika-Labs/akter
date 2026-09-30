@@ -5,8 +5,10 @@ import { callerKey } from "../../identity/caller.ts"
 
 const OutcomeJson = Schema.fromJsonString(Outcome)
 
+const encodeOutcomeJson = Schema.encodeEffect(OutcomeJson)
+
 /** Encodes an outcome to the JSON text a receipt stores. */
-export const encodeOutcome = Schema.encodeEffect(OutcomeJson)
+export const encodeOutcome = (outcome: Outcome) => encodeOutcomeJson(outcome)
 
 const decodeOutcome = Schema.decodeEffect(OutcomeJson)
 
