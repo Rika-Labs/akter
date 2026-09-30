@@ -110,6 +110,7 @@ import type {
   AnyMember,
   CommandRecord,
   DeclaredError,
+  MemberKind,
   MemberRecord,
   ValueSchema,
 } from "../members/command.ts"
@@ -258,7 +259,7 @@ interface ParentDefinition extends Placed<"actor" | "parent", string> {
  */
 type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
 
-type PlacementKind<Pl> = Pl extends "tenant" ? "tenant" : Pl extends "actor" ? "actor" : "parent"
+type PlacementKind<Pl> = Pl extends "tenant" | "actor" ? Pl : "parent"
 
 /** What a subscriber needs of each definition it may subscribe to. */
 const sources = new WeakMap<
@@ -322,21 +323,18 @@ type CommandsOf<Members extends MemberRecord> = Extract<
   { readonly kind: "command" }
 >
 
-type CommandKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "command" ? K : never
+/** The keys of the members of `kind`. */
+type KeysOf<Members extends MemberRecord, Kind extends MemberKind> = {
+  [K in keyof Members]: Members[K]["kind"] extends Kind ? K : never
 }[keyof Members]
 
-type QueryKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
-}[keyof Members]
+type CommandKeys<Members extends MemberRecord> = KeysOf<Members, "command">
 
-type ConnectionKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "connection" ? K : never
-}[keyof Members]
+type QueryKeys<Members extends MemberRecord> = KeysOf<Members, "query">
 
-type StreamKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "stream" ? K : never
-}[keyof Members]
+type ConnectionKeys<Members extends MemberRecord> = KeysOf<Members, "connection">
+
+type StreamKeys<Members extends MemberRecord> = KeysOf<Members, "stream">
 
 type ConnectionsOf<Members extends MemberRecord> = Extract<
   Values<Members>,
@@ -356,13 +354,9 @@ export type ConnectionHandlers<C extends AnyConnection, R> = {
   readonly resync?: (input: { readonly after: string | undefined }) => Effect.Effect<void, never, R>
 }
 
-type WorkflowKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "workflow" ? K : never
-}[keyof Members]
+type WorkflowKeys<Members extends MemberRecord> = KeysOf<Members, "workflow">
 
-type ReducerKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
-}[keyof Members]
+type ReducerKeys<Members extends MemberRecord> = KeysOf<Members, "reducer">
 
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
 type QueryReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
