@@ -335,6 +335,7 @@ const checkLedgerCases = (input: {
   readonly findings: Array<Finding>
 }) => {
   const ledger = input.files.find((file) => file.path === ledgerPath)
+
   if (ledger === undefined) return
 
   for (const name of unknownLedgerCases({ ledger: ledger.text, files: input.files }))

@@ -15,7 +15,9 @@ export const ledgerCaseNames = (ledger: string): ReadonlyArray<string> => {
 
   for (const match of ledger.matchAll(/`([^`\n]+)`/g)) {
     const span = match[1] ?? ""
+
     if (!/^[a-z][a-z'-]* [a-z]/.test(span) || span.startsWith("bun ")) continue
+
     if (span.split(" ").length >= 4) names.add(span)
   }
 
@@ -40,7 +42,9 @@ export const unknownLedgerCases = (input: {
 
   for (const file of input.files) {
     if (!/\.tsx?$/.test(file.path)) continue
+
     if (!sourceRoots.some((root) => file.path.startsWith(root))) continue
+
     if (file.path.startsWith("tooling/structure/")) continue
 
     for (const match of file.text.matchAll(
@@ -54,6 +58,7 @@ export const unknownLedgerCases = (input: {
       }
 
       const parts = template.split(/\$\{[^}]*\}/)
+
       if (Math.max(...parts.map((part) => part.length)) < 12) continue
       templates.push(new RegExp(`^${parts.map(escape).join(".+")}$`))
     }
