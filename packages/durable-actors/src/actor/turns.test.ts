@@ -163,7 +163,7 @@ describe("actor turns through the runtime", () => {
         expect(refused).toBeInstanceOf(Refused)
         yield* test.advance(0)
         expect(calls).toEqual([])
-        expect(yield* test.inspect(order.ref)).toMatchObject({ effects: 0, outbox: 0 })
+        expect(yield* test.inspect(order.ref)).toMatchObject({ jobs: 0, outbox: 0 })
 
         yield* order.Place({ amount: 713 })
         yield* ledger.Audit({ amount: 5 })
