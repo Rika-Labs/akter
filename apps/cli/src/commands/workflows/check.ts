@@ -1,51 +1,62 @@
-import { checkWorkflows, formatIncompatibility } from "@durable-actors/core/runtime"
+import { Database, checkWorkflows, formatIncompatibility } from "@durable-actors/core/runtime"
 import type { Incompatibility } from "@durable-actors/core/runtime"
-import { Effect, Schema } from "effect"
+import { BunCrypto } from "@effect/platform-bun"
+import { Console, Effect, Layer, Schema } from "effect"
+import { Command, Flag } from "effect/unstable/cli"
+import type { SqlError } from "effect/unstable/sql"
 import { pathToFileURL } from "node:url"
+import { CommandFailed, UsageError, fail } from "../../failure.ts"
 
-/** The arguments could not be parsed; the message says why. */
-export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
-  message: Schema.String,
-}) {}
-
-/** Usage text for `durable workflows`. */
-export const USAGE = "Usage: durable workflows check --entry <module> --database-url <url> [--json]"
-
-/** Parsed arguments of `workflows check`. */
-export interface CheckOptions {
-  readonly entry: string
-  readonly databaseUrl: string
-  readonly json: boolean
+/** Flags of the commands that load an entry module and read its database. */
+export const entryFlags = {
+  entry: Flag.File("entry", { mustExist: true }).pipe(
+    Flag.withDescription("The entry module; it exports an `actors` array of actor definitions"),
+  ),
+  databaseUrl: Flag.Redacted("database-url").pipe(
+    Flag.withDescription("The application's Postgres URL"),
+  ),
+  json: Flag.Boolean("json").pipe(
+    Flag.withDefault(false),
+    Flag.withDescription("Print the report as JSON"),
+  ),
 }
 
-/** Parses the arguments after `workflows check`. */
-export const parseCheck = (args: ReadonlyArray<string>) =>
+/**
+ * Loads the entry's actors, then runs `run` against its Postgres and prints
+ * the report; a report with exit code 1 ends the command with it. `reading`
+ * names what a database failure could not read.
+ */
+export const entryCommand = <R>({
+  options,
+  reading,
+  run,
+}: {
+  readonly options: Command.Command.Config.Infer<typeof entryFlags>
+  readonly reading: string
+  readonly run: (
+    actors: ReadonlyArray<{ readonly name: string; readonly api: object }>,
+  ) => Effect.Effect<{ readonly output: string; readonly exitCode: number }, SqlError.SqlError, R>
+}) =>
   Effect.gen(function* () {
-    let entry: string | undefined
-    let databaseUrl: string | undefined
-    let json = false
+    const module = yield* loadEntry(options.entry)
+    const actors = yield* actorsOf({ module, entry: options.entry })
 
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
+    const services = yield* Layer.build(
+      Database.postgres({ url: options.databaseUrl }).pipe(Layer.provideMerge(BunCrypto.layer)),
+    )
 
-      if (arg === "--json") json = true
-      else if (arg === "--entry" || arg === "--database-url") {
-        const value = args[++index]
+    const { output, exitCode } = yield* run(actors).pipe(Effect.provideContext(services))
 
-        if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
+    yield* Console.log(output)
 
-        if (arg === "--entry") entry = value
-        else databaseUrl = value
-      } else return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-    }
-
-    if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
-
-    if (databaseUrl === undefined)
-      return yield* UsageError.make({ message: "--database-url is required" })
-
-    return { entry, databaseUrl, json } satisfies CheckOptions
-  })
+    if (exitCode !== 0) return yield* CommandFailed.make({ exitCode })
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      SqlError: (error) => fail({ message: `Cannot read ${reading}: ${error.message}` }),
+      UsageError: (error) => fail({ message: error.message }),
+    }),
+  )
 
 /** An entry module: its `actors` array of actor definitions. */
 const Entry = Schema.Struct({
@@ -141,3 +152,16 @@ export const check = ({
   checkWorkflows(actors).pipe(
     Effect.map((incompatibilities) => report({ incompatibilities, json })),
   )
+
+/** `durable workflows check`: exits 1 when an open execution needs a step the entry removed. */
+export const checkCommand = Command.make("check", entryFlags, (options) =>
+  entryCommand({
+    options,
+    reading: "workflow state",
+    run: (actors) => check({ actors, json: options.json }),
+  }),
+).pipe(
+  Command.withDescription(
+    "Compare the entry's workflows with every open execution, read-only; exit 1 when a deploy would be refused",
+  ),
+)

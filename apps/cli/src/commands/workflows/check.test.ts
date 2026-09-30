@@ -1,11 +1,13 @@
 import { Actor, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { BunCrypto } from "@effect/platform-bun"
-import { Cause, Effect, Exit, Layer, Schedule, Schema } from "effect"
+import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
+import { Cause, Context, Effect, Exit, FileSystem, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { describe, expect, it } from "vitest"
 
-import { UsageError, actorsOf, check, loadEntry, parseCheck } from "./check.ts"
+import { UsageError } from "../../failure.ts"
+import { runCli } from "../../testing.ts"
+import { actorsOf, check, loadEntry } from "./check.ts"
 
 const deployment = (label: string | null) => {
   const Order = Actor.workflow("Order", {
@@ -88,16 +90,58 @@ describe("durable workflows check", () => {
 
   it("parses its arguments and rejects a missing entry module or one without an actors array", () =>
     Effect.gen(function* () {
-      expect(
-        yield* parseCheck(["--entry", "./a.ts", "--database-url", "postgres://x", "--json"]),
-      ).toEqual({ entry: "./a.ts", databaseUrl: "postgres://x", json: true })
+      const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "durable-check-" })
+      const entry = `${directory}/entry.ts`
+      yield* fs.writeFileString(entry, "export const actors = []\n")
 
-      const missing = yield* Effect.exit(parseCheck(["--entry", "./a.ts"]))
-      expect(Exit.isFailure(missing) && String(missing.cause)).toContain(
-        "--database-url is required",
-      )
-      const unknown = yield* Effect.exit(parseCheck(["--verbose"]))
-      expect(Exit.isFailure(unknown) && String(unknown.cause)).toContain("Unknown argument")
+      const unreachable = yield* runCli([
+        "workflows",
+        "check",
+        "--entry",
+        entry,
+        "--database-url",
+        "postgres://127.0.0.1:1/none",
+        "--json",
+      ])
+
+      expect(unreachable.exitCode).toBe(2)
+      expect(unreachable.stderr).toContain("Cannot read workflow state")
+
+      const missing = yield* runCli(["workflows", "check", "--entry", entry])
+      expect(missing.exitCode).toBe(2)
+      expect(missing.stderr).toContain("Missing required flag: --database-url")
+
+      const unknown = yield* runCli(["workflows", "check", "--verbose"])
+      expect(unknown.exitCode).toBe(2)
+      expect(unknown.stderr).toContain("Unrecognized flag: --verbose")
+
+      const nowhere = yield* runCli([
+        "workflows",
+        "check",
+        "--entry",
+        "./does-not-exist.ts",
+        "--database-url",
+        "postgres://x",
+      ])
+
+      expect(nowhere.exitCode).toBe(2)
+      expect(nowhere.stderr).toContain("Path does not exist")
+
+      const broken = `${directory}/broken.ts`
+      yield* fs.writeFileString(broken, "export const actors = [\n")
+
+      const unloadable = yield* runCli([
+        "workflows",
+        "check",
+        "--entry",
+        broken,
+        "--database-url",
+        "postgres://x",
+      ])
+
+      expect(unloadable.exitCode).toBe(2)
+      expect(unloadable.stderr).toContain(`Cannot load ${broken}`)
 
       const absent = yield* Effect.exit(loadEntry("./does-not-exist.ts"))
       expect(Exit.isFailure(absent) && Schema.is(UsageError)(Cause.squash(absent.cause))).toBe(true)
@@ -123,5 +167,5 @@ describe("durable workflows check", () => {
       const [loaded] = yield* actorsOf({ module: { actors: [Current.Shop] }, entry: "./a.ts" })
       expect(loaded?.name).toBe("Shop")
       expect(loaded?.api["Order"]).toBe(Current.Shop.api.Order)
-    }).pipe(Effect.runPromise))
+    }).pipe(Effect.scoped, Effect.runPromise))
 })

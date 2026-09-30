@@ -1,24 +1,9 @@
 import { DefectRecords, type DefectRecord } from "@durable-actors/core/runtime"
-import { DateTime, Duration, Effect, Option, Schema } from "effect"
+import { Clock, Console, DateTime, Duration, Effect, Option } from "effect"
+import { Command, Flag } from "effect/unstable/cli"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import { RunnerUnreachable, TOKEN_ENV } from "../operator/request.ts"
-import { UsageError } from "../workflows/check.ts"
-
-/** Usage text for `durable defects`. */
-export const USAGE =
-  "Usage: durable defects list --url <runner> [--url <runner> ...] [--tenant <tenant>] [--actor <type>] [--since <duration>] [--limit <n>] [--token-env <name>] [--json]"
-
-/** Parsed arguments of `defects list`. */
-export interface ListOptions {
-  readonly urls: ReadonlyArray<string>
-  /** A tenant, or `*` for every tenant the operator's grant covers. */
-  readonly tenant: string
-  readonly actor: string | undefined
-  readonly sinceMs: number | undefined
-  readonly limit: number | undefined
-  readonly tokenEnv: string
-  readonly json: boolean
-}
+import { fail } from "../../failure.ts"
+import { RunnerUnreachable, operatorFlags, operatorToken } from "../operator/request.ts"
 
 const units = { s: "seconds", m: "minutes", h: "hours", d: "days" } as const
 
@@ -33,70 +18,42 @@ const parseSince = (value: string) => {
   )
 }
 
-const Limit = Schema.FiniteFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 1, maximum: 1000 }),
-)
+const flags = {
+  ...operatorFlags,
+  tenant: Flag.String("tenant").pipe(
+    Flag.withDefault("*"),
+    Flag.withDescription(
+      "The tenant to read, or * for every tenant the operator's grant covers (default *)",
+    ),
+  ),
+  actor: Flag.String("actor").pipe(
+    Flag.optional,
+    Flag.withDescription("Only defects of this actor type"),
+  ),
+  since: Flag.String("since").pipe(
+    Flag.filterMap(parseSince, () => 'a duration such as 1h, 30m, 2d, 45s or "90 minutes"'),
+    Flag.optional,
+    Flag.withDescription("Only defects this recent: 1h, 30m, 2d, 45s, or any duration"),
+  ),
+  limit: Flag.Int("limit").pipe(
+    Flag.filter(
+      (limit) => limit >= 1 && limit <= 1000,
+      () => "an integer from 1 to 1000",
+    ),
+    Flag.optional,
+    Flag.withDescription("At most this many of the newest defects, 1 to 1000"),
+  ),
+}
 
-const decodeLimit = Schema.decodeUnknownOption(Limit)
-
-/** Parses the arguments after `defects list`; `nowMs` anchors `--since`. */
-export const parseList = ({
-  args,
-  nowMs,
-}: {
-  readonly args: ReadonlyArray<string>
-  readonly nowMs: number
-}) =>
-  Effect.gen(function* () {
-    const urls: Array<string> = []
-    let actor: string | undefined
-    let sinceMs: number | undefined
-    let limit: number | undefined
-    let tokenEnv = TOKEN_ENV
-    let tenant = "*"
-    let json = false
-
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (arg === "--json") {
-        json = true
-        continue
-      }
-
-      if (!["--url", "--tenant", "--actor", "--since", "--limit", "--token-env"].includes(arg))
-        return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-
-      const value = args[++index]
-
-      if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-      if (arg === "--url") urls.push(value.replace(/\/+$/, ""))
-      else if (arg === "--tenant") tenant = value
-      else if (arg === "--actor") actor = value
-      else if (arg === "--token-env") tokenEnv = value
-      else if (arg === "--limit") {
-        const parsed = decodeLimit(value)
-
-        if (Option.isNone(parsed))
-          return yield* UsageError.make({ message: "--limit must be an integer from 1 to 1000" })
-
-        limit = parsed.value
-      } else {
-        const since = parseSince(value)
-
-        if (Option.isNone(since))
-          return yield* UsageError.make({ message: `--since is not a duration: ${value}` })
-
-        sinceMs = nowMs - Duration.toMillis(since.value)
-      }
-    }
-
-    if (urls.length === 0) return yield* UsageError.make({ message: "--url is required" })
-
-    return { urls, tenant, actor, sinceMs, limit, tokenEnv, json } satisfies ListOptions
-  })
+/** What `defects list` reads. */
+export interface ListOptions {
+  readonly urls: ReadonlyArray<string>
+  /** A tenant, or `*` for every tenant the operator's grant covers. */
+  readonly tenant: string
+  readonly actor: string | undefined
+  readonly sinceMs: number | undefined
+  readonly limit: number | undefined
+}
 
 /**
  * Reads each runner's `GET /operator/defects` and merges them oldest first. Each
@@ -104,7 +61,7 @@ export const parseList = ({
  * deployment; older history is in the telemetry backend.
  */
 export const listDefects = Effect.fnUntraced(function* (
-  options: Omit<ListOptions, "tokenEnv" | "json">,
+  options: ListOptions,
   token: string | undefined,
 ) {
   const client = yield* HttpClient.HttpClient
@@ -160,3 +117,36 @@ export const formatDefects = ({
     )
     .join("\n")
 }
+
+/** `durable defects list`: every named runner's recent defect spans, merged oldest first. */
+export const listCommand = Command.make("list", flags, (options) =>
+  Effect.gen(function* () {
+    const nowMs = yield* Clock.currentTimeMillis
+    const token = yield* operatorToken(options.tokenEnv)
+
+    const defects = yield* listDefects(
+      {
+        urls: options.urls,
+        tenant: options.tenant,
+        actor: Option.getOrUndefined(options.actor),
+        sinceMs: Option.getOrUndefined(
+          Option.map(options.since, (since) => nowMs - Duration.toMillis(since)),
+        ),
+        limit: Option.getOrUndefined(options.limit),
+      },
+      token,
+    )
+
+    yield* Console.log(formatDefects({ defects, json: options.json }))
+  }).pipe(
+    Effect.catchTags({
+      RunnerUnreachable: (error) =>
+        fail({ message: `Cannot read defects from ${error.url}: ${error.message}` }),
+      ConfigError: (error) => fail({ message: `Cannot read the operator token: ${error.message}` }),
+    }),
+  ),
+).pipe(
+  Command.withDescription(
+    "List recent defects from each runner named; each keeps only its own recent defect spans",
+  ),
+)

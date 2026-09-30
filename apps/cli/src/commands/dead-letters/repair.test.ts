@@ -2,12 +2,14 @@ import { Actor, User } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
-import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
+import { Context, Effect, Layer, Redacted, Schema } from "effect"
+import { HttpRouter } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { describe, expect, it } from "vitest"
 
-import { parseRepair, repair } from "./repair.ts"
+import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
+
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 class Notify extends Actor.effect<Notify>()("CliNotify", { input: { to: Schema.String } }) {}
 
@@ -63,31 +65,42 @@ const operators = OperatorAuth.tokens([
 describe("durable dead-letters", () => {
   it("parses retry and discard, and refuses a missing reason or actor", () =>
     Effect.gen(function* () {
-      const retry = yield* parseRepair({
-        action: "retry",
-        args: [
-          "e1",
-          "--actor",
-          "CliPager/p1",
-          "--url",
-          "http://runner/",
-          "--tenant",
-          "t",
-          "--reason",
-          "pager is back",
-          "--provider-checked",
-        ],
-      })
+      const runner = recordingFetch({ effectId: "e1" })
 
-      expect(retry).toMatchObject({
-        urls: ["http://runner"],
+      const retried = yield* runCliWith({
+        fetch: runner.fetch,
+        env: { DURABLE_OPERATOR_TOKEN: "repair-token" },
+      })([
+        "dead-letters",
+        "retry",
+        "e1",
+        "--actor",
+        "CliPager/p1",
+        "--url",
+        "http://runner/",
+        "--tenant",
+        "t",
+        "--reason",
+        "pager is back",
+        "--provider-checked",
+      ])
+
+      expect(retried).toEqual({ stdout: '{"effectId":"e1"}\n', stderr: "", exitCode: 0 })
+      expect(
+        runner.requests.map(({ method, url, authorization }) => ({ method, url, authorization })),
+      ).toEqual([
+        {
+          method: "POST",
+          url: "http://runner/operator/dead-letters/e1/retry",
+          authorization: "Bearer repair-token",
+        },
+      ])
+      expect(yield* decodeJson(runner.requests[0]!.body)).toEqual({
         tenant: "t",
         actorType: "CliPager",
         actorId: "p1",
-        effectId: "e1",
         reason: "pager is back",
         providerChecked: true,
-        tokenEnv: "DURABLE_OPERATOR_TOKEN",
       })
 
       for (const args of [
@@ -95,29 +108,25 @@ describe("durable dead-letters", () => {
         ["e1", "--url", "u", "--tenant", "t", "--reason", "r"],
         ["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"],
       ])
-        expect(
-          Exit.isFailure(yield* parseRepair({ action: "retry", args }).pipe(Effect.exit)),
-        ).toBe(true)
+        expect((yield* runCli(["dead-letters", "retry", ...args])).exitCode).toBe(2)
 
-      expect(
-        Exit.isFailure(
-          yield* parseRepair({
-            action: "discard",
-            args: [
-              "e1",
-              "--actor",
-              "a/b",
-              "--url",
-              "u",
-              "--tenant",
-              "t",
-              "--reason",
-              "r",
-              "--provider-checked",
-            ],
-          }).pipe(Effect.exit),
-        ),
-      ).toBe(true)
+      const discard = yield* runCli([
+        "dead-letters",
+        "discard",
+        "e1",
+        "--actor",
+        "a/b",
+        "--url",
+        "u",
+        "--tenant",
+        "t",
+        "--reason",
+        "r",
+        "--provider-checked",
+      ])
+
+      expect(discard.exitCode).toBe(2)
+      expect(discard.stderr).toContain("Unrecognized flag: --provider-checked")
     }).pipe(Effect.runPromise))
 
   it("retries a dead letter through the operator routes and refuses a second repair", () =>
@@ -140,49 +149,42 @@ describe("durable dead-letters", () => {
 
       yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
 
-      const fetcher = Layer.succeed(FetchHttpClient.Fetch, ((input, init) =>
-        web.handler(new Request(input, init))) as typeof fetch)
+      const fetch = ((input, init) =>
+        web.handler(new Request(input, init))) as typeof globalThis.fetch
 
-      const services = yield* Layer.build(FetchHttpClient.layer.pipe(Layer.provide(fetcher)))
-
-      const args = (action: "retry" | "discard") =>
-        parseRepair({
+      const repair = (action: "retry" | "discard", token: string) =>
+        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+          "dead-letters",
           action,
-          args: [
-            letter!.effect_id,
-            "--actor",
-            "CliPager/p1",
-            "--url",
-            "http://runner",
-            "--tenant",
-            tenant,
-            "--reason",
-            "pager is back",
-          ],
-        })
+          letter!.effect_id,
+          "--actor",
+          "CliPager/p1",
+          "--url",
+          "http://runner",
+          "--tenant",
+          tenant,
+          "--reason",
+          "pager is back",
+          "--json",
+        ])
 
       provider.up = true
 
-      const retried = yield* repair({ options: yield* args("retry"), token: "repair-token" }).pipe(
-        Effect.provideContext(services),
-      )
+      const retried = yield* repair("retry", "repair-token")
 
-      expect(retried).toMatchObject({ effectId: expect.any(String) })
+      expect(retried.exitCode).toBe(0)
+      expect(yield* decodeJson(retried.stdout)).toMatchObject({ effectId: expect.any(String) })
       yield* Context.get(context, ActorTest).advance(0)
       expect(provider.calls).toBe(2)
 
-      const again = yield* repair({ options: yield* args("discard"), token: "repair-token" }).pipe(
-        Effect.provideContext(services),
-        Effect.flip,
-      )
+      const again = yield* repair("discard", "repair-token")
 
-      expect(again).toMatchObject({ status: 404 })
+      expect(again.exitCode).toBe(1)
+      expect(again.stderr).toMatch(/^Refused \(404\): /)
 
-      const unauthorized = yield* repair({
-        options: yield* args("retry"),
-        token: "app-token",
-      }).pipe(Effect.provideContext(services), Effect.flip)
+      const unauthorized = yield* repair("retry", "app-token")
 
-      expect(unauthorized).toMatchObject({ status: 401 })
+      expect(unauthorized.exitCode).toBe(1)
+      expect(unauthorized.stderr).toMatch(/^Refused \(401\): /)
     }).pipe(Effect.scoped, Effect.runPromise))
 })

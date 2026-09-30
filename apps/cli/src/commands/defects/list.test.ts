@@ -2,11 +2,12 @@ import { Actor, User } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Clock, Effect, Exit, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
-import { formatDefects, listDefects, parseList } from "./list.ts"
+import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
+import { formatDefects, listDefects } from "./list.ts"
 
 const Break = Actor.command("Break", { input: Schema.String })
 
@@ -43,26 +44,62 @@ const operators = OperatorAuth.tokens([
 describe("durable defects list", () => {
   it("parses runners, filters, and compact durations", () =>
     Effect.gen(function* () {
-      const options = yield* parseList({
-        args: ["--url", "http://a/", "--url", "http://b", "--actor", "Room", "--since", "1h"],
-        nowMs: 10_000_000,
-      })
+      const runners = recordingFetch([])
+      const before = yield* Clock.currentTimeMillis
 
-      expect(options).toEqual({
-        urls: ["http://a", "http://b"],
-        tenant: "*",
-        actor: "Room",
-        sinceMs: 10_000_000 - 3_600_000,
-        limit: undefined,
-        tokenEnv: "DURABLE_OPERATOR_TOKEN",
-        json: false,
-      })
+      const listed = yield* runCliWith({
+        fetch: runners.fetch,
+        env: { DURABLE_OPERATOR_TOKEN: "ops-token" },
+      })([
+        "defects",
+        "list",
+        "--url",
+        "http://a/",
+        "--url",
+        "http://b",
+        "--actor",
+        "Room",
+        "--since",
+        "1h",
+      ])
 
-      const long = yield* parseList({ args: ["--url", "u", "--since", "90 minutes"], nowMs: 0 })
-      expect(long.sinceMs).toBe(-5_400_000)
+      expect(listed).toEqual({ stdout: "No defects.\n", stderr: "", exitCode: 0 })
+      expect(runners.requests.map(({ url }) => new URL(url).origin)).toEqual([
+        "http://a",
+        "http://b",
+      ])
 
-      for (const args of [[], ["--url"], ["--url", "u", "--limit", "0"], ["--url", "u", "--x"]])
-        expect(Exit.isFailure(yield* parseList({ args, nowMs: 0 }).pipe(Effect.exit))).toBe(true)
+      for (const { url, authorization } of runners.requests) {
+        const query = new URL(url).searchParams
+        const sinceMs = Number(query.get("sinceMs"))
+
+        expect(new URL(url).pathname).toBe("/operator/defects")
+        expect(query.get("tenant")).toBe("*")
+        expect(query.get("actor")).toBe("Room")
+        expect(query.has("limit")).toBe(false)
+        expect(sinceMs).toBeGreaterThanOrEqual(before - 3_600_000 - 1)
+        expect(sinceMs).toBeLessThanOrEqual((yield* Clock.currentTimeMillis) - 3_600_000)
+        expect(authorization).toBe("Bearer ops-token")
+      }
+
+      const long = recordingFetch([])
+      yield* runCliWith({
+        fetch: long.fetch,
+      })(["defects", "list", "--url", "http://c", "--since", "90 minutes", "--limit", "5"])
+      const query = new URL(long.requests[0]!.url).searchParams
+      const ago = (yield* Clock.currentTimeMillis) - Number(query.get("sinceMs"))
+      expect(ago).toBeGreaterThanOrEqual(5_400_000)
+      expect(ago).toBeLessThan(5_460_000)
+      expect(query.get("limit")).toBe("5")
+
+      for (const args of [
+        [],
+        ["--url"],
+        ["--url", "u", "--limit", "0"],
+        ["--url", "u", "--x"],
+        ["--url", "u", "--since", "soon"],
+      ])
+        expect((yield* runCli(["defects", "list", ...args])).exitCode).toBe(2)
     }).pipe(Effect.runPromise))
 
   it("lists a runner's defect spans for the operator's tenant, newest last", () =>

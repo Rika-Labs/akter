@@ -1,11 +1,11 @@
 import { Actor, type PayloadMigrations, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Schema } from "effect"
+import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
+import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { UsageError } from "../workflows/check.ts"
-import { parsePayloads, payloads } from "./run.ts"
+import { runCli } from "../../testing.ts"
+import { payloads } from "./run.ts"
 
 const V0 = { body: Schema.String }
 
@@ -80,11 +80,37 @@ describe("durable payloads", () => {
 
   it("rejects an unknown payloads command and missing flags", () =>
     Effect.gen(function* () {
-      const unknown = yield* Effect.exit(parsePayloads(["migrate"]))
-      expect(Exit.isFailure(unknown)).toBe(true)
+      const unknown = yield* runCli(["payloads", "migrate"])
+      expect(unknown.exitCode).toBe(2)
+      expect(unknown.stderr).toContain('Unknown subcommand "migrate"')
 
-      const missing = yield* Effect.flip(parsePayloads(["check", "--entry", "x.ts"]))
-      expect(missing).toBeInstanceOf(UsageError)
-      expect(missing.message).toBe("--database-url is required")
-    }).pipe(Effect.runPromise))
+      const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "durable-payloads-" })
+      const entry = `${directory}/entry.ts`
+      yield* fs.writeFileString(entry, "export const actors = []\n")
+
+      const missing = yield* runCli(["payloads", "check", "--entry", entry])
+      expect(missing.exitCode).toBe(2)
+      expect(missing.stderr).toContain("Missing required flag: --database-url")
+
+      const args = (command: string) => [
+        "payloads",
+        command,
+        "--entry",
+        entry,
+        "--database-url",
+        "postgres://127.0.0.1:1/none",
+        "--json",
+      ]
+
+      const unreachable = yield* runCli(args("check"))
+      expect(unreachable.exitCode).toBe(2)
+      expect(unreachable.stderr).toContain("Cannot read payload versions")
+
+      expect(yield* runCli(args("clear"))).toEqual({
+        stdout: '{\n  "results": []\n}\n',
+        stderr: "",
+        exitCode: 0,
+      })
+    }).pipe(Effect.scoped, Effect.runPromise))
 })
