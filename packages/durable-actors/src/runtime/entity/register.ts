@@ -255,6 +255,7 @@ const keepSingletonAwake = Effect.fnUntraced(function* (
   services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>,
 ) {
   const sharding = yield* Sharding.Sharding
+
   const ref = ActorRef.make({
     tenant: registration.tenant,
     actor: registration.name,
