@@ -146,13 +146,11 @@ const QUOTED = /^"(.*)"$/
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true })
 
-const decodeBody = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 const decodeSuccess = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ value: Schema.optionalKey(Schema.Json) })),
 )
-
-const decodeDeclared = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 const utf8 = new TextEncoder()
 
@@ -578,7 +576,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             catch: () => invalidInput("decode"),
           })
 
-          return yield* decodeBody(text).pipe(Effect.mapError((error) => undecodable(error)))
+          return yield* decodeJson(text).pipe(Effect.mapError((error) => undecodable(error)))
         })
 
       const refuseBinding = ActorError.make({
@@ -693,7 +691,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               Effect.gen(function* () {
                 const status = yield* member.failureStatus(failure.value)
 
-                return { ok: false, status, body: yield* decodeDeclared(failure.value) } as const
+                return { ok: false, status, body: yield* decodeJson(failure.value) } as const
               }).pipe(Effect.orDie),
             Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
             Acknowledged: (acknowledged) =>
