@@ -47,6 +47,26 @@ const Sleepy = Actor.make("CapacitySleepy", {
 
 const WarmUp = Actor.make("CapacityWarmUp", { key: Schema.NonEmptyString, api: { Touch } })
 
+const Patient = Actor.make("CapacityPatient", { key: Schema.NonEmptyString, api: { Touch } })
+
+const Quick = Actor.make("CapacityQuick", {
+  key: Schema.NonEmptyString,
+  api: { Touch },
+  policy: { deliveryTimeout: "20 seconds", hibernateAfter: "1 second" },
+})
+
+/**
+ * `Patient` comes first, so its type, with the default 60-second
+ * `hibernateAfter`, registers before `Quick`'s one second.
+ */
+const HibernationLive = Layer.mergeAll(
+  Patient.toLayer(Effect.succeed({ Touch: () => Effect.succeed(0) })),
+  Quick.toLayer(Effect.succeed({ Touch: () => Effect.succeed(0) })),
+)
+
+/** The longest an idle activation may outlive its `hibernateAfter`: the idle sweep runs every 5 seconds. */
+const SWEEP_MS = 5_000
+
 const CapacityLive = Layer.mergeAll(
   Sleepy.toLayer(
     Effect.succeed({
@@ -237,6 +257,37 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
           const third = yield* Sleepy.get("third")
           expect(yield* third.Touch()).toBe(1)
           expect(yield* test.inspect(third.ref)).toMatchObject({ receipts: 1, state: { count: 1 } })
+        }),
+      ),
+  },
+  {
+    name: "hibernates an idle actor within one idle sweep of its hibernateAfter when a type with a longer one registered first",
+    timeoutMs: 45_000,
+    run: ({ environment, expect }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+
+          const services = yield* Layer.build(
+            Layer.fresh(
+              HibernationLive.pipe(
+                Layer.provideMerge(ActorTest.layer({ database, maxResidentActors: 2 })),
+                Layer.provide(Layer.succeed(Crypto.Crypto, yield* Crypto.Crypto)),
+                Layer.orDie,
+              ),
+            ),
+          )
+
+          yield* Effect.gen(function* () {
+            yield* (yield* Patient.get("stays")).Touch()
+            yield* (yield* Quick.get("idle")).Touch()
+            const waiting = yield* Quick.get("waiting")
+            const started = yield* Clock.currentTimeMillis
+            const exit = yield* waiting.Touch().pipe(Effect.exit)
+
+            expect(reasonOf(exit)).toBe("success")
+            expect((yield* Clock.currentTimeMillis) - started < 1_000 + SWEEP_MS + 3_000).toBe(true)
+          }).pipe(Effect.provideContext(services))
         }),
       ),
   },
