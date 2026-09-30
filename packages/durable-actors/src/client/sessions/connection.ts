@@ -3,7 +3,7 @@ import type { ServedConnection } from "../../actor/served.ts"
 import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import type { ValueSchema } from "../../members/command.ts"
 import type { AnyConnection } from "../../members/connection.ts"
-import type { ProgressEffect } from "../../members/effect.ts"
+import type { ProgressJob } from "../../members/job.ts"
 import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../protocol/frames.ts"
 import { aborted, decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
 
@@ -12,13 +12,13 @@ import { aborted, decodeFailure, type Failure, undecodableFailure } from "../tra
  * decoded by that job's `progress` schema. Unions over the jobs a connection
  * member lists, so narrowing on `job` types `frame`.
  */
-export type ProgressUpdate<E extends ProgressEffect = ProgressEffect> = E extends ProgressEffect
-  ? { readonly job: E["tag"]; readonly frame: E["progress"]["Type"] }
+export type ProgressUpdate<J extends ProgressJob = ProgressJob> = J extends ProgressJob
+  ? { readonly job: J["tag"]; readonly frame: J["progress"]["Type"] }
   : never
 
 /** The progress a connection member's client receives: one update per job the member lists. */
 export type ProgressOfConnection<M extends AnyConnection> = ProgressUpdate<
-  NonNullable<M["progress"]>["effects"][number]
+  NonNullable<M["progress"]>["jobs"][number]
 >
 
 type Messages<Frame> = Data.TaggedEnum<{

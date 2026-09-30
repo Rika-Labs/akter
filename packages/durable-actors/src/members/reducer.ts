@@ -1,128 +1,135 @@
 import { Schema, type Result } from "effect"
 import type { ActorState } from "../state/migration.ts"
-import { type DeclaredError, member, type Member, type ValueSchema } from "./command.ts"
+import {
+  type DeclaredError,
+  member,
+  type Member,
+  type PayloadOf,
+  type PayloadOption,
+  type ValueSchema,
+} from "./command.ts"
 
 type Fields = Readonly<Record<string, ValueSchema>>
 
 type StateOf<F extends Fields> = Schema.Struct<F>["Type"]
 
 /**
- * Combines two inputs into one whose single application equals applying both
- * in order, which lets the server merge queued calls into one turn. Declared
- * as a method so its parameters stay bivariant and any reducer fits `AnyReducer`.
+ * Ordered batching: `combine(first, second)` is one payload whose single
+ * reduction equals reducing `first` and then `second`, which lets the server
+ * fold consecutive queued calls, in their order, into one turn. It needs that
+ * fold equivalence only; it is not commutativity or a merge of concurrent
+ * replicas. Declared as a method so its parameters stay bivariant and any
+ * reducer fits `AnyReducer`.
  */
-export interface Commutative<Input> {
-  combine(first: Input, second: Input): Input
+export interface Batch<Payload> {
+  combine(first: Payload, second: Payload): Payload
 }
 
 /**
  * A pure state transition declared in the contract. The server runs it as an
- * ordinary fenced, receipted turn with no handler; a commutative reducer
- * replies `void` and declares no errors so turns may later be merged.
+ * ordinary fenced, receipted turn with no handler; a batched reducer replies
+ * `void` and declares no error, so combined turns stay equivalent to
+ * sequential ones and each call keeps its own receipt.
  */
 export interface Reducer<
   Tag extends string,
   F extends Fields,
-  Input extends ValueSchema,
-  Output extends ValueSchema,
-  Errors extends ReadonlyArray<DeclaredError>,
-> extends Member<"reducer", Tag, Input, Output, Errors> {
+  Payload extends ValueSchema,
+  Success extends ValueSchema,
+  Error extends DeclaredError,
+> extends Member<"reducer", Tag, Payload, Success, Error> {
   readonly state: ActorState<F>
   /** Declared as a method so its parameters stay bivariant and any reducer fits `AnyReducer`. */
-  reduce(state: StateOf<F>, input: Input["Type"]): Result.Result<StateOf<F>, Errors[number]["Type"]>
-  readonly commutative: Commutative<Input["Type"]> | undefined
+  reduce(state: StateOf<F>, payload: Payload["Type"]): Result.Result<StateOf<F>, Error["Type"]>
+  readonly batch: Batch<Payload["Type"]> | undefined
 }
 
 /** Any reducer, whatever its schemas. */
-export type AnyReducer = Reducer<
-  string,
-  Fields,
-  ValueSchema,
-  ValueSchema,
-  ReadonlyArray<DeclaredError>
->
+export type AnyReducer = Reducer<string, Fields, ValueSchema, ValueSchema, DeclaredError>
 
 /**
- * The overloads of `Actor.reducer`. A commutative reducer replies `void` and
- * cannot fail, so merged turns stay equivalent to sequential ones; any other
- * replies the committed state. Declaring `errors` on a commutative reducer
- * throws.
+ * The overloads of `Actor.reducer`. A batched reducer replies `void` and
+ * cannot fail; any other replies the committed state. Declaring `error` on a
+ * batched reducer throws.
  *
  * @example
  * const Add = Actor.reducer("Add", {
  *   state: Counter,
- *   input: Schema.Struct({ by: Schema.Int }),
+ *   payload: { by: Schema.Int },
  *   reduce: (state, { by }) => Result.succeed({ count: state.count + by }),
- *   commutative: { combine: (a, b) => ({ by: a.by + b.by }) },
+ *   batch: { combine: (first, second) => ({ by: first.by + second.by }) },
  * })
  */
 export interface MakeReducer {
-  <const Tag extends string, const F extends Fields, Input extends ValueSchema = Schema.Void>(
+  <const Tag extends string, const F extends Fields, const P extends PayloadOption = Schema.Void>(
     tag: Tag,
     options: {
       readonly state: ActorState<F>
-      readonly input?: Input
-      readonly errors?: readonly []
-      readonly reduce: (state: StateOf<F>, input: Input["Type"]) => Result.Result<StateOf<F>, never>
-      readonly commutative: Commutative<Input["Type"]>
+      readonly payload?: P
+      readonly error?: Schema.Never
+      readonly reduce: (
+        state: StateOf<F>,
+        payload: PayloadOf<P>["Type"],
+      ) => Result.Result<StateOf<F>, never>
+      readonly batch: Batch<PayloadOf<P>["Type"]>
     },
-  ): Reducer<Tag, F, Input, Schema.Void, readonly []>
+  ): Reducer<Tag, F, PayloadOf<P>, Schema.Void, Schema.Never>
   <
     const Tag extends string,
     const F extends Fields,
-    Input extends ValueSchema = Schema.Void,
-    const Errors extends ReadonlyArray<DeclaredError> = readonly [],
+    const P extends PayloadOption = Schema.Void,
+    Error extends DeclaredError = Schema.Never,
   >(
     tag: Tag,
     options: {
       readonly state: ActorState<F>
-      readonly input?: Input
-      readonly errors?: Errors
+      readonly payload?: P
+      readonly error?: Error
       readonly reduce: (
         state: StateOf<F>,
-        input: Input["Type"],
-      ) => Result.Result<StateOf<F>, Errors[number]["Type"]>
-      readonly commutative?: undefined
+        payload: PayloadOf<P>["Type"],
+      ) => Result.Result<StateOf<F>, Error["Type"]>
+      readonly batch?: undefined
     },
-  ): Reducer<Tag, F, Input, Schema.Struct<F>, Errors>
+  ): Reducer<Tag, F, PayloadOf<P>, Schema.Struct<F>, Error>
 }
 
 const reducer = (
   tag: string,
   options: {
     readonly state: ActorState
-    readonly input?: ValueSchema
-    readonly errors?: ReadonlyArray<DeclaredError>
+    readonly payload?: PayloadOption
+    readonly error?: DeclaredError
     readonly reduce: AnyReducer["reduce"]
-    readonly commutative?: Commutative<unknown>
+    readonly batch?: Batch<ValueSchema["Type"]>
   },
-):
-  | Reducer<string, Fields, ValueSchema, Schema.Void, ReadonlyArray<DeclaredError>>
-  | Reducer<string, Fields, ValueSchema, Schema.Struct<Fields>, ReadonlyArray<DeclaredError>> => {
-  const { state, reduce, commutative } = options
+): AnyReducer => {
+  const { state, reduce, batch } = options
 
-  if (commutative === undefined)
+  if (batch === undefined)
     return {
       ...member("reducer")(tag, {
-        input: options.input,
-        output: Schema.Struct(state.fields),
-        errors: options.errors,
+        payload: options.payload,
+        success: Schema.Struct(state.fields),
+        error: options.error,
       }),
       state,
       reduce,
-      commutative,
+      batch,
     }
 
-  if ((options.errors ?? []).length > 0)
-    throw new Error(`Commutative reducer ${tag} cannot declare errors`)
+  if (options.error !== undefined && options.error !== Schema.Never)
+    throw new Error(`Batched reducer ${tag} cannot declare an error`)
 
   return {
-    ...member("reducer")(tag, { input: options.input, output: Schema.Void }),
+    ...member("reducer")(tag, { payload: options.payload }),
     state,
     reduce,
-    commutative,
+    batch,
   }
 }
 
+const make: MakeReducer = reducer as never
+
 /** `Reducer.make` is `Actor.reducer`; see `MakeReducer` for its two forms. */
-export const Reducer = { make: reducer as MakeReducer }
+export const Reducer = { make }

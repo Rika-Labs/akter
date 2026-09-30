@@ -7,31 +7,29 @@ import { CurrentCaller, Tenant, type Caller } from "./identity/caller.ts"
 import { Command, Query } from "./members/command.ts"
 import { Connection } from "./members/connection.ts"
 import { StreamMember } from "./members/stream.ts"
-import { Event } from "./members/event.ts"
+import { event } from "./members/event.ts"
 import { Reducer } from "./members/reducer.ts"
-import { Cancelled, DeadLetter, effect } from "./members/effect.ts"
+import { Cancelled, DeadLetter, job } from "./members/job.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob, content } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
 import { WorkflowMember } from "./runtime/workflows/steps.ts"
 import { Delivery, SubscriptionMember } from "./members/subscription.ts"
-import { make as authMake, none as authNone } from "./serve/auth.ts"
-import { jwt } from "./serve/jwt.ts"
-import { assertion } from "./serve/assertion/verify.ts"
-import { serve } from "./serve/layer.ts"
 import { publicAccess } from "./policies/access.ts"
 
 /**
  * The declaration namespace of `@durable-actors/core`: one constructor per
  * kind of member, the actor definition, and the ambient-context combinators.
- * An invalid definition throws when it is built, not when the actor first runs.
+ * Everything here is browser-safe declaration data; serving and runtime
+ * assembly live in `@durable-actors/core/runtime`. An invalid definition
+ * throws when it is built, not when the actor first runs.
  *
  * @example
- * const Increment = Actor.command("Increment", { output: Schema.Int })
+ * const Increment = Actor.command("Increment", { success: Schema.Int })
  * const Counter = Actor.make("Counter", { key: Schema.String, api: { Increment } })
  */
 export const Actor = {
-  /** Defines an actor type: its key, state, events, tables, blobs, effects, `api` and `internal` members, subscriptions, and policy. */
+  /** Defines an actor type: its key, state, events, tables, blobs, members, creation, schedules, jobs, subscriptions, and policy. */
   make: Definition.make,
   /** Declares a command member; see `Command.make`. */
   command: Command.make,
@@ -43,15 +41,15 @@ export const Actor = {
   stream: StreamMember.make,
   /** Declares a workflow member and its typed step constructors. */
   workflow: WorkflowMember.make,
-  /** Declares a durable event class: `class Posted extends Actor.Event<Posted>()("Posted", fields) {}`. */
-  Event: Event.make,
-  /** Declares a pure state transition the server runs as an ordinary command turn; a commutative one is merged when queued. */
+  /** Declares a durable event class: `const Posted = Actor.event("Posted", fields)`. */
+  event,
+  /** Declares a pure state transition the server runs as an ordinary command turn; a batched one folds queued calls in order. */
   reducer: Reducer.make,
-  /** Declares an effect class: a request for external I/O that a turn records and an executor runs after commit. */
-  effect,
-  /** The input schema of an effect's `onDeadLetter` command: `Actor.DeadLetter(E)`. */
+  /** Declares a job class: a request for external I/O that a turn enqueues and an executor runs after commit. */
+  job,
+  /** The payload schema of a job binding's `onDeadLetter` command: `Actor.DeadLetter(J)`. */
   DeadLetter,
-  /** The input schema of an effect's `onCancelled` command: `Actor.Cancelled(E)`. */
+  /** The payload schema of a job binding's `onCancelled` command: `Actor.Cancelled(J)`. */
   Cancelled,
   /** Declares an actor's keyed state fields and their migrations. */
   state: ActorStates.make,
@@ -61,18 +59,14 @@ export const Actor = {
   blob,
   /** Declares shared content: immutable bytes stored once per tenant that actors reference by name. */
   content,
-  /** Builds one step of a state, event, or effect migration chain. */
+  /** Builds one step of a state, event, or job migration chain. */
   migration: ActorStates.migration,
   /** The key of an actor with one instance per tenant; its handle is `X.get()`. */
   singleton: Definition.singleton,
   /** Declares a subscription to another actor type's committed events. */
   subscription: SubscriptionMember.make,
-  /** The input schema of a subscription handler: one delivery of a source's events. */
+  /** The payload schema of a subscription handler, which also names the source and events it delivers. */
   Delivery,
-  /** Serves actor definitions over HTTP as routes on the application's `HttpRouter`. */
-  serve,
-  /** Authentication providers for `Actor.serve`; one per served layer. */
-  auth: { none: authNone, make: authMake, jwt, assertion },
   /**
    * Ready-made `access` policies for `Actor.make`. `public` allows every caller
    * and kind, which opens the actor to anyone who can reach the server; use it
@@ -128,7 +122,6 @@ export type {
   Handle,
   Intents,
   StreamHandler,
-  WorkflowHandlers,
 } from "./actor/definition.ts"
 
 export {
@@ -181,11 +174,15 @@ export type { AnyConnection, Connection } from "./members/connection.ts"
 
 export type { AnyStream, Stream as StreamMember } from "./members/stream.ts"
 
-export type { EffectClass, EffectPolicy, ProgressEffect, ProgressOf } from "./members/effect.ts"
+export type { AnyJob, JobBinding, JobClass, ProgressJob, ProgressOf } from "./members/job.ts"
+
+export type { EventOf } from "./members/event.ts"
+
+export type { DeclaredError, PayloadOption } from "./members/command.ts"
 
 export type { PayloadMigrations, PayloadOptions } from "./members/payload.ts"
 
-export type { Commutative, Reducer } from "./members/reducer.ts"
+export type { Batch, Reducer } from "./members/reducer.ts"
 
 export type { AnyBlob, AnyContent, Blob, ContentBlob } from "./members/blob.ts"
 
@@ -195,6 +192,7 @@ export type {
   DeliveredGap,
   DeliveredRejection,
   Delivery,
+  DeliverySchema,
   Route,
   SubscribeContext,
   SubscribeFrom,
@@ -205,7 +203,7 @@ export type { CommandContext, EventEntry, QueryContext, Turn } from "./contexts/
 
 export type { WorkflowContext } from "./contexts/workflow.ts"
 
-export type { ExecutorContext, PerformContext, PerformOptions } from "./contexts/effect.ts"
+export type { EnqueueContext, EnqueueOptions, ExecutorContext } from "./contexts/job.ts"
 
 export type {
   BroadcastContext,
@@ -237,19 +235,6 @@ export type {
   ScopedRows,
 } from "./tables/owned.ts"
 
-export type { AuthProvider, AuthRequest, Authenticated, Binding } from "./serve/auth.ts"
-
-export {
-  ASSERTION_SKEW_MS,
-  AssertionClaims,
-  AssertionKey,
-  AssertionKeySet,
-  KeyRefreshClaims,
-  MAX_ASSERTION_SECONDS,
-} from "./serve/assertion/verify.ts"
-
-export type { AssertionOptions } from "./serve/assertion/verify.ts"
-
 export {
   ASSERTION_HEADER,
   ASSERTION_TYPE,
@@ -261,7 +246,5 @@ export {
 } from "./serve/assertion/binding.ts"
 
 export type { BoundRequest } from "./serve/assertion/binding.ts"
-
-export { actorErrorBody, closeCodeOf, statusOf } from "./protocol/wire.ts"
 
 export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./protocol/frames.ts"

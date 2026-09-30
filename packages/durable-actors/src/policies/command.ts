@@ -1,6 +1,5 @@
 import { Duration, Schema } from "effect"
 import type { AnyCommand } from "../members/command.ts"
-import type { AnyEffect, EffectPolicies } from "../members/effect.ts"
 
 const Positive = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }))
 
@@ -12,20 +11,19 @@ const horizon = (duration: Duration.Input) =>
     Duration.toMillis(duration),
   )
 
-/** The commands a `policy.cron` entry may target: those that take no input. */
-type CronTarget<Command extends AnyCommand> = AnyCommand extends Command
-  ? AnyCommand
-  : Extract<Command, { readonly input: Schema.Void }>
-
-/** Serializable actor policies; each key has exactly one meaning and one default. */
-export interface Policy<
-  Command extends AnyCommand = AnyCommand,
-  Effects extends AnyEffect = never,
-> {
+/**
+ * Serializable actor limits, retention, and lifecycle settings; each key has
+ * exactly one meaning and one default. What the actor does (who creates it,
+ * its schedules, its jobs) is declared on the definition, not here.
+ */
+export interface Policy {
   /** Idle time before the activation sleeps. Default 60 seconds. */
   readonly hibernateAfter?: Duration.Input
-  /** Deadline for the whole turn transaction. Default 30 seconds. */
-  readonly commandTimeout?: Duration.Input
+  /**
+   * Deadline for one command turn's transaction and one query's execution.
+   * It does not bound a workflow or a live session. Default 30 seconds.
+   */
+  readonly executionTimeout?: Duration.Input
   /** Deadline for acquiring the generation lock. Default 2 seconds. */
   readonly lockWait?: Duration.Input
   /** How long a caller waits for a reply; the turn itself is not cancelled. Default 30 seconds. */
@@ -34,12 +32,10 @@ export interface Policy<
   readonly maxStateBytes?: number
   /** Maximum queued commands per activation. Default unbounded. */
   readonly mailboxCapacity?: number
-  /** The only command that may create the actor; other commands fail `NotCreated` until it commits. */
-  readonly createdBy?: Command
   /**
    * How long a receipt is kept after its command id is issued; a timer's
    * receipt counts from its due time. A receipt is never pruned before its id
-   * expires, nor while an intent or effect with its id is still pending.
+   * expires, nor while an intent or job with its id is still pending.
    * Default 7 days.
    */
   readonly keepReceipts?: Duration.Input
@@ -65,23 +61,8 @@ export interface Policy<
    * it finishes. Must be at least the deployment's retry window. Default 7 days.
    */
   readonly keepWorkflows?: Duration.Input
-  /** Per declared effect, keyed by tag; see `EffectPolicy`. */
-  readonly effects?: EffectPolicies<Effects, Command>
-  /**
-   * Schedules mapped to the zero-input command each tick runs with a
-   * `System({ source: "cron" })` caller. A key is a five- or six-field cron
-   * expression evaluated in UTC, the same prefixed `CRON_TZ=<IANA zone> ` to
-   * evaluate it in that zone, or `@every <duration>` (at least 1 second) to
-   * fire on every multiple of the duration since the Unix epoch. In a zone, a
-   * time a spring-forward gap skips fires once at the first instant after the
-   * gap, and a time a fall-back transition repeats fires once, at its first
-   * occurrence. A tick fires at most once per scheduled time, never overlaps
-   * the previous tick of its entry, and after downtime fires once rather than
-   * once per missed time.
-   */
-  readonly cron?: Readonly<Record<string, CronTarget<Command>>>
-  /** A tick later than this after its scheduled time is skipped. Default 1 day. */
-  readonly cronSkipIfOlderThan?: Duration.Input
+  /** A schedule tick later than this after its scheduled time is skipped. Default 1 day. */
+  readonly maxScheduleLag?: Duration.Input
   /**
    * Whether open connections keep the activation awake. `"park"` (default)
    * lets it hibernate with sockets open at their holders; `"keepAwake"`
@@ -106,10 +87,11 @@ export interface Policy<
   }
   /**
    * The actor types that may subscribe to this actor's events, by name, so
-   * this definition never imports its subscribers. A subscription on any
-   * other type fails at `Actor.make`. Omitted, every type in the tenant may.
+   * this definition never imports its subscribers. These are actor type
+   * names, not user principals. A subscription on any other type fails at
+   * `Actor.make`. Omitted, every type in the tenant may.
    */
-  readonly subscribers?: ReadonlyArray<string>
+  readonly allowedSubscriberTypes?: ReadonlyArray<string>
   /**
    * How long past `keepEvents` subscriptions to this actor may hold its
    * events back from pruning. An event older than both is pruned, and a
@@ -148,20 +130,21 @@ export interface TurnPolicy {
  * Applies the defaults of `declared` and validates each bound: durations run
  * from 1 ms to 2^31 - 1 ms, retention horizons up to about ten years, and
  * `reauthorizeEvery` from 1 second to 1 hour, and `watch.reconcileEvery` from
- * 5 seconds to 1 hour. Throws when a value is out of
- * range or `createdBy` is not one of `commands`.
+ * 5 seconds to 1 hour. Throws when a value is out of range or `createdBy` is
+ * not one of `commands`.
  */
 export const resolvePolicy = (policy: {
   readonly declared: Policy | undefined
+  readonly createdBy: AnyCommand | undefined
   readonly commands: ReadonlyArray<AnyCommand>
 }): TurnPolicy => {
-  const { declared, commands } = policy
+  const { declared, createdBy, commands } = policy
 
-  if (declared?.createdBy !== undefined && !commands.includes(declared.createdBy))
-    throw new Error("policy.createdBy must belong to this actor")
+  if (createdBy !== undefined && !commands.includes(createdBy))
+    throw new Error("createdBy must be a command of this actor")
 
   return Object.freeze({
-    executionMs: milliseconds(declared?.commandTimeout ?? "30 seconds"),
+    executionMs: milliseconds(declared?.executionTimeout ?? "30 seconds"),
     lockWaitMs: milliseconds(declared?.lockWait ?? "2 seconds"),
     deliveryMs: milliseconds(declared?.deliveryTimeout ?? "30 seconds"),
     stateMaxBytes: Positive.make(declared?.maxStateBytes ?? 65_536),
@@ -170,7 +153,7 @@ export const resolvePolicy = (policy: {
       declared?.mailboxCapacity === undefined
         ? "unbounded"
         : Positive.make(declared.mailboxCapacity),
-    createdBy: declared?.createdBy?.tag,
+    createdBy: createdBy?.tag,
     keepReceiptsMs: horizon(declared?.keepReceipts ?? "7 days"),
     keepEventsMs: horizon(declared?.keepEvents ?? "30 days"),
     blobMaxBytes: Positive.make(declared?.maxBlobBytes ?? 67_108_864),
@@ -187,8 +170,11 @@ export const resolvePolicy = (policy: {
       ),
     },
     keepWorkflowsMs: horizon(declared?.keepWorkflows ?? "7 days"),
-    cronSkipMs: horizon(declared?.cronSkipIfOlderThan ?? "1 day"),
-    subscribers: declared?.subscribers === undefined ? undefined : [...declared.subscribers],
+    cronSkipMs: horizon(declared?.maxScheduleLag ?? "1 day"),
+    subscribers:
+      declared?.allowedSubscriberTypes === undefined
+        ? undefined
+        : [...declared.allowedSubscriberTypes],
     holdEventsMs: horizon(declared?.holdEventsForSubscribers ?? "7 days"),
   })
 }

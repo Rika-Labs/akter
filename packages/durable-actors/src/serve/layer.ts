@@ -16,12 +16,8 @@ import {
   type HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http"
-import {
-  type ServedConnection,
-  type ServedDefinition,
-  type ServedMember,
-  servedDefinitions,
-} from "../actor/served.ts"
+import { type ServedConnection, type ServedDefinition, type ServedMember } from "../actor/served.ts"
+import { descriptorOf } from "../actor/descriptor.ts"
 import {
   ActorError,
   InvalidInput,
@@ -253,7 +249,7 @@ const isConnectionUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
   ) && offeredProtocols(request)[0] === SUBPROTOCOL
 
 const resolve = (actor: { readonly name: string }): ServedDefinition => {
-  const definition = servedDefinitions.get(actor)
+  const definition = descriptorOf(actor)?.served
 
   if (definition === undefined)
     throw new Error(`Actor.serve: ${actor.name} is not an Actor.make definition`)

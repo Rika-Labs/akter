@@ -23,12 +23,12 @@ export interface StepRegistry {
   readonly steps: Map<string, StepEntry>
 }
 
-/** A method signature, so a workflow with a specific input is still an `AnyWorkflow`. */
-interface KeyFunction<Input extends ValueSchema> {
-  key(input: Input["Type"]): string
+/** A method signature, so a workflow with a specific payload is still an `AnyWorkflow`. */
+interface KeyFunction<Payload extends ValueSchema> {
+  key(payload: Payload["Type"]): string
 }
 
-type KeyOf<Input extends ValueSchema> = KeyFunction<Input>["key"]
+type KeyOf<Payload extends ValueSchema> = KeyFunction<Payload>["key"]
 
 /**
  * A durable workflow member: a body the runtime replays from recorded steps.
@@ -37,26 +37,26 @@ type KeyOf<Input extends ValueSchema> = KeyFunction<Input>["key"]
  */
 export interface Workflow<
   Tag extends string,
-  Input extends ValueSchema,
-  Output extends ValueSchema,
-  Errors extends ReadonlyArray<DeclaredError>,
-> extends Member<"workflow", Tag, Input, Output, Errors> {
+  Payload extends ValueSchema,
+  Success extends ValueSchema,
+  Error extends DeclaredError,
+> extends Member<"workflow", Tag, Payload, Success, Error> {
   /** The execution key; the start's command id when omitted. */
-  readonly key: KeyOf<Input> | undefined
+  readonly key: KeyOf<Payload> | undefined
   /** Version markers by name, for branching the body on how an old execution started. */
   readonly versions: Readonly<Record<string, VersionRange>>
   /** The constructors created on this workflow, so the layer can check that a body uses only declared steps. */
   readonly registry: StepRegistry
-  /** An activity: `run(input, execute)` records `execute`'s exit once per execution. */
+  /** An activity: `run(payload, execute)` records `execute`'s exit once per execution. */
   readonly step: <
     const Name extends string,
-    I extends ValueSchema = Schema.Void,
+    P extends ValueSchema = Schema.Void,
     S extends ValueSchema = Schema.Void,
-    const E extends ReadonlyArray<DeclaredError> = readonly [],
+    E extends DeclaredError = Schema.Never,
   >(
     name: Name,
-    options?: { readonly input?: I; readonly success?: S; readonly errors?: E },
-  ) => Step<Name, I, S, E>
+    options?: { readonly payload?: P; readonly success?: S; readonly error?: E },
+  ) => Step<Name, P, S, E>
   /** A durable clock: calling it with a duration sleeps across restarts. */
   readonly sleep: <const Name extends string>(name: Name) => Sleep<Name>
   /** An owner-event wait: the first matching event after the execution's cursor. */
@@ -68,29 +68,29 @@ export interface Workflow<
   readonly race: <
     const Name extends string,
     S extends ValueSchema,
-    const E extends ReadonlyArray<DeclaredError> = readonly [],
+    E extends DeclaredError = Schema.Never,
   >(
     name: Name,
-    options: { readonly success: S; readonly errors?: E },
+    options: { readonly success: S; readonly error?: E },
   ) => Race<Name, S, E>
 }
 
 /** Any workflow, whatever its schemas. */
-export type AnyWorkflow = Workflow<string, ValueSchema, ValueSchema, ReadonlyArray<DeclaredError>>
+export type AnyWorkflow = Workflow<string, ValueSchema, ValueSchema, DeclaredError>
 
 /** An activity constructor: `run` executes once per execution and replays its recorded exit afterwards. */
 export interface Step<
   Name extends string,
-  I extends ValueSchema,
+  P extends ValueSchema,
   S extends ValueSchema,
-  E extends ReadonlyArray<DeclaredError>,
+  E extends DeclaredError,
 > {
   readonly name: Name
   readonly kind: "activity"
   readonly run: <R>(
-    input: I["Type"],
-    execute: (input: I["Type"]) => Effect.Effect<S["Type"], E[number]["Type"], R>,
-  ) => Effect.Effect<S["Type"], E[number]["Type"], R>
+    payload: P["Type"],
+    execute: (payload: P["Type"]) => Effect.Effect<S["Type"], E["Type"], R>,
+  ) => Effect.Effect<S["Type"], E["Type"], R>
 }
 
 /** A durable clock: calling it with a duration sleeps across restarts. */
@@ -119,16 +119,12 @@ export interface Wait<Name extends string, Ev extends EventClass> {
  * the same winner. Only a winner or a declared failure is recorded; a
  * suspension, defect, or interruption leaves the race to run again on replay.
  */
-export interface Race<
-  Name extends string,
-  S extends ValueSchema,
-  E extends ReadonlyArray<DeclaredError>,
-> {
+export interface Race<Name extends string, S extends ValueSchema, E extends DeclaredError> {
   readonly name: Name
   readonly kind: "deferred"
   readonly run: <R>(
-    effects: ReadonlyArray<Effect.Effect<S["Type"], E[number]["Type"], R>>,
-  ) => Effect.Effect<S["Type"], E[number]["Type"], R>
+    effects: ReadonlyArray<Effect.Effect<S["Type"], E["Type"], R>>,
+  ) => Effect.Effect<S["Type"], E["Type"], R>
 }
 
 /** Whether a member is a workflow. */

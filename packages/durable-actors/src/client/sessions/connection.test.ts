@@ -10,24 +10,24 @@ const Live = Actor.connection("Live", { client: Schema.String, server: Schema.St
 
 const Room = Actor.make("ConnectionClientRoom", { key: Schema.String, api: { Live } })
 
-class Render extends Actor.effect<Render>()("Render", {
-  input: { steps: Schema.Int },
+const Render = Actor.job("Render", {
+  payload: { steps: Schema.Int },
   progress: Schema.Struct({ percent: Schema.Finite }),
-}) {}
+})
 
-class Scan extends Actor.effect<Scan>()("Scan", {
+const Scan = Actor.job("Scan", {
   progress: Schema.Struct({ found: Schema.Int, path: Schema.String }),
-}) {}
+})
 
 const Watch = Actor.connection("Watch", {
   server: Schema.String,
   client: Schema.Finite,
-  progress: { effects: [Render, Scan] },
+  progress: { jobs: [Render, Scan] },
 })
 
 const Jobs = Actor.make("ConnectionProgressRoom", {
   key: Schema.String,
-  effects: [Render, Scan],
+  jobs: { Render: { job: Render }, Scan: { job: Scan } },
   api: { Live, Watch },
 })
 
@@ -183,7 +183,7 @@ describe("socketUrl", () => {
   })
 })
 
-class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+const Posted = Actor.event("Posted", { text: Schema.String })
 
 const Board = Actor.make("FeedClientBoard", {
   key: Schema.String,

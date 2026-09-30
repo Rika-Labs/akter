@@ -2,7 +2,7 @@ import { Context, type DateTime, Effect, Option, type Stream } from "effect"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
 import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
 import type { AnyBlob } from "../members/blob.ts"
-import type { AnyEffect, ProgressEffect, ProgressOf } from "../members/effect.ts"
+import type { AnyJob, ProgressJob, ProgressOf } from "../members/job.ts"
 import type { EventClass } from "../members/event.ts"
 import type { BlobReadOf, BlobWriteOf } from "../state/blob.ts"
 import type { Group, AnyOwnedTable, ScopedRead, TurnRows } from "../tables/owned.ts"
@@ -31,7 +31,7 @@ export interface Turn<Name extends string> {
 
 declare const MintableTypeId: unique symbol
 
-/** Type-level mark of an unkeyed actor that declares `policy.createdBy`, so turns can mint it. */
+/** Type-level mark of an unkeyed actor that declares `createdBy`, so turns can mint it. */
 export interface Mintable<Id extends string = string> {
   readonly [MintableTypeId]: Id
 }
@@ -80,15 +80,15 @@ export interface EventEntry<E> {
   readonly timestamp: DateTime.Utc
 }
 
-/** One executor progress frame of an effect this actor performed. */
-export interface ProgressEntry<E extends ProgressEffect> {
-  readonly effectId: string
-  /** The effect as performed. */
-  readonly effect: E["Type"]
+/** One executor progress frame of a job this actor enqueued. */
+export interface ProgressEntry<J extends ProgressJob> {
+  readonly jobId: string
+  /** The job as enqueued. */
+  readonly job: J["Type"]
   readonly attempt: number
   /** Per attempt, from 1; a gap means frames of the attempt were lost. */
   readonly seq: number
-  readonly frame: ProgressOf<E>
+  readonly frame: ProgressOf<J>
 }
 
 /** The read-only context of one query, obtained with `yield* X.Read`. */
@@ -97,7 +97,7 @@ export interface QueryContext<
   Event extends EventClass = never,
   Tables extends AnyOwnedTable = AnyOwnedTable,
   Blobs extends AnyBlob = AnyBlob,
-  Effects extends AnyEffect = never,
+  Jobs extends AnyJob = never,
 > {
   readonly id: string
   readonly ref: ActorRef
@@ -138,15 +138,15 @@ export interface QueryContext<
     options?: { readonly after?: string | undefined },
   ) => Stream.Stream<EventEntry<E["Type"]>, UnknownCursor | RetentionGap, InStream>
   /**
-   * Live executor progress of this actor's effects of class `effect`, from
-   * the moment of the call; it has no history, may skip or coalesce frames,
-   * and ends with the stream. Only stream handlers whose member lists
-   * `effect` in `progress.effects` receive any.
+   * Live executor progress of this actor's jobs of class `job`, from the
+   * moment of the call; it has no history, may skip or coalesce frames, and
+   * ends with the stream. Only stream handlers whose member lists `job` in
+   * `progress.jobs` receive any.
    */
-  readonly progress: <E extends Extract<Effects, ProgressEffect>>(
-    effect: E,
-    options?: { readonly effectId?: string | undefined },
-  ) => Stream.Stream<ProgressEntry<E>, never, InStream>
+  readonly progress: <J extends Extract<Jobs, ProgressJob>>(
+    job: J,
+    options?: { readonly jobId?: string | undefined },
+  ) => Stream.Stream<ProgressEntry<J>, never, InStream>
 }
 
 /**

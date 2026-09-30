@@ -36,9 +36,9 @@ class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {
 }) {}
 
 const Call = Actor.command("Call", {
-  input: Schema.Struct({ text: Schema.String }),
-  output: Schema.Int,
-  errors: [RoomClosed],
+  payload: { text: Schema.String },
+  success: Schema.Int,
+  error: RoomClosed,
 })
 
 const Vectors = Actor.make("ExchangeVectors", { key: Schema.String, api: { Call } })

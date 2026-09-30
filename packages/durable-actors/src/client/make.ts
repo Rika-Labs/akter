@@ -81,19 +81,19 @@ export interface CommandOptions extends QueryOptions {
  * current result first, never one older than one already delivered.
  */
 export type WatchCall<M extends AnyMember> = (
-  ...args: M["input"]["Type"] extends void
+  ...args: M["payload"]["Type"] extends void
     ? [options?: WatchOptions]
-    : [input: M["input"]["Type"], options?: WatchOptions]
-) => AsyncIterable<M["output"]["Type"]>
+    : [input: M["payload"]["Type"], options?: WatchOptions]
+) => AsyncIterable<M["success"]["Type"]>
 
-type Call<M extends AnyMember> = (M["input"]["Type"] extends void
+type Call<M extends AnyMember> = (M["payload"]["Type"] extends void
   ? (
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
-    ) => Promise<M["output"]["Type"]>
+    ) => Promise<M["success"]["Type"]>
   : (
-      input: M["input"]["Type"],
+      input: M["payload"]["Type"],
       options?: M["kind"] extends "query" ? QueryOptions : CommandOptions,
-    ) => Promise<M["output"]["Type"]>) &
+    ) => Promise<M["success"]["Type"]>) &
   (M extends { readonly watch: true } ? { readonly watch: WatchCall<M> } : unknown)
 
 /**
@@ -119,18 +119,18 @@ export interface ClientState<State> {
 export interface ConnectionClient<M extends AnyConnection> {
   /** Opens a session; the `authorization` header from `headers` travels in `hello`. */
   readonly connect: (
-    ...args: M["input"]["Type"] extends void
-      ? [params?: M["input"]["Type"], options?: ConnectOptions]
-      : [params: M["input"]["Type"], options?: ConnectOptions]
+    ...args: M["payload"]["Type"] extends void
+      ? [params?: M["payload"]["Type"], options?: ConnectOptions]
+      : [params: M["payload"]["Type"], options?: ConnectOptions]
   ) => Promise<ClientConnection<M["server"]["Type"], M["client"]["Type"], ProgressOfConnection<M>>>
 }
 
 /** A stream member: each call subscribes once, as an `AsyncIterable` of its elements. */
 export type StreamCall<M extends AnyStream> = (
-  ...args: M["input"]["Type"] extends void
+  ...args: M["payload"]["Type"] extends void
     ? [options?: StreamOptions]
-    : [input: M["input"]["Type"], options?: StreamOptions]
-) => AsyncIterable<M["output"]["Type"]>
+    : [input: M["payload"]["Type"], options?: StreamOptions]
+) => AsyncIterable<M["success"]["Type"]>
 
 /** One actor over HTTP: each public member as a Promise-returning method, connections as `connect`. */
 export type ClientHandle<
