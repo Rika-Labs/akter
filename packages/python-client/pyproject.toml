@@ -1,0 +1,10 @@
+[project]
+name = "durable-actors-client-runtime"
+version = "0.0.0"
+description = "Runtime tests for the Python client generated from a served Durable Actors OpenAPI document."
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["python"]
+pythonpath = ["python"]
