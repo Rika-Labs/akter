@@ -672,12 +672,14 @@ const deliveryRequest = Effect.fnUntraced(function* (options: {
 }) {
   const test = yield* ActorTest
   const internal = yield* InternalActors
+
   const route = options.route ?? {
     actor: "SubFollower",
     subscription: "FollowedOrders",
     command: "OnOrder",
     source: "SubOrder",
   }
+
   const subscriber = { tenant: test.tenant, actor: route.actor, id: options.subscriber }
   const source = { tenant: test.tenant, actor: route.source, id: options.source }
 
@@ -1199,11 +1201,13 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           yield* (yield* SubFollower.get("feeddie-follower")).Follow({ source: "feeddie-order" })
           yield* drain
+
           const crash = crashOnce(
             fixture,
             "afterClaim",
             (request) => request.command === "$feed" && request.ref.id === "feeddie-order",
           )
+
           yield* (yield* SubOrder.get("feeddie-order")).Place({ customerId: "f", amount: 1 })
           yield* drain
           expect(crash.crashed).toBe(true)
@@ -1522,6 +1526,7 @@ export const subscriptionsConformance: ReadonlyArray<ConformanceCase> = [
             (sql) => sql`DELETE FROM actor_receipts WHERE tenant_id = ${test.tenant}
               AND actor_type = 'SubGated' AND actor_id = 'gate-sub' AND command = 'OnGated'`,
           )
+
           const stale = yield* deliveryRequest({
             subscriber: "gate-sub",
             source: "gate-order",
@@ -2582,10 +2587,11 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
             "gapreceipt-j~gap:0-2",
             "gapreceipt-j#3:OrderPlaced",
           ])
+
           for (const entry of ["gapreceipt-j~gap:0-2", "gapreceipt-j#3:OrderPlaced"])
             expect(
-              fixture.runs.filter((run) => run === `SubFollower/gapreceipt-f/${entry}`),
-            ).toHaveLength(1)
+              fixture.runs.filter((run) => run === `SubFollower/gapreceipt-f/${entry}`).length,
+            ).toBe(1)
           expect(yield* journalRow("gapreceipt-j", "SubFollower")).toMatchObject({
             delivered: "3",
             gap_through: null,
@@ -2611,11 +2617,13 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
           yield* test.advance("3 hours")
 
           fixture.behave = () => "apply"
+
           const pause = yield* pauseOnce(
             fixture,
             "afterClaim",
             (request) => request.ref.id === "claimrace-j" && request.commandId === "claimrace-f",
           )
+
           const delivering = yield* test.advance("300 seconds").pipe(Effect.forkChild)
           yield* pause.reached
           yield* test.cleanup
@@ -2674,6 +2682,7 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
                   FROM actor_subscriptions WHERE tenant_id = ${tenant}
                     AND source_id = 'tomb-order' AND subscriber_id = 'tomb-follower'`,
               )
+
               const tags = query(
                 (sql) => sql<{ event: string }>`SELECT event FROM actor_subscription_tags
                   WHERE tenant_id = ${tenant} AND source_id = 'tomb-order'`,
@@ -2688,12 +2697,16 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
               yield* drain
 
               expect(yield* row).toEqual([{ events: '["OrderPlaced"]', active: false, due: false }])
+
               const { state } = yield* (yield* ActorTest).inspect({
                 tenant,
                 actor: "SubFollower",
                 id: "tomb-follower",
               })
-              expect(state["log"] ?? []).toEqual([])
+
+              expect(
+                (yield* Schema.decodeUnknownEffect(LogState)(state).pipe(Effect.orDie)).log ?? [],
+              ).toEqual([])
             }),
           ),
         )

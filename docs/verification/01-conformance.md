@@ -1038,6 +1038,34 @@ The cases live in [`conformance/adoption.ts`](../../packages/durable-actors/src/
 
 Not covered in this slice: enforcement, the guard, `durable adopt enforce|release`, and the `adoption` runtime option, so the Adoption check above is not yet met and no adopted table is authoritative. A login shared by the application and the runtime is supported for observation only. The proposed `adoption` benchmark is not built. Neki is not claimed.
 
+### Failure-matrix cases (M5.5)
+
+[#394](https://github.com/Rika-Labs/durable-actors/issues/394) adds a case for each [failure-matrix](02-failure-matrix.md) row that described a durable transition without one. Each row's **Evidence** cell names its cases.
+
+In `conformance/subscriptions.ts`, on PGlite and Postgres:
+
+- `reactivates a subscription over its tombstone, so the source's next event is delivered`: row **Resubscribe over a tombstone, then the source emits a subscribed event**. After an unsubscribe leaves an inactive row at epoch 2, a new subscribe reactivates it at epoch 3, its tags return to the summary, and the next event is delivered.
+- `tombstones a caught-up row and delivers Rejected when a resubscribe names a cursor above the source's head`: the caught-up row becomes inactive at the new epoch, and no later event is delivered.
+- `expands a feed row once its lease ends when the relay dies after claiming it`: a crash at the feed claim leaves the feed row and delivers nothing. After the claim lease the row is expanded and the event is delivered once.
+- `never claims a row widened with a class this runner does not declare, and leaves it due`: a row whose events include a class this runner does not declare stays due and unclaimed. Once the row matches the declaration, it is delivered.
+- `backs a routed row off with last_error when route throws, and holds its later events`.
+- `acknowledges a RetentionGap redelivered after its receipt was pruned without running the handler again`: the gap's commit moved the applied cursor, so the redelivery is `AlreadyApplied`.
+- `delivers a RetentionGap, never a skip, when retention prunes a claimed row's events before it reads them`: the delivery is paused after its claim while cleanup prunes the events.
+- `widens no tombstone at startup, so it gains no tag and never becomes due`.
+- `acknowledges a stale routed delivery as AlreadyApplied after a NotCreated skip and a later creation`: the fixture `SubGated` declares `policy.createdBy`, so a delivery to an uncreated subscriber stores its cursor and skips.
+
+In `conformance/connections.ts`:
+
+- `an owner deletes the rows of an earlier holder epoch at the same address, and its live connection still receives broadcasts` (PGlite and Postgres): a row copied under another holder epoch at the same holder is deleted at the next delivery, when the holder answers `wrongEpoch`.
+- `a connection's commands take ids another caller never holds, and each commits once under its own caller` (PGlite and Postgres). The HMAC derivation itself is checked by `are stable for one call and distinct across seq, index, target, command, and secret` in `identity/command.test.ts`.
+- `an owner deletes a dead holder's connection rows at its next delivery, and its turns still commit` (Postgres, two runners, runner 0 holding only): after `cluster.kill(0)`, the owner's next broadcast fails to reach the holder and deletes its row.
+
+In `conformance/workflows.ts`, on the three-runner harness against Postgres:
+
+- `workflows: replays an interrupted execution's compensation on a survivor when its runner dies mid-compensation, and records the interrupt once`: the `compensate-block` scenario holds its compensation. After the owner is killed, the survivor runs the compensation again, the result is an interrupt, and the execution finishes with no steps left.
+
+Still without a case: **Connection-row load fails before a broadcasting commit**, because no fault point makes the owner's row load fail transiently (a missing table is a deterministic defect), and **Same-runner activation restarts while holders are unsealed**, because no fault point holds a seal between two activations on one runner.
+
 ## Faithful test boundary
 
 `ActorTest` MUST exercise the real turn, Cluster entity, SQL tables, serialization, receipts, and outbox. There is no handler-only fake-context runtime. Only the database, transport, clock, executor implementations, and caller are substituted. Use production `SqlMessageStorage` on the test transaction connection, not in-memory message storage whose writes could survive a rolled-back turn. On PGlite, Cluster runner bookkeeping additionally moves to memory because `SqlRunnerStorage` would reserve the sole connection; message storage, migrations, and receipts stay in SQL and this substitution is only valid under `SingleRunner`.

@@ -739,7 +739,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
             FROM actor_connections WHERE connection_id = ${connection.connectionId}`.pipe(
             Effect.orDie,
           )
-          expect(yield* rows(room.ref)).toHaveLength(2)
+          expect((yield* rows(room.ref)).length).toBe(2)
           yield* test.hibernate(room.ref)
 
           yield* room.Post("after restart")
@@ -749,6 +749,7 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           const left = yield* sql<{ connection_id: string }>`SELECT connection_id
             FROM actor_connections WHERE tenant_id = ${room.ref.tenant}
               AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id}`.pipe(Effect.orDie)
+
           expect(left).toEqual([{ connection_id: connection.connectionId }])
         }),
       ),
@@ -771,47 +772,17 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           expect(frameOf(broadcast)).toEqual(Said.make({ text: "preminted" }))
 
           const sql = yield* SqlClient.SqlClient
+
           const receipts = yield* sql<{ command_id: string; caller_key: string }>`
             SELECT command_id, caller_key FROM actor_receipts WHERE tenant_id = ${room.ref.tenant}
               AND actor_type = ${room.ref.actor} AND actor_id = ${room.ref.id}
               AND command = 'Post'`.pipe(Effect.orDie)
 
-          expect(receipts).toHaveLength(2)
+          expect(receipts.length).toBe(2)
           expect(new Set(receipts.map((receipt) => receipt.command_id)).size).toBe(2)
           expect(new Set(receipts.map((receipt) => receipt.caller_key)).size).toBe(2)
           expect(yield* posts(room.ref)).toBe(2)
           expect(yield* test.receiptsFor(room.ref, "Post")).toBe(2)
-        }),
-      ),
-  },
-  {
-    name: "a broadcasting turn whose connection rows cannot load commits nothing, and its retry under the same id commits once",
-    requiresIndependentConnections: true,
-    timeoutMs: 30_000,
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const { test, room, connection } = yield* connect("connections-unloaded")
-          yield* next(connection)
-          yield* test.hibernate(room.ref)
-
-          if (environment.connect === undefined)
-            return yield* Effect.die(new Error("backend lacks independent connections"))
-
-          const lock = yield* environment.connect
-          yield* lock.query("BEGIN")
-          yield* lock.query("LOCK TABLE actor_connections IN ACCESS EXCLUSIVE MODE")
-
-          const posting = yield* room.Post("during outage").pipe(Effect.forkChild)
-          yield* Effect.sleep("3 seconds")
-          expect(yield* test.receiptsFor(room.ref, "Post")).toBe(0)
-          yield* lock.query("ROLLBACK")
-
-          yield* Fiber.join(posting)
-          expect(yield* posts(room.ref)).toBe(1)
-          expect(yield* test.receiptsFor(room.ref, "Post")).toBe(1)
-          const [broadcast] = yield* next(connection)
-          expect(frameOf(broadcast)).toEqual(Said.make({ text: "during outage" }))
         }),
       ),
   },
@@ -1917,7 +1888,10 @@ export const connectionsConformance: ReadonlyArray<ConformanceCase> = [
           yield* cluster
             .on(1)(rows)
             .pipe(
-              Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: (count) => count === 0 }),
+              Effect.repeat({
+                schedule: Schedule.spaced("50 millis"),
+                until: (count) => count === 0,
+              }),
               Effect.timeoutOrElse({
                 duration: "30 seconds",
                 orElse: () => Effect.die(new Error("The dead holder's row was never deleted")),

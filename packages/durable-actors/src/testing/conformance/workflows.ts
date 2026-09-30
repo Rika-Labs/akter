@@ -1201,6 +1201,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
               return (owner + 1) % cluster.runners
             }),
           )
+
           yield* advance(survivor, "31 seconds")
           yield* eventually(
             Effect.sync(() => (engine.runs.get(`compensate:${key}`) ?? 0) >= 2),
@@ -1216,7 +1217,7 @@ export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
-          expect(engine.runs.get(`compensate:${key}`)).toBeGreaterThanOrEqual(2)
+          expect((engine.runs.get(`compensate:${key}`) ?? 0) >= 2).toBe(true)
 
           const rows = yield* on(
             survivor,
