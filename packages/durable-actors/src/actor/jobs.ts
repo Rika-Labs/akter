@@ -1,13 +1,8 @@
 import { Cause, type Context, Effect, Exit, Option, Result, Schema } from "effect"
-import type { ExecutorContext } from "../contexts/effect.ts"
+import type { ExecutorContext } from "../contexts/job.ts"
 import { Tenant } from "../identity/caller.ts"
 import type { AnyCommand } from "../members/command.ts"
-import {
-  type AnyEffect,
-  CancelledOutcome,
-  type ProgressEffect,
-  type ProgressOf,
-} from "../members/effect.ts"
+import { type AnyJob, CancelledOutcome, type ProgressJob, type ProgressOf } from "../members/job.ts"
 import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import type { EffectRoute, RegisteredEffect } from "../runtime/members.ts"
 import type { CompiledJob, Descriptor } from "./descriptor.ts"
@@ -16,7 +11,7 @@ const utf8 = new TextEncoder()
 
 type Executor = (job: unknown) => Effect.Effect<unknown, unknown, unknown>
 
-/** The `onCancelled` input of a cancelled job whose provider call succeeded. */
+/** What the relay knows of a cancelled job whose provider call succeeded. */
 interface CancelledSuccess {
   readonly effectId: string
   readonly attempts: number
@@ -27,7 +22,7 @@ interface CancelledSuccess {
 /** Encodes a value as a route command's payload. */
 const routeCodec = (command: AnyCommand) => {
   const encode = Schema.encodeEffect(
-    Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input }))),
+    Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.payload }))),
   )
 
   return (value: unknown) =>
@@ -62,8 +57,8 @@ const jobOf = (
     onCancelled === undefined
       ? Effect.succeed(undefined)
       : onCancelled({
-          effectId: letter.effectId,
-          effect: decoded,
+          jobId: letter.effectId,
+          job: decoded,
           attempts: letter.attempts,
           outcome: letter.outcome,
           ambiguous: letter.ambiguous,
@@ -81,26 +76,21 @@ const jobOf = (
     perActor: policy.perActor,
     routesCancelled: onCancelled !== undefined,
     execute: Effect.fnUntraced(function* (payload, version, attempt) {
-      const decoded = yield* codec
-        .decode(payload, version)
-        .pipe(
-          Effect.mapError((error) => ({
-            cause: error.message,
-            ambiguous: false,
-            notStarted: true,
-          })),
-        )
+      const decoded = yield* codec.decode(payload, version).pipe(
+        Effect.mapError((error) => ({
+          cause: error.message,
+          ambiguous: false,
+          notStarted: true,
+        })),
+      )
 
       const { report, reporting, ...identity } = attempt
 
-      const progress = (
-        target: AnyEffect,
-        frame: ProgressOf<ProgressEffect>,
-      ): Effect.Effect<void> =>
+      const progress = (target: AnyJob, frame: ProgressOf<ProgressJob>): Effect.Effect<void> =>
         !reporting()
           ? Effect.void
           : target !== job || encodeProgress === undefined
-            ? Effect.logWarning("Progress frame does not match the running effect")
+            ? Effect.logWarning("Progress frame does not match the running job")
             : encodeProgress(frame).pipe(
                 Effect.map((json) => utf8.encode(json)),
                 Effect.matchEffect({
@@ -116,7 +106,13 @@ const jobOf = (
                 ),
               )
 
-      const context: ExecutorContext = { ...identity, progress } as ExecutorContext
+      const context: ExecutorContext = {
+        jobId: identity.effectId,
+        attempt: identity.attempt,
+        principal: identity.principal,
+        ref: identity.ref,
+        progress,
+      }
 
       const exit = yield* execute(decoded).pipe(
         Effect.timeoutOrElse({
@@ -141,14 +137,14 @@ const jobOf = (
         onCancelled === undefined
           ? undefined
           : yield* cancelledRoute(decoded, {
-              effectId: context.effectId,
+              effectId: context.jobId,
               attempts: context.attempt,
               outcome: CancelledOutcome.cases.Succeeded.make({ value: exit.value }),
               ambiguous: false,
             }).pipe(
               Effect.catch((error) =>
                 cancelledRoute(decoded, {
-                  effectId: context.effectId,
+                  effectId: context.jobId,
                   attempts: context.attempt,
                   outcome: CancelledOutcome.cases.Unknown.make({
                     cause: `The onCancelled route cannot accept the result: ${String(error)}`,
@@ -188,7 +184,13 @@ const jobOf = (
 
       if (onDeadLetter === undefined || Option.isNone(decoded)) return undefined
 
-      return yield* onDeadLetter({ ...letter, effect: decoded.value })
+      return yield* onDeadLetter({
+        jobId: letter.effectId,
+        job: decoded.value,
+        attempts: letter.attempts,
+        cause: letter.cause,
+        ambiguous: letter.ambiguous,
+      })
     }, Effect.orDie),
   }
 }

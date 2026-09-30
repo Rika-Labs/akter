@@ -2,7 +2,7 @@ import { Cron, DateTime, Duration, Effect, Option, Result, Schema, SchemaAST } f
 import type { AnyCommand } from "../members/command.ts"
 import { CRON_PREFIX } from "../runtime/cron/key.ts"
 
-/** One `policy.cron` entry: its tick's timer key, when it ticks, and its zero-input target. */
+/** One `schedules` entry: its tick's timer key, when it ticks, and its zero-input target. */
 export interface CronEntry {
   readonly key: string
   /** The first scheduled instant strictly after `afterMs`. */
@@ -12,6 +12,11 @@ export interface CronEntry {
   readonly payload: Effect.Effect<string>
 }
 
+/** The commands a `schedules` entry may target: those whose payload is `Schema.Void`. */
+export type ScheduleTarget<Command extends AnyCommand> = AnyCommand extends Command
+  ? AnyCommand
+  : Extract<Command, { readonly payload: Schema.Void }>
+
 /** An actor type's cron entries and how late a tick may still fire. */
 export interface CronSchedule {
   readonly entries: ReadonlyArray<CronEntry>
@@ -20,7 +25,7 @@ export interface CronSchedule {
 
 const emptyPayload = (command: AnyCommand) =>
   Schema.encodeEffect(
-    Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input }))),
+    Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.payload }))),
   )({ value: undefined }).pipe(Effect.orDie)
 
 const ZONE_PREFIX = /^CRON_TZ=(\S+)\s+(.*)$/
@@ -44,26 +49,26 @@ const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
 
   if (every !== null) {
     if (zoned !== null)
-      throw new Error(`policy.cron "${declaration}": an interval takes no time zone`)
+      throw new Error(`schedules "${declaration}": an interval takes no time zone`)
 
     const length = Duration.fromInput((every[1] ?? "") as Duration.Input)
     const millis = Option.isSome(length) ? Duration.toMillis(length.value) : Number.NaN
 
     if (!Number.isSafeInteger(millis) || millis < 1000)
       throw new Error(
-        `policy.cron "${declaration}" needs an interval of whole milliseconds, at least 1 second`,
+        `schedules "${declaration}" needs an interval of whole milliseconds, at least 1 second`,
       )
 
     return { key: `${CRON_PREFIX}@every ${millis}ms`, next: nextEvery(millis) }
   }
 
   if (/^[+-]/.test(zone) || Option.isNone(DateTime.zoneMakeNamed(zone)))
-    throw new Error(`policy.cron "${declaration}" names an unknown time zone "${zone}"`)
+    throw new Error(`schedules "${declaration}" names an unknown time zone "${zone}"`)
 
   const parsed = Cron.parse(expression, "UTC")
 
   if (Result.isFailure(parsed))
-    throw new Error(`policy.cron "${declaration}" does not parse: ${parsed.failure.message}`)
+    throw new Error(`schedules "${declaration}" does not parse: ${parsed.failure.message}`)
 
   return {
     key: `${CRON_PREFIX}${zone} ${canonicalOf(parsed.success)}`,
@@ -72,7 +77,7 @@ const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
 }
 
 /**
- * Parses `policy.cron`. A key is a five- or six-field Effect `Cron.parse`
+ * Parses `schedules`. A key is a five- or six-field Effect `Cron.parse`
  * expression evaluated in UTC, the same with a `CRON_TZ=<IANA zone> ` prefix
  * evaluated in that zone, or `@every <duration>`. Whitespace is normalized and
  * the timer key names the zone, so one expression in two zones is two entries.
@@ -80,7 +85,7 @@ const scheduleOf = (declaration: string): Pick<CronEntry, "key" | "next"> => {
  * zone, a bad interval, or a target that is not a zero-input command of this
  * actor throw.
  */
-export const resolveCron = ({
+export const resolveSchedules = ({
   declared,
   commands,
 }: {
@@ -94,15 +99,15 @@ export const resolveCron = ({
     const { key, next } = scheduleOf(declaration)
 
     if (!commands.includes(command))
-      throw new Error(`policy.cron "${declaration}" must name a command of this actor`)
+      throw new Error(`schedules "${declaration}" must name a command of this actor`)
 
-    if (!SchemaAST.isVoid(command.input.ast))
-      throw new Error(`policy.cron "${declaration}" must name a command without input`)
+    if (!SchemaAST.isVoid(command.payload.ast))
+      throw new Error(`schedules "${declaration}" must name a command without input`)
 
     const duplicate = declarations.get(key)
 
     if (duplicate !== undefined)
-      throw new Error(`policy.cron "${declaration}" repeats the schedule of "${duplicate}"`)
+      throw new Error(`schedules "${declaration}" repeats the schedule of "${duplicate}"`)
 
     declarations.set(key, declaration)
     entries.push({

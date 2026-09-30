@@ -13,7 +13,7 @@ export type PayloadMigrations =
   | ReadonlyArray<StateMigration>
   | { readonly from: number; readonly steps: ReadonlyArray<StateMigration> }
 
-/** Migration options shared by `Actor.Event` and `Actor.effect`. */
+/** Migration options shared by `Actor.event` and `Actor.job`. */
 export interface PayloadOptions {
   readonly migrations?: PayloadMigrations
   /**
@@ -105,9 +105,9 @@ export const declareChain = (declared: {
 }
 
 /**
- * The chain of an event or effect class. `class X extends Actor.Event<X>()(…)`
- * is a subclass of the class the chain was declared on, so lookup follows the
- * prototype chain; a class declared without one reads and writes version 0.
+ * The chain of an event or job class. Lookup follows the prototype chain, so
+ * a subclass of an `Actor.event` or `Actor.job` value shares its chain; a class
+ * declared without one reads and writes version 0.
  */
 export const payloadChain = (schema: Schema.Top): PayloadChain => {
   for (let current: Schema.Top | null = schema; current !== null;) {

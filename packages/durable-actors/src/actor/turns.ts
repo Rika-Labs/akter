@@ -1,7 +1,7 @@
 import { Context, DateTime, Duration, Effect, Fiber, Option, Result, Schema } from "effect"
 import { InsideTurn, type Mintable } from "../contexts/command.ts"
 import type { ConnectionInfo } from "../contexts/connection.ts"
-import type { PerformOptions } from "../contexts/effect.ts"
+import type { EnqueueOptions } from "../contexts/job.ts"
 import { Due, effectKey, emptyOutbox, InTurn, openOutbox } from "../handles/intents.ts"
 import { ActorRef, principal } from "../identity/caller.ts"
 import { childId } from "../identity/child.ts"
@@ -32,12 +32,12 @@ const MAX_EMIT_BYTES = 1_048_576
 
 type Handler = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
 
-/** When and under which key `turn.perform` stages a job. */
-const performSchedule = (options: PerformOptions | undefined) => {
+/** When and under which key `turn.enqueue` stages a job. */
+const enqueueSchedule = (options: EnqueueOptions | undefined) => {
   if (options?.key !== undefined) effectKey(options.key)
 
   if (options?.after !== undefined && options.at !== undefined)
-    throw new Error("turn.perform takes after or at, not both")
+    throw new Error("turn.enqueue takes after or at, not both")
 
   let due: Due | undefined
 
@@ -45,7 +45,7 @@ const performSchedule = (options: PerformOptions | undefined) => {
     const millis = Duration.toMillis(Duration.fromInputUnsafe(options.after))
 
     if (!Number.isFinite(millis) || millis < 0)
-      throw new Error("turn.perform after needs a finite, non-negative duration")
+      throw new Error("turn.enqueue after needs a finite, non-negative duration")
     due = Due.cases.After.make({ millis: Math.ceil(millis) })
   }
 
@@ -90,7 +90,7 @@ const warnUnrouted = (descriptor: Descriptor, tag: string) =>
     warned.set(descriptor, tags.add(tag))
 
     return Effect.logWarning(
-      `Keyed effect ${tag} has neither onCancelled nor onDeadLetter; an ambiguous cancellation is only dead-lettered`,
+      `Keyed job ${tag} has neither onCancelled nor onDeadLetter; an ambiguous cancellation is only dead-lettered`,
     )
   })
 
@@ -228,7 +228,7 @@ const commandTurn = (
 
       if (target === undefined || !target.mintable)
         return yield* Effect.die(
-          new Error("turn.mint needs an unkeyed actor that declares policy.createdBy"),
+          new Error("turn.mint needs an unkeyed actor that declares createdBy"),
         )
 
       if (target.parent !== undefined && target.parent.name !== name)
@@ -257,19 +257,19 @@ const commandTurn = (
       return id
     })
 
-    const perform = Effect.fnUntraced(function* (
+    const enqueue = Effect.fnUntraced(function* (
       instance: { readonly _tag: string },
-      options?: PerformOptions,
+      options?: EnqueueOptions,
     ) {
       if (!open || (yield* InsideTurn) !== turn)
-        return yield* Effect.die(new Error("Effect capability escaped its turn"))
+        return yield* Effect.die(new Error("Job capability escaped its turn"))
 
       const declared = descriptor.jobs.get(instance._tag)
 
       if (declared === undefined)
-        return yield* Effect.die(new Error(`Undeclared effect: ${instance._tag}`))
+        return yield* Effect.die(new Error(`Unbound job: ${instance._tag}`))
 
-      const scheduled = yield* Effect.sync(() => performSchedule(options))
+      const scheduled = yield* Effect.sync(() => enqueueSchedule(options))
 
       if (scheduled.key !== undefined) yield* warnUnrouted(descriptor, instance._tag)
       const { value, version } = yield* declared.codec.encode(instance).pipe(Effect.orDie)
@@ -317,9 +317,9 @@ const commandTurn = (
         })
       })
 
-    const cancelEffect = Effect.fnUntraced(function* (key: string) {
+    const cancelJob = Effect.fnUntraced(function* (key: string) {
       if (!open || (yield* InsideTurn) !== turn)
-        return yield* Effect.die(new Error("Effect capability escaped its turn"))
+        return yield* Effect.die(new Error("Job capability escaped its turn"))
 
       yield* Effect.sync(() => effectKey(key))
       outbox.cancelEffect(key)
@@ -337,8 +337,8 @@ const commandTurn = (
       group: access.group,
       blob,
       mint,
-      perform,
-      cancelEffect,
+      enqueue,
+      cancelJob,
       broadcast: broadcastsTo(descriptor, broadcasts, escaped),
       subscribe: changeSubscription("subscribe"),
       unsubscribe: (declared: AnySubscription, id: string) =>
@@ -357,7 +357,7 @@ const commandTurn = (
     }
 
     return yield* Effect.gen(function* () {
-      const input = yield* codecs.decodeInput(request.payload).pipe(Effect.orDie)
+      const input = yield* codecs.decodePayload(request.payload).pipe(Effect.orDie)
       const output = yield* handle(input.value)
 
       if (misused !== undefined) return yield* Effect.die(new Error(misused))
@@ -376,7 +376,7 @@ const commandTurn = (
           new Error(`Minted actor ${keyed.actor}/${keyed.id} has a keyed creating intent`),
         )
 
-      const value = yield* codecs.encodeOutput({ value: output }).pipe(Effect.orDie)
+      const value = yield* codecs.encodeSuccess({ value: output }).pipe(Effect.orDie)
 
       return {
         outcome: Outcome.cases.Success.make({ value }),
@@ -437,7 +437,7 @@ const reducerTurns = (
     )
 
     const value = yield* codecs
-      .encodeOutput({ value: reducer.commutative === undefined ? next : undefined })
+      .encodeSuccess({ value: reducer.batch === undefined ? next : undefined })
       .pipe(Effect.orDie)
 
     return {
@@ -449,8 +449,8 @@ const reducerTurns = (
     } satisfies BusinessResult
   })
 
-  const decodeInput = (request: Request) =>
-    codecs.decodeInput(request.payload).pipe(
+  const decodePayload = (request: Request) =>
+    codecs.decodePayload(request.payload).pipe(
       Effect.orDie,
       Effect.map((input) => input.value),
     )
@@ -459,22 +459,22 @@ const reducerTurns = (
     internal: false,
     handler: false,
     run: Effect.fnUntraced(function* (request, rows) {
-      return yield* reduceOnce(rows, yield* decodeInput(request))
+      return yield* reduceOnce(rows, yield* decodePayload(request))
     }),
   }
 
-  const commutative = reducer.commutative
+  const batch = reducer.batch
 
-  if (commutative === undefined) return single
+  if (batch === undefined) return single
 
   return {
     ...single,
     merge: Effect.fnUntraced(function* (requests, rows) {
-      const inputs = yield* Effect.forEach(requests, decodeInput)
-      const combined = inputs.reduce((first, second) => commutative.combine(first, second))
+      const inputs = yield* Effect.forEach(requests, decodePayload)
+      const combined = inputs.reduce((first, second) => batch.combine(first, second))
 
       return yield* reduceOnce(rows, combined).pipe(
-        Effect.catch(() => Effect.die(new Error(`Commutative reducer ${reducer.tag} failed`))),
+        Effect.catch(() => Effect.die(new Error(`Batched reducer ${reducer.tag} failed`))),
       )
     }),
   }

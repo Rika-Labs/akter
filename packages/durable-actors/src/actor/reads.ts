@@ -9,7 +9,7 @@ import {
 import { CurrentCaller, principal, Tenant } from "../identity/caller.ts"
 import { DEFAULT_REPLAY_LIMIT, type EventClass, MAX_REPLAY_LIMIT } from "../members/event.ts"
 import type { AnyStream } from "../members/stream.ts"
-import type { AnyEffect } from "../members/effect.ts"
+import type { AnyJob } from "../members/job.ts"
 import type { InternalActors } from "../runtime/actors.ts"
 import type { ReadSet } from "../runtime/connections/reads.ts"
 import type {
@@ -23,7 +23,7 @@ import { Outcome } from "../runtime/request.ts"
 import { ownership } from "../tables/owned.ts"
 import type { Descriptor } from "./descriptor.ts"
 
-type AnyQueryContext = QueryContext<Record<string, unknown>, EventClass, never, never, AnyEffect>
+type AnyQueryContext = QueryContext<Record<string, unknown>, EventClass, never, never, AnyJob>
 
 type Handler = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
 
@@ -143,7 +143,9 @@ export const queriesOf = (
       if (handle === undefined)
         return yield* Effect.die(new Error(`Missing query handler ${member.tag}`))
 
-      const { decodeInput, encodeOutput, isError, encodeError } = descriptor.codecs.get(member.tag)!
+      const { decodePayload, encodeSuccess, isError, encodeError } = descriptor.codecs.get(
+        member.tag,
+      )!
       const watch = descriptor.watches.has(member.tag)
 
       registered.set(member.tag, {
@@ -206,9 +208,9 @@ export const queriesOf = (
           }
 
           return yield* Effect.gen(function* () {
-            const input = yield* decodeInput(request.payload).pipe(Effect.orDie)
+            const input = yield* decodePayload(request.payload).pipe(Effect.orDie)
             const output = yield* handle(input.value)
-            const value = yield* encodeOutput({ value: output }).pipe(Effect.orDie)
+            const value = yield* encodeSuccess({ value: output }).pipe(Effect.orDie)
 
             return Outcome.cases.Success.make({ value })
           }).pipe(
@@ -254,10 +256,10 @@ export const streamOf = (
   services: Context.Context<never>,
   actors: InternalActors["Service"],
 ): RegisteredStream => {
-  const { decodeInput, encodeOutput, isError, encodeError } = descriptor.codecs.get(member.tag)!
+  const { decodePayload, encodeSuccess, isError, encodeError } = descriptor.codecs.get(member.tag)!
 
   const progressCodecs = new Map(
-    (member.progress?.effects ?? []).map((job) => [
+    (member.progress?.jobs ?? []).map((job) => [
       job.tag,
       {
         job: Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(job))),
@@ -322,20 +324,20 @@ export const streamOf = (
                     .pipe(
                       Stream.mapEffect((stored) => entryOf(descriptor, event, stored)),
                     )) as AnyQueryContext["follow"],
-            progress: ((job: AnyEffect, options?: { readonly effectId?: string | undefined }) => {
+            progress: ((job: AnyJob, options?: { readonly jobId?: string | undefined }) => {
               const codecs = progressCodecs.get(job.tag)
 
-              if (codecs === undefined || member.progress?.effects.includes(job as never) !== true)
+              if (codecs === undefined || member.progress?.jobs.includes(job as never) !== true)
                 return Stream.die(
                   new Error(`Stream ${member.tag} does not list progress of ${job.tag}`),
                 )
 
-              return input.progress(job.tag, options?.effectId).pipe(
+              return input.progress(job.tag, options?.jobId).pipe(
                 Stream.mapEffect((stored) =>
                   Effect.gen(function* () {
                     const entry: ProgressEntry<never> = {
-                      effectId: stored.effectId,
-                      effect: (yield* codecs.job(stored.effect)) as never,
+                      jobId: stored.effectId,
+                      job: (yield* codecs.job(stored.effect)) as never,
                       attempt: stored.attempt,
                       seq: stored.seq,
                       frame: (yield* codecs.frame(stored.frame)) as never,
@@ -348,10 +350,10 @@ export const streamOf = (
             }) as AnyQueryContext["progress"],
           }
 
-          const { value } = yield* decodeInput(payload).pipe(Effect.orDie)
+          const { value } = yield* decodePayload(payload).pipe(Effect.orDie)
 
           return handle(value).pipe(
-            Stream.mapEffect((output) => encodeOutput({ value: output }).pipe(Effect.orDie)),
+            Stream.mapEffect((output) => encodeSuccess({ value: output }).pipe(Effect.orDie)),
             Stream.catch((error) =>
               isError(error)
                 ? Stream.fromEffect(

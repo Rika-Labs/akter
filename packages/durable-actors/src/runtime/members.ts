@@ -1,11 +1,18 @@
-import { type Context, type Effect, type Exit, Schema, type Scope, type Stream } from "effect"
+import {
+  type Context,
+  type Effect,
+  type Exit,
+  type Option,
+  Schema,
+  type Scope,
+  type Stream,
+} from "effect"
 import type { Access } from "../policies/access.ts"
 import type { SubscriptionFailure } from "../errors/subscription.ts"
 import type { RetentionGap, UnknownCursor } from "../errors/events.ts"
-import type { ActorRef, Caller } from "../identity/caller.ts"
+import type { ActorRef, Caller, Principal } from "../identity/caller.ts"
 import type { Placement } from "./storage/codec.ts"
 import type { ConnectionCommands } from "../identity/connection.ts"
-import type { ExecutorContext } from "../contexts/effect.ts"
 import type { TurnPolicy } from "../policies/command.ts"
 import type { CronEntry } from "./cron/schedule.ts"
 import type { StagedOutbox } from "../handles/intents.ts"
@@ -219,7 +226,12 @@ interface EffectFailure {
 }
 
 /** What the relay gives one attempt; the executor sees it as `X.Executor`. */
-type AttemptContext = Omit<ExecutorContext, "progress"> & {
+type AttemptContext = {
+  readonly effectId: string
+  readonly attempt: number
+  readonly principal: Option.Option<Principal>
+  readonly ref: ActorRef
+
   /** False when progress reports go nowhere, so frames need not be encoded. */
   readonly reporting: () => boolean
   /** Offers one encoded progress frame to the attempt's slot. */

@@ -1,12 +1,12 @@
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
 import { Actor } from "../index.ts"
-import { resolveCron } from "./schedules.ts"
+import { resolveSchedules } from "./schedules.ts"
 
 const Tick = Actor.command("Tick")
 
 const entryOf = (declaration: string) => {
-  const [entry] = resolveCron({ declared: { [declaration]: Tick }, commands: [Tick] })
+  const [entry] = resolveSchedules({ declared: { [declaration]: Tick }, commands: [Tick] })
 
   return entry!
 }

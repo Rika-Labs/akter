@@ -35,7 +35,7 @@ export const workflowsOf = (
           Effect.gen(function* () {
             if (member.key === undefined) return fallback
 
-            const input = yield* codecs.decodeInput(payload)
+            const input = yield* codecs.decodePayload(payload)
             const key = member.key(input.value)
 
             yield* checkExecutionKey(key)
@@ -43,7 +43,7 @@ export const workflowsOf = (
             return key
           }).pipe(Effect.orDie),
         run: (payload, context) =>
-          codecs.decodeInput(payload).pipe(
+          codecs.decodePayload(payload).pipe(
             Effect.orDie,
             Effect.flatMap((input) => body(input.value)),
             Effect.exit,
