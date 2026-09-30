@@ -21,7 +21,7 @@ The runtime supports embedded, served, and hosted modes. Repository placement is
 - [Messaging and events](05-messaging.md)
 - [Storage and ownership](06-storage-ownership.md)
 - [Realtime continuity](07-realtime.md)
-- [Workflows, schedules, and effects](08-background-work.md)
+- [Workflows, schedules, and jobs](08-background-work.md)
 - [Failure and recovery](09-recovery.md)
 - [Security and tenancy](10-security.md)
 - [Error model](error-model.md)

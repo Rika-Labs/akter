@@ -1,11 +1,11 @@
 # Backup and restore
 
-**Responsibility:** restore service without duplicating authority or external effects.  
+**Responsibility:** restore service without duplicating authority or external calls.  
 **Authority:** operational.  
 **Owner role:** operations/reliability.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
-The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, messages, events, workflows, effects, dead letters, database-backed `actor_blobs` chunks, and the Neki outbox when applicable. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
+The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, messages, events, workflows, jobs, dead letters, database-backed `actor_blobs` chunks, and the Neki outbox when applicable. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
 
 ## Backups on Postgres
 
@@ -36,20 +36,20 @@ Record with every backup: the snapshot time, the latest id in `actor_migrations`
    FROM durable.receipts;
    ```
 
-   `newest_issued` is at most one `commandTimeout` later than a time this database's clock had already reached, because a receipt is written only once its id's intent or timer is due; it is `NULL` when no receipt is retained, which proves nothing. If `database_now` is earlier than `newest_issued` by more than the largest `commandTimeout` of your actor types, the clock is behind. If any check fails, fix the clock before starting any runner, because a clock behind the ids makes expired ids admissible again.
+   `newest_issued` is at most one `executionTimeout` later than a time this database's clock had already reached, because a receipt is written only once its id's intent or timer is due; it is `NULL` when no receipt is retained, which proves nothing. If `database_now` is earlier than `newest_issued` by more than the largest `executionTimeout` of your actor types, the clock is behind. If any check fails, fix the clock before starting any runner, because a clock behind the ids makes expired ids admissible again.
 
 4. **Deploy code that supports the restored schema.** A snapshot older than the code migrates forward at boot. Code older than the snapshot's latest `actor_migrations` id starts without migrating, and is safe only if every newer migration was an expand ([migrations](02-migrations.md#expand-and-contract)); deploy the release that took the backup or a later one. Startup refuses a snapshot that applied a higher id while lacking a lower id the code registers. The code's retry window and placements must match the restored `actor_deployment` and `actor_placements`.
-5. **List what the provider may have seen beyond the snapshot.** The restored database forgets every turn and every effect attempt after the snapshot:
+5. **List what the provider may have seen beyond the snapshot.** The restored database forgets every turn and every job attempt after the snapshot:
 
    ```sql
-   SELECT tenant_id, actor_type, actor_id, effect_id, effect, attempts, ambiguous, last_error
-   FROM durable.effects WHERE attempts > 0;
+   SELECT tenant_id, actor_type, actor_id, job_id, job, attempts, ambiguous, last_error
+   FROM durable.jobs WHERE attempts > 0;
    SELECT * FROM durable.dead_letters;
    ```
 
-   Every restored effect row runs again, with its original effect id as the idempotency key and its recorded attempt count, including one whose call was in flight when the backup was taken. A provider that honours the idempotency key answers without acting twice; for one that doesn't, reconcile these rows with the provider before starting runners. Effects the snapshot never recorded, from turns after it, are gone from the database; reconcile them from the provider's records.
+   Every restored job row runs again, with its original job id as the idempotency key and its recorded attempt count, including one whose call was in flight when the backup was taken. A provider that honours the idempotency key answers without acting twice; for one that doesn't, reconcile these rows with the provider before starting runners. Jobs the snapshot never recorded, from turns after it, are gone from the database; reconcile them from the provider's records.
 
-6. **Start the runners, then ingress.** Each actor's first turn takes a generation above the snapshot's. Pending intents, timers, and effects in the snapshot are delivered once. Watch redelivery, `CommandExpired`, and duplicate-suppression signals.
+6. **Start the runners, then ingress.** Each actor's first turn takes a generation above the snapshot's. Pending intents, timers, and jobs in the snapshot are delivered once. Watch redelivery, `CommandExpired`, and duplicate-suppression signals.
 
 Do not delete receipts or outbox rows to make a restore start.
 
@@ -58,7 +58,7 @@ Do not delete receipts or outbox rows to make a restore start.
 - A command whose receipt the snapshot holds replays its outcome while its id is live.
 - An expired id is refused with `CommandExpired`, whether or not the snapshot holds its receipt: expiry is part of the id, not the receipt.
 - A command that committed after the snapshot and whose id is still live runs again, once, when its client retries: the restored history never saw it. This is the restore's RPO window. Its external consequences need the reconciliation in step 5.
-- Accepted internal work in the snapshot, such as pending intents and effects, completes even when the external retry horizon of the command that created it has passed.
+- Accepted internal work in the snapshot, such as pending intents and jobs, completes even when the external retry horizon of the command that created it has passed.
 
 ## Evidence
 
@@ -93,11 +93,11 @@ Not rehearsed: recovery to a `recovery_target_time` or LSN (only named restore p
 - **Whole database only.** There is no tenant-only export, import, or restore. Any future tenant-only procedure must preserve every related row within the deployment database.
 - **PGlite.** A copy of a stopped `dataDir` is the only backup method; see [below](#embedded-pglite).
 
-Retained receipt and effect horizons bound what a restore can deduplicate; see [retention](retention.md).
+Retained receipt and job horizons bound what a restore can deduplicate; see [retention](retention.md).
 
 ## Embedded PGlite
 
-Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)) and verified by `restores a stopped copy and refuses expired command ids after restore` in [`conformance/crash/pglite-production.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/pglite-production.test.ts). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and effect reconciliation above still apply, and there is no point-in-time recovery.
+Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)) and verified by `restores a stopped copy and refuses expired command ids after restore` in [`conformance/crash/pglite-production.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/pglite-production.test.ts). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and job reconciliation above still apply, and there is no point-in-time recovery.
 
 ## Cold tier
 

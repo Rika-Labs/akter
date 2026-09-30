@@ -29,6 +29,6 @@ The published operation matrix for Drizzle is in [Drizzle integration](../api/04
 
 Topology adapters provide single-runner operation or HTTP-connected runners using verified advertise addresses. Kubernetes topology was removed from the current public surface. Railway requires proof that replicas can reach each other's `railnet0` address. Transport adapters back Effect RPC, HTTP, WebSocket, SSE, and OpenAPI without changing actor semantics.
 
-External calls are declared effects executed after commit under their retry and dead-letter policies. Framework blobs are database-backed chunks, not an external object-storage adapter. Runtime clocks use Effect `Clock` so tests can control time. Application provider integrations may narrow capabilities, but must report unsupported guarantees rather than silently weakening them.
+External calls are declared jobs executed after commit under their retry and dead-letter policies. Framework blobs are database-backed chunks, not an external object-storage adapter. Runtime clocks use Effect `Clock` so tests can control time. Application provider integrations may narrow capabilities, but must report unsupported guarantees rather than silently weakening them.
 
 The conformance suite in `@durable-actors/core/testing` is the authority for Postgres, PGlite, and Neki behavior. See [support matrix](../operations/support-matrix.md).

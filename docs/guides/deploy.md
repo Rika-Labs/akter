@@ -11,7 +11,7 @@ Durable Actors is alpha. Before you deploy, know the limits the [support matrix]
 
 - **Postgres only.** PGlite is for development and tests, one process per data directory. Production PGlite is not supported.
 - **One runtime process per database.** Multi-runner operation has in-process evidence for some features but is not claimed for production.
-- **Embedded or served over HTTP.** `Actor.serve` serves commands, reducers, and queries over HTTP, verified behind Bun's HTTP server on loopback. WebSocket and SSE are not served yet, and no proxy, load balancer, or hosting provider has been verified.
+- **Embedded or served over HTTP.** `Actors.serve` serves commands, reducers, and queries over HTTP, verified behind Bun's HTTP server on loopback. WebSocket and SSE are not served yet, and no proxy, load balancer, or hosting provider has been verified.
 - **No managed hosting.** Hosted runners are planned.
 - **Not on npm yet.** Install `@durable-actors/core` from a locally packed tarball, as in the [quickstart](../quickstart.md), until the first alpha release.
 
@@ -44,7 +44,7 @@ HttpRouter.serve(routes).pipe(
 )
 ```
 
-`routes` is `Actor.serve({ actors: [Room], auth, openapi: { path: "/openapi.json" } })`. An embedded app, like the quickstart's `counter`, skips `Actor.serve` and calls its actors as Effects inside the same process.
+`routes` is `Actors.serve({ actors: [Room], auth, openapi: { path: "/openapi.json" } })` from `@durable-actors/core/runtime`. An embedded app, like the quickstart's `counter`, skips `Actors.serve` and calls its actors as Effects inside the same process.
 
 ## The database
 
@@ -63,21 +63,21 @@ See [deployment](../operations/01-deployment.md#postgres-connections-across-runn
 
 ## Serving over HTTP
 
-- **TLS.** Serve `Actor.serve` behind TLS. Credentials and `Idempotency-Key` travel in headers, and the framework cannot tell whether a proxy terminates TLS, so it does not refuse plain HTTP.
-- **Authentication.** `Actor.serve` requires an auth provider. Use `Actor.auth.jwt({ issuer, audience, jwks, tenant })` for tokens from an identity provider, `Actor.auth.make` for your own, and `Actor.auth.none` only for deliberately public actors. Authorization is still your `authorize` callback.
+- **TLS.** Serve `Actors.serve` behind TLS. Credentials and `Idempotency-Key` travel in headers, and the framework cannot tell whether a proxy terminates TLS, so it does not refuse plain HTTP.
+- **Authentication.** `Actors.serve` requires an auth provider. Use `Auth.jwt({ issuer, audience, jwks, tenant })` from `@durable-actors/core/runtime` for tokens from an identity provider, `Auth.make` for your own, and `Auth.none` only for deliberately public actors. Authorization is still your `authorize` callback.
 - **Browsers.** List allowed browser origins in `origins`. Behind a proxy, list the public origin: forwarding headers are not trusted.
 - **Clients.** The OpenAPI document at `openapi.path` generates clients in any language; see [generating clients](../api/05-generated-clients.md). Every client must keep one `Idempotency-Key` across its retries of a command.
-- **Retry window.** `Actor.serve` refuses a runtime whose retry window is below 60 seconds. The default is one day.
+- **Retry window.** `Actors.serve` refuses a runtime whose retry window is below 60 seconds. The default is one day.
 
 ## Releasing a new version
 
-With one runtime process per database, a release stops the old process and starts the new one; rolling deploys with mixed versions are not claimed. A command the old process had not committed is not applied, and a caller that retries it with the same command id gets exactly one result: handles do this on their own until `deliveryTimeout`, and HTTP clients do it by resending the same `Idempotency-Key`. Pending intents, timers, and effects stay in the outbox until the new process delivers them.
+With one runtime process per database, a release stops the old process and starts the new one; rolling deploys with mixed versions are not claimed. A command the old process had not committed is not applied, and a caller that retries it with the same command id gets exactly one result: handles do this on their own until `deliveryTimeout`, and HTTP clients do it by resending the same `Idempotency-Key`. Pending intents, timers, and jobs stay in the outbox until the new process delivers them.
 
 Before you release:
 
 1. Apply owned-table migrations that the old and new code both accept (expand before contract).
 2. If you changed a workflow, check that no open execution needs a removed or renamed step. Startup refuses such a deploy. `durable workflows check --entry <module> --database-url <url>`, from `apps/cli` in the repository (not yet published), runs the same check first.
-3. Keep every event, effect, and workflow payload decodable until the records that use it have passed their retention.
+3. Keep every event, job, and workflow payload decodable until the records that use it have passed their retention.
 
 See [migrations](../operations/02-migrations.md) and [backup and restore](../operations/04-backup-restore.md).
 
@@ -85,8 +85,8 @@ See [migrations](../operations/02-migrations.md) and [backup and restore](../ope
 
 - Postgres, a database for this app alone, and `DATABASE_URL` in a secret.
 - Owned-table migrations applied before start.
-- `authorize` allows only the callers and tenants you expect, and `Actor.serve` has a real auth provider.
+- `authorize` allows only the callers and tenants you expect, and `Actors.serve` has a real auth provider.
 - TLS in front of the HTTP server, and `origins` set for browser clients.
 - `maxConnections × processes` within the server's `max_connections`.
 - One runtime process per database.
-- Logs collected: deterministic defects, dead-lettered effects, and outbox retries are logged as warnings and errors. See [observability](../operations/03-observability.md).
+- Logs collected: deterministic defects, dead-lettered jobs, and outbox retries are logged as warnings and errors. See [observability](../operations/03-observability.md).

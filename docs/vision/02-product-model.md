@@ -7,9 +7,9 @@
 
 ## Vision
 
-An actor is an identity plus serialized mutation under one transaction. `Actor.make(name, definition)` is the only way to make an actor. Its definition declares `key`, `placement`, `state`, `tables`, `blobs`, `events`, `effects`, an `api` of commands, reducers, queries, streams, connections, and workflows, and `policy`. There is one way to do each task ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)).
+An actor is an identity plus serialized mutation under one transaction. `Actor.make(name, definition)` is the only way to make an actor. Its definition declares `key`, `placement`, `state`, `tables`, `blobs`, `events`, an `api` of commands, reducers, queries, streams, connections, and workflows, `internal` commands, `createdBy`, `schedules`, `jobs`, `subscriptions`, `policy`, and `access`. There is one way to do each task ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)).
 
-Actors may use framework-minted ids, application-defined names, or `Actor.singleton`. `policy.cron` schedules a command on the same actor. `policy.hibernateAfter` lets an idle activation sleep, and parked WebSocket-style connections can wake it.
+Actors may use framework-minted ids, application-defined names, or `Actor.singleton`. `schedules` runs a command on the same actor. `policy.hibernateAfter` lets an idle activation sleep, and parked WebSocket-style connections can wake it.
 
 ## The turn model
 
@@ -17,9 +17,9 @@ Actors may use framework-minted ids, application-defined names, or `Actor.single
 command → generation fence → receipt → handler → commit
 ```
 
-These steps run in one database transaction. The commit may include keyed state, OwnedTable rows, events, timers, actor intents, workflow intents, effect obligations, and the receipt. A retained receipt makes retrying the same command id replay the logical result instead of applying the handler twice. Declared application failures are recorded and replayed too.
+These steps run in one database transaction. The commit may include keyed state, OwnedTable rows, events, timers, actor intents, workflow intents, job obligations, and the receipt. A retained receipt makes retrying the same command id replay the logical result instead of applying the handler twice. Declared application failures are recorded and replayed too.
 
-Outside a command turn, state access is read-only through `X.Read`. Workflow bodies and effect executors act on actors through handles rather than a direct state capability. Activation-local values live in the layer's build closure and deliberately disappear when the activation hibernates.
+Outside a command turn, state access is read-only through `X.Read`. Workflow bodies and job executors act on actors through handles rather than a direct state capability. Activation-local values live in the layer's build closure and deliberately disappear when the activation hibernates.
 
 ## One primitive, several modes
 

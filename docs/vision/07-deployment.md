@@ -27,7 +27,7 @@ Self-hosting must not require the hosted control plane. Operators need standard 
 
 - actor generations, mailbox pressure, and activation lifecycle;
 - receipt and event retention;
-- workflow, timer, effect, and dead-letter state;
+- workflow, timer, job, and dead-letter state;
 - database saturation and shard placement;
 - parked connections and replay gaps;
 - drain, restore, and reconciliation progress.

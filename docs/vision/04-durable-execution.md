@@ -7,7 +7,7 @@
 
 ## Vision
 
-Durable execution is part of the actor model, not a second product. Commands, workflows, cron, timers, actor messages, and external effects share identity, tenancy, attribution, and recovery semantics.
+Durable execution is part of the actor model, not a second product. Commands, workflows, schedules, timers, actor messages, and jobs share identity, tenancy, attribution, and recovery semantics.
 
 ## Command guarantees
 
@@ -18,11 +18,11 @@ Commands are direct: nothing is durable until the turn commits, and the caller's
 ## Durable consequences
 
 - **Workflows** are actor members for finite, durable operations. They support durable activities, sleep, interruption, and owner-scoped `waitFor` on events.
-- **Cron and timers** deliver commands later through the outbox. `policy.cron` is cluster-wide on a singleton and per-actor otherwise; `Intent.after`, `Intent.key`, and `Intent.cancel` manage timers from turns.
-- **Effects** represent external side effects committed as obligations, retried after commit, and moved to dead letters when policy is exhausted.
+- **Schedules and timers** deliver commands later through the outbox. `schedules` is cluster-wide on a singleton and per-actor otherwise; `Intent.after`, `Intent.key`, and `Intent.cancel` manage timers from turns.
+- **Jobs** represent external calls committed as obligations, retried after commit, and moved to dead letters when policy is exhausted.
 - **Actor intents** deliver commands or workflow controls after the source turn commits.
 
-Effects are at least once. Exactly-once external outcomes require provider idempotency, a transactional handoff, or reconciliation. Dead letters and unknown outcomes are product state, not hidden counters.
+Jobs are at least once. Exactly-once external outcomes require provider idempotency, a transactional handoff, or reconciliation. Dead letters and unknown outcomes are product state, not hidden counters.
 
 ## Failure model
 

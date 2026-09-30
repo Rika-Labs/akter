@@ -58,7 +58,7 @@ There is one package, `@durable-actors/core`, with four entries:
 
 ## Testing
 
-`ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. In-memory PGlite is its fast default; real Postgres must prove locking and multi-connection behavior, and the same conformance suite gates Neki support. The harness includes callers, virtual time, crashes, pauses, stale generations, effects, workflows, seeded old state, and inspection without inventing a fake handler runtime; the [conformance ledger](../verification/01-conformance.md) records the evidence for each.
+`ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. In-memory PGlite is its fast default; real Postgres must prove locking and multi-connection behavior, and the same conformance suite gates Neki support. The harness includes callers, virtual time, crashes, pauses, stale generations, jobs, workflows, seeded old state, and inspection without inventing a fake handler runtime; the [conformance ledger](../verification/01-conformance.md) records the evidence for each.
 
 `examples/counter`, `examples/chat`, `examples/orders`, `examples/subscriptions`, and `examples/coding-agent` are the runnable end-to-end corpus; each runs its own tests on PGlite and Postgres. Future published examples must be copied from tested implementations. The coding-agent example stays as a showcase: it demonstrates that an agent is an ordinary actor. It is not a design driver, and nothing enters the framework only because an agent needs it; external tool generators consume `/openapi.json` without adding an AI-specific framework API.
 
