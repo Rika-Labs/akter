@@ -42,7 +42,7 @@ const harness = () =>
 const app = () =>
   ManagedRuntime.make(
     RoomLive.pipe(
-      Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
+      Layer.provideMerge(Actors.layer()),
       Layer.provide(
         Option.match(url, {
           onNone: () => Database.pglite({ dataDir }),
@@ -153,7 +153,6 @@ test("a closed room rejects posts and keeps nothing from them", async () => {
 
 test("messages survive a restart", async () => {
   const room = Room.get(RoomId.make(crypto.randomUUID())).pipe(
-    Actor.tenant("quickstart-test"),
     Actor.as(User.make({ subject: "ada" })),
   )
 

@@ -17,7 +17,7 @@ import {
   type Scope,
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
-import { Actor, RetentionGap, UnknownCursor, User } from "../../index.ts"
+import { Actor, RetentionGap, UnknownCursor } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import type { PayloadMigrations } from "../../members/payload.ts"
 import {
@@ -351,7 +351,6 @@ const deploy = <A, E>(
             Layer.provideMerge(
               ActorTest.layer({
                 database,
-                as: User.make({ subject: "alice" }),
                 retryWindowMs: 60_000,
                 payloadWriterWindow: options?.payloadWriterWindow,
               }),
@@ -864,7 +863,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               actors: Layer.empty,
               runnerActors: (runner) =>
                 runner === 0 ? Base.layer : Next.layer.pipe(Layer.provide(afterRunner0)),
-              as: User.make({ subject: "alice" }),
               payloadWriterWindow: "2 seconds",
             }),
           )
@@ -1112,7 +1110,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               shardLockExpiration: "3 seconds",
               actors: Layer.empty,
               runnerActors: (runner) => (runner === 0 ? FirstPhase.layer : Base.layer),
-              as: User.make({ subject: "alice" }),
             }),
           )
 

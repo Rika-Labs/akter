@@ -111,7 +111,6 @@ const runtime = (dataDir: string, hang: ReadonlyArray<string>) =>
   LedgerLive.pipe(
     Layer.provideMerge(
       Actors.layer({
-        authorize: () => Effect.succeed(true),
         retryWindowMs: RETRY_WINDOW_MS,
         relay: { claimLease: "3 seconds" },
         executors: { lease: "3 seconds" },

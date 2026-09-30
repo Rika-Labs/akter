@@ -18,7 +18,6 @@ import {
 } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import {
-  Anonymous,
   type ActorRef,
   type Caller,
   CurrentCaller,
@@ -353,7 +352,7 @@ export class ActorTest extends Context.Service<
       return yield* simulateCluster(yield* ActorCluster)(options, program)
     })
 
-  static readonly layer = (options: TestOptions) =>
+  static readonly layer = (options: TestOptions = {}) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto
@@ -446,14 +445,17 @@ export class ActorTest extends Context.Service<
                 id = "singleton",
                 actorOptions?: TestActorOptions,
               ) {
-                const as = options.as ?? Anonymous.make({})
+                const { as } = options
 
-                const caller = Schema.is(System)(as)
-                  ? as
-                  : System.make({
-                      source: "actor",
-                      onBehalfOf: Option.getOrUndefined(principal(as)),
-                    })
+                const caller =
+                  as === undefined
+                    ? System.make({ source: "actor" })
+                    : Schema.is(System)(as)
+                      ? as
+                      : System.make({
+                          source: "actor",
+                          onBehalfOf: Option.getOrUndefined(principal(as)),
+                        })
 
                 type H = InternalHandleOf<D> & { readonly ref: ActorRef }
 
@@ -743,7 +745,7 @@ export class ActorTest extends Context.Service<
         )
 
         const runtime = runtimeLayer({
-          authorize: options.authorize ?? (() => Effect.succeed(true)),
+          authorize: options.authorize,
           retryWindowMs: options.retryWindowMs,
           maxResidentActors: options.maxResidentActors,
           relay: options.relay,
@@ -759,7 +761,7 @@ export class ActorTest extends Context.Service<
         return Layer.mergeAll(
           runtime,
           test.pipe(Layer.provide(runtime)),
-          Layer.succeed(CurrentCaller, options.as ?? Anonymous.make({})),
+          Layer.succeed(CurrentCaller, options.as ?? System.make({ source: "process" })),
           Layer.succeed(Tenant, tenant),
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(

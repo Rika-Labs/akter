@@ -30,7 +30,7 @@ export class ContentStore extends Context.Service<
     ) => Effect.Effect<ContentRef, ContentTooLarge | ActorError>
     /**
      * A fresh grant for the content `ref` references under `blob`/`name`, after
-     * `authorize` allows `caller` the operation `<blob>.grant`; none for a
+     * the actor's `access` policy and `authorize` allow `caller` the operation `<blob>.grant`; none for a
      * missing name or content swept meanwhile.
      */
     readonly grant: (
@@ -40,8 +40,8 @@ export class ContentStore extends Context.Service<
       name: string,
     ) => Effect.Effect<Option.Option<ContentRef>, ActorError>
     /**
-     * The referenced content's size and bytes, after `authorize` allows
-     * `caller` the operation `<blob>.get`; none for a missing name. The bytes
+     * The referenced content's size and bytes, after the actor's `access`
+     * policy and `authorize` allow `caller` the operation `<blob>.get`; none for a missing name. The bytes
      * come from one snapshot; content swept after the reference resolved
      * fails the stream before any chunk.
      */
@@ -81,7 +81,7 @@ export const Content = {
     }),
   /**
    * A fresh grant for the content an actor references, so another actor's
-   * turn can attach it. `authorize` sees the ambient caller with kind
+   * turn can attach it. `access` and `authorize` see the ambient caller with kind
    * `content` and command `<blob>.grant`. None when the actor holds no reference under `name`.
    */
   grant: (

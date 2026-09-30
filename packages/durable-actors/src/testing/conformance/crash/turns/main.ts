@@ -40,9 +40,7 @@ const live = Layer.unwrap(
     })
 
     return CounterLive.pipe(
-      Layer.provideMerge(
-        Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(Layer.provide(hooks)),
-      ),
+      Layer.provideMerge(Actors.layer().pipe(Layer.provide(hooks))),
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     )
   }),

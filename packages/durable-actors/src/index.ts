@@ -19,6 +19,7 @@ import { make as authMake, none as authNone } from "./serve/auth.ts"
 import { jwt } from "./serve/jwt.ts"
 import { assertion } from "./serve/assertion/verify.ts"
 import { serve } from "./serve/layer.ts"
+import { publicAccess } from "./policies/access.ts"
 
 /**
  * The declaration namespace of `@durable-actors/core`: one constructor per
@@ -72,16 +73,22 @@ export const Actor = {
   serve,
   /** Authentication providers for `Actor.serve`; one per served layer. */
   auth: { none: authNone, make: authMake, jwt, assertion },
+  /**
+   * Ready-made `access` policies for `Actor.make`. `public` allows every caller
+   * and kind, which opens the actor to anyone who can reach the server; use it
+   * only for demos and deliberately public actors.
+   */
+  access: { public: publicAccess },
   /** Provided by the runtime only inside command turns; `X.intents` requires it. */
   InTurn,
   /** Provided by the runtime only inside stream handlers; `read.follow` requires it. */
   InStream,
-  /** Runs the piped Effect with `caller` as the ambient caller that handles capture. */
+  /** Runs the piped Effect with `caller` as the ambient caller that handles capture, for trusted code that acts on behalf of a user; without it, in-process code is `System({ source: "process" })`. */
   as:
     (caller: Caller) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.provideService(effect, CurrentCaller, caller),
-  /** Runs the piped Effect in `tenant`; the default tenant is `"default"`. */
+  /** Runs the piped Effect in `tenant`, for trusted code that acts on behalf of a tenant; the default tenant is `"default"`. */
   tenant:
     (tenant: string) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -134,6 +141,8 @@ export {
 export { ContentRef } from "./identity/content.ts"
 
 export type { ContentEntry } from "./identity/content.ts"
+
+export type { Access, AccessRequest } from "./policies/access.ts"
 
 export type { Policy } from "./policies/command.ts"
 

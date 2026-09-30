@@ -1,6 +1,5 @@
-import { User } from "@durable-actors/core"
 import { Actors } from "@durable-actors/core/runtime"
-import { Effect, Layer, Schema } from "effect"
+import { Layer } from "effect"
 import { RoomLive } from "./room/layer.ts"
 import { ModerationApi, Moderators } from "./room/moderation.ts"
 import { routes } from "./server.ts"
@@ -11,12 +10,7 @@ import { routes } from "./server.ts"
  */
 export const actors = RoomLive.pipe(
   Layer.provide([ModerationApi.layer, Moderators.layer]),
-  Layer.provideMerge(
-    Actors.layer({
-      authorize: ({ caller, ref }) =>
-        Effect.succeed(Schema.is(User)(caller) && ref.tenant === "chat-demo"),
-    }),
-  ),
+  Layer.provideMerge(Actors.layer()),
 )
 
 /** The chat routes served over `actors`. */

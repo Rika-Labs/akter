@@ -13,11 +13,11 @@ import {
   Tracer,
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
-import { Actor, Intent, User } from "../../index.ts"
+import { Actor, Intent } from "../../index.ts"
 import type { Request } from "../../runtime/request.ts"
 import type { EffectPolicy } from "../../members/effect.ts"
 import type { ActorRef } from "../../identity/caller.ts"
-import { layer as runtimeLayer } from "../../runtime/layer.ts"
+import { layer as runtimeLayer, type Options as RuntimeOptions } from "../../runtime/layer.ts"
 import { SpanNames } from "../../runtime/telemetry/spans.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
 import { claimIntents } from "../../runtime/turn/relay.ts"
@@ -151,6 +151,13 @@ const RelayCaller = Actor.make("RelayCaller", {
 
 const MAILBOXES = 32
 
+/** A `Take` intent's stored payload: its encoded input under `value`. */
+const decodeTaken = (payload: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(Schema.Struct({ value: Schema.String })))(payload).pipe(
+    Effect.map(({ value }) => value),
+    Effect.orDie,
+  )
+
 const mailboxOf = (id: string) => {
   let hash = 0
 
@@ -263,8 +270,6 @@ const NO_POLL = { poll: "1 hour" } as const
 
 const SHORT_LEASE = { lease: "3 seconds" } as const
 
-type RuntimeOptions = Parameters<typeof runtimeLayer>[0]
-
 interface ClusterSettings {
   readonly relay?: RuntimeOptions["relay"]
   readonly executors?: RuntimeOptions["executors"]
@@ -297,7 +302,6 @@ const withCluster = <A, E>(
           (settings.withoutExecutors ?? []).includes(runner)
             ? Layer.empty
             : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
-        as: User.make({ subject: "alice" }),
         relay: settings.relay,
         executors: settings.executors,
       })
@@ -582,8 +586,19 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const ids = Array.from({ length: 30 }, (_, index) => `retried-${index}`)
           const failing = new Set(ids.filter((_, index) => index % 10 === 0))
+          const delivering = new Map<string, number>()
+          fixture.hook = (point, request) =>
+            point === "afterClaim" && request.command === "Take"
+              ? decodeTaken(request.payload).pipe(
+                  Effect.map((id) => {
+                    delivering.set(id, fixture.claims.get(request.commandId)!)
+                  }),
+                )
+              : Effect.void
           fixture.onTake = (id) =>
-            failing.delete(id) ? Effect.die(new Error("Receiver defect")) : Effect.void
+            failing.has(id) && delivering.get(id) === 1
+              ? Effect.die(new Error("Receiver defect"))
+              : Effect.void
           yield* stage(0, ids)
           yield* eventually(
             outboxRows(1).pipe(Effect.map((rows) => rows.length === 0)),
@@ -596,8 +611,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "every claim to end",
           )
 
-          expect(failing.size).toBe(0)
-          expect(ids.filter((id) => fixture.taken.get(id) === 2)).toEqual([
+          expect(ids.filter((id) => delivering.get(id) === 2)).toEqual([
             "retried-0",
             "retried-10",
             "retried-20",
@@ -1738,21 +1752,19 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             }
           }
 
-          const authorize = () => Effect.succeed(true)
-
           expect(
             rejects(() => {
-              runtimeLayer({ authorize, executors: { lease: "2 seconds" } })
+              runtimeLayer({ executors: { lease: "2 seconds" } })
             }),
           ).toContain("executors.lease must be at least 3 seconds")
           expect(
             rejects(() => {
-              runtimeLayer({ authorize, relay: { deliveryConcurrency: 0 } })
+              runtimeLayer({ relay: { deliveryConcurrency: 0 } })
             }),
           ).not.toBe(undefined)
           expect(
             rejects(() => {
-              runtimeLayer({ authorize, executors: { lease: "3 seconds", concurrency: 1 } })
+              runtimeLayer({ executors: { lease: "3 seconds", concurrency: 1 } })
             }),
           ).toBe(undefined)
 

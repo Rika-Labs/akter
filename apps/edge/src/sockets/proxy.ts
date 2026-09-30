@@ -17,7 +17,7 @@ import { claimsFor } from "../signing/claims.ts"
 
 /** What a client socket delivers, in order: its messages, then its close. */
 export type Inbound = Data.TaggedEnum<{
-  Message: { readonly data: string | Uint8Array<ArrayBuffer> }
+  Message: { readonly data: string | Uint8Array<ArrayBuffer>; readonly bytes: number }
   Closed: {}
 }>
 
@@ -34,6 +34,8 @@ export interface SocketData {
   /** The principal the upgrade's own credential proved, if it carried one; `hello` carries it on. */
   readonly upgrade: Principal | undefined
   readonly inbox: Queue.Queue<Inbound>
+  /** Bytes of client messages received and not yet handed to a runner. */
+  pending: number
 }
 
 type Reason = ActorError["reason"]
@@ -68,6 +70,10 @@ const sendable = (code: number) => (code === 1005 || code === 1006 ? 1011 : code
  * becomes an assertion bound to the upgrade and carrying this session's id. It
  * is signed once a runner has accepted the socket, so failing over first can't
  * age it. A renewal binds the same upgrade path and session id.
+ *
+ * Messages wait for the runner while its socket's buffer is over
+ * `socketBufferBytes`; the server closes a client whose waiting messages pass
+ * that bound, so one socket holds a bounded amount of edge memory.
  */
 export const proxySocket = Effect.fnUntraced(function* (
   edge: Edge,
@@ -111,7 +117,15 @@ export const proxySocket = Effect.fnUntraced(function* (
   const authenticate = (credential: string) =>
     edge.authenticator.authenticate({ deployment: deployment.id, credential }).pipe(Effect.result)
 
-  const first = yield* Queue.take(inbox)
+  const take = Queue.take(inbox).pipe(
+    Effect.tap((inbound) =>
+      Effect.sync(() => {
+        if (Inbound.$is("Message")(inbound)) ws.data.pending -= inbound.bytes
+      }),
+    ),
+  )
+
+  const first = yield* take
 
   if (Inbound.$is("Closed")(first)) return
 
@@ -196,7 +210,7 @@ export const proxySocket = Effect.fnUntraced(function* (
   upstream.send(greeting)
 
   while (true) {
-    const next = yield* Queue.take(inbox)
+    const next = yield* take
 
     if (Inbound.$is("Closed")(next) || upstream.readyState !== WebSocket.OPEN) {
       upstream.close(1000)
@@ -207,6 +221,7 @@ export const proxySocket = Effect.fnUntraced(function* (
     const message = Predicate.isString(next.data) ? decodeClient(next.data) : Option.none()
 
     if (Option.isNone(message) || message.value.t !== "reauthenticate") {
+      while (upstream.bufferedAmount > edge.options.socketBufferBytes) yield* Effect.sleep(5)
       upstream.send(next.data)
       continue
     }

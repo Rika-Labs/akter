@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest"
 import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
 import { formatLagging } from "./list.ts"
 
-const live = ActorTest.layer({}).pipe(Layer.provideMerge(BunCrypto.layer))
+const live = ActorTest.layer().pipe(Layer.provideMerge(BunCrypto.layer))
 
 const operators = OperatorAuth.tokens([
   {

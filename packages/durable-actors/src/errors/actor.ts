@@ -31,7 +31,7 @@ export class InvalidCommandId extends Schema.TaggedError<InvalidCommandId>()("In
 /**
  * `missing_credentials`, `invalid_credentials`, and `expired` come from a
  * served endpoint's auth provider; `access_denied` and `receipt_access_denied`
- * from the runtime's `authorize` hook.
+ * from an actor's `access` policy or the runtime's `authorize` hook.
  */
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", {
   code: Schema.Literals([

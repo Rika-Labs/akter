@@ -299,6 +299,9 @@ export const jwt = <Keys extends URL | Jwks>(
       return yield* invalid
 
     if (exp * 1000 <= now - toleranceMs) return yield* unauthorized("expired")
+    const expiresAt = DateTime.make(exp * 1000)
+
+    if (Option.isNone(expiresAt)) return yield* invalid
 
     const resolved = yield* Effect.try({
       try: () => ({
@@ -314,7 +317,7 @@ export const jwt = <Keys extends URL | Jwks>(
     return {
       caller: User.make({ subject: resolved.subject }),
       tenant: resolved.tenant,
-      expiresAt: DateTime.makeUnsafe(exp * 1000),
+      expiresAt: expiresAt.value,
     }
   })
 

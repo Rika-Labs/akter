@@ -6,14 +6,13 @@
  * drill kills the process.
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { TurnHooks } from "@durable-actors/core/testing"
-import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
+import { Config, Console, Effect, Layer, Redacted } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { OrdersLive } from "../layer.ts"
 import { Payments } from "../payments/client.ts"
-import { routes, TENANT } from "../server.ts"
+import { routes } from "../server.ts"
 
 /**
  * The runner's runtime, with short leases and backoff so a dead runner's claims
@@ -41,8 +40,6 @@ const runtime = Layer.unwrap(
       Layer.provide(Payments.http(provider).pipe(Layer.provide(FetchHttpClient.layer))),
       Layer.provideMerge(
         Actors.layer({
-          authorize: ({ caller, ref }) =>
-            Effect.succeed(Schema.is(User)(caller) && ref.tenant === TENANT),
           relay: { poll: "100 millis", claimLease: "3 seconds", maxBackoff: "1 second" },
           executors: { lease: "3 seconds" },
         }).pipe(Layer.provide(hooks)),

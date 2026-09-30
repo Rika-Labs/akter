@@ -14,7 +14,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { Actor, User } from "../../../../index.ts"
+import { Actor } from "../../../../index.ts"
 import { observeAdoption } from "../../../../runtime/adoption/observe.ts"
 import { planAdoption } from "../../../../runtime/adoption/plan.ts"
 import { migrate } from "../../../../runtime/database/migrations.ts"
@@ -104,7 +104,6 @@ describe("adoption backfill across process death with Postgres", () => {
               Layer.provideMerge(
                 ActorTest.layer({
                   database: Redacted.make(database.href),
-                  as: User.make({ subject: "alice" }),
                 }),
               ),
               Layer.provide(BunCrypto.layer),

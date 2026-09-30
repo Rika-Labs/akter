@@ -96,11 +96,7 @@ const live = Layer.unwrap(
     })
 
     return JournalLive.pipe(
-      Layer.provideMerge(
-        Actors.layer({ authorize: () => Effect.succeed(true) }).pipe(
-          Layer.provide(Layer.mergeAll(hooks, clock)),
-        ),
-      ),
+      Layer.provideMerge(Actors.layer().pipe(Layer.provide(Layer.mergeAll(hooks, clock)))),
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     )
   }),
