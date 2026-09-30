@@ -1,5 +1,6 @@
 import { Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
+import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { decompress } from "../storage/codec.ts"
 
 /**
@@ -51,24 +52,17 @@ export interface ActorIdentity {
 }
 
 /**
- * Runs `effect` in a read-only, repeatable-read transaction, so every read in
- * it sees one snapshot and Postgres refuses any write it could attempt. The
- * transaction names `tenant`, so when row-level security owns the views they
- * return no other tenant's rows, whatever a read's own filter says.
+ * Runs `effect` in a read-only snapshot that names `tenant`, so when
+ * row-level security owns the views they return no other tenant's rows,
+ * whatever a read's own filter says.
  */
 export const readOnly =
   (tenant: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-
-      return yield* sql.withTransaction(
-        sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
-          Effect.andThen(sql`SELECT set_config('durable.tenant', ${tenant}, true)`),
-          Effect.andThen(effect),
-        ),
-      )
-    })
+    Effect.flatMap(
+      SqlClient.SqlClient,
+      (sql) => sql`SELECT set_config('durable.tenant', ${tenant}, true)`,
+    ).pipe(Effect.andThen(effect), inReadOnlySnapshot)
 
 /** The view catalog and the tenant's row counts. */
 export interface Overview {
