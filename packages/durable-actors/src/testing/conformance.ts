@@ -94,14 +94,15 @@ import {
   drainLayer,
 } from "./conformance/drain.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
+import { connectionsConformance } from "./conformance/connections.ts"
 import {
-  connectionsConformance,
   connectionsFixture,
   type ConnectionsFixture,
   connectionsLayer,
-} from "./conformance/connections.ts"
+} from "./conformance/connections/actors.ts"
 import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
-import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
+import { transportsConformance } from "./conformance/transports.ts"
+import { transportsLayer } from "./conformance/transports/actors.ts"
 import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
@@ -145,14 +146,14 @@ import {
   progressLayer,
   type ProgressFixture,
 } from "./conformance/progress.ts"
+import { subscriptionsConformance } from "./conformance/subscriptions.ts"
+import { subscriptionsClusterConformance } from "./conformance/subscriptions/cluster.ts"
+import { subscriptionsRetentionConformance } from "./conformance/subscriptions/retention.ts"
 import {
-  subscriptionsClusterConformance,
-  subscriptionsConformance,
-  subscriptionsRetentionConformance,
   subscriptionsFixture,
   subscriptionsLayer,
   type SubscriptionsFixture,
-} from "./conformance/subscriptions.ts"
+} from "./conformance/subscriptions/actors.ts"
 import { ContentHooks, TurnHooks } from "../runtime/turn/hooks.ts"
 import { NekiTurnSessions } from "../runtime/database/neki/session.ts"
 import type { ContentStore } from "../handles/content.ts"
@@ -163,12 +164,12 @@ import {
   contentLayer,
   type ContentFixture,
 } from "./conformance/content-blobs.ts"
+import { workflowsConformance } from "./conformance/workflows.ts"
 import {
-  workflowsConformance,
   workflowsFixture,
   type WorkflowsFixture,
   workflowsLive,
-} from "./conformance/workflows.ts"
+} from "./conformance/workflows/actors.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
