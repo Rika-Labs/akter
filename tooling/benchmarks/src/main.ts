@@ -214,7 +214,7 @@ const program = Effect.gen(function* () {
 
             const measured = yield* scenario.run({
               backend,
-              profile: profile === "ci" ? "quick" : profile,
+              quick: profile !== "full",
               runners,
               withRuntime: withRuntime({ backend, runners }),
             })

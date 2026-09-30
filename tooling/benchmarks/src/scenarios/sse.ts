@@ -68,8 +68,7 @@ export const sse: Scenario = {
     "Event feeds over SSE through Actor.serve and the Promise client: a command's event reaching 1 and 64 open feeds on one actor, and a 5,000-event backlog replayed to a new feed.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const operations = quick ? 200 : 2000
+      const operations = context.quick ? 200 : 2000
       const results: Array<CaseResult> = []
 
       for (const feeds of [1, 64])
@@ -128,7 +127,7 @@ export const sse: Scenario = {
                 parameters: { events: backlog, workers: 1, protocol: "http/1.1" },
                 instruments,
                 workers: 1,
-                operations: quick ? 3 : 20,
+                operations: context.quick ? 3 : 20,
                 operation: replay,
                 listStatements: true,
               })

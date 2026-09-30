@@ -61,12 +61,11 @@ export const manyActors: Scenario = {
   description: `${WORKERS} concurrent callers over 1k/10k/100k actors: first touch (create + activate each actor once), then uniform steady-state load (warm only while resident; see coldFraction), then a connection-pool sweep at 10k actors.`,
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const postgres = context.backend.name === "postgres"
       const results: Array<CaseResult> = []
-      const durationMs = quick ? 3000 : 20_000
+      const durationMs = context.quick ? 3000 : 20_000
 
-      const counts = quick ? [1000] : postgres ? [1000, 10_000, 100_000] : [1000, 10_000]
+      const counts = context.quick ? [1000] : postgres ? [1000, 10_000, 100_000] : [1000, 10_000]
 
       for (const actors of counts)
         results.push(
@@ -136,7 +135,7 @@ export const manyActors: Scenario = {
           )),
         )
 
-      if (!postgres || quick) return results
+      if (!postgres || context.quick) return results
 
       for (const pool of [25, 50])
         results.push(
