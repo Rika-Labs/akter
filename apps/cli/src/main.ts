@@ -22,6 +22,7 @@ import {
   devRoutes,
   parseDev,
 } from "./commands/dev/run.ts"
+import { USAGE as ADOPT_USAGE, adopt, parseAdopt } from "./commands/adopt/run.ts"
 import {
   USAGE as DEFECTS_USAGE,
   formatDefects,
@@ -137,6 +138,40 @@ const payloadsCommand = (args: ReadonlyArray<string>) =>
     Effect.catchTags({
       SqlError: (error) => fail(`Cannot read payload versions: ${error.message}`),
       UsageError: (error) => fail(`${error.message}\n${PAYLOADS_USAGE}`),
+    }),
+  )
+
+const adoptCommand = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const options = yield* parseAdopt({ args, nowMs: yield* Clock.currentTimeMillis })
+
+    const actors =
+      options.entry === undefined
+        ? []
+        : yield* actorsOf({ module: yield* loadEntry(options.entry), entry: options.entry })
+
+    const services = yield* Layer.build(
+      Database.postgres({ url: Redacted.make(options.databaseUrl) }).pipe(
+        Layer.provideMerge(BunCrypto.layer),
+      ),
+    )
+
+    const { output, exitCode } = yield* adopt({ options, actors }).pipe(
+      Effect.provideContext(services),
+    )
+
+    yield* Console.log(output)
+    yield* Effect.sync(() => {
+      process.exitCode = exitCode
+    })
+  }).pipe(
+    Effect.scoped,
+    Effect.catchTags({
+      SqlError: (error) =>
+        fail(
+          `Cannot read adoption state (is the database migrated to 0024_adoption?): ${error.message}`,
+        ),
+      UsageError: (error) => fail(`${error.message}\n${ADOPT_USAGE}`),
     }),
   )
 
@@ -316,6 +351,8 @@ const program = Effect.gen(function* () {
 
   if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
 
+  if (group === "adopt") return yield* adoptCommand(process.argv.slice(3))
+
   if (group === "fleet") return yield* fleetCommand(process.argv.slice(3))
 
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
@@ -360,6 +397,7 @@ const program = Effect.gen(function* () {
       USAGE,
       DEFECTS_USAGE,
       PAYLOADS_USAGE,
+      ADOPT_USAGE,
       FLEET_USAGE,
       INSPECT_USAGE,
       EXPORT_USAGE,

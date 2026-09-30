@@ -23,6 +23,9 @@ import { checkFleet } from "../../runtime/fleet/checks.ts"
 import { rebuildFleetView, setupFleet } from "../../runtime/fleet/setup.ts"
 import { FLEET_SLOT, LOCK_RETRY } from "../../runtime/fleet/maintainer.ts"
 import { tenantRoutingKey } from "../../runtime/storage/codec.ts"
+import { backfillAdoption } from "../../runtime/adoption/backfill.ts"
+import { observeAdoption } from "../../runtime/adoption/observe.ts"
+import { migrate } from "../../runtime/database/migrations.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
@@ -38,6 +41,31 @@ export const fleetOrders = Actor.table(
     archived: boolean("archived").notNull(),
   }),
 )
+
+const legacyInvoices = pgTable("fleet_legacy_invoices", {
+  id: text("id").primaryKey(),
+  orgId: text("org_id").notNull(),
+  accountId: text("account_id").notNull(),
+  status: text("status").notNull(),
+  amount: bigint("amount", { mode: "bigint" }).notNull(),
+})
+
+const invoiceRows = Actor.table(legacyInvoices, {
+  owner: { tenant: legacyInvoices.orgId, actor: legacyInvoices.accountId },
+})
+
+const LegacyAccount = Actor.make("FleetLegacyAccount", {
+  key: Schema.String,
+  tables: [invoiceRows],
+  api: {},
+})
+
+/** Invoices of an adopted table, by status. */
+const InvoicesByStatus = Fleet.view("InvoicesByStatus", {
+  from: invoiceRows,
+  groupBy: ["status"],
+  select: { invoices: Fleet.count(), total: Fleet.sum("amount") },
+})
 
 const spread = Actor.table(
   pgTable("fleet_spread", { id: text("id").primaryKey(), kind: text("kind").notNull() }),
@@ -737,6 +765,62 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
           record(model, cluster.tenant, order("l1", "new", 5))
 
           yield* settleBoth(expect, admin, model)
+        }),
+      ),
+  },
+  {
+    name: "fleet: a legacy writer's change to an adopted table appears in the view",
+    requiresLogicalDecoding: true,
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { database, admin } = yield* fleetDatabase(environment, { setup: false })
+          const tenant = "legacy-tenant"
+          const on = Effect.provideService(SqlClient.SqlClient, admin)
+
+          yield* admin`CREATE TABLE fleet_legacy_invoices (id text PRIMARY KEY, org_id text NOT NULL,
+              account_id text NOT NULL, status text NOT NULL, amount bigint NOT NULL)`.pipe(
+            Effect.orDie,
+          )
+          yield* admin`CREATE TABLE fleet_invoices_by_status (tenant_id text, status text,
+              invoices bigint NOT NULL, total bigint NOT NULL, as_of numeric NOT NULL,
+              PRIMARY KEY (tenant_id, status))`.pipe(Effect.orDie)
+          yield* admin`INSERT INTO fleet_legacy_invoices VALUES
+              ('i1', ${tenant}, 'acct-a', 'open', 10), ('i2', ${tenant}, 'acct-b', 'open', 20)`.pipe(
+            Effect.orDie,
+          )
+          yield* migrate.pipe(on, Effect.orDie)
+          yield* observeAdoption([LegacyAccount]).pipe(on, Effect.orDie)
+          yield* backfillAdoption([LegacyAccount], {}).pipe(on, Effect.orDie)
+          yield* admin`CREATE INDEX fleet_legacy_invoices_recompute
+              ON fleet_legacy_invoices (routing_key, org_id, status)`.pipe(Effect.orDie)
+          yield* setupFleet([InvoicesByStatus]).pipe(on, Effect.orDie)
+
+          yield* Layer.build(ActorTest.layer({ database, fleet: [InvoicesByStatus] }))
+
+          const rows = admin<{
+            tenant_id: string
+            status: string
+            invoices: number
+            total: string
+          }>`
+            SELECT tenant_id, status, invoices::int AS invoices, total::text AS total
+            FROM fleet_invoices_by_status ORDER BY status`.pipe(Effect.orDie)
+
+          yield* settle(expect, rows, [
+            { tenant_id: tenant, status: "open", invoices: 2, total: "30" },
+          ])
+
+          yield* admin`UPDATE fleet_legacy_invoices SET status = 'paid', amount = 25 WHERE id = 'i2'`.pipe(
+            Effect.orDie,
+          )
+
+          yield* settle(expect, rows, [
+            { tenant_id: tenant, status: "open", invoices: 1, total: "10" },
+            { tenant_id: tenant, status: "paid", invoices: 1, total: "25" },
+          ])
         }),
       ),
   },

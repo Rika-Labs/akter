@@ -96,7 +96,7 @@ export const checkFleet = Effect.fnUntraced(function* (
         `${source} does not have full replica identity; run durable fleet setup (ALTER TABLE ${source} REPLICA IDENTITY FULL)`,
       )
 
-    const leading = ["routing_key", "tenant_id", ...view.groupColumns]
+    const leading = [view.routingColumn, view.tenantColumn, ...view.groupColumns]
 
     const indexes = yield* sql<{ columns: ReadonlyArray<string> }>`
       SELECT array(

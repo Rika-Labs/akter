@@ -83,7 +83,7 @@ Queuing a group is uninterruptible, so either every statement of the group is qu
 
 1. **Admission group (round trip 1):**
    - `BEGIN`;
-   - `set_config` for `lock_timeout`, `statement_timeout`, tenant scope, and on Neki `__neki.tx_mode='single'`;
+   - `set_config` for `lock_timeout`, `statement_timeout`, tenant scope, and on Neki `__neki.tx_mode='single'` (amended by [ADR 0057](0057-neki-suite-preparation.md): the session sets it before `BEGIN`);
    - on a cold activation only, the generation insert-if-missing (`INSERT … ON CONFLICT DO NOTHING`);
    - the fenced read of the generation row, joined to the receipt for this command id (`SELECT … FOR UPDATE OF g`);
    - on a cold activation only, the generation bump (`UPDATE … RETURNING`) and the state read.

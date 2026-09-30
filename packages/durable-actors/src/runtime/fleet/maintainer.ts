@@ -76,6 +76,9 @@ const recomputeStatement = (
   const derived = qualified(resolved.derivedSchema, view.tableName.split(".").at(-1)!)
   const groupColumns = view.groupColumns.map(identifier)
   const keys = ["tenant_id", ...groupColumns]
+  const tenantColumn = identifier(view.tenantColumn)
+  const sourceKeys = [`${tenantColumn}::text`, ...groupColumns]
+  const grouping = [tenantColumn, ...groupColumns]
 
   const aggregates = view.aggregates.map(({ kind, column }) =>
     AGGREGATE_SQL[kind](identifier(column ?? "")),
@@ -100,12 +103,13 @@ const recomputeStatement = (
 
   const statement = fragment`WITH fresh AS (
       INSERT INTO ${fragment.raw(derived)} (${fragment.raw(columns.join(", "))})
-      SELECT ${fragment.raw(keys.join(", "))}, ${fragment.raw(aggregates.join(", "))}, ${asOf}::numeric
+      SELECT ${fragment.raw(sourceKeys.join(", "))}, ${fragment.raw(aggregates.join(", "))}, ${asOf}::numeric
       FROM ${fragment.raw(source)}
-      WHERE routing_key = ${String(tenantRoutingKey(tenant))}::bigint AND tenant_id = ${tenant}${equal("")}${
-        filter === undefined ? fragment`` : fragment` AND (${filter})`
-      }
-      GROUP BY ${fragment.raw(keys.join(", "))}
+      WHERE ${fragment.raw(identifier(view.routingColumn))} = ${String(tenantRoutingKey(tenant))}::bigint
+        AND ${fragment.raw(tenantColumn)} = ${tenant}${equal("")}${
+          filter === undefined ? fragment`` : fragment` AND (${filter})`
+        }
+      GROUP BY ${fragment.raw(grouping.join(", "))}
       ON CONFLICT (${fragment.raw(keys.join(", "))}) DO UPDATE SET ${fragment.raw(
         [...view.aggregates.map(({ key }) => identifier(key)), "as_of"]
           .map((column) => `${column} = EXCLUDED.${column}`)
@@ -285,7 +289,7 @@ const run = Effect.fnUntraced(function* (
     for (const { view, sourceSchema } of views) {
       if (relation.schema !== sourceSchema || relation.table !== view.source.table) continue
 
-      const indexes = ["tenant_id", ...view.groupColumns].map((column) =>
+      const indexes = [view.tenantColumn, ...view.groupColumns].map((column) =>
         relation.columns.indexOf(column),
       )
 
@@ -477,7 +481,8 @@ const run = Effect.fnUntraced(function* (
 
         const [next] = yield* on(
           sql<{ tenant_id: string }>`SELECT tenant_id FROM (
-              SELECT tenant_id FROM ${sql.literal(source)}
+              SELECT ${sql.literal(identifier(resolved.view.tenantColumn))}::text AS tenant_id
+              FROM ${sql.literal(source)}
               UNION SELECT tenant_id FROM ${sql.literal(derived)}) t
             WHERE ${after === undefined ? sql`true` : sql`tenant_id > ${after}`}
             ORDER BY tenant_id LIMIT 1`,

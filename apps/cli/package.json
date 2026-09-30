@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "CLI_BACKEND=none bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src",
-    "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/tenants apps/cli/src/commands/fleet"
+    "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/tenants apps/cli/src/commands/adopt apps/cli/src/commands/fleet"
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",
@@ -20,6 +20,7 @@
   "devDependencies": {
     "@durable-actors/postgres": "workspace:*",
     "@types/pg": "8.23.1",
+    "drizzle-orm": "catalog:",
     "pg": "8.23.0",
     "vitest": "catalog:"
   }

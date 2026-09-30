@@ -17,11 +17,10 @@ import { SandboxReaperLive } from "./sandbox-reaper/layer.ts"
 const tenant = "coding-agent-demo"
 
 const DatabaseLive = Layer.unwrap(
-  Effect.gen(function* () {
-    const url = yield* Config.option(Config.Redacted("DATABASE_URL"))
-
-    return Option.isSome(url) ? Database.postgres({ url: url.value }) : Database.pglite()
-  }),
+  Effect.map(
+    Config.option(Config.Redacted("DATABASE_URL")),
+    Option.match({ onNone: () => Database.pglite(), onSome: (url) => Database.postgres({ url }) }),
+  ),
 )
 
 /**

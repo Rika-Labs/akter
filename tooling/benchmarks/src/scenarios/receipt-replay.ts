@@ -14,8 +14,7 @@ export const receiptReplay: Scenario = {
   run: (context) =>
     context.withRuntime({}, (instruments) =>
       Effect.gen(function* () {
-        const quick = context.profile === "quick"
-        const commands = quick ? 100 : 1000
+        const commands = context.quick ? 100 : 1000
 
         const probes = yield* Effect.forEach(Array.from({ length: 100 }), (_, index) =>
           Probe.get(`replay-${index}`),
@@ -40,7 +39,7 @@ export const receiptReplay: Scenario = {
             parameters: { commands, actors: 100, workers: 64 },
             instruments,
             workers: 64,
-            durationMs: quick ? 2000 : 10_000,
+            durationMs: context.quick ? 2000 : 10_000,
             operation: (index) => calls[index % commands]!,
           }),
         ]

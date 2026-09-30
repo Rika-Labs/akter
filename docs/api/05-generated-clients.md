@@ -27,15 +27,15 @@ Every command requires an `Idempotency-Key` header, the command id `v1.<issuedAt
 
 Error bodies are `{ _tag: "ActorError", reason, isRetryable, retryAfter? }`. Retry with the same id, never a new one:
 
-| Outcome                                                             | Retry with the same id?                   | Wait                                                 |
-| ------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
-| `503 ActorUnavailable`, `503 RunnerAtCapacity`, `429 MailboxFull`   | yes                                       | `retryAfter` ms (`retry-after` in seconds), jittered |
-| `504 Timeout`                                                       | yes; the turn may have committed          | 0–250 ms of jitter                                   |
-| no response (network failure)                                       | yes; the outcome is unknown               | exponential, from 100 ms, capped at 5 s, with jitter |
-| `400 InvalidCommandId` with code `future`                           | yes, once `durable-now` passes `issuedAt` | until then                                           |
-| `401 Unauthorized` with code `expired`                              | once, with a fresh credential             | none                                                 |
-| `410 CommandExpired`                                                | no; surface it, never remint              | –                                                    |
-| `409`, other `400`, `401`, `403`, `404`, `413`, `415`, `422`, `500` | no                                        | –                                                    |
+| Outcome                                                             | Retry with the same id?                   | Wait                                                                                                              |
+| ------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `503 ActorUnavailable`, `503 RunnerAtCapacity`, `429 MailboxFull`   | yes                                       | `retryAfter` ms (`retry-after` in seconds), jittered                                                              |
+| `504 Timeout`                                                       | yes; the turn may have committed          | 0–250 ms of jitter                                                                                                |
+| no response (network failure)                                       | yes; the outcome is unknown               | exponential, from 100 ms, capped at 5 s, with jitter                                                              |
+| `400 InvalidCommandId` with code `future`                           | yes, once `durable-now` passes `issuedAt` | until then, plus half the round trip of the `durable-now` sample, which bounds how far the estimate can run ahead |
+| `401 Unauthorized` with code `expired`                              | once, with a fresh credential             | none                                                                                                              |
+| `410 CommandExpired`                                                | no; surface it, never remint              | –                                                                                                                 |
+| `409`, other `400`, `401`, `403`, `404`, `413`, `415`, `422`, `500` | no                                        | –                                                                                                                 |
 
 Stop retrying once the id's `expiresAt` is less than a second away on the client's clock corrected by `durable-now`.
 
@@ -61,3 +61,29 @@ A server under `Actor.auth.none` declares no schemes. Never put a credential in 
 - A command's `commandId` is the same id `Idempotency-Key` carries. Mint it once with `durable.commandIds`, keep it with the pending call, and send it with the same `input` on every retry. The JSON-RPC `id` is not a command id and may change on each attempt. A call retried over HTTP with the same id replays the same receipt.
 - A result is `isError: false` with the output as JSON text (and as `structuredContent` when the tool has an `outputSchema`), or `isError: true` with the text holding exactly the error body of the HTTP route: a declared error, `{ _tag: "ActorError", reason, isRetryable, retryAfter? }`, or `{ _tag: "Defect", traceId }`. The retry table above applies to `isRetryable` and `retryAfter`. Failed authentication is an HTTP `401` with the `Unauthorized` body, not a JSON-RPC error.
 - Internal commands, connections, streams, feeds, and content have no tool, and a call to one is `-32602 Unknown tool`.
+
+## Python
+
+`packages/python-client` generates a Python 3.9+ package, using only the standard library, from an OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)):
+
+```sh
+bun packages/python-client/src/main.ts http://localhost:8080/openapi.json --out ./clients --name chat_client
+```
+
+The package has `models.py` (a `TypedDict` for every schema the public members use), `client.py` (one class per actor, one method per public command, reducer, and query, in snake case), and `_runtime.py`, the fixed runtime that holds the command-id rules above.
+
+```python
+from chat_client import Client, CommandExpired, DeclaredError
+
+client = Client("http://localhost:8080", token=lambda: current_token())
+key = client.mint_command_id()
+client.room.post("room-1", {"body": "hi"}, command_id=key)
+client.room.post("room-1", {"body": "hi"}, command_id=key)  # replays the stored result
+client.room.recent("room-1", {"limit": 20})
+```
+
+- `base_url` is the origin: each method carries its full path, `basePath` included. A method takes the actor id (unless the actor is a singleton), the input (unless the member has none), and, for commands, a keyword-only `command_id`. Without one, the runtime mints an id and keeps it across every retry of that call. Keep an id you mint yourself with the pending operation.
+- `token` is a bearer string or a function called before every attempt; a command refused with `401 expired` is retried once, with a fresh call to it and the same id.
+- Failures are exceptions: framework reasons are `ActorError` subclasses (`CommandExpired`, `CommandConflict`, `Unauthorized`, ...) with `tag`, `code`, `status`, `is_retryable`, and `retry_after_ms`; a declared failure is `DeclaredError` with `tag` and `body` (`DECLARED_ERRORS` maps each operation to its tags); a defect is `Defect` with `trace_id`; no reply after every attempt is `TransportError`. `CommandExpired` is raised, never replaced.
+- `OPERATIONS` maps each operation id to its attribute and method, so the names agree with OpenAPI and the other clients. Internal commands, streams, feeds, connections, and content have no method.
+- Not included: `durable-min-version` read-your-writes tokens.

@@ -97,6 +97,9 @@ export interface FleetView<
   readonly groupBy: G
   /** Group column SQL names, in key order. */
   readonly groupColumns: ReadonlyArray<string>
+  /** The source's SQL names of its tenant and routing key columns. */
+  readonly tenantColumn: string
+  readonly routingColumn: string
   readonly select: S
   readonly aggregates: ReadonlyArray<SelectedAggregate>
   readonly table: DerivedTable<`fleet_${string}`, T, G, S>
@@ -204,7 +207,7 @@ const view = <
   const reserved: ReadonlyArray<string> = OWNERSHIP
 
   const business = (key: string, role: string) => {
-    if (reserved.includes(key) || !source.columns.includes(key))
+    if (reserved.includes(key) || source.ownerKeys.includes(key) || !source.columns.includes(key))
       throw new Error(
         `Fleet view ${name}: ${role} ${key} is not a business column of ${source.name}`,
       )
@@ -252,6 +255,13 @@ const view = <
     return { key, kind: aggregate.kind, column: column.name }
   })
 
+  if (source.routingKey === undefined)
+    throw new Error(
+      `Fleet view ${name} reads ${source.name}, adopted for reading only; a view recomputes by routing_key, so adopt it with access "write"`,
+    )
+
+  const tenantColumn = source.ownerColumns[source.ownerKeys.indexOf(source.tenantKey)]!
+  const routingColumn = columns[source.routingKey]!.name
   const tableName = `fleet_${snake(name)}`
 
   const derived = {
@@ -300,6 +310,7 @@ const view = <
     .update(
       canonical({
         source: source.name,
+        owner: [routingColumn, tenantColumn],
         where: (where ?? null) as Canonical,
         groupBy: groupColumns,
         select: aggregates.map(({ key, kind, column }) => ({ key, kind, column })),
@@ -315,6 +326,8 @@ const view = <
     where,
     groupBy: definition.groupBy,
     groupColumns,
+    tenantColumn,
+    routingColumn,
     select: definition.select,
     aggregates,
     table,
