@@ -7,6 +7,7 @@ import { FrameworkClock } from "../turn/admission.ts"
 import { bucketOf, CallerJson, OutboxRuntime, textArray } from "../turn/outbox.ts"
 import { compress } from "../storage/codec.ts"
 import { notifyWaits } from "../workflows/engine.ts"
+import { summarize } from "../subscriptions/storage.ts"
 
 /** The outbox key of an actor's feed row, which tells the relay to expand its subscriptions. */
 const FEED_KEY = "$feed"
@@ -28,8 +29,8 @@ const FEED_KEY = "$feed"
  * expanding the feed while this commits keeps it due. Routed subscriptions
  * registered here that name an emitted class get their missing source-side
  * rows first, starting at this turn's first event. Those rows are widened,
- * never narrowed, so an older runner cannot shrink one back; each inserted row
- * and each added tag enters the tag summary.
+ * never narrowed, so an older runner cannot shrink one back, and their tag
+ * summary moves in the same statement by the tags the upsert added.
  */
 export const eventsStatement = Effect.fnUntraced(function* (
   request: Request,
@@ -86,16 +87,12 @@ export const eventsStatement = Effect.fnUntraced(function* (
             DO UPDATE SET events = ARRAY(SELECT DISTINCT e FROM unnest(actor_subscriptions.events || EXCLUDED.events) AS u(e) ORDER BY e)
             WHERE NOT actor_subscriptions.events @> EXCLUDED.events
             RETURNING subscriber_type, subscription, events),
-          routed_tags AS (
-            INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
-            SELECT ${routingKey}, ${tenant}, ${actor}, ${id}, x.tag, count(*)::int
-            FROM routed_new n LEFT JOIN routed_old o USING (subscriber_type, subscription)
-            CROSS JOIN LATERAL unnest(n.events) AS x(tag)
-            WHERE o.events IS NULL OR NOT x.tag = ANY(o.events)
-            GROUP BY x.tag
-            ON CONFLICT (routing_key, tenant_id, source_type, source_id, event)
-            DO UPDATE SET rows = actor_subscription_tags.rows + EXCLUDED.rows
-            RETURNING 1)`
+          routed_changed AS (
+            SELECT ${routingKey}::bigint AS routing_key, ${tenant}::text AS tenant_id,
+              ${actor}::text AS source_type, ${id}::text AS source_id,
+              coalesce(o.events, '{}'::text[]) AS was, n.events AS now
+            FROM routed_new n LEFT JOIN routed_old o USING (subscriber_type, subscription)),
+          ${summarize({ sql, changed: "routed_changed" })}`
 
   const statement = Effect.map(
     sql<{ emitted_at_ms: string; fed: number }>`WITH reserved AS (

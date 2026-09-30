@@ -1,4 +1,4 @@
-import { Cause, Clock, Deferred, Effect, Option, Result, Schema } from "effect"
+import { Cause, Clock, Data, Deferred, Effect, Option, Result, Schema } from "effect"
 import { SqlClient, type Statement } from "effect/unstable/sql"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import type { JobFailure, JobRoute, RegisteredJob } from "../members.ts"
@@ -44,13 +44,25 @@ export interface CappedGroup {
 }
 
 /** The job rows of `group`, as the outbox row aliased `o`. */
-export const groupRow = (sql: SqlClient.SqlClient, group: CappedGroup) =>
+export const groupRow = ({
+  sql,
+  group,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly group: CappedGroup
+}) =>
   sql`o.routing_key = ${BigInt(group.routing_key)} AND o.tenant_id = ${group.tenant_id}
     AND o.actor_type = ${group.actor_type} AND o.actor_id = ${group.actor_id}
     AND o.command = ${group.command} AND o.kind = 'job'`
 
 /** The advisory lock that serializes every runner's claims of one capped group. */
-export const groupLock = (sql: SqlClient.SqlClient, group: CappedGroup) =>
+export const groupLock = ({
+  sql,
+  group,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly group: CappedGroup
+}) =>
   sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
     group.tenant_id,
     group.actor_type,
@@ -79,12 +91,12 @@ export const wakeWaiting = ({
 }) =>
   sql.withTransaction(
     Effect.andThen(
-      groupLock(sql, group),
+      groupLock({ sql, group }),
       sql`UPDATE actor_outbox SET due_at_ms = least(due_at_ms, ${at}), waiting = false
         WHERE waiting AND NOT running AND cancelled_at_ms IS NULL
           AND (routing_key, intent_id) IN (
             SELECT o.routing_key, o.intent_id FROM actor_outbox o
-            WHERE ${groupRow(sql, group)} AND o.waiting AND NOT o.running
+            WHERE ${groupRow({ sql, group })} AND o.waiting AND NOT o.running
               AND o.cancelled_at_ms IS NULL
             ORDER BY o.ready_at_ms, o.intent_id LIMIT 1
             FOR UPDATE OF o SKIP LOCKED
@@ -100,20 +112,16 @@ export const wakeWaiting = ({
  * cancellation; `Unattempted` a cancelled or exhausted row claimed only to
  * be settled.
  */
-export type Reported =
-  | {
-      readonly _tag: "Succeeded"
-      readonly success: JobRoute | undefined
-      readonly cancelled: JobRoute | undefined
-    }
-  | {
-      readonly _tag: "Rejected"
-      readonly failure: JobFailure
-      readonly cancelled: JobRoute | undefined
-    }
-  | { readonly _tag: "Failed"; readonly failure: JobFailure }
-  | { readonly _tag: "Interrupted" }
-  | { readonly _tag: "Unattempted" }
+export type Reported = Data.TaggedEnum<{
+  Succeeded: { readonly success: JobRoute | undefined; readonly cancelled: JobRoute | undefined }
+  Rejected: { readonly failure: JobFailure; readonly cancelled: JobRoute | undefined }
+  Failed: { readonly failure: JobFailure }
+  Interrupted: {}
+  Unattempted: {}
+}>
+
+/** Constructors and matchers for `Reported`. */
+export const Reported = Data.taggedEnum<Reported>()
 
 /**
  * The one guarded write that ends a job row: it becomes an intent to `route`,
@@ -422,103 +430,101 @@ export const jobAttempts = Effect.fnUntraced(function* (options: {
         return recorded
       })
 
-    const settle = (reported: Reported) =>
+    /**
+     * Records a failure, then ends the row when it was cancelled, final, or the
+     * last attempt. A `rejected` result succeeded at the provider, so it goes to
+     * `onCancelled` when the row was cancelled, and is late when no row took it.
+     */
+    const failed = (failure: JobFailure, cancelledRoute: JobRoute | undefined, rejected: boolean) =>
       Effect.gen(function* () {
         const attempt = row.attempts
+        const routesResult = cancelledRoute !== undefined && registered.routesCancelled
 
-        switch (reported._tag) {
-          case "Unattempted":
-            if (row.cancelled && attempt === 0)
-              return yield* apply({ route: undefined, attempt: 0, cancelled: true })
+        if (
+          routesResult &&
+          (yield* apply({ route: cancelledRoute, attempt: undefined, cancelled: true }))
+        )
+          return true
 
-            if (row.cancelled)
-              return yield* settleCancelled(
-                attempt,
-                known(row.ambiguous, row.maybe_applied),
-                row.last_error ??
-                  (row.ambiguous || row.maybe_applied
-                    ? cancelledCause(attempt)
-                    : "Failed before it was cancelled"),
-              )
+        const recorded = yield* record(failure)
 
-            return yield* exhaust(attempt, row.last_error ?? "No attempt reported", row.ambiguous)
-          case "Interrupted":
-            yield* Effect.logInfo("Job attempt interrupted by its cancellation").pipe(
-              Effect.annotateLogs({ attempt }),
-              annotate,
-            )
+        if (recorded === undefined) {
+          if (rejected) yield* late(cancelledRoute)
+          else
+            yield* warnAttempt("Job attempt failed after a newer attempt or a settle took its row")
 
-            return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
-          case "Succeeded": {
-            const uncancelled = { route: reported.success, attempt: undefined, cancelled: false }
-
-            if (yield* apply(uncancelled)) {
-              yield* tally(Metrics.relayDelivered, { kind: "job" }, 1)
-
-              return true
-            }
-
-            const route = registered.routesCancelled ? reported.cancelled : reported.success
-
-            if (yield* apply({ route, attempt: undefined, cancelled: true })) return true
-
-            yield* late(reported.cancelled)
-
-            return false
-          }
-          case "Rejected":
-          case "Failed": {
-            const cancelledRoute = reported._tag === "Rejected" ? reported.cancelled : undefined
-            const routesResult = cancelledRoute !== undefined && registered.routesCancelled
-
-            if (
-              routesResult &&
-              (yield* apply({ route: cancelledRoute, attempt: undefined, cancelled: true }))
-            )
-              return true
-
-            const { failure } = reported
-            const recorded = yield* record(failure)
-
-            if (recorded === undefined) {
-              if (reported._tag === "Rejected") yield* late(cancelledRoute)
-              else
-                yield* warnAttempt(
-                  "Job attempt failed after a newer attempt or a settle took its row",
-                )
-
-              return false
-            }
-
-            if (recorded.cancelled) {
-              if (
-                routesResult &&
-                (yield* apply({ route: cancelledRoute, attempt, cancelled: true }))
-              )
-                return true
-
-              return yield* settleCancelled(
-                attempt,
-                known(recorded.ambiguous, recorded.maybe_applied),
-                failure.cause,
-              )
-            }
-
-            if (failure.final === true || attempt >= registered.attempts)
-              return yield* exhaust(attempt, failure.cause, recorded.ambiguous)
-
-            yield* Effect.logWarning(
-              "Job attempt failed; retrying with backoff",
-              failure.cause,
-            ).pipe(Effect.annotateLogs({ attempt, ambiguous: recorded.ambiguous }), annotate)
-            yield* tally(Metrics.relayRetried, { kind: "job" }, 1)
-
-            return false
-          }
+          return false
         }
+
+        if (recorded.cancelled) {
+          if (routesResult && (yield* apply({ route: cancelledRoute, attempt, cancelled: true })))
+            return true
+
+          return yield* settleCancelled(
+            attempt,
+            known(recorded.ambiguous, recorded.maybe_applied),
+            failure.cause,
+          )
+        }
+
+        if (failure.final === true || attempt >= registered.attempts)
+          return yield* exhaust(attempt, failure.cause, recorded.ambiguous)
+
+        yield* Effect.logWarning("Job attempt failed; retrying with backoff", failure.cause).pipe(
+          Effect.annotateLogs({ attempt, ambiguous: recorded.ambiguous }),
+          annotate,
+        )
+        yield* tally(Metrics.relayRetried, { kind: "job" }, 1)
+
+        return false
       })
 
-    if (row.cancelled || row.exhausted) return yield* settle({ _tag: "Unattempted" })
+    const settle = Reported.$match({
+      Unattempted: () => {
+        const attempt = row.attempts
+
+        if (row.cancelled && attempt === 0)
+          return apply({ route: undefined, attempt: 0, cancelled: true })
+
+        if (row.cancelled)
+          return settleCancelled(
+            attempt,
+            known(row.ambiguous, row.maybe_applied),
+            row.last_error ??
+              (row.ambiguous || row.maybe_applied
+                ? cancelledCause(attempt)
+                : "Failed before it was cancelled"),
+          )
+
+        return exhaust(attempt, row.last_error ?? "No attempt reported", row.ambiguous)
+      },
+      Interrupted: () =>
+        Effect.logInfo("Job attempt interrupted by its cancellation").pipe(
+          Effect.annotateLogs({ attempt: row.attempts }),
+          annotate,
+          Effect.andThen(settleCancelled(row.attempts, "Unknown", cancelledCause(row.attempts))),
+        ),
+      Succeeded: ({ success, cancelled }) =>
+        Effect.gen(function* () {
+          if (yield* apply({ route: success, attempt: undefined, cancelled: false })) {
+            yield* tally(Metrics.relayDelivered, { kind: "job" }, 1)
+
+            return true
+          }
+
+          const route = registered.routesCancelled ? cancelled : success
+
+          if (yield* apply({ route, attempt: undefined, cancelled: true })) return true
+
+          yield* late(cancelled)
+
+          return false
+        }),
+      Rejected: ({ failure, cancelled }) => failed(failure, cancelled, true),
+      Failed: ({ failure }) => failed(failure, undefined, false),
+    })
+
+    if (row.cancelled || row.exhausted) return yield* settle(Reported.Unattempted())
 
     const attempt = row.attempts
     const request = yield* requestOf(row).pipe(Effect.orDie)
@@ -637,10 +643,10 @@ export const jobAttempts = Effect.fnUntraced(function* (options: {
         return false
       }
 
-      if (outcome === "cancelled") return yield* settle({ _tag: "Interrupted" })
+      if (outcome === "cancelled") return yield* settle(Reported.Interrupted())
 
       if (Result.isFailure(outcome))
-        return yield* settle({ _tag: "Failed", failure: outcome.failure })
+        return yield* settle(Reported.Failed({ failure: outcome.failure }))
 
       const { success, cancelled, rejected } = outcome.success
 
@@ -649,8 +655,8 @@ export const jobAttempts = Effect.fnUntraced(function* (options: {
 
       return yield* settle(
         rejected === undefined
-          ? { _tag: "Succeeded", success, cancelled }
-          : { _tag: "Rejected", failure: rejected, cancelled },
+          ? Reported.Succeeded({ success, cancelled })
+          : Reported.Rejected({ failure: rejected, cancelled }),
       )
     }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
   })

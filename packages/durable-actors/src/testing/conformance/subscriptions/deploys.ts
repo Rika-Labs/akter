@@ -214,4 +214,70 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
         }),
       ),
   },
+  {
+    name: "keeps the tag summary exact when many subscriptions of one source change at once, and deletes counts that reach zero",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ids = Array.from({ length: 16 }, (_, index) => `crowd-${index}`)
+
+          const counts = query(
+            (sql) => sql<{ event: string; rows: number }>`SELECT event, rows
+              FROM actor_subscription_tags
+              WHERE tenant_id = ${test.tenant} AND source_id = 'crowd-order' ORDER BY event`,
+          )
+
+          yield* Effect.forEach(
+            ids,
+            (id) =>
+              SubFollower.get(id).pipe(
+                Effect.flatMap((follower) => follower.Follow({ source: "crowd-order" })),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* drain
+          expect(yield* counts).toEqual([
+            { event: "OrderCancelled", rows: 16 },
+            { event: "OrderPlaced", rows: 16 },
+          ])
+
+          yield* Effect.forEach(
+            ids,
+            (id, index) =>
+              SubFollower.get(id).pipe(
+                Effect.flatMap((follower) =>
+                  index % 2 === 0
+                    ? follower.Unfollow("crowd-order")
+                    : follower.Unfollow("crowd-order").pipe(
+                        Effect.andThen(follower.Follow({ source: "crowd-order" })),
+                      ),
+                ),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* drain
+          expect(yield* counts).toEqual([
+            { event: "OrderCancelled", rows: 8 },
+            { event: "OrderPlaced", rows: 8 },
+          ])
+          expect(yield* tagMismatches).toEqual([])
+
+          yield* Effect.forEach(
+            ids,
+            (id) =>
+              SubFollower.get(id).pipe(
+                Effect.flatMap((follower) => follower.Unfollow("crowd-order")),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* drain
+          expect(yield* counts).toEqual([])
+          expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
+    timeoutMs: 60_000,
+  },
 ]

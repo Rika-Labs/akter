@@ -909,6 +909,10 @@ export const migrations = {
    * timer keys, dead-letter columns, payload-version kinds, and the inspection views. Rows keep
    * their ids, attempts, ambiguity, and cancellation marks, so a job in flight settles under the
    * same id. Dropping the renamed views drops any grants on them.
+   *
+   * A subscription change lowers a tag count in place and deletes a count it
+   * lowered to 0 before its transaction commits, so a summary row may hold 0
+   * only inside that transaction.
    */
   "0026_jobs": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
@@ -940,6 +944,8 @@ export const migrations = {
           CHECK (kind IN ('event', 'job'))`
     }
 
+    yield* sql`ALTER TABLE actor_subscription_tags DROP CONSTRAINT actor_subscription_tags_rows_check,
+        ADD CONSTRAINT actor_subscription_tags_rows_check CHECK (rows >= 0)`
     yield* sql`DROP VIEW durable.effects`
     yield* sql`DROP VIEW durable.dead_letters`
     yield* sql`CREATE VIEW durable.jobs AS

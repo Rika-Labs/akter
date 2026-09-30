@@ -409,8 +409,8 @@ export const claimCapped = ({
 }) =>
   sql.withTransaction(
     Effect.gen(function* () {
-      yield* groupLock(sql, group)
-      const inGroup = groupRow(sql, group)
+      yield* groupLock({ sql, group })
+      const inGroup = groupRow({ sql, group })
       yield* sql`SELECT 1 FROM actor_outbox o WHERE ${inGroup} AND o.running FOR UPDATE OF o`
 
       return yield* sql<ClaimedRow>`WITH live AS (

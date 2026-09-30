@@ -10,6 +10,7 @@ import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { TurnHooks, type TurnPoint } from "../turn/hooks.ts"
 import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
 import { candidates, outboxNow } from "../turn/relay.ts"
+import { changeRows, rowColumns } from "./storage.ts"
 import { deliveryCommandId } from "./identity.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -37,38 +38,47 @@ interface SubscriptionSettings {
   readonly retryWindowMs: number
 }
 
-interface OutboxWork {
-  readonly kind: "feed" | "control"
-  readonly routing_key: string
-  readonly intent_id: string
-  readonly attempts: number
-  readonly tenant_id: string
-  readonly actor_type: string
-  readonly actor_id: string
-  readonly target_type: string
-  readonly target_id: string
-  readonly command: string
-  readonly payload: string
-  readonly scheduled_at_ms: string
-  readonly claimed_until: string
-}
+/** A claimed feed row to expand, or control row to register at its source. */
+const OutboxWork = Schema.Struct({
+  kind: Schema.Literals(["feed", "control"]),
+  routing_key: Schema.String,
+  intent_id: Schema.String,
+  attempts: Schema.Int,
+  tenant_id: Schema.String,
+  actor_type: Schema.String,
+  actor_id: Schema.String,
+  target_type: Schema.String,
+  target_id: Schema.String,
+  command: Schema.String,
+  payload: Schema.String,
+  scheduled_at_ms: Schema.String,
+  claimed_until: Schema.String,
+})
 
-interface SubscriptionRow {
-  readonly kind: "subscription"
-  readonly routing_key: string
-  readonly tenant_id: string
-  readonly source_type: string
-  readonly source_id: string
-  readonly subscriber_type: string
-  readonly subscription: string
-  readonly subscriber_id: string
-  readonly events: ReadonlyArray<string>
-  readonly epoch: string
-  readonly delivered: string
-  readonly attempts: number
-  readonly gap_through: string | null
-  readonly claimed_until: string
-}
+type OutboxWork = typeof OutboxWork.Type
+
+/** A claimed subscription row to deliver. */
+const SubscriptionRow = Schema.Struct({
+  kind: Schema.Literal("subscription"),
+  routing_key: Schema.String,
+  tenant_id: Schema.String,
+  source_type: Schema.String,
+  source_id: Schema.String,
+  subscriber_type: Schema.String,
+  subscription: Schema.String,
+  subscriber_id: Schema.String,
+  events: Schema.Array(Schema.String),
+  epoch: Schema.String,
+  delivered: Schema.String,
+  attempts: Schema.Int,
+  gap_through: Schema.NullOr(Schema.String),
+  claimed_until: Schema.String,
+})
+
+type SubscriptionRow = typeof SubscriptionRow.Type
+
+/** A unit of relay work, as a claim returns it in its `work` column: an outbox row to expand or a subscription row to deliver. */
+const SubscriptionWork = Schema.fromJsonString(Schema.Union([OutboxWork, SubscriptionRow]))
 
 /** A unit of relay work: an outbox row to expand or a subscription row to deliver. */
 export type SubscriptionWork = OutboxWork | SubscriptionRow
@@ -158,6 +168,8 @@ const decodeStrings = Schema.decodeEffect(StringsJson)
 
 const decodeJson = Schema.decodeEffect(JsonText)
 
+const decodeWork = Schema.decodeEffect(SubscriptionWork)
+
 /** How subscription work can fail; the relay logs it and the row's lease or backoff retries it. */
 export type SubscriptionError = SqlError.SqlError | Schema.SchemaError | SubscriptionFailure
 
@@ -195,9 +207,8 @@ const hookRequest = (ref: ActorRef, command: string, commandId: string) =>
  * refused subscribe leaves a tombstone at its own epoch. A subscription is due at
  * once when history after its start already matches, so one to a quiet source
  * still delivers it. Widening only adds this declaration's classes to the row's
- * list, and each added class enters the tag summary; removing a row's tags locks
- * each summary row first so concurrent removals never lose a decrement, and a
- * count reaching 0 is deleted.
+ * list. Every write that changes a row's `active` or `events` goes through
+ * `changeRows`, which moves the tag summary in the same transaction.
  *
  * Gaps: pruning removes a prefix, so history after `delivered` is missing when the
  * oldest retained event is past its successor or nothing is retained. An
@@ -357,7 +368,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     return results.length === 0 ? undefined : { parts, results }
   }
 
-  const decode = (work: string) => Effect.orDie(decodeJson(work)) as Effect.Effect<SubscriptionWork>
+  const decode = (work: string) => Effect.orDie(decodeWork(work))
 
   const placementKey = Effect.fnUntraced(function* (ref: ActorRef) {
     const placement = yield* options.placementOf(ref.actor)
@@ -370,30 +381,23 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     return routingKey({ ref, placement })
   })
 
-  const addTags = (key: bigint, source: ActorRef, tags: ReadonlyArray<string>) =>
-    tags.length === 0
-      ? Effect.void
-      : sql`INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
-          SELECT ${key}, ${source.tenant}, ${source.actor}, ${source.id}, x.tag, 1
-          FROM unnest(${textArray({ sql, values: tags })}) AS x(tag)
-          ON CONFLICT (routing_key, tenant_id, source_type, source_id, event)
-          DO UPDATE SET rows = actor_subscription_tags.rows + 1`.pipe(Effect.asVoid)
+  const rowKey = (
+    alias: string,
+    row: Pick<SubscriptionRow, "subscriber_type" | "subscription" | "subscriber_id">,
+    key: bigint,
+    source: ActorRef,
+  ) =>
+    sql`${sourceWhere(alias, key, source)} AND ${sql(alias)}.subscriber_type = ${row.subscriber_type}
+      AND ${sql(alias)}.subscription = ${row.subscription} AND ${sql(alias)}.subscriber_id = ${row.subscriber_id}`
 
-  /** Takes one row's tags, as the JSON its statement returned, out of the tag summary. */
-  const removeTags = Effect.fnUntraced(function* (key: bigint, source: ActorRef, events: string) {
-    for (const tag of yield* decodeStrings(events)) {
-      const where = sql`routing_key = ${key} AND tenant_id = ${source.tenant}
-        AND source_type = ${source.actor} AND source_id = ${source.id} AND event = ${tag}`
-
-      const [row] = yield* sql<{ rows: number }>`SELECT rows FROM actor_subscription_tags
-        WHERE ${where} FOR UPDATE`
-
-      if (row === undefined) continue
-
-      if (row.rows <= 1) yield* sql`DELETE FROM actor_subscription_tags WHERE ${where}`
-      else yield* sql`UPDATE actor_subscription_tags SET rows = rows - 1 WHERE ${where}`
-    }
-  })
+  /** Deletes the rows `old_rows` locked, returning each as no longer active. */
+  const deleteLocked = sql`DELETE FROM actor_subscriptions s USING old_rows o
+    WHERE s.routing_key = o.routing_key AND s.tenant_id = o.tenant_id
+      AND s.source_type = o.source_type AND s.source_id = o.source_id
+      AND s.subscriber_type = o.subscriber_type AND s.subscription = o.subscription
+      AND s.subscriber_id = o.subscriber_id
+    RETURNING s.routing_key, s.tenant_id, s.source_type, s.source_id, s.subscriber_type,
+      s.subscription, s.subscriber_id, false AS active, s.events`
 
   /**
    * Deletes a dynamic row the subscriber acknowledged as stale or
@@ -401,17 +405,10 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
    * never removes a newer subscription.
    */
   const deleteRow = (row: SubscriptionRow, key: bigint, source: ActorRef) =>
-    sql.withTransaction(
-      Effect.gen(function* () {
-        const [gone] = yield* sql<{ active: boolean; events: string }>`
-          DELETE FROM actor_subscriptions s
-          WHERE ${sourceWhere("s", key, source)}
-            AND s.subscriber_type = ${row.subscriber_type} AND s.subscription = ${row.subscription}
-            AND s.subscriber_id = ${row.subscriber_id} AND s.epoch = ${row.epoch}
-          RETURNING s.active, to_jsonb(s.events)::text AS events`
-
-        if (gone?.active === true) yield* removeTags(key, source, gone.events)
-      }),
+    changeRows(
+      sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+        WHERE ${rowKey("s", row, key, source)} AND s.epoch = ${row.epoch} FOR UPDATE`,
+      deleteLocked,
     )
 
   /**
@@ -587,12 +584,8 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
         const head = BigInt(generation!.head)
 
-        const [existing] = yield* sql<{
-          epoch: string
-          active: boolean
-          events: string
-        }>`SELECT s.epoch::text AS epoch, s.active, to_jsonb(s.events)::text AS events
-          FROM actor_subscriptions s
+        const [existing] = yield* sql<{ epoch: string; active: boolean }>`
+          SELECT s.epoch::text AS epoch, s.active FROM actor_subscriptions s
           WHERE ${target} FOR UPDATE`
 
         const refused =
@@ -604,17 +597,22 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
         if (existing !== undefined && BigInt(existing.epoch) >= epoch)
           return refused && BigInt(existing.epoch) === epoch && !existing.active
 
-        if (existing?.active === true) yield* removeTags(key, source, existing.events)
+        const old = sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+          WHERE ${target} FOR UPDATE`
 
         if (change.op === "remove" || refused) {
-          yield* sql`INSERT INTO actor_subscriptions (routing_key, tenant_id, source_type, source_id,
-              subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
-            VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
-              ${row.command}, ${subscriber.id}, ${textArray({ sql, values: change.events })}, ${epoch}, false,
-              ${head}, ${Number(key >> 56n)})
-            ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
-            DO UPDATE SET epoch = EXCLUDED.epoch, active = false, due_at_ms = NULL, attempts = 0,
-              last_error = NULL, gap_at_ms = NULL, gap_through = NULL`
+          yield* changeRows(
+            old,
+            sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
+                subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
+              VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
+                ${row.command}, ${subscriber.id}, ${textArray({ sql, values: change.events })}, ${epoch}, false,
+                ${head}, ${Number(key >> 56n)})
+              ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
+              DO UPDATE SET epoch = EXCLUDED.epoch, active = false, due_at_ms = NULL, attempts = 0,
+                last_error = NULL, gap_at_ms = NULL, gap_through = NULL
+              RETURNING ${rowColumns({ sql, alias: "s" })}`,
+          )
 
           return refused
         }
@@ -625,23 +623,25 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           Match.orElse((cursor) => BigInt(cursor)),
         )
 
-        yield* sql`INSERT INTO actor_subscriptions (routing_key, tenant_id, source_type, source_id,
-            subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket,
-            due_at_ms)
-          SELECT ${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
-            ${row.command}, ${subscriber.id}, x.events, ${epoch}, true, ${delivered},
-            ${Number(key >> 56n)},
-            CASE WHEN EXISTS (SELECT 1 FROM actor_events e
-                WHERE ${eventsOf("e", key, source)}
-                  AND e.sequence > ${delivered} AND e.sequence <= ${head} AND e.event = ANY(x.events))
-              THEN ${now()} END
-          FROM (SELECT ${textArray({ sql, values: change.events })} AS events) AS x
-          ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
-          DO UPDATE SET events = EXCLUDED.events, epoch = EXCLUDED.epoch, active = true,
-            delivered = EXCLUDED.delivered, marked = 0, due_at_ms = EXCLUDED.due_at_ms, attempts = 0,
-            last_error = NULL, gap_at_ms = NULL, gap_through = NULL`
-
-        yield* addTags(key, source, change.events)
+        yield* changeRows(
+          old,
+          sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
+              subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket,
+              due_at_ms)
+            SELECT ${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
+              ${row.command}, ${subscriber.id}, x.events, ${epoch}, true, ${delivered},
+              ${Number(key >> 56n)},
+              CASE WHEN EXISTS (SELECT 1 FROM actor_events e
+                  WHERE ${eventsOf("e", key, source)}
+                    AND e.sequence > ${delivered} AND e.sequence <= ${head} AND e.event = ANY(x.events))
+                THEN ${now()} END
+            FROM (SELECT ${textArray({ sql, values: change.events })} AS events) AS x
+            ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
+            DO UPDATE SET events = EXCLUDED.events, epoch = EXCLUDED.epoch, active = true,
+              delivered = EXCLUDED.delivered, marked = 0, due_at_ms = EXCLUDED.due_at_ms, attempts = 0,
+              last_error = NULL, gap_at_ms = NULL, gap_through = NULL
+            RETURNING ${rowColumns({ sql, alias: "s" })}`,
+        )
 
         return false
       }),
@@ -962,31 +962,20 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     yield* at("afterSettleSnapshot")
 
-    const settle = sql<{ added: string }>`
-      WITH old AS (SELECT s.events FROM actor_subscriptions s WHERE ${held()}),
-      settled AS (
-        UPDATE actor_subscriptions s SET delivered = ${delivered}, attempts = 0, last_error = NULL,
+    const declared = textArray({ sql, values: subscription.events })
+
+    const settled = yield* changeRows(
+      sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s WHERE ${held()} FOR UPDATE`,
+      sql`UPDATE actor_subscriptions s SET delivered = ${delivered}, attempts = 0, last_error = NULL,
           gaps = s.gaps + ${uncountedGaps}, gap_at_ms = NULL, gap_through = NULL,
           due_at_ms = CASE WHEN ${pending!.due} OR s.marked > ${delivered} THEN ${now()} END,
-          events = CASE WHEN s.events @> ${textArray({ sql, values: subscription.events })} THEN s.events
-            ELSE ARRAY(SELECT DISTINCT x FROM unnest(s.events || ${textArray({ sql, values: subscription.events })}) AS u(x) ORDER BY x) END
+          events = CASE WHEN s.events @> ${declared} THEN s.events
+            ELSE ARRAY(SELECT DISTINCT x FROM unnest(s.events || ${declared}) AS u(x) ORDER BY x) END
         WHERE ${held()}
-        RETURNING s.events)
-      SELECT to_jsonb(ARRAY(SELECT u.x FROM old, unnest(settled.events) AS u(x)
-          WHERE NOT u.x = ANY(old.events)))::text AS added
-      FROM settled`
-
-    const settled = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const [done] = yield* settle
-
-        if (done !== undefined) yield* addTags(key, source, yield* decodeStrings(done.added))
-
-        return done !== undefined
-      }),
+        RETURNING ${rowColumns({ sql, alias: "s" })}`,
     )
 
-    if (!settled) return yield* lostClaim("settle")
+    if (settled === 0) return yield* lostClaim("settle")
 
     yield* count(Metrics.relayDelivered, { kind: "subscription" }, 1)
     yield* count(
@@ -1015,8 +1004,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
   /**
    * Widens the rows of one dynamic subscription to its declaration's event
-   * classes, 1,000 rows per statement, and adds each added class to the tag
-   * summary in the same statement. It keeps every cursor and epoch, never
+   * classes, 1,000 rows per transaction, with their tag summary. It keeps every cursor and epoch, never
    * narrows a row, and is idempotent, so every runner of a rolling deploy may
    * run it. A widened row with an event of an added class after its
    * `delivered` becomes due. Rows claimed right now are skipped; their settle
@@ -1029,43 +1017,30 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const tags = textArray({ sql, values: declared.events })
 
     for (;;) {
-      const [widened] = yield* sql<{ rows: number }>`
-        WITH picked AS (
-          SELECT routing_key, tenant_id, source_type, source_id, subscriber_type, subscription,
-            subscriber_id, events AS old
-          FROM actor_subscriptions
-          WHERE subscriber_type = ${subscriberType} AND subscription = ${declared.tag} AND active
-            AND NOT events @> ${tags}
+      const widened = yield* changeRows(
+        sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+          WHERE s.subscriber_type = ${subscriberType} AND s.subscription = ${declared.tag}
+            AND s.active AND NOT s.events @> ${tags}
           LIMIT ${EXPANSION_PAGE}
-          FOR UPDATE SKIP LOCKED),
-        widened AS (
-          UPDATE actor_subscriptions s
+          FOR UPDATE SKIP LOCKED`,
+        sql`UPDATE actor_subscriptions s
           SET events = ARRAY(SELECT DISTINCT u.x FROM unnest(s.events || ${tags}) AS u(x) ORDER BY u.x),
             due_at_ms = CASE WHEN s.due_at_ms IS NULL AND EXISTS (
                 SELECT 1 FROM actor_events e
                 WHERE e.routing_key = s.routing_key AND e.tenant_id = s.tenant_id
                   AND e.actor_type = s.source_type AND e.actor_id = s.source_id
                   AND e.sequence > s.delivered AND e.event = ANY(${tags})
-                  AND NOT e.event = ANY(p.old))
+                  AND NOT e.event = ANY(o.events))
               THEN ${now()} ELSE s.due_at_ms END
-          FROM picked p
-          WHERE s.routing_key = p.routing_key AND s.tenant_id = p.tenant_id
-            AND s.source_type = p.source_type AND s.source_id = p.source_id
-            AND s.subscriber_type = p.subscriber_type AND s.subscription = p.subscription
-            AND s.subscriber_id = p.subscriber_id
-          RETURNING s.routing_key, s.tenant_id, s.source_type, s.source_id, s.events, p.old),
-        summary AS (
-          INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
-          SELECT w.routing_key, w.tenant_id, w.source_type, w.source_id, x.tag, count(*)::int
-          FROM widened w CROSS JOIN LATERAL unnest(w.events) AS x(tag)
-          WHERE NOT x.tag = ANY(w.old)
-          GROUP BY w.routing_key, w.tenant_id, w.source_type, w.source_id, x.tag
-          ON CONFLICT (routing_key, tenant_id, source_type, source_id, event)
-          DO UPDATE SET rows = actor_subscription_tags.rows + EXCLUDED.rows
-          RETURNING 1)
-        SELECT (SELECT count(*) FROM widened)::int AS rows`
+          FROM old_rows o
+          WHERE s.routing_key = o.routing_key AND s.tenant_id = o.tenant_id
+            AND s.source_type = o.source_type AND s.source_id = o.source_id
+            AND s.subscriber_type = o.subscriber_type AND s.subscription = o.subscription
+            AND s.subscriber_id = o.subscriber_id
+          RETURNING ${rowColumns({ sql, alias: "s" })}`,
+      )
 
-      if (widened!.rows < EXPANSION_PAGE) break
+      if (widened < EXPANSION_PAGE) break
     }
   })
 
@@ -1080,32 +1055,13 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   ) {
     const cutoff = (yield* databaseTime) - REMOVED_AFTER_MS
 
-    return yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const gone = yield* sql<{
-          routing_key: string
-          tenant_id: string
-          source_type: string
-          source_id: string
-          active: boolean
-          events: string
-        }>`DELETE FROM actor_subscriptions
-          WHERE subscriber_type = ${subscriberType}
-            AND NOT subscription = ANY(${textArray({ sql, values: declared })})
-            AND due_at_ms < ${cutoff}
-          RETURNING routing_key::text AS routing_key, tenant_id, source_type, source_id, active,
-            to_jsonb(events)::text AS events`
-
-        for (const row of gone)
-          if (row.active)
-            yield* removeTags(
-              BigInt(row.routing_key),
-              { tenant: row.tenant_id, actor: row.source_type, id: row.source_id },
-              row.events,
-            )
-
-        return gone.length
-      }),
+    return yield* changeRows(
+      sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+        WHERE s.subscriber_type = ${subscriberType}
+          AND NOT s.subscription = ANY(${textArray({ sql, values: declared })})
+          AND s.due_at_ms < ${cutoff}
+        FOR UPDATE`,
+      deleteLocked,
     )
   })
 
