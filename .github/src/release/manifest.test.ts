@@ -1,9 +1,12 @@
+import { Exit, Schema } from "effect"
 import { expect, it } from "vitest"
 import {
+  pinTemplateManifest,
   publishManifest,
   tarballProblems,
   undeclaredImports,
   type FrameworkManifest,
+  TemplateManifest,
 } from "./manifest.ts"
 
 const manifest: FrameworkManifest = {
@@ -162,4 +165,53 @@ it("rejects versions outside the SemVer grammar", () => {
     ["version 1.2.3-01 is not a semantic version"],
     ["version 1.2 is not a semantic version"],
   ])
+})
+
+const template: TemplateManifest = {
+  private: true,
+  scripts: { start: "bun src/main.ts" },
+  dependencies: { "@durable-actors/core": "workspace:*", effect: "catalog:" },
+  devDependencies: { "@types/bun": "catalog:", typescript: "catalog:" },
+}
+
+const pins = {
+  catalog: { effect: "4.0.0-rc.116", typescript: "7.0.2" },
+  rootDevDependencies: { "@types/bun": "1.4.2", typescript: "5.9.9" },
+  framework: manifest,
+}
+
+it("pins a scaffold to the catalog, then root dev tools, and to the framework's own version", () => {
+  expect(pinTemplateManifest({ template, ...pins })).toEqual({
+    private: true,
+    scripts: { start: "bun src/main.ts" },
+    dependencies: { "@durable-actors/core": "0.1.0-alpha.0", effect: "4.0.0-rc.116" },
+    devDependencies: { "@types/bun": "1.4.2", typescript: "7.0.2" },
+  })
+})
+
+it("refuses a scaffold that misses a framework peer or names another workspace package", () => {
+  expect(() =>
+    pinTemplateManifest({
+      template: { ...template, dependencies: { "@durable-actors/core": "workspace:*" } },
+      ...pins,
+    }),
+  ).toThrow("framework peers: effect")
+  expect(() =>
+    pinTemplateManifest({
+      template: {
+        ...template,
+        dependencies: { ...template.dependencies, "@durable-actors/react": "workspace:*" },
+      },
+      ...pins,
+    }),
+  ).toThrow("@durable-actors/react is a workspace dependency")
+})
+
+it("rejects a scaffold manifest that copies a version instead of naming the catalog", () => {
+  const decode = Schema.decodeUnknownExit(TemplateManifest)
+
+  expect(Exit.isSuccess(decode(template))).toBe(true)
+  expect(Exit.isFailure(decode({ ...template, dependencies: { effect: "4.0.0-rc.116" } }))).toBe(
+    true,
+  )
 })

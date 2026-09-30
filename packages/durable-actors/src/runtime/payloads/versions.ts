@@ -1,10 +1,7 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import {
-  definitionPayloads,
-  type DefinitionPayloads,
-  type PayloadDeclaration,
-} from "../../members/payload.ts"
+import { descriptorOf } from "../../actor/descriptor.ts"
+import { type DefinitionPayloads, type PayloadDeclaration } from "../../members/payload.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { textArray } from "../turn/outbox.ts"
@@ -228,7 +225,7 @@ export const dropWriters = (runtimeId: string) =>
 
 const definitionsOf = (actors: ReadonlyArray<object>) =>
   actors.flatMap((actor): ReadonlyArray<DefinitionPayloads> => {
-    const payloads = definitionPayloads.get(actor)
+    const payloads = descriptorOf(actor)?.definitionPayloads
 
     return payloads === undefined ? [] : [payloads]
   })

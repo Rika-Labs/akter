@@ -47,13 +47,6 @@ root TypeScript configuration, lint plugins, Vitest configuration, and the
 `.github` sources consumed by infra are included in their owning checks.
 The real-Turbo regression test exercises these invalidation boundaries.
 
-The vendored `anti-slop/require-safety-comment-for-type-assertion` rule is
-disabled repository-wide. It requires a `SAFETY:` comment even for casts that
-only bridge TypeScript generics or construct a test fixture; enabling it here
-would require boilerplate rather than evidence of a checked invariant. Typed
-lint, typechecking, and the other anti-slop rules remain enabled. Revisit this
-decision if a narrower rule can distinguish unchecked boundary casts.
-
 File-scoped type-aware lint exceptions are limited to platform boundaries:
 `effecttsgo/any-unknown-in-error-context` for `infra/alchemy.run.ts`, and
 `effecttsgo/async-function` plus `effecttsgo/process-env` for the imperative
@@ -138,7 +131,7 @@ Dependabot is turned off for this repository; dependency updates, catalog or not
 - Effect and its adapters stay on `4.0.0-rc.116`; the npm `latest` tag on Effect's older major is not an upgrade. Vitest 5 matches the adapter's peer range.
 - Drizzle ORM and Kit use the matching `rc5` snapshot `1.0.0-rc.5-5935859`; this is an intentional prerelease channel, not a stable-version claim.
 - Oxlint/plugins stay at `1.82.0` with `oxlint-tsgolint` `7.0.2001`. `@effect/tsgo` `0.45.0` rejects the newer Oxlint patch target; update this cohort together when supported.
-- Oxlint's `RuleTester` requires Node >=22 and rejects Bun. Its package test script uses `npm exec --package=node@26.7.0` and prints the selected version, so local and CI runs do not depend on the runner's default Node. This requires npm and registry access on a cold npm cache; it installs only into npm's cache, not the repository or global toolchain. Use `npm exec`, not `npx`, which Bun rewrites to `bun x` in package scripts. The vendored anti-slop rule files run through Node's test runner, not Vitest; their CLI fixture uses the repository's installed Oxlint binary rather than pnpm. Directive tests and application tests still run on Bun. No tests or evidence checks are skipped.
+- Oxlint's `RuleTester` requires Node >=22 and rejects Bun. Its package test script uses `npm exec --package=node@26.7.0` and prints the selected version, so local and CI runs do not depend on the runner's default Node. This requires npm and registry access on a cold npm cache; it installs only into npm's cache, not the repository or global toolchain. Use `npm exec`, not `npx`, which Bun rewrites to `bun x` in package scripts. The vendored anti-slop rule files run through Node's test runner, not Vitest. Directive tests and application tests still run on Bun. No tests or evidence checks are skipped.
 - Babel uses 8.0.6 with the newest v8 TypeScript transform (8.0.0-rc.6). Babel supplies its own types; StyleX is loaded through Babel's plugin resolver. Node types use 26.6.2. The application runtime remains Bun 1.4.2.
 - CI and Compose use PostgreSQL 18.6. Orb setup installs PostgreSQL 18 from the official PGDG repository. Compose mounts the v18 image at `/var/lib/postgresql`, using a separate `postgres18` volume; orbs use `.local/postgres18`. Older volumes/directories are preserved, not migrated or deleted. Existing development data needs an explicit dump/restore or reviewed major-version upgrade before reuse.
 

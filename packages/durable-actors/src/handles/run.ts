@@ -21,13 +21,13 @@ export interface WorkflowRun<W extends AnyWorkflow> {
   readonly executionId: string
   /** `None` for an unknown execution; `Suspended` until it finishes. */
   readonly poll: Effect.Effect<
-    Option.Option<EffectWorkflow.Result<W["output"]["Type"], W["errors"][number]["Type"]>>,
+    Option.Option<EffectWorkflow.Result<W["success"]["Type"], W["error"]["Type"]>>,
     ActorError.Of<PollReason>
   >
   /** Polls until the execution finishes; an interrupted execution interrupts. */
   readonly result: Effect.Effect<
-    W["output"]["Type"],
-    W["errors"][number]["Type"] | ActorError.Of<PollReason>
+    W["success"]["Type"],
+    W["error"]["Type"] | ActorError.Of<PollReason>
   >
   /** Durably interrupts the execution; idempotent, and a no-op once it finished. */
   readonly interrupt: Effect.Effect<void, ActorError.Of<CommandReason>>
@@ -42,9 +42,9 @@ export const workflowRun = <W extends AnyWorkflow>(options: {
   readonly interrupt: Effect.Effect<void, ActorError>
   readonly decode: (
     recorded: RecordedExit,
-  ) => Effect.Effect<Exit.Exit<W["output"]["Type"], W["errors"][number]["Type"]>>
+  ) => Effect.Effect<Exit.Exit<W["success"]["Type"], W["error"]["Type"]>>
 }) => {
-  type Result = EffectWorkflow.Result<W["output"]["Type"], W["errors"][number]["Type"]>
+  type Result = EffectWorkflow.Result<W["success"]["Type"], W["error"]["Type"]>
 
   const poll = Effect.gen(function* (): Effect.fn.Return<Option.Option<Result>, ActorError> {
     const status = yield* options.poll
@@ -66,9 +66,7 @@ export const workflowRun = <W extends AnyWorkflow>(options: {
   const result = poll.pipe(
     Effect.map(
       Option.filter(
-        (
-          found,
-        ): found is EffectWorkflow.Complete<W["output"]["Type"], W["errors"][number]["Type"]> =>
+        (found): found is EffectWorkflow.Complete<W["success"]["Type"], W["error"]["Type"]> =>
           found instanceof EffectWorkflow.Complete,
       ),
     ),

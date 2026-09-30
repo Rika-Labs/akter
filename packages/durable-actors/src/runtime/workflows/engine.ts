@@ -33,7 +33,7 @@ import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
-import type { ActivationCache } from "../turn/execute.ts"
+import type { ActivationCache } from "../storage/generation.ts"
 import { changedSteps, decodeStoredManifest, missingSteps } from "./compatibility.ts"
 import { manifestOf, toJson } from "./manifest.ts"
 

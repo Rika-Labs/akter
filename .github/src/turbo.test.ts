@@ -49,7 +49,7 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
         yield* fs.makeDirectory(`${root}/.github/src`, { recursive: true })
         yield* fs.writeFileString(`${root}/.github/src/policy.ts`, "export const policy = 1")
         yield* fs.makeDirectory(`${root}/tooling/oxlint/anti-slop`, { recursive: true })
-        yield* fs.writeFileString(`${root}/tooling/oxlint/anti-slop/index.ts`, "export default {}")
+        yield* fs.writeFileString(`${root}/tooling/oxlint/anti-slop/plugin.ts`, "export default {}")
         run(["bun", "install", "--lockfile-only", "--ignore-scripts"])
         run(["git", "init", "-q"])
         run(["git", "add", "."])
@@ -134,7 +134,7 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
           hash(changed, "@durable-actors/infra#typecheck"),
         )
         yield* fs.writeFileString(
-          `${root}/tooling/oxlint/anti-slop/index.ts`,
+          `${root}/tooling/oxlint/anti-slop/plugin.ts`,
           "export default { changed: true }",
         )
         expect(hash(yield* report(), "@durable-actors/api#lint")).not.toBe(

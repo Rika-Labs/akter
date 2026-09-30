@@ -1,4 +1,4 @@
-import { Cause, Schema } from "effect"
+import { type Cause, Predicate, Schema, SchemaAST } from "effect"
 
 /** A schema that needs no Effect services to encode or decode, so a member codec runs anywhere. */
 export type ValueSchema = Schema.Top & {
@@ -6,10 +6,27 @@ export type ValueSchema = Schema.Top & {
   readonly EncodingServices: never
 }
 
-/** A tagged error class a member declares in `errors`; its handler may fail with it and callers receive it as a typed failure. */
+/**
+ * The `error` schema of a member: a tagged error class, a `Schema.Union` of
+ * them, or `Schema.Never`. A handler may fail with its values and callers
+ * receive them as typed failures; a framework reason can never masquerade as one.
+ */
 export type DeclaredError = ValueSchema & {
   readonly Type: Cause.YieldableError & { readonly _tag: string }
 }
+
+/** The struct fields a `payload` option may name instead of a schema. */
+export type PayloadFields = Readonly<Record<string, ValueSchema>>
+
+/** A `payload` option: a schema, or struct fields that stand for `Schema.Struct(fields)`. */
+export type PayloadOption = ValueSchema | PayloadFields
+
+/** The schema a `payload` option stands for. */
+export type PayloadOf<P extends PayloadOption> = P extends ValueSchema
+  ? P
+  : P extends Schema.Struct.Fields
+    ? Schema.Struct<P>
+    : never
 
 /** The kinds of member an actor definition lists. */
 export type MemberKind = "command" | "query" | "reducer" | "connection" | "stream" | "workflow"
@@ -21,24 +38,24 @@ export type MemberKind = "command" | "query" | "reducer" | "connection" | "strea
 export interface Member<
   Kind extends MemberKind,
   Tag extends string,
-  Input extends ValueSchema,
-  Output extends ValueSchema,
-  Errors extends ReadonlyArray<DeclaredError>,
+  Payload extends ValueSchema,
+  Success extends ValueSchema,
+  Error extends DeclaredError,
 > {
   readonly kind: Kind
   readonly tag: Tag
-  readonly input: Input
-  readonly output: Output
-  readonly errors: Errors
+  readonly payload: Payload
+  readonly success: Success
+  readonly error: Error
 }
 
-/** A command member: a fenced, receipted turn that may change state, emit events, and stage intents and effects. */
+/** A command member: a fenced, receipted turn that may change state, emit events, and stage intents and jobs. */
 export type Command<
   Tag extends string,
-  Input extends ValueSchema,
-  Output extends ValueSchema,
-  Errors extends ReadonlyArray<DeclaredError>,
-> = Member<"command", Tag, Input, Output, Errors>
+  Payload extends ValueSchema,
+  Success extends ValueSchema,
+  Error extends DeclaredError,
+> = Member<"command", Tag, Payload, Success, Error>
 
 /**
  * A query member: reads committed state without activating the actor, taking
@@ -47,23 +64,17 @@ export type Command<
  */
 export type Query<
   Tag extends string,
-  Input extends ValueSchema,
-  Output extends ValueSchema,
-  Errors extends ReadonlyArray<DeclaredError>,
+  Payload extends ValueSchema,
+  Success extends ValueSchema,
+  Error extends DeclaredError,
   Watch extends boolean = boolean,
-> = Member<"query", Tag, Input, Output, Errors> & { readonly watch: Watch }
+> = Member<"query", Tag, Payload, Success, Error> & { readonly watch: Watch }
 
 /** Any `api` or `internal` member, whatever its schemas. */
-export type AnyMember = Member<
-  MemberKind,
-  string,
-  ValueSchema,
-  ValueSchema,
-  ReadonlyArray<DeclaredError>
->
+export type AnyMember = Member<MemberKind, string, ValueSchema, ValueSchema, DeclaredError>
 
 /** Any command, whatever its schemas. */
-export type AnyCommand = Command<string, ValueSchema, ValueSchema, ReadonlyArray<DeclaredError>>
+export type AnyCommand = Command<string, ValueSchema, ValueSchema, DeclaredError>
 
 /** A record of members keyed by tag, as used by the `api` and `internal` definition sections. */
 export type MemberRecord = Readonly<Record<string, AnyMember>>
@@ -71,34 +82,59 @@ export type MemberRecord = Readonly<Record<string, AnyMember>>
 /** A record of commands keyed by tag. */
 export type CommandRecord = Readonly<Record<string, AnyCommand>>
 
-/** Builds a member of `kind`: `input` and `output` default to `void`, and `errors` to none. */
+/** Normalizes a `payload` option once: struct fields become `Schema.Struct(fields)`. */
+export const payloadSchema = <P extends PayloadOption>(payload: P | undefined): PayloadOf<P> =>
+  (payload === undefined
+    ? Schema.Void
+    : Schema.isSchema(payload)
+      ? payload
+      : Schema.Struct(payload as PayloadFields)) as PayloadOf<P>
+
+/**
+ * The tagged error classes an `error` schema admits, flattening unions;
+ * `Schema.Never` admits none. The served protocol assigns each one its status.
+ */
+export const declaredErrors = (error: DeclaredError): ReadonlyArray<DeclaredError> => {
+  if (SchemaAST.isNever(error.ast)) return []
+
+  if (Predicate.hasProperty(error, "members") && Array.isArray(error.members))
+    return (error.members as ReadonlyArray<DeclaredError>).flatMap(declaredErrors)
+
+  return [error]
+}
+
+/**
+ * Builds a member of `kind`: `payload` and `success` default to `Schema.Void`
+ * and `error` to `Schema.Never`.
+ */
 export const member =
   <Kind extends MemberKind>(kind: Kind) =>
   <
     const Tag extends string,
-    Input extends ValueSchema = Schema.Void,
-    Output extends ValueSchema = Schema.Void,
-    const Errors extends ReadonlyArray<DeclaredError> = readonly [],
+    const P extends PayloadOption = Schema.Void,
+    Success extends ValueSchema = Schema.Void,
+    Error extends DeclaredError = Schema.Never,
   >(
     tag: Tag,
-    options?: { readonly input?: Input; readonly output?: Output; readonly errors?: Errors },
-  ): Member<Kind, Tag, Input, Output, Errors> => {
-    const input = (options?.input ?? Schema.Void) as Input
-    const output = (options?.output ?? Schema.Void) as Output
-    const errors = (options?.errors ?? []) as Errors
-
-    return { kind, tag, input, output, errors }
-  }
+    options?: { readonly payload?: P; readonly success?: Success; readonly error?: Error },
+  ): Member<Kind, Tag, PayloadOf<P>, Success, Error> => ({
+    kind,
+    tag,
+    payload: payloadSchema(options?.payload),
+    success: (options?.success ?? Schema.Void) as Success,
+    error: (options?.error ?? Schema.Never) as Error,
+  })
 
 /**
- * `Command.make` is `Actor.command`: declares a command by tag. `input` and
- * `output` default to `void`; `errors` lists the tagged errors its handler may
- * fail with, which callers receive as typed failures.
+ * `Command.make` is `Actor.command`: declares a command by tag. `payload` is a
+ * schema or struct fields and `success` a schema, both `Schema.Void` when
+ * omitted; `error` is the tagged error class, or `Schema.Union` of them, its
+ * handler may fail with, which callers receive as typed failures.
  *
  * @example
  * const Increment = Actor.command("Increment", {
- *   input: Schema.Struct({ by: Schema.Int }),
- *   output: Schema.Int,
+ *   payload: { by: Schema.Int },
+ *   success: Schema.Int,
  * })
  */
 export const Command = { make: member("command") }
@@ -114,24 +150,24 @@ export const Command = { make: member("command") }
  * rerun of their own.
  *
  * @example
- * const Total = Actor.query("Total", { output: Schema.Int, watch: true })
+ * const Total = Actor.query("Total", { success: Schema.Int, watch: true })
  */
 export const Query = {
   make: <
     const Tag extends string,
-    Input extends ValueSchema = Schema.Void,
-    Output extends ValueSchema = Schema.Void,
-    const Errors extends ReadonlyArray<DeclaredError> = readonly [],
+    const P extends PayloadOption = Schema.Void,
+    Success extends ValueSchema = Schema.Void,
+    Error extends DeclaredError = Schema.Never,
     const Watch extends boolean = false,
   >(
     tag: Tag,
     options?: {
-      readonly input?: Input
-      readonly output?: Output
-      readonly errors?: Errors
+      readonly payload?: P
+      readonly success?: Success
+      readonly error?: Error
       readonly watch?: Watch
     },
-  ): Query<Tag, Input, Output, Errors, Watch> => ({
+  ): Query<Tag, PayloadOf<P>, Success, Error, Watch> => ({
     ...member("query")(tag, options),
     watch: (options?.watch ?? false) as Watch,
   }),

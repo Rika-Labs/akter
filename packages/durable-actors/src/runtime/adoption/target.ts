@@ -1,12 +1,8 @@
 import { getTableColumns } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import {
-  declaredTablesOf,
-  ownership,
-  type AdoptionAccess,
-  type MappedKind,
-} from "../../tables/owned.ts"
+import { descriptorOf } from "../../actor/descriptor.ts"
+import { ownership, type AdoptionAccess, type MappedKind } from "../../tables/owned.ts"
 import type { Placement } from "../storage/codec.ts"
 
 /** A command's precondition failed; the message names the table and the fix. */
@@ -47,7 +43,7 @@ export const adoptionTargets = Effect.fnUntraced(function* (
   const targets: Array<AdoptionTarget> = []
 
   for (const actor of actors) {
-    const declared = declaredTablesOf(actor)
+    const declared = descriptorOf(actor)
 
     for (const table of declared?.tables ?? []) {
       const info = ownership(table)!
@@ -57,7 +53,7 @@ export const adoptionTargets = Effect.fnUntraced(function* (
       const columns = getTableColumns(table)
 
       targets.push({
-        actor: declared!.actor,
+        actor: declared!.name,
         placement: declared!.placement,
         access: info.access,
         schema: info.schema ?? current,

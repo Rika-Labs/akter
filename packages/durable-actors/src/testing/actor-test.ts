@@ -25,11 +25,8 @@ import {
   System,
   principal,
 } from "../identity/caller.ts"
-import {
-  type DefinitionWithInternal,
-  type InternalDefinition,
-  internalDefinitions,
-} from "../actor/definition.ts"
+import type { DefinitionWithInternal } from "../actor/definition.ts"
+import { descriptorOf } from "../actor/descriptor.ts"
 import type { ActorError } from "../errors/actor.ts"
 import type { ValueSchema } from "../members/command.ts"
 import type { AnyConnection } from "../members/connection.ts"
@@ -455,9 +452,7 @@ export class ActorTest extends Context.Service<
 
                 type H = InternalHandleOf<D> & { readonly ref: ActorRef }
 
-                const internal = internalDefinitions.get(definition) as
-                  | InternalDefinition<H>
-                  | undefined
+                const internal = descriptorOf(definition)?.internal
 
                 if (internal === undefined)
                   return yield* Effect.die(new Error("Unknown actor definition"))

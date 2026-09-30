@@ -47,19 +47,26 @@ Commands, queries, and optimistic reducers over HTTP are implemented, and so are
 
 `state` is a reserved member tag, like `ref`.
 
-<!-- snippet
+```ts
 import { Actor } from "@durable-actors/core"
 import { Result, Schema } from "effect"
+
 class TooMany extends Schema.TaggedError<TooMany>()("TooMany", {}) {}
 const TallyState = Actor.state({ count: Schema.Int })
-const Add = Actor.reducer("Add", { state: TallyState, input: Schema.Struct({ by: Schema.Int }), errors: [TooMany], reduce: (state, { by }) => (state.count + by > 10 ? Result.fail(new TooMany()) : Result.succeed({ count: state.count + by })) })
+const Add = Actor.reducer("Add", {
+  state: TallyState,
+  input: Schema.Struct({ by: Schema.Int }),
+  errors: [TooMany],
+  reduce: (state, { by }) =>
+    state.count + by > 10
+      ? Result.fail(new TooMany())
+      : Result.succeed({ count: state.count + by }),
+})
 const Snapshot = Actor.query("Snapshot", { output: Schema.Struct({ count: Schema.Int }) })
 const Tally = Actor.make("Tally", { key: Schema.String, state: TallyState, api: { Add, Snapshot } })
 const tallies = Tally.client({ baseUrl: "/api" })
 declare const render: (state: { readonly count: number } | undefined) => void
--->
 
-```ts
 const tally = tallies.get("t1")
 tally.state.reconcile(await tally.Snapshot())
 const unsubscribe = tally.state.subscribe((state) => render(state))
@@ -67,23 +74,27 @@ const reply = tally.Add({ by: 2 }) // tally.state.current shows the +2 now
 await reply // committed state from the reply; or throws TooMany and rolls back
 ```
 
-<!-- snippet module=room/contract.ts
+```ts title="room/contract.ts"
 import { Actor } from "@durable-actors/core"
 import { Schema } from "effect"
 export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
-export const Post = Actor.command("Post", { input: Schema.Struct({ body: Schema.String }), output: Schema.String })
-export const History = Actor.query("History", { input: Schema.Struct({}), output: Schema.Array(Schema.String) })
+export const Post = Actor.command("Post", {
+  input: Schema.Struct({ body: Schema.String }),
+  output: Schema.String,
+})
+export const History = Actor.query("History", {
+  input: Schema.Struct({}),
+  output: Schema.Array(Schema.String),
+})
 export const Room = Actor.make("Room", { key: RoomId, api: { Post, History } })
--->
-
-<!-- snippet
-declare const token: () => string
-declare const signal: AbortSignal
--->
+```
 
 ```ts
 import { ActorError } from "@durable-actors/core/client"
 import { Room, RoomId } from "./room/contract.ts" // definitions and schemas only
+
+declare const token: () => string
+declare const signal: AbortSignal
 
 const rooms = Room.client({
   baseUrl: "/api", // absolute, or relative to the page
@@ -135,15 +146,14 @@ The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
 
 `X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Each command is saved under the client's `identity`, a stable key for the signed-in user (never a credential); without one, the key is the `iss` and `sub` of an `authorization: Bearer` JWT, and an offline client with neither refuses to queue. Only the current principal's commands are sent: another's show as `held` until that user signs back in or the application discards them, so a shared device never sends one user's commands as another.
 
-<!-- snippet
+```ts
 import { Offline, type PendingCommand } from "@durable-actors/core/client"
 import { Room, RoomId } from "./room/contract.ts"
+
 declare const user: string
 declare const commandId: string
 declare const render: (pending: ReadonlyArray<PendingCommand>) => void
--->
 
-```ts
 const rooms = Room.client({
   baseUrl: "/api",
   identity: () => user,
