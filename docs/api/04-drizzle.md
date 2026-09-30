@@ -33,6 +33,31 @@ export const Room = Actor.make("Room", { key: RoomId, tables: [messages], api: {
 
 `Actor.table` rejects a table that has no primary key, declares a column whose key or SQL name is `routing_key`, `tenant_id`, or `actor_id`, declares a foreign key (inline `.references()` or `foreignKey()`), is an alias, or is already owned. An owned table is listed in exactly one actor type's `tables`; `Actor.make` rejects a table another actor type already lists, and the runtime records the owner in `actor_tables` so a later deployment cannot move a table to a second actor type. At startup each registered table must exist with the primary key `(routing_key, tenant_id, actor_id, <business key>)`; otherwise the layer fails instead of running unscoped. With `rowLevelSecurity` on, it must also have row-level security on with the `durable_tenant` policy, and the tenant role must be able to read and write it.
 
+## Adopting an existing table
+
+A table that already exists, and that a web app or batch job also writes, is adopted instead of declared ([ADR 0054](../decisions/0054-existing-schema-adoption.md)):
+
+```ts
+const InvoiceRows = Actor.table(existingInvoices, {
+  owner: { tenant: existingInvoices.orgId, actor: existingInvoices.accountId },
+})
+
+const Contacts = Actor.table(existingContacts, {
+  owner: { tenant: existingContacts.tenant, actor: existingContacts.owner },
+  access: "read",
+})
+```
+
+`owner.tenant` holds the `TenantId` string and `owner.actor` the actor's encoded key. Both must be `text`, `varchar`, or `uuid` columns of the table, and they must differ. A `uuid` column needs ids in canonical lowercase form; the turn refuses any other id. Integer and `citext` columns are refused: an integer column would let `"042"` and `"42"` name the same rows through two actor ids.
+
+The table stays as it is. Its primary key, unique constraints, indexes, and foreign keys are not prefixed or removed, and no policy is added, so business keys are unique across actors. The framework adds one nullable `routing_key bigint` to the Drizzle object, which `durable adopt observe` also adds to the database, so the next `drizzle-kit generate` emits an `ADD COLUMN routing_key` that the database already has; remove that statement. `Row` and `Insert` follow Drizzle: an adopted table's rows carry its two mapped columns as read-only values, and the turn rejects a write that sets either one. Types cannot tell which property a column object came from, so a column shaped exactly like a mapped column is optional in `Insert`, and the database refuses the row if it is missing.
+
+An insert or upsert whose primary key belongs to another actor fails the turn as a deterministic defect and changes nothing. An upsert conflicts on the table's own primary key and updates only where the mapped columns match the turn.
+
+`access: "read"` adopts the table for reading only: `turn.rows(table)` and `read.rows(table)` are `ScopedRead`, filtered by the two mapped columns, with no mutation methods, and `group` refuses the table. The framework adds no column, record, or trigger, and the table needs only an index leading with `(tenant, actor)`.
+
+A writable adopted table starts only after `durable adopt observe`, and the runtime refuses it otherwise; see the [migrations guide](../operations/02-migrations.md#adopting-an-existing-schema). While a table is observed the actor is not authoritative, because other code still writes it.
+
 ## Scoped rows
 
 Inside a command turn, `turn.rows(table)` is scoped to the current tenant and actor and bound to the turn transaction. `turn.rows` accepts only tables in the actor's `tables`, in types and at runtime. `read.rows(table)` in queries is `ScopedRead`: it exposes only `one`, `all`, and `count` and has no mutation methods at runtime either.

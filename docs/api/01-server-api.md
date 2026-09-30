@@ -238,6 +238,17 @@ class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
 - `Actors.layer` refuses to start when a recorded version is above the chain's current version (a rollback past a schema change), when a chain starts above an event version not yet marked cleared, when a chain starts above the version of a pending effect or dead letter, and when an actor type drops an event class a subscription still has undelivered events of. Each runtime records the version it writes before it takes a shard and heartbeats a writer row per written version every half `payloadWriterWindow` (default 2 minutes, at least 1 second); a runtime that has not refreshed within the window refuses new turns with `ActorUnavailable` until it does.
 - `durable payloads check --entry <module> --database-url <url> [--json]` runs the startup check read-only and exits 1 when a deployment would be refused. `durable payloads clear` marks a superseded event version cleared once its `superseded_at_ms + keepEvents` has passed, no writer row for it was refreshed within its window plus the longest `commandTimeout`, and no event of that version remains; it exits 1 while a version stays uncleared. `checkPayloads` and `clearPayloads` in `@durable-actors/core/runtime` are the same operations.
 
+### Existing-schema adoption
+
+`Actor.table(existing, { owner: { tenant, actor }, access? })` adopts a table other code writes ([Drizzle integration](04-drizzle.md#adopting-an-existing-table)). The CLI, with `--entry <module>` for the actor definitions and `--database-url <url>` for a login that owns or can alter the table:
+
+- `durable adopt plan [--table <name>] [--json]` reads the catalog and prints what adoption would meet and the SQL each step would run; it changes nothing and exits 1 while a table has a problem.
+- `durable adopt observe <table>` adds `routing_key bigint`, records the adoption in `actor_adoptions`, and installs the statement triggers that record each write in `actor_adoption_writes`. `durable adopt observe <table> --report [--since 7d] [--clear] [--json]` prints the recorded writers by login, `application_name`, and operation.
+- `durable adopt backfill <table> [--batch 1000]` fills `routing_key` in resumable batches; it refuses rows whose mapped columns are `NULL` or empty.
+- `durable adopt status --database-url <url> [--json]` lists each adopted table with its mode, unbackfilled rows, and last legacy write.
+
+`planAdoption`, `observeAdoption`, `adoptionWriters`, `backfillAdoption`, and `adoptionStatus` in `@durable-actors/core/runtime` are the same operations. A refused command exits 1 with the reason (`AdoptionRefused`).
+
 ## Content
 
 Built by M4.13 ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)). Shared content is immutable bytes stored once per tenant; actors hold named references to it.
