@@ -6,6 +6,8 @@
 
 ## Observe an actor-local query
 
+<!-- snippet target -->
+
 ```ts
 const room = Chat.client({ baseUrl }).get("room-42")
 for await (const page of room.Recent.watch({ limit: 50 })) render(page)
@@ -15,18 +17,11 @@ for await (const page of room.Recent.watch({ limit: 50 })) render(page)
 
 ## Work offline
 
-```ts
-const client = Chat.client({
-  baseUrl,
-  offline: Offline.indexedDb("chat"),
-})
-const pending = client.get("room-42").SendMessage({ body: "On a plane" })
-// pending represents queued, committed, failed, or expired—not a Promise that must stay open offline.
-```
-
-The persisted queue stores the original command ID and expiry metadata, then replays in order per actor. `CommandExpired` requires explicit application resolution; replacing the ID is a new operation. Optimistic UI applies only where a reducer is declared.
+Shipped in M6.5: see [Offline queue](03-typescript-sdk.md#offline-queue-m65) and [ADR 0058](../decisions/0058-offline-command-queue.md).
 
 ## Version a workflow
+
+<!-- snippet target -->
 
 ```ts
 Ship: Effect.fn(function* (order) {
@@ -43,27 +38,22 @@ Ship: Effect.fn(function* (order) {
 
 ## Inspect and reproduce
 
-```text
-durable inspect Chat/room-42 --turns 5
-durable export Chat/room-42 --output room-42.seed
-```
-
-```ts
-const room = yield * test.actor(Chat, "room-42", { seed: "room-42.seed" })
-```
-
-These are operator-authorized operations with explicit redaction and retention. The baseline export is current actor state plus relevant durable obligations and metadata; arbitrary past-turn rewind requires a separately costed history feature.
+`durable inspect Chat/room-42` and `durable export Chat/room-42 --output room-42.seed` shipped, with `test.actor(Chat, "room-42", { seed: "room-42.seed" })` ([server API](01-server-api.md)). The baseline export is current actor state plus pending intents and effects; arbitrary past-turn rewind, and so a `--turns` option, requires a separately costed history feature.
 
 ## Derive protocols
 
+<!-- snippet target -->
+
 ```ts
-Actor.serve({ actors: [ChatLive], auth: jwt(...) })
-// planned OpenAPI; proposed MCP endpoint and generated Python client
+Actor.serve({ actors: [ChatLive], auth: jwt(...), openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } })
+// generated Python client: bun packages/python-client/src/main.ts <openapi.json> --out <dir>
 ```
 
-MCP exposes only public members. A durable tool invocation requires a stable caller-supplied operation ID; a transport event ID with no guaranteed retry stability is insufficient. The Python client follows the same runtime schemas and expiry semantics as the TypeScript client.
+MCP (shipped as `serve({ mcp })`, described in [generating clients](05-generated-clients.md#mcp)) exposes only public members. A durable tool invocation requires a stable caller-supplied `commandId`; a transport event ID with no guaranteed retry stability is insufficient. The Python client (see [generating clients](05-generated-clients.md#python)) follows the same runtime schemas and expiry semantics as the TypeScript client.
 
 ## Serve cold
+
+<!-- snippet target -->
 
 ```ts
 export default Actor.serve.handler({ actors: [ChatLive], database: Database.postgres({ url }) })
@@ -72,6 +62,8 @@ export default Actor.serve.handler({ actors: [ChatLive], database: Database.post
 The handler is illustrative. A persistent edge must wake runners, recover due work, and terminate or reconnect sockets after gateway failure. Benchmark warm and cold turns separately.
 
 ## Generated apps
+
+<!-- snippet target -->
 
 ```ts
 const TodoList = Actor.make("TodoList", {

@@ -122,6 +122,9 @@ export const HttpTally = Actor.make("HttpTally", {
 /** Handler runs, so a replay can be shown not to rerun the handler. */
 export const runs = { count: 0 }
 
+/** The `text` of every `HttpRoom.Post` the handler ran, in the order it ran them. */
+export const posted: Array<string> = []
+
 interface Gate {
   hold: Effect.Effect<void>
 }
@@ -134,6 +137,7 @@ export const httpLayer = Layer.mergeAll(
       Post: Effect.fnUntraced(function* ({ text }: { readonly text: string }) {
         const turn = yield* HttpRoom.Turn
         runs.count += 1
+        posted.push(text)
         yield* turn.state.set({ count: turn.state.count + 1 })
 
         if (text === "full") return yield* Full.make({ capacity: turn.state.count })
@@ -222,7 +226,7 @@ const bearer = (request: AuthRequest) =>
     onSome: (header) => principal(header.replace(/^Bearer /, "")),
   })
 
-const tokens = Actor.auth.make(bearer)
+export const tokens = Actor.auth.make(bearer)
 
 const session = (request: AuthRequest) => {
   const value = request.cookies["session"]
@@ -369,7 +373,7 @@ const WireReason = Schema.Struct({
   reason: Schema.Struct({ _tag: Schema.String, code: Schema.optionalKey(Schema.String) }),
 })
 
-const reasonOf = (body: Schema.Json | undefined) =>
+export const reasonOf = (body: Schema.Json | undefined) =>
   Schema.decodeUnknownEffect(WireReason)(body).pipe(
     Effect.orDie,
     Effect.map(({ reason }) =>
@@ -412,9 +416,9 @@ const securityOf = (server: Server) =>
     }),
   )
 
-const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.String }))
+export const isDefectBody = Schema.is(Schema.TaggedStruct("Defect", { traceId: Schema.String }))
 
-const envelope = (reason: Reason) => actorErrorBody(ActorError.make({ reason }))
+export const envelope = (reason: Reason) => actorErrorBody(ActorError.make({ reason }))
 
 export const receipts = Effect.fnUntraced(function* (tenant: string, actor: string, id: string) {
   return (yield* (yield* ActorTest).inspect(ActorRef.make({ tenant, actor, id }))).receipts

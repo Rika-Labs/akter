@@ -7,7 +7,7 @@
 
 `@durable-actors/core/client` is the browser-safe Promise client. It is derived from the same actor definitions, runtime schemas, errors, and OpenAPI surface as the Effect API; it is not a second runtime.
 
-`X.client({ baseUrl, headers, timeoutInMs, fetch })` creates a client. Its `get` and `create` accessors follow the actor's `key`. Commands and queries return Promises, event feeds and server streams are `AsyncIterable`, and connections combine an async frame stream with typed `send` and `close` operations. A connection's frames arrive as `{ frame, cursor?, event? }` envelopes; after an ungraceful owner death the client receives `Resync { after }`, resynchronizes, and acknowledges with `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md); M3.5). A member that opts into executor progress ([ADR 0030](../decisions/0030-executor-progress-frames.md)) also yields `Progress { effect, effectId, attempt, seq, frame }` messages, whose `frame` is decoded by that effect's `progress` schema. Over WebSocket they arrive as the server message `t: "progress"` with `effect`, `effectId`, `attempt`, `seq`, and `frame` and no `cursor` or `event`, never inside a `frame` message; this amends ADR 0027, and clients ignore a `t` they don't know. Progress is best-effort and display-only: it may be coalesced or dropped, a loss followed by a later frame of the same attempt shows as a `seq` gap, and it is never replayed after `Resync` or a reconnect. SSE event feeds carry no progress.
+`X.client({ baseUrl, headers, timeoutInMs, fetch, commandIds, offline })` creates a client. Its `get` and `create` accessors follow the actor's `key`. Commands and queries return Promises, event feeds and server streams are `AsyncIterable`, and connections combine an async frame stream with typed `send` and `close` operations. A connection's frames arrive as `{ frame, cursor?, event? }` envelopes; after an ungraceful owner death the client receives `Resync { after }`, resynchronizes, and acknowledges with `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md); M3.5). A member that opts into executor progress ([ADR 0030](../decisions/0030-executor-progress-frames.md)) also yields `Progress { effect, effectId, attempt, seq, frame }` messages, whose `frame` is decoded by that effect's `progress` schema. Over WebSocket they arrive as the server message `t: "progress"` with `effect`, `effectId`, `attempt`, `seq`, and `frame` and no `cursor` or `event`, never inside a `frame` message; this amends ADR 0027, and clients ignore a `t` they don't know. Progress is best-effort and display-only: it may be coalesced or dropped, a loss followed by a later frame of the same attempt shows as a `seq` gap, and it is never replayed after `Resync` or a reconnect. SSE event feeds carry no progress.
 
 Reducers run optimistically: calling one applies its `reduce` to the client's copy of committed state immediately, re-applies pending inputs over each committed state the server pushes, and drops the input when its receipt arrives, rolling it back if the receipt is a failure. Every handle exposes `state` as committed state plus pending inputs. Queries carry the handle's last-seen commit version, so the nearest caught-up replica can answer with read-your-writes consistency. See [ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md).
 
@@ -29,7 +29,7 @@ Commands, queries, and optimistic reducers over HTTP are implemented, and so are
   - `Frame { frame, cursor, event }`. Frames whose `event` the client already delivered are dropped after a resync.
   - `Resync { after, reason, deadline }`.
   - `ResyncReplayed`.
-  - `Progress { effect, effectId, attempt, seq, frame }`, for a member with `progress: { effects }`. `frame` is decoded by the effect's `progress` schema and typed `unknown`. A progress message whose effect the member doesn't list, or whose frame doesn't decode, is dropped, because progress is lossy anyway.
+  - `Progress { effect, effectId, attempt, seq, frame }`, for a member with `progress: { effects }`. `frame` is decoded by the effect's `progress` schema and typed by it: the message type is a union over the effects the member lists, so narrowing on `effect` types `frame`, as in `if (message.effect === "Render") message.frame.percent`. `ProgressUpdate`, `ProgressMessage`, and `ProgressOfConnection<Member>` from `@durable-actors/core/client` name these types; a member that lists no effects has no `Progress` message, and code written against no particular member sees `effect: string` and `frame: unknown`. Only connections carry progress to a client, so the types come per effect, not per command. A progress message whose effect the member doesn't list, or whose frame doesn't decode, is dropped, because progress is lossy anyway.
 
   A message whose `t` the client doesn't know is ignored; one that isn't valid JSON, or a known `t` with the wrong shape, ends the connection with `TransportError` `decode`. `frames` yields only the decoded member frames, without resync notices or progress. Iteration ends on a normal close and throws the session's `ActorError` otherwise. A socket that drops without `end` is `SessionEnded` `HolderLost` with `resync: true`, and the caller reconnects: a connection is not reopened automatically, because a new one has a fresh session. After `Resync`, the client calls `onResync({ after })` and acknowledges with `resyncDone` once it settles, and again after `resyncReplayed`, because the holder ignores an acknowledgment that comes before the member's own replay. On `reauthenticate`, the client calls `headers` again and sends its `authorization`.
 
@@ -44,6 +44,18 @@ Commands, queries, and optimistic reducers over HTTP are implemented, and so are
 
 `state` is a reserved member tag, like `ref`.
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Result, Schema } from "effect"
+class TooMany extends Schema.TaggedError<TooMany>()("TooMany", {}) {}
+const TallyState = Actor.state({ count: Schema.Int })
+const Add = Actor.reducer("Add", { state: TallyState, input: Schema.Struct({ by: Schema.Int }), errors: [TooMany], reduce: (state, { by }) => (state.count + by > 10 ? Result.fail(new TooMany()) : Result.succeed({ count: state.count + by })) })
+const Snapshot = Actor.query("Snapshot", { output: Schema.Struct({ count: Schema.Int }) })
+const Tally = Actor.make("Tally", { key: Schema.String, state: TallyState, api: { Add, Snapshot } })
+const tallies = Tally.client({ baseUrl: "/api" })
+declare const render: (state: { readonly count: number } | undefined) => void
+-->
+
 ```ts
 const tally = tallies.get("t1")
 tally.state.reconcile(await tally.Snapshot())
@@ -51,6 +63,20 @@ const unsubscribe = tally.state.subscribe((state) => render(state))
 const reply = tally.Add({ by: 2 }) // tally.state.current shows the +2 now
 await reply // committed state from the reply; or throws TooMany and rolls back
 ```
+
+<!-- snippet module=room/contract.ts
+import { Actor } from "@durable-actors/core"
+import { Schema } from "effect"
+export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
+export const Post = Actor.command("Post", { input: Schema.Struct({ body: Schema.String }), output: Schema.String })
+export const History = Actor.query("History", { input: Schema.Struct({}), output: Schema.Array(Schema.String) })
+export const Room = Actor.make("Room", { key: RoomId, api: { Post, History } })
+-->
+
+<!-- snippet
+declare const token: () => string
+declare const signal: AbortSignal
+-->
 
 ```ts
 import { ActorError } from "@durable-actors/core/client"
@@ -95,7 +121,39 @@ Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or bra
 - `useCommand(client, (input, options) => handle.Member(input, options))` holds one user intent. `run(input)` mints a command id with `client.commandId()` before sending and passes it in `options`. `retry()` sends the same input under the same id, so a retry after a lost response or a timeout replays the receipt instead of running the command twice. `state` is `idle`, `pending`, `success` with `data`, or `error` with the failure and `expired`. `expired` is true for `CommandExpired`: `retry` cannot help, and a new `run` is a new operation. `reset()` forgets the intent.
 - `useQuery(query, deps)` runs `query({ signal })` on mount and when `deps` change. Only the latest read updates `{ data, error, loading }`; `refetch()` reads again.
 - `useEventFeed(handle, Event, { after?, storageKey? })` follows `handle.events`. It returns the `entries` delivered since mount, the last `cursor`, the `error` that ended the feed, and `gap` when that error is `RetentionGap`, which is never skipped. With `storageKey`, each delivered cursor is written to `sessionStorage`, and a remount or reload resumes after it. A feed of an actor no command has created yet (`NotCreated`) is asked for again every 500 ms.
-- `useConnection(handle.Member, params, { onResync?, keep? })` holds one connection while mounted with the same params (compared by their JSON). It returns `status` (`connecting`, `open`, or `closed`), the latest `keep` frames (default 100), the `error` that ended it, and `send`. A closed connection is not reopened by itself, because a new one is a new session.
+- `useConnection(handle.Member, params, { onResync?, keep? })` holds one connection while mounted with the same params (compared by their JSON). It returns `status` (`connecting`, `open`, or `closed`), the latest `keep` frames (default 100), the latest `keep` executor `progress` messages (default 100; the Promise client's `Progress` messages, typed by effect as above, and display-only, so a `seq` gap within one `effectId` and `attempt` is a dropped one), the `error` that ended it, and `send`. A closed connection is not reopened by itself, because a new one is a new session.
 - `useActorState(handle)` is the handle's `state`: committed state with pending optimistic reducer inputs applied, through `useSyncExternalStore`.
 
 The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
+
+## Offline queue (M6.5)
+
+`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Name the database per signed-in user: commands saved under one name are delivered by any client that opens it.
+
+<!-- snippet
+import { Offline, type PendingCommand } from "@durable-actors/core/client"
+import { Room, RoomId } from "./room/contract.ts"
+declare const user: string
+declare const commandId: string
+declare const render: (pending: ReadonlyArray<PendingCommand>) => void
+-->
+
+```ts
+const rooms = Room.client({ baseUrl: "/api", offline: Offline.indexedDb(`chat:${user}`) })
+const queue = rooms.offline! // undefined without `offline`
+
+queue.subscribe((pending) => render(pending)) // { commandId, target, member, input, status, failure }
+await rooms.get(RoomId.make("lobby")).Post({ body: "on a plane" }) // resolves once the server answers
+await queue.discard(commandId) // the only way to resolve an `expired` or `failed` command
+```
+
+- **Calls stay Promises.** A command resolves with its output once the server answers. `timeoutInMs` or `signal` stops the wait with `Timeout` carrying the command id, as always, but the command stays queued and is still delivered. A call aborted before its command was saved queues nothing.
+- **Order.** Commands of one actor are sent one at a time in call order; different actors are independent. A command that expired or was rejected for good does not hold back later ones. Tabs sharing a store deliver what they read, and a duplicate is a retry the receipt answers.
+- **Retries.** Retryable failures wait as online retries do, until the id's retry deadline; the browser's `online` event and `queue.flush()` skip the wait. A rejected credential stops that actor's queue, keeping its commands, until `flush()` or another command for the actor.
+- **Expiry.** A command whose id passed its retry window is never sent and is never given a new id. Its caller is rejected with `CommandExpired`, and it stays in `pending` as `expired` until `discard`. A declared or other final failure stays as `failed` with the server's answer, decoded again after a reload. A repeated id with the same input joins the queued command; with other input it fails `CommandConflict`.
+- **Failures of the store.** A command that could not be saved rejects with `OfflineStoreError` (`operation` `save`) and was never sent. An unreadable store rejects `queue.ready` and every later call with `OfflineStoreError`. A failed removal after a commit is reported through `reportError` and the receipt answers the replay.
+- **Minting.** With a store, a mint that cannot reach the server within three seconds uses the retry window and clock offset this page last learned; a page that never reached the server rejects with the network error.
+- **React.** `useCommand` needs nothing more: `run` mints its id through `client.commandId()`, which works offline, the queued command keeps that id, and `retry` joins it or replays its receipt. Show the queue with `useSyncExternalStore` over `client.offline.subscribe` and `pending`, as the chat example's React page does with `?offline=1`.
+- **Reducers.** An optimistic reducer stays applied while its command waits and follows the command's delivery, not the call's timeout. After a reload `handle.state` shows committed state until the queue's commands land.
+
+Queued commands hold their input as JSON on the device. The queue never stores headers or credentials.

@@ -7,7 +7,7 @@
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actor, Unauthorized, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Config, Effect, Layer, Option, Schema } from "effect"
 import { Headers, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { Counter } from "../counter/contract.ts"
 import { CounterLive } from "../counter/layer.ts"
@@ -45,14 +45,12 @@ const actors = CounterLive.pipe(
   ),
 )
 
-/**
- * The pages' scripts, bundled for browsers from app.ts and react.tsx once at startup.
- */
+/** The pages' scripts, bundled for browsers from their entry files once at startup, and their HTML. */
 const pages = HttpRouter.use(
   Effect.fnUntraced(function* (router) {
     const built = yield* Effect.promise(() =>
       Bun.build({
-        entrypoints: [`${import.meta.dir}/app.ts`, `${import.meta.dir}/react.tsx`],
+        entrypoints: ["app.ts", "react.tsx"].map((file) => `${import.meta.dir}/${file}`),
         target: "browser",
         minify: true,
       }),
@@ -65,43 +63,40 @@ const pages = HttpRouter.use(
         ),
       )
 
-    for (const output of built.outputs) {
-      const script = yield* Effect.promise(() => output.text())
-
+    for (const output of built.outputs)
       yield* router.add(
         "GET",
         `/${output.path.split("/").at(-1)}` as HttpRouter.PathInput,
         Effect.succeed(
-          HttpServerResponse.text(script, { contentType: "text/javascript; charset=utf-8" }),
-        ),
-      )
-    }
-
-    const page = (name: string) =>
-      Effect.promise(() => Bun.file(`${import.meta.dir}/${name}`).text()).pipe(
-        Effect.map((html) =>
-          HttpServerResponse.text(html, { contentType: "text/html; charset=utf-8" }),
+          HttpServerResponse.text(yield* Effect.promise(() => output.text()), {
+            contentType: "text/javascript; charset=utf-8",
+          }),
         ),
       )
 
-    yield* router.add("GET", "/counters/*", Effect.succeed(yield* page("index.html")))
-    yield* router.add("GET", "/react/counters/*", Effect.succeed(yield* page("react.html")))
+    for (const [path, file] of [
+      ["/counters/*", "index.html"],
+      ["/react/counters/*", "react.html"],
+    ] as const)
+      yield* router.add(
+        "GET",
+        path,
+        Effect.succeed(
+          HttpServerResponse.text(
+            yield* Effect.promise(() => Bun.file(`${import.meta.dir}/${file}`).text()),
+            { contentType: "text/html; charset=utf-8" },
+          ),
+        ),
+      )
+
     yield* router.add("GET", "/health", Effect.succeed(HttpServerResponse.text("ok")))
   }),
 )
 
 const database = Layer.unwrap(
-  Effect.map(Config.option(Config.String("DATABASE_URL")), (url) =>
-    Option.match(url, {
-      onNone: () => Database.pglite(),
-      onSome: (value) => Database.postgres({ url: Redacted.make(value) }),
-    }),
-  ),
-)
-
-const port = Layer.unwrap(
-  Effect.map(Config.withDefault(Config.Int("PORT"), 3004), (value) =>
-    BunHttpServer.layer({ port: value }),
+  Effect.map(
+    Config.option(Config.Redacted("DATABASE_URL")),
+    Option.match({ onNone: () => Database.pglite(), onSome: (url) => Database.postgres({ url }) }),
   ),
 )
 
@@ -109,7 +104,7 @@ HttpRouter.serve(Layer.mergeAll(api, pages)).pipe(
   Layer.provide(actors),
   Layer.provide(database),
   Layer.provide(BunCrypto.layer),
-  Layer.provide(port),
+  Layer.provide(BunHttpServer.layerConfig({ port: Config.withDefault(Config.Int("PORT"), 3004) })),
   Layer.launch,
   BunRuntime.runMain,
 )
