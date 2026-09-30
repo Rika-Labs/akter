@@ -70,6 +70,7 @@ import {
   watchLayer,
 } from "./conformance/watch.ts"
 import { singleShardConformance } from "./conformance/single-shard.ts"
+import { crossShardLayer, crossShardOutboxConformance } from "./conformance/outbox-cross-shard.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
@@ -1527,6 +1528,7 @@ export const conformanceGroups = {
   watch: watchConformance,
   adoption: adoptionConformance,
   singleShard: singleShardConformance,
+  crossShardOutbox: crossShardOutboxConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
@@ -1601,6 +1603,7 @@ export const describeConformance = (options: {
     transportsLayer,
     mintLayer,
     placementLayer,
+    crossShardLayer,
     subscriptionsLayer(fixture.subscriptions),
     contentLayer(fixture.content),
     drainLayer(fixture.drain),
