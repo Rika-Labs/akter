@@ -1,8 +1,13 @@
-import { type Cause, Effect, Match, Option, Schema } from "effect"
-import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { Effect, Match, Option, Schema } from "effect"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
-import { isSameOrigin } from "../../serve/layer.ts"
-import { actorErrorResponse, Defect, invalidInput, undecodable } from "../../serve/wire.ts"
+import { invalidInput, undecodable } from "../../serve/wire.ts"
+import {
+  foundOrNotFound,
+  notFoundResponse,
+  operatorResponse,
+  refuseCrossOrigin,
+} from "../inspector/http.ts"
 import { DefectLog } from "../telemetry/defects.ts"
 import type { AuditEntry } from "./audit.ts"
 import type { OperatorAuth } from "./auth.ts"
@@ -84,18 +89,6 @@ const RetryBody = Schema.Struct({
   providerChecked: Schema.optional(Schema.Boolean),
 })
 
-/** The body of a 404: nothing of that name exists in the tenant. */
-const NotFound = Schema.TaggedStruct("NotFound", {})
-
-const noStore = (response: HttpServerResponse.HttpServerResponse) =>
-  HttpServerResponse.setHeaders(response, { "cache-control": "no-store" })
-
-const notFound = () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 })
-
-/** Answers a found value as JSON and an absent one as a 404. */
-const foundOrNotFound = (found: Option.Option<unknown>) =>
-  Option.match(found, { onNone: notFound, onSome: (value) => HttpServerResponse.jsonUnsafe(value) })
-
 /** Answers a repair's result as JSON and each refusal with its own status. */
 const repairResponse = <A>(repair: Effect.Effect<A, RepairError>) =>
   repair.pipe(
@@ -104,7 +97,7 @@ const repairResponse = <A>(repair: Effect.Effect<A, RepairError>) =>
       Effect.succeed(
         Match.value(error).pipe(
           Match.tagsExhaustive({
-            OperatorNotFound: notFound,
+            OperatorNotFound: notFoundResponse,
             ProviderOutcomeUnknown: (refused) =>
               HttpServerResponse.jsonUnsafe(refused, { status: 409 }),
             EffectNotServed: (refused) => HttpServerResponse.jsonUnsafe(refused, { status: 503 }),
@@ -119,17 +112,6 @@ const decodeBody = <A, RD>(schema: Schema.ConstraintDecoder<A, RD>) =>
   HttpServerRequest.schemaBodyJson(schema).pipe(
     Effect.catchTag("HttpServerError", () => Effect.fail(invalidInput("decode"))),
   )
-
-const traceId = Effect.currentSpan.pipe(
-  Effect.map((span) => span.traceId),
-  Effect.orElseSucceed(() => "0".repeat(32)),
-)
-
-const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>) {
-  yield* Effect.logError("Operator request failed", cause)
-
-  return HttpServerResponse.jsonUnsafe(Defect.make({ traceId: yield* traceId }), { status: 500 })
-})
 
 /**
  * Serves the operator routes on the application's `HttpRouter`. Every
@@ -159,10 +141,7 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
 
       const authenticate = (request: HttpServerRequest.HttpServerRequest) =>
         Effect.gen(function* () {
-          const origin = Headers.get(request.headers, "origin")
-
-          if (Option.isSome(origin) && !isSameOrigin({ request, origin: origin.value }))
-            return yield* invalidInput("origin_not_allowed")
+          yield* refuseCrossOrigin(request)
 
           return yield* options.auth
             .authenticate({
@@ -233,9 +212,7 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
             authenticate(request).pipe(
               Effect.flatMap(handle),
               Effect.catchTag("SchemaError", (error) => Effect.fail(undecodable(error))),
-              Effect.catch(actorErrorResponse),
-              Effect.catchCause(defectResponse),
-              Effect.map(noStore),
+              operatorResponse("Operator request failed"),
             ),
         )
 
