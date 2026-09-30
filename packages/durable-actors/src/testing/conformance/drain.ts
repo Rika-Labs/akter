@@ -540,6 +540,78 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "drain: a turn the deadline interrupts while its sent COMMIT is still running commits once, and the caller's retry returns its output",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture.drain,
+        {},
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const id = "commit-sent"
+          const ref = yield* refOf(id)
+          const owner = (yield* cluster.owner(ref))!
+          const caller = (owner + 1) % cluster.runners
+          expect(yield* deposit(caller, id, 1)).toBe(1)
+
+          const commandId = yield* mint(caller)
+          const held = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+
+          yield* on(
+            caller,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.unsafe(`CREATE FUNCTION hold_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN PERFORM pg_advisory_xact_lock(4242); RETURN NULL; END $$`)
+              yield* sql.unsafe(`CREATE CONSTRAINT TRIGGER hold_commit AFTER INSERT ON actor_receipts
+                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+                WHEN (NEW.command_id = '${commandId}') EXECUTE FUNCTION hold_commit()`)
+              yield* sql`SELECT pg_advisory_xact_lock(4242)`.pipe(
+                Effect.andThen(Deferred.succeed(held, undefined)),
+                Effect.andThen(Deferred.await(release)),
+                sql.withTransaction,
+                Effect.forkDetach,
+              )
+            }).pipe(Effect.orDie),
+          )
+          yield* Deferred.await(held)
+
+          const call = yield* deposit(caller, id, 2, commandId).pipe(Effect.forkChild)
+
+          yield* eventually(
+            on(
+              caller,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+
+                const waiting = yield* sql`SELECT 1 FROM pg_stat_activity
+                  WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+                    AND upper(query) LIKE 'COMMIT%'`
+
+                return waiting.length > 0
+              }).pipe(Effect.orDie),
+            ),
+            "the turn's COMMIT to wait on the advisory lock",
+          )
+
+          expect(yield* drain(owner, "200 millis")).toEqual({
+            outcome: "deadline-expired",
+            interruptedTurns: 1,
+            interruptedEffects: 0,
+          })
+          yield* Deferred.succeed(release, undefined)
+
+          yield* cluster.shutdown(owner)
+          expect(yield* Fiber.join(call)).toBe(3)
+          expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 3 }, receipts: 2 })
+          expect(fixture.drain.runs.get(commandId)).toBe(2)
+        }),
+      ),
+  },
+  {
     name: "drain: replays the receipt of a turn the deadline interrupted after its commit, without running it again",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
