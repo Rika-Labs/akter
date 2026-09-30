@@ -6,7 +6,7 @@ import {
   RunnerAtCapacity,
   withRetryAfter,
 } from "../../errors/actor.ts"
-import { actorErrorBody } from "../../serve/wire.ts"
+import { actorErrorBody } from "../../protocol/wire.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import {

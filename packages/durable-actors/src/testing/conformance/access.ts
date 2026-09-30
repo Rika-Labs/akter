@@ -51,7 +51,7 @@ import {
 import type { RuntimeControl } from "../../runtime/drain.ts"
 import type { OperatorRuntime } from "../../runtime/operators/repair.ts"
 import type { DefectLog } from "../../runtime/telemetry/defects.ts"
-import { SUBPROTOCOL } from "../../serve/frames.ts"
+import { SUBPROTOCOL } from "../../protocol/frames.ts"
 import { MCP_VERSION } from "../../serve/mcp/endpoint.ts"
 import { openFeed } from "../../serve/sessions/feed.ts"
 import { ActorTest, executeForTest, TEST_CONTENT_KEY } from "../actor-test.ts"

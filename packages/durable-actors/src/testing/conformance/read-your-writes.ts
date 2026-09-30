@@ -1,7 +1,7 @@
 import { Effect, Redacted, Schedule, type Scope } from "effect"
 import { dual } from "effect/Function"
 import { ActorError, InvalidInput } from "../../errors/actor.ts"
-import { actorErrorBody } from "../../serve/wire.ts"
+import { actorErrorBody } from "../../protocol/wire.ts"
 import { HttpRoom, serveHttp, tenantOf, type Server } from "./http.ts"
 import type {
   ConformanceCase,

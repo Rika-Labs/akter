@@ -7,7 +7,7 @@ import {
   Unauthorized,
 } from "../../errors/actor.ts"
 import { retryDeadline } from "../clock.ts"
-import { CREDENTIAL_CODES, type Failure } from "../transport.ts"
+import type { Failure } from "../transport.ts"
 import { OfflineStoreError, type OfflineStore, type QueuedCommand } from "./store.ts"
 
 /** A queued command as an application sees it. */
@@ -133,9 +133,7 @@ const isExpired = (failure: Failure) =>
   isFramework(failure) && Schema.is(CommandExpired)(failure.reason)
 
 const isCredentialFailure = (failure: Failure) =>
-  isFramework(failure) &&
-  Schema.is(Unauthorized)(failure.reason) &&
-  CREDENTIAL_CODES.has(failure.reason.code)
+  isFramework(failure) && Schema.is(Unauthorized)(failure.reason) && failure.reason.isCredential
 
 const decodeBody = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 

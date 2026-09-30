@@ -4,7 +4,7 @@ import { Actor } from "../../index.ts"
 import { descriptorOf } from "../../actor/descriptor.ts"
 import { mcpTools } from "./tools.ts"
 
-const Post = Actor.command("Post", { input: Schema.Struct({ text: Schema.String }) })
+const Post = Actor.command("Post", { payload: { text: Schema.String } })
 
 const Room = Actor.make("Room", { key: Schema.String, api: { Post } })
 

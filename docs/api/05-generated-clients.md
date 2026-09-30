@@ -27,19 +27,21 @@ Every command requires an `Idempotency-Key` header, the command id `v1.<issuedAt
 
 Error bodies are `{ _tag: "ActorError", reason, isRetryable, retryAfter? }`. Retry with the same id, never a new one:
 
-| Outcome                                                             | Retry with the same id?                   | Wait                                                                                                              |
-| ------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `503 ActorUnavailable`, `503 RunnerAtCapacity`, `429 MailboxFull`   | yes                                       | `retryAfter` ms (`retry-after` in seconds), jittered                                                              |
-| `504 Timeout`                                                       | yes; the turn may have committed          | 0–250 ms of jitter                                                                                                |
-| no response (network failure)                                       | yes; the outcome is unknown               | exponential, from 100 ms, capped at 5 s, with jitter                                                              |
-| `400 InvalidCommandId` with code `future`                           | yes, once `durable-now` passes `issuedAt` | until then, plus half the round trip of the `durable-now` sample, which bounds how far the estimate can run ahead |
-| `401 Unauthorized` with code `expired`                              | once, with a fresh credential             | none                                                                                                              |
-| `410 CommandExpired`                                                | no; surface it, never remint              | –                                                                                                                 |
-| `409`, other `400`, `401`, `403`, `404`, `413`, `415`, `422`, `500` | no                                        | –                                                                                                                 |
+| Outcome                                                                       | Retry with the same id?                     | Wait                                                                                                             |
+| ----------------------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `503 ActorUnavailable`, `503 RunnerAtCapacity`, `429 MailboxFull`             | yes                                         | the body's `retryAfter` ms as sent (the server already jittered it); else `retry-after`, seconds or an HTTP date |
+| `504 Timeout`                                                                 | yes; the turn may have committed            | 50 ms, jittered by half either way                                                                               |
+| no response (network failure), or `408`, `429`, `5xx` without a protocol body | yes; the outcome is unknown                 | `retry-after` when the gateway sent one, else exponential from 100 ms, capped at 2 s, with jitter                |
+| `400 InvalidCommandId` with code `future`                                     | once, after `durable-now` passes `issuedAt` | until then, plus 50 ms                                                                                           |
+| `401 Unauthorized` with code `expired`                                        | once, with a fresh credential               | none                                                                                                             |
+| `410 CommandExpired`                                                          | no; surface it, never remint                | –                                                                                                                |
+| `409`, other `400`, `401`, `403`, `404`, `413`, `415`, `422`, `500`           | no                                          | –                                                                                                                |
 
 Stop retrying once the id's `expiresAt` is less than a second away on the client's clock corrected by `durable-now`.
 
 Queries take no `Idempotency-Key` and can be retried freely.
+
+The Promise client and the Python runtime run one corpus of scripted exchanges, [`protocol/exchanges.json`](../../packages/durable-actors/src/protocol/exchanges.json), and must agree on every attempt count, command id, outcome and wait bound in it. One intended difference remains: the Promise client retries until its call timeout (60 seconds by default) or the id's expiry bound, while the Python runtime also stops after `max_attempts` (8 by default), because it has no call deadline; and the Python runtime refreshes an expired credential only when `token` is a function it can call again.
 
 ## Authentication
 

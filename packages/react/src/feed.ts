@@ -1,13 +1,12 @@
 import {
-  ActorError,
   type FeedEntry,
   type FeedOptions,
   type Failure,
-  NotCreated,
   RetentionGap,
 } from "@durable-actors/core/client"
-import { Effect, Schema } from "effect"
+import { Schema } from "effect"
 import { useEffect, useState } from "react"
+import { followCreated } from "./created.ts"
 
 /** Anything with an event feed: an `X.client(...).get(id)` handle. */
 export interface FeedSource<E extends { readonly Type: unknown }> {
@@ -36,9 +35,6 @@ export interface EventFeed<Event> {
   /** Events after the cursor were pruned: reload state instead of resuming. */
   readonly gap: boolean
 }
-
-/** How long a feed of an actor no command has created yet waits before asking again. */
-const NOT_CREATED_RETRY = "500 millis"
 
 const stored = (key: string | undefined) =>
   key === undefined || !("sessionStorage" in globalThis)
@@ -73,36 +69,20 @@ export const useEventFeed = <E extends { readonly Type: unknown }>(
 
     setFeed({ entries: [], cursor: from, error: undefined, gap: false })
 
-    const follow = async (): Promise<void> => {
-      try {
-        for await (const entry of handle.events(event, {
-          after: from,
-          signal: controller.signal,
-        })) {
-          if (storageKey !== undefined) globalThis.sessionStorage.setItem(storageKey, entry.cursor)
+    void followCreated(controller.signal, async () => {
+      for await (const entry of handle.events(event, { after: from, signal: controller.signal })) {
+        if (storageKey !== undefined) globalThis.sessionStorage.setItem(storageKey, entry.cursor)
 
-          setFeed((current) => ({
-            ...current,
-            entries: [...current.entries, entry],
-            cursor: entry.cursor,
-          }))
-        }
-      } catch (thrown) {
-        const error = thrown as Failure
-
-        if (controller.signal.aborted) return
-
-        if (Schema.is(ActorError)(error) && Schema.is(NotCreated)(error.reason)) {
-          await Effect.runPromise(Effect.sleep(NOT_CREATED_RETRY))
-
-          return controller.signal.aborted ? undefined : follow()
-        }
-
-        setFeed((current) => ({ ...current, error, gap: Schema.is(RetentionGap)(error) }))
+        setFeed((current) => ({
+          ...current,
+          entries: [...current.entries, entry],
+          cursor: entry.cursor,
+        }))
       }
-    }
-
-    void follow()
+    }).then((error) => {
+      if (error !== undefined)
+        setFeed((current) => ({ ...current, error, gap: Schema.is(RetentionGap)(error) }))
+    })
 
     return () => controller.abort()
   }, [handle, event, after, storageKey])

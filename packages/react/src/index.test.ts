@@ -17,29 +17,29 @@ import {
 import type { ConnectionMessage, ProgressOfConnection } from "@durable-actors/core/client"
 import { keepLast, receive } from "./connection.ts"
 
-class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+const Posted = Actor.event("Posted", { text: Schema.String })
 
-const Post = Actor.command("Post", { input: Schema.String })
+const Post = Actor.command("Post", { payload: Schema.String })
 
-const Count = Actor.query("Count", { output: Schema.Finite, watch: true })
+const Count = Actor.query("Count", { success: Schema.Finite, watch: true })
 
 const Presence = Actor.connection("Presence", { server: Schema.String, client: Schema.String })
 
-class Render extends Actor.effect<Render>()("Render", {
-  input: { steps: Schema.Int },
+const Render = Actor.job("Render", {
+  payload: { steps: Schema.Int },
   progress: Schema.Struct({ percent: Schema.Finite }),
-}) {}
+})
 
 const Watch = Actor.connection("Watch", {
   server: Schema.String,
-  progress: { effects: [Render] },
+  progress: { jobs: [Render] },
 })
 
 const Room = Actor.make("ReactRoom", {
   key: Schema.String,
   events: [Posted],
   feeds: [Posted],
-  effects: [Render],
+  jobs: { Render: { job: Render } },
   api: { Post, Count, Presence, Watch },
 })
 
@@ -101,10 +101,10 @@ describe("@durable-actors/react", () => {
 
     const percent = (seq: number) =>
       Message.Progress({
-        effectId: "e1",
+        jobId: "e1",
         attempt: 1,
         seq,
-        effect: "Render",
+        job: "Render",
         frame: { percent: seq },
       })
 
@@ -123,12 +123,12 @@ describe("@durable-actors/react", () => {
     expect(receive(third, Message.ResyncReplayed(), 2)).toBe(third)
   })
 
-  it("types the progress a hook returns by effect", () => {
+  it("types the progress a hook returns by job", () => {
     const Typed = () => {
       const watch = useConnection(rooms.get("r1").Watch, undefined)
 
       for (const message of watch.progress)
-        if (message.effect === "Render")
+        if (message.job === "Render")
           expectTypeOf(message.frame).toEqualTypeOf<{ readonly percent: number }>()
 
       return null
@@ -143,5 +143,29 @@ describe("@durable-actors/react", () => {
     }
 
     expect([Typed, Plain]).toHaveLength(2)
+  })
+
+  it("keys a connection by its primitive params, and requires a key for object params", () => {
+    const Params = Actor.connection("Params", {
+      payload: Schema.Struct({ room: Schema.String }),
+      server: Schema.String,
+      client: Schema.String,
+    })
+
+    const Lobby = Actor.make("ReactLobby", { key: Schema.String, api: { Params } })
+    const lobby = Lobby.client({ baseUrl: "http://server.invalid", fetch: refuse }).get("l1")
+
+    const Keyed = () => {
+      useConnection(lobby.Params, { room: "a" }, { key: "a" })
+      // @ts-expect-error object params need an explicit session key
+      useConnection(lobby.Params, { room: "a" })
+      // @ts-expect-error a session key is a primitive, not an object compared by identity
+      useConnection(lobby.Params, { room: "a" }, { key: { room: "a" } })
+      useConnection(rooms.get("r1").Presence, undefined)
+
+      return null
+    }
+
+    expect(Keyed).toBeTypeOf("function")
   })
 })

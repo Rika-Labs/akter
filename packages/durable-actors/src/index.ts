@@ -247,4 +247,4 @@ export {
 
 export type { BoundRequest } from "./serve/assertion/binding.ts"
 
-export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./serve/frames.ts"
+export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./protocol/frames.ts"

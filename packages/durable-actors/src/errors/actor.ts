@@ -28,6 +28,12 @@ export class InvalidCommandId extends Schema.TaggedError<InvalidCommandId>()("In
   neverAdmitted: Schema.optionalKey(Schema.Boolean),
 }) {}
 
+const CREDENTIAL_CODES: ReadonlySet<string> = new Set([
+  "missing_credentials",
+  "invalid_credentials",
+  "expired",
+])
+
 /**
  * `missing_credentials`, `invalid_credentials`, and `expired` come from a
  * served endpoint's auth provider; `access_denied` and `receipt_access_denied`
@@ -42,7 +48,16 @@ export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthoriz
     "invalid_credentials",
     "expired",
   ]),
-}) {}
+}) {
+  /**
+   * Whether the credential failed rather than the caller's permission: a
+   * served `401` with a `Bearer` challenge, refused before any turn ran, which
+   * a fresh credential can resolve. Every other code is a `403` decision.
+   */
+  get isCredential(): boolean {
+    return CREDENTIAL_CODES.has(this.code)
+  }
+}
 
 /** A schema issue at a path, without the offending value. */
 const InputIssue = Schema.Struct({ path: Schema.String, message: Schema.String })

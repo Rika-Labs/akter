@@ -1,11 +1,6 @@
-import {
-  ActorError,
-  type Failure,
-  NotCreated,
-  type WatchOptions,
-} from "@durable-actors/core/client"
-import { Effect, Schema } from "effect"
+import type { Failure, WatchOptions } from "@durable-actors/core/client"
 import { useEffect, useRef, useState } from "react"
+import { followCreated } from "./created.ts"
 
 /** The newest result of a watched query and how the watch stands. */
 export interface WatchResult<Output> {
@@ -14,9 +9,6 @@ export interface WatchResult<Output> {
   /** How the watch ended, if it did. */
   readonly error: Failure | undefined
 }
-
-/** How long a watch of an actor no command has created yet waits before asking again. */
-const NOT_CREATED_RETRY = "500 millis"
 
 /**
  * Follows a watched query: `data` is the newest result, replaced each time the
@@ -40,26 +32,12 @@ export const useWatch = <Output>(
     const controller = new AbortController()
     setResult({ data: undefined, error: undefined })
 
-    const follow = async (): Promise<void> => {
-      try {
-        for await (const data of latest.current({ signal: controller.signal }))
-          setResult({ data, error: undefined })
-      } catch (thrown) {
-        const error = thrown as Failure
-
-        if (controller.signal.aborted) return
-
-        if (Schema.is(ActorError)(error) && Schema.is(NotCreated)(error.reason)) {
-          await Effect.runPromise(Effect.sleep(NOT_CREATED_RETRY))
-
-          return controller.signal.aborted ? undefined : follow()
-        }
-
-        setResult((current) => ({ ...current, error }))
-      }
-    }
-
-    void follow()
+    void followCreated(controller.signal, async () => {
+      for await (const data of latest.current({ signal: controller.signal }))
+        setResult({ data, error: undefined })
+    }).then((error) => {
+      if (error !== undefined) setResult((current) => ({ ...current, error }))
+    })
 
     return () => controller.abort()
   }, deps)

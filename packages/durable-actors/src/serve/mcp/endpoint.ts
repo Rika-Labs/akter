@@ -1,7 +1,8 @@
 import { Effect, Encoding, Option, Result, Schema } from "effect"
 import { Headers, HttpServerResponse } from "effect/unstable/http"
 import { ActorError, InvalidInput } from "../../errors/actor.ts"
-import { actorErrorBody, invalidInput, undecodable } from "../wire.ts"
+import { actorErrorBody } from "../../protocol/wire.ts"
+import { invalidInput, undecodable } from "../wire.ts"
 import type { McpTool } from "./tools.ts"
 
 /** The MCP revision this endpoint speaks. */
