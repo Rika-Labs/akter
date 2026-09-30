@@ -1,6 +1,6 @@
 import { Effect, Schema, Stream } from "effect"
 import { ActorError } from "../../errors/actor.ts"
-import type { WatchResult } from "../../handles/actors.ts"
+import type { WatchResult } from "../../runtime/members.ts"
 import { actorErrorBody } from "../wire.ts"
 import { FEED_KEEPALIVE_MS } from "./feed.ts"
 
