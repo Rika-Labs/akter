@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actors, Auth } from "@durable-actors/core/runtime"
 import { Effect, Layer, Stream } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { load } from "../measure.ts"
@@ -6,14 +6,14 @@ import { FeedProbe, Pinged } from "../probe/feeds.ts"
 import { type ActorServices, type CaseResult, measure, type Scenario } from "../scenario.ts"
 
 /**
- * The probe's `Actor.serve` routes on a listening Bun server, disposed with
+ * The probe's `Actors.serve` routes on a listening Bun server, disposed with
  * the scope. The server's idle timeout is off, because a feed idles between
  * commands and must not be closed.
  */
 const serve = Effect.fnUntraced(function* () {
   const services = yield* Effect.context<ActorServices>()
 
-  const app = Actor.serve({ actors: [FeedProbe], auth: Actor.auth.none }).pipe(
+  const app = Actors.serve({ actors: [FeedProbe], auth: Auth.none }).pipe(
     Layer.provide(Layer.succeedContext(services)),
   )
 
@@ -65,7 +65,7 @@ const follow = Effect.fnUntraced(function* (
 export const sse: Scenario = {
   name: "sse",
   description:
-    "Event feeds over SSE through Actor.serve and the Promise client: a command's event reaching 1 and 64 open feeds on one actor, and a 5,000-event backlog replayed to a new feed.",
+    "Event feeds over SSE through Actors.serve and the Promise client: a command's event reaching 1 and 64 open feeds on one actor, and a 5,000-event backlog replayed to a new feed.",
   run: (context) =>
     Effect.gen(function* () {
       const operations = context.quick ? 200 : 2000

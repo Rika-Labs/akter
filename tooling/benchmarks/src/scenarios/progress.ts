@@ -47,7 +47,7 @@ const percentile = (samples: ReadonlyArray<number>, rank: number) => {
 }
 
 /**
- * Executor progress on one runner: from a command that performs `Report`
+ * Executor progress on one runner: from a command that enqueues `Report`
  * until its executor's one frame reaches a connection, and until its route's
  * broadcast does, for an actor type that receives the progress and one that
  * does not, whose pool sends no progress messages at all.

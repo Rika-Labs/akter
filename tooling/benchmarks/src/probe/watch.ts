@@ -5,7 +5,7 @@ import { Effect, Layer, Schema } from "effect"
 export const Bump = Actor.command("Bump")
 
 /** The number of bumps so far, watchable. */
-export const Total = Actor.query("Total", { output: Schema.Finite, watch: true })
+export const Total = Actor.query("Total", { success: Schema.Finite, watch: true })
 
 /**
  * One counter whose `Total` is watched. `minInterval` is 1 ms so the cases
@@ -23,19 +23,15 @@ export const WatchProbe = Actor.make("WatchProbe", {
 
 /** Handlers for `WatchProbe`. */
 export const WatchProbeLive = Layer.mergeAll(
-  WatchProbe.toLayer(
-    Effect.succeed({
-      Bump: Effect.fnUntraced(function* () {
-        const turn = yield* WatchProbe.Turn
-        yield* turn.state.set({ count: turn.state.count + 1 })
-      }),
+  WatchProbe.toLayer({
+    Bump: Effect.fnUntraced(function* () {
+      const turn = yield* WatchProbe.Turn
+      yield* turn.state.set({ count: turn.state.count + 1 })
     }),
-  ),
-  WatchProbe.toQueryLayer(
-    Effect.succeed({
-      Total: Effect.fnUntraced(function* () {
-        return (yield* WatchProbe.Read).state.count
-      }),
+  }),
+  WatchProbe.toQueryLayer({
+    Total: Effect.fnUntraced(function* () {
+      return (yield* WatchProbe.Read).state.count
     }),
-  ),
+  }),
 )
