@@ -86,6 +86,7 @@ export const Thread = Actor.make("Thread", {
     messageId: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
     replies: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
+  access: signedIn,
   api: { Open, Reply },
   policy: { createdBy: Open },
 })
