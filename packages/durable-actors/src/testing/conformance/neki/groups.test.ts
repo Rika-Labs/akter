@@ -14,6 +14,7 @@ const modules: Partial<Record<ConformanceGroup, string>> = {
   counter: "../conformance.ts",
   reducer: "reducers.ts",
   edge: "assertions.ts",
+  coldServeEdge: "cold-serve.ts",
   content: "content-blobs.ts",
 }
 
