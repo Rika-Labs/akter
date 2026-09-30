@@ -225,6 +225,18 @@ export interface Options {
   readonly rowLevelSecurity?: {
     readonly role: string
   }
+  /**
+   * The writer role of enforced adopted tables. A turn of an actor type that
+   * owns one runs as `role`, which the table's guard trigger admits and every
+   * other login is refused, so it needs read and write on every framework and
+   * owned table and must own none of them. This login must be able to `SET
+   * ROLE` to it. Set together with `rowLevelSecurity`, both must name the same
+   * role, because a turn takes one role. The runtime refuses to start an
+   * enforced table without it.
+   */
+  readonly adoption?: {
+    readonly role: string
+  }
 }
 
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }))
@@ -324,6 +336,8 @@ const PROGRESS_SEND_TIMEOUT = "5 seconds"
  *   retry like any delivery failure; it is not a defect.
  */
 export const layer = (options: Options) => {
+  const enforcedTypes = new Set<string>()
+
   const retryWindowMs = Schema.Int.check(
     Schema.isBetween({ minimum: 1, maximum: 2_592_000_000 }),
   ).make(options.retryWindowMs ?? 86_400_000)
@@ -927,7 +941,7 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
-        role: (yield* TenantScope).role,
+        tenantScope: yield* TenantScope,
       })
 
       const seeding = seedRuntime({
@@ -936,7 +950,7 @@ export const layer = (options: Options) => {
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
         wake: relay.wake,
-        role: (yield* TenantScope).role,
+        tenantScope: yield* TenantScope,
       })
 
       const internalActors = InternalActors.of({
@@ -978,6 +992,8 @@ export const layer = (options: Options) => {
           content,
           retryWindowMs,
           tableRole: options.rowLevelSecurity?.role,
+          adoptionRole: options.adoption?.role,
+          enforcedTypes,
           writerDeclarations,
           refreshPayloadWriters,
           subscriptions,
@@ -1154,6 +1170,17 @@ export const layer = (options: Options) => {
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
 
+      if (
+        options.rowLevelSecurity !== undefined &&
+        options.adoption !== undefined &&
+        options.rowLevelSecurity.role !== options.adoption.role
+      )
+        return yield* Effect.die(
+          new Error(
+            `rowLevelSecurity.role ${options.rowLevelSecurity.role} and adoption.role ${options.adoption.role} must name the same role: a turn takes one role`,
+          ),
+        )
+
       if (options.rowLevelSecurity !== undefined)
         yield* checkRowLevelSecurity(options.rowLevelSecurity.role)
 
@@ -1231,7 +1258,15 @@ export const layer = (options: Options) => {
       return runtime.pipe(
         Layer.provide(sharding),
         Layer.provide(lease),
-        Layer.provide(Layer.succeed(TenantScope, { role: options.rowLevelSecurity?.role })),
+        Layer.provide(
+          Layer.succeed(TenantScope, {
+            role: options.rowLevelSecurity?.role,
+            adoption:
+              options.adoption === undefined
+                ? undefined
+                : { role: options.adoption.role, enforced: enforcedTypes },
+          }),
+        ),
       )
     }),
   )
