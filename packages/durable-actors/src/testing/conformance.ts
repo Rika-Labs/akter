@@ -136,6 +136,7 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
+import { adoptionConformance } from "./conformance/adoption.ts"
 import { rlsConformance } from "./conformance/rls.ts"
 import {
   progressDeliveryConformance,
@@ -1514,6 +1515,7 @@ export const conformanceGroups = {
   operator: operatorConformance,
   export: exportConformance,
   placement: placementConformance,
+  adoption: adoptionConformance,
   singleShard: singleShardConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 

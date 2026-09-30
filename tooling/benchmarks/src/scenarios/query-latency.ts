@@ -10,7 +10,6 @@ export const queryLatency: Scenario = {
     "Query handler reads of committed state: sequential on one actor, then 64 concurrent callers over 1k actors.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       results.push(
@@ -25,7 +24,7 @@ export const queryLatency: Scenario = {
               parameters: { actors: 1, workers: 1 },
               instruments,
               workers: 1,
-              operations: quick ? 300 : 3000,
+              operations: context.quick ? 300 : 3000,
               operation: () => probe.Peek(),
               listStatements: true,
             })
@@ -53,7 +52,7 @@ export const queryLatency: Scenario = {
               parameters: { actors, workers: 64 },
               instruments,
               workers: 64,
-              durationMs: quick ? 2000 : 10_000,
+              durationMs: context.quick ? 2000 : 10_000,
               operation: peek,
             })
           }),

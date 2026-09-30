@@ -15,7 +15,7 @@ import { User } from "../identity/caller.ts"
 import { type AuthProvider, bearerToken, Credential, unauthorized } from "./auth.ts"
 
 /** A JWS algorithm `Actor.auth.jwt` can verify. */
-export type Algorithm =
+type Algorithm =
   | "RS256"
   | "RS384"
   | "RS512"
@@ -43,7 +43,7 @@ export const Jwk = Schema.Struct({
 export type Jwk = typeof Jwk.Type
 
 /** A static JSON Web Key Set. */
-export interface Jwks {
+interface Jwks {
   readonly keys: ReadonlyArray<Jwk>
 }
 
@@ -52,10 +52,10 @@ const JwksJson = Schema.Struct({ keys: Schema.Array(Schema.Unknown) })
 const decodeJwk = Schema.decodeUnknownOption(Jwk)
 
 /** The verified payload of a JWT, handed to the `tenant` and `subject` callbacks. */
-export type Claims = Readonly<Record<string, Schema.Json>>
+type Claims = Readonly<Record<string, Schema.Json>>
 
 /** Options of `Actor.auth.jwt`. */
-export interface JwtOptions<Keys extends URL | Jwks> {
+interface JwtOptions<Keys extends URL | Jwks> {
   /** The required `iss` claim. */
   readonly issuer: string
   /** The token's `aud` must include at least one of these. */

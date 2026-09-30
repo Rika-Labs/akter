@@ -19,8 +19,7 @@ export const ownedRows: Scenario = {
     "turn.rows insert and read-then-update turns, and read.rows point and page queries, on one actor among 10 neighbours with 1,000 rows each.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const operations = quick ? 300 : 3000
+      const operations = context.quick ? 300 : 3000
 
       const seeded = <A, E, R>(body: Effect.Effect<A, E, R>) =>
         Effect.gen(function* () {
