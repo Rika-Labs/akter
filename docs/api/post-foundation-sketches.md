@@ -2,15 +2,13 @@
 
 **Responsibility:** show the intended developer experience for ADRs [0014](../decisions/0014-adoption-observation-and-client-reach.md) (adoption has shipped; see the [Drizzle guide](04-drizzle.md#adopting-an-existing-table)) and [0016](../decisions/0016-generated-durable-applications.md).
 
-**Authority:** illustrative proposal only. These names and signatures are not exported and are subject to API/versioning review.
+**Authority:** illustrative proposal only. These names and signatures are not exported and are subject to API/versioning review. This is the one API document whose examples the documentation check does not typecheck; an example moves to the API reference, as a self-contained checked module, when its API ships.
 
 ## Work offline
 
 Shipped in M6.5: see [Offline queue](03-typescript-sdk.md#offline-queue-m65) and [ADR 0058](../decisions/0058-offline-command-queue.md).
 
 ## Version a workflow
-
-<!-- snippet target -->
 
 ```ts
 Ship: Effect.fn(function* (order) {
@@ -31,8 +29,6 @@ Ship: Effect.fn(function* (order) {
 
 ## Derive protocols
 
-<!-- snippet target -->
-
 ```ts
 Actor.serve({ actors: [ChatLive], auth: jwt(...), openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } })
 // generated Python client: bun packages/python-client/src/main.ts <openapi.json> --out <dir>
@@ -42,8 +38,6 @@ MCP (shipped as `serve({ mcp })`, described in [generating clients](05-generated
 
 ## Serve cold
 
-<!-- snippet target -->
-
 ```ts
 export default Actor.serve.handler({ actors: [ChatLive], database: Database.postgres({ url }) })
 ```
@@ -51,8 +45,6 @@ export default Actor.serve.handler({ actors: [ChatLive], database: Database.post
 The handler is illustrative. A persistent edge must wake runners, recover due work, and terminate or reconnect sockets after gateway failure. Benchmark warm and cold turns separately.
 
 ## Generated apps
-
-<!-- snippet target -->
 
 ```ts
 const TodoList = Actor.make("TodoList", {

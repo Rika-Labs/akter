@@ -45,9 +45,7 @@ See the runnable [counter](../../examples/counter/src/main.ts), the [protocol](.
 
 `Actor.make(name, definition)` is the only way to make an actor, and the definition is its only shape: there is no piping or later configuration. Every section is data; code lives in layers. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
-<!-- snippet file=counter.ts -->
-
-```ts
+```ts title="counter.ts"
 import { Effect, Result, Schema } from "effect"
 import { Actor } from "@durable-actors/core"
 
@@ -121,16 +119,18 @@ Type checks replace lists that must agree: an `api` or `internal` key must equal
 
 From [ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md). The relay, executor, and per-effect timing settings are implemented (M2.4), and so are `policy.cron` and `cronSkipIfOlderThan` (M2.5), with the time zones and fixed intervals of [ADR 0042](../decisions/0042-cron-time-zones-intervals-and-daylight-saving.md) ([below](#cron-time-zones-and-intervals)). Every default equals the M1 behaviour.
 
-<!-- snippet
+```ts
 import { Actor } from "@durable-actors/core"
 import { Actors } from "@durable-actors/core/runtime"
 import { Effect, Schema } from "effect"
-class Moderate extends Actor.effect<Moderate>()("Moderate", { input: { body: Schema.String }, success: Schema.Boolean }) {}
+
+class Moderate extends Actor.effect<Moderate>()("Moderate", {
+  input: { body: Schema.String },
+  success: Schema.Boolean,
+}) {}
 const Moderated = Actor.command("Moderated", { input: Schema.Boolean })
 const Send = Actor.command("Send")
--->
 
-```ts
 export const Newsletter = Actor.make("Newsletter", {
   key: Actor.singleton,
   effects: [Moderate],
@@ -174,11 +174,9 @@ export const runtime = Actors.layer({
 
 Implemented in M4.2 ([ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md)). `Actors.layer` also provides `RuntimeControl`:
 
-<!-- snippet
-import type { Effect } from "effect"
--->
-
 ```ts
+import type { Effect } from "effect"
+
 import { RuntimeControl } from "@durable-actors/core/runtime"
 
 const ready = RuntimeControl.use((control) => control.readiness)
@@ -197,15 +195,14 @@ const report = RuntimeControl.use((control) => control.drain({ deadline: "30 sec
 
 From [ADR 0042](../decisions/0042-cron-time-zones-intervals-and-daylight-saving.md), implemented (M2.5).
 
-<!-- snippet
+```ts
 import { Actor } from "@durable-actors/core"
+
 const Digest = Actor.command("Digest")
 const OpenDesk = Actor.command("OpenDesk")
 const OpenLondonDesk = Actor.command("OpenLondonDesk")
 const Reconcile = Actor.command("Reconcile")
--->
 
-```ts
 export const Desk = Actor.make("Desk", {
   key: Actor.singleton,
   api: {},
@@ -230,21 +227,28 @@ export const Desk = Actor.make("Desk", {
 
 Implemented in M2.13 (migration `0015_effect_control`) with the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md). `perActor` is validated at `Actor.make`, and `executors.cancelCheck` at `Actors.layer` (at least 1 second; above `lease / 3` it is lowered to `lease / 3`).
 
-<!-- snippet
+```ts
 import { Actor } from "@durable-actors/core"
 import { Actors } from "@durable-actors/core/runtime"
 import { Effect, Schema } from "effect"
-class SendReminder extends Actor.effect<SendReminder>()("SendReminder", { input: { userId: Schema.String } }) {}
-class CapturePayment extends Actor.effect<CapturePayment>()("CapturePayment", { input: { amount: Schema.Int } }) {}
+
+class SendReminder extends Actor.effect<SendReminder>()("SendReminder", {
+  input: { userId: Schema.String },
+}) {}
+class CapturePayment extends Actor.effect<CapturePayment>()("CapturePayment", {
+  input: { amount: Schema.Int },
+}) {}
 const Remind = Actor.command("Remind", { input: Schema.String })
 const Forget = Actor.command("Forget")
 const ReminderSent = Actor.command("ReminderSent")
-const ReminderCancelled = Actor.command("ReminderCancelled", { input: Actor.Cancelled(SendReminder) })
+const ReminderCancelled = Actor.command("ReminderCancelled", {
+  input: Actor.Cancelled(SendReminder),
+})
 const Captured = Actor.command("Captured")
-const CaptureCancelled = Actor.command("CaptureCancelled", { input: Actor.Cancelled(CapturePayment) })
--->
+const CaptureCancelled = Actor.command("CaptureCancelled", {
+  input: Actor.Cancelled(CapturePayment),
+})
 
-```ts
 export const Billing = Actor.make("Billing", {
   key: Schema.String,
   effects: [SendReminder, CapturePayment],
@@ -291,15 +295,14 @@ export const runtime = Actors.layer({
 
 Implemented in M4.7 (migration `0021_payload_versions`) with the accepted defaults of [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md).
 
-<!-- snippet
+```ts
 import { Actor } from "@durable-actors/core"
 import { Schema } from "effect"
+
 const OrderId = Schema.String
 const Money = Schema.Struct({ amount: Schema.Number, currency: Schema.String })
 const Receipt = Schema.Struct({ id: Schema.String })
--->
 
-```ts
 const V1 = { orderId: OrderId, amount: Schema.Number }
 const V2 = { orderId: OrderId, total: Money }
 
@@ -362,12 +365,10 @@ Designs from the M4 ADRs, accepted 2026-09-28. Hosted ingress and embedded PGlit
 
 ## Layers
 
-<!-- snippet
+```ts
 import { Effect } from "effect"
 import { CountChanged, Counter } from "./counter.ts"
--->
 
-```ts
 export const CounterLive = Counter.toLayer(
   Effect.succeed({
     Reset: Effect.fn(function* () {
@@ -396,14 +397,13 @@ Each takes the Effect form only; there is no options object. Handlers take only 
 
 ## Calling actors
 
-<!-- snippet
+```ts
 import { Intent } from "@durable-actors/core"
 import { Effect } from "effect"
 import { Counter, CounterId } from "./counter.ts"
-const id = CounterId.make("c1")
--->
 
-```ts
+const id = CounterId.make("c1")
+
 const outside = Effect.gen(function* () {
   const counter = yield* Counter.get(id)
   const state = yield* counter.Increment(5) // request/reply
@@ -423,9 +423,10 @@ Inside a turn, `X.intents(id)` returns the same method shape as durable intents.
 
 Workflow members, runs, and steps follow [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md):
 
-<!-- snippet
+```ts
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
+
 const OrderId = Schema.String
 const Address = Schema.String
 const Label = Schema.String
@@ -437,9 +438,7 @@ class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", {}) {}
 class Paid extends Actor.Event<Paid>()("Paid", { orderId: Schema.String }) {}
 declare const inventory: { readonly reserve: (order: typeof Order.Type) => Effect.Effect<string> }
 const input = { orderId: "o1", address: "1 Main St" }
--->
 
-```ts
 export const Ship = Actor.workflow("Ship", {
   input: { orderId: OrderId, address: Address },
   output: Label,

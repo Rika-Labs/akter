@@ -3,7 +3,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { Socket } from "effect/unstable/socket"
 import { User } from "../../../index.ts"
 import { InternalActors } from "../../../runtime/actors.ts"
-import { servedDefinitions } from "../../../actor/served.ts"
+import { descriptorOf } from "../../../actor/descriptor.ts"
 import { socketSession } from "../../../serve/sessions/socket.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
@@ -61,9 +61,9 @@ export const transportStreamConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* socketSession({
             socket,
-            connection: servedDefinitions
-              .get(SocketRoom)!
-              .connections.find((connection) => connection.tag === Chat.tag)!,
+            connection: descriptorOf(SocketRoom)!.served.connections.find(
+              (connection) => connection.tag === Chat.tag,
+            )!,
             holder: actors.holder,
             ref: () => ref,
             upgrade: principal,

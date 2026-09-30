@@ -7,6 +7,21 @@ import { brokenLinks, linkSources } from "./links.ts"
 
 const repositoryRoot = new URL("../../..", import.meta.url).pathname
 
+/**
+ * One authoritative document per `linkSources` pattern. A scan that misses
+ * any of them read the wrong root or a broken pattern, and would pass
+ * without checking anything.
+ */
+const essentialDocuments = [
+  "README.md",
+  "docs/contracts/README.md",
+  "apps/docs/README.md",
+  "packages/durable-actors/README.md",
+  "examples/orders/README.md",
+  "tooling/oxlint/README.md",
+  "infra/README.md",
+]
+
 describe("brokenLinks", () => {
   const files = new Map([
     ["docs/api/README.md", "# API\n\n## Calling actors\n"],
@@ -81,7 +96,7 @@ layer(BunServices.layer)("repository documents", (it) => {
         for (const source of new Bun.Glob(pattern).scanSync(repositoryRoot))
           if (!source.includes("node_modules/")) sources.add(source)
 
-      expect(sources.size).toBeGreaterThan(100)
+      expect([...sources]).toEqual(expect.arrayContaining(essentialDocuments))
 
       const broken: Array<string> = []
 
