@@ -1,6 +1,6 @@
 # Durable Actors: a substantial simplification plan
 
-Prepared September 30, 2026. **Implementation authorized by Dallen; delivery remains in progress.** The audit below describes the starting implementation. The execution decisions in this section supersede earlier name-preservation recommendations, not durable correctness guarantees.
+Prepared September 30, 2026. **Implementation is integrated and verified locally; remote delivery remains pending.** The audit below describes the starting implementation. The execution decisions in this section supersede earlier name-preservation recommendations, not durable correctness guarantees.
 
 ## Accepted execution plan
 
@@ -48,18 +48,18 @@ An owner requests cross-scope edits rather than applying a broad repository-wide
 
 ### Execution ledger
 
-| Workstream                | Initial state          | Completion evidence required                                                                                                                                           |
-| ------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foundation and policy     | Published              | Shared foundation: tracked plan, accepted ADR and AGENTS policy; all 85 root-check tasks and the 513-file tarball check passed                                         |
-| Actor API/compiler        | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-a816-7506-ba83-fe1b51ff7d28): A1–A10, direct constructors, inferred layers, descriptor and negative types     |
-| Testing/evidence          | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-b1d8-7783-9618-62790e1b640f): T1–T5/T8, case parity, provider metadata, cleanup and reducer-law falsification |
-| Protocol/clients          | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-bbc8-7251-a7a1-759982633bb6): C1–C10/T6/T7, CRLF/end-ID regression, parity and browser/session evidence       |
-| Tooling/scaffolds         | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-c720-7773-85ce-16136794ff06): G1–G5/G7–G10/T7, duplicate engines/facts, checked docs and packed scaffolds     |
-| Turn/activation           | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-d108-7329-9119-f069a7a48159): R1–R5/R8, real Postgres fence/commit/cancellation and pipeline evidence         |
-| Job/subscription delivery | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-d9a6-7097-8720-b1acdcc6374f): R6–R7/R12, job storage, late/cancel settlement and epoch/summary evidence       |
-| Workflow                  | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-e397-768e-8406-2bc1f19d6556): R9–R10, quiescence, shared verdicts and simultaneous park/resume evidence       |
-| Connections and CLI       | Implementing           | Coordinator: R11/G6, preserved sequencing/session authority and browser-safe shared inspection response schemas                                                        |
-| Integration and delivery  | Pending implementation | Complete candidate accounting, exact-tree root/provider/E2E/package checks, before/after measurements, current-SHA CI and merged remote `main`                         |
+| Workstream                | Current local state | Integration evidence                                                                                                                                                                                |
+| ------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foundation and policy     | Published           | Tracked plan, accepted ADR and AGENTS policy; the unchanged foundation passed 85 root-check tasks and the 513-file tarball check                                                                    |
+| Actor API/compiler        | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-a816-7506-ba83-fe1b51ff7d28): A1–A10, direct constructors, inferred layers, descriptor, negative types and current docs                              |
+| Testing/evidence          | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-b1d8-7783-9618-62790e1b640f): T1–T5/T8, case parity, backend metadata, teardown fix and batch-law falsification                                      |
+| Protocol/clients          | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-bbc8-7251-a7a1-759982633bb6): C1–C10/T6/T7, CRLF/end-ID regression, protocol corpus, progress seam and Python consumer                               |
+| Tooling/scaffolds         | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-c720-7773-85ce-16136794ff06): G1–G5/G7–G10/T7, removed duplicate engines, packaged templates, CLI jobs and root browser gate                         |
+| Turn/activation           | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-d108-7329-9119-f069a7a48159): R1–R5/R8, shared transaction drive, local activation state, ordered publication and fencing                            |
+| Job/subscription delivery | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-d9a6-7097-8720-b1acdcc6374f): R6–R7/R12, jobs storage, guarded settlement and publish/cleanup summary race regressions                               |
+| Workflow                  | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-e397-768e-8406-2bc1f19d6556): R9–R10, latch quiescence, shared verdicts and two additional conformance cases                                         |
+| Connections and CLI       | Integrated          | Coordinator: R11/G6, stream admission/lifetime owner, fenced open takeover, shared Inspection schemas and one ordered broadcast/progress owner                                                      |
+| Integration and delivery  | Locally verified    | All bundles and remaining consumers integrated; root, Postgres, Docker, E2E, package/scaffold and statement gates passed. The integrated branch is committed locally, not pushed or merged remotely |
 
 Early interface agreements preserve one ordered connection sequencer, move browser-safe wire facts into `src/protocol`, and expose serving as `Actors.serve` plus `Auth` on the existing runtime entry. Inspection schemas share that browser-safe protocol owner and are exported through the existing client entry; the dev inspector must not import runtime or serve modules. The job migration preserves durable identity values, and peer edits to shared seams are isolated from substantive changes for integration.
 
@@ -71,6 +71,147 @@ Early interface agreements preserve one ordered connection sequencer, move brows
 - Retired tests name the plausible wrong implementation and the surviving evidence that rejects it. No test-count/coverage quota, silent skips, expectation weakening or mocked-away storage boundary.
 - Every candidate above and every authoring decision has a final disposition; source/support/concept reductions and any intentional tradeoffs are recorded here.
 - The integration PR has successful trusted current-SHA CI and its required evidence artifact before merge. Confirm `origin/main` contains the delivered commits. Local edits or a pushed branch are not the requested finished state.
+
+### Final candidate dispositions
+
+All 50 candidates have an explicit disposition below. "Implemented" describes the ownership change, not a promise of fewer total lines. The retained backend driver, immutable entity identity, connection sequencer and citation reader are identified rather than counted as deletions.
+
+#### Actor API/compiler
+
+| ID  | Disposition | Result and preserved boundary                                                                                                                                                                                           |
+| --- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | Implemented | Validate the whole declaration before publishing table ownership. The rejected-declaration regression no longer poisons the next valid declaration; a real second owner remains forbidden.                              |
+| A2  | Implemented | `Actor.make` compiles a descriptor; phase layers, turns, reads, connections and handles own their execution responsibilities. `definition.ts` is 763 rather than 3,375 lines.                                           |
+| A3  | Implemented | One descriptor replaces seven parallel declaration registries. Its inert identity is metadata, never generation authority.                                                                                              |
+| A4  | Implemented | Member codec compilation has one owner, projected into storage and transport adapters. Void/default encoding, transformed values, declared failures and replay remain distinct tested contracts.                        |
+| A5  | Implemented | Operations use `payload/success/error`; events/jobs use direct value factories. Current consumers, checked docs, templates and CLI workflow validation use the new spelling without aliases.                            |
+| A6  | Implemented | Existing phase layers accept direct maps or Effect-built maps and infer requirements. Capability-negative tests still reject missing/wrong handlers and phase escapes.                                                  |
+| A7  | Implemented | Typed builder errors belong to ordinary layer startup or singleton activation, respectively. Singleton builders are not run early to manufacture a startup error type.                                                  |
+| A8  | Implemented | Ordinary once-per-layer and singleton once-per-activation build ownership remain separate, with scope/lifetime and takeover coverage. Shared compilation does not merge their lifetimes.                                |
+| A9  | Implemented | The policy owner resolves job bindings, durations, retries and route settings once. Actor-local `jobs` replaces the two effects registries; `createdBy` and `schedules` are declaration fields.                         |
+| A10 | Implemented | Serving/Auth construction lives on `/runtime`. A real root/declaration browser gate exposed and removed the SQL-bearing cursor import; inert tags, Drizzle table declarations and workflow declarations remain allowed. |
+
+#### Turn, activation, delivery and workflow
+
+| ID  | Disposition                          | Result and preserved boundary                                                                                                                                                                                                                                                                            |
+| --- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | Implemented with backend distinction | A common drive owns turn/batch lifecycle. PGlite retains transaction-per-batch because its sole connection cannot support the Postgres overlap; consolidating that driver would deadlock. COMMIT verification, interruption invalidation and round trips remain covered.                                 |
+| R2  | Implemented                          | Activation state and mailbox ownership are local instead of mutable global WeakMaps. Retry/restart and orphan recovery remain under the activation owner.                                                                                                                                                |
+| R3  | Queue replacement rejected           | Front insertion after a failed batch, same-ID barriers and queued-hook completion still require a buffer and latch. An Effect Queue would add coordination rather than remove it; the explicit local mailbox stays.                                                                                      |
+| R4  | Implemented                          | One ordered committed-result publication path owns cache updates, wakes, progress close, realtime flush, workflow kick and caller settlement. No post-commit best-effort work is presented as atomic or durable history.                                                                                 |
+| R5  | Implemented                          | Actor-row identity and generation checks share a storage owner. Specialized lock modes remain visible; stale connection and workflow writers are checked on real Postgres.                                                                                                                               |
+| R6  | Implemented                          | Typed delivery lanes share scoped lease supervision. Job and subscription claims/settles remain domain-specific; capacity does not leave claimed rows waiting to start.                                                                                                                                  |
+| R7  | Implemented                          | Tagged job outcomes lead to one guarded persisted settlement. Not-started, failed, unknown and possibly-applied outcomes remain distinct, including late attempts and cancellation ambiguity.                                                                                                            |
+| R8  | Scoped retention                     | Mutable runtime state is local; the immutable actor-type Entity cache stays to preserve stable Cluster identity. Moving that cache onto declarations would breach the browser boundary without removing a changing owner.                                                                                |
+| R9  | Implemented                          | Workflow quiescence uses a state-change latch instead of spin polling. New cases cover sibling completion while parking and a concurrent resume kick; persisted workflow state remains authoritative.                                                                                                    |
+| R10 | Implemented                          | Compatibility verdict assembly is shared and pure. Global deployment snapshots and fenced execution checks remain separate orchestration boundaries.                                                                                                                                                     |
+| R11 | Implemented with one sequencer       | Stream admission, producer lifetime, windows and revocation have their own module. Durable session writes and ordered broadcast/progress publication stay under the generation owner; the open-takeover regression fails before the locking fix and passes after it.                                     |
+| R12 | Implemented                          | Subscription storage moves rows and tag summaries together using lock-then-count. Publish builds upserts from the materialized locked row, preventing both the settled-tag double count and the deleted-tag lost wake. Real transactions hold each competing interleaving across the statement snapshot. |
+
+#### Protocol and clients
+
+| ID  | Disposition                 | Result and preserved boundary                                                                                                                                                                                                                                                 |
+| --- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | Implemented                 | Effect `Sse.decode` repairs split CRLF parsing, with explicit/new ID handling preserving terminal `end`. The consumer fiber reads the body so an error cannot drop a preceding chunk; an idle watchdog cancels it. No invented size budget is imposed on watch/stream output. |
+| C2  | Implemented                 | Feed/watch/stream share Effect-backed SSE encoding. Their wire bytes and distinct successful-end semantics are preserved.                                                                                                                                                     |
+| C3  | Implemented                 | Feed and watch share reconnect supervision, but own last-delivered cursor and greatest-version strategies. Auth refresh, retry-after floor, sleep abort and non-resumable streams have discriminating tests.                                                                  |
+| C4  | Implemented                 | `Unauthorized.isCredential` is the sole credential classifier. HTTP, queues and live sessions derive their separate actions from that fact.                                                                                                                                   |
+| C5  | Implemented                 | `clientOf` owns projection; `callsOf` owns attempts/offline queue; Optimistic owns reducer order. `client/make.ts` is 557 rather than 1,257 lines.                                                                                                                            |
+| C6  | Implemented                 | Browser-safe protocol frames/wire facts and 15 golden exchanges are shared by the Promise and Python clients. Declared failures stay unwrapped and defects opaque.                                                                                                            |
+| C7  | Socket replacement rejected | The native Effect Socket prototype passed behavior checks but added about 8.4 kB minified without a compensating ownership reduction. The smaller browser implementation stays.                                                                                               |
+| C8  | Implemented                 | React feed/watch share the small creation-wait operation. Core still reports NotCreated as terminal; hook cancellation owns waiting and unmount.                                                                                                                              |
+| C9  | Implemented                 | React connections use primitive session identity or an explicit `options.key` for object params, not JSON serialization. Key changes reopen a session; same-key params changes do not silently send new params.                                                               |
+| C10 | Implemented                 | Python shares exchange evidence and now honors body retryAfter, gateway statuses, HTTP-date retry-after and one future-ID resend. `max_attempts` and refresh only for callable tokens are intentional differences, not a second Effect runtime.                               |
+
+#### Testing/evidence
+
+| ID  | Disposition                                                   | Result and preserved boundary                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1  | Implemented                                                   | Each group owns its fixture, layers and hooks; the global fixture/merge list is gone. The all-features single-shard case has an explicit whole-framework suite. `conformance.ts` is 839 rather than 1,788 lines.                                                                                                                                                                                                                    |
+| T2  | Implemented                                                   | Cases run under the registrar signal, wait for interrupted finalizers, and reset access per case. Regressions reject removing either ownership rule.                                                                                                                                                                                                                                                                                |
+| T3  | Implemented                                                   | Registry requirements enforce fresh-database access on every PG/PGlite run and derive backend run/skip evidence; the source-import parser is gone. All 520 cases selected by the integrated Neki registry remain unverified on Neki.                                                                                                                                                                                                |
+| T4  | Implemented                                                   | Vitest projects derive from the shard registry; 24 wrappers and the literal-source assertion are gone. Replica-sensitive cases share the replica shard. All 796 registry cases ran exactly once in the integrated Postgres run.                                                                                                                                                                                                     |
+| T5  | Implemented                                                   | `/testing` owns disposable/test databases for crash suites, examples and conformance. `tooling/databases` is deleted. Create/drop use short-lived admin connections so teardown is not tied to an already-ended case fiber.                                                                                                                                                                                                         |
+| T6  | Implemented                                                   | Browser fixture mechanics are shared while Promise, React, offline, reconnect and cursor entry paths remain real browser tests. The combined run passed 19/19.                                                                                                                                                                                                                                                                      |
+| T7  | Implemented                                                   | Removed the required internal dependency path and numeric link-source quota. Forbidden packages, real browser builds, authoritative documents and broken-link scans remain enforced.                                                                                                                                                                                                                                                |
+| T8  | Partial: registry index implemented, citation reader retained | The registry supplies exact case names, requirements and backend run/skips. Loop-built crash/E2E names outside that registry still use template matching, and existing prose citations still use the English-span reader. Replacing these with another maintained registry or rewriting roughly 900 citations would add a separate evidence-maintenance surface; those readers were not deleted and are not claimed as a reduction. |
+
+`checkBatchLaw` separately fixes the false-green law checker: both paths must succeed with schema-valid states, each on a private copy. The old checker accepted always-throws, equally invalid states and aliased reversed in-place append; ordered append still passes. The duplicate owned-row property is retired: dropping the actor predicate fails six surviving deterministic cases, while removing the tenant predicate or upsert actor guard is an equivalent mutant accepted by both old and surviving suites. Its measured cost was about 15 s on PG and 35 s on PGlite, not minutes.
+
+#### Structure, documentation and scaffolding
+
+| ID  | Disposition | Result and preserved boundary                                                                                                                                                                                  |
+| --- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1  | Implemented | The manifest-aware structure owner remains; duplicate approximate barrel lint, registration and tests are removed. Explicit exports and workspace dependency direction still fail when violated.               |
+| G2  | Implemented | Arbitrary leaf/shape rules are removed after the structure policy change. Real package boundaries and the separate StyleX compilation unit remain.                                                             |
+| G3  | Implemented | Oxfmt owns spacing; the subjective spacing rule and its vendored engine/options/AST are deleted. No replacement formatting adapter was added.                                                                  |
+| G4  | Implemented | Plugin layers are pruned/consolidated. The small deliberate config list remains; no rule-generation pipeline was added. No-inline-comments and no-decision-references remain enforced.                         |
+| G5  | Implemented | TypeScript fences are visible, complete modules with ordinary title/import metadata. Hidden prelude/module markers and isolation/remapping machinery are gone; current API examples still typecheck.           |
+| G6  | Implemented | Browser-safe Inspection response schemas serve the inspector and operator display. Receipt outcome decoding/redaction remains conditional on receipts.read; duplicated response schemas are gone.              |
+| G7  | Implemented | CLI scope/docs reflect the working local development, stored-data validation and inspection/repair commands. Empty login/deploy/migrate reservations are removed; no unrelated hosted control plane was built. |
+| G8  | Implemented | Released template pins derive from the owning catalog/manifest during packaging. Published scaffolding uses concrete generated pins, not the monorepo root at runtime.                                         |
+| G9  | Implemented | Counter/chat overlays share database, tsconfig and gitignore base files. Both packed scaffolds install, typecheck, test and retain state across restarts on PG and PGlite.                                     |
+| G10 | Implemented | Tiny actors may use one coherent module; empty ownership reservations are removed. Working product/control-plane packages are not erased or reorganized to improve a metric.                                   |
+
+### Integrated measurements
+
+These are tracked `.ts` files and physical lines, measured identically against the foundation baseline and the integrated implementation. They are not a deletion budget or a count of distinct guarantees.
+
+| Slice                                   | Before files / lines | After files / lines |
+| --------------------------------------- | -------------------: | ------------------: |
+| All framework source                    |        365 / 106,776 |       375 / 111,189 |
+| Non-test implementation outside testing |         152 / 42,510 |        173 / 43,926 |
+| Non-test code inside testing            |         124 / 54,050 |        125 / 54,875 |
+| Framework `.test.ts` files              |          89 / 10,216 |         77 / 12,388 |
+| Entire testing tree                     |         176 / 57,786 |        154 / 58,713 |
+| Entire runtime tree                     |          98 / 28,206 |        105 / 29,063 |
+
+The overall framework grew by 4,413 lines; this is **not** a net LOC reduction. The concrete simplifications are fewer parallel declaration registries, central fixtures, shard wrappers, protocol classifiers, supervision paths, copied schemas/pins and rule engines. Smaller central owners are not reported as deletion of the modules to which responsibilities moved.
+
+| Central owner                | Before lines | After lines |
+| ---------------------------- | -----------: | ----------: |
+| actor/definition.ts          |        3,375 |         763 |
+| testing/conformance.ts       |        1,788 |         839 |
+| runtime/connections/owner.ts |        1,770 |       1,539 |
+| runtime/turn/relay.ts        |        1,563 |       1,013 |
+| runtime/layer.ts             |        1,421 |       1,420 |
+| runtime/turn/execute.ts      |        1,293 |       1,301 |
+| runtime/workflows/engine.ts  |        1,274 |       1,321 |
+| client/make.ts               |        1,257 |         557 |
+
+The tooling/scaffold/release paths changed by +647/−2,212 lines. The connection owner shrank by 231 lines and gained a 247-line cohesive stream module: its benefit is ownership, not LOC. The workflow work likewise improves signaling/verdict ownership without shrinking the engine.
+
+Browser-minified builds of the same counter contract entry measured 442,743 B before and 305,196 B after; the client entry measured 117,600 B before and 125,549 B after. The additional minimal inert actor gate is 304,106 B across 71 first-party modules; it is a separate probe, not the same counter contract. The root entry is 375,091 B. Its gate rejects SQL, Cluster, serving, drivers and server platform packages, not inert modules merely because their directory is called runtime.
+
+The exact-tree Postgres CI statement run and `bench:compare --statements ... --fail` passed against the unchanged committed baseline. Sequential hot turns remain about 8 statements/2 round trips, waiting-32 batches 109/3, merged-1024 batches 3.0102/0.0029, and cold activation 10/2. The owner's paired turn measurements were latency-neutral. This combined benchmark ran beside verification workload, so its latency/tails are not presented as an isolated speedup or regression measurement. The testing owner's paired integration times were 10m53s before and 11m05s after, with core tests 774s before and 746s after: time-neutral, not a claimed speedup.
+
+### Integrated verification and delivery state
+
+The combined implementation was committed before the following runs. Documentation-only accounting changes do not alter the tested implementation.
+
+| Executed check                              | Decisive result                                                                                                                                       |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workspace typecheck                         | 28/28 package tasks passed                                                                                                                            |
+| Core declaration build                      | Passed, including portable workflow polling and exported offline CommandQueue types                                                                   |
+| Documentation checks                        | 8/8 passed, including current API snippets and links                                                                                                  |
+| Combined core Postgres integration config   | 43 passed files, 1 skipped; 833 passed / 809 skipped tests, exit 0, 631.33 s; all 796 registry cases selected exactly once with declared requirements |
+| Docker crash drills/rehearsal               | 4 files, 13/13 tests, exit 0                                                                                                                          |
+| Orders SIGKILL drill                        | 9/9 passed                                                                                                                                            |
+| Promise/React/offline browser E2E           | 19/19 passed                                                                                                                                          |
+| Packed counter/chat scaffold integration    | Each scaffold installed, typechecked, tested and preserved state across restarts on PGlite and Postgres; exit 0                                       |
+| Clean packed-core consumer smoke            | Installed the tarball, typechecked positive/negative command calls, ran PGlite commands and returned `[2,5]`; exit 0                                  |
+| Postgres CI statement/round-trip comparison | Unchanged baseline matched within existing tolerances; no new errors or omitted cases                                                                 |
+| Combined root `bun run check`               | Exit 0; 84/84 Turbo tasks, core 52 files / 862 passed / 227 skipped, and 557 files passing the tarball check; full uncached core run 718.46 s         |
+
+The root browser gate, builder/capability regressions, interrupted harness cleanup, open takeover, late/ambiguous settlement, routed-row snapshot races and workflow park/resume cases remain part of the executed suite rather than inferred from types. Combined checks exposed the CLI's old workflow schema fields and one stale `effects: 0` inspection assertion. Migrating those to the canonical API preserved the workflow validation and rollback/post-commit assertions; their focused files passed 2/2 and 4/4, then the full root gate passed. No failure was waived or expectation weakened.
+
+The independent package smoke initially selected platform-node-shared rc.118 through platform-bun rc.116's caret dependency, alongside Effect rc.116, and failed loading `effect/process/ChildProcess`. A two-package clean-install probe reproduced the failure without the framework. Pinning platform-node-shared through the existing root catalog, exactly as the released scaffold already does, makes the clean graph coherent; the smoke then installed, typechecked and executed successfully. No runtime dependency version or framework API was changed to hide the failure.
+
+Backend skips are capability decisions, not executed support. The integrated index has 796 conformance cases plus ten workflow-engine cases; Neki's actual requirement predicate selects 520, rather than the 517 in the earlier owner report. None ran against a Neki router, so all remain unverified and no Neki support is claimed. Docker was initially unavailable in owner orbs but was provisioned locally for the combined drills above.
+
+The real `durable dev` command now starts. Its rendered inspector was checked at 2× scale: Jobs navigation/tile, selected Jobs route and `No job in flight.`, with no old Effects text or clipping. The populated CLI state was also inspected with three Charge rows and one dead letter. Review artifacts: [populated Jobs inspector](.amp/in/artifacts/cli-inspector-jobs.png) and [integrated empty state](.amp/in/artifacts/cli-inspector-jobs-empty.png).
+
+Remaining delivery: the integrated branch is local, not pushed; no integration PR, current-SHA remote CI or merge into remote `main` has been performed. No pre-push gate was bypassed. Remote publication/merge and any resulting deployment must not be inferred from passing local checks.
 
 ## Recommendation
 
