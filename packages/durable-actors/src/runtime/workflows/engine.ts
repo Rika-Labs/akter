@@ -13,12 +13,11 @@ import {
 import { ActivityOutcomeUnknown } from "../../errors/workflow.ts"
 import {
   type BusinessResult,
-  Outcome,
   type RegisteredCommand,
   type RegisteredWorkflow,
   type Registration,
-  Request,
-} from "../../handles/actors.ts"
+} from "../members.ts"
+import { Outcome, Request } from "../request.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import {
   ExecutionIdOutput,

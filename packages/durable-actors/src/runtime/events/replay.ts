@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
-import type { StoredEvent } from "../../handles/actors.ts"
+import type { StoredEvent } from "../members.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { decompress } from "../storage/codec.ts"
 
