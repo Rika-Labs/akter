@@ -114,8 +114,8 @@ const till = (tenant: string) => ({ tenant, actorType: "OpTill", actorId: "t1" }
 const paths = (tenant: string) => ({
   inspect: `/operator/actors/OpTill/t1?tenant=${tenant}`,
   receipt: (commandId: string) => `/operator/receipts/OpTill/t1/${commandId}?tenant=${tenant}`,
-  retry: (effectId: string) => `/operator/dead-letters/${effectId}/retry`,
-  discard: (effectId: string) => `/operator/dead-letters/${effectId}/discard`,
+  retry: (jobId: string) => `/operator/dead-letters/${jobId}/retry`,
+  discard: (jobId: string) => `/operator/dead-letters/${jobId}/discard`,
   defects: `/operator/defects?tenant=${tenant}`,
   audit: `/operator/audit?tenant=${tenant}`,
 })
@@ -351,12 +351,12 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             )
 
             expect(retried.status).toBe(200)
-            const { effectId } = retried.body as { effectId: string }
-            expect(effectId).not.toBe(letter!.job_id)
+            const { jobId } = retried.body as { jobId: string }
+            expect(jobId).not.toBe(letter!.job_id)
 
             yield* (yield* ActorTest).advance(0)
 
-            expect(fixture.charges).toEqual([letter!.job_id, effectId])
+            expect(fixture.charges).toEqual([letter!.job_id, jobId])
             expect(yield* deadLetters).toEqual([])
 
             const [row] = yield* audit
@@ -369,7 +369,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
               reason: "provider back up",
               capability: '{"action":"dead-letters.retry","tenant":"*","actorType":"OpTill"}',
             })
-            expect(row!.outcome).toContain(`"effectId":"${effectId}"`)
+            expect(row!.outcome).toContain(`"jobId":"${jobId}"`)
             expect(row!.outcome).toContain('"providerChecked":false')
 
             const again = yield* send("POST", paths(tenant).retry(letter!.job_id), "repair-token", {
@@ -433,7 +433,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             expect(refused).toMatchObject({
               status: 409,
-              body: { effectId: letter!.job_id },
+              body: { jobId: letter!.job_id },
             })
             expect((yield* deadLetters).length).toBe(1)
             expect(yield* audit).toEqual([])

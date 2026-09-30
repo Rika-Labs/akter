@@ -316,7 +316,7 @@ const drainDuringTurn = (
     expect(yield* drain(owner, "200 millis")).toEqual({
       outcome: "deadline-expired",
       interruptedTurns: 1,
-      interruptedEffects: 0,
+      interruptedJobs: 0,
     })
 
     expect(yield* inspect(caller, ref)).toMatchObject(
@@ -349,7 +349,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
                 const single = yield* account("single")
                 expect(yield* single.Deposit(1)).toBe(1)
 
-                const clean = { outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 }
+                const clean = { outcome: "clean", interruptedTurns: 0, interruptedJobs: 0 }
                 expect(yield* control.drain({ deadline: "5 seconds" })).toEqual(clean)
                 expect(yield* control.readiness).toEqual({ ready: false, reason: "drained" })
                 expect(yield* control.drain({ deadline: "1 millis" })).toEqual(clean)
@@ -392,7 +392,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
                 expect(yield* control.drain({ deadline: "100 millis" })).toEqual({
                   outcome: "deadline-expired",
                   interruptedTurns: 1,
-                  interruptedEffects: 0,
+                  interruptedJobs: 0,
                 })
                 yield* Fiber.interrupt(call)
                 expect(yield* (yield* ActorTest).inspect(held.ref)).toMatchObject({
@@ -465,7 +465,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(yield* Fiber.join(draining)).toEqual({
             outcome: "clean",
             interruptedTurns: 0,
-            interruptedEffects: 0,
+            interruptedJobs: 0,
           })
           expect(yield* Fiber.join(call)).toBe(3)
           expect(yield* readiness(owner)).toEqual({ ready: false, reason: "drained" })
@@ -531,7 +531,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(yield* Fiber.join(draining)).toEqual({
             outcome: "clean",
             interruptedTurns: 0,
-            interruptedEffects: 0,
+            interruptedJobs: 0,
           })
           expect(yield* Fiber.join(first)).toBe(3)
 
@@ -623,7 +623,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(yield* drain(owner, "200 millis")).toEqual({
             outcome: "deadline-expired",
             interruptedTurns: 1,
-            interruptedEffects: 0,
+            interruptedJobs: 0,
           })
           yield* Deferred.succeed(release, undefined)
 
@@ -667,7 +667,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(yield* drain(0, "5 seconds")).toEqual({
             outcome: "clean",
             interruptedTurns: 0,
-            interruptedEffects: 0,
+            interruptedJobs: 0,
           })
 
           yield* on(owner, account(id).pipe(Effect.flatMap((handle) => handle.Bill("late"))))
@@ -713,7 +713,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(yield* drain(0, "200 millis")).toEqual({
             outcome: "deadline-expired",
             interruptedTurns: 0,
-            interruptedEffects: 1,
+            interruptedJobs: 1,
           })
           expect(fixture.attempts).toEqual([{ runner: 0, attempt: 1, interrupted: true }])
           expect(yield* chargeRow(owner)).toEqual([{ attempts: 1, ambiguous: true, leased: true }])
@@ -767,7 +767,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(yield* drain(drained, "5 seconds")).toEqual({
             outcome: "clean",
             interruptedTurns: 0,
-            interruptedEffects: 0,
+            interruptedJobs: 0,
           })
 
           const [row] = yield* on(
@@ -913,7 +913,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
           expect(report).toEqual({
             outcome: "deadline-expired",
             interruptedTurns: 1,
-            interruptedEffects: 0,
+            interruptedJobs: 0,
           })
           expect(took < 500 + 1_000).toBe(true)
 

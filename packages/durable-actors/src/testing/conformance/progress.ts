@@ -187,14 +187,14 @@ export const progressConformance: ReadonlyArray<ConformanceCase<ProgressFixture>
           yield* test.advance(0)
           const records = yield* recordsOf("latest")
           const frames = framesOf(records)
-          const effectId = fixture.captured?.jobId
+          const jobId = fixture.captured?.jobId
 
           expect([1, 2]).toContain(frames.length)
           expect(frames.at(-1)).toEqual({ attempt: 1, seq: 3, frame: upload })
           expect(frames.map((frame) => frame.seq)).toEqual(
             frames.map((frame) => frame.seq).toSorted((a, b) => a - b),
           )
-          expect(records.every((record) => record.jobId === effectId)).toBe(true)
+          expect(records.every((record) => record.jobId === jobId)).toBe(true)
           expect(records.at(-1) && ProgressRecord.$is("ProgressClosed")(records.at(-1)!)).toBe(true)
           expect(records.at(-1)).toMatchObject({ attempt: 1 })
           expect(yield* outputsOf("latest")).toEqual(["a.mp4"])

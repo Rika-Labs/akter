@@ -31,12 +31,22 @@ export const databaseName = Effect.fnUntraced(function* (
   return `${prefix}_${yield* Clock.currentTimeMillis}_${uuid}`
 })
 
-/** An administrative connection to the server `url` names, closed with the scope. */
-const adminOf = (url: Redacted.Redacted<string>) =>
-  Layer.build(PgClient.layer({ url, maxConnections: 4 })).pipe(
-    Effect.map((context) => Context.get(context, SqlClient.SqlClient)),
-    Effect.orDie,
-  )
+/**
+ * Runs `use` on an administrative connection to the server `url` names that
+ * lives only as long as `use`. A connection held across a caller's scope
+ * would belong to the fiber that opened it, and a finalizer running after
+ * that fiber ended would find it interrupted.
+ */
+const withAdmin = <A, E>(
+  url: Redacted.Redacted<string>,
+  use: (admin: SqlClient.SqlClient) => Effect.Effect<A, E>,
+) =>
+  Effect.scoped(
+    Layer.build(PgClient.layer({ url, maxConnections: 1 })).pipe(
+      Effect.map((context) => Context.get(context, SqlClient.SqlClient)),
+      Effect.flatMap(use),
+    ),
+  ).pipe(Effect.orDie)
 
 /** `url` with its database replaced by `name`. */
 const onDatabase = (url: Redacted.Redacted<string>, name: string) => {
@@ -58,16 +68,20 @@ export const disposableDatabase = Effect.fnUntraced(function* (options: {
   readonly prefix?: "actors" | "actors_template" | "isolated" | "restored" | "disposable"
   readonly template?: string | undefined
 }): Effect.fn.Return<Redacted.Redacted<string>, never, Scope.Scope | Crypto.Crypto> {
-  const admin = yield* adminOf(options.url)
   const name = yield* databaseName(yield* Crypto.Crypto, options.prefix ?? "disposable")
 
   yield* Effect.acquireRelease(
     options.template === undefined
-      ? admin.unsafe(`CREATE DATABASE "${name}"`).pipe(Effect.orDie)
-      : admin
-          .unsafe(`CREATE DATABASE "${name}" TEMPLATE "${options.template}"`)
-          .pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }), Effect.orDie),
-    () => admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).pipe(Effect.orDie),
+      ? withAdmin(options.url, (admin) => admin.unsafe(`CREATE DATABASE "${name}"`))
+      : withAdmin(options.url, (admin) =>
+          admin
+            .unsafe(`CREATE DATABASE "${name}" TEMPLATE "${options.template}"`)
+            .pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") })),
+        ),
+    () =>
+      withAdmin(options.url, (admin) =>
+        admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`),
+      ),
   )
 
   return onDatabase(options.url, name)
@@ -78,26 +92,25 @@ export const disposableDatabase = Effect.fnUntraced(function* (options: {
  * names: a run that was killed, or whose teardown timed out, never dropped
  * its own.
  */
-export const sweepStaleDatabases = Effect.fnUntraced(function* (url: Redacted.Redacted<string>) {
-  const admin = yield* adminOf(url)
-  const now = yield* Clock.currentTimeMillis
+export const sweepStaleDatabases = (url: Redacted.Redacted<string>) =>
+  withAdmin(url, (admin) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      const rows = yield* admin<{ readonly datname: string }>`SELECT datname FROM pg_database`
 
-  const rows = yield* admin<{ readonly datname: string }>`SELECT datname FROM pg_database`.pipe(
-    Effect.orDie,
+      yield* Effect.forEach(
+        rows
+          .map(({ datname }) => datname)
+          .filter((name) => {
+            const created = NAMED.exec(name)?.[1]
+
+            return created !== undefined && now - Number(created) > STALE_AFTER_MS
+          }),
+        (name) => admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`),
+        { concurrency: "unbounded", discard: true },
+      )
+    }),
   )
-
-  yield* Effect.forEach(
-    rows
-      .map(({ datname }) => datname)
-      .filter((name) => {
-        const created = NAMED.exec(name)?.[1]
-
-        return created !== undefined && now - Number(created) > STALE_AFTER_MS
-      }),
-    (name) => admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).pipe(Effect.orDie),
-    { concurrency: "unbounded", discard: true },
-  )
-}, Effect.scoped)
 
 /**
  * The database a test that runs on both backends uses: `undefined`, a fresh

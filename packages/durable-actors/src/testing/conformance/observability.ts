@@ -63,7 +63,7 @@ const TickDelivery = Actor.Delivery({ source: Author, events: [Ticked] })
 const OnTick = Actor.command("OnTick", { payload: TickDelivery })
 
 const Watch = Actor.subscription("ObsWatch", {
-  delivery: Actor.Delivery({ source: Author, events: [Ticked] }),
+  delivery: TickDelivery,
 
   handler: OnTick,
   route: () => "w1",

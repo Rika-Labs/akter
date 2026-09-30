@@ -215,7 +215,7 @@ const deployment = (variant: Variant) => {
     const Record = Actor.command("Record", { payload: Delivery })
 
     const Placements = Actor.subscription("Placements", {
-      delivery: Actor.Delivery({ source: Ledger, events: [Placed] }),
+      delivery: Delivery,
 
       handler: Record,
       route: (event) => event.orderId,
