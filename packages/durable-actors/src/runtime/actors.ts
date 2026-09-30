@@ -17,7 +17,7 @@ import type {
   Registration,
   StoredEvent,
   WorkflowStatus,
-} from "./registration.ts"
+} from "./members.ts"
 
 /** Runtime-only capabilities; package entry points export only Actors. */
 export class InternalActors extends Context.Service<

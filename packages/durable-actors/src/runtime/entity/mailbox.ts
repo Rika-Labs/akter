@@ -15,7 +15,7 @@ export const BATCH_CAP = 32
 export const MERGE_CAP = 1024
 
 /** A waiting command, and whether its reducer merges with its neighbours. */
-export interface Mergeable {
+interface Mergeable {
   readonly request: Request
   readonly command: { readonly merge?: unknown }
 }

@@ -7,7 +7,7 @@ import {
   type ConnectionLister,
   type EmittedEvent,
   type RegisteredCommand,
-} from "../registration.ts"
+} from "../members.ts"
 import { Outcome, type Request } from "../request.ts"
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
@@ -308,7 +308,7 @@ export interface Done {
  * batch's handlers, and `committed` once the batch commits or rolls back,
  * before the next batch's handlers run.
  */
-export interface Run<W extends Delivery, RN, RP, RC> {
+interface Run<W extends Delivery, RN, RP, RC> {
   readonly first: ReadonlyArray<W>
   readonly next: Effect.Effect<ReadonlyArray<W> | undefined, never, RN>
   readonly prepare: Effect.Effect<void, never, RP>
@@ -480,7 +480,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     const cold = view.generation === undefined
 
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)
+      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
+      set_config('durable.turn', 'on', true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || view.state === undefined

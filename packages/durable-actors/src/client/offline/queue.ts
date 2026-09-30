@@ -57,7 +57,7 @@ export interface OfflineQueue {
 }
 
 /** What a client asks the queue to save; the queue adds its position, base URL and status. */
-export type NewCommand = Pick<QueuedCommand, "commandId" | "target" | "member" | "body">
+type NewCommand = Pick<QueuedCommand, "commandId" | "target" | "member" | "body">
 
 /** One answered attempt that did not settle the command, with when to try again if the client knows. */
 export interface Refused {
@@ -93,7 +93,7 @@ export interface Delivery<Output> {
 }
 
 /** The queue a client drives: what an application sees, plus saving commands. */
-export interface CommandQueue<Output> extends OfflineQueue {
+interface CommandQueue<Output> extends OfflineQueue {
   /**
    * Saves the command `make` builds, then delivers it. Calls are taken one at
    * a time in the order they were made, so an id that takes longer to mint

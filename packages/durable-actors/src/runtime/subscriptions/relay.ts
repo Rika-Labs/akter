@@ -4,7 +4,7 @@ import { SubscriptionFailure } from "../../errors/subscription.ts"
 import { SqlClient, type Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"
-import { type RegisteredSubscription } from "../registration.ts"
+import { type RegisteredSubscription } from "../members.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decompress, type Placement, routingKey } from "../storage/codec.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
@@ -28,7 +28,7 @@ export interface LocalSubscription {
 }
 
 /** Tuning for subscription work: concurrency, lease, and backoff bounds. */
-export interface SubscriptionSettings {
+interface SubscriptionSettings {
   /** Feed expansions, control registrations, and subscription deliveries each run this many at once. */
   readonly concurrency: number
   /** Matching events one claimed subscription row delivers before it settles. */

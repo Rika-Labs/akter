@@ -73,7 +73,7 @@ const recoverable = (error: ActorError) =>
   ["SlowConsumer", "OwnerLost", "ActorUnavailable"].includes(error.reason.cause)
 
 /** What a feed reads and who reads it. */
-export interface FeedOptions {
+interface FeedOptions {
   readonly actors: InternalActors["Service"]
   /** The actor whose committed events the feed serves. */
   readonly ref: ActorRef

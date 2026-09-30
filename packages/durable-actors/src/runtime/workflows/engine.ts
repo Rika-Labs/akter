@@ -16,7 +16,7 @@ import {
   type RegisteredCommand,
   type RegisteredWorkflow,
   type Registration,
-} from "../registration.ts"
+} from "../members.ts"
 import { Outcome, Request } from "../request.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import {

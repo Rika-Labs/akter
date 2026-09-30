@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import type { EmittedEvent } from "../registration.ts"
+import type { EmittedEvent } from "../members.ts"
 import type { Request } from "../request.ts"
 import { System } from "../../identity/caller.ts"
 import { FrameworkClock } from "../turn/admission.ts"

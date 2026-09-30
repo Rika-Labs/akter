@@ -61,7 +61,7 @@ import {
   type RegisteredWorkflow,
   type WorkflowStatus,
   type EmittedEvent,
-} from "../runtime/registration.ts"
+} from "../runtime/members.ts"
 import { InternalActors } from "../runtime/actors.ts"
 import { Outcome, Request } from "../runtime/request.ts"
 import {
@@ -127,7 +127,7 @@ import type { NoDatabase } from "../runtime/effects/isolation.ts"
 import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import { type Policy, resolvePolicy } from "../policies/command.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
-import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
+import { type AnyOwnedTable, ownership, recordDeclaredTables } from "../tables/owned.ts"
 import { type ActorClient, type ClientOptions, clientOf } from "../client/make.ts"
 import {
   checkDeclaredErrors,
@@ -932,6 +932,11 @@ const make = <
 
     if (info.owner !== undefined && info.owner !== name)
       throw new Error(`Table ${info.name} is already owned by actor ${info.owner}`)
+
+    if (info.adopted && policy.createdBy !== undefined)
+      throw new Error(
+        `Actor ${name} mints its ids and cannot adopt table ${info.name}: legacy rows carry ids it never minted`,
+      )
     info.owner = name
   }
 
@@ -3174,6 +3179,8 @@ const make = <
   })
 
   if (mintable) mintables.set(actor, { name, createdBy: policy.createdBy!, parent: parent?.name })
+
+  recordDeclaredTables({ definition: actor, tables: { actor: name, placement, tables } })
 
   placedDefinitions.set(actor, {
     name,

@@ -3,7 +3,7 @@ import { Workflow as EffectWorkflow } from "effect/unstable/workflow"
 import { type RecordedExit, StoredResult } from "../contexts/workflow.ts"
 import type { ActorError } from "../errors/actor.ts"
 import type { AnyWorkflow } from "../members/workflow.ts"
-import type { WorkflowStatus } from "../runtime/registration.ts"
+import type { WorkflowStatus } from "../runtime/members.ts"
 
 type PollReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
 

@@ -16,7 +16,7 @@ import {
 import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request } from "../request.ts"
-import { type RegisteredEffect } from "../registration.ts"
+import { type RegisteredEffect } from "../members.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../effects/progress.ts"
 import { CRON_PREFIX } from "../cron/key.ts"
@@ -148,7 +148,7 @@ export const candidates = ({
     ) o`
 
 /** Intents to claim in one statement: up to `limit` free delivery slots. */
-export interface IntentClaim {
+interface IntentClaim {
   readonly limit: number
   readonly leaseMs: number
   readonly maxBackoffMs: number

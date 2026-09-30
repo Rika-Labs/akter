@@ -31,7 +31,7 @@ import {
   type OpenConnection,
   type Registration,
   type StoredProgress,
-} from "../registration.ts"
+} from "../members.ts"
 import { type ActorRef, Caller, type Principal, principal } from "../../identity/caller.ts"
 import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
