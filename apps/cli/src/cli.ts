@@ -1,4 +1,4 @@
-import { Effect, Runtime } from "effect"
+import { Effect, Runtime, Schema } from "effect"
 import { CliError, Command } from "effect/unstable/cli"
 
 import { version } from "../package.json" with { type: "json" }
@@ -77,10 +77,13 @@ export const durable = Command.make("durable").pipe(
   ]),
 )
 
+const isShowHelp = Schema.is(CliError.ShowHelp)
+
 /**
  * Runs `durable` on `args`, the arguments after the program name. Invalid
  * arguments print help and the error, and end with exit status 2, the status
- * of every usage error; a command group named alone prints its help and exits 0.
+ * of every usage error; a command
+ * group named alone prints its help and exits 0.
  */
 export const run = (args: ReadonlyArray<string>) =>
   Command.runWith(durable, { version })(args).pipe(
@@ -91,10 +94,7 @@ export const run = (args: ReadonlyArray<string>) =>
         Effect.fail(
           CommandFailed.make({
             exitCode: 2,
-            reason:
-              error._tag === "ShowHelp"
-                ? error.errors.map((cause) => cause._tag).join(", ")
-                : error._tag,
+            reason: isShowHelp(error) ? (error.errors[0]?._tag ?? "ShowHelp") : error._tag,
           }),
         ),
     ),

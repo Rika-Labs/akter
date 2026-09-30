@@ -53,7 +53,8 @@ export const entryCommand = <R>({
   }).pipe(
     Effect.scoped,
     Effect.catchTags({
-      SqlError: (error) => fail({ reason: error._tag, message: `Cannot read ${reading}: ${error.message}` }),
+      SqlError: (error) =>
+        fail({ reason: error._tag, message: `Cannot read ${reading}: ${error.message}` }),
       UsageError: (error) => fail({ reason: error._tag, message: error.message }),
     }),
   )

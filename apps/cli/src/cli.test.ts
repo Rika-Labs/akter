@@ -70,17 +70,24 @@ describe("durable", () => {
       for (const [args, reason, error] of [
         [
           ["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--bogus"],
-          "UnrecognizedOption", "Unrecognized flag: --bogus",
+          "UnrecognizedOption",
+          "Unrecognized flag: --bogus",
         ],
         [
           ["export", "Room/r1", "--url", "u", "--output", "f.seed"],
-          "MissingOption", "Missing required flag: --tenant",
+          "MissingOption",
+          "Missing required flag: --tenant",
         ],
         [
           ["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--receipts", "many"],
-          "InvalidValue", 'Invalid value for flag --receipts: "many"',
+          "InvalidValue",
+          'Invalid value for flag --receipts: "many"',
         ],
-        [["inspect", "--url", "u", "--tenant", "t"], "MissingArgument", "Missing required argument: actor"],
+        [
+          ["inspect", "--url", "u", "--tenant", "t"],
+          "MissingArgument",
+          "Missing required argument: actor",
+        ],
         [["deploy"], "UnknownSubcommand", 'Unknown subcommand "deploy"'],
       ] as const) {
         const refused = yield* runCli(args)

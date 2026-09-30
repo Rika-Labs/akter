@@ -88,10 +88,26 @@ describe("durable export", () => {
       ])
 
       for (const [args, reason, message] of [
-        [["Vault", "--url", "u", "--tenant", "t", "--output", "f"], "InvalidValue", 'Invalid value for argument <actor>: "Vault". Expected: an actor named as <Type>/<id>'],
-        [["Vault/v1", "--url", "u", "--output", "f"], "MissingOption", 'Missing required flag: --tenant'],
-        [["Vault/v1", "--url", "u", "--tenant", "t"], "MissingOption", 'Missing required flag: --output'],
-        [["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"], "UnexpectedArgument", 'Unexpected positional argument: "extra"'],
+        [
+          ["Vault", "--url", "u", "--tenant", "t", "--output", "f"],
+          "InvalidValue",
+          'Invalid value for argument <actor>: "Vault". Expected: an actor named as <Type>/<id>',
+        ],
+        [
+          ["Vault/v1", "--url", "u", "--output", "f"],
+          "MissingOption",
+          "Missing required flag: --tenant",
+        ],
+        [
+          ["Vault/v1", "--url", "u", "--tenant", "t"],
+          "MissingOption",
+          "Missing required flag: --output",
+        ],
+        [
+          ["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"],
+          "UnexpectedArgument",
+          'Unexpected positional argument: "extra"',
+        ],
       ] as const) {
         const refused = yield* runCli(["export", ...args])
 

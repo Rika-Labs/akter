@@ -62,9 +62,13 @@ describe("durable subscriptions skip", () => {
       }
 
       for (const [args, reason, message] of [
-        [without("--reason"), "MissingOption", 'Missing required flag: --reason'],
-        [without("--tenant"), "MissingOption", 'Missing required flag: --tenant'],
-        [[...without("--through"), "--through", "0x2"], "InvalidValue", 'Invalid value for flag --through: "0x2". Expected: a positive event cursor'],
+        [without("--reason"), "MissingOption", "Missing required flag: --reason"],
+        [without("--tenant"), "MissingOption", "Missing required flag: --tenant"],
+        [
+          [...without("--through"), "--through", "0x2"],
+          "InvalidValue",
+          'Invalid value for flag --through: "0x2". Expected: a positive event cursor',
+        ],
       ] as const) {
         const refused = yield* runCli(["subscriptions", "skip", ...args])
 

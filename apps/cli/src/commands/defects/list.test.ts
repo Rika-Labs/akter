@@ -7,6 +7,7 @@ import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
 import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
+import { OperatorRefused } from "../operator/request.ts"
 import { formatDefects, listDefects } from "./list.ts"
 
 const Break = Actor.command("Break", { input: Schema.String })
@@ -93,11 +94,19 @@ describe("durable defects list", () => {
       expect(query.get("limit")).toBe("5")
 
       for (const [args, reason, message] of [
-        [[], "MissingOption", 'Missing required flag: --url'],
-        [["--url"], "MissingOption", 'Missing value for flag --url'],
-        [["--url", "u", "--limit", "0"], "InvalidValue", 'Invalid value for flag --limit: "0". Expected: an integer from 1 to 1000'],
-        [["--url", "u", "--x"], "UnrecognizedOption", 'Unrecognized flag: --x'],
-        [["--url", "u", "--since", "soon"], "InvalidValue", 'Invalid value for flag --since: "soon"'],
+        [[], "MissingOption", "Missing required flag: --url"],
+        [["--url"], "InvalidValue", "Missing value for flag --url"],
+        [
+          ["--url", "u", "--limit", "0"],
+          "InvalidValue",
+          'Invalid value for flag --limit: "0". Expected: an integer from 1 to 1000',
+        ],
+        [["--url", "u", "--x"], "UnrecognizedOption", "Unrecognized flag: --x"],
+        [
+          ["--url", "u", "--since", "soon"],
+          "InvalidValue",
+          'Invalid value for flag --since: "soon"',
+        ],
       ] as const) {
         const refused = yield* runCli(["defects", "list", ...args])
 
@@ -160,19 +169,19 @@ describe("durable defects list", () => {
         "b1",
         "b2",
       ])
-      expect(yield* read("plant-token", "other").pipe(Effect.flip)).toMatchObject({
-        _tag: "OperatorRefused",
-        status: 403,
-      })
-      expect(yield* read("plant-token", "*").pipe(Effect.flip)).toMatchObject({
-        _tag: "OperatorRefused",
-        status: 403,
-      })
+      const foreignTenant = yield* read("plant-token", "other").pipe(Effect.flip)
+
+      expect(foreignTenant).toBeInstanceOf(OperatorRefused)
+      expect(foreignTenant).toMatchObject({ status: 403 })
+      const everyTenant = yield* read("plant-token", "*").pipe(Effect.flip)
+
+      expect(everyTenant).toBeInstanceOf(OperatorRefused)
+      expect(everyTenant).toMatchObject({ status: 403 })
       expect(yield* read("plant-token", "plant", "Kettle")).toEqual([])
-      expect(yield* read(undefined, "plant").pipe(Effect.flip)).toMatchObject({
-        _tag: "OperatorRefused",
-        status: 401,
-      })
+      const anonymous = yield* read(undefined, "plant").pipe(Effect.flip)
+
+      expect(anonymous).toBeInstanceOf(OperatorRefused)
+      expect(anonymous).toMatchObject({ status: 401 })
 
       const fetch = ((input, init) =>
         web.handler(new Request(input, init))) as typeof globalThis.fetch
@@ -190,7 +199,9 @@ describe("durable defects list", () => {
       const listed = yield* cli("plant-token", "plant")
 
       expect(listed).toMatchObject({ exitCode: 0, reason: "" })
-      expect(listed.stdout.split("\n").filter((line) => line.includes("Boiler/b1  Break "))).toHaveLength(2)
+      expect(
+        listed.stdout.split("\n").filter((line) => line.includes("Boiler/b1  Break ")),
+      ).toHaveLength(2)
 
       for (const [token, tenant, status] of [
         ["plant-token", "other", 403],

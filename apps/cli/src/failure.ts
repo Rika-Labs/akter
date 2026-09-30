@@ -32,8 +32,6 @@ export const fail = (failure: {
 }) =>
   Console.error(failure.message).pipe(
     Effect.andThen(
-      Effect.fail(
-        CommandFailed.make({ exitCode: failure.exitCode ?? 2, reason: failure.reason }),
-      ),
+      Effect.fail(CommandFailed.make({ exitCode: failure.exitCode ?? 2, reason: failure.reason })),
     ),
   )

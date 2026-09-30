@@ -126,10 +126,17 @@ export const operatorCommand = <
       RunnerUnreachable: (error) =>
         fail({ reason: error._tag, message: `Cannot reach ${error.url}: ${error.message}` }),
       OperatorRefused: (error) =>
-        fail({ reason: error._tag, message: `Refused (${error.status}): ${error.body}`, exitCode: 1 }),
-      ConfigError: (error) => fail({ reason: error._tag, message: `Cannot read the operator token: ${error.message}` }),
-      SchemaError: (error) => fail({ reason: error._tag, message: `Unexpected answer: ${error.message}` }),
-      PlatformError: (error) => fail({ reason: error._tag, message: `Cannot write the file: ${error.message}` }),
+        fail({
+          reason: error._tag,
+          message: `Refused (${error.status}): ${error.body}`,
+          exitCode: 1,
+        }),
+      ConfigError: (error) =>
+        fail({ reason: error._tag, message: `Cannot read the operator token: ${error.message}` }),
+      SchemaError: (error) =>
+        fail({ reason: error._tag, message: `Unexpected answer: ${error.message}` }),
+      PlatformError: (error) =>
+        fail({ reason: error._tag, message: `Cannot write the file: ${error.message}` }),
     }),
   )
 

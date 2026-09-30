@@ -38,17 +38,23 @@ describe("durable tenants create arguments", () => {
   it("refuses a missing flag, an unknown argument, and a tenant or region outside its limits", () =>
     Effect.gen(function* () {
       const refused = [
-        [valid.slice(0, 9), "Missing required flag: --operator"],
+        [valid.slice(0, 9), "MissingOption", "Missing required flag: --operator"],
         [[...valid, "--force"], "UnrecognizedOption", "Unrecognized flag: --force"],
         [
           [...valid.slice(0, 2), "bad tenant", ...valid.slice(3)],
-          "InvalidValue", 'Invalid value for argument <tenant>: "bad tenant"',
+          "InvalidValue",
+          'Invalid value for argument <tenant>: "bad tenant"',
         ],
         [
           [...valid.slice(0, 6), "US East", ...valid.slice(7)],
-          "InvalidValue", 'Invalid value for flag --region: "US East"',
+          "InvalidValue",
+          'Invalid value for flag --region: "US East"',
         ],
-        [[...valid.slice(0, 2), ...valid.slice(3)], "MissingArgument", "Missing required argument: tenant"],
+        [
+          [...valid.slice(0, 2), ...valid.slice(3)],
+          "MissingArgument",
+          "Missing required argument: tenant",
+        ],
       ] as const
 
       for (const [args, reason, error] of refused) {

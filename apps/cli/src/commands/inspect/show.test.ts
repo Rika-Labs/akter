@@ -76,10 +76,22 @@ describe("durable inspect and durable receipts show", () => {
       ])
 
       for (const [args, reason, message] of [
-        [["inspect", "Room", "--url", "u", "--tenant", "t"], "InvalidValue", 'Invalid value for argument <actor>: "Room"'],
-        [["inspect", "Room/r1", "--url", "u"], "MissingOption", 'Missing required flag: --tenant'],
-        [["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--receipts", "0"], "InvalidValue", 'Invalid value for flag --receipts: "0". Expected: an integer from 1 to 1000'],
-        [["receipts", "show", "Room/r1", "--url", "u", "--tenant", "t"], "MissingArgument", 'Missing required argument: commandId'],
+        [
+          ["inspect", "Room", "--url", "u", "--tenant", "t"],
+          "InvalidValue",
+          'Invalid value for argument <actor>: "Room"',
+        ],
+        [["inspect", "Room/r1", "--url", "u"], "MissingOption", "Missing required flag: --tenant"],
+        [
+          ["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--receipts", "0"],
+          "InvalidValue",
+          'Invalid value for flag --receipts: "0". Expected: an integer from 1 to 1000',
+        ],
+        [
+          ["receipts", "show", "Room/r1", "--url", "u", "--tenant", "t"],
+          "MissingArgument",
+          "Missing required argument: commandId",
+        ],
       ] as const) {
         const refused = yield* runCli([...args])
 

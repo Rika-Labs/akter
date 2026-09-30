@@ -85,7 +85,12 @@ describe("durable dead-letters", () => {
         "--provider-checked",
       ])
 
-      expect(retried).toEqual({ stdout: '{"effectId":"e1"}\n', stderr: "", exitCode: 0, reason: "" })
+      expect(retried).toEqual({
+        stdout: '{"effectId":"e1"}\n',
+        stderr: "",
+        exitCode: 0,
+        reason: "",
+      })
       expect(
         runner.requests.map(({ method, url, authorization }) => ({ method, url, authorization })),
       ).toEqual([
@@ -104,9 +109,21 @@ describe("durable dead-letters", () => {
       })
 
       for (const [args, reason, message] of [
-        [["e1", "--actor", "CliPager/p1", "--url", "u", "--tenant", "t"], "MissingOption", 'Missing required flag: --reason'],
-        [["e1", "--url", "u", "--tenant", "t", "--reason", "r"], "MissingOption", 'Missing required flag: --actor'],
-        [["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"], "InvalidValue", 'Invalid value for flag --actor: "CliPager". Expected: an actor named as <Type>/<id>'],
+        [
+          ["e1", "--actor", "CliPager/p1", "--url", "u", "--tenant", "t"],
+          "MissingOption",
+          "Missing required flag: --reason",
+        ],
+        [
+          ["e1", "--url", "u", "--tenant", "t", "--reason", "r"],
+          "MissingOption",
+          "Missing required flag: --actor",
+        ],
+        [
+          ["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"],
+          "InvalidValue",
+          'Invalid value for flag --actor: "CliPager". Expected: an actor named as <Type>/<id>',
+        ],
       ] as const) {
         const refused = yield* runCli(["dead-letters", "retry", ...args])
 

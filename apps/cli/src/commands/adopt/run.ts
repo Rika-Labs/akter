@@ -222,7 +222,10 @@ export const observeCommand = Command.make(
   (options) =>
     Effect.gen(function* () {
       if ((Option.isSome(options.since) || options.clear) && !options.report)
-        return yield* fail({ reason: "UsageError", message: "--since and --clear belong to observe --report" })
+        return yield* fail({
+          reason: "UsageError",
+          message: "--since and --clear belong to observe --report",
+        })
 
       const nowMs = yield* Clock.currentTimeMillis
 

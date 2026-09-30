@@ -134,11 +134,20 @@ export const listCommand = Command.make("list", flags, (options) =>
   }).pipe(
     Effect.catchTags({
       RunnerUnreachable: (error) =>
-        fail({ reason: error._tag, message: `Cannot read defects from ${error.url}: ${error.message}` }),
+        fail({
+          reason: error._tag,
+          message: `Cannot read defects from ${error.url}: ${error.message}`,
+        }),
       OperatorRefused: (error) =>
-        fail({ reason: error._tag, message: `Refused (${error.status}): ${error.body}`, exitCode: 1 }),
-      SchemaError: (error) => fail({ reason: error._tag, message: `Unexpected answer: ${error.message}` }),
-      ConfigError: (error) => fail({ reason: error._tag, message: `Cannot read the operator token: ${error.message}` }),
+        fail({
+          reason: error._tag,
+          message: `Refused (${error.status}): ${error.body}`,
+          exitCode: 1,
+        }),
+      SchemaError: (error) =>
+        fail({ reason: error._tag, message: `Unexpected answer: ${error.message}` }),
+      ConfigError: (error) =>
+        fail({ reason: error._tag, message: `Cannot read the operator token: ${error.message}` }),
     }),
   ),
 ).pipe(

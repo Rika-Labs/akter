@@ -47,17 +47,34 @@ describe("durable subscriptions list --lagging", () => {
         "5",
       ])
 
-      expect(listed).toEqual({ stdout: "no lagging subscriptions\n", stderr: "", exitCode: 0, reason: "" })
+      expect(listed).toEqual({
+        stdout: "no lagging subscriptions\n",
+        stderr: "",
+        exitCode: 0,
+        reason: "",
+      })
       expect(runner.requests.map(({ url }) => url)).toEqual([
         "http://a/operator/subscriptions/lagging?tenant=t&minAttempts=3&limit=5",
       ])
 
       for (const [args, reason, message] of [
-        [["--url", "u", "--tenant", "t"], "MissingOption", 'Missing required flag: --lagging'],
-        [["--lagging", "--url", "u"], "MissingOption", 'Missing required flag: --tenant'],
-        [["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"], "InvalidValue", 'Invalid value for flag --min-attempts: "0"'],
-        [["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"], "InvalidValue", 'Invalid value for flag --limit: "1001"'],
-        [["--lagging", "--url", "u", "--tenant", "t", "extra"], "UnexpectedArgument", 'Unexpected positional argument: "extra"'],
+        [["--url", "u", "--tenant", "t"], "MissingOption", "Missing required flag: --lagging"],
+        [["--lagging", "--url", "u"], "MissingOption", "Missing required flag: --tenant"],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"],
+          "InvalidValue",
+          'Invalid value for flag --min-attempts: "0"',
+        ],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"],
+          "InvalidValue",
+          'Invalid value for flag --limit: "1001"',
+        ],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "extra"],
+          "UnexpectedArgument",
+          'Unexpected positional argument: "extra"',
+        ],
       ] as const) {
         const refused = yield* runCli(["subscriptions", "list", ...args])
 

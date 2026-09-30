@@ -82,7 +82,10 @@ export const createCommand = Command.make("create", flags, (options) =>
     Effect.catchTags({
       UsageError: (error) => fail({ reason: error._tag, message: error.message }),
       ActorError: (error) =>
-        fail({ reason: error._tag, message: `durable tenants create failed: ${error.reason._tag}` }),
+        fail({
+          reason: error._tag,
+          message: `durable tenants create failed: ${error.reason._tag}`,
+        }),
     }),
   ),
 ).pipe(

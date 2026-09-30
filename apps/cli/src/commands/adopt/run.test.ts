@@ -115,13 +115,19 @@ describe("durable adopt arguments", () => {
         [["plan", "--report", ...base], "UnrecognizedOption", "Unrecognized flag: --report"],
         [
           ["observe", "t", "--since", "7d", ...base],
-          "UsageError", "--since and --clear belong to observe --report",
+          "UsageError",
+          "--since and --clear belong to observe --report",
         ],
         [["plan", "--batch", "5", ...base], "UnrecognizedOption", "Unrecognized flag: --batch"],
-        [["backfill", "t", "--batch", "0", ...base], "InvalidValue", 'Invalid value for flag --batch: "0"'],
+        [
+          ["backfill", "t", "--batch", "0", ...base],
+          "InvalidValue",
+          'Invalid value for flag --batch: "0"',
+        ],
         [
           ["observe", "t", "--report", "--since", "week", ...base],
-          "InvalidValue", 'Invalid value for flag --since: "week"',
+          "InvalidValue",
+          'Invalid value for flag --since: "week"',
         ],
         [["plan", "--force", ...base], "UnrecognizedOption", "Unrecognized flag: --force"],
       ] as const) {
@@ -206,7 +212,10 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
           actors,
         })
 
-        expect(observed).toEqual({ output: "public.cli_invoices is observing", exitCode: 0, reason: "" })
+        expect(observed).toEqual({
+          output: "public.cli_invoices is observing",
+          exitCode: 0,
+        })
 
         yield* sql`UPDATE cli_invoices SET amount = 5 WHERE org_id = 'acme'`
         yield* sql`DELETE FROM cli_invoices WHERE id = 'i3'`

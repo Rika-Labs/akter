@@ -1,10 +1,11 @@
 import { Actor, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
-import { Context, Effect, Exit, Fiber, FileSystem, Layer, Schedule, Schema } from "effect"
+import { Context, Effect, Fiber, FileSystem, Layer, Schedule, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
+import { UsageError } from "../../failure.ts"
 import { runCli, startCli } from "../../testing.ts"
 import { INSPECTOR_PATH, appOf, devRoutes } from "./run.ts"
 
@@ -73,13 +74,22 @@ describe("durable dev", () => {
 
         for (const [args, reason, message] of [
           [[], "MissingOption", "Missing required flag: --entry"],
-          [["--entry"], "MissingOption", "Missing value for flag --entry"],
+          [["--entry"], "InvalidValue", "Missing value for flag --entry"],
           [["--entry", entry, "--json"], "UnrecognizedOption", "Unrecognized flag: --json"],
-          [["--entry", entry, "--port", "70000"], "InvalidValue", 'Invalid value for flag --port: "70000"'],
-          [["--entry", entry, "--port", "1.5"], "InvalidValue", 'Invalid value for flag --port: "1.5"'],
+          [
+            ["--entry", entry, "--port", "70000"],
+            "InvalidValue",
+            'Invalid value for flag --port: "70000"',
+          ],
+          [
+            ["--entry", entry, "--port", "1.5"],
+            "InvalidValue",
+            'Invalid value for flag --port: "1.5"',
+          ],
           [
             ["--entry", entry, "--database-url", "postgres://x", "--data-dir", directory],
-            "UsageError", "--data-dir is for PGlite; drop it or --database-url",
+            "UsageError",
+            "--data-dir is for PGlite; drop it or --database-url",
           ],
         ] as const) {
           const refused = yield* runCli(["dev", ...args])
@@ -98,10 +108,11 @@ describe("durable dev", () => {
       expect(yield* appOf({ module: { app }, entry: "app.ts" })).toBe(app)
 
       for (const module of [{}, { app: () => app }, { routes: app }])
-        expect(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.flip)).toMatchObject({
-          _tag: "UsageError",
-          message: "app.ts must export `app`: a Layer of its routes that needs only the database",
-        })
+        expect(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.flip)).toEqual(
+          UsageError.make({
+            message: "app.ts must export `app`: a Layer of its routes that needs only the database",
+          }),
+        )
     }).pipe(Effect.runPromise))
 
   it("serves the app's commands and an inspector that reads only its tenant", () =>
