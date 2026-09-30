@@ -48,18 +48,20 @@ An owner requests cross-scope edits rather than applying a broad repository-wide
 
 ### Execution ledger
 
-| Workstream                | Initial state          | Completion evidence required                                                                                                                   |
-| ------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foundation and policy     | In progress            | Tracked plan, accepted superseding ADR and AGENTS policy; published shared baseline                                                            |
-| Actor API/compiler        | Pending dispatch       | A1–A10 decisions, direct constructors, inferred layers, browser-safe descriptor, negative types and complete consumer migration                |
-| Testing/evidence          | Pending dispatch       | T1–T5/T8 decisions, collected-case parity, honest provider metadata, interruptible cleanup and rejected always-throwing reducer                |
-| Protocol/clients          | Pending dispatch       | C1–C10/T6/T7 decisions, CRLF/end-ID regression, protocol parity and browser/session evidence                                                   |
-| Tooling/scaffolds         | Pending dispatch       | G1–G5/G7–G10/T7 decisions, removed duplicate engines/facts, checked docs and packed generated projects                                         |
-| Turn/activation           | Pending dispatch       | R1–R5/R8 decisions, real Postgres fence/commit/cancellation evidence and no material pipeline regression                                       |
-| Job/subscription delivery | Pending dispatch       | R6–R7/R12 decisions, canonical job storage, guarded late/cancel settlement and epoch/summary evidence                                          |
-| Workflow                  | Pending dispatch       | R9–R10 decisions, no quiescence spin loop, shared verdicts and simultaneous park/resume evidence                                               |
-| Connections and CLI       | Pending implementation | R11/G6 decisions, preserved sequencing/session authority and server-derived inspection schemas                                                 |
-| Integration and delivery  | Pending implementation | Complete candidate accounting, exact-tree root/provider/E2E/package checks, before/after measurements, current-SHA CI and merged remote `main` |
+| Workstream                | Initial state          | Completion evidence required                                                                                                                                           |
+| ------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Foundation and policy     | Published              | Shared foundation: tracked plan, accepted ADR and AGENTS policy; all 85 root-check tasks and the 513-file tarball check passed                                         |
+| Actor API/compiler        | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-a816-7506-ba83-fe1b51ff7d28): A1–A10, direct constructors, inferred layers, descriptor and negative types     |
+| Testing/evidence          | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-b1d8-7783-9618-62790e1b640f): T1–T5/T8, case parity, provider metadata, cleanup and reducer-law falsification |
+| Protocol/clients          | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-bbc8-7251-a7a1-759982633bb6): C1–C10/T6/T7, CRLF/end-ID regression, parity and browser/session evidence       |
+| Tooling/scaffolds         | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-c720-7773-85ce-16136794ff06): G1–G5/G7–G10/T7, duplicate engines/facts, checked docs and packed scaffolds     |
+| Turn/activation           | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-d108-7329-9119-f069a7a48159): R1–R5/R8, real Postgres fence/commit/cancellation and pipeline evidence         |
+| Job/subscription delivery | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-d9a6-7097-8720-b1acdcc6374f): R6–R7/R12, job storage, late/cancel settlement and epoch/summary evidence       |
+| Workflow                  | Implementing           | [High-mode owner](https://ampcode.com/threads/T-01a0f3f6-e397-768e-8406-2bc1f19d6556): R9–R10, quiescence, shared verdicts and simultaneous park/resume evidence       |
+| Connections and CLI       | Implementing           | Coordinator: R11/G6, preserved sequencing/session authority and browser-safe shared inspection response schemas                                                        |
+| Integration and delivery  | Pending implementation | Complete candidate accounting, exact-tree root/provider/E2E/package checks, before/after measurements, current-SHA CI and merged remote `main`                         |
+
+Early interface agreements preserve one ordered connection sequencer, move browser-safe wire facts into `src/protocol`, and expose serving as `Actors.serve` plus `Auth` on the existing runtime entry. Inspection schemas share that browser-safe protocol owner and are exported through the existing client entry; the dev inspector must not import runtime or serve modules. The job migration preserves durable identity values, and peer edits to shared seams are isolated from substantive changes for integration.
 
 ### Final proof and merge criteria
 
@@ -311,7 +313,7 @@ const Counter = Actor.make("Counter", {
 const CounterLive = Counter.toLayer({
   Increment: Effect.fnUntraced(function* (amount: number) {
     const turn = yield* Counter.Turn
-    const count = yield* turn.state.count.get()
+    const count = turn.state.count
     yield* turn.state.set({ count: count + amount })
     return count + amount
   }),
