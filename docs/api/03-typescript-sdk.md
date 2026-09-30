@@ -44,6 +44,18 @@ Commands, queries, and optimistic reducers over HTTP are implemented, and so are
 
 `state` is a reserved member tag, like `ref`.
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Result, Schema } from "effect"
+class TooMany extends Schema.TaggedError<TooMany>()("TooMany", {}) {}
+const TallyState = Actor.state({ count: Schema.Int })
+const Add = Actor.reducer("Add", { state: TallyState, input: Schema.Struct({ by: Schema.Int }), errors: [TooMany], reduce: (state, { by }) => (state.count + by > 10 ? Result.fail(new TooMany()) : Result.succeed({ count: state.count + by })) })
+const Snapshot = Actor.query("Snapshot", { output: Schema.Struct({ count: Schema.Int }) })
+const Tally = Actor.make("Tally", { key: Schema.String, state: TallyState, api: { Add, Snapshot } })
+const tallies = Tally.client({ baseUrl: "/api" })
+declare const render: (state: { readonly count: number } | undefined) => void
+-->
+
 ```ts
 const tally = tallies.get("t1")
 tally.state.reconcile(await tally.Snapshot())
@@ -51,6 +63,20 @@ const unsubscribe = tally.state.subscribe((state) => render(state))
 const reply = tally.Add({ by: 2 }) // tally.state.current shows the +2 now
 await reply // committed state from the reply; or throws TooMany and rolls back
 ```
+
+<!-- snippet module=room/contract.ts
+import { Actor } from "@durable-actors/core"
+import { Schema } from "effect"
+export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
+export const Post = Actor.command("Post", { input: Schema.Struct({ body: Schema.String }), output: Schema.String })
+export const History = Actor.query("History", { input: Schema.Struct({}), output: Schema.Array(Schema.String) })
+export const Room = Actor.make("Room", { key: RoomId, api: { Post, History } })
+-->
+
+<!-- snippet
+declare const token: () => string
+declare const signal: AbortSignal
+-->
 
 ```ts
 import { ActorError } from "@durable-actors/core/client"
@@ -104,12 +130,20 @@ The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
 
 `X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Name the database per signed-in user: commands saved under one name are delivered by any client that opens it.
 
+<!-- snippet
+import { Offline, type PendingCommand } from "@durable-actors/core/client"
+import { Room, RoomId } from "./room/contract.ts"
+declare const user: string
+declare const commandId: string
+declare const render: (pending: ReadonlyArray<PendingCommand>) => void
+-->
+
 ```ts
 const rooms = Room.client({ baseUrl: "/api", offline: Offline.indexedDb(`chat:${user}`) })
 const queue = rooms.offline! // undefined without `offline`
 
 queue.subscribe((pending) => render(pending)) // { commandId, target, member, input, status, failure }
-await rooms.get("lobby").Post({ body: "on a plane" }) // resolves once the server answers
+await rooms.get(RoomId.make("lobby")).Post({ body: "on a plane" }) // resolves once the server answers
 await queue.discard(commandId) // the only way to resolve an `expired` or `failed` command
 ```
 

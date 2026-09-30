@@ -11,13 +11,13 @@ Durable Actors should feel like Effect application development, not infrastructu
 
 ## The API ladder
 
-The following is accepted design notation, not a runnable example of the current scaffolded package:
+An actor is one definition and one layer of handlers:
 
 ```ts
 import { Effect, Schema } from "effect"
 import { Actor } from "@durable-actors/core"
 
-export const Reset = Actor.command("Reset", { description: "Reset the counter." })
+export const Reset = Actor.command("Reset")
 
 export const Counter = Actor.make("Counter", {
   state: Actor.state({ value: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),

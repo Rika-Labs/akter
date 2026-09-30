@@ -6,6 +6,8 @@
 
 ## Adopt a legacy table
 
+<!-- snippet target -->
+
 ```ts
 const InvoiceRows = Actor.table(existingInvoices, {
   owner: { tenant: existingInvoices.orgId, actor: existingInvoices.accountId },
@@ -21,6 +23,8 @@ Existing columns must be mapped and validated without relying on TypeScript for 
 
 ## Observe an actor-local query
 
+<!-- snippet target -->
+
 ```ts
 const room = Chat.client({ baseUrl }).get("room-42")
 for await (const page of room.Recent.watch({ limit: 50 })) render(page)
@@ -33,6 +37,8 @@ for await (const page of room.Recent.watch({ limit: 50 })) render(page)
 Shipped in M6.5: see [Offline queue](03-typescript-sdk.md#offline-queue-m65) and [ADR 0058](../decisions/0058-offline-command-queue.md).
 
 ## Version a workflow
+
+<!-- snippet target -->
 
 ```ts
 Ship: Effect.fn(function* (order) {
@@ -53,6 +59,8 @@ Ship: Effect.fn(function* (order) {
 
 ## Derive protocols
 
+<!-- snippet target -->
+
 ```ts
 Actor.serve({ actors: [ChatLive], auth: jwt(...), openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } })
 // generated Python client: proposed
@@ -62,6 +70,8 @@ MCP (shipped as `serve({ mcp })`, described in [generating clients](05-generated
 
 ## Serve cold
 
+<!-- snippet target -->
+
 ```ts
 export default Actor.serve.handler({ actors: [ChatLive], database: Database.postgres({ url }) })
 ```
@@ -69,6 +79,8 @@ export default Actor.serve.handler({ actors: [ChatLive], database: Database.post
 The handler is illustrative. A persistent edge must wake runners, recover due work, and terminate or reconnect sockets after gateway failure. Benchmark warm and cold turns separately.
 
 ## Generated apps
+
+<!-- snippet target -->
 
 ```ts
 const TodoList = Actor.make("TodoList", {

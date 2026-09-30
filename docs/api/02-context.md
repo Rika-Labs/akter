@@ -7,19 +7,46 @@
 
 Handlers take only their input. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
+<!-- snippet
+import { Actor, type ActorRef, type Caller } from "@durable-actors/core"
+import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
+import { Context, DateTime, Effect, Schema } from "effect"
+class RoomClosed extends Schema.TaggedError<RoomClosed>()("RoomClosed", {}) {}
+class NotAMember extends Schema.TaggedError<NotAMember>()("NotAMember", {}) {}
+class MessageAdded extends Actor.Event<MessageAdded>()("MessageAdded", { id: Schema.String, body: Schema.String }) {}
+const messages = Actor.table(pgTable("chat_messages", { id: text("id").primaryKey(), author_id: text("author_id").notNull(), body: text("body").notNull(), sent_at: timestamp("sent_at", { withTimezone: true }).notNull() }))
+const SendMessage = Actor.command("SendMessage", { input: Schema.Struct({ body: Schema.String }), output: Schema.String, errors: [NotAMember] })
+const Chat = Actor.make("Chat", { key: Schema.String, state: Actor.state({ closed: Schema.Boolean }), tables: [messages], events: [MessageAdded], api: { SendMessage } })
+class Access extends Context.Service<Access, { readonly requireMember: (caller: Caller, ref: ActorRef) => Effect.Effect<string, NotAMember> }>()("Access") {}
+-->
+
 ```ts
-SendMessage: Effect.fn(function* ({ body }) {
-  const turn = yield* Chat.Turn
-  yield* access.requireMember(turn.caller, turn.ref)
-  yield* turn
-    .rows(messages)
-    .insert({ id: turn.commandId, author_id: turn.caller.id, body, sent_at: yield* DateTime.now })
-  yield* turn.emit(new MessageAdded({ id: turn.commandId, body }))
-  return turn.commandId
-})
+export const ChatLive = Chat.toLayer(
+  Effect.gen(function* () {
+    const access = yield* Access
+    return {
+      SendMessage: Effect.fn(function* ({ body }) {
+        const turn = yield* Chat.Turn
+        const author = yield* access.requireMember(turn.caller, turn.ref)
+        yield* turn.rows(messages).insert({
+          id: turn.commandId,
+          author_id: author,
+          body,
+          sent_at: DateTime.toDateUtc(yield* DateTime.now),
+        })
+        yield* turn.emit(new MessageAdded({ id: turn.commandId, body }))
+        return turn.commandId
+      }),
+    }
+  }),
+)
 
 // A helper's requirement states where it may run.
-const requireOpen: Effect.Effect<void, RoomClosed, Chat.Turn> = Effect.gen(function* () {
+const requireOpen: Effect.Effect<
+  void,
+  RoomClosed,
+  Context.Service.Identifier<typeof Chat.Turn>
+> = Effect.gen(function* () {
   const turn = yield* Chat.Turn
   if (turn.state.closed) return yield* new RoomClosed()
 })
@@ -49,17 +76,46 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 
 `turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`, `delete`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes. For an `Actor.content` blob (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)), `turn.blob(C)` returns `ContentWrite`: `attach(name, ref)`, `detach(name)`, and `list`, an Effect of the references by name. `read.blob(C)` returns `ContentRead`: `get(name)`, `stream(name)`, and `list`. Turns never see content bytes. `attach` checks the grant's MAC without a read and requires it to stay valid for the skew margin past the actor shard's clock, failing `InvalidContentRef` otherwise; a reference with an existing name replaces it, and references count against `policy.maxBlobEntries` with the actor's own entries. `get` returns `Option.none()` for a missing name, and so does a read whose content a sweep removed after the name resolved; it never returns partial bytes. `stream` reads every chunk from one `REPEATABLE READ` snapshot held for at most `commandTimeout` and fails with `NoSuchElementError` before any chunk for a missing name.
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Effect, Option, Schema } from "effect"
+-->
+
 ```ts
 const Attachments = Actor.blob("attachments")
 
-// in a command handler
-const files = (yield * Room.Turn).blob(Attachments)
-yield * files.set(id, bytes)
-yield * files.append("log", line) // a new chunk; earlier chunks are not rewritten
-yield * files.compact("log") // one chunk, same bytes
+const Attach = Actor.command("Attach", {
+  input: Schema.Struct({ id: Schema.String, bytes: Schema.Uint8Array, line: Schema.Uint8Array }),
+})
+const Download = Actor.query("Download", {
+  input: Schema.String,
+  output: Schema.Option(Schema.Uint8Array),
+})
+const Room = Actor.make("Room", {
+  key: Schema.String,
+  blobs: [Attachments],
+  api: { Attach, Download },
+})
 
-// in a query handler
-const file = yield * (yield * Room.Read).blob(Attachments).get(id)
+export const RoomLive = Room.toLayer(
+  Effect.succeed({
+    Attach: Effect.fn(function* ({ id, bytes, line }) {
+      const files = (yield* Room.Turn).blob(Attachments)
+      yield* files.set(id, bytes)
+      yield* files.append("log", line) // a new chunk; earlier chunks are not rewritten
+      yield* files.compact("log") // one chunk, same bytes
+    }),
+  }),
+)
+
+export const RoomReads = Room.toQueryLayer(
+  Effect.succeed({
+    Download: Effect.fn(function* (id) {
+      const file: Option.Option<Uint8Array> = yield* (yield* Room.Read).blob(Attachments).get(id)
+      return file
+    }),
+  }),
+)
 ```
 
 ## Command turns
@@ -86,6 +142,10 @@ Unhandled declared failures roll back business changes and staged notifications 
 `turn.emit(event)` takes an instance of a class declared in the actor's `events`; any other class fails to compile, and an undeclared or invalid value is a defect at runtime. The event is encoded when emitted and appended in the turn's own transaction, so a declared failure, a defect, or a crash before COMMIT leaves no event. Each committed event gets the next number in its actor's sequence, reserved on the locked generation row, so the sequence has no gaps or reuse even after pruning.
 
 `read.events(Event, { after })` returns the committed events of one declared class after the exclusive cursor, oldest first, as `EventEntry` values:
+
+<!-- snippet
+import type { DateTime } from "effect"
+-->
 
 ```ts
 interface EventEntry<E> {
