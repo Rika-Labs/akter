@@ -49,8 +49,8 @@ export const manifestOf = Effect.fnUntraced(function* (actorType: string, member
 
   const manifest: Manifest = {
     workflow: member.tag,
-    input: fingerprintOf([member.input]),
-    output: fingerprintOf([member.output, ...member.errors]),
+    input: fingerprintOf([member.payload]),
+    output: fingerprintOf([member.success, member.error]),
     steps: [...member.registry.steps.values()].map((step) => ({
       name: step.name,
       kind: step.kind,

@@ -71,7 +71,7 @@ export interface BlobScope extends Omit<TableScope, "tables"> {
   readonly maxBytes: number
   /** Entries and content references of all the actor's blobs together: `policy.maxBlobEntries`. */
   readonly maxEntries: number
-  /** `commandTimeout`: how long a content stream may hold its snapshot. */
+  /** `executionTimeout`: how long a content stream may hold its snapshot. */
   readonly timeoutMs: number
 }
 
