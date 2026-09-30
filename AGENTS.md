@@ -40,3 +40,9 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 ## Verification
 
 Use the repository commands in `package.json`. Prefer real Postgres for concurrency, fencing, ownership, and recovery tests. Do not claim Neki or provider behavior without provider-specific evidence.
+
+- Prefer a small set of integration/E2E scenarios through the real public API and storage. Exercise rollback, interruption, retry, restart, stale ownership and denied access where relevant; assert the resulting state and obligations, not just successful execution.
+- Before adding a test, name the plausible wrong implementation it must reject. Derive expected values independently; use asymmetric inputs and both sides of important boundaries.
+- Keep focused type, algebraic, protocol and packaging tests when integration/E2E cannot establish that contract. Do not mock the boundary whose behavior the test claims to prove.
+- Consolidate fixtures and duplicate scenarios first. Delete a behavioral test only after identifying surviving evidence that rejects the same mistake; preserve distinct provider and failure-path evidence.
+- Never weaken assertions, hide failures, skip cases, or change production behavior merely to make tests green. An intentional contract change needs independently justified expectations. Missing evidence is unknown, not a pass; test counts and coverage percentages are not the objective.
