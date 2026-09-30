@@ -9,14 +9,23 @@ export interface AccessRequest {
   /**
    * What is being asked: `command` for commands and reducers, `query` for
    * queries, `open` for a connection, `stream` for a stream, `feed` for an
-   * event feed (with `command` set to the event tag), `reauthorize` for a live
+   * event feed (with `command` set to the event tag), `watch` for a query
+   * watch (with `command` set to the query tag), `reauthorize` for a live
    * session's periodic check, and `content` for a content operation on the
    * actor, with `command` set to `<blob>.grant` or `<blob>.get`. A policy
    * should deny kinds it does not know.
    */
-  readonly kind: "command" | "query" | "open" | "stream" | "feed" | "reauthorize" | "content"
-  /** On `reauthorize`, what the session is: an `open` connection, a `stream`, or a `feed`. */
-  readonly of?: "open" | "stream" | "feed"
+  readonly kind:
+    | "command"
+    | "query"
+    | "open"
+    | "stream"
+    | "feed"
+    | "watch"
+    | "reauthorize"
+    | "content"
+  /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, or a `watch`. */
+  readonly of?: "open" | "stream" | "feed" | "watch"
 }
 
 /**

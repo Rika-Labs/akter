@@ -281,6 +281,10 @@ const prepared = (
     return { target, role, viewOwner }
   })
 
+/** A fresh database for `environment`, migrated with the owned tables and a new tenant role, as row-level security cases need. */
+export const preparedForRowLevelSecurity = (environment: ConformanceEnvironment) =>
+  prepared(environment)
+
 const runtimeOn = (target: Target, role: string, replica?: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto

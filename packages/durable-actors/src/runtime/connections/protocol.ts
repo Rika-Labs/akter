@@ -10,6 +10,35 @@ import { ActorRef, Caller } from "../../identity/caller.ts"
  */
 export const FEED_MEMBER = "$feed"
 
+/** The prefix of the framework connection member a query watch opens; the watched query's tag follows. */
+export const WATCH_PREFIX = "$watch:"
+
+/** The framework connection member that watches `query`. `$` can't start a declared member's tag, so it never collides with one. */
+export const watchMember = (query: string) => `${WATCH_PREFIX}${query}`
+
+/** Whether `member` is a framework watch connection. */
+export const isWatchMember = (member: string) => member.startsWith(WATCH_PREFIX)
+
+/** The query a framework watch member watches. */
+export const watchedQuery = (member: string) => member.slice(WATCH_PREFIX.length)
+
+/** What one commit wrote: whether it changed state, and the event classes, tables, and blobs it wrote. */
+export const WriteSet = Schema.Struct({
+  state: Schema.Boolean,
+  events: Schema.Array(Schema.String),
+  tables: Schema.Array(Schema.String),
+  blobs: Schema.Array(Schema.String),
+})
+
+/** What one commit wrote. */
+export type WriteSet = typeof WriteSet.Type
+
+/** The frame an owner broadcasts to an actor's watches after each commit: the commit's version and its write set. */
+export const Committed = Schema.Struct({ version: Schema.String, writes: WriteSet })
+
+/** A decoded `Committed` frame. */
+export type Committed = typeof Committed.Type
+
 /** One committed feed event as its owner broadcasts it; `value` is the stored encoding. */
 export const FeedFrame = Schema.Struct({
   tag: Schema.String,

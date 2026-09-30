@@ -49,7 +49,10 @@ const InputIssue = Schema.Struct({ path: Schema.String, message: Schema.String }
 
 /**
  * A served request the boundary refused before any turn. Never in a typed
- * in-process handle's error channel.
+ * in-process handle's error channel. A served watch ends with `not_watchable`
+ * when a rerun reads something no commit signal covers, such as its placement
+ * group, and a watch request for a query not declared `watch: true` is refused
+ * with it; an in-process watch dies with it instead.
  */
 export class InvalidInput extends Schema.TaggedError<InvalidInput>()("InvalidInput", {
   code: Schema.Literals([
@@ -64,6 +67,7 @@ export class InvalidInput extends Schema.TaggedError<InvalidInput>()("InvalidInp
     "unknown_event",
     "too_many_filters",
     "unknown_content",
+    "not_watchable",
   ]),
   issues: Schema.optionalKey(Schema.Array(InputIssue)),
 }) {}
