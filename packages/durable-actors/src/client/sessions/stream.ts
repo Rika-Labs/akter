@@ -1,8 +1,14 @@
 import { Effect, Option, Queue, Schema, Stream } from "effect"
 import type { ServedMember } from "../../actor/served.ts"
 import type { ValueSchema } from "../../members/command.ts"
-import { parse } from "./feed.ts"
-import { decodeFailure, type Failure, networkFailure, undecodableFailure } from "../transport.ts"
+import { readEvents } from "./feed.ts"
+import {
+  aborted,
+  decodeFailure,
+  type Failure,
+  networkFailure,
+  undecodableFailure,
+} from "../transport.ts"
 
 /** Options of one stream subscription. */
 export interface StreamOptions {
@@ -43,33 +49,17 @@ export const subscription = ({
       const failureOf = (text: string, status: number) =>
         decodeFailure(declared)({ status, headers: new Headers(), text, sentAt: 0 })
 
-      const response = yield* open(yield* Effect.abortSignal)
-
-      if (response.status !== 200) {
-        const text = yield* Effect.tryPromise({ try: () => response.text(), catch: networkFailure })
-
-        return yield* failureOf(text, response.status)
-      }
-
-      if (response.body === null) return yield* undecodableFailure()
-
-      const reader = response.body.getReader()
-
-      yield* Effect.addFinalizer(() => Effect.promise(() => reader.cancel().catch(() => undefined)))
-
-      const text = new TextDecoder()
-      let buffer = ""
+      const { next } = yield* readEvents({
+        response: yield* open(yield* Effect.abortSignal),
+        refused: failureOf,
+      })
 
       while (true) {
-        const chunk = yield* Effect.tryPromise({ try: () => reader.read(), catch: networkFailure })
+        const messages = yield* next
 
-        if (chunk.done) return yield* networkFailure()
+        if (messages === undefined) return yield* networkFailure()
 
-        buffer += text.decode(chunk.value, { stream: true })
-        const parsed = parse(buffer)
-        buffer = parsed.rest
-
-        for (const message of parsed.messages) {
+        for (const message of messages) {
           if (message.event === "end") {
             const body = yield* decodeJson(message.data).pipe(Effect.mapError(undecodableFailure))
 
@@ -90,19 +80,4 @@ export const subscription = ({
       Effect.catch((failure) => Queue.fail(out, failure)),
       Effect.andThen(Queue.end(out)),
     ),
-  ).pipe(
-    Stream.interruptWhen(
-      Effect.callback<void>((resume) => {
-        const signal = options.signal
-
-        if (signal === undefined) return
-
-        if (signal.aborted) return resume(Effect.void)
-
-        const onAbort = () => resume(Effect.void)
-        signal.addEventListener("abort", onAbort, { once: true })
-
-        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
-      }),
-    ),
-  )
+  ).pipe(Stream.interruptWhen(aborted(options.signal)))

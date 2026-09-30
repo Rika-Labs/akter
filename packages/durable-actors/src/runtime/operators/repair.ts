@@ -1,6 +1,6 @@
 import { Context, type Crypto, Effect, Option, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { RegisteredEffect } from "../../handles/actors.ts"
+import type { RegisteredEffect } from "../members.ts"
 import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import * as Queries from "../inspector/queries.ts"
@@ -164,7 +164,8 @@ export const operatorRuntime = (deps: {
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
   readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
   readonly wake: Effect.Effect<void>
-  readonly role: string | undefined
+  /** The tenant and adoption writer roles the operator's turns take, as the runtime's own turns do. */
+  readonly tenantScope: ReferenceOf<typeof TenantScope>
 }) => {
   const placement = (actorType: string) =>
     recordedPlacement(actorType).pipe(
@@ -194,7 +195,7 @@ export const operatorRuntime = (deps: {
       Effect.catchIf(SqlError.isSqlError, Effect.die),
       Effect.provideService(FrameworkClock, deps.clock),
       Effect.provideService(OutboxRuntime, deps.outbox),
-      Effect.provideService(TenantScope, { role: deps.role }),
+      Effect.provideService(TenantScope, deps.tenantScope),
       Effect.provideContext(deps.services),
     )
 

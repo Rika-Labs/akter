@@ -29,7 +29,8 @@ import {
   RunnerAtCapacity,
   Unauthorized,
 } from "../errors/actor.ts"
-import { InternalActors, Outcome, Request } from "../handles/actors.ts"
+import { InternalActors } from "../runtime/actors.ts"
+import { Outcome, Request } from "../runtime/request.ts"
 import { ContentStore } from "../handles/content.ts"
 import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"
@@ -146,13 +147,11 @@ const QUOTED = /^"(.*)"$/
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true })
 
-const decodeBody = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 const decodeSuccess = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ value: Schema.optionalKey(Schema.Json) })),
 )
-
-const decodeDeclared = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 const utf8 = new TextEncoder()
 
@@ -239,6 +238,13 @@ const offeredProtocols = (request: HttpServerRequest.HttpServerRequest) =>
   })
 
 /** A connection route answers only a WebSocket upgrade that offers our subprotocol first, which the server then selects. */
+/** A server-sent event response that proxies must neither cache nor buffer. */
+const eventStream = <E>(body: Stream.Stream<Uint8Array, E>) =>
+  HttpServerResponse.stream(body, {
+    contentType: "text/event-stream",
+    headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
+  })
+
 const isConnectionUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
   Option.exists(
     Headers.get(request.headers, "upgrade"),
@@ -573,7 +579,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             catch: () => invalidInput("decode"),
           })
 
-          return yield* decodeBody(text).pipe(Effect.mapError((error) => undecodable(error)))
+          return yield* decodeJson(text).pipe(Effect.mapError((error) => undecodable(error)))
         })
 
       const refuseBinding = ActorError.make({
@@ -602,6 +608,17 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               ),
             )
 
+      /** Checks a route that ignores its body against the credential's binding, reading the body only when bound. */
+      const checkUnreadBody = (
+        authenticated: Authenticated,
+        request: HttpServerRequest.HttpServerRequest,
+      ) =>
+        authenticated.binding === undefined
+          ? Effect.void
+          : readBytes(request).pipe(
+              Effect.flatMap((body) => checkBinding(authenticated, request, body)),
+            )
+
       const checkRenewal = (
         authenticated: Authenticated,
         request: HttpServerRequest.HttpServerRequest,
@@ -620,6 +637,27 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       }
 
       const empty = new Uint8Array(0)
+
+      /** Reads a request body a JSON content type or none allows, checked against the credential's binding. */
+      const readBound = (
+        request: HttpServerRequest.HttpServerRequest,
+        authenticated: Authenticated,
+      ) =>
+        Effect.gen(function* () {
+          const type = Headers.get(request.headers, "content-type")
+
+          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+            return yield* invalidInput("unsupported_media_type")
+
+          const body = yield* readBytes(request)
+
+          yield* checkBinding(authenticated, request, body)
+
+          return body
+        })
+
+      const refOf = (definition: ServedDefinition, id: string, authenticated: Authenticated) =>
+        ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
 
       const commandId = (request: HttpServerRequest.HttpServerRequest) => {
         const header = Headers.get(request.headers, "idempotency-key")
@@ -667,7 +705,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               Effect.gen(function* () {
                 const status = yield* member.failureStatus(failure.value)
 
-                return { ok: false, status, body: yield* decodeDeclared(failure.value) } as const
+                return { ok: false, status, body: yield* decodeJson(failure.value) } as const
               }).pipe(Effect.orDie),
             Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
             Acknowledged: (acknowledged) =>
@@ -690,11 +728,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           .pipe(Effect.mapError((error) => undecodable(error)))
 
         const call = Request.make({
-          ref: ActorRef.make({
-            tenant: authenticated.tenant,
-            actor: definition.name,
-            id: input.id,
-          }),
+          ref: refOf(definition, input.id, authenticated),
           caller: authenticated.caller,
           command: member.tag,
           commandId: input.commandId,
@@ -727,14 +761,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           if (key === undefined) return yield* invalidInput("missing_command_id")
 
-          const type = Headers.get(request.headers, "content-type")
-
-          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
-            return yield* invalidInput("unsupported_media_type")
-
-          const bytes = yield* readBytes(request)
-
-          yield* checkBinding(authenticated, request, bytes)
+          const bytes = yield* readBound(request, authenticated)
 
           const { outcome, version } = yield* runMember({
             definition,
@@ -792,14 +819,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
           const authenticated = yield* authenticate(request)
-          const type = Headers.get(request.headers, "content-type")
-
-          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
-            return yield* invalidInput("unsupported_media_type")
-
-          const bytes = yield* readBytes(request)
-
-          yield* checkBinding(authenticated, request, bytes)
+          const bytes = yield* readBound(request, authenticated)
           const body = yield* decodeJsonBody(request, bytes)
 
           const payload = yield* member
@@ -808,7 +828,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           const elements = actors.subscribe(
             Request.make({
-              ref: ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id }),
+              ref: refOf(definition, id, authenticated),
               caller: authenticated.caller,
               command: member.tag,
               commandId: "",
@@ -816,10 +836,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             }),
           )
 
-          return HttpServerResponse.stream(streamResponse(elements), {
-            contentType: "text/event-stream",
-            headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
-          })
+          return elements.pipe(streamResponse, eventStream)
         })
 
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
@@ -898,7 +915,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const authenticated = yield* authenticate(request)
 
           yield* checkBinding(authenticated, request, empty)
-          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const ref = refOf(definition, id, authenticated)
 
           if (!(yield* actors.exists(ref)))
             return yield* ActorError.make({ reason: NotCreated.make({}) })
@@ -932,10 +949,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             return HttpServerResponse.jsonUnsafe(body, { status: checked.status })
           }
 
-          return HttpServerResponse.stream(feedStream({ options, first: held, after }), {
-            contentType: "text/event-stream",
-            headers: { "cache-control": "no-cache", "x-accel-buffering": "no" },
-          })
+          return eventStream(feedStream({ options, first: held, after }))
         })
 
       const uploadHandler = (store: ContentStore["Service"]) =>
@@ -988,10 +1002,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const { blob, name } = yield* contentParams(definition)
           const authenticated = yield* authenticate(request)
 
-          if (authenticated.binding !== undefined)
-            yield* checkBinding(authenticated, request, yield* readBytes(request))
+          yield* checkUnreadBody(authenticated, request)
 
-          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const ref = refOf(definition, id, authenticated)
           const found = yield* store.download(ref, authenticated.caller, blob, name)
 
           if (Option.isNone(found)) return yield* invalidInput("unknown_content")
@@ -1008,10 +1021,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const { blob, name } = yield* contentParams(definition)
           const authenticated = yield* authenticate(request)
 
-          if (authenticated.binding !== undefined)
-            yield* checkBinding(authenticated, request, yield* readBytes(request))
+          yield* checkUnreadBody(authenticated, request)
 
-          const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
+          const ref = refOf(definition, id, authenticated)
           const granted = yield* store.grant(ref, authenticated.caller, blob, name)
 
           if (Option.isNone(granted)) return yield* invalidInput("unknown_content")
@@ -1029,118 +1041,96 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return key === undefined ? {} : { "x-request-id": key }
         }
 
-      for (const definition of definitions)
+      const route = (
+        method: Parameters<typeof router.add>[0],
+        path: string,
+        handler: Parameters<typeof respond>[0],
+        headers?: Parameters<typeof respond>[1],
+      ) =>
+        router.add(method, `${basePath}${path}` as HttpRouter.PathInput, respond(handler, headers))
+
+      for (const definition of definitions) {
         for (const member of definition.members)
-          yield* router.add(
+          yield* route(
             "POST",
-            `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
-            respond(memberHandler(definition, member), requestId(member)),
+            memberPath({ definition, member }),
+            memberHandler(definition, member),
+            requestId(member),
           )
 
-      for (const definition of definitions)
         for (const member of definition.streams)
-          yield* router.add(
+          yield* route(
             "POST",
-            `${basePath}${memberPath({ definition, member })}` as HttpRouter.PathInput,
-            respond(streamHandler(definition, member)),
+            memberPath({ definition, member }),
+            streamHandler(definition, member),
           )
 
-      for (const definition of definitions)
         if (definition.feeds.length > 0)
-          yield* router.add(
+          yield* route(
             "GET",
-            `${basePath}${memberPath({ definition, member: { tag: FEED_ROUTE } })}` as HttpRouter.PathInput,
-            respond(feedHandler(definition)),
+            memberPath({ definition, member: { tag: FEED_ROUTE } }),
+            feedHandler(definition),
           )
 
-      for (const definition of definitions)
         for (const connection of definition.connections)
-          yield* router.add(
+          yield* route(
             "GET",
-            `${basePath}${memberPath({ definition, member: connection })}` as HttpRouter.PathInput,
-            respond(connectionHandler(definition, connection)),
+            memberPath({ definition, member: connection }),
+            connectionHandler(definition, connection),
           )
+      }
 
       if (Option.isSome(contentStore)) {
         const store = contentStore.value
 
-        yield* router.add(
-          "POST",
-          `${basePath}/content` as HttpRouter.PathInput,
-          respond(uploadHandler(store)),
-        )
+        yield* route("POST", "/content", uploadHandler(store))
 
         for (const definition of definitions)
           if (definition.contents.length > 0) {
-            const entry = `${basePath}${memberPath({ definition, member: { tag: CONTENT_ROUTE } })}/:blob/:name`
+            const entry = `${memberPath({ definition, member: { tag: CONTENT_ROUTE } })}/:blob/:name`
 
-            yield* router.add(
-              "GET",
-              entry as HttpRouter.PathInput,
-              respond(downloadHandler(store, definition)),
-            )
-            yield* router.add(
-              "POST",
-              `${entry}/grant` as HttpRouter.PathInput,
-              respond(grantHandler(store, definition)),
-            )
+            yield* route("GET", entry, downloadHandler(store, definition))
+            yield* route("POST", `${entry}/grant`, grantHandler(store, definition))
           }
       }
 
-      yield* router.add(
-        "GET",
-        `${basePath}/protocol` as HttpRouter.PathInput,
-        respond(() =>
-          Effect.succeed(
-            HttpServerResponse.jsonUnsafe({
-              protocol: PROTOCOL,
-              retryWindowMs: actors.retryWindowMs,
-              now: clock.now(),
-            }),
-          ),
-        ),
-      )
-
-      yield* router.add(
-        "GET",
-        `${basePath}/ready` as HttpRouter.PathInput,
-        respond(() =>
-          Effect.map(control.readiness, (readiness) =>
-            HttpServerResponse.jsonUnsafe(readiness, {
-              status: readiness.ready ? 200 : 503,
-              headers: { "cache-control": "no-store" },
-            }),
-          ),
-        ),
-      )
-
-      yield* router.add(
-        "POST",
-        `${basePath}/command-ids` as HttpRouter.PathInput,
-        respond((request) =>
-          Effect.gen(function* () {
-            const authenticated = yield* authenticate(request)
-
-            if (authenticated.binding !== undefined)
-              yield* checkBinding(authenticated, request, yield* readBytes(request))
-
-            return HttpServerResponse.jsonUnsafe({ commandId: yield* actors.mintCommandId })
+      yield* route("GET", "/protocol", () =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe({
+            protocol: PROTOCOL,
+            retryWindowMs: actors.retryWindowMs,
+            now: clock.now(),
           }),
         ),
+      )
+
+      yield* route("GET", "/ready", () =>
+        Effect.map(control.readiness, (readiness) =>
+          HttpServerResponse.jsonUnsafe(readiness, {
+            status: readiness.ready ? 200 : 503,
+            headers: { "cache-control": "no-store" },
+          }),
+        ),
+      )
+
+      yield* route("POST", "/command-ids", (request) =>
+        Effect.gen(function* () {
+          const authenticated = yield* authenticate(request)
+
+          yield* checkUnreadBody(authenticated, request)
+
+          return HttpServerResponse.jsonUnsafe({ commandId: yield* actors.mintCommandId })
+        }),
       )
 
       const refreshKeys = options.auth.refreshKeys
 
       if (refreshKeys !== undefined)
-        yield* router.add(
-          "POST",
-          `${basePath}${KEY_REFRESH_PATH}` as HttpRouter.PathInput,
-          respond((request) =>
-            refreshKeys({ headers: request.headers, cookies: {} }).pipe(
-              Effect.provideContext(context),
-              Effect.mapError((reason) => ActorError.make({ reason })),
-              Effect.as(HttpServerResponse.empty({ status: 204 })),
-            ),
+        yield* route("POST", KEY_REFRESH_PATH, (request) =>
+          refreshKeys({ headers: request.headers, cookies: {} }).pipe(
+            Effect.provideContext(context),
+            Effect.mapError((reason) => ActorError.make({ reason })),
+            Effect.as(HttpServerResponse.empty({ status: 204 })),
           ),
         )
 
@@ -1153,12 +1143,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         },
       })
 
-      const fallback = respond((request) =>
-        request.method === "OPTIONS" ? Effect.succeed(preflight) : invalidInput("unknown_route"),
-      )
+      const fallback = (request: HttpServerRequest.HttpServerRequest) =>
+        request.method === "OPTIONS" ? Effect.succeed(preflight) : invalidInput("unknown_route")
 
-      yield* router.add("*", `${basePath}/actors/*` as HttpRouter.PathInput, fallback)
-      yield* router.add("OPTIONS", `${basePath}/*` as HttpRouter.PathInput, fallback)
+      yield* route("*", "/actors/*", fallback)
+      yield* route("OPTIONS", "/*", fallback)
 
       if (options.openapi !== undefined || options.mcp !== undefined) {
         const spec = openApiDocument({
@@ -1169,10 +1158,8 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         })
 
         if (options.openapi !== undefined)
-          yield* router.add(
-            "GET",
-            `${basePath}${options.openapi.path}` as HttpRouter.PathInput,
-            respond(() => Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
+          yield* route("GET", options.openapi.path, () =>
+            Effect.succeed(HttpServerResponse.jsonUnsafe(spec)),
           )
 
         if (options.mcp !== undefined) {
@@ -1184,37 +1171,23 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             },
           }
 
-          const path = `${basePath}${options.mcp.path}` as HttpRouter.PathInput
+          yield* route("POST", options.mcp.path, (request) =>
+            Effect.gen(function* () {
+              const authenticated = yield* authenticate(request)
+              const body = yield* readBound(request, authenticated)
 
-          yield* router.add(
-            "POST",
-            path,
-            respond((request) =>
-              Effect.gen(function* () {
-                const authenticated = yield* authenticate(request)
-                const type = Headers.get(request.headers, "content-type")
-
-                if (Option.isSome(type) && !JSON_TYPE.test(type.value))
-                  return yield* invalidInput("unsupported_media_type")
-
-                const body = yield* readBytes(request)
-
-                yield* checkBinding(authenticated, request, body)
-
-                return yield* handleMcp(
-                  { ...endpoint, call: callTool(authenticated) },
-                  { headers: request.headers, body },
-                )
-              }),
-            ),
+              return yield* handleMcp(
+                { ...endpoint, call: callTool(authenticated) },
+                { headers: request.headers, body },
+              )
+            }),
           )
 
-          const postOnly = respond(() =>
-            Effect.succeed(HttpServerResponse.empty({ status: 405, headers: { allow: "POST" } })),
-          )
+          const postOnly = () =>
+            Effect.succeed(HttpServerResponse.empty({ status: 405, headers: { allow: "POST" } }))
 
-          yield* router.add("GET", path, postOnly)
-          yield* router.add("DELETE", path, postOnly)
+          yield* route("GET", options.mcp.path, postOnly)
+          yield* route("DELETE", options.mcp.path, postOnly)
         }
       }
     }),

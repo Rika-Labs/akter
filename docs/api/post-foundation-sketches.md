@@ -1,25 +1,8 @@
 # Post-foundation API sketches
 
-**Responsibility:** show the intended developer experience for ADRs [0014](../decisions/0014-adoption-observation-and-client-reach.md) and [0016](../decisions/0016-generated-durable-applications.md).
+**Responsibility:** show the intended developer experience for ADRs [0014](../decisions/0014-adoption-observation-and-client-reach.md) (adoption has shipped; see the [Drizzle guide](04-drizzle.md#adopting-an-existing-table)) and [0016](../decisions/0016-generated-durable-applications.md).
 
 **Authority:** illustrative proposal only. These names and signatures are not exported and are subject to API/versioning review.
-
-## Adopt a legacy table
-
-<!-- snippet target -->
-
-```ts
-const InvoiceRows = Actor.table(existingInvoices, {
-  owner: { tenant: existingInvoices.orgId, actor: existingInvoices.accountId },
-})
-const Account = Actor.make("Account", {
-  key: AccountId,
-  tables: [InvoiceRows],
-  api: { IssueInvoice, VoidInvoice },
-})
-```
-
-Existing columns must be mapped and validated without relying on TypeScript for authority. A proposed CLI first reports legacy direct writers, then enforces actor-scoped writes with database privileges or a guard that cannot be forged by application connections. `routing_key` backfills and tenant isolation require a real Postgres/Neki migration plan.
 
 ## Observe an actor-local query
 

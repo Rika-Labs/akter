@@ -1,6 +1,6 @@
 import { Crypto, Effect, Schema } from "effect"
 import { ActorError, CommandConflict, Unauthorized } from "../../errors/actor.ts"
-import { Outcome, type Request } from "../../handles/actors.ts"
+import { Outcome, type Request } from "../request.ts"
 import { callerKey } from "../../identity/caller.ts"
 
 const OutcomeJson = Schema.fromJsonString(Outcome)

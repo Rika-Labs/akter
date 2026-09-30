@@ -237,17 +237,16 @@ export const planAdoption = Effect.fnUntraced(function* (
     }
 
     for (const key of foreign) {
-      if (!key.incoming) {
-        if (target.access === "write")
-          warnings.push(
-            `foreign key ${key.name} from ${name} to a shared parent adds multixact contention on a high-volume actor table`,
-          )
-        continue
-      }
+      if (key.incoming) continue
+
+      if (target.access === "write")
+        warnings.push(
+          `foreign key ${key.name} from ${name} to a shared parent adds multixact contention on a high-volume actor table`,
+        )
 
       if (key.delete_action === "c" || key.delete_action === "n")
         warnings.push(
-          `foreign key ${key.name} reaches ${name} with ${key.delete_action === "c" ? "ON DELETE CASCADE" : "ON DELETE SET NULL"}; enforce refuses until it is resolved`,
+          `foreign key ${key.name} of ${name} has ${key.delete_action === "c" ? "ON DELETE CASCADE" : "ON DELETE SET NULL"} on its parent, so a parent delete would change this table as its owner; enforce refuses until it is resolved`,
         )
     }
 

@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { InternalActors } from "../handles/actors.ts"
+import { InternalActors } from "../runtime/actors.ts"
 
 const SAMPLE_EVERY = "10 seconds"
 

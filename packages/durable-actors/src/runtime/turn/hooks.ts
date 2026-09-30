@@ -1,5 +1,5 @@
 import { Context, Effect, Schema } from "effect"
-import type { Request } from "../../handles/actors.ts"
+import type { Request } from "../request.ts"
 
 /**
  * A named moment in command delivery, turn execution, and the outbox and
