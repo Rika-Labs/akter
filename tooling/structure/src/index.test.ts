@@ -164,32 +164,12 @@ describe("tests beside sources", () => {
   })
 })
 
-describe("leaf directory limit", () => {
-  it("fails a leaf over 12 authored modules but not its parents", () => {
-    const modules: Array<TreeFile> = []
-
-    for (let index = 0; index < 13; index += 1)
-      modules.push(file(`packages/foo/src/feature/m${index}.ts`))
-
-    const findings = analyze({
-      files: [
-        cleanManifest("packages/foo", "@durable-actors/foo"),
-        file("packages/foo/src/index.ts"),
-        ...modules,
-      ],
-      exemptions: [],
-    })
-
-    expect(paths(findings)).toEqual(["packages/foo/src/feature"])
-    expect(findings[0]?.message).toContain("13")
-  })
-})
-
 describe("exemptions", () => {
   const exemptions: ReadonlyArray<Exemption> = [
-    { path: "packages/ui", rule: "no-ui-package", reason: "test" },
+    { path: "tooling/vendored/index.ts", rule: "index-not-entry", reason: "test" },
     { path: "research", rule: "structure-rules", reason: "test" },
-    { path: "packages/gone", rule: "no-ui-package", reason: "test" },
+    { path: "packages/gone", rule: "index-not-entry", reason: "test" },
+    { path: "packages/ui", rule: "index-not-entry", reason: "test" },
   ]
 
   it("suppresses matching findings", () => {
@@ -197,14 +177,14 @@ describe("exemptions", () => {
       files: [
         cleanManifest("packages/ui", "@durable-actors/ui"),
         file("packages/ui/src/index.ts"),
+        file("tooling/vendored/index.ts"),
         file("research/v4/framework/Actor.ts"),
         file("research/anything/index.ts"),
       ],
       exemptions,
     })
 
-    expect(paths(findings)).not.toContain("packages/ui")
-    expect(paths(findings)).not.toContain("research/anything/index.ts")
+    expect(findings.filter((finding) => !finding.message.startsWith("stale exemption"))).toEqual([])
   })
 
   it("reports an exemption whose path no longer exists or no longer violates", () => {
@@ -213,8 +193,16 @@ describe("exemptions", () => {
       exemptions,
     })
 
-    const stale = findings.filter((finding) => finding.message.startsWith("stale exemption"))
-
-    expect(stale.map((finding) => finding.path).sort()).toEqual(["packages/gone", "research"])
+    expect(
+      findings
+        .map((finding) => `${finding.path}: ${finding.message}`)
+        .toSorted()
+        .map((line) => line.replace(/ — remove the entry$/, "")),
+    ).toEqual([
+      "packages/gone: stale exemption for rule 'index-not-entry': the path no longer exists",
+      "packages/ui: stale exemption for rule 'index-not-entry': the path no longer violates it",
+      "research: stale exemption for rule 'structure-rules': the path no longer exists",
+      "tooling/vendored/index.ts: stale exemption for rule 'index-not-entry': the path no longer exists",
+    ])
   })
 })

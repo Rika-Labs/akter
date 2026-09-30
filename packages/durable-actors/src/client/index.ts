@@ -1,3 +1,5 @@
+import * as Inspection from "../protocol/inspection.ts"
+
 export type {
   ActorClient,
   ClientHandle,
@@ -59,3 +61,5 @@ export {
 } from "../errors/actor.ts"
 
 export { RetentionGap, UnknownCursor } from "../errors/events.ts"
+
+export { Inspection }

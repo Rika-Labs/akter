@@ -1,13 +1,20 @@
 import { Schema, SchemaAST } from "effect"
-import { type DeclaredError, member, type Member, type ValueSchema } from "./command.ts"
-import type { ProgressEffect } from "./effect.ts"
+import {
+  type DeclaredError,
+  member,
+  type Member,
+  type PayloadOf,
+  type PayloadOption,
+  type ValueSchema,
+} from "./command.ts"
+import type { ProgressJob } from "./job.ts"
 
 /** Tags reserved for framework control frames, which travel in their own envelope variant. */
 const CONTROL_TAGS = new Set(["Resync", "ResyncReplayed", "ResyncDone"])
 
 /**
- * A long-lived session between one client and one actor. Its `input` is the
- * open params; `server` frames flow to the client and `client` frames to the
+ * A long-lived session between one client and one actor. Its `payload` is
+ * the open params; `server` frames flow to the client and `client` frames to the
  * actor; `session` is the per-connection state the handlers may set.
  */
 export interface Connection<
@@ -16,25 +23,25 @@ export interface Connection<
   Server extends ValueSchema,
   Client extends ValueSchema,
   Session extends ValueSchema | undefined,
-  Errors extends ReadonlyArray<DeclaredError>,
-  Effects extends ProgressEffect = never,
-> extends Member<"connection", Tag, Params, typeof Schema.Void, Errors> {
+  Error extends DeclaredError,
+  Jobs extends ProgressJob = never,
+> extends Member<"connection", Tag, Params, typeof Schema.Void, Error> {
   readonly server: Server
   readonly client: Client
   readonly session: Session
   /** Stamp member frames with the flushed-through cursor and event cursor. Default true. */
   readonly stampCursor: boolean
   /** Executor progress this member's connections receive, if any. */
-  readonly progress: ConnectionProgress<Effects> | undefined
+  readonly progress: ConnectionProgress<Jobs> | undefined
 }
 
 /**
- * The effects whose executor progress a connection member receives, and to
+ * The jobs whose executor progress a connection member receives, and to
  * whom: `"performer"` (the default) only connections whose caller has the
- * performing turn's principal, `"all"` every open connection of the member.
+ * enqueueing turn's principal, `"all"` every open connection of the member.
  */
-interface ConnectionProgress<Effects extends ProgressEffect> {
-  readonly effects: ReadonlyArray<Effects>
+interface ConnectionProgress<Jobs extends ProgressJob> {
+  readonly jobs: ReadonlyArray<Jobs>
   readonly to: "performer" | "all"
 }
 
@@ -45,8 +52,8 @@ export type AnyConnection = Connection<
   ValueSchema,
   ValueSchema,
   ValueSchema | undefined,
-  ReadonlyArray<DeclaredError>,
-  ProgressEffect
+  DeclaredError,
+  ProgressJob
 >
 
 const taggedIdentifiers = (schema: Schema.Top): ReadonlyArray<string> => {
@@ -66,26 +73,26 @@ const taggedIdentifiers = (schema: Schema.Top): ReadonlyArray<string> => {
 const make = <
   const Tag extends string,
   Server extends ValueSchema,
-  Params extends ValueSchema = typeof Schema.Void,
+  const P extends PayloadOption = typeof Schema.Void,
   Client extends ValueSchema = typeof Schema.Never,
   Session extends ValueSchema | undefined = undefined,
-  const Errors extends ReadonlyArray<DeclaredError> = readonly [],
-  Effects extends ProgressEffect = never,
+  Error extends DeclaredError = typeof Schema.Never,
+  Jobs extends ProgressJob = never,
 >(
   tag: Tag,
   options: {
     readonly server: Server
-    readonly params?: Params
+    readonly payload?: P
     readonly client?: Client
     readonly session?: Session
-    readonly errors?: Errors
+    readonly error?: Error
     readonly stampCursor?: boolean
     readonly progress?: {
-      readonly effects: ReadonlyArray<Effects>
+      readonly jobs: ReadonlyArray<Jobs>
       readonly to?: "performer" | "all"
     }
   },
-): Connection<Tag, Params, Server, Client, Session, Errors, Effects> => {
+): Connection<Tag, PayloadOf<P>, Server, Client, Session, Error, Jobs> => {
   if (tag.startsWith("$")) throw new Error(`Connection ${tag} may not start with $`)
 
   for (const schema of [options.server, options.client])
@@ -95,9 +102,9 @@ const make = <
           throw new Error(`Connection ${tag} frames may not use the control tag ${reserved}`)
 
   return {
-    ...member("connection")<Tag, Params, typeof Schema.Void, Errors>(tag, {
-      input: options.params,
-      errors: options.errors,
+    ...member("connection")<Tag, P, typeof Schema.Void, Error>(tag, {
+      payload: options.payload,
+      error: options.error,
     }),
     server: options.server,
     client: (options.client ?? Schema.Never) as Client,
@@ -106,13 +113,13 @@ const make = <
     progress:
       options.progress === undefined
         ? undefined
-        : { effects: options.progress.effects, to: options.progress.to ?? "performer" },
+        : { jobs: options.progress.jobs, to: options.progress.to ?? "performer" },
   }
 }
 
 /**
  * `Connection.make` is `Actor.connection`: declares a connection by tag.
- * `server` types the frames sent to the client; `params` the open input,
+ * `server` types the frames sent to the client; `payload` the open params,
  * `client` the frames it may send, and `session` the per-connection state
  * handlers may set. Throws when the tag starts with `$`, which names framework
  * members such as the one an event feed opens, or when a frame schema uses a

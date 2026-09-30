@@ -1,18 +1,15 @@
 import { Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
+import type * as Inspection from "../../protocol/inspection.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { decompress } from "../storage/codec.ts"
 
-/**
- * A stored value as the inspector shows it: the decoded JSON, or why it could
- * not be decoded, so one corrupt row never hides the rest of a page.
- */
-export type Decoded = { readonly json: Schema.Json } | { readonly undecodable: string }
+export type { Decoded } from "../../protocol/inspection.ts"
 
 const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
 /** Decodes a JSON `text` column such as a payload, caller, or outcome. */
-export const decodeText = (text: string | null): Decoded | null => {
+export const decodeText = (text: string | null): Inspection.Decoded | null => {
   if (text === null) return null
 
   return Option.match(parseJson(text), {
@@ -22,7 +19,7 @@ export const decodeText = (text: string | null): Decoded | null => {
 }
 
 /** Decodes a zstd-compressed JSON `bytea` column such as state, an event, or a step exit. */
-export const decodeBytes = (bytes: Uint8Array | null): Decoded | null => {
+export const decodeBytes = (bytes: Uint8Array | null): Inspection.Decoded | null => {
   if (bytes === null) return null
 
   let text: string
@@ -46,10 +43,7 @@ interface Page {
 }
 
 /** The `(actor type, actor id)` pair that names an actor within a tenant. */
-interface ActorIdentity {
-  readonly actorType: string
-  readonly actorId: string
-}
+type ActorIdentity = Pick<Inspection.ActorRow, "actorType" | "actorId">
 
 /**
  * Runs `effect` in a read-only snapshot that names `tenant`, so when
@@ -64,23 +58,6 @@ export const readOnly =
       (sql) => sql`SELECT set_config('durable.tenant', ${tenant}, true)`,
     ).pipe(Effect.andThen(effect), inReadOnlySnapshot)
 
-/** The view catalog and the tenant's row counts. */
-interface Overview {
-  readonly tenant: string
-  readonly views: ReadonlyArray<{ readonly view: string; readonly version: number }>
-  readonly counts: {
-    readonly actors: number
-    readonly receipts: number
-    readonly events: number
-    readonly outbox: number
-    readonly timers: number
-    readonly effects: number
-    readonly deadLetters: number
-    readonly workflows: number
-    readonly openWorkflows: number
-  }
-}
-
 /** The view catalog and the tenant's row count in each view, from one snapshot. */
 export const overview = ({ tenant }: { readonly tenant: string }) =>
   Effect.gen(function* () {
@@ -90,7 +67,7 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
       SELECT view_name AS view, version::int AS version FROM durable.views
       ORDER BY view_name COLLATE "C"`
 
-    const [counts] = yield* sql<Overview["counts"]>`
+    const [counts] = yield* sql<Inspection.Overview["counts"]>`
       SELECT
         (SELECT count(*)::int FROM durable.actors WHERE tenant_id = ${tenant}) AS actors,
         (SELECT count(*)::int FROM durable.receipts WHERE tenant_id = ${tenant}) AS receipts,
@@ -103,18 +80,10 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
         (SELECT count(*)::int FROM durable.workflows
           WHERE tenant_id = ${tenant} AND status <> 'finished') AS "openWorkflows"`
 
-    return { tenant, views, counts: counts! } satisfies Overview
+    return { tenant, views, counts: counts! } satisfies Inspection.Overview
   })
 
-/** One actor in a listing, with its placement and current generation. */
-interface ActorRow extends ActorIdentity {
-  readonly placement: string | null
-  readonly generation: number
-  readonly created: boolean
-  readonly lastEventSequence: number
-}
-
-interface StoredActor extends ActorRow {
+interface StoredActor extends Inspection.ActorRow {
   readonly routingKey: string
 }
 
@@ -139,7 +108,7 @@ export const actors = (page: ActorsPage) =>
         ? sql`TRUE`
         : sql`(actor_type COLLATE "C", actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
 
-    const rows = yield* sql<ActorRow>`
+    const rows = yield* sql<Inspection.ActorRow>`
       SELECT actor_type AS "actorType", actor_id AS "actorId", placement,
         generation::float8 AS generation, created,
         last_event_sequence::float8 AS "lastEventSequence"
@@ -156,7 +125,7 @@ export const actors = (page: ActorsPage) =>
       actors: items,
       next:
         more && last !== undefined ? { actorType: last.actorType, actorId: last.actorId } : null,
-    }
+    } satisfies typeof Inspection.ActorsPage.Type
   })
 
 const findActor = ({ tenant, actorType, actorId }: ActorPage) =>
@@ -173,86 +142,39 @@ const findActor = ({ tenant, actorType, actorId }: ActorPage) =>
     return Option.fromNullishOr(row)
   })
 
-interface ReceiptRow {
-  readonly commandId: string
-  readonly command: string
+type ReceiptRow = Omit<Inspection.ReceiptRow, "callerKey" | "outcome" | "events"> & {
   readonly callerKey: string
-  readonly outcomeTag: string | null
   readonly outcome: string
-  readonly expiresAtMs: number
   readonly events: string | null
 }
 
-interface EventRow {
-  readonly sequence: number
-  readonly event: string
-  readonly commandId: string | null
+type EventRow = Omit<Inspection.EventRow, "value"> & {
   readonly value: Uint8Array
-  readonly bytes: number
-  readonly emittedAtMs: number
 }
 
-interface OutboxRow extends ActorIdentity {
-  readonly intentId: string
-  readonly timerKey: string | null
-  readonly targetType: string
-  readonly targetId: string
-  readonly command: string
+type OutboxRow = Omit<Inspection.OutboxRow, "payload" | "caller"> & {
   readonly payload: string
   readonly caller: string
-  readonly attempts: number
-  readonly lastError: string | null
-  readonly dueAtMs: number
 }
 
-interface EffectRow extends ActorIdentity {
-  readonly effectId: string
-  readonly effect: string
+type EffectRow = Omit<Inspection.EffectRow, "payload" | "caller"> & {
   readonly payload: string
   readonly caller: string
-  readonly attempts: number
-  readonly lastError: string | null
-  readonly ambiguous: boolean
-  readonly dueAtMs: number
 }
 
-interface DeadLetterRow extends ActorIdentity {
-  readonly effectId: string
-  readonly effect: string
+type DeadLetterRow = Omit<Inspection.DeadLetterRow, "payload"> & {
   readonly payload: string
-  readonly attempts: number
-  readonly cause: string
-  readonly ambiguous: boolean
-  readonly deadAtMs: number
 }
 
-interface WorkflowRow extends ActorIdentity {
-  readonly executionId: string
-  readonly workflow: string
-  readonly workflowKey: string
-  readonly manifestHash: string
-  readonly status: string
-  readonly interrupt: boolean
+type WorkflowRow = Omit<Inspection.WorkflowRow, "caller" | "payload" | "result" | "steps"> & {
   readonly caller: string
   readonly payload: Uint8Array
-  readonly payloadBytes: number
   readonly result: Uint8Array | null
-  readonly resultBytes: number | null
-  readonly startedAtMs: number
-  readonly finishedAtMs: number | null
 }
 
-interface StepRow {
+type StepRow = Omit<Inspection.StepRow, "exit"> & {
   readonly executionId: string
-  readonly step: string
-  readonly attempt: number
-  readonly kind: string
   readonly exit: Uint8Array | null
-  readonly waitEvent: string | null
-  readonly version: number | null
-  readonly dueAtMs: number | null
-  readonly startedAtMs: number
-  readonly settledAtMs: number | null
 }
 
 const outboxOf = (row: OutboxRow) => ({
@@ -395,14 +317,7 @@ export const actor = (page: ActorPage) =>
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
-    const [totals] = yield* sql<{
-      receipts: number
-      events: number
-      outbox: number
-      effects: number
-      deadLetters: number
-      workflows: number
-    }>`
+    const [totals] = yield* sql<Inspection.ActorDetail["totals"]>`
       SELECT
         (SELECT count(*)::int FROM durable.receipts WHERE ${owned}) AS receipts,
         (SELECT count(*)::int FROM durable.events WHERE ${owned}) AS events,
@@ -426,7 +341,7 @@ export const actor = (page: ActorPage) =>
       deadLetters: deadLetters.map(deadLetterOf),
       workflows: workflows.map((workflow) => workflowOf(workflow, steps)),
       totals: totals!,
-    })
+    } satisfies Inspection.ActorDetail)
   })
 
 /** The tenant's pending intents and timers, soonest first. */
@@ -440,7 +355,7 @@ export const outbox = ({ tenant, limit }: Page) =>
       [tenant, limit],
     )
 
-    return { outbox: rows.map(outboxOf) }
+    return { outbox: rows.map(outboxOf) } satisfies typeof Inspection.OutboxPage.Type
   })
 
 /** The tenant's performed effects not yet settled, soonest first. */
@@ -454,7 +369,7 @@ export const effects = ({ tenant, limit }: Page) =>
       [tenant, limit],
     )
 
-    return { effects: rows.map(effectOf) }
+    return { effects: rows.map(effectOf) } satisfies typeof Inspection.EffectsPage.Type
   })
 
 /** The tenant's dead letters, newest first. */
@@ -468,7 +383,7 @@ export const deadLetters = ({ tenant, limit }: Page) =>
       [tenant, limit],
     )
 
-    return { deadLetters: rows.map(deadLetterOf) }
+    return { deadLetters: rows.map(deadLetterOf) } satisfies typeof Inspection.DeadLettersPage.Type
   })
 
 /** A tenant-wide page of workflow executions. */
@@ -498,5 +413,7 @@ export const workflows = ({ tenant, limit, status }: WorkflowsPage) =>
       [tenant, status, limit],
     )
 
-    return { workflows: rows.map((row) => workflowOf(row, steps)) }
+    return {
+      workflows: rows.map((row) => workflowOf(row, steps)),
+    } satisfies typeof Inspection.WorkflowsPage.Type
   })

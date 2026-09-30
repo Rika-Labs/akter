@@ -323,27 +323,6 @@ export interface TableAccess {
   readonly group: Group
 }
 
-/** The tables an actor type declares and how its rows are placed, as tooling that reads a definition needs them. */
-export interface DeclaredTables {
-  readonly actor: string
-  readonly placement: Placement
-  readonly tables: ReadonlyArray<AnyOwnedTable>
-}
-
-const declared = new WeakMap<WeakKey, DeclaredTables>()
-
-/** Records the tables an actor definition declares; `Actor.make` calls it once per definition. */
-export const recordDeclaredTables = (entry: {
-  readonly definition: WeakKey
-  readonly tables: DeclaredTables
-}) => {
-  declared.set(entry.definition, entry.tables)
-}
-
-/** The tables and placement of an actor definition, or undefined for any other value. */
-export const declaredTablesOf = (definition: WeakKey): DeclaredTables | undefined =>
-  declared.get(definition)
-
 /** The ownership of `table`, or undefined when it is not an owned table. */
 export const ownership = (table: PgSelectConfig["table"]): Ownership | undefined => owned.get(table)
 
