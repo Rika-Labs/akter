@@ -4,7 +4,7 @@ export type { FaultOptions, TestActorOptions, TestConnection, TestMessage } from
 
 export { ActorCluster } from "./cluster.ts"
 
-export { checkMergeLaw } from "./property.ts"
+export { checkBatchLaw } from "./property.ts"
 
 export { SIMULATION_SEEDS, simulationSeeds } from "./simulate.ts"
 

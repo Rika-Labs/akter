@@ -282,6 +282,7 @@
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
         "@effect/sql-pglite": "catalog:",
+        "@effect/vitest": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-kit": "catalog:",
         "drizzle-orm": "catalog:",

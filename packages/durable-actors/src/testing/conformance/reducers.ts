@@ -1,14 +1,10 @@
 import { Cause, Effect, Exit, Layer, Result, Schema } from "effect"
-import { Arbitrary } from "effect/unstable/arbitrary"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Actors, CommandConflict } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { decompress } from "../../runtime/storage/codec.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { ActorTest } from "../actor-test.ts"
-import { checkMergeLaw } from "../property.ts"
-import { Bump, Fragile } from "./batches.ts"
-import { Tick as MultiRunnerTick } from "./multi-runner.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
 class Overflow extends Schema.TaggedError<Overflow>()("Overflow", { max: Schema.Int }) {}
@@ -104,46 +100,8 @@ const storedVersion = Effect.fnUntraced(function* (ref: ActorRef) {
   return row === undefined ? undefined : decompress(row.value)
 }, Effect.orDie)
 
-/** Reducer cases: the merge law over generated inputs, one receipt per committed change, replay without reducing, and rejection of changed input under a reused command id. */
+/** Reducer cases: one receipt per committed change, replay without reducing, and rejection of changed input under a reused command id. */
 export const reducerConformance: ReadonlyArray<ConformanceCase> = [
-  {
-    name: "merge law: every commutative reducer in the fixtures satisfies it over generated inputs, and a reducer that breaks it is caught",
-    run: ({ expect, environment }) =>
-      environment.run(
-        Effect.gen(function* () {
-          const bounded = Arbitrary.schema(
-            Schema.Int.check(Schema.isBetween({ minimum: -1_000_000, maximum: 1_000_000 })),
-          )
-
-          const fixtures = [
-            { reducer: Tick, state: (count: number) => ({ count, label: "" }) },
-            { reducer: Bump, state: (count: number) => ({ count, log: [] }) },
-            { reducer: MultiRunnerTick, state: (count: number) => ({ count }) },
-          ]
-
-          for (const { reducer, state } of fixtures) {
-            const runs = yield* checkMergeLaw({
-              reducer,
-              state: Arbitrary.map(bounded, state),
-              input: bounded,
-              maxInputs: 16,
-            })
-
-            expect(runs > 0).toBe(true)
-          }
-
-          const broken = yield* checkMergeLaw({
-            reducer: Fragile,
-            state: Arbitrary.map(bounded, (count) => ({ count, log: [] })),
-            input: Arbitrary.schema(
-              Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
-            ),
-          }).pipe(Effect.exit)
-
-          expect(Exit.isFailure(broken)).toBe(true)
-        }),
-      ),
-  },
   {
     name: "reducer commits changed state and one receipt, and replays without reducing again",
     run: ({ expect, environment }) =>
