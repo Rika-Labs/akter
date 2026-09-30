@@ -151,6 +151,13 @@ const RelayCaller = Actor.make("RelayCaller", {
 
 const MAILBOXES = 32
 
+/** A `Take` intent's stored payload: its encoded input under `value`. */
+const decodeTaken = (payload: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(Schema.Struct({ value: Schema.String })))(payload).pipe(
+    Effect.map(({ value }) => value),
+    Effect.orDie,
+  )
+
 const mailboxOf = (id: string) => {
   let hash = 0
 
@@ -582,8 +589,19 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const ids = Array.from({ length: 30 }, (_, index) => `retried-${index}`)
           const failing = new Set(ids.filter((_, index) => index % 10 === 0))
+          const delivering = new Map<string, number>()
+          fixture.hook = (point, request) =>
+            point === "afterClaim" && request.command === "Take"
+              ? decodeTaken(request.payload).pipe(
+                  Effect.map((id) => {
+                    delivering.set(id, fixture.claims.get(request.commandId)!)
+                  }),
+                )
+              : Effect.void
           fixture.onTake = (id) =>
-            failing.delete(id) ? Effect.die(new Error("Receiver defect")) : Effect.void
+            failing.has(id) && delivering.get(id) === 1
+              ? Effect.die(new Error("Receiver defect"))
+              : Effect.void
           yield* stage(0, ids)
           yield* eventually(
             outboxRows(1).pipe(Effect.map((rows) => rows.length === 0)),
@@ -596,8 +614,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
             "every claim to end",
           )
 
-          expect(failing.size).toBe(0)
-          expect(ids.filter((id) => fixture.taken.get(id) === 2)).toEqual([
+          expect(ids.filter((id) => delivering.get(id) === 2)).toEqual([
             "retried-0",
             "retried-10",
             "retried-20",
