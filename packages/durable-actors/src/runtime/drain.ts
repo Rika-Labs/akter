@@ -141,7 +141,7 @@ export const turnGate = () => {
 export type TurnGate = ReturnType<typeof turnGate>
 
 /** The runtime's side of a drain: its relay and background work. */
-export interface Drainable {
+interface Drainable {
   readonly gate: TurnGate
   /** Stops claims and releases claimed deliveries. */
   readonly stopClaims: Effect.Effect<void>

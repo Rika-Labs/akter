@@ -61,7 +61,7 @@ export const progress: Scenario = {
     "Executor progress through the owner to a held connection: command to frame, and command to route broadcast with and without an opted-in member.",
   run: (context) =>
     Effect.gen(function* () {
-      const operations = context.profile === "quick" ? 100 : 500
+      const operations = context.quick ? 100 : 500
       const results: Array<CaseResult> = []
 
       const cases = [

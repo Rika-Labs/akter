@@ -24,7 +24,7 @@ const decodeParts = Schema.decodeResult(PartsJson)
 const encodeParts = (parts: typeof Parts.Type) => JSON.stringify(parts)
 
 /** Everything an execution id names: its owner, its workflow member, and its key. */
-export interface Execution {
+interface Execution {
   readonly tenant: string
   readonly actor: string
   readonly id: string
