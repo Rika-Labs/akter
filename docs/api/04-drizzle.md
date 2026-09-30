@@ -44,6 +44,13 @@ export const Room = Actor.make("Room", { key: RoomId, tables: [messages], api: {
 
 A table that already exists, and that a web app or batch job also writes, is adopted instead of declared ([ADR 0054](../decisions/0054-existing-schema-adoption.md)):
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { pgTable, text } from "drizzle-orm/pg-core"
+const existingInvoices = pgTable("invoices", { id: text("id").primaryKey(), orgId: text("org_id").notNull(), accountId: text("account_id").notNull() })
+const existingContacts = pgTable("contacts", { id: text("id").primaryKey(), tenant: text("tenant").notNull(), owner: text("owner").notNull() })
+-->
+
 ```ts
 const InvoiceRows = Actor.table(existingInvoices, {
   owner: { tenant: existingInvoices.orgId, actor: existingInvoices.accountId },
