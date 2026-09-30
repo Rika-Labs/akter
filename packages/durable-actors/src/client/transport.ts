@@ -84,6 +84,19 @@ export const networkFailure = () =>
 export const undecodableFailure = () =>
   transportFailure(TransportError.make({ code: "decode", retryable: false }))
 
+/** Succeeds once `signal` aborts, at once when it already has; never without a signal. */
+export const aborted = (signal: AbortSignal | undefined) =>
+  Effect.callback<void>((resume) => {
+    if (signal === undefined) return
+
+    if (signal.aborted) return resume(Effect.void)
+
+    const onAbort = () => resume(Effect.void)
+    signal.addEventListener("abort", onAbort, { once: true })
+
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort))
+  })
+
 /** A status a proxy or gateway may answer before any runner saw the request. */
 const isRetryableStatus = (status: number) => status >= 500 || status === 429 || status === 408
 
