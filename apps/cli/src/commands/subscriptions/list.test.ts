@@ -1,11 +1,12 @@
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Exit, Layer, Redacted } from "effect"
-import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
+import { Context, Effect, Layer, Redacted } from "effect"
+import { HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
-import { formatLagging, list, parseList } from "./list.ts"
+import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
+import { formatLagging } from "./list.ts"
 
 const live = ActorTest.layer({}).pipe(Layer.provideMerge(BunCrypto.layer))
 
@@ -30,28 +31,56 @@ const operators = OperatorAuth.tokens([
 describe("durable subscriptions list --lagging", () => {
   it("parses the tenant, thresholds, and the required --lagging switch", () =>
     Effect.gen(function* () {
-      expect(
-        yield* parseList([
-          "--lagging",
-          "--url",
-          "http://a/",
-          "--tenant",
-          "t",
-          "--min-attempts",
-          "3",
-          "--limit",
-          "5",
-        ]),
-      ).toMatchObject({ urls: ["http://a"], tenant: "t", minAttempts: "3", limit: "5" })
+      const runner = recordingFetch([])
 
-      for (const args of [
-        ["--url", "u", "--tenant", "t"],
-        ["--lagging", "--url", "u"],
-        ["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"],
-        ["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"],
-        ["--lagging", "--url", "u", "--tenant", "t", "extra"],
+      const listed = yield* runCliWith({ fetch: runner.fetch })([
+        "subscriptions",
+        "list",
+        "--lagging",
+        "--url",
+        "http://a/",
+        "--tenant",
+        "t",
+        "--min-attempts",
+        "3",
+        "--limit",
+        "5",
       ])
-        expect(Exit.isFailure(yield* parseList(args).pipe(Effect.exit))).toBe(true)
+
+      expect(listed).toEqual({
+        stdout: "no lagging subscriptions\n",
+        stderr: "",
+        exitCode: 0,
+        reason: "",
+      })
+      expect(runner.requests.map(({ url }) => url)).toEqual([
+        "http://a/operator/subscriptions/lagging?tenant=t&minAttempts=3&limit=5",
+      ])
+
+      for (const [args, reason, message] of [
+        [["--url", "u", "--tenant", "t"], "MissingOption", "Missing required flag: --lagging"],
+        [["--lagging", "--url", "u"], "MissingOption", "Missing required flag: --tenant"],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"],
+          "InvalidValue",
+          'Invalid value for flag --min-attempts: "0"',
+        ],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"],
+          "InvalidValue",
+          'Invalid value for flag --limit: "1001"',
+        ],
+        [
+          ["--lagging", "--url", "u", "--tenant", "t", "extra"],
+          "UnexpectedArgument",
+          'Unexpected positional argument: "extra"',
+        ],
+      ] as const) {
+        const refused = yield* runCli(["subscriptions", "list", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("prints each failing row with its lag, and reads only under a tenant-wide inspect grant", () =>
@@ -66,19 +95,35 @@ describe("durable subscriptions list --lagging", () => {
 
       yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
 
-      const fetcher = Layer.succeed(FetchHttpClient.Fetch, ((input, init) =>
-        web.handler(new Request(input, init))) as typeof fetch)
+      const fetch = ((input, init) =>
+        web.handler(new Request(input, init))) as typeof globalThis.fetch
 
-      const services = yield* Layer.build(FetchHttpClient.layer.pipe(Layer.provide(fetcher)))
+      const read = (token: string) =>
+        runCliWith({
+          fetch,
+          env: { DURABLE_OPERATOR_TOKEN: token },
+        })(["subscriptions", "list", "--lagging", "--url", "http://runner", "--tenant", tenant])
 
-      const options = yield* parseList(["--lagging", "--url", "http://runner", "--tenant", tenant])
+      expect(yield* read("look-token")).toEqual({
+        stdout: "no lagging subscriptions\n",
+        stderr: "",
+        exitCode: 0,
+        reason: "",
+      })
 
-      const read = (token: string) => list({ options, token }).pipe(Effect.provideContext(services))
+      const json = yield* runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: "look-token" } })([
+        "subscriptions",
+        "list",
+        "--lagging",
+        "--url",
+        "http://runner",
+        "--tenant",
+        tenant,
+        "--json",
+      ])
 
-      const answer = yield* read("look-token")
-
-      expect(answer).toEqual([])
-      expect(yield* formatLagging(answer)).toBe("no lagging subscriptions")
+      expect(json.stdout).toBe("[]\n")
+      expect(yield* formatLagging([])).toBe("no lagging subscriptions")
 
       expect(
         yield* formatLagging([
@@ -99,8 +144,15 @@ describe("durable subscriptions list --lagging", () => {
         "Order/o1 -> Follower.FollowedOrders/f1  delivered 1 of 3  lag 2  attempts 9\n  Error: bad payload",
       )
 
-      expect(Exit.isFailure(yield* read("actor-token").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("skip-token").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("nobody").pipe(Effect.exit))).toBe(true)
+      for (const [token, status] of [
+        ["actor-token", 403],
+        ["skip-token", 403],
+        ["nobody", 401],
+      ] as const) {
+        const refused = yield* read(token)
+
+        expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
+        expect(refused.stderr).toMatch(new RegExp(`^Refused \\(${status}\\): `))
+      }
     }).pipe(Effect.scoped, Effect.runPromise))
 })

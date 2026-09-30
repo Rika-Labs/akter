@@ -209,6 +209,14 @@ export const toleranceOf = ({
       )
     : STATEMENT_TOLERANCE
 
+/** The tolerance policy as the statements comparison prints it, per-case shares included. */
+export const toleranceSummary = () =>
+  `±${STATEMENT_TOLERANCE} statements or round trips per operation, or ${CONCURRENT_TOLERANCE * 100}% of the baseline for concurrent cases (${[
+    ...CONCURRENT_TOLERANCES,
+  ]
+    .map(([key, share]) => `${share * 100}% for ${key}`)
+    .join(", ")})`
+
 /**
  * Reduces a `ci` profile run on Postgres to a baseline; throws for any other
  * run or a case without a statement count.
@@ -441,11 +449,7 @@ const statements = Effect.fnUntraced(function* (
     .pipe(Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Baseline))), Effect.orDie)
 
   yield* Console.log(
-    `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ±${STATEMENT_TOLERANCE} statements or round trips per operation, or ${CONCURRENT_TOLERANCE * 100}% of the baseline for concurrent cases (${Object.entries(
-      CONCURRENT_TOLERANCES,
-    )
-      .map(([key, share]) => `${share * 100}% for ${key}`)
-      .join(", ")})\n`,
+    `baseline: ${baseline.sha}\nrun:      ${result.git.shortSha}\ntolerance: ${toleranceSummary()}\n`,
   )
 
   const { cases, unmeasured, added, removed } = compareStatements({ baseline, result })

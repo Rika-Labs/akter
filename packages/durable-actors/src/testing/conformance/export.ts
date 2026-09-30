@@ -434,7 +434,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "refuses a seed that is malformed, of another actor type, names an unregistered effect, or targets an existing actor, writing nothing",
+    name: "refuses a seed that is malformed, of another actor type, names an unregistered effect, marks created an actor without createdBy, or targets an existing actor, writing nothing",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -450,6 +450,7 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
                 effects: [{ effect: "ExpMissing", payload: null, payloadVersion: 0, dueInMs: 0 }],
               },
             ],
+            ["created.seed", { ...literalSeed, created: true }],
             ["literal.seed", literalSeed],
             ["changed.seed", { ...literalSeed, state: { balance: 99, memo: "new" } }],
           ])
@@ -467,7 +468,9 @@ export const exportConformance: ReadonlyArray<ConformanceCase> = [
             expect(died(yield* attempt("m2", "wrong-type.seed"), "not ExpLedger")).toBe(true)
             expect(died(yield* attempt("m3", "unregistered.seed"), "does not register")).toBe(true)
 
-            for (const id of ["m1", "m2", "m3"])
+            expect(died(yield* attempt("m4", "created.seed"), "createdBy")).toBe(true)
+
+            for (const id of ["m1", "m2", "m3", "m4"])
               expect((yield* inspectOf(id)).generation).toBe(undefined)
 
             expect(Exit.isSuccess(yield* attempt("l1", "literal.seed"))).toBe(true)

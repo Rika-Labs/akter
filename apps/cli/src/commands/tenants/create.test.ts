@@ -1,9 +1,9 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { migrate } from "@durable-actors/postgres/migrate"
-import { Config, Crypto, Effect, Exit, ManagedRuntime, Option, Schema } from "effect"
+import { Config, Crypto, Effect, ManagedRuntime } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { parseCreate, UsageError } from "./create.ts"
+import { runCli } from "../../testing.ts"
 
 const runtime = ManagedRuntime.make(BunCrypto.layer)
 
@@ -12,49 +12,58 @@ afterAll(() => runtime.dispose())
 const postgres = runtime.runSync(Config.String("CLI_BACKEND")) === "postgres"
 
 const valid = [
+  "tenants",
+  "create",
   "acme",
   "--deployment",
   "dep-1",
   "--region",
   "us-east",
   "--database-url",
-  "postgres://localhost/control",
+  "postgres://127.0.0.1:1/control",
   "--operator",
   "ops@example.com",
 ]
 
 describe("durable tenants create arguments", () => {
-  it("reads the tenant and every required flag", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        expect(yield* parseCreate(valid)).toEqual({
-          tenant: "acme",
-          deployment: "dep-1",
-          region: "us-east",
-          databaseUrl: "postgres://localhost/control",
-          operator: "ops@example.com",
-        })
-      }),
-    ))
+  it("reads the tenant and every required flag before it opens the control plane", () =>
+    Effect.gen(function* () {
+      const unreachable = yield* runCli(valid)
+
+      expect(unreachable.exitCode).not.toBe(0)
+      expect(unreachable.stderr).toContain("Failed to connect")
+      expect(unreachable.stderr).not.toContain("USAGE")
+    }).pipe(Effect.runPromise))
 
   it("refuses a missing flag, an unknown argument, and a tenant or region outside its limits", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const refused = [
-          valid.slice(0, 7),
-          [...valid, "--force"],
-          ["bad tenant", ...valid.slice(1)],
-          [...valid.slice(0, 4), "US East", ...valid.slice(5)],
-          valid.slice(1),
-        ]
+    Effect.gen(function* () {
+      const refused = [
+        [valid.slice(0, 9), "MissingOption", "Missing required flag: --operator"],
+        [[...valid, "--force"], "UnrecognizedOption", "Unrecognized flag: --force"],
+        [
+          [...valid.slice(0, 2), "bad tenant", ...valid.slice(3)],
+          "InvalidValue",
+          'Invalid value for argument <tenant>: "bad tenant"',
+        ],
+        [
+          [...valid.slice(0, 6), "US East", ...valid.slice(7)],
+          "InvalidValue",
+          'Invalid value for flag --region: "US East"',
+        ],
+        [
+          [...valid.slice(0, 2), ...valid.slice(3)],
+          "MissingArgument",
+          "Missing required argument: tenant",
+        ],
+      ] as const
 
-        for (const args of refused) {
-          const exit = yield* parseCreate(args).pipe(Effect.exit)
+      for (const [args, reason, error] of refused) {
+        const exit = yield* runCli(args)
 
-          expect(Option.exists(Exit.findErrorOption(exit), Schema.is(UsageError))).toBe(true)
-        }
-      }),
-    ))
+        expect(exit).toMatchObject({ exitCode: 2, reason })
+        expect(exit.stderr).toContain(error)
+      }
+    }).pipe(Effect.runPromise))
 })
 
 /** A fresh control-plane database with every packages/postgres migration applied. */
@@ -80,19 +89,6 @@ const controlPlane = Effect.gen(function* () {
   )
 
   return { url: base.href, pool }
-})
-
-const cli = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
-  const child = Bun.spawn(["bun", new URL("../../main.ts", import.meta.url).pathname, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-
-  const stdout = yield* Effect.promise(() => new Response(child.stdout).text())
-  const stderr = yield* Effect.promise(() => new Response(child.stderr).text())
-  const code = yield* Effect.promise(() => child.exited)
-
-  return { stdout, stderr, code }
 })
 
 describe.skipIf(!postgres)("durable tenants create on Postgres", () => {
@@ -122,16 +118,18 @@ describe.skipIf(!postgres)("durable tenants create on Postgres", () => {
               "ops@example.com",
             ]
 
-            const created = yield* cli(args("us-east"))
+            const created = yield* runCli(args("us-east"))
 
-            expect(created).toMatchObject({
-              code: 0,
+            expect(created).toEqual({
               stdout: "dep-1/acme lives in us-east (active)\n",
+              stderr: "",
+              exitCode: 0,
+              reason: "",
             })
 
-            const refused = yield* cli(args("eu-west"))
+            const refused = yield* runCli(args("eu-west"))
 
-            expect(refused.code).toBe(2)
+            expect(refused).toMatchObject({ exitCode: 2, reason: "UsageError" })
             expect(refused.stderr).toContain("already lives in us-east")
 
             const rows = yield* Effect.promise(() =>

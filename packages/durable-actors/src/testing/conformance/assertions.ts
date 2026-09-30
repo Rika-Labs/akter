@@ -10,6 +10,7 @@ import {
   Schedule,
   Schema,
   type Scope,
+  Stream,
 } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { Actor, Unauthorized, User } from "../../index.ts"
@@ -889,6 +890,63 @@ export const delayingProxy = Effect.fnUntraced(function* (target: string) {
 
 /** Edge cases: the edge strips client-supplied assertions, signs the caller it authenticated, honors key rotation and revocation bounds, and routes across runners and regions. */
 export const edgeConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "refuses a body over its request limit by content-length and stops reading a streamed one soon after the limit",
+    requiresEdge: true,
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const edge = yield* (yield* edgeOf(environment.edge)).start({ primaryRegion: REGION })
+          const runner = yield* edgeRunner(edge, REGION)
+
+          yield* edge.addRunner({ region: REGION, url: runner.url })
+
+          const client = Context.get(
+            yield* Layer.build(FetchHttpClient.layer),
+            HttpClient.HttpClient,
+          )
+
+          const target = `${edge.url}/actors/HttpRoom/limited/Post`
+          const chunk = new Uint8Array(64 * 1024)
+          let produced = 0
+
+          const endless = Stream.fromEffectRepeat(
+            Effect.sync(() => {
+              produced += chunk.byteLength
+
+              return chunk
+            }),
+          )
+
+          const reply = (request: HttpClientRequest.HttpClientRequest) =>
+            client.execute(request).pipe(
+              Effect.flatMap((response) =>
+                Effect.map(response.text, (text) => ({ status: response.status, text })),
+              ),
+              Effect.timeout("10 seconds"),
+              Effect.orDie,
+            )
+
+          const streamed = yield* reply(
+            HttpClientRequest.post(target).pipe(HttpClientRequest.bodyStream(endless)),
+          )
+
+          expect(streamed.status).toBe(413)
+          expect(streamed.text.includes('"code":"too_large"')).toBe(true)
+          expect(produced < 16 * 1024 * 1024).toBe(true)
+
+          const declared = yield* reply(
+            HttpClientRequest.post(target).pipe(
+              HttpClientRequest.bodyUint8Array(new Uint8Array(2 * 1024 * 1024)),
+            ),
+          )
+
+          expect(declared.status).toBe(413)
+          expect(declared.text.includes('"code":"too_large"')).toBe(true)
+        }),
+      ),
+  },
   {
     name: "strips a client-supplied durable-assertion and takes the caller only from the assertion",
     requiresEdge: true,

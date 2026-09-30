@@ -1,7 +1,9 @@
-import { Effect, Exit } from "effect"
+import { Effect, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { parseSkip } from "./skip.ts"
+import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
+
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
 const base = [
   "--url",
@@ -23,8 +25,23 @@ const base = [
 describe("durable subscriptions skip", () => {
   it("parses the source, subscriber, subscription, cursor, and reason", () =>
     Effect.gen(function* () {
-      expect(yield* parseSkip(base)).toMatchObject({
-        urls: ["http://a"],
+      const runner = recordingFetch({ skipped: true })
+
+      expect(
+        yield* runCliWith({ fetch: runner.fetch })(["subscriptions", "skip", ...base]),
+      ).toEqual({
+        stdout: '{"skipped":true}\n',
+        stderr: "",
+        exitCode: 0,
+        reason: "",
+      })
+      expect(runner.requests.map(({ method, url }) => ({ method, url }))).toEqual([
+        {
+          method: "POST",
+          url: "http://a/operator/subscriptions/skip",
+        },
+      ])
+      expect(yield* decodeJson(runner.requests[0]!.body)).toEqual({
         tenant: "t",
         sourceType: "Order",
         sourceId: "o1",
@@ -44,11 +61,19 @@ describe("durable subscriptions skip", () => {
         return base.filter((_, index) => index !== at && index !== at + 1)
       }
 
-      for (const args of [
-        without("--reason"),
-        without("--tenant"),
-        [...without("--through"), "--through", "0x2"],
-      ])
-        expect(Exit.isFailure(yield* parseSkip(args).pipe(Effect.exit))).toBe(true)
+      for (const [args, reason, message] of [
+        [without("--reason"), "MissingOption", "Missing required flag: --reason"],
+        [without("--tenant"), "MissingOption", "Missing required flag: --tenant"],
+        [
+          [...without("--through"), "--through", "0x2"],
+          "InvalidValue",
+          'Invalid value for flag --through: "0x2". Expected: a positive event cursor',
+        ],
+      ] as const) {
+        const refused = yield* runCli(["subscriptions", "skip", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 })

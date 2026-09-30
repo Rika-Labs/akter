@@ -6,6 +6,7 @@ import {
   type Result,
   STATEMENT_TOLERANCE,
   toleranceOf,
+  toleranceSummary,
   toBaseline,
 } from "./compare.ts"
 
@@ -173,6 +174,12 @@ describe("compareStatements", () => {
       0.8675,
     )
     expect(toleranceOf({ key: "hot-actor/concurrent-8", baseline: 4.79 })).toBeCloseTo(0.5748)
+  })
+
+  it("prints the per-case tolerance shares that toleranceOf applies", () => {
+    expect(toleranceSummary()).toBe(
+      `±${STATEMENT_TOLERANCE} statements or round trips per operation, or 5% of the baseline for concurrent cases (12% for hot-actor/concurrent-8)`,
+    )
   })
 
   it("passes a concurrent case's scheduling noise and fails a deterministic case's one statement", () => {
