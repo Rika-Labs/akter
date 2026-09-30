@@ -895,9 +895,10 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
                 ),
             ).pipe(Effect.forkChild)
 
-            yield* Deferred.await(entered)
-
-            if (stop === "abort") controller.abort()
+            if (stop === "abort") {
+              yield* Deferred.await(entered)
+              controller.abort()
+            }
 
             const stopped = yield* Fiber.join(call)
             expect(reasonOf(stopped)).toMatchObject({ tag: "Timeout", commandId })
