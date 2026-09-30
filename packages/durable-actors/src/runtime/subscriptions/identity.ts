@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import type { Request, SubscriptionEnvelope } from "../../handles/actors.ts"
+import type { Request, SubscriptionEnvelope } from "../request.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 
 const encodeIdentity = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))

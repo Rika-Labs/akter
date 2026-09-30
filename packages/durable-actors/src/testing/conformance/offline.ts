@@ -7,7 +7,7 @@ import {
   type QueuedCommand,
 } from "../../client/offline/store.ts"
 import { ActorError } from "../../errors/actor.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import { Full, HttpRoom, HttpTally, posted, receipts, runs, serveHttp, tenantOf } from "./http.ts"
 

@@ -2,12 +2,8 @@ import { DateTime, Effect, Match, Result, Schema } from "effect"
 import { SqlClient, SqlError, type Statement } from "effect/unstable/sql"
 import { SubscriptionFailure } from "../../errors/subscription.ts"
 import type { ActorError } from "../../errors/actor.ts"
-import {
-  Outcome,
-  type RegisteredSubscription,
-  Request,
-  type SubscriptionEnvelope,
-} from "../../handles/actors.ts"
+import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"
+import { type RegisteredSubscription } from "../members.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decompress, type Placement, routingKey } from "../storage/codec.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"

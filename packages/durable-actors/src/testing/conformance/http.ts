@@ -33,7 +33,7 @@ import {
   InvalidInput,
   type Reason,
 } from "../../errors/actor.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import type { ContentStore } from "../../handles/content.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
