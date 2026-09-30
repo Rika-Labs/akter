@@ -392,7 +392,6 @@ const decodeEntries = Schema.decodeEffect(
 export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "row-level security on: three runners serve two tenants' turns, timers, effects, and reads, each seeing only its own",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -475,7 +474,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: every framework table and owned table carries the tenant policy",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, () =>
         Effect.gen(function* () {
@@ -496,7 +494,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: turns, timers, effects, queries, and owned rows serve two tenants, each seeing only its own",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, () =>
@@ -527,7 +524,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: a transaction naming one tenant reads, changes, and inserts no other tenant's rows in any protected table",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, ({ role }) =>
@@ -605,7 +601,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: an export runs as the tenant role and carries only its tenant's actors",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, ({ role }) =>
@@ -643,7 +638,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: turns, queries, and every caller-facing read outside a turn run as the tenant role",
-    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, ({ role }) =>
@@ -707,7 +701,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: a role granted only the durable schema reads its transaction's tenant through the views and no runtime table",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       withRowLevelSecurity(environment, () =>
@@ -779,7 +772,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: the runtime refuses to start when the role is missing or owns an owned table, or a view belongs to an exempt role or one the tenant role can act as",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ expect, environment }) =>
       environment.run(
@@ -841,7 +833,6 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "row-level security on: a replica read runs as the tenant role and binds the tenant, falling through to the primary when the role is refused there",
-    requiresFreshDatabase: true,
     requiresReplica: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>

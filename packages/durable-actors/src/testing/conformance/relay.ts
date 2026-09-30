@@ -544,7 +544,6 @@ const kill = (runner: number) =>
 export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
   {
     name: "claims each due row on exactly one runner",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) => {
@@ -583,7 +582,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "counts a delivery retried after a failure as the row's next attempt, not a second holder",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) => {
@@ -638,7 +636,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "redelivers a row after its claim lease when the claiming runner is killed",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -669,7 +666,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "redelivers after a runner kill between receiver commit and row deletion with one receiver transition",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -698,7 +694,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "creates a minted child once when the runner claiming its creating intent is killed",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -727,7 +722,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "does not let rows that die unsettled delay newer due rows",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
@@ -789,7 +783,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "keeps a stale runner's settle from changing a row another runner claimed",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -829,7 +822,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "delivers intents while every executor slot runs a slow effect",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
@@ -885,7 +877,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "renews an executor lease so a long attempt is not taken over",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -912,7 +903,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "interrupts an attempt that loses its lease and routes at most one result",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -959,7 +949,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "dead-letters as ambiguous when the last attempt's lease expires",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -987,7 +976,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "claims effects only on runners that have their executor",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -1023,7 +1011,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "uses per-effect timeout and backoff from policy.effects",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
@@ -1088,7 +1075,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "claims no more intents than free delivery slots",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
@@ -1142,7 +1128,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "routes a lease-expired attempt's success when it beats the takeover",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -1238,7 +1223,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "marks the dead letter ambiguous when a stale success arrives after it",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -1283,7 +1267,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "interrupts an attempt at its local deadline when renewals cannot reach the database",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -1323,7 +1306,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "does not start an attempt whose claim outlived its lease before execution",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -1358,7 +1340,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "keeps a failure's backoff when a renewal races the settle",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
@@ -1392,7 +1373,6 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
   },
   {
     name: "routes one result when the runner is killed after the provider succeeded",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>

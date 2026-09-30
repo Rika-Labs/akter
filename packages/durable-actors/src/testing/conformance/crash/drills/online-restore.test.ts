@@ -8,9 +8,10 @@ import {
   type ConformanceBackend,
   type ConformanceCase,
   type ConformanceDatabase,
+  conformanceGroups,
   registerConformance,
 } from "../../../conformance.ts"
-import { restoreConformance, type RestoreFixture, restoreSuite, vaults } from "../../restore.ts"
+import { type RestoreFixture, restoreSuite, vaults } from "../../restore.ts"
 import { archivingPostgres } from "./online-restore.ts"
 
 type Server = Effect.Success<ReturnType<typeof archivingPostgres>>
@@ -322,7 +323,9 @@ const recoversToEachRestorePoint: ConformanceCase<RestoreFixture> = {
     ),
 }
 
-const restoreCases = restoreConformance.filter(({ name }) => !name.includes("rolling deploy"))
+const restoreCases = conformanceGroups.restore.cases.filter(
+  ({ name }) => !name.includes("rolling deploy"),
+)
 
 for (const [backup, extra] of [
   [dumped, []],

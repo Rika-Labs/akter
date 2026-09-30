@@ -150,7 +150,6 @@ const reasonOf = (exit: Exit.Exit<unknown, unknown>) => {
 export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ environment, expect }) =>
       withCapacity(
@@ -205,7 +204,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a bounded mailbox that is not resident reports RunnerAtCapacity, not MailboxFull",
-    requiresFreshDatabase: true,
     timeoutMs: 30_000,
     run: ({ environment, expect }) =>
       withCapacity(
@@ -220,7 +218,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a resident bounded actor with a full mailbox still reports MailboxFull",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 30_000,
     run: ({ environment, expect }) =>
@@ -247,7 +244,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a caller over capacity succeeds on retry once an idle actor hibernates",
-    requiresFreshDatabase: true,
     timeoutMs: 40_000,
     run: ({ environment, expect }) =>
       withCapacity(
@@ -266,7 +262,6 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "hibernates an idle actor within one idle sweep of its hibernateAfter when a type with a longer one registered first",
-    requiresFreshDatabase: true,
     timeoutMs: 45_000,
     run: ({ environment, expect }) =>
       environment.run(

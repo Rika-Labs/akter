@@ -161,7 +161,6 @@ export const sums = (expected: ReadonlyMap<string, number>) =>
 export const simulationConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps receipts and outbox delivery exactly once across seeded runner kills, lost heartbeats, crashes, and lost connections on three runners",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 1_800_000,
     run: ({ expect, environment }) =>
@@ -203,7 +202,6 @@ export const simulationConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reruns a seed on three runners to the same fault schedule and outcome",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 300_000,
     run: ({ expect, environment }) =>
@@ -238,7 +236,6 @@ export const simulationConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "dies with the seed when a cluster program sends no command",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -257,7 +254,6 @@ export const simulationConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses a primary failover without a primary to fail over or a command count",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>

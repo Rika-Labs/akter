@@ -457,7 +457,6 @@ const withCase = <E>(
 export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "payload migrations: refuses 0021_payload_versions on a database that already holds events, outbox rows, or dead letters",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -500,7 +499,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: stores the current payload version with each emitted event and performed effect",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         deploy(
@@ -530,7 +528,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: upcasts version-0 events written before a chain step was added through the chain in read.events, feeds, and subscription deliveries",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -565,7 +562,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: runs a pending effect written at an older version with the upcast payload",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -586,7 +582,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: delivers an onDeadLetter route with the upcast effect and keeps the dead letter's version",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -616,7 +611,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: resets payload_version to 0 when a settled effect row becomes its route intent",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         deploy(
@@ -655,7 +649,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: fails a read as a defect, never a skip, when an upcast throws or the stored version is newer than the chain",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -699,7 +692,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: keeps an earlier attempt's ambiguity on the row and in the dead letter when a later attempt fails to decode its payload",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         deploy(
@@ -738,7 +730,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: refuses startup after a rollback past a recorded version, and when a shortened chain drops a version still retained",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -778,7 +769,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: refuses a shortened chain after the retention horizon until durable payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -850,7 +840,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     name: "payload migrations: refuses durable payloads clear while a runtime writing that version refreshed within the window, and a runtime past its window refuses new turns until it refreshes",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -937,7 +926,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: records the writeVersion, not the chain's last version, while a two-phase deploy is in its first phase",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         deploy(
@@ -966,7 +954,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "payload migrations: writes the old version under writeVersion and reads both versions on one runtime",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -995,7 +982,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   {
     timeoutMs: 60_000,
     name: "payload migrations: refuses removing an event class while a subscription has undelivered events of that tag or an open workflow waits on it",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -1068,7 +1054,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   {
     timeoutMs: 60_000,
     name: "payload migrations: replays a subscription receipt after a schema change without CommandConflict",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -1113,7 +1098,6 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     name: "payload migrations: two runners, one with the new chain under writeVersion, both write and read version 0",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {

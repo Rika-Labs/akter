@@ -367,7 +367,6 @@ const deniedReply = (reply: Reply) => reply.status === 403 || reply.text.include
 export const accessConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "runs in-process code as System({ source: process }) in the default tenant, with no authorize and no Actor.as or Actor.tenant",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -425,7 +424,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "allows System callers and denies User and Anonymous callers of every kind when there is no access and no authorize",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) => {
       const { Ledger, layer } = ledgerOf("AccessClosed")
 
@@ -449,7 +447,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "asks an actor's access policy for each kind: command, query, open, stream, feed, and content each allow and deny on their own",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) => {
       let selected: Kind = "command"
       const seen: Array<AccessRequest> = []
@@ -511,7 +508,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "requires the global authorize and the actor's access to both allow, and lets either alone decide when the other is absent",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) => {
       let globalAllows = true
       let actorAllows = true
@@ -579,7 +575,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "applies an actor's access policy to live sessions on reauthorize: a revoked connection, stream, and feed each end with access_denied",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) => {
       let revoked = false
       const reauthorized: Array<string> = []
@@ -650,7 +645,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "answers a served request from a User or Anonymous caller with 403 access_denied by default, and lets an actor's access, or Actor.access.public, allow them",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) => {
       const closed = ledgerOf("AccessServedClosed")
       const anonymous = ledgerOf("AccessServedPublic", ({ caller }) => isAnonymous(caller))
@@ -732,7 +726,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps internal commands System-only and off public handles when an actor's access allows everyone",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) => {
       const { Ledger, layer } = ledgerOf("AccessInternal", Actor.access.public)
 
@@ -770,7 +763,6 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "sees Anonymous, never System, on every served entry point under Auth.none, and denies it by default",
-    requiresFreshDatabase: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) => {
       const asked: Array<AccessRequest> = []

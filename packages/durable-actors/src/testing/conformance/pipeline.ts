@@ -398,7 +398,6 @@ const rival = (database: Redacted.Redacted<string>) =>
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "pipeline: a warm turn and a wake each take two round trips, and a replay writes nothing",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withProbe(environment, {}, (probe) =>
@@ -435,7 +434,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: each awaited handler statement adds one round trip on the turn session",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withProbe(environment, {}, (probe) =>
@@ -454,7 +452,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: admission, handler, and commit statements keep their groups and order",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withProbe(environment, { prepare: false }, (probe) =>
@@ -510,7 +507,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a stale cached generation sends no writes, rolls back, and reloads committed state",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -556,7 +552,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a turn waiting on the fence of a rival takeover reloads instead of committing",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -605,7 +600,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a failed statement in the commit group makes COMMIT roll back, fails the turn, and discards the cache",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -651,7 +645,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a crash before commit rolls the turn back and the retry starts a fresh transaction",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -673,7 +666,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a crash after commit resolves the retry through the receipt without rerunning the handler",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -695,7 +687,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: commands queued behind or arriving after a turn that crashes after commit are answered promptly and commit once",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) => {
@@ -769,7 +760,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a delayed intent keeps two round trips and is due its delay after commit",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -803,7 +793,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a batch of waiting commands takes two round trips, and its savepoints add none",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -857,7 +846,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: the next batch's admission rides in the previous batch's commit flight, and its handlers wait for their own fence",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -926,7 +914,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a batch whose commit fails rolls back the next batch before its handlers run, and every caller retries once",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -979,7 +966,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a later batch stays hidden until its own commit",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -1009,7 +995,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a defect after a batch commits restarts the activation, and every caller gets its committed outcome",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) => {
@@ -1055,7 +1040,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: each pipelined batch has its own span, not the span of the batch before it",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) => {
@@ -1099,7 +1083,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a keyed delayed effect, its replacement, and its cancellation each keep two round trips",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -1135,7 +1118,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: an unreachable database fails a command id mint as ActorUnavailable, not a defect",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withProbe(environment, { everyPool: true }, (_probe, _database, relayed) =>
@@ -1172,7 +1154,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a turn that loses the database mid-commit is answered, and its caller's retry commits it once",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -1214,7 +1195,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a turn whose COMMIT applied but whose reply was lost is answered from its receipt, never rerun or failed",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -1246,7 +1226,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "pipeline: a batch that loses the database mid-commit answers every command in it, and each caller's retry commits once",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>

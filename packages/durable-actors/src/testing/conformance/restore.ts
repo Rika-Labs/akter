@@ -203,7 +203,6 @@ const RETRY_WINDOW_MS = 60_000
 export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> = [
   {
     name: "restores a backup without reopening expired command ids or dropping pending intents",
-    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       offline(
@@ -293,7 +292,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> 
   },
   {
     name: "replays a receipt the backup holds and runs an unexpired command the backup lost once",
-    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       offline(
@@ -350,7 +348,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> 
   },
   {
     name: "retries an effect in flight at the backup with its idempotency key after restore, and routes its result once",
-    requiresFreshDatabase: true,
     timeoutMs: 60_000,
     run: ({ expect, environment, fixture }) =>
       offline(
@@ -430,7 +427,6 @@ export const restoreConformance: ReadonlyArray<ConformanceCase<RestoreFixture>> 
   },
   {
     name: "keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
