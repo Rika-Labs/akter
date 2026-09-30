@@ -90,7 +90,7 @@ export interface HeldConnection {
 }
 
 /** What a transport asks a holder to open. */
-interface OpenRequest {
+export interface OpenRequest {
   readonly ref: ActorRef
   readonly member: string
   readonly caller: Caller
