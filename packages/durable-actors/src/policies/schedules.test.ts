@@ -1,7 +1,7 @@
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
-import { Actor } from "../../index.ts"
-import { resolveCron } from "./schedule.ts"
+import { Actor } from "../index.ts"
+import { resolveCron } from "./schedules.ts"
 
 const Tick = Actor.command("Tick")
 

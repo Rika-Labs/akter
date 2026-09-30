@@ -14,7 +14,7 @@ import {
 import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../runtime/actors.ts"
 import type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "../state/blob.ts"
-import { resolveCron } from "../runtime/cron/schedule.ts"
+import { resolveCron } from "../policies/schedules.ts"
 import { resolvePolicy } from "../policies/command.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 

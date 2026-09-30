@@ -1,0 +1,215 @@
+import { Cause, type Context, Effect, Exit, Option, Result, Schema } from "effect"
+import type { ExecutorContext } from "../contexts/effect.ts"
+import { Tenant } from "../identity/caller.ts"
+import type { AnyCommand } from "../members/command.ts"
+import {
+  type AnyEffect,
+  CancelledOutcome,
+  type ProgressEffect,
+  type ProgressOf,
+} from "../members/effect.ts"
+import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
+import type { EffectRoute, RegisteredEffect } from "../runtime/members.ts"
+import type { CompiledJob, Descriptor } from "./descriptor.ts"
+
+const utf8 = new TextEncoder()
+
+type Executor = (job: unknown) => Effect.Effect<unknown, unknown, unknown>
+
+/** The `onCancelled` input of a cancelled job whose provider call succeeded. */
+interface CancelledSuccess {
+  readonly effectId: string
+  readonly attempts: number
+  readonly outcome: { readonly _tag: "Succeeded"; readonly value: unknown }
+  readonly ambiguous: boolean
+}
+
+/** Encodes a value as a route command's payload. */
+const routeCodec = (command: AnyCommand) => {
+  const encode = Schema.encodeEffect(
+    Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.input }))),
+  )
+
+  return (value: unknown) =>
+    encode({ value }).pipe(
+      Effect.map((payload): EffectRoute => ({ command: command.tag, payload })),
+    )
+}
+
+/**
+ * One job's registration. Only a typed failure proves the provider did not
+ * apply the call; a defect, timeout, or interruption leaves the attempt's
+ * outcome unknown. A result `onSuccess` cannot accept is dead-lettered rather
+ * than executed again, since the provider already applied it, and a
+ * cancelled job's result goes to `onCancelled`, as an unknown outcome when
+ * that route cannot accept it. A stored payload that no longer decodes never
+ * reaches the executor.
+ */
+const jobOf = (
+  Executor: Context.Key<unknown, unknown>,
+  { job, codec, policy }: CompiledJob,
+  execute: Executor,
+): RegisteredEffect => {
+  const onSuccess = policy.onSuccess === undefined ? undefined : routeCodec(policy.onSuccess)
+  const onDeadLetter =
+    policy.onDeadLetter === undefined ? undefined : routeCodec(policy.onDeadLetter)
+  const onCancelled = policy.onCancelled === undefined ? undefined : routeCodec(policy.onCancelled)
+
+  const cancelledRoute = (
+    decoded: unknown,
+    letter: Parameters<RegisteredEffect["cancelled"]>[2] | CancelledSuccess,
+  ): Effect.Effect<EffectRoute | undefined, Schema.SchemaError> =>
+    onCancelled === undefined
+      ? Effect.succeed(undefined)
+      : onCancelled({
+          effectId: letter.effectId,
+          effect: decoded,
+          attempts: letter.attempts,
+          outcome: letter.outcome,
+          ambiguous: letter.ambiguous,
+        })
+
+  const encodeProgress =
+    job.progress === undefined
+      ? undefined
+      : Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.toCodecJson(job.progress)))
+
+  return {
+    attempts: policy.attempts,
+    backoff: policy.backoff,
+    progressEveryMs: encodeProgress === undefined ? undefined : policy.progressEveryMs,
+    perActor: policy.perActor,
+    routesCancelled: onCancelled !== undefined,
+    execute: Effect.fnUntraced(function* (payload, version, attempt) {
+      const decoded = yield* codec
+        .decode(payload, version)
+        .pipe(
+          Effect.mapError((error) => ({
+            cause: error.message,
+            ambiguous: false,
+            notStarted: true,
+          })),
+        )
+
+      const { report, reporting, ...identity } = attempt
+
+      const progress = (
+        target: AnyEffect,
+        frame: ProgressOf<ProgressEffect>,
+      ): Effect.Effect<void> =>
+        !reporting()
+          ? Effect.void
+          : target !== job || encodeProgress === undefined
+            ? Effect.logWarning("Progress frame does not match the running effect")
+            : encodeProgress(frame).pipe(
+                Effect.map((json) => utf8.encode(json)),
+                Effect.matchEffect({
+                  onFailure: (error) =>
+                    Effect.logWarning("Progress frame did not encode", String(error)),
+                  onSuccess: (bytes) =>
+                    bytes.length > MAX_PROGRESS_BYTES
+                      ? Effect.logWarning("Progress frame exceeds 4 KiB")
+                      : report(bytes),
+                }),
+                Effect.catchDefect((defect) =>
+                  Effect.logWarning("Progress frame did not encode", String(defect)),
+                ),
+              )
+
+      const context: ExecutorContext = { ...identity, progress } as ExecutorContext
+
+      const exit = yield* execute(decoded).pipe(
+        Effect.timeoutOrElse({
+          duration: policy.timeoutMs,
+          orElse: () => Effect.die(new Error(`Executor timed out after ${policy.timeoutMs} ms`)),
+        }),
+        Effect.provideService(Executor, context),
+        Effect.provideService(Tenant, context.ref.tenant),
+        Effect.exit,
+      ) as Effect.Effect<Exit.Exit<unknown, unknown>>
+
+      if (Exit.isFailure(exit))
+        return yield* Effect.fail({
+          cause: Cause.pretty(exit.cause),
+          ambiguous:
+            !Cause.hasFails(exit.cause) ||
+            Cause.hasDies(exit.cause) ||
+            Cause.hasInterrupts(exit.cause),
+        })
+
+      const cancelled =
+        onCancelled === undefined
+          ? undefined
+          : yield* cancelledRoute(decoded, {
+              effectId: context.effectId,
+              attempts: context.attempt,
+              outcome: CancelledOutcome.cases.Succeeded.make({ value: exit.value }),
+              ambiguous: false,
+            }).pipe(
+              Effect.catch((error) =>
+                cancelledRoute(decoded, {
+                  effectId: context.effectId,
+                  attempts: context.attempt,
+                  outcome: CancelledOutcome.cases.Unknown.make({
+                    cause: `The onCancelled route cannot accept the result: ${String(error)}`,
+                  }),
+                  ambiguous: true,
+                }),
+              ),
+              Effect.orDie,
+            )
+
+      if (onSuccess === undefined) return { success: undefined, cancelled, rejected: undefined }
+
+      const success = yield* onSuccess(exit.value).pipe(Effect.result)
+
+      if (Result.isFailure(success))
+        return {
+          success: undefined,
+          cancelled,
+          rejected: {
+            cause: `The onSuccess route cannot accept the result: ${String(success.failure)}`,
+            ambiguous: true,
+            final: true,
+          },
+        }
+
+      return { success: success.success, cancelled, rejected: undefined }
+    }) as RegisteredEffect["execute"],
+    cancelled: Effect.fnUntraced(function* (payload, version, letter) {
+      const decoded = yield* codec.decode(payload, version).pipe(Effect.option)
+
+      if (Option.isNone(decoded)) return undefined
+
+      return yield* cancelledRoute(decoded.value, letter)
+    }, Effect.orDie),
+    deadLetter: Effect.fnUntraced(function* (payload, version, letter) {
+      const decoded = yield* codec.decode(payload, version).pipe(Effect.option)
+
+      if (onDeadLetter === undefined || Option.isNone(decoded)) return undefined
+
+      return yield* onDeadLetter({ ...letter, effect: decoded.value })
+    }, Effect.orDie),
+  }
+}
+
+/** Every declared job's registration; a job without an executor is a defect of the layer. */
+export const jobsOf = (
+  descriptor: Descriptor,
+  Executor: Context.Key<unknown, unknown>,
+  executors: Readonly<Record<string, Executor | undefined>>,
+) =>
+  Effect.gen(function* () {
+    const registered = new Map<string, RegisteredEffect>()
+
+    for (const compiled of descriptor.jobs.values()) {
+      const execute = executors[compiled.job.tag]
+
+      if (execute === undefined)
+        return yield* Effect.die(new Error(`Missing executor ${compiled.job.tag}`))
+
+      registered.set(compiled.job.tag, jobOf(Executor, compiled, execute))
+    }
+
+    return registered as ReadonlyMap<string, RegisteredEffect>
+  })
