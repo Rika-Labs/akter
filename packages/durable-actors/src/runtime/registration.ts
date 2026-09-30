@@ -2,12 +2,8 @@ import { Context, Crypto, Effect } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import type { ActorError } from "../errors/actor.ts"
-import type {
-  EffectRegistration,
-  InternalActors,
-  QueryRegistration,
-  Registration,
-} from "../handles/actors.ts"
+import type { EffectRegistration, QueryRegistration, Registration } from "./members.ts"
+import type { InternalActors } from "./actors.ts"
 import { type AnyBlob, isContent } from "../members/blob.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"

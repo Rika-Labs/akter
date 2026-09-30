@@ -23,7 +23,7 @@ import {
 } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, Tenant, User } from "../../index.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import {
   ActorError,
   InvalidInput,

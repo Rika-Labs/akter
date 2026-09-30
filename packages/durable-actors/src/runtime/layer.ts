@@ -35,15 +35,10 @@ import {
   MailboxFull,
   RunnerAtCapacity,
 } from "../errors/actor.ts"
-import {
-  Actors,
-  type EffectRegistration,
-  type Executed,
-  InternalActors,
-  type QueryRegistration,
-  type Registration,
-  type Request,
-} from "../handles/actors.ts"
+import { Actors } from "../handles/actors.ts"
+import { type EffectRegistration, type QueryRegistration, type Registration } from "./members.ts"
+import type { Executed, Request } from "./request.ts"
+import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"

@@ -14,7 +14,7 @@ import {
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { Actor, Unauthorized, User } from "../../index.ts"
 import { ActorError } from "../../errors/actor.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import type { RuntimeControl } from "../../runtime/drain.ts"
 import type { AssertionClaims, AssertionKey } from "../../serve/assertion/verify.ts"
 import type { AuthProvider } from "../../serve/auth.ts"

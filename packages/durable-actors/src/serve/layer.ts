@@ -29,7 +29,8 @@ import {
   RunnerAtCapacity,
   Unauthorized,
 } from "../errors/actor.ts"
-import { InternalActors, Outcome, Request } from "../handles/actors.ts"
+import { InternalActors } from "../runtime/actors.ts"
+import { Outcome, Request } from "../runtime/request.ts"
 import { ContentStore } from "../handles/content.ts"
 import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
 import { ActorRef, Anonymous, User } from "../identity/caller.ts"

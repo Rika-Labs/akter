@@ -11,7 +11,7 @@ import {
   type UnknownCursor,
 } from "../index.ts"
 import type { ConnectOptions } from "../client/index.ts"
-import type { InternalActors } from "../handles/actors.ts"
+import type { InternalActors } from "../runtime/actors.ts"
 import type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "../state/blob.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
 import { resolvePolicy } from "../policies/command.ts"

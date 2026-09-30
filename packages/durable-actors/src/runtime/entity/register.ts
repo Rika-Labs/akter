@@ -27,13 +27,8 @@ import {
 import { Rpc } from "effect/unstable/rpc"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
-import {
-  Executed,
-  Outcome,
-  type RegisteredCommand,
-  type Registration,
-  Request,
-} from "../../handles/actors.ts"
+import { Executed, Outcome, Request } from "../request.ts"
+import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"

@@ -12,7 +12,8 @@ import {
   Stream,
 } from "effect"
 import { ActorError, InvalidInput, SessionEnded } from "../../errors/actor.ts"
-import { Outcome, type Request, type WatchResult } from "../../handles/actors.ts"
+import { Outcome, type Request } from "../request.ts"
+import { type WatchResult } from "../members.ts"
 import type { Holder, HeldConnection } from "./holder.ts"
 import { Committed, watchMember } from "./protocol.ts"
 import { emptyReadSet, invalidates, type ReadSet, unsupportedRead } from "./reads.ts"

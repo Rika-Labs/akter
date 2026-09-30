@@ -3,7 +3,7 @@ import { HttpRouter } from "effect/unstable/http"
 import { Actor, Unauthorized } from "../../index.ts"
 import { InvalidInput } from "../../errors/actor.ts"
 import { CommandConflict, CommandExpired } from "../../errors/actor.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import { MCP_VERSION } from "../../serve/mcp/endpoint.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import {
