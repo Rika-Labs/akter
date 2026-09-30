@@ -17,7 +17,12 @@ import type { AnyMember, MemberRecord, ValueSchema } from "../members/command.ts
 import type { AnyConnection } from "../members/connection.ts"
 import type { AnyStream } from "../members/stream.ts"
 import type { EventClass } from "../members/event.ts"
-import { type ClientConnection, type ConnectOptions, connect } from "./sessions/connection.ts"
+import {
+  type ClientConnection,
+  type ConnectOptions,
+  connect,
+  type ProgressOfConnection,
+} from "./sessions/connection.ts"
 import { type FeedEntry, type FeedOptions, feedStream } from "./sessions/feed.ts"
 import { type StreamOptions, subscription } from "./sessions/stream.ts"
 import { ConsistencyToken, DatabaseClock, lifetime, retryDeadline } from "./clock.ts"
@@ -115,7 +120,7 @@ export interface ConnectionClient<M extends AnyConnection> {
     ...args: M["input"]["Type"] extends void
       ? [params?: M["input"]["Type"], options?: ConnectOptions]
       : [params: M["input"]["Type"], options?: ConnectOptions]
-  ) => Promise<ClientConnection<M["server"]["Type"], M["client"]["Type"]>>
+  ) => Promise<ClientConnection<M["server"]["Type"], M["client"]["Type"], ProgressOfConnection<M>>>
 }
 
 /** A stream member: each call subscribes once, as an `AsyncIterable` of its elements. */

@@ -102,15 +102,13 @@ export const none: AuthProvider = {
 }
 
 /** Verifies a request's credential; fails `Unauthorized` when it is missing, invalid, or expired. */
-export type Authenticate<R> = (
-  request: AuthRequest,
-) => Effect.Effect<Authenticated, Unauthorized, R>
+type Authenticate<R> = (request: AuthRequest) => Effect.Effect<Authenticated, Unauthorized, R>
 
 /**
  * Options of a custom provider. It reads `authorization: Bearer` unless it
  * names a cookie; one that reads both sets `bearer: true` as well.
  */
-export type MakeOptions<R> =
+type MakeOptions<R> =
   | {
       readonly authenticate: Authenticate<R>
       readonly cookies?: undefined

@@ -18,6 +18,7 @@ import { contentBlobs } from "./scenarios/content-blobs.ts"
 import { coldActivation } from "./scenarios/cold-activation.ts"
 import { connections } from "./scenarios/connections.ts"
 import { progress } from "./scenarios/progress.ts"
+import { sse } from "./scenarios/sse.ts"
 import { effectConcurrency } from "./scenarios/effect-concurrency.ts"
 import { effectRoundTrip } from "./scenarios/effect-round-trip.ts"
 import { events } from "./scenarios/events.ts"
@@ -79,6 +80,7 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   workflows,
   connections,
   progress,
+  sse,
   workflowCheck,
   mint,
   cron,
@@ -212,7 +214,7 @@ const program = Effect.gen(function* () {
 
             const measured = yield* scenario.run({
               backend,
-              profile: profile === "ci" ? "quick" : profile,
+              quick: profile !== "full",
               runners,
               withRuntime: withRuntime({ backend, runners }),
             })

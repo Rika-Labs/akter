@@ -27,8 +27,6 @@ export const turnBatches: Scenario = {
     "One held turn and calls already waiting behind it, per operation: 32 commands commit as one turn batch, or 1,024 commutative reducer calls commit as one merged turn.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-
       const rounds = (options: {
         readonly name: string
         readonly waiting: number
@@ -79,14 +77,14 @@ export const turnBatches: Scenario = {
         yield* rounds({
           name: `waiting-${WAITING}`,
           waiting: WAITING,
-          operations: quick ? 30 : 300,
+          operations: context.quick ? 30 : 300,
           call: (probe) => probe.Add(1),
           calls: 1,
         }),
         yield* rounds({
           name: `merged-${MERGED}`,
           waiting: MERGED,
-          operations: quick ? 10 : 100,
+          operations: context.quick ? 10 : 100,
           call: (probe) => probe.Tick(1),
           calls: MERGED + 1,
         }),

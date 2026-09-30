@@ -18,7 +18,8 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
-import { compress, decompress } from "../storage/codec.ts"
+import { compress, decompress, routingKey as routingKeyOf } from "../storage/codec.ts"
+import { recordedPlacement } from "../storage/placements.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
@@ -145,11 +146,15 @@ const acknowledgement = (
 /**
  * True when `request` is a minted actor's creating intent: its caller carries
  * the parent's mint proof for the actor's id, and the parent's committed
- * outbox still holds that exact intent with the same payload.
+ * outbox still holds that exact intent with the same payload. The read names
+ * the parent's routing key, which a parent-placed actor shares and any other
+ * actor gets from the parent type's recorded placement, so it is one keyed
+ * statement rather than a scan of every shard.
  */
 const committedMintIntent = Effect.fnUntraced(function* (
   request: Request,
   parent: string | undefined,
+  routingKey: bigint,
 ) {
   const { caller, ref } = request
 
@@ -158,11 +163,21 @@ const committedMintIntent = Effect.fnUntraced(function* (
 
   const sql = yield* SqlClient.SqlClient
 
+  const parentPlacement =
+    parent === undefined ? yield* recordedPlacement(caller.ref.actor) : undefined
+
+  if (parent === undefined && parentPlacement === undefined) return false
+
+  const parentKey =
+    parentPlacement === undefined
+      ? routingKey
+      : routingKeyOf({ ref: caller.ref, placement: parentPlacement })
+
   const rows = yield* sql<{ caller: string }>`SELECT caller FROM actor_outbox
     WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
       AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
       AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}
-      AND payload::jsonb = ${request.payload}::jsonb`
+      AND payload::jsonb = ${request.payload}::jsonb AND routing_key = ${parentKey}`
 
   if (rows.length === 0) return false
 
@@ -294,7 +309,7 @@ export interface Done {
  * batch's handlers, and `committed` once the batch commits or rolls back,
  * before the next batch's handlers run.
  */
-export interface Run<W extends Delivery, RN, RP, RC> {
+interface Run<W extends Delivery, RN, RP, RC> {
   readonly first: ReadonlyArray<W>
   readonly next: Effect.Effect<ReadonlyArray<W> | undefined, never, RN>
   readonly prepare: Effect.Effect<void, never, RP>
@@ -466,7 +481,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     const cold = view.generation === undefined
 
     const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true)
+      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
+      set_config('durable.turn', 'on', true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || view.state === undefined
@@ -701,7 +717,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           policy.createdBy === request.command &&
           !created &&
           isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
-          (request.external === true || !(yield* committedMintIntent(request, parent)))
+          (request.external === true || !(yield* committedMintIntent(request, parent, routingKey)))
         ) {
           settled[index] = Result.fail(
             ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),

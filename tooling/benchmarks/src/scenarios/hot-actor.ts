@@ -10,7 +10,6 @@ export const hotActor: Scenario = {
     "Warm command turns on one actor: sequential latency, then 8 and 64 concurrent callers competing for its single turn slot.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       results.push(
@@ -24,7 +23,7 @@ export const hotActor: Scenario = {
               parameters: { actors: 1, workers: 1 },
               instruments,
               workers: 1,
-              operations: quick ? 300 : 3000,
+              operations: context.quick ? 300 : 3000,
               operation: () => probe.Add(1),
               listStatements: true,
             })
@@ -44,7 +43,7 @@ export const hotActor: Scenario = {
                 parameters: { actors: 1, workers },
                 instruments,
                 workers,
-                durationMs: quick ? 2000 : 10_000,
+                durationMs: context.quick ? 2000 : 10_000,
                 operation: () => probe.Add(1),
               })
             }),
