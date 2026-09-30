@@ -1,5 +1,5 @@
-import { Actor, User } from "@durable-actors/core"
-import { Database, Inspector } from "@durable-actors/core/runtime"
+import { User } from "@durable-actors/core"
+import { Auth, Database, Inspector } from "@durable-actors/core/runtime"
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Schema } from "effect"
 import type { Cause, Crypto } from "effect"
@@ -45,7 +45,7 @@ const flags = {
 export type DevServices = SqlClient.SqlClient | Crypto.Crypto | HttpRouter.HttpRouter
 
 /**
- * An entry's `app` export: the application's routes, usually `Actor.serve`,
+ * An entry's `app` export: the application's routes, usually `Actors.serve`,
  * with its actor layers and `Actors.layer` provided, leaving the database to
  * `durable dev`. Its startup failures, such as a migration error, are tagged errors.
  */
@@ -76,7 +76,7 @@ export const INSPECTOR_PATH = "/_durable/inspector"
  * reading one tenant. The server listens on loopback unless told otherwise.
  */
 export const localOperator = (tenant: string) =>
-  Actor.auth.make(() => Effect.succeed({ tenant, caller: User.make({ subject: "durable-dev" }) }))
+  Auth.make(() => Effect.succeed({ tenant, caller: User.make({ subject: "durable-dev" }) }))
 
 /** The entry's routes and the inspector's page and API, on one router. */
 export const devRoutes = ({ app, tenant }: { readonly app: DevApp; readonly tenant: string }) =>
