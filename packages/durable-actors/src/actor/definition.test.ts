@@ -1,4 +1,4 @@
-import { type Context, Effect, Layer, Schema, Stream } from "effect"
+import { Context, type Duration, Effect, Layer, Schema, Stream } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import {
   Actor,
@@ -14,6 +14,7 @@ import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../handles/actors.ts"
 import type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "../state/blob.ts"
 import { resolveCron } from "../runtime/cron/schedule.ts"
+import { resolvePolicy } from "../policies/command.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
 describe("actor declarations", () => {
@@ -384,6 +385,101 @@ describe("actor declarations", () => {
     >()
     // @ts-expect-error internal members must be commands
     expect(() => Actor.make("Hidden", { api: { Bump }, internal: { Peek } })).toThrow("commands")
+  })
+
+  it("lets only a query declared watch handle a watch, and only with X.Read", () => {
+    class Clock extends Context.Service<Clock, { readonly tick: number }>()(
+      "@durable-actors/core/actor/definition.test/Clock",
+    ) {}
+
+    const Peek = Actor.query("Peek", { output: Schema.Finite, watch: true })
+    const Plain = Actor.query("Plain", { output: Schema.Finite })
+    const Bump = Actor.command("Bump")
+
+    const Box = Actor.make("Box", {
+      state: Actor.state({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+      api: { Bump, Peek, Plain },
+    })
+
+    expect(Peek.watch).toBe(true)
+    expect(Plain.watch).toBe(false)
+
+    type Public = Effect.Success<ReturnType<typeof Box.create>>
+
+    expectTypeOf<Public["Peek"]["watch"]>().toBeFunction()
+    expectTypeOf<Public["Peek"]["watch"]>().returns.toEqualTypeOf<
+      Stream.Stream<
+        number,
+        ActorError.Of<
+          | "ActorUnavailable"
+          | "Unauthorized"
+          | "RunnerAtCapacity"
+          | "SessionEnded"
+          | "NotCreated"
+          | "Timeout"
+        >
+      >
+    >()
+    expectTypeOf<Public["Plain"]>().not.toHaveProperty("watch")
+
+    const reads = Box.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          return (yield* Box.Read).state.n
+        }),
+        Plain: Effect.fnUntraced(function* () {
+          yield* Clock
+
+          return (yield* Box.Read).state.n
+        }),
+      }),
+    )
+
+    expectTypeOf(reads).toEqualTypeOf<
+      Layer.Layer<never, never, Context.Service.Identifier<typeof Clock> | InternalActors>
+    >()
+
+    const onlyWatched = Box.toQueryLayer(
+      Effect.succeed({
+        Peek: Effect.fnUntraced(function* () {
+          return (yield* Box.Read).state.n
+        }),
+        Plain: () => Effect.succeed(1),
+      }),
+    )
+
+    expectTypeOf(onlyWatched).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+
+    const watchesClock = Effect.fnUntraced(function* () {
+      yield* Clock
+
+      return 1
+    })
+
+    Box.toQueryLayer(
+      // @ts-expect-error a watched handler may require nothing but X.Read
+      Effect.succeed({
+        Peek: watchesClock,
+        Plain: () => Effect.succeed(1),
+      }),
+    )
+  })
+
+  it("resolves watch limits and bounds reconcileEvery from 5 seconds to 1 hour", () => {
+    const Read = Actor.command("Read")
+
+    const resolved = (watch?: { readonly reconcileEvery?: Duration.Input }) =>
+      resolvePolicy({ declared: watch === undefined ? undefined : { watch }, commands: [Read] })
+
+    expect(resolved().watch).toEqual({
+      maxPerActor: 1_000,
+      minIntervalMs: 100,
+      reconcileMs: 30_000,
+    })
+    expect(resolved({ reconcileEvery: "5 seconds" }).watch.reconcileMs).toBe(5_000)
+    expect(resolved({ reconcileEvery: "1 hour" }).watch.reconcileMs).toBe(3_600_000)
+    expect(() => resolved({ reconcileEvery: "4 seconds" })).toThrow()
+    expect(() => resolved({ reconcileEvery: "2 hours" })).toThrow()
   })
 
   it("types turn.emit and read.events to the declared events of X.Turn and X.Read", () => {

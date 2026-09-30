@@ -265,7 +265,11 @@ export const actorRegistration = ({
 
       registrations.set(registration.name, registration)
 
-      if (registration.connections.size > 0 || registration.feeds.size > 0)
+      if (
+        registration.connections.size > 0 ||
+        registration.feeds.size > 0 ||
+        registration.watches.size > 0
+      )
         heldTypes.set(registration.name, heldType(registration))
 
       if (retained) sweepsWorkflows.add(registration.name)
