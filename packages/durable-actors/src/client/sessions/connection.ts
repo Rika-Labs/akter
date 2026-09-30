@@ -2,14 +2,26 @@ import { Data, Deferred, Effect, Match, Option, Predicate, Queue, Schema, Stream
 import type { ServedConnection } from "../../actor/served.ts"
 import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import type { ValueSchema } from "../../members/command.ts"
+import type { AnyConnection } from "../../members/connection.ts"
+import type { ProgressEffect } from "../../members/effect.ts"
 import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../serve/frames.ts"
 import { decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
 
 /**
- * What a connection's client receives, in order: member frames, the holder's
- * resync notices, and executor progress for a member that lists effects.
+ * One effect's progress as its client receives it: the effect's tag and a
+ * frame decoded by that effect's `progress` schema. Unions over the effects a
+ * connection member lists, so narrowing on `effect` types `frame`.
  */
-export type ConnectionMessage<Frame> = Data.TaggedEnum<{
+export type ProgressUpdate<E extends ProgressEffect = ProgressEffect> = E extends ProgressEffect
+  ? { readonly effect: E["tag"]; readonly frame: E["progress"]["Type"] }
+  : never
+
+/** The progress a connection member's client receives: one update per effect the member lists. */
+export type ProgressOfConnection<M extends AnyConnection> = ProgressUpdate<
+  NonNullable<M["progress"]>["effects"][number]
+>
+
+type Messages<Frame> = Data.TaggedEnum<{
   Frame: {
     readonly frame: Frame
     /** The flushed-through event cursor the frame was sent above; absent under `stampCursor: false`. */
@@ -25,27 +37,40 @@ export type ConnectionMessage<Frame> = Data.TaggedEnum<{
     readonly deadline: number
   }
   ResyncReplayed: {}
-  /**
-   * An executor's progress on an effect the member lists: display-only, lossy,
-   * and never replayed after a resync. `frame` is decoded by that effect's
-   * `progress` schema; `seq` counts the attempt's reports, so a gap is a dropped one.
-   */
-  Progress: {
-    readonly effect: string
+  Progress: ProgressUpdate & {
     readonly effectId: string
     readonly attempt: number
     readonly seq: number
-    readonly frame: unknown
   }
 }>
 
+/**
+ * An executor's progress on an effect the member lists: display-only, lossy,
+ * and never replayed after a resync. `frame` is decoded by that effect's
+ * `progress` schema; `seq` counts the attempt's reports, so a gap is a dropped one.
+ */
+export type ProgressMessage<Progress extends ProgressUpdate = ProgressUpdate> = Extract<
+  Messages<never>,
+  { readonly _tag: "Progress" }
+> &
+  Progress
+
+/**
+ * What a connection's client receives, in order: member frames, the holder's
+ * resync notices, and executor progress for a member that lists effects.
+ * `Progress` is the member's `ProgressUpdate`, so its messages narrow by `effect`.
+ */
+export type ConnectionMessage<Frame, Progress extends ProgressUpdate = ProgressUpdate> =
+  | Exclude<Messages<Frame>, { readonly _tag: "Progress" }>
+  | ProgressMessage<Progress>
+
 interface ConnectionMessageDefinition extends Data.TaggedEnum.WithGenerics<1> {
-  readonly taggedEnum: ConnectionMessage<this["A"]>
+  readonly taggedEnum: Messages<this["A"]>
 }
 
 const ConnectionMessage = Data.taggedEnum<ConnectionMessageDefinition>()
 
-type FrameMessage<Frame> = Extract<ConnectionMessage<Frame>, { readonly _tag: "Frame" }>
+type FrameMessage<Frame> = Extract<Messages<Frame>, { readonly _tag: "Frame" }>
 
 /** Options of one `connect` call. */
 export interface ConnectOptions {
@@ -61,7 +86,11 @@ export interface ConnectOptions {
 }
 
 /** An open connection: typed frames both ways. */
-export interface ClientConnection<Server, Client> {
+export interface ClientConnection<
+  Server,
+  Client,
+  Progress extends ProgressUpdate = ProgressUpdate,
+> {
   /** The server's id for this connection. */
   readonly connectionId: string
   /** The flushed-through event cursor when it opened: replay events after it to catch up. */
@@ -72,7 +101,7 @@ export interface ClientConnection<Server, Client> {
    * `ServerClosed` when the actor closed it, and `HolderLost` with
    * `resync: true` for a dropped socket. Consume either this or `frames`, not both.
    */
-  readonly messages: AsyncIterable<ConnectionMessage<Server>>
+  readonly messages: AsyncIterable<ConnectionMessage<Server, Progress>>
   /** The member frames of `messages`, without the resync notices or progress. */
   readonly frames: AsyncIterable<Server>
   /** Sends one frame; rejects with `SessionEnded` `HolderLost` once the session ended or its socket stopped being open. */
