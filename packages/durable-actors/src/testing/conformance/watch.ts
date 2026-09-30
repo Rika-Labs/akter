@@ -35,7 +35,6 @@ import {
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import { parse } from "../../client/sessions/feed.ts"
 import type { Authenticated } from "../../serve/auth.ts"
 import { HttpWatched, serveHttp, tenantOf } from "./http.ts"
 import { pauseReplay, replayedThrough, withReplica } from "./read-your-writes.ts"
@@ -483,9 +482,27 @@ const watchOver = (
       Stream.runForEach((chunk) =>
         Effect.sync(() => {
           buffer += chunk
-          const parsed = parse(buffer)
-          buffer = parsed.rest
-          messages.push(...parsed.messages)
+          let end = buffer.indexOf("\n\n")
+
+          while (end !== -1) {
+            const block = buffer.slice(0, end)
+            buffer = buffer.slice(end + 2)
+            end = buffer.indexOf("\n\n")
+            const fields = new Map<string, string>()
+
+            for (const line of block.split("\n"))
+              if (!line.startsWith(":")) {
+                const colon = line.indexOf(":")
+                fields.set(line.slice(0, colon), line.slice(colon + 2))
+              }
+
+            if (fields.has("data"))
+              messages.push({
+                id: fields.get("id"),
+                event: fields.get("event"),
+                data: fields.get("data")!,
+              })
+          }
         }),
       ),
       Effect.ignore,

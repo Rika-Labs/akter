@@ -40,6 +40,7 @@ const Spec = Schema.Struct({
       Schema.String,
       Schema.Struct({
         operationId: Schema.String,
+        "x-durable-transport": Schema.optionalKey(Schema.String),
         parameters: Schema.optionalKey(
           Schema.Array(Schema.Struct({ name: Schema.String, in: Schema.String })),
         ),
@@ -191,6 +192,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
 
           const operations = Object.entries(spec.paths).flatMap(([path, methods]) =>
             methods["post"] !== undefined &&
+            methods["post"]["x-durable-transport"] === undefined &&
             (path.startsWith("/actors/") || methods["post"].operationId === "durable.commandIds")
               ? [{ path, operation: methods["post"] }]
               : [],
@@ -243,7 +245,10 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
 
             expect(tool.outputSchema === undefined).toBe(success === undefined)
             expect(tool.annotations.readOnlyHint).toBe(
-              path.endsWith("/Count") || path.endsWith("/Peek") || path.endsWith("/Snapshot"),
+              path.endsWith("/Count") ||
+                path.endsWith("/Peek") ||
+                path.endsWith("/Snapshot") ||
+                path.endsWith("/Level"),
             )
           }
 

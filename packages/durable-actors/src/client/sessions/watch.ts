@@ -2,9 +2,10 @@ import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
 import type { ServedMember } from "../../actor/served.ts"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import type { ValueSchema } from "../../members/command.ts"
-import { decodeFailure, type Failure, networkFailure, undecodableFailure } from "../transport.ts"
-import { parse } from "./feed.ts"
+import { aborted, decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
+import { readEvents } from "./feed.ts"
 
+/** Options of one watch. */
 export interface WatchOptions {
   /** Ends the iteration; the watch stops at once. */
   readonly signal?: AbortSignal
@@ -24,9 +25,11 @@ const isExpired = (failure: Failure) =>
   Schema.is(Unauthorized)(failure.reason) &&
   failure.reason.code === "expired"
 
+/** Whether a watch that ended with `failure` may reopen. */
 const reopens = (failure: Failure, authRetried: boolean) =>
   Schema.is(ActorError)(failure) && (failure.isRetryable || (!authRetried && isExpired(failure)))
 
+/** The greater of the version held and a result's `id`, when that is a version. */
 const later = (current: string | undefined, seen: string | undefined) =>
   seen !== undefined &&
   VERSION.test(seen) &&
@@ -34,7 +37,8 @@ const later = (current: string | undefined, seen: string | undefined) =>
     ? seen
     : current
 
-export interface WatchSource {
+interface WatchSource {
+  /** The served query watched. */
   readonly member: ServedMember
   /**
    * Posts the watch with its encoded input and fresh headers. `version` is the
@@ -44,7 +48,8 @@ export interface WatchSource {
   readonly open: (
     version: string | undefined,
     signal: AbortSignal,
-  ) => Effect.Effect<Response, ActorError>
+  ) => Effect.Effect<Response, Failure>
+  /** Decodes the query's declared errors from a served body. */
   readonly declared: (body: Schema.Json) => Option.Option<Failure>
   /** The consistency token the client holds when the watch starts. */
   readonly token: () => string | undefined
@@ -54,11 +59,12 @@ export interface WatchSource {
 /**
  * One watch on a query declared `watch: true`: its current result, then the
  * newest result after each commit that changed what the query read. A watch is
- * state, not history, so a dropped connection is reopened with the greatest
- * version any result carried as `durable-min-version`, and its first result
- * is the current state, never older than one already delivered. It fails with
- * the query's declared error or the `ActorError` that ended it when a retry
- * cannot help.
+ * state, not history, so a dropped connection is reopened after a jittered,
+ * growing delay, or the server's `retryAfter`, with the greatest version any
+ * result carried as `durable-min-version`; its first result is the current
+ * state, never older than one already delivered. It fails with the query's
+ * declared error or the `ActorError` that ended it when a retry cannot help,
+ * and an expired credential is retried once.
  */
 export const watchStream = ({
   member,
@@ -79,41 +85,18 @@ export const watchStream = ({
       let authRetried = false
 
       const once = Effect.gen(function* () {
-        const response = yield* open(last, yield* Effect.abortSignal)
-
-        if (response.status !== 200) {
-          const text = yield* Effect.tryPromise({
-            try: () => response.text(),
-            catch: networkFailure,
-          })
-
-          return yield* failureOf(text, response.status, response.headers)
-        }
-
-        if (response.body === null) return yield* undecodableFailure()
-
-        const reader = response.body.getReader()
-
-        yield* Effect.addFinalizer(() =>
-          Effect.promise(() => reader.cancel().catch(() => undefined)),
-        )
-
-        const text = new TextDecoder()
-        let buffer = ""
+        const { next } = yield* readEvents({
+          response: yield* open(last, yield* Effect.abortSignal),
+          refused: failureOf,
+          idleMs: IDLE_MS,
+        })
 
         while (true) {
-          const chunk = yield* Effect.tryPromise({
-            try: () => reader.read(),
-            catch: networkFailure,
-          }).pipe(Effect.timeoutOption(IDLE_MS))
+          const messages = yield* next
 
-          if (Option.isNone(chunk) || chunk.value.done) return
+          if (messages === undefined) return
 
-          buffer += text.decode(chunk.value.value, { stream: true })
-          const parsed = parse(buffer)
-          buffer = parsed.rest
-
-          for (const message of parsed.messages) {
+          for (const message of messages) {
             if (message.event === "end") return yield* failureOf(message.data, 0)
 
             const json = yield* decodeJson(message.data).pipe(Effect.mapError(undecodableFailure))
@@ -149,19 +132,4 @@ export const watchStream = ({
       Effect.catch((failure) => Queue.fail(out, failure)),
       Effect.andThen(Queue.end(out)),
     ),
-  ).pipe(
-    Stream.interruptWhen(
-      Effect.callback<void>((resume) => {
-        const signal = options.signal
-
-        if (signal === undefined) return
-
-        if (signal.aborted) return resume(Effect.void)
-
-        const onAbort = () => resume(Effect.void)
-        signal.addEventListener("abort", onAbort, { once: true })
-
-        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
-      }),
-    ),
-  )
+  ).pipe(Stream.interruptWhen(aborted(options.signal)))
