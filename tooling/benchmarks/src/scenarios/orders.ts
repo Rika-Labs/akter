@@ -60,7 +60,6 @@ export const orders: Scenario = {
     "examples/orders Place: the acknowledged turn (lines, event, two minted shipments, a charge), the round trip until the charge's Charged turn commits, and 16 concurrent callers.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       const cases = [
@@ -102,8 +101,8 @@ export const orders: Scenario = {
                   instruments: database.instruments,
                   workers,
                   ...(workers === 1
-                    ? { operations: quick ? 100 : 1000 }
-                    : { durationMs: quick ? 2000 : 10_000 }),
+                    ? { operations: context.quick ? 100 : 1000 }
+                    : { durationMs: context.quick ? 2000 : 10_000 }),
                   operation: (index) => operation(`${name}-${index}`),
                   listStatements: workers === 1,
                 })
