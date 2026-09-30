@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { UsageError } from "../workflows/check.ts"
+import { parseFlags, UsageError } from "../../flags.ts"
 
 /** The environment variable an operator command reads its bearer token from, unless `--token-env` names another. */
 export const TOKEN_ENV = "DURABLE_OPERATOR_TOKEN"
@@ -17,17 +17,6 @@ export class OperatorRefused extends Schema.TaggedError<OperatorRefused>()("Oper
   body: Schema.String,
 }) {}
 
-/** Flags every operator command takes, and the arguments left for the command itself. */
-export interface OperatorFlags {
-  readonly urls: ReadonlyArray<string>
-  readonly tenant: string | undefined
-  readonly tokenEnv: string
-  readonly json: boolean
-  readonly flags: ReadonlyMap<string, string>
-  readonly switches: ReadonlySet<string>
-  readonly positional: ReadonlyArray<string>
-}
-
 /**
  * Parses `--url` (repeatable), `--tenant`, `--token-env`, `--json`, the
  * command's own `valued` flags and `switches`, and positional arguments.
@@ -35,55 +24,33 @@ export interface OperatorFlags {
 export const parseOperatorFlags = ({
   args,
   valued,
-  switches: known,
+  switches,
+  maxPositional,
 }: {
   readonly args: ReadonlyArray<string>
   readonly valued: ReadonlyArray<string>
   readonly switches: ReadonlyArray<string>
+  readonly maxPositional?: number
 }) =>
   Effect.gen(function* () {
-    const urls: Array<string> = []
-    const flags = new Map<string, string>()
-    const switches = new Set<string>()
-    const positional: Array<string> = []
-    let tenant: string | undefined
-    let tokenEnv = TOKEN_ENV
-    let json = false
+    const parsed = yield* parseFlags({
+      args,
+      valued: [...valued, "--url", "--tenant", "--token-env"],
+      switches: [...switches, "--json"],
+      maxPositional,
+    })
 
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (!arg.startsWith("--")) {
-        positional.push(arg)
-        continue
-      }
-
-      if (arg === "--json") {
-        json = true
-        continue
-      }
-
-      if (known.includes(arg)) {
-        switches.add(arg)
-        continue
-      }
-
-      if (![...valued, "--url", "--tenant", "--token-env"].includes(arg))
-        return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-
-      const value = args[++index]
-
-      if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-      if (arg === "--url") urls.push(value.replace(/\/+$/, ""))
-      else if (arg === "--tenant") tenant = value
-      else if (arg === "--token-env") tokenEnv = value
-      else flags.set(arg, value)
-    }
+    const urls = parsed.repeated("--url").map((url) => url.replace(/\/+$/, ""))
 
     if (urls.length === 0) return yield* UsageError.make({ message: "--url is required" })
 
-    return { urls, tenant, tokenEnv, json, flags, switches, positional } satisfies OperatorFlags
+    return {
+      ...parsed,
+      urls,
+      tenant: parsed.flags.get("--tenant"),
+      tokenEnv: parsed.flags.get("--token-env") ?? TOKEN_ENV,
+      json: parsed.switches.has("--json"),
+    }
   })
 
 /** Splits `Room/r1` into its actor type and id; the id may itself contain `/`. */

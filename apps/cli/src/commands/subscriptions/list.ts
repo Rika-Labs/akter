@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect"
-import { UsageError } from "../workflows/check.ts"
+import { UsageError } from "../../flags.ts"
 import { operatorRequest, parseOperatorFlags } from "../operator/request.ts"
 
 export const USAGE =

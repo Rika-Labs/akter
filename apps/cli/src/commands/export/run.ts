@@ -1,6 +1,6 @@
 import { Seed, SeedJson } from "@durable-actors/core/runtime"
 import { Effect, FileSystem, Schema } from "effect"
-import { UsageError } from "../workflows/check.ts"
+import { UsageError } from "../../flags.ts"
 import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
 
 /** Usage text for `durable export`. */

@@ -4,7 +4,7 @@ import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Exit, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { UsageError } from "../workflows/check.ts"
+import { UsageError } from "../../flags.ts"
 import { parsePayloads, payloads } from "./run.ts"
 
 const V0 = { body: Schema.String }

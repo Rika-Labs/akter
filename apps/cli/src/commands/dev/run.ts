@@ -5,25 +5,12 @@ import type { Cause, Crypto } from "effect"
 import type { HttpRouter } from "effect/unstable/http"
 import type { SqlClient } from "effect/unstable/sql"
 
-import { UsageError } from "../workflows/check.ts"
+import { parseFlags, UsageError } from "../../flags.ts"
 import { pageRoutes } from "./inspector/page.ts"
 
 /** Usage text for `durable dev`. */
 export const USAGE =
   "Usage: durable dev --entry <module> [--database-url <url> | --data-dir <dir>] [--port <port>] [--hostname <host>] [--tenant <tenant>]"
-
-/** Parsed arguments of `dev`. */
-export interface DevOptions {
-  readonly entry: string
-  /** Postgres to run on; PGlite when absent. */
-  readonly databaseUrl: string | undefined
-  /** Where PGlite keeps its files; in memory when absent. */
-  readonly dataDir: string | undefined
-  readonly port: number
-  readonly hostname: string
-  /** The one tenant the inspector reads. */
-  readonly tenant: string
-}
 
 const Port = Schema.FiniteFromString.check(
   Schema.isInt(),
@@ -32,32 +19,19 @@ const Port = Schema.FiniteFromString.check(
 
 const decodePort = Schema.decodeUnknownEffect(Port)
 
-const VALUED = new Set([
-  "--entry",
-  "--database-url",
-  "--data-dir",
-  "--port",
-  "--hostname",
-  "--tenant",
-])
-
-/** Parses the arguments after `dev`. */
+/**
+ * Parses the arguments after `dev`. Without `--database-url` it runs on
+ * PGlite, in `--data-dir` or in memory; the inspector reads one `--tenant`.
+ */
 export const parseDev = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const values = new Map<string, string>()
+    const parsed = yield* parseFlags({
+      args,
+      valued: ["--entry", "--database-url", "--data-dir", "--port", "--hostname", "--tenant"],
+      maxPositional: 0,
+    })
 
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (!VALUED.has(arg)) return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-
-      const value = args[++index]
-
-      if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-      values.set(arg, value)
-    }
-
+    const values = parsed.flags
     const entry = values.get("--entry")
 
     if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
@@ -81,7 +55,7 @@ export const parseDev = (args: ReadonlyArray<string>) =>
       port,
       hostname: values.get("--hostname") ?? "127.0.0.1",
       tenant: values.get("--tenant") ?? "default",
-    } satisfies DevOptions
+    }
   })
 
 /** What `durable dev` provides to an entry's `app`: the database, crypto, and the router. */

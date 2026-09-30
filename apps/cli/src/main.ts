@@ -5,6 +5,7 @@ import {
   Clock,
   Config,
   Console,
+  type Crypto,
   Effect,
   type FileSystem,
   Layer,
@@ -14,6 +15,7 @@ import {
   Schema,
 } from "effect"
 import { FetchHttpClient, type HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
+import type { SqlClient, SqlError } from "effect/unstable/sql"
 
 import {
   INSPECTOR_PATH,
@@ -50,14 +52,8 @@ import {
 } from "./commands/subscriptions/list.ts"
 import { USAGE as SKIP_USAGE, parseSkip, skip } from "./commands/subscriptions/skip.ts"
 import { USAGE as RECEIPTS_USAGE, parseShow, showReceipt } from "./commands/receipts/show.ts"
-import {
-  type UsageError,
-  USAGE,
-  actorsOf,
-  check,
-  loadEntry,
-  parseCheck,
-} from "./commands/workflows/check.ts"
+import type { UsageError } from "./flags.ts"
+import { USAGE, actorsOf, check, loadEntry, parseCheck } from "./commands/workflows/check.ts"
 import { USAGE as PAYLOADS_USAGE, parsePayloads, payloads } from "./commands/payloads/run.ts"
 import {
   USAGE as TENANTS_USAGE,
@@ -66,18 +62,37 @@ import {
   parseCreate,
 } from "./commands/tenants/create.ts"
 
-const fail = (message: string) =>
-  Console.error(message).pipe(
-    Effect.andThen(
-      Effect.sync(() => {
-        process.exitCode = 2
-      }),
-    ),
-  )
+const setExitCode = (code: number) =>
+  Effect.sync(() => {
+    process.exitCode = code
+  })
 
-const workflowsCheck = (args: ReadonlyArray<string>) =>
+const fail = (message: string) => Console.error(message).pipe(Effect.andThen(setExitCode(2)))
+
+/**
+ * Runs a command that loads an entry module's actors and reads them against
+ * the database, then prints its report and exits with its code.
+ */
+const entryCommand = <O extends { readonly entry: string; readonly databaseUrl: string }>({
+  usage,
+  unreadable,
+  parse,
+  run,
+}: {
+  readonly usage: string
+  readonly unreadable: string
+  readonly parse: Effect.Effect<O, UsageError>
+  readonly run: (
+    options: O,
+    actors: ReadonlyArray<{ readonly name: string; readonly api: object }>,
+  ) => Effect.Effect<
+    { readonly output: string; readonly exitCode: number },
+    SqlError.SqlError,
+    SqlClient.SqlClient | Crypto.Crypto
+  >
+}) =>
   Effect.gen(function* () {
-    const options = yield* parseCheck(args)
+    const options = yield* parse
     const module = yield* loadEntry(options.entry)
     const actors = yield* actorsOf({ module, entry: options.entry })
 
@@ -87,49 +102,15 @@ const workflowsCheck = (args: ReadonlyArray<string>) =>
       ),
     )
 
-    const { output, exitCode } = yield* check({ actors, json: options.json }).pipe(
-      Effect.provideContext(services),
-    )
+    const { output, exitCode } = yield* run(options, actors).pipe(Effect.provideContext(services))
 
     yield* Console.log(output)
-    yield* Effect.sync(() => {
-      process.exitCode = exitCode
-    })
+    yield* setExitCode(exitCode)
   }).pipe(
     Effect.scoped,
     Effect.catchTags({
-      SqlError: (error) => fail(`Cannot read workflow state: ${error.message}`),
-      UsageError: (error) => fail(`${error.message}\n${USAGE}`),
-    }),
-  )
-
-const payloadsCommand = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const options = yield* parsePayloads(args)
-    const module = yield* loadEntry(options.entry)
-    const actors = yield* actorsOf({ module, entry: options.entry })
-
-    const services = yield* Layer.build(
-      Database.postgres({ url: Redacted.make(options.databaseUrl) }).pipe(
-        Layer.provideMerge(BunCrypto.layer),
-      ),
-    )
-
-    const { output, exitCode } = yield* payloads({
-      command: options.command,
-      actors,
-      json: options.json,
-    }).pipe(Effect.provideContext(services))
-
-    yield* Console.log(output)
-    yield* Effect.sync(() => {
-      process.exitCode = exitCode
-    })
-  }).pipe(
-    Effect.scoped,
-    Effect.catchTags({
-      SqlError: (error) => fail(`Cannot read payload versions: ${error.message}`),
-      UsageError: (error) => fail(`${error.message}\n${PAYLOADS_USAGE}`),
+      SqlError: (error) => fail(`${unreadable}: ${error.message}`),
+      UsageError: (error) => fail(`${error.message}\n${usage}`),
     }),
   )
 
@@ -233,11 +214,7 @@ const operatorCommand = <O extends { readonly tokenEnv: string; readonly json: b
       RunnerUnreachable: (error) => fail(`Cannot reach ${error.url}: ${error.message}`),
       OperatorRefused: (error) =>
         Console.error(`Refused (${error.status}): ${error.body}`).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              process.exitCode = 1
-            }),
-          ),
+          Effect.andThen(setExitCode(1)),
         ),
       ConfigError: (error) => fail(`Cannot read the operator token: ${error.message}`),
       SchemaError: (error) => fail(`Unexpected answer: ${error.message}`),
@@ -267,11 +244,23 @@ const program = Effect.gen(function* () {
 
   if (group === "dev") return yield* dev(process.argv.slice(3))
 
-  if (group === "workflows" && command === "check") return yield* workflowsCheck(args)
+  if (group === "workflows" && command === "check")
+    return yield* entryCommand({
+      usage: USAGE,
+      unreadable: "Cannot read workflow state",
+      parse: parseCheck(args),
+      run: (options, actors) => check({ actors, json: options.json }),
+    })
 
   if (group === "defects" && command === "list") return yield* defectsList(args)
 
-  if (group === "payloads") return yield* payloadsCommand(process.argv.slice(3))
+  if (group === "payloads")
+    return yield* entryCommand({
+      usage: PAYLOADS_USAGE,
+      unreadable: "Cannot read payload versions",
+      parse: parsePayloads(process.argv.slice(3)),
+      run: (options, actors) => payloads({ command: options.command, actors, json: options.json }),
+    })
 
   if (group === "tenants" && command === "create") return yield* tenantsCreate(args)
 

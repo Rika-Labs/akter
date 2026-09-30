@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { UsageError } from "../workflows/check.ts"
+import { UsageError } from "../../flags.ts"
 import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
 
 /** Usage text for `durable dead-letters`. */

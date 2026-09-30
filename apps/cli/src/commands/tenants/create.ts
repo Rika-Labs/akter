@@ -12,11 +12,7 @@ import {
 } from "@durable-actors/deployments"
 import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Layer, Redacted, Schema } from "effect"
-
-/** The arguments could not be parsed; the message says why. */
-export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
-  message: Schema.String,
-}) {}
+import { parseFlags, UsageError } from "../../flags.ts"
 
 /** Usage text for `durable tenants`. */
 export const USAGE =
@@ -32,12 +28,6 @@ export interface CreateOptions {
   readonly operator: string
 }
 
-const FLAGS = ["--deployment", "--region", "--database-url", "--operator"] as const
-
-type Flag = (typeof FLAGS)[number]
-
-const isFlag = (arg: string): arg is Flag => FLAGS.some((flag) => flag === arg)
-
 const checked = <S extends Schema.Top & { readonly Type: string }>(
   schema: S,
   name: string,
@@ -47,28 +37,19 @@ const checked = <S extends Schema.Top & { readonly Type: string }>(
     ? Effect.succeed(value)
     : Effect.fail(UsageError.make({ message: `${name} "${value}" is not valid` }))
 
+const REQUIRED = ["--deployment", "--region", "--database-url", "--operator"]
+
 /** Parses the arguments after `tenants create`. */
 export const parseCreate = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const values = new Map<Flag, string>()
-    let tenant: string | undefined
-
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (isFlag(arg)) {
-        const value = args[++index]
-
-        if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-        values.set(arg, value)
-      } else if (tenant === undefined && !arg.startsWith("--")) tenant = arg
-      else return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-    }
+    const parsed = yield* parseFlags({ args, valued: REQUIRED, maxPositional: 1 })
+    const tenant = parsed.positional[0]
 
     if (tenant === undefined) return yield* UsageError.make({ message: "<tenant> is required" })
 
-    for (const flag of FLAGS)
+    const values = parsed.flags
+
+    for (const flag of REQUIRED)
       if (!values.has(flag)) return yield* UsageError.make({ message: `${flag} is required` })
 
     return {

@@ -5,7 +5,8 @@ import { Cause, Effect, Exit, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { describe, expect, it } from "vitest"
 
-import { UsageError, actorsOf, check, loadEntry, parseCheck } from "./check.ts"
+import { UsageError } from "../../flags.ts"
+import { actorsOf, check, loadEntry, parseCheck } from "./check.ts"
 
 const deployment = (label: string | null) => {
   const Order = Actor.workflow("Order", {

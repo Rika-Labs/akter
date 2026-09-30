@@ -1,50 +1,22 @@
 import { checkPayloads, clearPayloads, formatPayloadProblem } from "@durable-actors/core/runtime"
 import type { ClearResult, PayloadProblem } from "@durable-actors/core/runtime"
 import { Effect } from "effect"
-import { UsageError } from "../workflows/check.ts"
+import { UsageError } from "../../flags.ts"
+import { parseCheck } from "../workflows/check.ts"
 
 /** Usage text for `durable payloads`. */
 export const USAGE =
   "Usage: durable payloads check|clear --entry <module> --database-url <url> [--json]"
 
-/** Parsed arguments of `payloads check|clear`. */
-export interface PayloadsOptions {
-  readonly command: "check" | "clear"
-  readonly entry: string
-  readonly databaseUrl: string
-  readonly json: boolean
-}
-
 /** Parses the arguments after `payloads`: the command, then its flags. */
-export const parsePayloads = ([command, ...args]: ReadonlyArray<string>) =>
+export const parsePayloads = (argv: ReadonlyArray<string>) =>
   Effect.gen(function* () {
+    const [command, ...args] = argv
+
     if (command !== "check" && command !== "clear")
       return yield* UsageError.make({ message: `Unknown payloads command: ${command ?? ""}` })
 
-    let entry: string | undefined
-    let databaseUrl: string | undefined
-    let json = false
-
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (arg === "--json") json = true
-      else if (arg === "--entry" || arg === "--database-url") {
-        const value = args[++index]
-
-        if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-        if (arg === "--entry") entry = value
-        else databaseUrl = value
-      } else return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-    }
-
-    if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
-
-    if (databaseUrl === undefined)
-      return yield* UsageError.make({ message: "--database-url is required" })
-
-    return { command, entry, databaseUrl, json } satisfies PayloadsOptions
+    return { command, ...(yield* parseCheck(args)) } as const
   })
 
 /** What `payloads check` prints: exit 1 when a deployment of `actors` would be refused. */

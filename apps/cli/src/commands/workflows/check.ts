@@ -2,49 +2,33 @@ import { checkWorkflows, formatIncompatibility } from "@durable-actors/core/runt
 import type { Incompatibility } from "@durable-actors/core/runtime"
 import { Effect, Schema } from "effect"
 import { pathToFileURL } from "node:url"
-
-/** The arguments could not be parsed; the message says why. */
-export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
-  message: Schema.String,
-}) {}
+import { parseFlags, UsageError } from "../../flags.ts"
 
 /** Usage text for `durable workflows`. */
 export const USAGE = "Usage: durable workflows check --entry <module> --database-url <url> [--json]"
 
-/** Parsed arguments of `workflows check`. */
-export interface CheckOptions {
-  readonly entry: string
-  readonly databaseUrl: string
-  readonly json: boolean
-}
-
-/** Parses the arguments after `workflows check`. */
+/**
+ * Parses `--entry <module> --database-url <url> [--json]`, the flags of every
+ * command that loads an entry module against a database.
+ */
 export const parseCheck = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    let entry: string | undefined
-    let databaseUrl: string | undefined
-    let json = false
+    const parsed = yield* parseFlags({
+      args,
+      valued: ["--entry", "--database-url"],
+      switches: ["--json"],
+      maxPositional: 0,
+    })
 
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (arg === "--json") json = true
-      else if (arg === "--entry" || arg === "--database-url") {
-        const value = args[++index]
-
-        if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-        if (arg === "--entry") entry = value
-        else databaseUrl = value
-      } else return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-    }
+    const entry = parsed.flags.get("--entry")
+    const databaseUrl = parsed.flags.get("--database-url")
 
     if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
 
     if (databaseUrl === undefined)
       return yield* UsageError.make({ message: "--database-url is required" })
 
-    return { entry, databaseUrl, json } satisfies CheckOptions
+    return { entry, databaseUrl, json: parsed.switches.has("--json") }
   })
 
 /** An entry module: its `actors` array of actor definitions. */

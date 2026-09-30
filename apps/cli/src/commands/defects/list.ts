@@ -1,8 +1,8 @@
 import { DefectRecords, type DefectRecord } from "@durable-actors/core/runtime"
 import { DateTime, Duration, Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import { RunnerUnreachable, TOKEN_ENV } from "../operator/request.ts"
-import { UsageError } from "../workflows/check.ts"
+import { parseOperatorFlags, RunnerUnreachable } from "../operator/request.ts"
+import { UsageError } from "../../flags.ts"
 
 /** Usage text for `durable defects`. */
 export const USAGE =
@@ -49,53 +49,37 @@ export const parseList = ({
   readonly nowMs: number
 }) =>
   Effect.gen(function* () {
-    const urls: Array<string> = []
-    let actor: string | undefined
-    let sinceMs: number | undefined
-    let limit: number | undefined
-    let tokenEnv = TOKEN_ENV
-    let tenant = "*"
-    let json = false
+    const parsed = yield* parseOperatorFlags({
+      args,
+      valued: ["--actor", "--since", "--limit"],
+      switches: [],
+      maxPositional: 0,
+    })
 
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
+    const limit = parsed.flags.get("--limit")
+    const since = parsed.flags.get("--since")
+    const decodedLimit = limit === undefined ? Option.some(undefined) : decodeLimit(limit)
 
-      if (arg === "--json") {
-        json = true
-        continue
-      }
+    if (Option.isNone(decodedLimit))
+      return yield* UsageError.make({ message: "--limit must be an integer from 1 to 1000" })
 
-      if (!["--url", "--tenant", "--actor", "--since", "--limit", "--token-env"].includes(arg))
-        return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
+    const sinceDuration = since === undefined ? Option.some(undefined) : parseSince(since)
 
-      const value = args[++index]
+    if (Option.isNone(sinceDuration))
+      return yield* UsageError.make({ message: `--since is not a duration: ${since}` })
 
-      if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-      if (arg === "--url") urls.push(value.replace(/\/+$/, ""))
-      else if (arg === "--tenant") tenant = value
-      else if (arg === "--actor") actor = value
-      else if (arg === "--token-env") tokenEnv = value
-      else if (arg === "--limit") {
-        const parsed = decodeLimit(value)
-
-        if (Option.isNone(parsed))
-          return yield* UsageError.make({ message: "--limit must be an integer from 1 to 1000" })
-
-        limit = parsed.value
-      } else {
-        const since = parseSince(value)
-
-        if (Option.isNone(since))
-          return yield* UsageError.make({ message: `--since is not a duration: ${value}` })
-
-        sinceMs = nowMs - Duration.toMillis(since.value)
-      }
-    }
-
-    if (urls.length === 0) return yield* UsageError.make({ message: "--url is required" })
-
-    return { urls, tenant, actor, sinceMs, limit, tokenEnv, json } satisfies ListOptions
+    return {
+      urls: parsed.urls,
+      tenant: parsed.tenant ?? "*",
+      actor: parsed.flags.get("--actor"),
+      sinceMs:
+        sinceDuration.value === undefined
+          ? undefined
+          : nowMs - Duration.toMillis(sinceDuration.value),
+      limit: decodedLimit.value,
+      tokenEnv: parsed.tokenEnv,
+      json: parsed.json,
+    } satisfies ListOptions
   })
 
 /**

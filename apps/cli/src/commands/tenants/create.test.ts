@@ -3,7 +3,8 @@ import { migrate } from "@durable-actors/postgres/migrate"
 import { Config, Crypto, Effect, Exit, ManagedRuntime, Option, Schema } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { parseCreate, UsageError } from "./create.ts"
+import { UsageError } from "../../flags.ts"
+import { parseCreate } from "./create.ts"
 
 const runtime = ManagedRuntime.make(BunCrypto.layer)
 
