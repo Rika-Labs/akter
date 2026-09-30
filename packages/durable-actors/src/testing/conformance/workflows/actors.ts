@@ -115,6 +115,8 @@ const WatchMarkB = Watch.step("mark-b", { input: Schema.String, success: Schema.
 
 const WatchLong = Watch.sleep("long")
 
+const WatchEmit = Watch.step("emit", { input: Schema.String, success: Schema.String })
+
 const Emit = Actor.command("Emit", {
   input: Schema.Struct({ orderId: Schema.String, amount: Schema.Int }),
 })
@@ -360,6 +362,32 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
               yield* WatchLong("10 seconds")
 
               return yield* marked(WatchMarkA, "slept")
+
+            case "sibling": {
+              const { id } = yield* Shipper.Workflow
+
+              const [waited, emitted] = yield* Effect.all(
+                [
+                  paid(WatchFirst, true),
+                  WatchEmit.run(orderId, (key) =>
+                    Effect.gen(function* () {
+                      yield* bump(fixture, `emit:${key}`)
+                      const gate = fixture.gates.get(key)
+
+                      if (gate !== undefined) yield* Deferred.await(gate)
+                      yield* (yield* Shipper.get(id))
+                        .Pay({ orderId: key, amount: 8 })
+                        .pipe(Effect.orDie)
+
+                      return "emitted"
+                    }),
+                  ),
+                ],
+                { concurrency: "unbounded" },
+              )
+
+              return `${waited}|${emitted}`
+            }
           }
 
           return yield* Effect.die(new Error(`Unknown mode ${mode}`))

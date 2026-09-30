@@ -1,4 +1,16 @@
-import { Cause, Context, Crypto, Data, Effect, Exit, Fiber, Option, Schema, Scope } from "effect"
+import {
+  Cause,
+  Context,
+  Crypto,
+  Data,
+  Effect,
+  Exit,
+  Fiber,
+  Latch,
+  Option,
+  Schema,
+  Scope,
+} from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { Activity, Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
 import {
@@ -396,17 +408,30 @@ const derivedUuid = (bytes: Uint8Array) => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
 
-/** An execution this activation is running now. */
-interface LiveRun {
-  rerun: boolean
-  activities: number
+/**
+ * One replay of a live run. It ends when its body records a result, parks, or
+ * leaves the execution for another runner, or when the engine interrupts it.
+ */
+interface Pass {
+  /** The body's fiber, a child of the run's loop; absent only until it is forked. */
   body: Fiber.Fiber<unknown, unknown> | undefined
-  /** Clocks and waits the live run is parked on while another branch still runs. */
+  /** Clocks and waits this pass parked on while another branch still works. */
   readonly parked: Set<string>
-  /** Activity, clock, and wait steps of the run still working, not parked. */
-  active: number
-  /** The engine stopped this run itself to replay it, as for an interrupt. */
-  preempted: boolean
+  /** Activity, clock, and wait steps of the pass still working, not parked. */
+  working: number
+  /** Open exactly while no step works, so a parking step waits for the signal instead of polling. */
+  readonly idle: Latch.Latch
+}
+
+/**
+ * An execution this activation is running now: its current pass, if one runs,
+ * and what the run does once that pass ends. `end` stops the run; `wake`
+ * replays it unless the pass left the execution for another runner; `preempt`
+ * replays it because the engine stopped the pass itself.
+ */
+interface LiveRun {
+  pass: Pass | undefined
+  next: "end" | "wake" | "preempt"
 }
 
 /**
@@ -426,9 +451,10 @@ interface LiveRun {
  * there, so the compensation finalizers of completed steps run before the
  * interrupt is recorded. A replay of a parked execution counts as running until it parks or
  * finishes, so inspection never reports a working run as suspended. A wake that
- * arrived during a run replays it once more unless the run lost its generation,
- * and a run the engine stopped to replay always replays. A parking step waits
- * until every other step of the run has parked or finished: a parked branch would
+ * arrived during a pass replays the run once more unless the pass left the
+ * execution for another runner or lost its generation, and a pass the engine
+ * stopped to replay always replays. A parking step waits, on the pass's idle
+ * signal, until every other step of the pass has parked or finished: a parked branch would
  * otherwise interrupt concurrent branches mid-step, losing a sibling's clock, wait
  * or activity work and possibly replaying forever. A race branch parked on a clock
  * or wait that can now settle stops the run so its replay settles it, and a
@@ -658,7 +684,7 @@ export const activationEngine = (options: {
       executionId,
       workflow,
       steps,
-      entry,
+      pass,
       interrupting,
       eventCursor,
       onBehalfOf,
@@ -666,7 +692,7 @@ export const activationEngine = (options: {
       readonly executionId: string
       readonly workflow: RegisteredWorkflow
       readonly steps: Map<string, StepRow>
-      readonly entry: LiveRun
+      readonly pass: Pass
       readonly interrupting: boolean
       readonly eventCursor: { value: bigint }
       readonly onBehalfOf: ReturnType<typeof principal>
@@ -734,26 +760,39 @@ export const activationEngine = (options: {
           ...row,
         })
 
+      const shift = (delta: 1 | -1) =>
+        Effect.sync(() => {
+          pass.working += delta
+
+          if (pass.working === 0) pass.idle.openUnsafe()
+          else pass.idle.closeUnsafe()
+        })
+
       const working = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         Effect.acquireUseRelease(
-          Effect.sync(() => (entry.active += 1)),
+          shift(1),
           () => effect,
-          () => Effect.sync(() => (entry.active -= 1)),
+          () => shift(-1),
         )
 
-      const quiet = Effect.gen(function* () {
+      /**
+       * Waits until no other step of the pass works. A step that just ended gets
+       * one scheduling turn to start its branch's next step before the pass
+       * counts as quiet.
+       */
+      const quiet: Effect.Effect<void> = Effect.gen(function* () {
         for (;;) {
-          while (entry.active > 0) yield* Effect.sleep("1 millis")
+          yield* pass.idle.await
           yield* Effect.yieldNow
 
-          if (entry.active === 0) return
+          if (pass.working === 0) return
         }
       })
 
       const suspend = Effect.acquireUseRelease(
-        Effect.sync(() => (entry.active -= 1)),
+        shift(-1),
         () => quiet,
-        () => Effect.sync(() => (entry.active += 1)),
+        () => shift(1),
       ).pipe(Effect.andThen(Effect.die(new Suspend())))
 
       const guarded = <A, R>(effect: Effect.Effect<A, SqlError.SqlError, R>) =>
@@ -810,11 +849,8 @@ export const activationEngine = (options: {
               Effect.provideContext(services),
             )
 
-            entry.activities += 1
-
             const exit = yield* run.pipe(
               Effect.provideService(CurrentCallPhase, CallPhase.Activity({ nextCommandId })),
-              Effect.ensuring(Effect.sync(() => (entry.activities -= 1))),
             )
 
             const at = yield* now
@@ -846,7 +882,7 @@ export const activationEngine = (options: {
             } else dueAt = Number(row.due_at_ms)
 
             if (at < dueAt) {
-              entry.parked.add(step.name)
+              pass.parked.add(step.name)
 
               return yield* suspend
             }
@@ -965,7 +1001,7 @@ export const activationEngine = (options: {
               remember(step, { scanned: String(scanned) })
             }
 
-            entry.parked.add(step.name)
+            pass.parked.add(step.name)
 
             return yield* suspend
           }).pipe(working, guarded),
@@ -1046,7 +1082,7 @@ export const activationEngine = (options: {
      * Runs one pass of an execution: replays it against this runner's workflow,
      * then records its result, parks it, or leaves it for a compatible runner.
      */
-    const runOnce = (executionId: string) =>
+    const runOnce = (executionId: string, pass: Pass) =>
       Effect.gen(function* () {
         const [execution] = yield* sql<ExecutionRow>`
           SELECT workflow, workflow_key, payload, caller, event_cursor::text AS event_cursor, status, interrupt,
@@ -1086,7 +1122,7 @@ export const activationEngine = (options: {
           executionId,
           workflow,
           steps: recorded.steps,
-          entry: live.get(executionId)!,
+          pass,
           interrupting,
           eventCursor: { value: BigInt(execution.event_cursor) },
           onBehalfOf,
@@ -1145,26 +1181,46 @@ export const activationEngine = (options: {
         Effect.annotateLogs({ actor: ref.actor, tenant: ref.tenant, id: ref.id, executionId }),
       )
 
-    const loop = (executionId: string) =>
+    /**
+     * Replays the run pass by pass until a pass ends with nothing asking for
+     * another. The decision to stop and the run's removal happen in one step, so
+     * a kick either reaches this run or starts a new one.
+     */
+    const loop = (executionId: string, run: LiveRun) =>
       Effect.gen(function* () {
-        const entry = live.get(executionId)!
-
         for (;;) {
-          entry.rerun = false
-          entry.parked.clear()
-          entry.preempted = false
-          const body = yield* Effect.forkChild(runOnce(executionId))
-          entry.body = body
-          const outcome = yield* Fiber.join(body).pipe(Effect.exit)
-          entry.body = undefined
+          const pass: Pass = {
+            body: undefined,
+            parked: new Set(),
+            working: 0,
+            idle: Latch.makeUnsafe(true),
+          }
 
-          if (
-            !entry.rerun ||
-            (!entry.preempted && Exit.isSuccess(outcome) && outcome.value === "abandoned")
-          )
-            break
+          run.pass = pass
+          const body = yield* Effect.forkChild(runOnce(executionId, pass))
+          pass.body = body
+          const outcome = yield* Fiber.join(body).pipe(Effect.exit)
+
+          const again = yield* Effect.sync(() => {
+            const left = Exit.isSuccess(outcome) && outcome.value === "abandoned"
+            const replay = run.next === "preempt" || (run.next === "wake" && !left)
+            run.pass = undefined
+            run.next = "end"
+
+            if (!replay) live.delete(executionId)
+
+            return replay
+          })
+
+          if (!again) return
         }
-      }).pipe(Effect.ensuring(Effect.sync(() => live.delete(executionId))))
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (live.get(executionId) === run) live.delete(executionId)
+          }),
+        ),
+      )
 
     const settleable = (executionId: string, parked: ReadonlySet<string>) =>
       parked.size === 0
@@ -1196,52 +1252,45 @@ export const activationEngine = (options: {
       Effect.gen(function* () {
         const current = live.get(executionId)
 
-        if (current !== undefined) {
-          current.rerun = true
-
-          if (interrupt && current.body !== undefined) {
-            current.preempted = true
-            yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
-          } else if (
-            current.body !== undefined &&
-            (yield* settleable(executionId, current.parked))
-          ) {
-            current.preempted = true
-            yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
-          }
-
-          if (current.activities > 0)
-            yield* fenced(
-              Effect.gen(function* () {
-                const [row] = yield* sql<{
-                  caller: string
-                }>`SELECT caller FROM actor_workflow_executions
-                  WHERE routing_key = ${routingKey} AND execution_id = ${executionId}`
-
-                if (row === undefined) return
-                const caller = yield* decodeCaller(row.caller).pipe(Effect.orDie)
-                yield* armTimer(
-                  routingKey,
-                  ref,
-                  executionId,
-                  (yield* now) + RECOVERY_MS,
-                  principal(caller),
-                )
-              }),
-            ).pipe(Effect.ignoreCause)
+        if (current === undefined) {
+          const run: LiveRun = { pass: undefined, next: "end" }
+          live.set(executionId, run)
+          yield* loop(executionId, run).pipe(Effect.forkIn(scope))
 
           return
         }
 
-        live.set(executionId, {
-          rerun: false,
-          activities: 0,
-          body: undefined,
-          parked: new Set(),
-          active: 0,
-          preempted: false,
-        })
-        yield* loop(executionId).pipe(Effect.forkIn(scope))
+        const pass = current.pass
+
+        if (current.next === "end") current.next = "wake"
+
+        if (pass?.body === undefined) return
+
+        if (interrupt || (yield* settleable(executionId, pass.parked))) {
+          if (current.pass !== pass) return
+          current.next = "preempt"
+          yield* Fiber.interrupt(pass.body).pipe(Effect.forkIn(scope))
+        }
+
+        if (pass.working > 0)
+          yield* fenced(
+            Effect.gen(function* () {
+              const [row] = yield* sql<{
+                caller: string
+              }>`SELECT caller FROM actor_workflow_executions
+                WHERE routing_key = ${routingKey} AND execution_id = ${executionId}`
+
+              if (row === undefined) return
+              const caller = yield* decodeCaller(row.caller).pipe(Effect.orDie)
+              yield* armTimer(
+                routingKey,
+                ref,
+                executionId,
+                (yield* now) + RECOVERY_MS,
+                principal(caller),
+              )
+            }),
+          ).pipe(Effect.ignoreCause)
       }).pipe(Effect.provideContext(services))
 
     return { kick, live: () => live.size }
