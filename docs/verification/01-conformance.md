@@ -1068,13 +1068,14 @@ In `conformance/connections/` (`reauthorization.ts` and `takeover.ts`):
 
 - `an owner deletes the rows of an earlier holder epoch at the same address, and its live connection still receives broadcasts` (PGlite and Postgres): a row copied under another holder epoch at the same holder is deleted at the next delivery, when the holder answers `wrongEpoch`.
 - `a connection's commands take ids another caller never holds, and each commits once under its own caller` (PGlite and Postgres). The HMAC derivation itself is checked by `are stable for one call and distinct across seq, index, target, command, and secret` in `identity/command.test.ts`.
+- `a turn whose connection-row load loses its database connection commits nothing, and the caller's retry under the same id commits once` (Postgres): an independent connection locks `actor_connections`, the owner's row load of a fresh activation waits on it, and that backend is terminated, so the load fails with a retryable `ConnectionError`. The caller's command commits once, with one receipt.
 - `an owner deletes a dead holder's connection rows at its next delivery, and its turns still commit` (Postgres, two runners, runner 0 holding only): after `cluster.kill(0)`, the owner's next broadcast fails to reach the holder and deletes its row.
 
 In `conformance/workflows/recovery.ts`, on the three-runner harness against Postgres:
 
 - `workflows: replays an interrupted execution's compensation on a survivor when its runner dies mid-compensation, and records the interrupt once`: the `compensate-block` scenario holds its compensation. After the owner is killed, the survivor runs the compensation again, the result is an interrupt, and the execution finishes with no steps left.
 
-Still without a case: **Connection-row load fails before a broadcasting commit**, because no fault point makes the owner's row load fail transiently (a missing table is a deterministic defect), and **Same-runner activation restarts while holders are unsealed**, because no fault point holds a seal between two activations on one runner.
+Still without a case: **Same-runner activation restarts while holders are unsealed**, because no fault point holds a seal between two activations on one runner.
 
 ## Faithful test boundary
 
