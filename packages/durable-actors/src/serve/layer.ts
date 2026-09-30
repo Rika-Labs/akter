@@ -59,10 +59,19 @@ import {
 } from "./assertion/binding.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "./frames.ts"
+import { handleMcp, type ToolCall, type ToolResult } from "./mcp/endpoint.ts"
+import { mcpTools } from "./mcp/tools.ts"
 import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
 import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
 import { streamResponse } from "./sessions/stream.ts"
-import { actorErrorResponse, Defect, invalidInput, PROTOCOL, undecodable } from "./wire.ts"
+import {
+  actorErrorBody,
+  actorErrorResponse,
+  Defect,
+  invalidInput,
+  PROTOCOL,
+  undecodable,
+} from "./wire.ts"
 
 /** Options of `Actor.serve`; `R` is what `auth` needs from the environment. */
 export interface ServeOptions<R> {
@@ -76,6 +85,16 @@ export interface ServeOptions<R> {
   readonly openapi?: {
     readonly path: `/${string}`
     readonly title?: string
+    readonly version?: string
+  }
+  /**
+   * Serves an MCP endpoint at `path`, derived from the same OpenAPI document:
+   * every public command, reducer, and query is a tool, and each call is
+   * authenticated and authorized like its HTTP route. Off unless given.
+   */
+  readonly mcp?: {
+    readonly path: `/${string}`
+    readonly name?: string
     readonly version?: string
   }
   /** Browser origins allowed besides the server's own. Requests without `Origin` are always served. */
@@ -144,23 +163,46 @@ const traceId = Effect.currentSpan.pipe(
   Effect.orElseSucceed(() => "0".repeat(32)),
 )
 
-const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>) {
+/** The opaque body a defect is answered with on every transport, after its cause is logged. */
+const defectBody = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>) {
   const trace = yield* traceId
 
   yield* Effect.logError("Actor.serve request failed", cause)
 
-  return HttpServerResponse.jsonUnsafe(Defect.make({ traceId: trace }), { status: 500 })
+  return Defect.make({ traceId: trace })
 })
 
-const pathId = Effect.fnUntraced(function* (definition: ServedDefinition) {
-  if (definition.key === "singleton") return yield* definition.decodeId("").pipe(Effect.orDie)
+const defectResponse = (cause: Cause.Cause<unknown>) =>
+  Effect.map(defectBody(cause), (body) => HttpServerResponse.jsonUnsafe(body, { status: 500 }))
 
-  const raw = (yield* HttpRouter.params).id ?? ""
+/** An actor's id as a request names it: the key schema decodes it exactly once, and no route or tool may name `.` or `..`. */
+const decodeId = Effect.fnUntraced(function* (definition: ServedDefinition, raw: string) {
+  if (definition.key === "singleton") return yield* definition.decodeId("").pipe(Effect.orDie)
 
   if (raw === "." || raw === "..") return yield* invalidInput("unservable_id")
 
   return yield* definition.decodeId(raw).pipe(Effect.mapError((error) => undecodable(error)))
 })
+
+const pathId = Effect.fnUntraced(function* (definition: ServedDefinition) {
+  return yield* decodeId(definition, (yield* HttpRouter.params).id ?? "")
+})
+
+/** One served member's call once its caller is authenticated and its id decoded. */
+interface MemberCall {
+  readonly definition: ServedDefinition
+  readonly member: ServedMember
+  readonly id: string
+  readonly authenticated: Authenticated
+  readonly commandId: string
+  readonly body: Schema.Json | undefined
+  readonly minVersion?: Effect.Effect<string | undefined, ActorError>
+}
+
+/** A settled call as every transport answers it: a status and the JSON body, absent for a void output. */
+type OutcomeBody =
+  | { readonly ok: true; readonly status: number; readonly body: Schema.Json | undefined }
+  | { readonly ok: false; readonly status: number; readonly body: Schema.Json }
 
 /** Same origin: the `Origin` names the request URL's scheme and the `Host` it was sent to. */
 export const isSameOrigin = ({
@@ -249,7 +291,9 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
  *   creates the actor it follows. A browser's reconnect resumes from
  *   `Last-Event-ID`.
  * - A content upload streams into the store hashed as it arrives; past the
- *   limit its transaction rolls back and nothing is stored. A sweep between
+ *   limit its transaction rolls back and nothing is stored. Under a credential
+ *   bound to its request it is read whole first, up to the same limit, so the
+ *   binding is checked before anything is stored. A sweep between
  *   resolving a download's name and reading its bytes ends the body before any
  *   byte, short of its declared length.
  * - `/ready` carries no credentials and is never cached, because a stale
@@ -288,17 +332,26 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           )
       }
 
-      const openapiPath = options.openapi?.path
+      const documentPaths = [
+        { option: "openapi", path: options.openapi?.path },
+        { option: "mcp", path: options.mcp?.path },
+      ]
 
-      if (
-        openapiPath !== undefined &&
-        (PROTOCOL_PATHS.has(openapiPath) ||
-          openapiPath === KEY_REFRESH_PATH ||
-          openapiPath === "/actors" ||
-          openapiPath.startsWith("/actors/"))
-      )
+      for (const { option, path } of documentPaths)
+        if (
+          path !== undefined &&
+          (PROTOCOL_PATHS.has(path) ||
+            path === KEY_REFRESH_PATH ||
+            path === "/actors" ||
+            path.startsWith("/actors/"))
+        )
+          return yield* Effect.die(
+            new Error(`Actor.serve: ${option}.path ${path} collides with a protocol route`),
+          )
+
+      if (options.mcp !== undefined && options.mcp.path === options.openapi?.path)
         return yield* Effect.die(
-          new Error(`Actor.serve: openapi.path ${openapiPath} collides with a protocol route`),
+          new Error(`Actor.serve: mcp.path and openapi.path are both ${options.mcp.path}`),
         )
 
       const schemes = options.auth.credentials.map(schemeName)
@@ -465,11 +518,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return authenticated
         })
 
-      const readBytes = (request: HttpServerRequest.HttpServerRequest) =>
+      const readBytes = (request: HttpServerRequest.HttpServerRequest, limit = requestBytes) =>
         Effect.gen(function* () {
           const length = Headers.get(request.headers, "content-length")
 
-          if (Option.isSome(length) && Number(length.value) > requestBytes)
+          if (Option.isSome(length) && Number(length.value) > limit)
             return yield* invalidInput("too_large")
 
           if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
@@ -488,7 +541,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               (acc, chunk) => {
                 const size = acc.size + chunk.byteLength
 
-                if (size > requestBytes) return Effect.fail(invalidInput("too_large"))
+                if (size > limit) return Effect.fail(invalidInput("too_large"))
                 received = size
                 acc.chunks.push(chunk)
 
@@ -578,13 +631,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         return QUOTED.exec(value)?.[1] ?? value
       }
 
-      const success = Effect.fnUntraced(function* (member: ServedMember, value: string) {
-        if (SchemaAST.isVoid(member.output.ast)) return HttpServerResponse.empty({ status: 204 })
-        const decoded = yield* decodeSuccess(value).pipe(Effect.orDie)
-
-        return HttpServerResponse.jsonUnsafe(decoded.value ?? null, { status: 200 })
-      })
-
       const minVersion = (request: HttpServerRequest.HttpServerRequest) => {
         const token = Option.getOrUndefined(Headers.get(request.headers, "durable-min-version"))
 
@@ -605,16 +651,23 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         )
       }
 
-      const outcomeResponse = (member: ServedMember, outcome: Outcome) =>
+      const outcomeBody = (member: ServedMember, outcome: Outcome) =>
         Match.value(outcome).pipe(
           Match.tagsExhaustive({
-            Success: (success_) => success(member, success_.value),
-            Failure: (failure) =>
+            Success: (success): Effect.Effect<OutcomeBody> =>
+              Effect.gen(function* () {
+                if (SchemaAST.isVoid(member.output.ast))
+                  return { ok: true, status: 204, body: undefined } as const
+
+                const decoded = yield* decodeSuccess(success.value)
+
+                return { ok: true, status: 200, body: decoded.value ?? null } as const
+              }).pipe(Effect.orDie),
+            Failure: (failure): Effect.Effect<OutcomeBody> =>
               Effect.gen(function* () {
                 const status = yield* member.failureStatus(failure.value)
-                const body = yield* decodeDeclared(failure.value)
 
-                return HttpServerResponse.jsonUnsafe(body, { status })
+                return { ok: false, status, body: yield* decodeDeclared(failure.value) } as const
               }).pipe(Effect.orDie),
             Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
             Acknowledged: (acknowledged) =>
@@ -622,13 +675,55 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           }),
         )
 
+      const outcomeResponse = (member: ServedMember, outcome: Outcome) =>
+        Effect.map(outcomeBody(member, outcome), ({ status, body }) =>
+          body === undefined
+            ? HttpServerResponse.empty({ status })
+            : HttpServerResponse.jsonUnsafe(body, { status }),
+        )
+
+      const runMember = Effect.fnUntraced(function* (input: MemberCall) {
+        const { definition, member, authenticated } = input
+
+        const payload = yield* member
+          .payload(input.body)
+          .pipe(Effect.mapError((error) => undecodable(error)))
+
+        const call = Request.make({
+          ref: ActorRef.make({
+            tenant: authenticated.tenant,
+            actor: definition.name,
+            id: input.id,
+          }),
+          caller: authenticated.caller,
+          command: member.tag,
+          commandId: input.commandId,
+          payload,
+        })
+
+        if (member.kind === "query")
+          return {
+            outcome: yield* actors.query(
+              call,
+              input.minVersion === undefined ? undefined : yield* input.minVersion,
+            ),
+            version: undefined,
+          }
+
+        const fiber = yield* actors.execute(call).pipe(Effect.exit, Effect.forkIn(scope))
+        const exit = yield* Fiber.join(fiber)
+
+        if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
+
+        return exit.value
+      })
+
       const memberHandler = (definition: ServedDefinition, member: ServedMember) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
 
           const authenticated = yield* authenticate(request)
-          const isQuery = member.kind === "query"
-          const key = isQuery ? "" : commandId(request)
+          const key = member.kind === "query" ? "" : commandId(request)
 
           if (key === undefined) return yield* invalidInput("missing_command_id")
 
@@ -640,38 +735,58 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const bytes = yield* readBytes(request)
 
           yield* checkBinding(authenticated, request, bytes)
-          const body = yield* decodeJsonBody(request, bytes)
 
-          const payload = yield* member
-            .payload(body)
-            .pipe(Effect.mapError((error) => undecodable(error)))
-
-          const call = Request.make({
-            ref: ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id }),
-            caller: authenticated.caller,
-            command: member.tag,
+          const { outcome, version } = yield* runMember({
+            definition,
+            member,
+            id,
+            authenticated,
             commandId: key,
-            payload,
+            body: yield* decodeJsonBody(request, bytes),
+            minVersion: minVersion(request),
           })
 
-          if (isQuery)
-            return yield* outcomeResponse(
-              member,
-              yield* actors.query(call, yield* minVersion(request)),
-            )
-
-          const fiber = yield* actors.execute(call).pipe(Effect.exit, Effect.forkIn(scope))
-          const exit = yield* Fiber.join(fiber)
-
-          if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
-
-          const { outcome, version } = exit.value
           const response = yield* outcomeResponse(member, outcome)
 
           return version === undefined
             ? response
             : HttpServerResponse.setHeader(response, "durable-version", version)
         })
+
+      const callTool =
+        (authenticated: Authenticated) =>
+        (call: ToolCall): Effect.Effect<ToolResult> => {
+          const route = call.tool.route
+
+          return Effect.gen(function* () {
+            if (route === undefined)
+              return { ok: true, value: { commandId: yield* actors.mintCommandId } } as const
+
+            const { definition, member } = route
+
+            const { outcome } = yield* runMember({
+              definition,
+              member,
+              id: yield* decodeId(definition, call.id ?? ""),
+              authenticated,
+              commandId: call.commandId ?? "",
+              body: call.input,
+            })
+
+            const settled = yield* outcomeBody(member, outcome)
+
+            return settled.ok
+              ? ({ ok: true, value: settled.body } as const)
+              : ({ ok: false, body: settled.body } as const)
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.map(actorErrorBody(error), (body) => ({ ok: false, body }) as const),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.map(defectBody(cause), (body) => ({ ok: false, body }) as const),
+            ),
+          )
+        }
 
       const streamHandler = (definition: ServedDefinition, member: ServedMember) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
@@ -826,6 +941,18 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const uploadHandler = (store: ContentStore["Service"]) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const authenticated = yield* authenticate(request)
+
+          if (authenticated.binding !== undefined) {
+            const bytes = yield* readBytes(request, contentBytes)
+
+            yield* checkBinding(authenticated, request, bytes)
+
+            return yield* store.upload(authenticated.tenant, Stream.make(bytes), contentBytes).pipe(
+              Effect.catchTag("ContentTooLarge", () => invalidInput("too_large")),
+              Effect.map((ref) => HttpServerResponse.jsonUnsafe(ref, { status: 200 })),
+            )
+          }
+
           const length = Headers.get(request.headers, "content-length")
 
           if (Option.isSome(length) && Number(length.value) > contentBytes)
@@ -860,6 +987,10 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const id = yield* pathId(definition)
           const { blob, name } = yield* contentParams(definition)
           const authenticated = yield* authenticate(request)
+
+          if (authenticated.binding !== undefined)
+            yield* checkBinding(authenticated, request, yield* readBytes(request))
+
           const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
           const found = yield* store.download(ref, authenticated.caller, blob, name)
 
@@ -876,6 +1007,10 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const id = yield* pathId(definition)
           const { blob, name } = yield* contentParams(definition)
           const authenticated = yield* authenticate(request)
+
+          if (authenticated.binding !== undefined)
+            yield* checkBinding(authenticated, request, yield* readBytes(request))
+
           const ref = ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
           const granted = yield* store.grant(ref, authenticated.caller, blob, name)
 
@@ -1025,19 +1160,62 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       yield* router.add("*", `${basePath}/actors/*` as HttpRouter.PathInput, fallback)
       yield* router.add("OPTIONS", `${basePath}/*` as HttpRouter.PathInput, fallback)
 
-      if (options.openapi !== undefined) {
+      if (options.openapi !== undefined || options.mcp !== undefined) {
         const spec = openApiDocument({
           api,
           auth: options.auth,
-          title: options.openapi.title ?? "durable-actors",
-          version: options.openapi.version ?? "1",
+          title: options.openapi?.title ?? "durable-actors",
+          version: options.openapi?.version ?? "1",
         })
 
-        yield* router.add(
-          "GET",
-          `${basePath}${options.openapi.path}` as HttpRouter.PathInput,
-          respond(() => Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
-        )
+        if (options.openapi !== undefined)
+          yield* router.add(
+            "GET",
+            `${basePath}${options.openapi.path}` as HttpRouter.PathInput,
+            respond(() => Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
+          )
+
+        if (options.mcp !== undefined) {
+          const endpoint = {
+            tools: yield* mcpTools({ document: spec, basePath, definitions }),
+            info: {
+              name: options.mcp.name ?? "durable-actors",
+              version: options.mcp.version ?? "1",
+            },
+          }
+
+          const path = `${basePath}${options.mcp.path}` as HttpRouter.PathInput
+
+          yield* router.add(
+            "POST",
+            path,
+            respond((request) =>
+              Effect.gen(function* () {
+                const authenticated = yield* authenticate(request)
+                const type = Headers.get(request.headers, "content-type")
+
+                if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+                  return yield* invalidInput("unsupported_media_type")
+
+                const body = yield* readBytes(request)
+
+                yield* checkBinding(authenticated, request, body)
+
+                return yield* handleMcp(
+                  { ...endpoint, call: callTool(authenticated) },
+                  { headers: request.headers, body },
+                )
+              }),
+            ),
+          )
+
+          const postOnly = respond(() =>
+            Effect.succeed(HttpServerResponse.empty({ status: 405, headers: { allow: "POST" } })),
+          )
+
+          yield* router.add("GET", path, postOnly)
+          yield* router.add("DELETE", path, postOnly)
+        }
       }
     }),
   )

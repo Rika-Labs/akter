@@ -15,6 +15,7 @@ import {
 import { EffectProbeLive } from "./effects.ts"
 import { ArchiveLive } from "./archive.ts"
 import { BatchProbeLive } from "./turns/batches.ts"
+import { FeedProbeLive } from "./feeds.ts"
 import { FamilyLive, LedgerLive } from "./ledger.ts"
 import { MintLive } from "./mint.ts"
 import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
@@ -189,6 +190,7 @@ export const ProbeLive = Layer.mergeAll(
   ArchiveLive,
   ReducerProbeLive,
   BatchProbeLive,
+  FeedProbeLive,
   WorkflowProbeLive,
   MintLive,
   CronProbeCommands,
