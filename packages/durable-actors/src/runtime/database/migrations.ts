@@ -820,7 +820,8 @@ export const migrations = {
           THEN session_user::text ELSE current_setting('role') END;
         changed bigint := 0;
       BEGIN
-        IF coalesce(current_setting('durable.backfill', true), '') = 'on' THEN
+        IF coalesce(current_setting('durable.backfill', true), '') = 'on'
+          AND pg_has_role(caller, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
           RETURN NULL;
         END IF;
         IF TG_NARGS > 0 AND caller = TG_ARGV[0] THEN

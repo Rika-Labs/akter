@@ -822,6 +822,65 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "observing still records a legacy role's write that sets durable.backfill, while the runtime's own backfill stays unrecorded",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      withAdoption(environment, { observe: true }, ({ target }) =>
+        Effect.gen(function* () {
+          if (!Redacted.isRedacted(target))
+            return yield* Effect.die(new Error("Observation by a second pool needs Postgres"))
+
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const crypto = yield* Crypto.Crypto
+          const role = `legacy_${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")}`
+
+          yield* sql.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD 'legacy'`)
+          yield* sql.unsafe(
+            `GRANT SELECT, INSERT, UPDATE, DELETE ON conformance_invoices TO ${role}`,
+          )
+          yield* Effect.addFinalizer(() =>
+            sql
+              .unsafe(`DROP OWNED BY ${role}`)
+              .pipe(Effect.andThen(sql.unsafe(`DROP ROLE ${role}`)), Effect.orDie),
+          )
+
+          yield* legacyInsert([{ id: "own", org: test.tenant, account: "acct-a" }])
+
+          const url = new URL(Redacted.value(target))
+          url.username = role
+          url.password = "legacy"
+
+          yield* onDatabase(
+            Redacted.make(url.href),
+            Effect.gen(function* () {
+              const legacy = yield* SqlClient.SqlClient
+
+              yield* Effect.gen(function* () {
+                yield* legacy`SELECT set_config('durable.backfill', 'on', true)`
+                yield* legacy`INSERT INTO conformance_invoices (id, org_id, account_id)
+                  VALUES ('hidden', ${test.tenant}, 'acct-a')`
+              }).pipe(legacy.withTransaction)
+            }),
+          )
+
+          yield* backfillAdoption(adopting, { only: "conformance_invoices" })
+
+          const writers = yield* adoptionWriters(adopting, { only: "conformance_invoices" })
+
+          expect(
+            writers
+              .filter((writer) => writer.sessionUser === role)
+              .map(({ operation, rows }) => [operation, rows]),
+          ).toEqual([["INSERT", 1]])
+          expect(writers.filter((writer) => writer.operation === "UPDATE")).toEqual([])
+          expect(yield* sql`SELECT 1 FROM conformance_invoices WHERE routing_key IS NULL`).toEqual(
+            [],
+          )
+        }),
+      ),
+  },
+  {
     name: "backfill fills every row with the key of the actor that writes it and refuses rows with NULL mapped columns",
     run: ({ expect, environment }) =>
       withAdoption(environment, { observe: true }, () =>
