@@ -15,6 +15,8 @@ export interface ServedMember {
   readonly failureStatus: (value: string) => Effect.Effect<number, Schema.SchemaError>
   /** A reducer's pure transition, which a client applies before its receipt arrives. */
   readonly reducer: OptimisticReducer | undefined
+  /** True for a query declared `watch: true`, which is also served as a watch. */
+  readonly watch: boolean
 }
 
 /** An actor's decoded state. */
@@ -127,6 +129,7 @@ interface ServedMemberSource {
     /** Method syntax keeps the parameters bivariant, so every reducer's `reduce` fits. */
     reduce?(state: StateValue, input: ValueSchema["Type"]): Result.Result<StateValue, unknown>
     readonly commutative?: unknown
+    readonly watch?: boolean
   }
   readonly codecs: {
     readonly encodeInput: (value: {
@@ -165,6 +168,7 @@ export const servedMember = ({ member, codecs }: ServedMemberSource): ServedMemb
             commutative: member.commutative !== undefined,
           }
         : undefined,
+    watch: member.kind === "query" && member.watch === true,
   }
 }
 
