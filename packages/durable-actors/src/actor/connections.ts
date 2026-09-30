@@ -99,7 +99,7 @@ export const connectionOf = (
       member.progress === undefined
         ? undefined
         : {
-            effects: new Set(member.progress.effects.map((job) => job.tag)),
+            effects: new Set(member.progress.jobs.map((job) => job.tag)),
             to: member.progress.to,
           },
     hasResync: entry.resync !== undefined,
@@ -201,7 +201,7 @@ export const connectionOf = (
 
       const program = ConnectionPhase.match(phase, {
         Open: ({ params }) =>
-          Effect.flatMap(memberCodec.decodeInput(params).pipe(Effect.orDie), ({ value }) =>
+          Effect.flatMap(memberCodec.decodePayload(params).pipe(Effect.orDie), ({ value }) =>
             entry.open(value),
           ).pipe(
             Effect.catch((error) =>

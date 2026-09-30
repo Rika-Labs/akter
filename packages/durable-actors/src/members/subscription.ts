@@ -47,23 +47,12 @@ export type Delivery<E> = DeliveredEvent<E> | DeliveredGap | DeliveredRejection
 
 const deliveryFields = { subscription: Schema.String, source: ActorRef }
 
-/**
- * The input schema of a subscription handler: one delivery of `events` from
- * `source`. It names only the source and its classes, so the handler command
- * can be declared before the subscription that references it.
- */
-export const Delivery = <
-  const S extends SourceDefinition,
-  const E extends ReadonlyArray<S["events"][number]>,
->(options: {
-  readonly source: S
-  readonly events: E
-}) =>
+const deliverySchema = <E extends ReadonlyArray<EventClass>>(events: E) =>
   Schema.Union([
     Schema.TaggedStruct("Event", {
       ...deliveryFields,
       cursor: Schema.String,
-      event: Schema.Union(options.events as E),
+      event: Schema.Union(events),
       commandId: Schema.String,
       timestamp: Schema.DateTimeUtc,
     }),
@@ -79,6 +68,53 @@ export const Delivery = <
     }),
   ])
 
+/**
+ * The payload schema of a subscription handler, which also records what it
+ * delivers: `events` of `source`. A subscription names it as its `delivery`,
+ * so the source and events are declared once, and the handler command can be
+ * declared before the subscription that references it.
+ */
+export type DeliverySchema<
+  S extends SourceDefinition = SourceDefinition,
+  E extends ReadonlyArray<EventClass> = ReadonlyArray<EventClass>,
+> = ReturnType<typeof deliverySchema<E>> & { readonly source: S; readonly events: E }
+
+/**
+ * `Actor.Delivery`: the payload schema of a subscription handler, one delivery
+ * of `events` from `source`. Throws when `events` is empty or names an event
+ * `source` does not declare, or one twice.
+ *
+ * @example
+ * const OrderDelivery = Actor.Delivery({ source: Orders, events: [Placed] })
+ * const Record = Actor.command("Record", { payload: OrderDelivery })
+ */
+export const Delivery = <
+  const S extends SourceDefinition,
+  const E extends ReadonlyArray<S["events"][number]>,
+>(options: {
+  readonly source: S
+  readonly events: E
+}): DeliverySchema<S, E> => {
+  if (options.events.length === 0)
+    throw new Error(`A delivery of ${options.source.name} names no event`)
+
+  const tags = new Set<string>()
+
+  for (const event of options.events) {
+    if (!options.source.events.includes(event))
+      throw new Error(`${options.source.name} does not declare event ${event.identifier}`)
+
+    if (tags.has(event.identifier))
+      throw new Error(`A delivery of ${options.source.name} lists ${event.identifier} twice`)
+    tags.add(event.identifier)
+  }
+
+  return Object.assign(deliverySchema(options.events), {
+    source: options.source,
+    events: options.events,
+  })
+}
+
 /** Declared as a method so a route of specific events still fits `AnySubscription`. */
 type RouteFunction<E> = { route(event: E, source: ActorRef): string }["route"]
 
@@ -86,8 +122,9 @@ type RouteFunction<E> = { route(event: E, source: ActorRef): string }["route"]
 export type Route<E> = RouteFunction<E> | { readonly _tag: "Singleton" }
 
 /**
- * A declared subscription of one subscriber type. `Routed` is true when it
- * has a `route`, so `turn.subscribe` accepts only dynamic ones.
+ * A declared subscription of one subscriber type, with the source and events
+ * of its delivery. `Routed` is true when it has a `route`, so `turn.subscribe`
+ * accepts only dynamic ones.
  */
 export interface Subscription<
   Tag extends string,
@@ -109,79 +146,59 @@ export interface Subscription<
 /** Any subscription, whatever its source and events. */
 export type AnySubscription = Subscription<string, ReadonlyArray<EventClass>, boolean>
 
-/** A handler command whose input doesn't accept the subscription's deliveries fails to compile. */
-type Accepting<H extends AnyCommand, E> = [Delivery<E>] extends [H["input"]["Type"]]
+/** A handler command whose payload doesn't accept the subscription's deliveries fails to compile. */
+type Accepting<H extends AnyCommand, E> = [Delivery<E>] extends [H["payload"]["Type"]]
   ? unknown
   : {
-      readonly "The handler's input must accept Actor.Delivery of the same source and events": never
+      readonly "The handler's payload must accept the subscription's delivery": never
     }
 
 const SUBSCRIPTION_TAG = /^[A-Za-z][A-Za-z0-9]{0,79}$/
 
-interface SubscriptionOptions<S extends SourceDefinition, E extends ReadonlyArray<EventClass>, H> {
-  readonly source: S
-  readonly events: E
+interface SubscriptionOptions<D extends DeliverySchema, H> {
+  /** The source and events this subscription delivers, declared once with `Actor.Delivery`. */
+  readonly delivery: D
+  /** The `internal` command each delivery runs as a turn; several subscriptions may share it. */
   readonly handler: H
   /** Event tags this subscription once delivered; rows carrying them skip them. */
   readonly retired?: ReadonlyArray<string>
 }
 
 /**
- * Declares a subscription: every committed event of `events` from `source`
- * reaches `handler`, an internal command of the subscriber, as an ordinary
- * command turn. With `route` it is routed: every source of the type in the
+ * Declares a subscription: every committed event its `delivery` names reaches
+ * `handler`, an internal command of the subscriber, as an ordinary command
+ * turn. With `route` it is routed: every source of the type in the
  * tenant, to the subscriber `route` names. Without it, it is dynamic: only the
  * sources a subscriber's turn subscribes to.
  */
 export interface SubscriptionFunction {
-  <
-    const Tag extends string,
-    const S extends SourceDefinition,
-    const E extends ReadonlyArray<S["events"][number]>,
-    const H extends AnyCommand,
-  >(
+  <const Tag extends string, const D extends DeliverySchema, const H extends AnyCommand>(
     tag: Tag,
-    options: SubscriptionOptions<S, E, H & Accepting<H, E[number]["Type"]>> & {
-      readonly route: Route<E[number]["Type"]>
+    options: SubscriptionOptions<D, H & Accepting<H, D["events"][number]["Type"]>> & {
+      readonly route: Route<D["events"][number]["Type"]>
     },
-  ): Subscription<Tag, E, true, H>
-  <
-    const Tag extends string,
-    const S extends SourceDefinition,
-    const E extends ReadonlyArray<S["events"][number]>,
-    const H extends AnyCommand,
-  >(
+  ): Subscription<Tag, D["events"], true, H>
+  <const Tag extends string, const D extends DeliverySchema, const H extends AnyCommand>(
     tag: Tag,
-    options: SubscriptionOptions<S, E, H & Accepting<H, E[number]["Type"]>>,
-  ): Subscription<Tag, E, false, H>
+    options: SubscriptionOptions<D, H & Accepting<H, D["events"][number]["Type"]>>,
+  ): Subscription<Tag, D["events"], false, H>
 }
 
 const subscription = ((
   tag: string,
-  options: SubscriptionOptions<SourceDefinition, ReadonlyArray<EventClass>, AnyCommand> & {
-    readonly route?: Route<never>
-  },
+  options: SubscriptionOptions<DeliverySchema, AnyCommand> & { readonly route?: Route<never> },
 ): AnySubscription => {
   if (!SUBSCRIPTION_TAG.test(tag))
     throw new Error(
       `Subscription tag ${tag} must be 1-80 letters and digits, starting with a letter`,
     )
 
-  if (options.events.length === 0) throw new Error(`Subscription ${tag} names no event`)
+  const { delivery } = options
 
-  const tags = new Set<string>()
+  if (!Predicate.hasProperty(delivery, "source") || !Predicate.hasProperty(delivery, "events"))
+    throw new Error(`Subscription ${tag}'s delivery must be an Actor.Delivery schema`)
 
-  for (const event of options.events) {
-    if (!options.source.events.includes(event))
-      throw new Error(
-        `Subscription ${tag}: ${options.source.name} does not declare event ${event.identifier}`,
-      )
-
-    if (tags.has(event.identifier))
-      throw new Error(`Subscription ${tag} lists ${event.identifier} twice`)
-    tags.add(event.identifier)
-  }
-
+  const tags = new Set(delivery.events.map((event) => event.identifier))
   const retired = options.retired ?? []
 
   for (const old of retired)
@@ -202,8 +219,8 @@ const subscription = ((
   return {
     kind: "subscription",
     tag,
-    source: options.source,
-    events: options.events,
+    source: delivery.source,
+    events: delivery.events,
     retired,
     handler: options.handler,
     route,
@@ -213,15 +230,13 @@ const subscription = ((
 
 /**
  * `SubscriptionMember.make` is `Actor.subscription`; see `SubscriptionFunction`
- * for the routed and dynamic forms. Throws on an invalid tag, no events, an
- * event the source does not declare, a duplicate or retired-and-delivered tag,
- * a handler that is not a command, or a `route` that is neither a function nor
- * `Actor.singleton`.
+ * for the routed and dynamic forms. Throws on an invalid tag, a delivery that
+ * is not an `Actor.Delivery`, a retired-and-delivered tag, a handler that is
+ * not a command, or a `route` that is neither a function nor `Actor.singleton`.
  *
  * @example
  * const OnPosted = Actor.subscription("OnPosted", {
- *   source: Feed,
- *   events: [Posted],
+ *   delivery: PostedDelivery,
  *   handler: Record,
  *   route: (event, source) => source.id,
  * })

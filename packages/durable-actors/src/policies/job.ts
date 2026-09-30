@@ -1,6 +1,6 @@
 import { Duration } from "effect"
 import type { AnyCommand } from "../members/command.ts"
-import type { AnyEffect, EffectPolicy } from "../members/effect.ts"
+import type { AnyJobBinding } from "../members/job.ts"
 
 /** Retries after a job's first failed attempt when its binding names none. */
 const DEFAULT_RETRIES = 3
@@ -53,7 +53,7 @@ export const resolveJobPolicy = ({
   commands,
 }: {
   readonly path: string
-  readonly declared: EffectPolicy<AnyEffect, AnyCommand> | undefined
+  readonly declared: AnyJobBinding
   readonly commands: ReadonlyArray<AnyCommand>
 }): JobPolicy => {
   for (const route of [declared?.onSuccess, declared?.onDeadLetter, declared?.onCancelled])

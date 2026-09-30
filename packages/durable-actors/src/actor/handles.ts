@@ -148,7 +148,7 @@ export const handleOf = Effect.fnUntraced(function* (
     (includeInternal ? descriptor.members : Object.values(descriptor.api))
       .filter((member) => member.kind !== "connection")
       .map((member) => {
-        const { encodeInput, decodeOutput, decodeError } = descriptor.codecs.get(member.tag)!
+        const { encodePayload, decodeSuccess, decodeError } = descriptor.codecs.get(member.tag)!
 
         const decoded = <A>(
           elements: Stream.Stream<A, ActorError | { readonly failure: string }>,
@@ -156,7 +156,7 @@ export const handleOf = Effect.fnUntraced(function* (
         ) =>
           elements.pipe(
             Stream.mapEffect((element) =>
-              Effect.map(decodeOutput(encoded(element)).pipe(Effect.orDie), (out) => out.value),
+              Effect.map(decodeSuccess(encoded(element)).pipe(Effect.orDie), (out) => out.value),
             ),
             Stream.catch((error) =>
               Schema.is(ActorError)(error)
@@ -174,7 +174,7 @@ export const handleOf = Effect.fnUntraced(function* (
               Stream.unwrap(
                 Effect.gen(function* () {
                   yield* outsideTurn
-                  const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+                  const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
 
                   return decoded(
                     internalActors.subscribe(
@@ -197,7 +197,7 @@ export const handleOf = Effect.fnUntraced(function* (
                 yield* callable
 
                 if (member.key !== undefined) yield* checkExecutionKey(member.key(input))
-                const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+                const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
 
                 const outcome = yield* send(
                   Request.make({
@@ -242,7 +242,7 @@ export const handleOf = Effect.fnUntraced(function* (
 
             if (member.kind !== "query") yield* callable
 
-            const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+            const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
 
             const outcome =
               member.kind === "query"
@@ -268,7 +268,7 @@ export const handleOf = Effect.fnUntraced(function* (
             if (Outcome.guards.Acknowledged(outcome))
               return yield* Effect.die(new Error(`Unexpected ${outcome.reason} acknowledgement`))
 
-            return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
+            return (yield* decodeSuccess(outcome.value).pipe(Effect.orDie)).value
           })
         }
 
@@ -278,7 +278,7 @@ export const handleOf = Effect.fnUntraced(function* (
           Stream.unwrap(
             Effect.gen(function* () {
               yield* outsideTurn
-              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+              const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
 
               const results = yield* internalActors.watch(
                 Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
@@ -341,14 +341,14 @@ export const intentsOf = Effect.fnUntraced(function* (descriptor: Descriptor, id
     descriptor.commands.flatMap((member) => {
       if (descriptor.handlerTags.has(member.tag)) return []
 
-      const { encodeInput } = descriptor.codecs.get(member.tag)!
+      const { encodePayload } = descriptor.codecs.get(member.tag)!
 
       return [
         [
           member.tag,
           (input: unknown) =>
             Effect.gen(function* () {
-              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+              const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
 
               yield* stageIntent(marker, { target, command: member.tag, payload })
             }),
@@ -359,14 +359,14 @@ export const intentsOf = Effect.fnUntraced(function* (descriptor: Descriptor, id
 
   const starts = Object.fromEntries(
     descriptor.workflows.map((member) => {
-      const { encodeInput } = descriptor.codecs.get(member.tag)!
+      const { encodePayload } = descriptor.codecs.get(member.tag)!
 
       return [
         member.tag,
         (input: unknown) =>
           Effect.gen(function* () {
             const { staging: current } = yield* currentStaging(marker)
-            const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+            const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
             const ordinal = (startCounts.get(current) ?? 0) + 1
 
             startCounts.set(current, ordinal)

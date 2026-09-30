@@ -15,7 +15,7 @@ import type { AnyStream } from "../members/stream.ts"
 import type { AnyReducer } from "../members/reducer.ts"
 import { type AnyWorkflow, isWorkflow } from "../members/workflow.ts"
 import type { AnySubscription } from "../members/subscription.ts"
-import type { AnyEffect, EffectPolicy } from "../members/effect.ts"
+import type { AnyJob, AnyJobBinding } from "../members/job.ts"
 import { type AnyBlob, isBlob, isContent } from "../members/blob.ts"
 import type { EventClass } from "../members/event.ts"
 import {
@@ -26,7 +26,7 @@ import {
 } from "../members/payload.ts"
 import { type Policy, resolvePolicy, type TurnPolicy } from "../policies/command.ts"
 import { type JobPolicy, resolveJobPolicy } from "../policies/job.ts"
-import { type CronEntry, resolveCron } from "../policies/schedules.ts"
+import { type CronEntry, resolveSchedules } from "../policies/schedules.ts"
 import { type AnyOwnedTable, ownership } from "../tables/owned.ts"
 import { exitCodec } from "../runtime/workflows/steps.ts"
 import { ActorStates, type ActorState } from "../state/migration.ts"
@@ -73,9 +73,11 @@ export interface Declaration {
   readonly feeds?: ReadonlyArray<EventClass> | undefined
   readonly tables?: ReadonlyArray<AnyOwnedTable> | undefined
   readonly blobs?: ReadonlyArray<AnyBlob> | undefined
-  readonly api: MemberRecord
+  readonly api?: MemberRecord | undefined
   readonly internal?: MemberRecord | undefined
-  readonly effects?: ReadonlyArray<AnyEffect> | undefined
+  readonly createdBy?: AnyCommand | undefined
+  readonly schedules?: Readonly<Record<string, AnyCommand>> | undefined
+  readonly jobs?: Readonly<Record<string, AnyJobBinding>> | undefined
   readonly policy?: Policy | undefined
   readonly access?: Access | undefined
   readonly subscriptions?: ReadonlyArray<AnySubscription> | undefined
@@ -83,8 +85,8 @@ export interface Declaration {
 
 /** One declared job of an actor: its schema, compiled payload codec, and resolved binding. */
 export interface CompiledJob {
-  readonly job: AnyEffect
-  readonly codec: ReturnType<typeof payloadCodec<AnyEffect>>
+  readonly job: AnyJob
+  readonly codec: ReturnType<typeof payloadCodec<AnyJob>>
   readonly policy: JobPolicy
 }
 
@@ -241,7 +243,7 @@ const placementOf = (
   if (singleton) throw new Error(`Singleton ${name} cannot be parent-placed`)
 
   if (declared.key === undefined && createdBy === undefined)
-    throw new Error(`Parent-placed ${name} needs a key or policy.createdBy`)
+    throw new Error(`Parent-placed ${name} needs a key or createdBy`)
 
   const placement: Placement = { parent: parent.name, placement: parent.placement }
 
@@ -281,24 +283,21 @@ const idSchemaOf = (
 
 const compileJobs = (declared: Declaration, commands: ReadonlyArray<AnyCommand>) => {
   const jobs = new Map<string, CompiledJob>()
-  const policies: Readonly<Record<string, EffectPolicy<AnyEffect, AnyCommand> | undefined>> =
-    declared.policy?.effects ?? {}
 
-  for (const job of declared.effects ?? []) {
-    if (jobs.has(job.tag)) throw new Error(`Duplicate effect: ${job.tag}`)
+  for (const [key, binding] of Object.entries(declared.jobs ?? {})) {
+    const job = binding?.job
+
+    if (job === undefined || !Schema.isSchema(job) || job.tag === undefined)
+      throw new Error(`jobs.${key} must bind an Actor.job value`)
+
+    if (key !== job.tag) throw new Error(`jobs.${key} must be keyed by its job's tag ${job.tag}`)
+
     jobs.set(job.tag, {
       job,
       codec: payloadCodec({ schema: job, tag: job.tag }),
-      policy: resolveJobPolicy({
-        path: `policy.effects.${job.tag}`,
-        declared: policies[job.tag],
-        commands,
-      }),
+      policy: resolveJobPolicy({ path: `jobs.${key}`, declared: binding, commands }),
     })
   }
-
-  for (const tag of Object.keys(policies))
-    if (!jobs.has(tag)) throw new Error(`policy.effects.${tag} names no declared effect`)
 
   return jobs
 }
@@ -331,7 +330,7 @@ const compileSubscriptions = (
 
     if (source.policy.subscribers !== undefined && !source.policy.subscribers.includes(name))
       throw new Error(
-        `${declared.source.name} policy.subscribers does not allow ${name} (subscription ${declared.tag})`,
+        `${declared.source.name} policy.allowedSubscriberTypes does not allow ${name} (subscription ${declared.tag})`,
       )
 
     const toSingleton = declared.route !== undefined && !Predicate.isFunction(declared.route)
@@ -413,7 +412,7 @@ const compileSubscriptions = (
  */
 export const compile = (name: string, declared: Declaration): Descriptor => {
   NAME.make(name)
-  const api = declared.api
+  const api = declared.api ?? {}
   const internal = declared.internal ?? {}
   tagMatches(api, internal)
 
@@ -433,17 +432,21 @@ export const compile = (name: string, declared: Declaration): Descriptor => {
     if (isWorkflow(member)) throw new Error(`Workflow ${member.tag} must be in api`)
 
   const fields = declared.state?.fields ?? {}
-  const policy = resolvePolicy({ declared: declared.policy, commands })
-  const cron = resolveCron({ declared: declared.policy?.cron, commands })
+  const policy = resolvePolicy({
+    declared: declared.policy,
+    createdBy: declared.createdBy,
+    commands,
+  })
+  const cron = resolveSchedules({ declared: declared.schedules, commands })
   const singleton = isSingletonKey(declared.key)
   const jobs = compileJobs(declared, commands)
   const progressJobs = new Set<string>()
 
   for (const member of [...connections, ...streams])
-    for (const job of member.progress?.effects ?? []) {
+    for (const job of member.progress?.jobs ?? []) {
       if (jobs.get(job.tag)?.job !== job || job.progress === undefined)
         throw new Error(
-          `${member.tag} lists progress of ${job.tag}, which is not a declared effect with a progress schema`,
+          `${member.tag} lists progress of ${job.tag}, which is not a bound job with a progress schema`,
         )
       progressJobs.add(job.tag)
     }
@@ -627,7 +630,7 @@ export const compile = (name: string, declared: Declaration): Descriptor => {
     workflowExits: new Map(
       workflows.map((member) => [
         member.tag,
-        exitCodec({ success: member.output, errors: member.errors }),
+        exitCodec({ success: member.success, error: member.error }),
       ]),
     ),
     fields,

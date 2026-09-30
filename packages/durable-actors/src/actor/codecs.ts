@@ -29,20 +29,19 @@ export const valueCodec = (
  * served view all use this one bundle.
  */
 export const memberCodecs = (member: AnyMember) => {
-  const input = valueCodec(member.input)
-  const output = valueCodec(member.output)
-  const errorSchema = Schema.Union(member.errors)
+  const payload = valueCodec(member.payload)
+  const success = valueCodec(member.success)
 
   const error: Schema.Codec<DeclaredError["Type"], string> = Schema.fromJsonString(
-    Schema.toCodecJson(errorSchema),
+    Schema.toCodecJson(member.error),
   )
 
   return {
-    encodeInput: Schema.encodeEffect(input),
-    decodeInput: Schema.decodeEffect(input),
-    encodeOutput: Schema.encodeEffect(output),
-    decodeOutput: Schema.decodeEffect(output),
-    isError: Schema.is(errorSchema),
+    encodePayload: Schema.encodeEffect(payload),
+    decodePayload: Schema.decodeEffect(payload),
+    encodeSuccess: Schema.encodeEffect(success),
+    decodeSuccess: Schema.decodeEffect(success),
+    isError: Schema.is(member.error),
     encodeError: Schema.encodeEffect(error),
     decodeError: Schema.decodeEffect(error),
   }

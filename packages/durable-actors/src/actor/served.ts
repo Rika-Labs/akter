@@ -1,6 +1,11 @@
 import { Effect, type Result, Schema, SchemaAST } from "effect"
-import type { DeclaredError, MemberKind, ValueSchema } from "../members/command.ts"
-import type { ProgressEffect } from "../members/effect.ts"
+import {
+  type DeclaredError,
+  declaredErrors,
+  type MemberKind,
+  type ValueSchema,
+} from "../members/command.ts"
+import type { ProgressJob } from "../members/job.ts"
 
 /** A public member as a served endpoint sees it: wire schemas and the runtime's payload codec. */
 export interface ServedMember {
@@ -30,7 +35,10 @@ export interface OptimisticReducer {
     state: StateValue,
     input: ValueSchema["Type"],
   ) => Result.Result<StateValue, unknown>
-  /** True when the reducer replies nothing, so its receipt carries no committed state. */
+  /**
+   * True for a batched reducer, which replies nothing, so its receipt carries
+   * no committed state. The field keeps its served name for the client.
+   */
   readonly commutative: boolean
 }
 
@@ -51,7 +59,7 @@ export interface ServedConnection {
   readonly serverFrame: (encoded: string) => Effect.Effect<Schema.Json, Schema.SchemaError>
   /** A declared `open` failure, as the runtime stores it, as the JSON a client reads. */
   readonly openFailure: (encoded: string) => Effect.Effect<Schema.Json, Schema.SchemaError>
-  /** The progress schema of each effect whose executor progress this member receives, by tag. */
+  /** The progress schema of each job whose executor progress this member receives, by tag. */
   readonly progress: ReadonlyMap<string, ValueSchema>
 }
 
@@ -73,7 +81,7 @@ export interface ServedDefinition {
   readonly feeds: ReadonlyArray<string>
   /** Names of the declared content blobs, served for download and grants. */
   readonly contents: ReadonlyArray<string>
-  /** `Actor.stream` members, served over SSE; each element is one encoded `output`. */
+  /** `Actor.stream` members, served over SSE; each element is one encoded `success` value. */
   readonly streams: ReadonlyArray<ServedMember>
 }
 
@@ -95,9 +103,9 @@ export const declaredStatus = (error: DeclaredError): number =>
 /** Rejects declared errors a served response could not tell apart from a framework one. */
 export const checkDeclaredErrors = (member: {
   readonly tag: string
-  readonly errors: ReadonlyArray<DeclaredError>
+  readonly error: DeclaredError
 }) => {
-  for (const error of member.errors) {
+  for (const error of declaredErrors(member.error)) {
     const tag = SchemaAST.resolveIdentifier(error.ast)
 
     if (tag !== undefined && RESERVED_TAGS.has(tag))
@@ -115,17 +123,17 @@ interface ServedMemberSource {
   readonly member: {
     readonly kind: MemberKind
     readonly tag: string
-    readonly input: ValueSchema
-    readonly output: ValueSchema
-    readonly errors: ReadonlyArray<DeclaredError>
+    readonly payload: ValueSchema
+    readonly success: ValueSchema
+    readonly error: DeclaredError
     readonly state?: { readonly fields: Readonly<Record<string, ValueSchema>> }
     /** Method syntax keeps the parameters bivariant, so every reducer's `reduce` fits. */
-    reduce?(state: StateValue, input: ValueSchema["Type"]): Result.Result<StateValue, unknown>
-    readonly commutative?: unknown
+    reduce?(state: StateValue, payload: ValueSchema["Type"]): Result.Result<StateValue, unknown>
+    readonly batch?: object | undefined
     readonly watch?: boolean
   }
   readonly codecs: {
-    readonly encodeInput: (value: {
+    readonly encodePayload: (value: {
       readonly value: unknown
     }) => Effect.Effect<string, Schema.SchemaError>
     readonly decodeError: (
@@ -136,17 +144,18 @@ interface ServedMemberSource {
 
 /** A public member's served view: its wire schemas, body decoder, and failure statuses. */
 export const servedMember = ({ member, codecs }: ServedMemberSource): ServedMember => {
-  const decodeBody = Schema.decodeUnknownEffect(Schema.toCodecJson(member.input))
-  const statuses = member.errors.map((error) => [Schema.is(error), declaredStatus(error)] as const)
+  const decodeBody = Schema.decodeUnknownEffect(Schema.toCodecJson(member.payload))
+  const errors = declaredErrors(member.error)
+  const statuses = errors.map((error) => [Schema.is(error), declaredStatus(error)] as const)
 
   return {
     kind: member.kind,
     tag: member.tag,
-    input: member.input,
-    output: member.output,
-    errors: member.errors,
+    input: member.payload,
+    output: member.success,
+    errors,
     payload: (body) =>
-      decodeBody(body ?? null).pipe(Effect.flatMap((value) => codecs.encodeInput({ value }))),
+      decodeBody(body ?? null).pipe(Effect.flatMap((value) => codecs.encodePayload({ value }))),
     failureStatus: (value) =>
       codecs
         .decodeError(value)
@@ -158,7 +167,7 @@ export const servedMember = ({ member, codecs }: ServedMemberSource): ServedMemb
         ? {
             state: Schema.Struct(member.state.fields),
             reduce: member.reduce.bind(member),
-            commutative: member.commutative !== undefined,
+            commutative: member.batch !== undefined,
           }
         : undefined,
     watch: member.kind === "query" && member.watch === true,
@@ -174,27 +183,27 @@ const decodeJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema
 /** A connection member's served view: its WebSocket frame codecs and progress schemas. */
 export const servedConnection = (member: {
   readonly tag: string
-  readonly input: ValueSchema
+  readonly payload: ValueSchema
   readonly server: ValueSchema
   readonly client: ValueSchema
-  readonly errors: ReadonlyArray<DeclaredError>
+  readonly error: DeclaredError
   readonly stampCursor: boolean
-  readonly progress: { readonly effects: ReadonlyArray<ProgressEffect> } | undefined
+  readonly progress: { readonly jobs: ReadonlyArray<ProgressJob> } | undefined
 }): ServedConnection => {
   const valueOf = (schema: ValueSchema) =>
     Schema.encodeEffect(Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema }))))
 
-  const decodeParams = Schema.decodeUnknownEffect(Schema.toCodecJson(member.input))
-  const encodeParams = valueOf(member.input)
+  const decodeParams = Schema.decodeUnknownEffect(Schema.toCodecJson(member.payload))
+  const encodeParams = valueOf(member.payload)
   const decodeClient = Schema.decodeUnknownEffect(Schema.toCodecJson(member.client))
   const encodeClient = valueOf(member.client)
 
   return {
     tag: member.tag,
-    params: member.input,
+    params: member.payload,
     server: member.server,
     client: member.client,
-    errors: member.errors,
+    errors: declaredErrors(member.error),
     stampCursor: member.stampCursor,
     openParams: (json) =>
       decodeParams(json ?? null).pipe(Effect.flatMap((value) => encodeParams({ value }))),
@@ -203,8 +212,6 @@ export const servedConnection = (member: {
     serverFrame: (encoded) =>
       decodeValueJson(encoded).pipe(Effect.map(({ value }) => value ?? null)),
     openFailure: decodeJsonString,
-    progress: new Map(
-      (member.progress?.effects ?? []).map((effect) => [effect.tag, effect.progress]),
-    ),
+    progress: new Map((member.progress?.jobs ?? []).map((job) => [job.tag, job.progress])),
   }
 }

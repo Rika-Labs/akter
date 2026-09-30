@@ -14,7 +14,7 @@ import {
 import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../runtime/actors.ts"
 import type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "../state/blob.ts"
-import { resolveCron } from "../policies/schedules.ts"
+import { resolveSchedules } from "../policies/schedules.ts"
 import { resolvePolicy } from "../policies/command.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
@@ -27,7 +27,7 @@ describe("actor declarations", () => {
     const A = Actor.make("A", {
       api: { Create, Read },
       internal: { Internal },
-      policy: { createdBy: Create },
+      createdBy: Create,
     })
 
     const B = Actor.make("B", { api: { Read } })
@@ -75,9 +75,9 @@ describe("actor declarations", () => {
   })
 
   it("types a client's event feed to the events the actor serves in feeds", () => {
-    class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+    const Posted = Actor.event("Posted", { text: Schema.String })
 
-    class Hidden extends Actor.Event<Hidden>()("Hidden", {}) {}
+    const Hidden = Actor.event("Hidden", {})
 
     const Ping = Actor.command("Ping")
 
@@ -112,17 +112,17 @@ describe("actor declarations", () => {
   })
 
   it("types stream handles and handlers, and keeps read.follow to stream handlers", () => {
-    class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+    const Posted = Actor.event("Posted", { text: Schema.String })
 
     class Missing extends Schema.TaggedError<Missing>()("Missing", {}) {}
 
     const Feed = Actor.stream("Feed", {
-      input: Schema.String,
-      output: Schema.String,
-      errors: [Missing],
+      payload: Schema.String,
+      success: Schema.String,
+      error: Missing,
     })
 
-    const Peek = Actor.query("Peek", { output: Schema.Finite })
+    const Peek = Actor.query("Peek", { success: Schema.Finite })
 
     const Room = Actor.make("StreamRoom", {
       key: Schema.String,
@@ -179,22 +179,22 @@ describe("actor declarations", () => {
     expectTypeOf<ReturnType<Served["Feed"]>>().toEqualTypeOf<AsyncIterable<string>>()
   })
 
-  it("types read.progress and rejects progress of undeclared or progress-less effects", () => {
-    class Render extends Actor.effect<Render>()("Render", {
-      input: { job: Schema.String },
+  it("types read.progress and rejects progress of unbound or progress-less jobs", () => {
+    const Render = Actor.job("Render", {
+      payload: { job: Schema.String },
       progress: Schema.Struct({ percent: Schema.Finite }),
-    }) {}
+    })
 
-    class Plain extends Actor.effect<Plain>()("Plain", { input: { job: Schema.String } }) {}
+    const Plain = Actor.job("Plain", { payload: { job: Schema.String } })
 
     const Percent = Actor.stream("Percent", {
-      output: Schema.Finite,
-      progress: { effects: [Render] },
+      success: Schema.Finite,
+      progress: { jobs: [Render] },
     })
 
     const Studio = Actor.make("ProgressStudio", {
       key: Schema.String,
-      effects: [Render],
+      jobs: { Render: { job: Render } },
       api: { Percent },
     })
 
@@ -215,34 +215,38 @@ describe("actor declarations", () => {
 
     const Watch = Actor.connection("Watch", {
       server: Schema.String,
-      progress: { effects: [Render] },
+      progress: { jobs: [Render] },
     })
 
     expect(() => Actor.make("Unlisted", { key: Schema.String, api: { Watch } })).toThrow(
-      "not a declared effect",
+      "not a bound job",
     )
 
     const Loose = Actor.connection("Loose", {
       server: Schema.String,
-      // @ts-expect-error only effects that declare a progress schema report progress
-      progress: { effects: [Plain] },
+      // @ts-expect-error only jobs that declare a progress schema report progress
+      progress: { jobs: [Plain] },
     })
 
     expect(() =>
-      Actor.make("Progressless", { key: Schema.String, effects: [Plain], api: { Loose } }),
+      Actor.make("Progressless", {
+        key: Schema.String,
+        jobs: { Plain: { job: Plain } },
+        api: { Loose },
+      }),
     ).toThrow("progress schema")
   })
 
   it("lets a turn mint only unkeyed actors that declare createdBy", () => {
     const Open = Actor.command("Open")
     const Mint = Actor.command("Mint")
-    const Child = Actor.make("Child", { api: { Open }, policy: { createdBy: Open } })
+    const Child = Actor.make("Child", { api: { Open }, createdBy: Open })
     const Plain = Actor.make("Plain", { api: { Open } })
 
     const Keyed = Actor.make("Keyed", {
       key: Schema.String,
       api: { Open },
-      policy: { createdBy: Open },
+      createdBy: Open,
     })
 
     const Single = Actor.make("Single", { key: Actor.singleton, api: { Open } })
@@ -267,7 +271,7 @@ describe("actor declarations", () => {
 
   it("rejects mismatched keys, duplicates, reserved names, and foreign creation commands", () => {
     const Create = Actor.command("Create")
-    const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
+    const Increment = Actor.command("Increment", { payload: Schema.Finite, success: Schema.Finite })
     // @ts-expect-error an api key must equal its command's tag
     expect(() => Actor.make("Mismatch", { api: { Other: Increment } })).toThrow(
       "must equal its tag",
@@ -290,22 +294,22 @@ describe("actor declarations", () => {
       Actor.make("Invalid", { api: { Increment }, policy: { maxStateBytes: 1.5 } }),
     ).toThrow()
     expect(() =>
-      Actor.make("Invalid", { api: { Increment }, policy: { commandTimeout: 0 } }),
+      Actor.make("Invalid", { api: { Increment }, policy: { executionTimeout: 0 } }),
     ).toThrow()
     expect(() =>
       // @ts-expect-error createdBy must name a command of this actor
-      Actor.make("Foreign", { api: { Increment }, policy: { createdBy: Create } }),
-    ).toThrow("belong")
+      Actor.make("Foreign", { api: { Increment }, createdBy: Create }),
+    ).toThrow("createdBy must be a command of this actor")
   })
 
   it("publishes nothing from a rejected definition, so a later valid one may own its table", () => {
     const audit = Actor.table(pgTable("audit_declaration", { id: text("id").primaryKey() }))
-    class Changed extends Actor.Event<Changed>()("Changed", {}) {}
+    const Changed = Actor.event("Changed", {})
 
     class Reserved extends Schema.TaggedError<Reserved>()("ActorError", {}) {}
 
     const Ping = Actor.command("Ping")
-    const Refused = Actor.command("Refused", { errors: [Reserved] })
+    const Refused = Actor.command("Refused", { error: Reserved })
 
     expect(() =>
       Actor.make("RejectedEarly", { tables: [audit], events: [Changed, Changed], api: { Ping } }),
@@ -341,7 +345,7 @@ describe("actor declarations", () => {
 
   it("splits commands and queries between toLayer and toQueryLayer", () => {
     const Bump = Actor.command("Bump")
-    const Peek = Actor.query("Peek", { output: Schema.Finite })
+    const Peek = Actor.query("Peek", { success: Schema.Finite })
 
     const Box = Actor.make("Box", {
       state: Actor.state({ n: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
@@ -361,12 +365,10 @@ describe("actor declarations", () => {
 
     const commands = Box.toLayer(Effect.succeed({ Bump: () => Effect.void }))
     expectTypeOf(commands).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
-    expectTypeOf<
-      keyof Effect.Success<Parameters<typeof Box.toLayer<never, never>>[0]>
-    >().toEqualTypeOf<"Bump">()
-    expectTypeOf<
-      keyof Effect.Success<Parameters<typeof Box.toQueryLayer<never, never>>[0]>
-    >().toEqualTypeOf<"Peek">()
+    // @ts-expect-error every command needs a handler in toLayer
+    Box.toLayer({})
+    // @ts-expect-error every query needs a handler in toQueryLayer
+    Box.toQueryLayer({})
 
     const reads = Box.toQueryLayer(
       Effect.succeed({
@@ -414,8 +416,8 @@ describe("actor declarations", () => {
       "@durable-actors/core/actor/definition.test/Clock",
     ) {}
 
-    const Peek = Actor.query("Peek", { output: Schema.Finite, watch: true })
-    const Plain = Actor.query("Plain", { output: Schema.Finite })
+    const Peek = Actor.query("Peek", { success: Schema.Finite, watch: true })
+    const Plain = Actor.query("Plain", { success: Schema.Finite })
     const Bump = Actor.command("Bump")
 
     const Box = Actor.make("Box", {
@@ -491,7 +493,11 @@ describe("actor declarations", () => {
     const Read = Actor.command("Read")
 
     const resolved = (watch?: { readonly reconcileEvery?: Duration.Input }) =>
-      resolvePolicy({ declared: watch === undefined ? undefined : { watch }, commands: [Read] })
+      resolvePolicy({
+        declared: watch === undefined ? undefined : { watch },
+        createdBy: undefined,
+        commands: [Read],
+      })
 
     expect(resolved().watch).toEqual({
       maxPerActor: 1_000,
@@ -505,12 +511,12 @@ describe("actor declarations", () => {
   })
 
   it("types turn.emit and read.events to the declared events of X.Turn and X.Read", () => {
-    class Posted extends Actor.Event<Posted>()("Posted", { body: Schema.String }) {}
+    const Posted = Actor.event("Posted", { body: Schema.String })
 
-    class Undeclared extends Actor.Event<Undeclared>()("Undeclared", {}) {}
+    const Undeclared = Actor.event("Undeclared", {})
 
     const Post = Actor.command("Post")
-    const History = Actor.query("History", { output: Schema.Array(Schema.String) })
+    const History = Actor.query("History", { success: Schema.Array(Schema.String) })
     const Feed = Actor.make("Feed", { events: [Posted], api: { Post, History } })
     const Plain = Actor.make("Plain", { api: { Post } })
 
@@ -542,7 +548,7 @@ describe("actor declarations", () => {
         History: Effect.fnUntraced(function* () {
           const read = yield* Feed.Read
           const entries = yield* read.events(Posted, { after: "0" }).pipe(Effect.orDie)
-          expectTypeOf(entries).toEqualTypeOf<ReadonlyArray<EventEntry<Posted>>>()
+          expectTypeOf(entries).toEqualTypeOf<ReadonlyArray<EventEntry<typeof Posted.Type>>>()
 
           return entries.map(({ event }) => event.body)
         }),
@@ -599,8 +605,8 @@ describe("actor declarations", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const Increment = Actor.command("Increment", {
-          input: Schema.Finite,
-          output: Schema.Finite,
+          payload: Schema.Finite,
+          success: Schema.Finite,
         })
 
         const Counter = Actor.make("Counter", {
@@ -639,9 +645,9 @@ describe("actor declarations", () => {
     ))
 
   it("offers intents only inside command turns and keeps request/reply out of them", () => {
-    const Ping = Actor.command("Ping", { input: Schema.String })
+    const Ping = Actor.command("Ping", { payload: Schema.String })
     const Wake = Actor.command("Wake")
-    const Peek = Actor.query("Peek", { output: Schema.Finite })
+    const Peek = Actor.query("Peek", { success: Schema.Finite })
 
     const Target = Actor.make("Target", {
       key: Schema.String,
@@ -704,115 +710,125 @@ describe("actor declarations", () => {
     expect(() => Intent.after(-1)).toThrow("non-negative")
     expect(() => Intent.key("")).toThrow("1-200")
   })
-  it("types effects, executors, and routes against the executor's return type", () => {
-    class Moderate extends Actor.effect<Moderate>()("Moderate", {
-      input: { body: Schema.String },
+  it("types jobs, executors, and routes against the executor's return type", () => {
+    const Moderate = Actor.job("Moderate", {
+      payload: { body: Schema.String },
       success: Schema.Struct({ flagged: Schema.Boolean }),
-    }) {}
+    })
 
-    class Other extends Actor.effect<Other>()("Other") {}
+    const Other = Actor.job("Other")
 
     const Post = Actor.command("Post")
 
     const Moderated = Actor.command("Moderated", {
-      input: Schema.Struct({ flagged: Schema.Boolean }),
+      payload: Schema.Struct({ flagged: Schema.Boolean }),
     })
 
-    const Failed = Actor.command("Failed", { input: Actor.DeadLetter(Moderate) })
+    const Failed = Actor.command("Failed", { payload: Actor.DeadLetter(Moderate) })
 
-    const Wrong = Actor.command("Wrong", { input: Schema.String })
+    const Wrong = Actor.command("Wrong", { payload: Schema.String })
 
-    const Room = Actor.make("EffectTypes", {
-      effects: [Moderate],
+    const Room = Actor.make("JobTypes", {
       api: { Post },
       internal: { Moderated, Failed },
-      policy: {
-        effects: { Moderate: { retry: { times: 2 }, onSuccess: Moderated, onDeadLetter: Failed } },
+      jobs: {
+        Moderate: {
+          job: Moderate,
+          retry: { times: 2 },
+          onSuccess: Moderated,
+          onDeadLetter: Failed,
+        },
       },
+    })
+
+    const Flagged = Actor.command("Flagged", { payload: { flagged: Schema.Boolean } })
+
+    const Audit = Actor.make("JobTypesAudit", {
+      internal: { Flagged },
+      jobs: { Moderate: { job: Moderate, onSuccess: Flagged, concurrency: { perActor: 1 } } },
     })
 
     expect(Moderate.tag).toBe("Moderate")
     expect(Moderate.make({ body: "hi" })).toBeInstanceOf(Moderate)
+    expect(new Moderate({ body: "hi" })).toEqual(Moderate.make({ body: "hi" }))
+    expect(Schema.decodeUnknownSync(Moderate)({ _tag: "Moderate", body: "hi" })).toBeInstanceOf(
+      Moderate,
+    )
+    expectTypeOf(Moderate.make({ body: "hi" })).toEqualTypeOf<{
+      readonly _tag: "Moderate"
+      readonly body: string
+    }>()
+    expectTypeOf(Audit.api).toEqualTypeOf<{}>()
 
     type Executor = (typeof Room.Executor)["Service"]
 
     type Read = (typeof Room.Read)["Service"]
 
-    expectTypeOf<Executor["effectId"]>().toEqualTypeOf<string>()
+    expectTypeOf<Executor["jobId"]>().toEqualTypeOf<string>()
     expectTypeOf<Executor["attempt"]>().toEqualTypeOf<number>()
-    expectTypeOf<keyof Read>().not.toEqualTypeOf<keyof Read | "perform">()
-    expectTypeOf(Actor.effect()("NoSelf")).toBeString()
+    expectTypeOf<keyof Read>().not.toEqualTypeOf<keyof Read | "enqueue">()
 
     Actor.make("WrongSuccess", {
-      effects: [Moderate],
       api: { Wrong },
       // @ts-expect-error onSuccess must accept the executor's return type
-      policy: { effects: { Moderate: { onSuccess: Wrong } } },
+      jobs: { Moderate: { job: Moderate, onSuccess: Wrong } },
     })
     Actor.make("WrongDeadLetter", {
-      effects: [Moderate],
       api: { Moderated },
-      // @ts-expect-error onDeadLetter must accept Actor.DeadLetter(E)
-      policy: { effects: { Moderate: { onDeadLetter: Moderated } } },
+      // @ts-expect-error onDeadLetter must accept Actor.DeadLetter(J)
+      jobs: { Moderate: { job: Moderate, onDeadLetter: Moderated } },
     })
     Actor.make("WrongCancelled", {
-      effects: [Moderate],
       api: { Moderated },
-      // @ts-expect-error onCancelled must accept Actor.Cancelled(E)
-      policy: { effects: { Moderate: { onCancelled: Moderated } } },
+      // @ts-expect-error onCancelled must accept Actor.Cancelled(J)
+      jobs: { Moderate: { job: Moderate, onCancelled: Moderated } },
     })
     expect(() =>
       Actor.make("ForeignRoute", {
-        effects: [Moderate],
         api: { Post },
         // @ts-expect-error a route must name a command of this actor
-        policy: { effects: { Moderate: { onSuccess: Moderated } } },
+        jobs: { Moderate: { job: Moderate, onSuccess: Moderated } },
       }),
     ).toThrow("routes must name a command of this actor")
     expect(() =>
-      Actor.make("UndeclaredEffect", {
-        effects: [Moderate],
+      Actor.make("MiskeyedJob", {
         api: { Post },
-        // @ts-expect-error policy.effects keys must be declared effects
-        policy: { effects: { Other: {} } },
+        // @ts-expect-error a binding is keyed by its job's tag
+        jobs: { Other: { job: Moderate } },
       }),
-    ).toThrow("names no declared effect")
-    expect(() =>
-      Actor.make("DuplicateEffect", { effects: [Moderate, Moderate], api: { Post } }),
-    ).toThrow("Duplicate effect")
+    ).toThrow("keyed by its job's tag Moderate")
     expect(() =>
       Actor.make("BadRetry", {
-        effects: [Moderate],
         api: { Post },
-        policy: { effects: { Moderate: { retry: { times: -1 } } } },
+        jobs: { Moderate: { job: Moderate, retry: { times: -1 } } },
       }),
-    ).toThrow("retry.times")
+    ).toThrow("jobs.Moderate.retry.times")
 
     for (const progressEvery of ["49 millis", "60000.5 millis", "61 seconds"] as const)
       expect(() =>
         Actor.make("BadProgressEvery", {
-          effects: [Moderate],
           api: { Post },
-          policy: { effects: { Moderate: { progressEvery } } },
+          jobs: { Moderate: { job: Moderate, progressEvery } },
         }),
       ).toThrow("progressEvery")
 
-    Room.toEffectLayer(Effect.succeed({ Moderate: () => Effect.succeed({ flagged: true }) }))
-    // @ts-expect-error an executor must return its effect's success type
-    Room.toEffectLayer(Effect.succeed({ Moderate: () => Effect.succeed("flagged") }))
+    const executors = Room.toJobLayer({ Moderate: () => Effect.succeed({ flagged: true }) })
+    expectTypeOf(executors).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
+    // @ts-expect-error an executor must return its job's success type
+    Room.toJobLayer({ Moderate: () => Effect.succeed("flagged") })
+    // @ts-expect-error every bound job needs an executor
+    Room.toJobLayer({})
 
-    const layer = Room.toLayer(
-      Effect.succeed({
-        Post: Effect.fnUntraced(function* () {
-          const turn = yield* Room.Turn
-          yield* turn.perform(Moderate.make({ body: "hi" }))
-          // @ts-expect-error only declared effects can be performed
-          yield* turn.perform(Other.make())
-        }),
-        Moderated: () => Effect.void,
-        Failed: (letter) => Effect.log(letter.effectId, letter.effect.body, letter.ambiguous),
+    const layer = Room.toLayer({
+      Post: Effect.fn(function* () {
+        const turn = yield* Room.Turn
+        yield* turn.enqueue(Moderate.make({ body: "hi" }))
+        // @ts-expect-error only bound jobs can be enqueued
+        yield* turn.enqueue(Other.make())
       }),
-    )
+      Moderated: () => Effect.void,
+      Failed: (letter) => Effect.log(letter.jobId, letter.job.body, letter.ambiguous),
+    })
 
     expectTypeOf(layer).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
   })
@@ -892,17 +908,17 @@ describe("actor declarations", () => {
   it("parses cron schedules and rejects bad expressions, duplicates, and targets", () => {
     const Tick = Actor.command("Tick")
     const Tock = Actor.command("Tock")
-    const Set = Actor.command("Set", { input: Schema.Finite })
+    const Set = Actor.command("Set", { payload: Schema.Finite })
     const Foreign = Actor.command("Foreign")
 
     expect(() =>
-      Actor.make("Spaced", { api: { Tick, Tock }, policy: { cron: { " 0  8 * * * ": Tick } } }),
+      Actor.make("Spaced", { api: { Tick, Tock }, schedules: { " 0  8 * * * ": Tick } }),
     ).not.toThrow()
     expect(() =>
       Actor.make("InternalTarget", {
         api: { Tock },
         internal: { Tick },
-        policy: { cron: { "0 8 * * *": Tick } },
+        schedules: { "0 8 * * *": Tick },
       }),
     ).not.toThrow()
     const Hourly = Actor.command("Hourly")
@@ -910,7 +926,7 @@ describe("actor declarations", () => {
     const Weekdays = Actor.command("Weekdays")
 
     expect(
-      resolveCron({
+      resolveSchedules({
         declared: {
           " 0  8 * * 1-5 ": Weekdays,
           "*/15 * * * *": Tick,
@@ -928,7 +944,7 @@ describe("actor declarations", () => {
       "$cron:UTC 30 * * * * *",
     ])
     expect(
-      resolveCron({
+      resolveSchedules({
         declared: {
           "CRON_TZ=America/New_York  0 8 * * 1-5": Weekdays,
           "CRON_TZ=Europe/London 0 8 * * 1-5": Tick,
@@ -956,9 +972,9 @@ describe("actor declarations", () => {
       ["@every 1000.5 millis", "at least 1 second"],
       ["@every", "at least 1 second"],
     ] as const)
-      expect(() => resolveCron({ declared: { [declaration]: Tick }, commands: [Tick] })).toThrow(
-        message,
-      )
+      expect(() =>
+        resolveSchedules({ declared: { [declaration]: Tick }, commands: [Tick] }),
+      ).toThrow(message)
 
     const repeats: ReadonlyArray<Readonly<Record<string, typeof Tick | typeof Tock>>> = [
       { "0 8 * * *": Tick, "CRON_TZ=UTC 0 8 * * *": Tock },
@@ -966,49 +982,49 @@ describe("actor declarations", () => {
     ]
 
     for (const declared of repeats)
-      expect(() => resolveCron({ declared, commands: [Tick, Tock] })).toThrow(
+      expect(() => resolveSchedules({ declared, commands: [Tick, Tock] })).toThrow(
         "repeats the schedule",
       )
     expect(() =>
-      Actor.make("Unparsable", { api: { Tick }, policy: { cron: { "61 * * * *": Tick } } }),
+      Actor.make("Unparsable", { api: { Tick }, schedules: { "61 * * * *": Tick } }),
     ).toThrow("does not parse")
     expect(() =>
       Actor.make("Equal", {
         api: { Tick, Tock },
-        policy: { cron: { "0 8 * * *": Tick, "0  8 * * *": Tock } },
+        schedules: { "0 8 * * *": Tick, "0  8 * * *": Tock },
       }),
     ).toThrow("repeats the schedule")
     expect(() =>
       Actor.make("Equivalent", {
         api: { Tick, Tock },
-        policy: { cron: { "0 8 * * 1-5": Tick, "0 8 * * 1,2,3,4,5": Tock } },
+        schedules: { "0 8 * * 1-5": Tick, "0 8 * * 1,2,3,4,5": Tock },
       }),
     ).toThrow("repeats the schedule")
     expect(() =>
       // @ts-expect-error a cron target must be a command of this actor
-      Actor.make("Foreigner", { api: { Tick }, policy: { cron: { "0 8 * * *": Foreign } } }),
+      Actor.make("Foreigner", { api: { Tick }, schedules: { "0 8 * * *": Foreign } }),
     ).toThrow("command of this actor")
     expect(() =>
       Actor.make("WithInput", {
         api: { Set },
         // @ts-expect-error a cron target takes no input
-        policy: { cron: { "0 8 * * *": Set } },
+        schedules: { "0 8 * * *": Set },
       }),
     ).toThrow("without input")
     expect(() =>
       Actor.make("BadSkip", {
         api: { Tick },
-        policy: { cron: { "0 8 * * *": Tick }, cronSkipIfOlderThan: -1 },
+        policy: { cron: { "0 8 * * *": Tick }, maxScheduleLag: -1 },
       }),
     ).toThrow()
   })
 
   it("types subscriptions, their handlers, and turn.subscribe, and rejects bad declarations", () => {
-    class Placed extends Actor.Event<Placed>()("Placed", { customer: Schema.String }) {}
+    const Placed = Actor.event("Placed", { customer: Schema.String })
 
-    class Cancelled extends Actor.Event<Cancelled>()("Cancelled", { customer: Schema.String }) {}
+    const Cancelled = Actor.event("Cancelled", { customer: Schema.String })
 
-    class Other extends Actor.Event<Other>()("Other", {}) {}
+    const Other = Actor.event("Other", {})
 
     const Noop = Actor.command("Noop")
     const Order = Actor.make("SubTypeOrder", { events: [Placed, Cancelled], api: { Noop } })
@@ -1016,58 +1032,60 @@ describe("actor declarations", () => {
     const Picky = Actor.make("SubTypePicky", {
       events: [Placed],
       api: { Noop },
-      policy: { subscribers: ["SubTypeAllowed"] },
+      policy: { allowedSubscriberTypes: ["SubTypeAllowed"] },
     })
 
-    const Record = Actor.command("Record", {
-      input: Actor.Delivery({ source: Order, events: [Placed, Cancelled] }),
-    })
+    const OrderDelivery = Actor.Delivery({ source: Order, events: [Placed, Cancelled] })
+
+    expect(OrderDelivery.source).toBe(Order)
+    expect(OrderDelivery.events).toEqual([Placed, Cancelled])
+
+    const Record = Actor.command("Record", { payload: OrderDelivery })
 
     const Routed = Actor.subscription("Routed", {
-      source: Order,
-      events: [Placed, Cancelled],
+      delivery: OrderDelivery,
       handler: Record,
       route: (event) => {
-        expectTypeOf(event).toEqualTypeOf<Placed | Cancelled>()
+        expectTypeOf(event).toEqualTypeOf<typeof Placed.Type | typeof Cancelled.Type>()
 
         return event.customer
       },
     })
 
-    const Dynamic = Actor.subscription("Dynamic", {
-      source: Order,
-      events: [Placed, Cancelled],
-      handler: Record,
-    })
+    const Dynamic = Actor.subscription("Dynamic", { delivery: OrderDelivery, handler: Record })
 
+    expect(Dynamic.source).toBe(Order)
+    expect(Dynamic.events).toEqual([Placed, Cancelled])
     expect(() =>
-      Actor.subscription("Undeclared", {
-        source: Order,
-        // @ts-expect-error the source doesn't declare Other
-        events: [Other],
-        handler: Record,
-      }),
+      // @ts-expect-error the source doesn't declare Other
+      Actor.Delivery({ source: Order, events: [Other] }),
     ).toThrow("does not declare event Other")
+    expect(() => Actor.Delivery({ source: Order, events: [Placed, Placed] })).toThrow("twice")
+    expect(() => Actor.Delivery({ source: Order, events: [] })).toThrow("names no event")
 
-    const Narrow = Actor.command("Narrow", { input: Schema.String })
+    const Narrow = Actor.command("Narrow", { payload: Schema.String })
 
     Actor.subscription("Mismatch", {
-      source: Order,
-      events: [Placed],
-      // @ts-expect-error the handler's input doesn't accept the delivery
+      delivery: Actor.Delivery({ source: Order, events: [Placed] }),
+      // @ts-expect-error the handler's payload doesn't accept the delivery
       handler: Narrow,
+    })
+
+    const OnlyPlaced = Actor.subscription("OnlyPlaced", {
+      delivery: Actor.Delivery({ source: Order, events: [Placed] }),
+      handler: Record,
     })
 
     const Summary = Actor.make("SubTypeSummary", {
       key: Schema.String,
       api: { Noop },
       internal: { Record },
-      subscriptions: [Routed, Dynamic],
+      subscriptions: [Routed, Dynamic, OnlyPlaced],
     })
 
     type Subscribe = (typeof Summary.Turn)["Service"]["subscribe"]
 
-    expectTypeOf<Parameters<Subscribe>[0]>().toEqualTypeOf<typeof Dynamic>()
+    expectTypeOf<Parameters<Subscribe>[0]>().toEqualTypeOf<typeof Dynamic | typeof OnlyPlaced>()
     // @ts-expect-error a routed subscription can't be subscribed to from a turn
     const _routed: Parameters<Subscribe>[0] = Routed
     expectTypeOf<keyof Effect.Success<ReturnType<typeof Summary.intents>>>().toEqualTypeOf<
@@ -1091,12 +1109,11 @@ describe("actor declarations", () => {
     ).toThrow("must be a command in internal")
 
     const PickyRecord = Actor.command("PickyRecord", {
-      input: Actor.Delivery({ source: Picky, events: [Placed] }),
+      payload: Actor.Delivery({ source: Picky, events: [Placed] }),
     })
 
     const FromPicky = Actor.subscription("FromPicky", {
-      source: Picky,
-      events: [Placed],
+      delivery: PickyRecord.payload,
       handler: PickyRecord,
     })
 
@@ -1107,7 +1124,7 @@ describe("actor declarations", () => {
         internal: { PickyRecord },
         subscriptions: [FromPicky],
       }),
-    ).toThrow("policy.subscribers does not allow SubTypeExcluded")
+    ).toThrow("policy.allowedSubscriberTypes does not allow SubTypeExcluded")
     expect(
       Actor.make("SubTypeAllowed", {
         key: Schema.String,
@@ -1123,8 +1140,7 @@ describe("actor declarations", () => {
         internal: { Record },
         subscriptions: [
           Actor.subscription("ToSingleton", {
-            source: Order,
-            events: [Placed, Cancelled],
+            delivery: OrderDelivery,
             handler: Record,
             route: Actor.singleton,
           }),
