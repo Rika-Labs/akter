@@ -338,10 +338,13 @@ const uploadEndpoint = (basePath: string) =>
 /** Protocol routes live in their own group. */
 const PROTOCOL_GROUP = "durable"
 
+/** The operation id of the route that mints command ids. */
+export const MINT_OPERATION = `${PROTOCOL_GROUP}.commandIds`
+
 /** Operation ids of the protocol routes; no served member may reuse one. */
 export const PROTOCOL_OPERATIONS: ReadonlySet<string> = new Set([
   `${PROTOCOL_GROUP}.protocol`,
-  `${PROTOCOL_GROUP}.commandIds`,
+  MINT_OPERATION,
   `${PROTOCOL_GROUP}.uploadContent`,
   `${PROTOCOL_GROUP}.ready`,
 ])

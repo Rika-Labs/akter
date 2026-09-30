@@ -1,29 +1,26 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
+import { Config, Console, Effect, Layer, Schema } from "effect"
 import { Counter } from "./counter/contract.ts"
 import { CounterLive } from "./counter/layer.ts"
 
-const live = Layer.unwrap(
-  Effect.gen(function* () {
-    const database = yield* Config.String("DATABASE_URL")
-
-    return CounterLive.pipe(
-      Layer.provideMerge(
-        Actors.layer({
-          authorize: ({ caller, ref }) =>
-            Effect.succeed(
-              Schema.is(User)(caller) &&
-                caller.subject === "counter-demo" &&
-                ref.tenant === "counter-demo",
-            ),
-        }),
-      ),
-      Layer.provide(Database.postgres({ url: Redacted.make(database) })),
-    )
-  }),
-).pipe(Layer.provide(BunCrypto.layer))
+const live = CounterLive.pipe(
+  Layer.provideMerge(
+    Actors.layer({
+      authorize: ({ caller, ref }) =>
+        Effect.succeed(
+          Schema.is(User)(caller) &&
+            caller.subject === "counter-demo" &&
+            ref.tenant === "counter-demo",
+        ),
+    }),
+  ),
+  Layer.provide(
+    Layer.unwrap(Effect.map(Config.Redacted("DATABASE_URL"), (url) => Database.postgres({ url }))),
+  ),
+  Layer.provide(BunCrypto.layer),
+)
 
 const program = Effect.gen(function* () {
   const counter = yield* Counter.get("visits").pipe(
