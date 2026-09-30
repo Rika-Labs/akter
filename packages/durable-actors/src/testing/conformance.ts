@@ -70,6 +70,7 @@ import {
 } from "./conformance/cold-serve.ts"
 import { operatorConformance } from "./conformance/operator.ts"
 import { placementConformance, placementLayer } from "./conformance/placement.ts"
+import { singleShardConformance } from "./conformance/single-shard.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import {
@@ -100,14 +101,15 @@ import {
   drainLayer,
 } from "./conformance/drain.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
+import { connectionsConformance } from "./conformance/connections.ts"
 import {
-  connectionsConformance,
   connectionsFixture,
   type ConnectionsFixture,
   connectionsLayer,
-} from "./conformance/connections.ts"
+} from "./conformance/connections/actors.ts"
 import { streamsConformance, streamsLayer } from "./conformance/streams.ts"
-import { transportsConformance, transportsLayer } from "./conformance/transports.ts"
+import { transportsConformance } from "./conformance/transports.ts"
+import { transportsLayer } from "./conformance/transports/actors.ts"
 import { batchesConformance, batchesLayer } from "./conformance/batches.ts"
 import { singletonConformance } from "./conformance/singleton.ts"
 import { cronClusterConformance, cronConformance } from "./conformance/cron.ts"
@@ -142,6 +144,7 @@ import {
 } from "./conformance/effects.ts"
 import { inspectionViewsConformance, inspectionViewsLayer } from "./conformance/inspection-views.ts"
 import { inspectorConformance, inspectorLayer } from "./conformance/inspector.ts"
+import { adoptionConformance } from "./conformance/adoption.ts"
 import { rlsConformance } from "./conformance/rls.ts"
 import {
   progressDeliveryConformance,
@@ -151,15 +154,16 @@ import {
   progressLayer,
   type ProgressFixture,
 } from "./conformance/progress.ts"
+import { subscriptionsConformance } from "./conformance/subscriptions.ts"
+import { subscriptionsClusterConformance } from "./conformance/subscriptions/cluster.ts"
+import { subscriptionsRetentionConformance } from "./conformance/subscriptions/retention.ts"
 import {
-  subscriptionsClusterConformance,
-  subscriptionsConformance,
-  subscriptionsRetentionConformance,
   subscriptionsFixture,
   subscriptionsLayer,
   type SubscriptionsFixture,
-} from "./conformance/subscriptions.ts"
+} from "./conformance/subscriptions/actors.ts"
 import { ContentHooks, TurnHooks } from "../runtime/turn/hooks.ts"
+import { NekiTurnSessions } from "../runtime/database/neki/session.ts"
 import type { ContentStore } from "../handles/content.ts"
 import type { Options } from "../runtime/layer.ts"
 import {
@@ -168,12 +172,12 @@ import {
   contentLayer,
   type ContentFixture,
 } from "./conformance/content-blobs.ts"
+import { workflowsConformance } from "./conformance/workflows.ts"
 import {
-  workflowsConformance,
   workflowsFixture,
   type WorkflowsFixture,
   workflowsLive,
-} from "./conformance/workflows.ts"
+} from "./conformance/workflows/actors.ts"
 
 /**
  * Assertions injected by the test framework running the suite, e.g. Vitest's
@@ -236,6 +240,12 @@ export interface ConformanceEnvironment {
     /** Queries read this streaming replica of `database` once it has caught up. */
     readonly replica?: Redacted.Redacted<string> | undefined
     readonly content?: Options["content"]
+    /**
+     * Sees every statement the runtime compiles, from any fiber. It replaces
+     * the current statement transformer of every fiber the runtime starts, so
+     * a case that installs its own on a caller cannot share the runtime.
+     */
+    readonly observe?: (statement: Statement.Statement<unknown>) => void
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
   readonly stop: Effect.Effect<void>
@@ -274,6 +284,13 @@ export interface ConformanceBackend {
   readonly independentConnections: boolean
   /** True when `open` returns a streaming replica of the primary. */
   readonly hasReplica?: boolean
+  /**
+   * True when the database is a Neki router. Turn sessions then run in
+   * single transaction mode and single fanout, and the cases flagged
+   * `requiresNeki` run; every other backend reports them through
+   * `registrar.skip`.
+   */
+  readonly neki?: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
   /**
@@ -347,6 +364,8 @@ export interface ConformanceCase {
   readonly requiresReplica?: boolean
   /** Requires `backend.edge`; backends without one register the case through `registrar.skip`. */
   readonly requiresEdge?: boolean
+  /** Requires `backend.neki`; every other backend registers the case through `registrar.skip`. */
+  readonly requiresNeki?: boolean
   readonly run: (ctx: ConformanceContext) => Promise<void>
   readonly timeoutMs?: number
 }
@@ -1508,6 +1527,8 @@ export const conformanceGroups = {
   export: exportConformance,
   coldServe: coldServeConformance,
   placement: placementConformance,
+  adoption: adoptionConformance,
+  singleShard: singleShardConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
@@ -1634,6 +1655,16 @@ export const describeConformance = (options: {
                   Layer.succeed(ContentHooks, {
                     at: (point) => Effect.suspend(() => fixture.content.hook(point)),
                   }),
+                  Layer.succeed(NekiTurnSessions, backend.neki === true),
+                  overrides?.observe === undefined
+                    ? Layer.empty
+                    : Layer.succeed(Statement.CurrentTransformer, (statement) =>
+                        Effect.sync(() => {
+                          overrides.observe!(statement)
+
+                          return statement
+                        }),
+                      ),
                 ),
               ),
             ),
@@ -1713,7 +1744,8 @@ export const describeConformance = (options: {
         (conformanceCase.requiresIndependentConnections === true &&
           backend.independentConnections === false) ||
         (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
-        (conformanceCase.requiresEdge === true && backend.edge === undefined)
+        (conformanceCase.requiresEdge === true && backend.edge === undefined) ||
+        (conformanceCase.requiresNeki === true && backend.neki !== true)
       ) {
         registrar.skip(conformanceCase.name)
         continue

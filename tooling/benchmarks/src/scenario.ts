@@ -10,9 +10,6 @@ import { afterCommit } from "./probe/effects.ts"
 import { ProbeLive } from "./probe/layer.ts"
 import { SubscriptionProbeLive, subscriptionCommitted } from "./probe/subscriptions.ts"
 
-/** Sizes of a run: `quick` for local checks, `full` for reported numbers. */
-export type Profile = "quick" | "full"
-
 /** Values that distinguish one case of a scenario from another. */
 export type Parameters = Readonly<Record<string, number | string | boolean>>
 
@@ -119,7 +116,8 @@ export const caseRuntime = runtimeLayer(undefined)
 /** What a scenario receives from the runner. */
 export interface ScenarioContext {
   readonly backend: Backend
-  readonly profile: Profile
+  /** Sizes cases for local checks rather than reported numbers. */
+  readonly quick: boolean
   /**
    * Runners sharing the case database. Above 1, `withRuntime` starts an
    * `ActorTest.cluster` on Postgres and runs `body` through runner 0; every
@@ -151,6 +149,17 @@ export interface Scenario {
   readonly multiRunner?: boolean
   readonly run: (context: ScenarioContext) => Effect.Effect<ReadonlyArray<CaseResult>>
 }
+
+/** The database's clock in epoch milliseconds, the clock its timers and relay claims compare against. */
+export const databaseNow = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+
+  const [row] = yield* sql<{
+    readonly now: string
+  }>`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
+
+  return Number(row!.now)
+}).pipe(Effect.orDie)
 
 /** Database connections a case runtime opens unless it asks for another number. */
 export const DEFAULT_POOL = 10

@@ -46,8 +46,7 @@ export const workflows: Scenario = {
     "Workflow executions to completion, sequentially: no steps, four activity steps, and a 50 ms durable sleep resumed by the relay; extra holds database-clock start-to-finish times.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const operations = quick ? 100 : 500
+      const operations = context.quick ? 100 : 500
       const results: Array<CaseResult> = []
 
       for (const [name, steps, sleepMs] of [

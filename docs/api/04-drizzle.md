@@ -9,6 +9,13 @@ Actor-owned tables use Drizzle semantics and gain `routing_key`, `tenant_id`, an
 
 ## Declaring an owned table
 
+<!-- snippet file=room.ts
+import { Schema } from "effect"
+const RoomId = Schema.String
+const Post = Actor.command("Post", { input: Schema.Struct({ body: Schema.String }) })
+const Recent = Actor.query("Recent", { output: Schema.Array(Schema.String) })
+-->
+
 ```ts
 import { Actor } from "@durable-actors/core"
 import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core"
@@ -33,21 +40,66 @@ export const Room = Actor.make("Room", { key: RoomId, tables: [messages], api: {
 
 `Actor.table` rejects a table that has no primary key, declares a column whose key or SQL name is `routing_key`, `tenant_id`, or `actor_id`, declares a foreign key (inline `.references()` or `foreignKey()`), is an alias, or is already owned. An owned table is listed in exactly one actor type's `tables`; `Actor.make` rejects a table another actor type already lists, and the runtime records the owner in `actor_tables` so a later deployment cannot move a table to a second actor type. At startup each registered table must exist with the primary key `(routing_key, tenant_id, actor_id, <business key>)`; otherwise the layer fails instead of running unscoped. With `rowLevelSecurity` on, it must also have row-level security on with the `durable_tenant` policy, and the tenant role must be able to read and write it.
 
+## Adopting an existing table
+
+A table that already exists, and that a web app or batch job also writes, is adopted instead of declared ([ADR 0054](../decisions/0054-existing-schema-adoption.md)):
+
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { pgTable, text } from "drizzle-orm/pg-core"
+const existingInvoices = pgTable("invoices", { id: text("id").primaryKey(), orgId: text("org_id").notNull(), accountId: text("account_id").notNull() })
+const existingContacts = pgTable("contacts", { id: text("id").primaryKey(), tenant: text("tenant").notNull(), owner: text("owner").notNull() })
+-->
+
+```ts
+const InvoiceRows = Actor.table(existingInvoices, {
+  owner: { tenant: existingInvoices.orgId, actor: existingInvoices.accountId },
+})
+
+const Contacts = Actor.table(existingContacts, {
+  owner: { tenant: existingContacts.tenant, actor: existingContacts.owner },
+  access: "read",
+})
+```
+
+`owner.tenant` holds the `TenantId` string and `owner.actor` the actor's encoded key. Both must be `text`, `varchar`, or `uuid` columns of the table, and they must differ. A `uuid` column needs ids in canonical lowercase form; the turn refuses any other id. Integer and `citext` columns are refused: an integer column would let `"042"` and `"42"` name the same rows through two actor ids.
+
+The table stays as it is. Its primary key, unique constraints, indexes, and foreign keys are not prefixed or removed, and no policy is added, so business keys are unique across actors. The framework adds one nullable `routing_key bigint` to the Drizzle object, which `durable adopt observe` also adds to the database, so the next `drizzle-kit generate` emits an `ADD COLUMN routing_key` that the database already has; remove that statement. `Row` and `Insert` follow Drizzle: an adopted table's rows carry its two mapped columns as read-only values, and the turn rejects a write that sets either one. Types cannot tell which property a column object came from, so a column shaped exactly like a mapped column is optional in `Insert`, and the database refuses the row if it is missing.
+
+An insert or upsert whose primary key belongs to another actor fails the turn as a deterministic defect and changes nothing. An upsert conflicts on the table's own primary key and updates only where the mapped columns match the turn.
+
+`access: "read"` adopts the table for reading only: `turn.rows(table)` and `read.rows(table)` are `ScopedRead`, filtered by the two mapped columns, with no mutation methods, and `group` refuses the table. The framework adds no column, record, or trigger, and the table needs only an index leading with `(tenant, actor)`.
+
+A writable adopted table starts only after `durable adopt observe`, and the runtime refuses it otherwise; see the [migrations guide](../operations/02-migrations.md#adopting-an-existing-schema). While a table is observed the actor is not authoritative, because other code still writes it.
+
 ## Scoped rows
 
 Inside a command turn, `turn.rows(table)` is scoped to the current tenant and actor and bound to the turn transaction. `turn.rows` accepts only tables in the actor's `tables`, in types and at runtime. `read.rows(table)` in queries is `ScopedRead`: it exposes only `one`, `all`, and `count` and has no mutation methods at runtime either.
 
-```ts
-const turn = yield * Room.Turn
-yield * turn.rows(messages).insert({ id, author, body, sentAt })
-yield * turn.rows(messages).update({ body }).where({ id })
-yield * turn.rows(messages).delete().where({ id })
-yield * turn.rows(messages).upsert({ id, author, body, sentAt })
+<!-- snippet
+import { Effect } from "effect"
+import { messages, Room } from "./room.ts"
+declare const id: string
+declare const author: string
+declare const body: string
+declare const sentAt: Date
+-->
 
-const read = yield * Room.Read
-const recent = yield * read.rows(messages).all({ orderBy: { sentAt: "desc" }, limit: 20 })
-const one = yield * read.rows(messages).one({ where: { id } }) // Option<Row>
-const total = yield * read.rows(messages).count({ where: { author } })
+```ts
+const inATurn = Effect.gen(function* () {
+  const turn = yield* Room.Turn
+  yield* turn.rows(messages).insert({ id, author, body, sentAt })
+  yield* turn.rows(messages).update({ body }).where({ id })
+  yield* turn.rows(messages).delete().where({ id })
+  yield* turn.rows(messages).upsert({ id, author, body, sentAt })
+})
+
+const inAQuery = Effect.gen(function* () {
+  const read = yield* Room.Read
+  const recent = yield* read.rows(messages).all({ orderBy: { sentAt: "desc" }, limit: 20 })
+  const one = yield* read.rows(messages).one({ where: { id } }) // Option<Row>
+  const total = yield* read.rows(messages).count({ where: { author } })
+})
 ```
 
 Filters are Drizzle's object filters (`TableFilter`) over business columns: equality by value, the column operators (`eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `notIn`, `like`, `ilike`, `notLike`, `notIlike`, `isNull`, `isNotNull`, `arrayContains`, `arrayContained`, `arrayOverlaps`), and `AND`, `OR`, and `NOT`. `orderBy` is `{ column: "asc" | "desc" }`. Rows are returned with business columns only. `update(values)` and `delete()` run only once given `.where(filter)`; `.where({})` affects every row of the actor. `upsert` inserts, or on a conflict of the scoped primary key updates the supplied non-key columns. Insert, update, and filter values are plain data: strings, numbers, bigints, booleans, `null`, `Date`, `Uint8Array`, arrays, and plain objects. The framework copies them before building SQL and rejects functions, class instances, and anything Drizzle would render as SQL, at any depth. A `Date` or `Uint8Array` is compared with `{ eq: value }`, not as a bare filter value, which Drizzle would otherwise read as an empty operator map.
@@ -83,11 +135,21 @@ Raw SQL, Drizzle's relational query API (`db.query`), `returning`, `onConflict` 
 
 `group` is a read-only Drizzle select scoped to the actor's placement group: every actor of the tenant under `placement: "tenant"`, or the actor itself under `placement: "actor"` ([ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md)). It is available on `X.Turn` (reading through the turn transaction) and `X.Read`, and one select is one snapshot.
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { eq, inArray } from "drizzle-orm"
+import { pgTable, text } from "drizzle-orm/pg-core"
+import { Effect, Schema } from "effect"
+const notes = Actor.table(pgTable("notes", { id: text("id").primaryKey() }))
+const labels = Actor.table(pgTable("labels", { noteId: text("note_id").primaryKey(), label: text("label").notNull() }))
+const Library = Actor.make("Library", { key: Schema.String, tables: [notes, labels], api: {} })
+declare const ids: ReadonlyArray<string>
+-->
+
 ```ts
-const read = yield * Library.Read
-const rows =
-  yield *
-  read.group((db) =>
+const inAQuery = Effect.gen(function* () {
+  const read = yield* Library.Read
+  const rows = yield* read.group((db) =>
     db
       .select({ note: notes.id, label: labels.label })
       .from(notes)
@@ -95,9 +157,10 @@ const rows =
       .where(inArray(notes.id, ids))
       .orderBy(notes.id),
   )
+})
 ```
 
-The builder gets only `select` and `selectDistinct`, and its select is only read: the framework rebuilds every expression from values read once (fresh text chunks, parameters holding copied plain data, and the real columns of the query's tables) and runs that on a fresh select of its own, so getters, proxies, or hidden `getSQL` members on the caller's objects never render. The base table and every joined table must be owned tables that some actor type of this runtime lists in `tables` and that passed the startup check (not aliases, and never a table merely wrapped with `Actor.table`); the framework adds `routing_key = <group> AND tenant_id = <tenant>` to the base table's `WHERE` and to each join's `ON`. Only inner and left joins are supported. Expressions in the selection, `where`, `having`, `orderBy`, `groupBy`, and `ON` may use business columns, plain values, and Drizzle's comparison, boolean, pattern, null, and aggregate operators, and each must balance its parentheses, so the framework's parenthesized scope predicate cannot be closed from inside. Ownership columns cannot be selected or filtered (so `db.select()` without fields is rejected); raw SQL text beyond operator words, table references, subqueries, identifiers, SQL-valued parameters, set operators, `WITH`, locking clauses, lateral joins, placeholders, and `DISTINCT ON` are rejected. Fleet-wide reads use declared `Fleet.view` definitions ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)).
+The builder gets only `select` and `selectDistinct`, and its select is only read: the framework rebuilds every expression from values read once (fresh text chunks, parameters holding copied plain data, and the real columns of the query's tables) and runs that on a fresh select of its own, so getters, proxies, or hidden `getSQL` members on the caller's objects never render. The base table and every joined table must be owned tables that some actor type of this runtime lists in `tables` and that passed the startup check (not aliases, and never a table merely wrapped with `Actor.table`); the framework adds `routing_key = <group> AND tenant_id = <tenant>` to the base table's `WHERE` and to each join's `ON`. Only inner and left joins are supported. Expressions in the selection, `where`, `having`, `orderBy`, `groupBy`, and `ON` may use business columns, plain values, and Drizzle's comparison, boolean, pattern, null, and aggregate operators, and each must balance its parentheses, so the framework's parenthesized scope predicate cannot be closed from inside. Ownership columns cannot be selected or filtered (so `db.select()` without fields is rejected); raw SQL text beyond operator words, table references, subqueries, identifiers, SQL-valued parameters, set operators, `WITH`, locking clauses, lateral joins, placeholders, and `DISTINCT ON` are rejected. Fleet-wide reads are the target `Fleet.view` definitions of [ADR 0056](../decisions/0056-fleet-views.md), not implemented yet.
 
 ## Transactions and backends
 
@@ -107,4 +170,4 @@ Application code supplies business fields and filters, not ownership columns; th
 
 TypeScript types alone are not authority: runtime scoping, phase checks, and the ownership-prefixed keys enforce it.
 
-There is one database per deployment region. Tenants are rows, isolated by `tenant_id`, composite indexes, and optional RLS. Placement is selected with `shardGroup`, not separate tenant databases. Table schema changes use normal SQL migrations; keyed actor state uses `Actor.migration` upcasts.
+There is one database per deployment region. Tenants are rows, isolated by `tenant_id`, composite indexes, and optional RLS. Placement is selected with `placement`, not separate tenant databases. Table schema changes use normal SQL migrations; keyed actor state uses `Actor.migration` upcasts.

@@ -1,5 +1,5 @@
 import { Schema, SchemaAST } from "effect"
-import type { DeclaredError, Member, ValueSchema } from "./command.ts"
+import { type DeclaredError, member, type Member, type ValueSchema } from "./command.ts"
 import type { ProgressEffect } from "./effect.ts"
 
 /** Tags reserved for framework control frames, which travel in their own envelope variant. */
@@ -17,6 +17,7 @@ export interface Connection<
   Client extends ValueSchema,
   Session extends ValueSchema | undefined,
   Errors extends ReadonlyArray<DeclaredError>,
+  Effects extends ProgressEffect = never,
 > extends Member<"connection", Tag, Params, typeof Schema.Void, Errors> {
   readonly server: Server
   readonly client: Client
@@ -24,7 +25,7 @@ export interface Connection<
   /** Stamp member frames with the flushed-through cursor and event cursor. Default true. */
   readonly stampCursor: boolean
   /** Executor progress this member's connections receive, if any. */
-  readonly progress: ConnectionProgress | undefined
+  readonly progress: ConnectionProgress<Effects> | undefined
 }
 
 /**
@@ -32,8 +33,8 @@ export interface Connection<
  * whom: `"performer"` (the default) only connections whose caller has the
  * performing turn's principal, `"all"` every open connection of the member.
  */
-interface ConnectionProgress {
-  readonly effects: ReadonlyArray<ProgressEffect>
+interface ConnectionProgress<Effects extends ProgressEffect> {
+  readonly effects: ReadonlyArray<Effects>
   readonly to: "performer" | "all"
 }
 
@@ -44,7 +45,8 @@ export type AnyConnection = Connection<
   ValueSchema,
   ValueSchema,
   ValueSchema | undefined,
-  ReadonlyArray<DeclaredError>
+  ReadonlyArray<DeclaredError>,
+  ProgressEffect
 >
 
 const taggedIdentifiers = (schema: Schema.Top): ReadonlyArray<string> => {
@@ -68,6 +70,7 @@ const make = <
   Client extends ValueSchema = typeof Schema.Never,
   Session extends ValueSchema | undefined = undefined,
   const Errors extends ReadonlyArray<DeclaredError> = readonly [],
+  Effects extends ProgressEffect = never,
 >(
   tag: Tag,
   options: {
@@ -78,11 +81,11 @@ const make = <
     readonly errors?: Errors
     readonly stampCursor?: boolean
     readonly progress?: {
-      readonly effects: ReadonlyArray<ProgressEffect>
+      readonly effects: ReadonlyArray<Effects>
       readonly to?: "performer" | "all"
     }
   },
-): Connection<Tag, Params, Server, Client, Session, Errors> => {
+): Connection<Tag, Params, Server, Client, Session, Errors, Effects> => {
   if (tag.startsWith("$")) throw new Error(`Connection ${tag} may not start with $`)
 
   for (const schema of [options.server, options.client])
@@ -92,11 +95,10 @@ const make = <
           throw new Error(`Connection ${tag} frames may not use the control tag ${reserved}`)
 
   return {
-    kind: "connection",
-    tag,
-    input: (options.params ?? Schema.Void) as Params,
-    output: Schema.Void,
-    errors: (options.errors ?? []) as Errors,
+    ...member("connection")<Tag, Params, typeof Schema.Void, Errors>(tag, {
+      input: options.params,
+      errors: options.errors,
+    }),
     server: options.server,
     client: (options.client ?? Schema.Never) as Client,
     session: options.session as Session,

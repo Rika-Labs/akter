@@ -169,7 +169,7 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))
 const valueCodec = (schema: ValueSchema): Schema.Codec<{ readonly value: unknown }, string> =>
   Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: schema })))
 
-interface TestDefinition {
+export interface TestDefinition {
   readonly get: unknown
 }
 
