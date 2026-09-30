@@ -74,9 +74,9 @@ const AnySchema = Schema.declare(Schema.isSchema)
 const WorkflowDefinition = Schema.Struct({
   kind: Schema.Literal("workflow"),
   tag: Schema.String,
-  input: AnySchema,
-  output: AnySchema,
-  errors: Schema.Array(AnySchema),
+  payload: AnySchema,
+  success: AnySchema,
+  error: AnySchema,
   versions: Schema.Record(
     Schema.String,
     Schema.Struct({ current: Schema.Finite, min: Schema.Finite }),
