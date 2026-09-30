@@ -14,7 +14,7 @@ import {
   Stream,
 } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
-import { Actor, Unauthorized, User } from "../../index.ts"
+import { Unauthorized, User } from "../../index.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import type { RuntimeControl } from "../../runtime/drain.ts"

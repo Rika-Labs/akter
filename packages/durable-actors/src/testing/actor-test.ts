@@ -450,8 +450,6 @@ export class ActorTest extends Context.Service<
                           onBehalfOf: Option.getOrUndefined(principal(as)),
                         })
 
-                type H = InternalHandleOf<D> & { readonly ref: ActorRef }
-
                 const internal = descriptorOf(definition)?.internal
 
                 if (internal === undefined)

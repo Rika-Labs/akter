@@ -1,6 +1,6 @@
 import { Cause, Effect, Encoding, Exit, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
-import { Actor, Unauthorized } from "../../index.ts"
+import { Unauthorized } from "../../index.ts"
 import { InvalidInput } from "../../errors/actor.ts"
 import { CommandConflict, CommandExpired } from "../../errors/actor.ts"
 import { InternalActors } from "../../runtime/actors.ts"
