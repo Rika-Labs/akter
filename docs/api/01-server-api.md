@@ -45,6 +45,8 @@ See the runnable [counter](../../examples/counter/src/main.ts), the [protocol](.
 
 `Actor.make(name, definition)` is the only way to make an actor, and the definition is its only shape: there is no piping or later configuration. Every section is data; code lives in layers. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
+<!-- snippet file=counter.ts -->
+
 ```ts
 import { Effect, Result, Schema } from "effect"
 import { Actor } from "@durable-actors/core"
@@ -60,7 +62,6 @@ export const CounterState = Actor.state({
 })
 
 export const Increment = Actor.reducer("Increment", {
-  description: "Add `amount`. Fails with Overflow above 1000.",
   state: CounterState,
   input: Schema.Int,
   errors: [Overflow],
@@ -69,7 +70,7 @@ export const Increment = Actor.reducer("Increment", {
       ? Result.fail(new Overflow({ max: 1_000 }))
       : Result.succeed({ count: state.count + amount }),
 })
-export const Reset = Actor.command("Reset", { description: "Set to zero and announce it." })
+export const Reset = Actor.command("Reset")
 export const GetCount = Actor.query("GetCount", { output: Schema.Int })
 
 export const Counter = Actor.make("Counter", {
@@ -118,22 +119,46 @@ Type checks replace lists that must agree: an `api` or `internal` key must equal
 
 From [ADR 0021](../decisions/0021-multi-runner-relay-singleton-and-cron.md). The relay, executor, and per-effect timing settings are implemented (M2.4), and so are `policy.cron` and `cronSkipIfOlderThan` (M2.5), with the time zones and fixed intervals of [ADR 0042](../decisions/0042-cron-time-zones-intervals-and-daylight-saving.md) ([below](#cron-time-zones-and-intervals)). Every default equals the M1 behaviour.
 
-```ts
-policy: {
-  effects: {
-    Moderate: {
-      timeout: "30 seconds",
-      retry: { times: 3, backoff: { base: "1 second", max: "256 seconds" } },
-      onSuccess: Moderated,
-    },
-  },
-  cron: { "0 8 * * *": Send },
-  cronSkipIfOlderThan: "1 day",
-}
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Actors } from "@durable-actors/core/runtime"
+import { Effect, Schema } from "effect"
+class Moderate extends Actor.effect<Moderate>()("Moderate", { input: { body: Schema.String }, success: Schema.Boolean }) {}
+const Moderated = Actor.command("Moderated", { input: Schema.Boolean })
+const Send = Actor.command("Send")
+const authorize = () => Effect.succeed(true)
+-->
 
-Actors.layer({
+```ts
+export const Newsletter = Actor.make("Newsletter", {
+  key: Actor.singleton,
+  effects: [Moderate],
+  api: {},
+  internal: { Moderated, Send },
+  policy: {
+    effects: {
+      Moderate: {
+        timeout: "30 seconds",
+        retry: { times: 3, backoff: { base: "1 second", max: "256 seconds" } },
+        onSuccess: Moderated,
+      },
+    },
+    cron: { "0 8 * * *": Send },
+    cronSkipIfOlderThan: "1 day",
+  },
+})
+
+export const runtime = Actors.layer({
   authorize,
-  relay: { poll: "1 second", passLimit: 256, deliveryConcurrency: 16, subscriptionConcurrency: 16, subscriptionBatch: 16, claimLease: "37 seconds", maxBackoff: "256 seconds" },
+  relay: {
+    poll: "1 second",
+    passLimit: 256,
+    deliveryConcurrency: 16,
+    subscriptionConcurrency: 16,
+    subscriptionBatch: 16,
+    claimLease: "37 seconds",
+    maxBackoff: "256 seconds",
+  },
   executors: { concurrency: 64, lease: "60 seconds" },
 })
 ```
@@ -148,6 +173,10 @@ Actors.layer({
 ### Runtime control: readiness and drain
 
 Implemented in M4.2 ([ADR 0003](../decisions/0003-failure-scoping-drain-and-hosted-trust.md)). `Actors.layer` also provides `RuntimeControl`:
+
+<!-- snippet
+import type { Effect } from "effect"
+-->
 
 ```ts
 import { RuntimeControl } from "@durable-actors/core/runtime"
@@ -168,15 +197,28 @@ const report = RuntimeControl.use((control) => control.drain({ deadline: "30 sec
 
 From [ADR 0042](../decisions/0042-cron-time-zones-intervals-and-daylight-saving.md), implemented (M2.5).
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+const Digest = Actor.command("Digest")
+const OpenDesk = Actor.command("OpenDesk")
+const OpenLondonDesk = Actor.command("OpenLondonDesk")
+const Reconcile = Actor.command("Reconcile")
+-->
+
 ```ts
-policy: {
-  cron: {
-    "0 8 * * *": Digest, // UTC, key $cron:UTC 0 8 * * *
-    "CRON_TZ=America/New_York 0 8 * * 1-5": OpenDesk, // key $cron:America/New_York 0 8 * * 1,2,3,4,5
-    "CRON_TZ=Europe/London 0 8 * * 1-5": OpenLondonDesk, // same expression, another zone, another entry
-    "@every 90 minutes": Reconcile, // key $cron:@every 5400000ms
+export const Desk = Actor.make("Desk", {
+  key: Actor.singleton,
+  api: {},
+  internal: { Digest, OpenDesk, OpenLondonDesk, Reconcile },
+  policy: {
+    cron: {
+      "0 8 * * *": Digest, // UTC, key $cron:UTC 0 8 * * *
+      "CRON_TZ=America/New_York 0 8 * * 1-5": OpenDesk, // key $cron:America/New_York 0 8 * * 1,2,3,4,5
+      "CRON_TZ=Europe/London 0 8 * * 1-5": OpenLondonDesk, // same expression, another zone, another entry
+      "@every 90 minutes": Reconcile, // key $cron:@every 5400000ms
+    },
   },
-}
+})
 ```
 
 - `CRON_TZ=<zone>` takes an IANA zone name the runtime knows; the key keeps the name as declared, so aliases such as `US/Eastern` and `America/New_York` are separate entries. Without the prefix the zone is `UTC`. `Actor.make` rejects an unknown zone or a fixed offset.
@@ -188,19 +230,59 @@ policy: {
 
 Implemented in M2.13 (migration `0015_effect_control`) with the accepted defaults of [ADR 0024](../decisions/0024-effect-cancellation-and-per-actor-concurrency.md). `perActor` is validated at `Actor.make`, and `executors.cancelCheck` at `Actors.layer` (at least 1 second; above `lease / 3` it is lowered to `lease / 3`).
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Actors } from "@durable-actors/core/runtime"
+import { Effect, Schema } from "effect"
+class SendReminder extends Actor.effect<SendReminder>()("SendReminder", { input: { userId: Schema.String } }) {}
+class CapturePayment extends Actor.effect<CapturePayment>()("CapturePayment", { input: { amount: Schema.Int } }) {}
+const Remind = Actor.command("Remind", { input: Schema.String })
+const Forget = Actor.command("Forget")
+const ReminderSent = Actor.command("ReminderSent")
+const ReminderCancelled = Actor.command("ReminderCancelled", { input: Actor.Cancelled(SendReminder) })
+const Captured = Actor.command("Captured")
+const CaptureCancelled = Actor.command("CaptureCancelled", { input: Actor.Cancelled(CapturePayment) })
+const authorize = () => Effect.succeed(true)
+-->
+
 ```ts
-policy: {
-  effects: {
-    SendReminder: { onSuccess: ReminderSent, onCancelled: ReminderCancelled },
-    CapturePayment: { concurrency: { perActor: 1 }, onSuccess: Captured, onCancelled: CaptureCancelled },
+export const Billing = Actor.make("Billing", {
+  key: Schema.String,
+  effects: [SendReminder, CapturePayment],
+  api: { Remind, Forget },
+  internal: { ReminderSent, ReminderCancelled, Captured, CaptureCancelled },
+  policy: {
+    effects: {
+      SendReminder: { onSuccess: ReminderSent, onCancelled: ReminderCancelled },
+      CapturePayment: {
+        concurrency: { perActor: 1 },
+        onSuccess: Captured,
+        onCancelled: CaptureCancelled,
+      },
+    },
   },
-}
+})
 
-// in a command turn
-yield* turn.perform(SendReminder.make({ userId }), { key: "reminder", after: "24 hours" })
-yield* turn.cancelEffect("reminder") // in a later turn
+export const BillingLive = Billing.toLayer(
+  Effect.succeed({
+    Remind: Effect.fn(function* (userId: string) {
+      const turn = yield* Billing.Turn
+      yield* turn.perform(SendReminder.make({ userId }), { key: "reminder", after: "24 hours" })
+    }),
+    Forget: Effect.fn(function* () {
+      yield* (yield* Billing.Turn).cancelEffect("reminder")
+    }),
+    ReminderSent: () => Effect.void,
+    ReminderCancelled: () => Effect.void,
+    Captured: () => Effect.void,
+    CaptureCancelled: () => Effect.void,
+  }),
+)
 
-Actors.layer({ authorize, executors: { concurrency: 64, lease: "60 seconds", cancelCheck: "20 seconds" } })
+export const runtime = Actors.layer({
+  authorize,
+  executors: { concurrency: 64, lease: "60 seconds", cancelCheck: "20 seconds" },
+})
 ```
 
 - `turn.perform(effect, { key?, after?, at? })` names the effect within its actor and may delay its first attempt; performing again with a live key cancels the earlier effect, then records the new one under a new effect id. Keys are stored with the reserved prefix `$effect:`, which `Intent.key` and `Intent.cancel` reject.
@@ -211,20 +293,28 @@ Actors.layer({ authorize, executors: { concurrency: 64, lease: "60 seconds", can
 
 Implemented in M4.7 (migration `0021_payload_versions`) with the accepted defaults of [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md).
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Schema } from "effect"
+const OrderId = Schema.String
+const Money = Schema.Struct({ amount: Schema.Number, currency: Schema.String })
+const Receipt = Schema.Struct({ id: Schema.String })
+-->
+
 ```ts
 const V1 = { orderId: OrderId, amount: Schema.Number }
 const V2 = { orderId: OrderId, total: Money }
 
-class OrderPlaced extends Actor.Event<OrderPlaced>()("OrderPlaced", V2, {
-  migrations: [
-    Actor.migration(V1, V2, (v1) => ({
-      orderId: v1.orderId,
-      total: { amount: v1.amount, currency: "USD" },
-    })),
-  ],
+const toV2 = Actor.migration(V1, V2, (v1) => ({
+  orderId: v1.orderId,
+  total: { amount: v1.amount, currency: "USD" },
+}))
+
+export class OrderPlaced extends Actor.Event<OrderPlaced>()("OrderPlaced", V2, {
+  migrations: [toV2],
 }) {}
 
-class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
+export class ChargeCard extends Actor.effect<ChargeCard>()("ChargeCard", {
   input: V2,
   success: Receipt,
   migrations: [toV2],
@@ -271,6 +361,11 @@ Designs from the M4 ADRs, accepted 2026-09-28. Hosted ingress and embedded PGlit
 
 ## Layers
 
+<!-- snippet
+import { Effect } from "effect"
+import { CountChanged, Counter } from "./counter.ts"
+-->
+
 ```ts
 export const CounterLive = Counter.toLayer(
   Effect.succeed({
@@ -300,14 +395,25 @@ Each takes the Effect form only; there is no options object. Handlers take only 
 
 ## Calling actors
 
-```ts
-const counter = yield * Counter.get(id)
-const state = yield * counter.Increment(5) // request/reply
+<!-- snippet
+import { Intent } from "@durable-actors/core"
+import { Effect } from "effect"
+import { Counter, CounterId } from "./counter.ts"
+const id = CounterId.make("c1")
+-->
 
-const later = yield * Counter.intents(id) // inside a turn only
-yield * later.Increment(1) // commits with the turn, delivered after
-yield * later.Reset().pipe(Intent.after("1 hour"), Intent.key("idle"))
-yield * Intent.cancel("idle")
+```ts
+const outside = Effect.gen(function* () {
+  const counter = yield* Counter.get(id)
+  const state = yield* counter.Increment(5) // request/reply
+})
+
+const insideATurn = Effect.gen(function* () {
+  const later = yield* Counter.intents(id)
+  yield* later.Reset() // commits with the turn, delivered after
+  yield* later.Reset().pipe(Intent.after("1 hour"), Intent.key("idle"))
+  yield* Intent.cancel("idle")
+})
 ```
 
 Outside a turn, every call is request/reply and direct: the command runs in its owner's turn, and the committed receipt is its only durable admission record ([ADR 0011](../decisions/0011-direct-commands-outbox-and-performance.md)). The handle retries retryable failures with the same command id. Work that must survive a caller crash is an intent written by a turn, or a workflow.
@@ -316,11 +422,27 @@ Inside a turn, `X.intents(id)` returns the same method shape as durable intents.
 
 Workflow members, runs, and steps follow [ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md):
 
+<!-- snippet
+import { Actor } from "@durable-actors/core"
+import { Effect, Schema } from "effect"
+const OrderId = Schema.String
+const Address = Schema.String
+const Label = Schema.String
+const Reservation = Schema.String
+const Quote = Schema.Number
+const Order = Schema.Struct({ id: Schema.String })
+class ShippingFailed extends Schema.TaggedError<ShippingFailed>()("ShippingFailed", {}) {}
+class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", {}) {}
+class Paid extends Actor.Event<Paid>()("Paid", { orderId: Schema.String }) {}
+declare const inventory: { readonly reserve: (order: typeof Order.Type) => Effect.Effect<string> }
+const input = { orderId: "o1", address: "1 Main St" }
+-->
+
 ```ts
 export const Ship = Actor.workflow("Ship", {
   input: { orderId: OrderId, address: Address },
   output: Label,
-  errors: [ShippingFailed],
+  errors: [ShippingFailed, OutOfStock],
   key: ({ orderId }) => orderId, // optional; defaults to the start's command id
   versions: { "fraud-check": { current: 2, min: 1 } }, // fraud-check 1 still runs "fraud"
 })
@@ -334,17 +456,39 @@ export const CoolOff = Ship.sleep("cool-off")
 export const AwaitPaid = Ship.wait("paid", Paid)
 export const FirstQuote = Ship.race("first-quote", { success: Quote })
 
-// in the body (X.toLayer)
-const reservation = yield * Reserve.run(order, (o) => inventory.reserve(o))
-yield * CoolOff("1 hour")
-const paid = yield * AwaitPaid({ where: (e) => e.orderId === order.id, timeout: "1 day" }) // Option<Paid>
+export const PlaceOrder = Actor.command("PlaceOrder", { output: Schema.String })
 
-const executionId = yield * later.Ship(input) // in a turn: the execution id
-const run = yield * order.Ship(input) // outside: WorkflowRun<Label, ShippingFailed>
-yield * run.poll // Option<Workflow.Result>
-yield * run.result // waits for completion
-yield * run.interrupt // idempotent, receipted
-const same = yield * Order.run(Ship, executionId) // reattach from a stored id
+export const Orders = Actor.make("Orders", {
+  key: OrderId,
+  events: [Paid],
+  api: { Ship, PlaceOrder },
+})
+
+export const OrdersLive = Orders.toLayer(
+  Effect.succeed({
+    Ship: Effect.fn(function* ({ orderId }) {
+      const order = { id: orderId }
+      const reservation = yield* Reserve.run(order, (o) => inventory.reserve(o))
+      yield* CoolOff("1 hour")
+      const paid = yield* AwaitPaid({ where: (e) => e.orderId === order.id, timeout: "1 day" }) // Option<Paid>
+      return reservation
+    }),
+    PlaceOrder: Effect.fn(function* () {
+      const turn = yield* Orders.Turn
+      const later = yield* Orders.intents(turn.id)
+      return yield* later.Ship(input) // in a turn: the execution id
+    }),
+  }),
+)
+
+const outside = Effect.gen(function* () {
+  const order = yield* Orders.get("o1")
+  const run = yield* order.Ship(input) // WorkflowRun<Label, ShippingFailed | OutOfStock>
+  yield* run.poll // Option<Workflow.Result>
+  yield* run.result // waits for completion
+  yield* run.interrupt // idempotent, receipted
+  const same = yield* Orders.run(Ship, run.executionId) // reattach from a stored id
+})
 ```
 
 A workflow intent returns the execution id (`Effect<string, never, Actor.InTurn>`) and mints its id when staged, unlike other intents, which return `void`. The framework drives Effect's `WorkflowEngine` directly with these ids, so applications don't call Effect's `Workflow.execute` or `Workflow.poll`, and a child `Workflow.execute` inside a body is unsupported. `poll` and `result` are admitted like queries; `interrupt` is a receipted public command authorized like the workflow member. `policy.keepWorkflows` (default `"7 days"`) keeps finished results for `poll`.
@@ -367,7 +511,7 @@ Target API from [ADR 0027](../decisions/0027-served-protocol.md): `Actor.serve({
 
 **Implemented (M3.2, HTTP only):** `Actor.serve({ actors, auth, basePath?, openapi?, mcp?, origins?, limits? })` is a layer that adds routes to the ambient `HttpRouter`; serve it with `HttpRouter.serve(layer)` and a platform server layer such as `BunHttpServer.layer`, and provide the runtime (`Actors.layer`) and each actor's `X.toLayer`/`X.toQueryLayer`. Every served actor must be registered in that runtime, or the layer fails to build. Routes: `GET /protocol` (unauthenticated: `{ protocol, retryWindowMs, now }`), `POST /command-ids` (authenticated like a command; `{ commandId }` minted from the database clock, nothing written), `POST /actors/{Actor}/{id}/{Member}` for every public command, reducer, and query (singletons omit `{id}`; a minted actor's `{id}` is a UUIDv7 from `X.create()` or a lowercase UUIDv8 from `turn.mint`, as [ADR 0025](../decisions/0025-turn-mint.md) amends ADR 0027, and a request to a turn-minted child's `createdBy` command carries no mint proof, so it fails `Unauthorized`), `OPTIONS` preflight, and `openapi.path` when set. Commands require `Idempotency-Key` (bare or quoted) and answer `x-request-id` with it, and every committed or replayed command answers `durable-version`; queries take neither, and read a configured replica only once it has replayed their `durable-min-version` (a malformed one is `400 InvalidInput { code: "decode" }`). Bodies are UTF-8 JSON (`application/json`; any other content type is `415`, invalid UTF-8 is `400 InvalidInput { code: "decode" }`), at most `limits.requestBytes` (default 1 MiB); `authorization` and `cookie` together are at most `limits.credentialBytes` (default 8 KiB). `origins` lists browser origins allowed besides the server's own (same origin means the request URL's scheme and host; forwarding headers such as `x-forwarded-proto` are not trusted, so behind a TLS-terminating proxy list the public origin); allowed origins get CORS headers exposing `x-request-id`, `retry-after`, `durable-now`, and `durable-version`. `Actor.auth.make(authenticate)` wraps a custom provider that reads `authorization: Bearer`; `Actor.auth.make({ authenticate, cookies: { name }, bearer? })` wraps one whose credential is the cookie `name` (an HTTP token, or `Actor.auth.make` throws). Only a provider that names a cookie receives the request's cookies, and `bearer: true` says it also reads `authorization`. The OpenAPI document lists the provider's credentials as alternative security requirements on every authenticated operation: `bearer` (`http`, `bearerFormat: JWT` for `Actor.auth.jwt`) and `cookie` (`apiKey` `in: cookie` with the cookie's name), and `Actor.serve` fails at startup on a hand-built provider with two credentials of one scheme ([ADR 0045](../decisions/0045-cookie-security-schemes.md)); `Actor.auth.jwt` verifies RS256/384/512, PS256/384/512, ES256/384, or EdDSA tokens from static keys or a JWKS URL (which needs an `HttpClient` layer), requires `exp`, and checks `iss`, `aud`, and `nbf` within `clockTolerance` (default 30 s). A declared error's `httpApiStatus` must be an unreserved 4xx (not 400, 401, 403, 404, 409, 410, 413, 415, or 429) and its tag cannot be `ActorError` or `Defect`; `Actor.make` throws otherwise. `mcp: { path, name?, version? }` (M6.6, [ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)) serves a stateless MCP 2026-07-28 endpoint at `path`: `POST` only (`GET` and `DELETE` answer `405`), authenticated per request like every route, with `server/discover`, `tools/list`, and `tools/call`. Each public command, reducer, and query is a tool named by its operation id (`Room.Post`), plus `durable.commandIds`; a tool takes `id`, `commandId`, and `input` as its OpenAPI operation takes the path segment, `Idempotency-Key`, and body, and answers the route's own JSON as text (`isError` for an error, with the body the route would send). `mcp.path` may not take a protocol route, an `/actors` path, or `openapi.path`. Workflow starts are not served yet. A member returning a non-void output answers `200` with its JSON, `null` for `undefined`; a void output answers `204`. Trailing slashes on `basePath` are ignored, so `basePath: "/"` is the same as no base path and `"/api/"` is `"/api"`. `Actor.serve` fails at startup when a served member's operation id would equal a protocol route's (`durable.protocol`, `durable.commandIds`), or when `openapi.path` is `/protocol`, `/command-ids`, or under `/actors`. [Generating clients](05-generated-clients.md) covers generating a client from the OpenAPI document; a generated client must keep the same `Idempotency-Key` across its retries. `Actor.serve` fails at startup when the runtime's retry window is below 60 seconds, because served clients mint ids up to a second or a round trip behind the database clock. Deployments must serve `Actor.serve` behind TLS: credentials and `Idempotency-Key` travel in headers, and the framework cannot tell whether a proxy in front of it terminates TLS, so it does not reject plain HTTP itself.
 
-**Implemented (M4.8, hosted runners):** `Actor.auth.assertion({ issuer, audience, region, keys, refreshEvery? })` is the only provider a hosted runner uses ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). It reads the edge's signed assertion from `durable-assertion`, or a WebSocket frame's `authorization: Bearer`, and ignores `authorization` and cookies, so the caller and tenant come only from the assertion. `issuer` is the edge's, `audience` the deployment id, and `region` the runner's own region. `keys` is the control plane's key-set URL (`{ keys: [{ kid, kty: "OKP", crv: "Ed25519", x, nbf?, exp? }] }`, which needs an `HttpClient` layer) or static keys of the same shape. A key-set URL is reread every `refreshEvery` (default 5 minutes), which bounds how long a removed key is still accepted, and on an unknown `kid` at most once a minute. A runner that can't reread a stale key set answers `503 ActorUnavailable` rather than keep trusting it. With a key-set URL, `Actor.serve` also serves `POST <basePath>/assertion-keys/refresh`, where the edge pushes an immediate reread after revoking a key (the [protocol contract](../contracts/protocol.md#hosted-assertions-adr-0031) has its format), so revocation doesn't wait for `refreshEvery`. The server then rebuilds the canonical request binding from the request it received, the body included, and refuses a mismatch with `401 invalid_credentials` before any turn. The wire format is in the [protocol contract](../contracts/protocol.md#hosted-edge-assertions-adr-0031). The OpenAPI document lists the credential as an `apiKey` scheme `in: header` named `durable-assertion`. `@durable-actors/core` also exports `requestDigest`, `reauthenticationDigest`, `canonicalRequest`, `AssertionClaims`, and `AssertionKeySet`, which the edge signs with.
+**Implemented (M4.8, hosted runners):** `Actor.auth.assertion({ issuer, audience, region, keys, refreshEvery? })` is the only provider a hosted runner uses ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). It reads the edge's signed assertion from `durable-assertion`, or a WebSocket frame's `authorization: Bearer`, and ignores `authorization` and cookies, so the caller and tenant come only from the assertion. `issuer` is the edge's, `audience` the deployment id, and `region` the runner's own region. `keys` is the control plane's key-set URL (`{ keys: [{ kid, kty: "OKP", crv: "Ed25519", x, nbf?, exp? }] }`, which needs an `HttpClient` layer) or static keys of the same shape. A key-set URL is reread every `refreshEvery` (default 5 minutes), which bounds how long a removed key is still accepted, and on an unknown `kid` at most once a minute. A runner that can't reread a stale key set answers `503 ActorUnavailable` rather than keep trusting it. With a key-set URL, `Actor.serve` also serves `POST <basePath>/assertion-keys/refresh`, where the edge pushes an immediate reread after revoking a key (the [protocol contract](../contracts/protocol.md#hosted-assertions-adr-0031) has its format), so revocation doesn't wait for `refreshEvery`. The server then rebuilds the canonical request binding from the request it received, the body included, and refuses a mismatch with `401 invalid_credentials` before any turn. The wire format is in the [protocol contract](../contracts/protocol.md#hosted-assertions-adr-0031). The OpenAPI document lists the credential as an `apiKey` scheme `in: header` named `durable-assertion`. `@durable-actors/core` also exports `requestDigest`, `reauthenticationDigest`, `canonicalRequest`, `AssertionClaims`, and `AssertionKeySet`, which the edge signs with.
 
 **Implemented (M3.3, WebSocket):** each connection member is served at `GET /actors/{Actor}/{id}/{Connection}` as a WebSocket upgrade that must offer the subprotocol `durable-actors.v1` first (the server selects it); any other `GET` there is `400 InvalidInput { code: "unsupported_protocol" }`. The origin check, `401` for a bad upgrade credential, and `503 RunnerAtCapacity` once 1,000 sockets on the runtime await `hello` are answered before the upgrade. Every message is one JSON text frame with a `t` discriminator (`serve/frames.ts` holds both directions' schemas): the client's first message is `hello { authorization?, params }` within 10 seconds; `authorization` has the header's form, `Bearer <token>`, and a non-browser client may instead authenticate the upgrade request, in which case both must name the same caller and tenant. After the holder's open the server sends `open { connectionId, baseline?, reauthenticateBy? }`, then `frame { frame, cursor?, event? }` member frames, `resync { after?, reason, deadline }` (`deadline` in milliseconds) and `resyncReplayed` after an ungraceful owner death, `reauthenticate { by }` a minute before the credential's expiry or at half its remaining life, `reauthenticated { by? }`, and last `end { error? }` before the close code in ADR 0027's table. The client sends `frame { frame }`, `resyncDone { through? }`, and `reauthenticate { authorization }`; any other `t`, a second `hello`, or a frame its member's schema rejects ends the session with `InvalidInput` (close `4400`), a message over 64 KiB with `SessionEnded` `Defect` (close `1009`), and a binary message with `InvalidInput` (close `1003`). A credential's `expiresAt` caps the session: the holder ends it with `Unauthorized` `expired` at that time unless a renewal for the same caller arrived, and `authorize` runs again with `kind: "reauthorize"` on each renewal. Under `stampCursor: false`, `open` has no `baseline` and `resync` no `after`. Commands never travel over the socket. Ping intervals and idle timeouts are the HTTP server's (`BunHttpServer.layer({ websocket: { sendPings, idleTimeout } })`). OpenAPI lists each connection as a `GET` operation `<Actor>.<Connection>` with `x-durable-transport: websocket`, `x-durable-subprotocol`, and `x-durable-frames` referencing `<Actor>.<Connection>.params`, `.server`, and `.client` under `components.schemas`.
 

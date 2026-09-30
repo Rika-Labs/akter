@@ -44,6 +44,8 @@ Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The
 
 Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres:
 
+<!-- snippet file=src/counter/contract.ts -->
+
 ```ts
 // src/counter/contract.ts: the actor's public shape
 import { Actor } from "@durable-actors/core"
@@ -57,6 +59,8 @@ export const Counter = Actor.make("Counter", {
   api: { Increment },
 })
 ```
+
+<!-- snippet file=src/counter/layer.ts -->
 
 ```ts
 // src/counter/layer.ts: the handler runs inside the turn's transaction
@@ -74,6 +78,16 @@ export const CounterLive = Counter.toLayer(
   }),
 )
 ```
+
+<!-- snippet file=src/main.ts
+import { BunCrypto } from "@effect/platform-bun"
+import { Actor, User } from "@durable-actors/core"
+import { Actors, Database } from "@durable-actors/core/runtime"
+import { Console, Effect, Layer, Schema } from "effect"
+import { Counter } from "./counter/contract.ts"
+import { CounterLive } from "./counter/layer.ts"
+const DatabaseLive = Database.pglite({ dataDir: "./.data" })
+-->
 
 ```ts
 // src/main.ts: runtime wiring and one call
