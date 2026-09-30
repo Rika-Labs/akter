@@ -1,3 +1,4 @@
+import { Latch } from "effect"
 import type { Request } from "../request.ts"
 
 /**
@@ -117,4 +118,51 @@ export const takeBatch = <
   }
 
   return batch
+}
+
+/**
+ * One activation handler's waiting commands in arrival order, and its
+ * worker's wake-up. A command is offered as Cluster delivers it and becomes
+ * takeable once its `queued` hook finished; the wake-up stays open while the
+ * front command is takeable, so the worker never sleeps past ready work and a
+ * command whose hook is still running holds back every command behind it.
+ * `alone` outlives the handler: it holds the ids of a failed batch, each run
+ * in a transaction of its own once.
+ */
+export const activationMailbox = <W extends Mergeable & { queued: boolean }>(
+  alone: Set<string>,
+) => {
+  const waiting: Array<W> = []
+  const ready = Latch.makeUnsafe(false)
+
+  return {
+    offer: (entry: W) => {
+      waiting.push(entry)
+    },
+    /** Marks `entry`'s `queued` hook finished, so a batch may take it. */
+    queued: (entry: W) => {
+      entry.queued = true
+      ready.openUnsafe()
+    },
+    /** Waits until the front command may be takeable. */
+    await: ready.await,
+    /** The next batch, possibly empty; the wake-up closes once the front command is not takeable. */
+    take: () => {
+      const batch = takeBatch({ waiting, alone })
+
+      if (waiting[0]?.queued !== true) ready.closeUnsafe()
+
+      return batch
+    },
+    /** Puts taken commands back in front of everything that arrived since. */
+    requeue: (entries: ReadonlyArray<W>) => {
+      if (entries.length === 0) return
+
+      waiting.unshift(...entries)
+      ready.openUnsafe()
+    },
+    /** Runs each of `ids` alone once, the next time it is taken. */
+    isolate: (ids: Iterable<string>) => markAlone({ alone, ids }),
+    size: () => waiting.length,
+  }
 }

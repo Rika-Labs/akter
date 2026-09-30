@@ -7,7 +7,6 @@ import {
   Duration,
   Effect,
   Exit,
-  Latch,
   Metric,
   Option,
   Result,
@@ -33,7 +32,7 @@ import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
-import { markAlone, takeBatch } from "./mailbox.ts"
+import { activationMailbox } from "./mailbox.ts"
 import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
 import { activationOwner, type Authorize } from "../connections/owner.ts"
 import { TenantScope } from "../database/tenancy.ts"
@@ -41,6 +40,7 @@ import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
 import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
+import { OutboxRuntime } from "../turn/outbox.ts"
 import type { TurnGate } from "../drain.ts"
 import { DefectLog } from "../telemetry/defects.ts"
 import { count, Metrics, record } from "../telemetry/metrics.ts"
@@ -116,25 +116,6 @@ const entityScope = Effect.serviceOption(
     }),
   ),
 )
-
-/**
- * The current handler's scope within each entity scope.
- */
-const handlerScopes = new WeakMap<Scope.Scope, Scope.Closeable>()
-
-/**
- * Rebuilds of each entity scope's handler since its last settled turn; absent
- * until the first build, so only a rebuild waits.
- */
-const restarts = new WeakMap<Scope.Scope, number>()
-
-/**
- * Per entity scope, the command ids of a batch a retryable defect aborted;
- * they outlive the handler the defect rebuilt, so each runs alone once. The
- * set is bounded by `ALONE_CAP`, so ids whose callers never retry do not
- * accumulate.
- */
-const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 
 /**
  * What a runner knows of one activation when a delivery to it times out: the
@@ -443,14 +424,34 @@ export const registerActor = Effect.fnUntraced(function* (
 
   const leaseLost = Effect.die(leaseLostDefect)
 
+  const restartIncomplete = RetryTurn.make({ message: "Activation restart did not complete" })
+
+  /**
+   * What each Cluster entity scope keeps across the handlers a defect restart
+   * rebuilds within it: rebuilds and in-place restarts since its last settled
+   * turn, absent until the first build so only a rebuild waits; the current
+   * handler's scope, closed when a rebuild supersedes it; and the ids of a
+   * batch a retryable failure aborted, each to run alone once.
+   */
+  const memories = new WeakMap<
+    Scope.Scope,
+    { restarts: number | undefined; handler: Scope.Closeable | undefined; alone: Set<string> }
+  >()
+
   const register = sharding.registerEntity(
     entity,
     Effect.gen(function* () {
       const activation = yield* entityScope
 
-      const rebuilt = restarts.get(activation)
+      const memory = memories.get(activation) ?? {
+        restarts: undefined,
+        handler: undefined,
+        alone: new Set<string>(),
+      }
 
-      restarts.set(activation, rebuilt === undefined ? 0 : rebuilt + 1)
+      memories.set(activation, memory)
+      const rebuilt = memory.restarts
+      memory.restarts = rebuilt === undefined ? 0 : rebuilt + 1
 
       const { entityId } = yield* Entity.CurrentAddress
 
@@ -460,9 +461,7 @@ export const registerActor = Effect.fnUntraced(function* (
       if (rebuilt !== undefined) yield* Effect.sleep(restartDelay(rebuilt))
       const [tenant, id] = yield* decodeEntityId(entityId).pipe(Effect.orDie)
 
-      const superseded = handlerScopes.get(activation)
-
-      if (superseded !== undefined) yield* Scope.close(superseded, Exit.void)
+      if (memory.handler !== undefined) yield* Scope.close(memory.handler, Exit.void)
 
       const shard =
         lease === undefined
@@ -478,11 +477,16 @@ export const registerActor = Effect.fnUntraced(function* (
         engine: Effect.Success<ReturnType<typeof activationEngine>> | undefined
       }
 
-      let lost = false
+      /**
+       * Why this handler refuses all work: its singleton lease is lost, or an
+       * in-place restart failed and the worker ended. Set once, never cleared;
+       * Cluster builds a new handler for the next delivery.
+       */
+      let refused: RetryTurn | undefined
 
       const handler = yield* Scope.fork(activation)
 
-      handlerScopes.set(activation, handler)
+      memory.handler = handler
 
       yield* residentWhile(entityId).pipe(Scope.provide(handler))
 
@@ -494,7 +498,7 @@ export const registerActor = Effect.fnUntraced(function* (
             Effect.repeat({ schedule: Schedule.spaced(lease.interval), until: (held) => !held }),
             Effect.andThen(
               Effect.sync(() => {
-                lost = true
+                refused = leaseLostDefect
               }),
             ),
             Effect.andThen(Effect.forkDetach(Scope.close(scope, Exit.void))),
@@ -525,54 +529,12 @@ export const registerActor = Effect.fnUntraced(function* (
       const policy = registration.policy
       const statements = registration.tables.length > 0 || registration.blobs.length > 0
 
-      const waiting: Array<Waiting> = []
-      const ready = Latch.makeUnsafe(false)
+      const mailbox = activationMailbox<Waiting>(memory.alone)
       let phase: ActivationDiagnosis["worker"] = "idle"
-      const alone = aloneAfterFailure.get(activation) ?? new Set<string>()
-      aloneAfterFailure.set(activation, alone)
-
-      const settle = Effect.fnUntraced(function* (
-        entry: Waiting,
-        exit: Exit.Exit<Executed, ActorError>,
-      ) {
-        const { request } = entry
-
-        if (Exit.isSuccess(exit)) restarts.set(activation, 0)
-
-        if (Exit.isSuccess(exit) && !Outcome.guards.Defect(exit.value.outcome)) {
-          yield* (yield* TurnHooks).at("afterCommit", request)
-
-          if (workflowRoutes.has(request.command)) {
-            const kicked = yield* kickedExecution({ request, outcome: exit.value.outcome })
-
-            if (kicked !== undefined) {
-              phase = "workflow kick"
-              current.engine ??= yield* activationEngine({
-                registration,
-                ref: request.ref,
-                routingKey: routingKeyOf(request.ref),
-                cache: current.owned.cache,
-                scope: current.scope,
-                deliveryMs: policy.deliveryMs,
-              })
-              yield* current.engine.kick(kicked.executionId, kicked.interrupt)
-              phase = "turn"
-            }
-          }
-        }
-
-        yield* Deferred.done(entry.reply, exit)
-      })
-
-      let ended = false
-
-      const restartIncomplete = Effect.die(
-        RetryTurn.make({ message: "Activation restart did not complete" }),
-      )
 
       const restart = (batch: ReadonlyArray<Waiting>, cause: Cause.Cause<unknown>) =>
         Effect.sync(() => {
-          ended = true
+          refused ??= restartIncomplete
         }).pipe(
           Effect.andThen(
             Effect.forEach(
@@ -590,25 +552,21 @@ export const registerActor = Effect.fnUntraced(function* (
         cause: Cause.Cause<unknown>,
       ) =>
         Effect.gen(function* () {
-          const failures = restarts.get(activation) ?? 0
+          const failures = memory.restarts ?? 0
 
           phase = "restarting"
-          restarts.set(activation, failures + 1)
+          memory.restarts = failures + 1
           yield* Scope.close(current.scope, Exit.void)
           yield* Effect.sleep(restartDelay(failures))
 
           if (lease !== undefined && !(yield* lease.holds(shard!))) {
-            lost = true
+            refused = leaseLostDefect
 
             return yield* Effect.die(leaseLostDefect)
           }
 
           current = yield* start.pipe(Effect.provideContext(built))
-
-          if (orphan.length > 0) {
-            waiting.unshift(...orphan)
-            ready.openUnsafe()
-          }
+          mailbox.requeue(orphan)
 
           const unavailable = ActorError.make({
             reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
@@ -639,16 +597,14 @@ export const registerActor = Effect.fnUntraced(function* (
 
       const following = Effect.gen(function* () {
         if (
-          lost ||
+          refused !== undefined ||
           !gate.open ||
           Exit.isFailure(current.activated) ||
           Exit.isFailure(yield* Effect.exit(writable))
         )
           return undefined
 
-        const batch = resolve(takeBatch({ waiting, alone }))
-
-        if (waiting[0]?.queued !== true) ready.closeUnsafe()
+        const batch = resolve(mailbox.take())
 
         taken.push(...batch)
 
@@ -657,8 +613,25 @@ export const registerActor = Effect.fnUntraced(function* (
 
       const labelled = new WeakMap<ReadonlyArray<Waiting>, ReadonlyArray<string>>()
 
-      const committed = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
+      /**
+       * The one owner of an ended batch's publication, in this order: wake the
+       * relay and running job attempts for obligations the commit made due or
+       * cancelled; record the batch's outcomes; end the transient progress of
+       * commands and jobs the batch settled; send its broadcasts, feed frames
+       * and watch updates to connections; then, per command in delivery order,
+       * run its `afterCommit` point, kick the workflow execution it started or
+       * resumed, and answer its caller. These steps follow the commit but are
+       * not atomic with it or with each other. A failure part-way stops the run
+       * as committed, so every command left unanswered is restarted and
+       * resolves through its receipt; a lost broadcast is not replayed.
+       */
+      const publish = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>, done: Done) {
         const { owned } = current
+        const outbox = yield* OutboxRuntime
+
+        if (done.wake) yield* outbox.wake
+
+        if (done.cancelled) yield* outbox.cancelled
 
         const labels = done.settled.map((settled, index) =>
           Result.isSuccess(settled)
@@ -694,13 +667,41 @@ export const registerActor = Effect.fnUntraced(function* (
           yield* owner.flush(owned, [...done.broadcasts, ...feeds.flat(), ...watches], done.head)
         }
 
-        for (const [index, settled] of done.settled.entries())
-          yield* settle(
-            batch[index]!,
-            Result.isSuccess(settled)
-              ? Exit.succeed<Executed>({ outcome: settled.success, version: done.version })
-              : Exit.fail(settled.failure),
-          )
+        for (const [index, settled] of done.settled.entries()) {
+          const entry = batch[index]!
+
+          if (Result.isFailure(settled)) {
+            yield* Deferred.fail(entry.reply, settled.failure)
+            continue
+          }
+
+          const outcome = settled.success
+          memory.restarts = 0
+
+          if (!Outcome.guards.Defect(outcome)) {
+            yield* (yield* TurnHooks).at("afterCommit", entry.request)
+
+            const kicked = workflowRoutes.has(entry.request.command)
+              ? yield* kickedExecution({ request: entry.request, outcome })
+              : undefined
+
+            if (kicked !== undefined) {
+              phase = "workflow kick"
+              current.engine ??= yield* activationEngine({
+                registration,
+                ref: entry.request.ref,
+                routingKey: routingKeyOf(entry.request.ref),
+                cache: current.owned.cache,
+                scope: current.scope,
+                deliveryMs: policy.deliveryMs,
+              })
+              yield* current.engine.kick(kicked.executionId, kicked.interrupt)
+              phase = "turn"
+            }
+          }
+
+          yield* Deferred.succeed(entry.reply, { outcome, version: done.version })
+        }
       })
 
       const observe =
@@ -766,7 +767,7 @@ export const registerActor = Effect.fnUntraced(function* (
             first: batch,
             next: pipelining ? following : Effect.undefined,
             prepare: owner.prepare(owned),
-            committed,
+            committed: publish,
             observe,
           },
           owned.cache,
@@ -787,17 +788,15 @@ export const registerActor = Effect.fnUntraced(function* (
         Effect.fnUntraced(function* ({ batch, orphan, cause, committed }) {
           if (committed || retryable(cause)) {
             if (!committed && batch.length > 1)
-              markAlone({ alone, ids: batch.map(({ request }) => request.commandId) })
+              mailbox.isolate(batch.map(({ request }) => request.commandId))
 
-            if (committed || lost) return yield* restart([...batch, ...(orphan ?? [])], cause)
+            if (committed || refused !== undefined)
+              return yield* restart([...batch, ...(orphan ?? [])], cause)
 
             return yield* restartActivation(batch, orphan ?? [], cause)
           }
 
-          if (orphan !== undefined) {
-            waiting.unshift(...orphan)
-            ready.openUnsafe()
-          }
+          mailbox.requeue(orphan ?? [])
 
           if (batch.length === 1) {
             const { request } = batch[0]!
@@ -813,10 +812,11 @@ export const registerActor = Effect.fnUntraced(function* (
               }),
             )
 
-            return yield* settle(
-              batch[0]!,
-              Exit.succeed<Executed>({ outcome: Outcome.cases.Defect.make({ cause: defect }) }),
-            )
+            memory.restarts = 0
+
+            return yield* Deferred.succeed(batch[0]!.reply, {
+              outcome: Outcome.cases.Defect.make({ cause: defect }),
+            })
           }
 
           yield* Effect.logDebug("Turn batch failed; running its commands one at a time", cause)
@@ -832,10 +832,8 @@ export const registerActor = Effect.fnUntraced(function* (
         while (true) {
           phase = "idle"
           taken = []
-          yield* ready.await
-          const batch = resolve(takeBatch({ waiting, alone }))
-
-          if (waiting[0]?.queued !== true) ready.closeUnsafe()
+          yield* mailbox.await
+          const batch = resolve(mailbox.take())
 
           if (batch.length === 0) continue
 
@@ -860,7 +858,7 @@ export const registerActor = Effect.fnUntraced(function* (
           yield* gate
             .run(
               Effect.gen(function* () {
-                if (lost) return yield* restart(batch, Cause.die(leaseLostDefect))
+                if (refused !== undefined) return yield* restart(batch, Cause.die(refused))
 
                 yield* writable
 
@@ -884,7 +882,7 @@ export const registerActor = Effect.fnUntraced(function* (
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
 
-      const diagnose = () => ({ worker: phase, mailbox: waiting.length, batch: taken.length })
+      const diagnose = () => ({ worker: phase, mailbox: mailbox.size(), batch: taken.length })
 
       workers.set(entityId, diagnose)
       building.delete(entityId)
@@ -896,15 +894,9 @@ export const registerActor = Effect.fnUntraced(function* (
 
       return entity.of({
         Wake: () =>
-          Effect.suspend(() => {
-            if (lost) return leaseLost
-
-            return ended ? restartIncomplete : Effect.void
-          }),
+          Effect.suspend(() => (refused === undefined ? Effect.void : Effect.die(refused))),
         Execute: ({ payload }) => {
-          if (lost) return leaseLost
-
-          if (ended) return restartIncomplete
+          if (refused !== undefined) return Effect.die(refused)
 
           const { activated } = current
 
@@ -927,20 +919,15 @@ export const registerActor = Effect.fnUntraced(function* (
             queued: false,
           }
 
-          waiting.push(entry)
+          mailbox.offer(entry)
 
           return Rpc.fork(
             Effect.gen(function* () {
               entry.context = yield* Effect.context<never>()
 
-              yield* (yield* TurnHooks).at("queued", payload).pipe(
-                Effect.ensuring(
-                  Effect.sync(() => {
-                    entry.queued = true
-                    ready.openUnsafe()
-                  }),
-                ),
-              )
+              yield* (yield* TurnHooks)
+                .at("queued", payload)
+                .pipe(Effect.ensuring(Effect.sync(() => mailbox.queued(entry))))
 
               return yield* Deferred.await(entry.reply)
             }).pipe(Effect.provideContext(services)),
