@@ -13,11 +13,7 @@
   "jsPlugins": [
     {
       "name": "anti-slop",
-      "specifier": "./tooling/oxlint/anti-slop/index.ts"
-    },
-    {
-      "name": "anti-slop-effect",
-      "specifier": "./tooling/oxlint/anti-slop/effect/index.ts"
+      "specifier": "./tooling/oxlint/anti-slop/plugin.ts"
     },
     {
       "name": "durable-actors",
@@ -42,18 +38,15 @@
     "anti-slop/no-unknown-type-aliases": "error",
     "anti-slop/no-unsafe-dictionary-type": "error",
     "anti-slop/no-widen-then-assert": "error",
-    "anti-slop/require-readable-spacing": "error",
-    "anti-slop/require-safety-comment-for-type-assertion": "off",
-    "anti-slop-effect/no-manual-effect-error-tag": "error",
-    "anti-slop-effect/no-manual-tag-comparison": "error",
-    "anti-slop-effect/no-manual-tagged-construction": "error",
-    "anti-slop-effect/no-service-constructor-imports": "error",
-    "anti-slop-effect/prefer-effect-match": "error",
+    "anti-slop/no-manual-effect-error-tag": "error",
+    "anti-slop/no-manual-tag-comparison": "error",
+    "anti-slop/no-manual-tagged-construction": "error",
+    "anti-slop/no-service-constructor-imports": "error",
+    "anti-slop/prefer-effect-match": "error",
     "durable-actors/filename-kebab-case": "error",
     "durable-actors/no-parent-echo-in-filename": "error",
     "durable-actors/no-role-suffix-filename": "error",
     "durable-actors/no-generic-directory-segment": "error",
-    "durable-actors/no-barrel-index": "error",
     "durable-actors/no-runtime-import-outside-runtime": "error",
     "durable-actors/no-decision-references": "error",
     "durable-actors/no-inline-comments": "error"
