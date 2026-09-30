@@ -1,7 +1,7 @@
 import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Effect, Layer, Match, Option, Predicate, Schema } from "effect"
 import { Actor, type Caller } from "../../../index.ts"
-import { Request } from "../../../handles/actors.ts"
+import { Request } from "../../../runtime/request.ts"
 import type { TurnPoint } from "../../../runtime/turn/hooks.ts"
 
 /** What a subscription handler does with one delivery, decided per entry. */

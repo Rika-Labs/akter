@@ -35,15 +35,10 @@ import {
   MailboxFull,
   RunnerAtCapacity,
 } from "../errors/actor.ts"
-import {
-  Actors,
-  type EffectRegistration,
-  type Executed,
-  InternalActors,
-  type QueryRegistration,
-  type Registration,
-  type Request,
-} from "../handles/actors.ts"
+import { Actors } from "../handles/actors.ts"
+import { type EffectRegistration, type QueryRegistration, type Registration } from "./members.ts"
+import type { Executed, Request } from "./request.ts"
+import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
@@ -68,7 +63,7 @@ import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { seedRuntime } from "./operators/seed.ts"
 import { count, Metrics } from "./telemetry/metrics.ts"
 import { TelemetrySampler } from "./telemetry/sampler.ts"
-import { turnConnections } from "./turn/pipeline.ts"
+import { TurnConnections, turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import {
   type LocalSubscription,
@@ -422,6 +417,7 @@ export const layer = (options: Options) => {
       const sharding = yield* Sharding.Sharding
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const diagnostics: Parameters<typeof actorRegistration>[0]["diagnostics"] = new Map()
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
@@ -630,6 +626,36 @@ export const layer = (options: Options) => {
 
       const publicActors = Actors.of({ mintCommandId })
 
+      /**
+       * Logs what this runner knows of a delivery's target when the delivery
+       * waits out `deliveryTimeout`: the target activation's handlers, worker
+       * phase, mailbox and batch, the turn pool's leased and waiting sessions,
+       * and any other activation on the runner being rebuilt or restarted, so
+       * a stall names its cause from one log line.
+       */
+      const deliveryTimedOut = (request: Request, address: string) =>
+        Effect.gen(function* () {
+          const target = diagnostics.get(request.ref.actor)
+          const turns = Option.getOrUndefined(yield* Effect.serviceOption(TurnConnections))
+
+          yield* Effect.logWarning("Delivery timed out").pipe(
+            Effect.annotateLogs({
+              actor: request.ref.actor,
+              id: request.ref.id,
+              tenant: request.ref.tenant,
+              command: request.command,
+              commandId: request.commandId,
+              activation: target?.diagnose(address),
+              turnSessions: turns?.sessions(),
+              restarting: [...diagnostics].flatMap(([actor, { restarting }]) =>
+                restarting()
+                  .filter((entityId) => actor !== request.ref.actor || entityId !== address)
+                  .map((entityId) => `${actor}:${entityId}`),
+              ),
+            }),
+          )
+        })
+
       const dispatch = Effect.fnUntraced(
         function* (request: Request, external: boolean) {
           const registration = registrations.get(request.ref.actor)
@@ -746,14 +772,17 @@ export const layer = (options: Options) => {
             Effect.timeoutOrElse({
               duration: registration.policy.deliveryMs,
               orElse: () =>
-                Effect.fail(
-                  ActorError.make({
-                    reason:
-                      rejectedAtCapacity && !isResident()
-                        ? RunnerAtCapacity.make({})
-                        : Timeout.make({ commandId: request.commandId }),
-                  }),
-                ),
+                rejectedAtCapacity && !isResident()
+                  ? Effect.fail(ActorError.make({ reason: RunnerAtCapacity.make({}) }))
+                  : deliveryTimedOut(request, address).pipe(
+                      Effect.andThen(
+                        Effect.fail(
+                          ActorError.make({
+                            reason: Timeout.make({ commandId: request.commandId }),
+                          }),
+                        ),
+                      ),
+                    ),
             }),
           )
         },
@@ -975,6 +1004,7 @@ export const layer = (options: Options) => {
         clock: frameworkClock,
         outbox,
         effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
         tenantScope: yield* TenantScope,
       })
@@ -1008,6 +1038,7 @@ export const layer = (options: Options) => {
           queryRegistrations,
           effectRegistrations,
           residency,
+          diagnostics,
           owners,
           heldTypes,
           heldType,

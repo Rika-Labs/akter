@@ -1,59 +1,11 @@
 import type { AnyFleetView } from "@durable-actors/core"
-import { rebuildFleetView, setupFleet } from "@durable-actors/core/runtime"
-import { Effect, Predicate } from "effect"
-import { UsageError } from "../workflows/check.ts"
-
-/** Usage text for `durable fleet`. */
-export const USAGE = [
-  "Usage: durable fleet setup --entry <module> --database-url <url>",
-  "       durable fleet rebuild <View> --database-url <url>",
-].join("\n")
-
-/** Parsed arguments of `fleet setup|rebuild`. */
-export type FleetOptions =
-  | { readonly command: "setup"; readonly entry: string; readonly databaseUrl: string }
-  | { readonly command: "rebuild"; readonly view: string; readonly databaseUrl: string }
-
-/** Parses the arguments after `fleet`: the command, a view name for `rebuild`, then flags. */
-export const parseFleet = ([command, ...rest]: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    if (command !== "setup" && command !== "rebuild")
-      return yield* UsageError.make({ message: `Unknown fleet command: ${command ?? ""}` })
-
-    const [view, args] =
-      command === "rebuild" && rest[0] !== undefined && !rest[0].startsWith("--")
-        ? [rest[0], rest.slice(1)]
-        : [undefined, rest]
-
-    let entry: string | undefined
-    let databaseUrl: string | undefined
-
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-      const known = arg === "--database-url" || (command === "setup" && arg === "--entry")
-
-      if (!known) return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-
-      const value = args[++index]
-
-      if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-      if (arg === "--entry") entry = value
-      else databaseUrl = value
-    }
-
-    if (databaseUrl === undefined)
-      return yield* UsageError.make({ message: "--database-url is required" })
-
-    if (command === "rebuild")
-      return view === undefined
-        ? yield* UsageError.make({ message: "fleet rebuild names a view" })
-        : ({ command, view, databaseUrl } satisfies FleetOptions)
-
-    if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
-
-    return { command, entry, databaseUrl } satisfies FleetOptions
-  })
+import { Database, rebuildFleetView, setupFleet } from "@durable-actors/core/runtime"
+import { BunCrypto } from "@effect/platform-bun"
+import { Console, Effect, Layer, Predicate, type Redacted } from "effect"
+import { Argument, Command, Flag } from "effect/unstable/cli"
+import type { SqlClient } from "effect/unstable/sql"
+import { CommandFailed, UsageError, fail } from "../../failure.ts"
+import { loadEntry } from "../workflows/check.ts"
 
 const isView = (value: unknown): value is AnyFleetView =>
   Predicate.hasProperty(value, "definitionHash") &&
@@ -91,3 +43,82 @@ export const rebuild = (view: string) =>
         : { output: `No fleet view ${view} is registered on this database`, exitCode: 1 },
     ),
   )
+
+/** Runs `run` against the Postgres at `databaseUrl`, prints its output, and ends with its exit code. */
+const onDatabase = <E, R>(
+  databaseUrl: Redacted.Redacted<string>,
+  run: Effect.Effect<
+    { readonly output: string; readonly exitCode: number },
+    E,
+    R | SqlClient.SqlClient
+  >,
+) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(
+      Database.postgres({ url: databaseUrl }).pipe(Layer.provideMerge(BunCrypto.layer)),
+    )
+
+    const { output, exitCode } = yield* run.pipe(Effect.provideContext(services))
+
+    yield* Console.log(output)
+
+    if (exitCode !== 0) return yield* CommandFailed.make({ exitCode, reason: "Refused" })
+  }).pipe(Effect.scoped)
+
+const databaseUrl = Flag.Redacted("database-url").pipe(
+  Flag.withDescription("The application's Postgres URL"),
+)
+
+/** `durable fleet setup`: full replica identity, publication, and slot for the entry's views. */
+export const setupCommand = Command.make(
+  "setup",
+  {
+    entry: Flag.File("entry", { mustExist: true }).pipe(
+      Flag.withDescription("The entry module; it exports a `fleet` array of Fleet.view values"),
+    ),
+    databaseUrl,
+  },
+  (options) =>
+    Effect.gen(function* () {
+      const views = yield* viewsOf({
+        module: yield* loadEntry(options.entry),
+        entry: options.entry,
+      })
+
+      return yield* onDatabase(
+        options.databaseUrl,
+        setup(views).pipe(Effect.map((output) => ({ output, exitCode: 0 }))),
+      )
+    }).pipe(
+      Effect.catchTags({
+        SqlError: (error) =>
+          fail({ reason: error._tag, message: `Cannot set up fleet views: ${error.message}` }),
+        FleetSetupRefused: (error) => fail({ reason: error._tag, message: error.message }),
+        UsageError: (error) => fail({ reason: error._tag, message: error.message }),
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Give the entry's fleet view sources full replica identity, publish them, and create the logical slot; needs wal_level=logical",
+  ),
+)
+
+/** `durable fleet rebuild <View>`: clears a view's error and rebuilds it; exits 1 for an unknown view. */
+export const rebuildCommand = Command.make(
+  "rebuild",
+  {
+    view: Argument.String("view").pipe(Argument.withDescription("The fleet view to rebuild")),
+    databaseUrl,
+  },
+  (options) =>
+    onDatabase(options.databaseUrl, rebuild(options.view)).pipe(
+      Effect.catchTags({
+        SqlError: (error) =>
+          fail({ reason: error._tag, message: `Cannot rebuild ${options.view}: ${error.message}` }),
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Rebuild a fleet view from its source, clearing its error; exit 1 when no runtime registered it",
+  ),
+)

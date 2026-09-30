@@ -14,7 +14,7 @@ import {
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent, User } from "../../index.ts"
-import type { Request } from "../../handles/actors.ts"
+import type { Request } from "../../runtime/request.ts"
 import type { EffectPolicy } from "../../members/effect.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { layer as runtimeLayer } from "../../runtime/layer.ts"

@@ -18,7 +18,7 @@ import {
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, RetentionGap, UnknownCursor, User } from "../../index.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import type { PayloadMigrations } from "../../members/payload.ts"
 import {
   checkPayloads,

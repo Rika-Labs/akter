@@ -1,6 +1,7 @@
 import { DateTime, Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { type AnyWorkflow, isWorkflow } from "../../members/workflow.ts"
+import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { manifestOf, toJson } from "./manifest.ts"
 
 /** One reason a deployment cannot run the open executions it would inherit. */
@@ -430,12 +431,6 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
 export const checkWorkflows = (
   actors: ReadonlyArray<{ readonly name: string; readonly api: object }>,
 ) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-
-    return yield* sql.withTransaction(
-      sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
-        Effect.andThen(findIncompatibilities(actors.map(declaredOf), { everyActorType: true })),
-      ),
-    )
-  })
+  Effect.suspend(() =>
+    inReadOnlySnapshot(findIncompatibilities(actors.map(declaredOf), { everyActorType: true })),
+  )

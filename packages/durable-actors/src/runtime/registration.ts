@@ -2,12 +2,8 @@ import { Context, Crypto, Effect } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import type { ActorError } from "../errors/actor.ts"
-import type {
-  EffectRegistration,
-  InternalActors,
-  QueryRegistration,
-  Registration,
-} from "../handles/actors.ts"
+import type { EffectRegistration, QueryRegistration, Registration } from "./members.ts"
+import type { InternalActors } from "./actors.ts"
 import { type AnyBlob, isContent } from "../members/blob.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
@@ -47,6 +43,7 @@ export const actorRegistration = ({
   queryRegistrations,
   effectRegistrations,
   residency,
+  diagnostics,
   owners,
   heldTypes,
   heldType,
@@ -73,6 +70,11 @@ export const actorRegistration = ({
   readonly queryRegistrations: Map<string, QueryRegistration>
   readonly effectRegistrations: Map<string, EffectRegistration>
   readonly residency: Map<string, (entityId: string) => boolean>
+  /** Each actor type's view of its activations, for a delivery that timed out. */
+  readonly diagnostics: Map<
+    string,
+    Pick<Effect.Success<ReturnType<typeof registerActor>>, "diagnose" | "restarting">
+  >
   readonly owners: Map<string, Owner>
   readonly heldTypes: Map<string, HeldActorType>
   readonly heldType: (registration: Registration) => HeldActorType
@@ -286,13 +288,14 @@ export const actorRegistration = ({
         Effect.sync(() => {
           registrations.delete(registration.name)
           residency.delete(registration.name)
+          diagnostics.delete(registration.name)
           owners.delete(registration.name)
           heldTypes.delete(registration.name)
           sweepsWorkflows.delete(registration.name)
         }),
       )
 
-      const { isResident, owner } = yield* registerActor(
+      const { isResident, owner, diagnose, restarting } = yield* registerActor(
         registration,
         transport,
         authorize,
@@ -305,6 +308,7 @@ export const actorRegistration = ({
       )
 
       residency.set(registration.name, isResident)
+      diagnostics.set(registration.name, { diagnose, restarting })
       owners.set(registration.name, owner)
     }),
     registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {

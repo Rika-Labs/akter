@@ -1,50 +1,15 @@
 import { fileURLToPath } from "node:url"
 import { BunCrypto } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Exit, ManagedRuntime, Option, Schema } from "effect"
+import { Config, Crypto, Effect, ManagedRuntime } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { UsageError } from "../workflows/check.ts"
-import { parseFleet } from "./run.ts"
+import { runCli } from "../../testing.ts"
 
 const runtime = ManagedRuntime.make(BunCrypto.layer)
 
 afterAll(() => runtime.dispose())
 
 const postgres = runtime.runSync(Config.String("CLI_BACKEND")) === "postgres"
-
-describe("durable fleet arguments", () => {
-  it("reads setup's entry and database, and rebuild's view and database", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        expect(
-          yield* parseFleet(["setup", "--entry", "app.ts", "--database-url", "postgres://db"]),
-        ).toEqual({ command: "setup", entry: "app.ts", databaseUrl: "postgres://db" })
-        expect(
-          yield* parseFleet(["rebuild", "OrdersByStatus", "--database-url", "postgres://db"]),
-        ).toEqual({ command: "rebuild", view: "OrdersByStatus", databaseUrl: "postgres://db" })
-      }),
-    ))
-
-  it("refuses an unknown command, a missing flag or view, and an entry on rebuild", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const refused = [
-          ["drop"],
-          ["setup", "--entry", "app.ts"],
-          ["setup", "--database-url", "postgres://db"],
-          ["rebuild", "--database-url", "postgres://db"],
-          ["rebuild", "V", "--entry", "app.ts", "--database-url", "postgres://db"],
-          ["setup", "--entry"],
-        ]
-
-        for (const args of refused) {
-          const exit = yield* parseFleet(args).pipe(Effect.exit)
-
-          expect(Option.exists(Exit.findErrorOption(exit), Schema.is(UsageError))).toBe(true)
-        }
-      }),
-    ))
-})
 
 const entry = fileURLToPath(
   new URL(
@@ -53,17 +18,21 @@ const entry = fileURLToPath(
   ),
 )
 
-const cli = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
-  const child = Bun.spawn(["bun", new URL("../../main.ts", import.meta.url).pathname, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+describe("durable fleet arguments", () => {
+  it("refuses a missing flag or view with exit status 2", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        for (const args of [
+          ["fleet", "setup", "--entry", entry],
+          ["fleet", "setup", "--database-url", "postgres://db"],
+          ["fleet", "rebuild", "--database-url", "postgres://db"],
+        ]) {
+          const result = yield* runCli(args)
 
-  const stdout = yield* Effect.promise(() => new Response(child.stdout).text())
-  const stderr = yield* Effect.promise(() => new Response(child.stderr).text())
-  const code = yield* Effect.promise(() => child.exited)
-
-  return { stdout, stderr, code }
+          expect(result.exitCode).toBe(2)
+        }
+      }),
+    ))
 })
 
 describe.skipIf(!postgres)("durable fleet setup on Postgres", () => {
@@ -82,7 +51,7 @@ describe.skipIf(!postgres)("durable fleet setup on Postgres", () => {
           const [level] = (yield* Effect.promise(() => admin.query("SHOW wal_level"))).rows
 
           if (level.wal_level !== "logical") {
-            const refused = yield* cli([
+            const refused = yield* runCli([
               "fleet",
               "setup",
               "--entry",
@@ -91,7 +60,7 @@ describe.skipIf(!postgres)("durable fleet setup on Postgres", () => {
               base.href,
             ])
 
-            expect(refused.code).not.toBe(0)
+            expect(refused.exitCode).not.toBe(0)
             expect(refused.stderr).toContain("set wal_level = logical")
 
             return
@@ -123,11 +92,13 @@ describe.skipIf(!postgres)("durable fleet setup on Postgres", () => {
           )
 
           const args = ["fleet", "setup", "--entry", entry, "--database-url", base.href]
-          const first = yield* cli(args)
+          const first = yield* runCli(args)
+
           expect(first.stderr).toBe("")
           expect(first.stdout).toContain("Replication slot durable_fleet: created")
 
-          const again = yield* cli(args)
+          const again = yield* runCli(args)
+
           expect(again.stdout).toContain("Replication slot durable_fleet: kept")
 
           const [state] = (yield* Effect.promise(() =>
@@ -145,8 +116,16 @@ describe.skipIf(!postgres)("durable fleet setup on Postgres", () => {
             pool.query(`CREATE TABLE actor_fleet_views (view_name text PRIMARY KEY,
               status text NOT NULL, last_error text, updated_at_ms bigint NOT NULL)`),
           )
-          const unknown = yield* cli(["fleet", "rebuild", "Missing", "--database-url", base.href])
-          expect(unknown.code).toBe(1)
+
+          const unknown = yield* runCli([
+            "fleet",
+            "rebuild",
+            "Missing",
+            "--database-url",
+            base.href,
+          ])
+
+          expect(unknown.exitCode).toBe(1)
           expect(unknown.stdout).toContain("No fleet view Missing is registered")
         }),
       ),

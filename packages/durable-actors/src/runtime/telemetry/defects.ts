@@ -25,7 +25,7 @@ export type DefectRecord = typeof DefectRecord.Type
 export const DefectRecords = Schema.Array(DefectRecord)
 
 /** Narrows a defect listing; `limit` keeps the newest matches. */
-export interface DefectFilter {
+interface DefectFilter {
   readonly actorType?: string | undefined
   readonly sinceMs?: number | undefined
   readonly limit?: number | undefined
