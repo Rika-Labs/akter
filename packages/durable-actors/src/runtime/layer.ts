@@ -1032,7 +1032,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.jobs.get(effect),
+        jobOf: (actorType, job) => effectRegistrations.get(actorType)?.jobs.get(job),
         wake: relay.wake,
         tenantScope: yield* TenantScope,
       })
@@ -1041,7 +1041,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.jobs.get(effect),
+        jobOf: (actorType, job) => effectRegistrations.get(actorType)?.jobs.get(job),
         createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
         tenantScope: yield* TenantScope,
