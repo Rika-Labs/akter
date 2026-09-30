@@ -5,10 +5,8 @@ import {
   Deferred,
   Effect,
   Exit,
-  Fiber,
   Option,
   Queue,
-  Schedule,
   Schema,
   Semaphore,
   Stream,
@@ -22,7 +20,6 @@ import {
   NotCreated,
   RunnerAtCapacity,
   SessionEnded,
-  Unauthorized,
 } from "../../errors/actor.ts"
 import {
   type Broadcast,
@@ -52,12 +49,11 @@ import {
   FeedFrame,
   HolderItem,
   isWatchMember,
-  StreamFailed,
-  StreamItem,
   watchedQuery,
   watchMember,
   type WriteSet,
 } from "./protocol.ts"
+import { type Authorize, type Subscription, streamSubscriptions } from "./streams.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
 import { WatchTap } from "./watch.ts"
 
@@ -67,20 +63,8 @@ export const MAX_SESSION_BYTES = 16_384
 /** Open connections one actor may have per connection member. */
 const MAX_MEMBER_CONNECTIONS = 10_000
 
-/** Open stream subscriptions one actor may have. */
-const MAX_ACTOR_STREAMS = 256
-
-/** Stream elements the owner holds for one subscriber before the handler waits. */
-const STREAM_WINDOW = 256
-
-/** How long a stream's window may stay full before the subscription ends. */
-const STREAM_STALL_MS = 30_000
-
 /** Events one `read.follow` page reads at most. */
 const FOLLOW_PAGE = 1_000
-
-/** How often the owner checks its subscriptions' authorization and windows. */
-const STREAM_TICK = "100 millis"
 
 /** Progress frames one actor accepts per second, with a burst of as many. */
 const PROGRESS_PER_SECOND = 20
@@ -170,28 +154,6 @@ interface Channel {
   readonly epoch: string
   seq: number
 }
-
-/** One open stream subscription, run by the owner for as long as its subscriber reads. */
-interface Subscription {
-  readonly member: string
-  readonly caller: Caller
-  /** When the subscriber's authorization last succeeded, on the framework clock. */
-  lastAuthorized: number
-  checking: boolean
-  /** Since when the handler has waited on a full window, if it is waiting. */
-  stalledSince: number | undefined
-  readonly end: (error: ActorError, discard: boolean) => Effect.Effect<void>
-}
-
-/** Decides whether a caller may open a stream or renew a session for a command; `false` refuses. */
-export type Authorize = (request: {
-  readonly caller: Caller
-  readonly ref: ActorRef
-  readonly command: string
-  readonly kind: "stream" | "reauthorize"
-  /** What a reauthorization renews, so a stream tag is never read as a feed's event tag. */
-  readonly of?: "stream"
-}) => Effect.Effect<boolean>
 
 /**
  * One actor's activation on this runner, shared by its command entity and its
@@ -1255,206 +1217,27 @@ export const activationOwner = ({
         }),
       )
 
-  const unauthorized = (code: "access_denied" | "reauthorization_unavailable") =>
-    ActorError.make({ reason: Unauthorized.make({ code }) })
+  const streams = streamSubscriptions({
+    registration,
+    activations,
+    transport,
+    authorize,
+    now,
+    prepare: Effect.fnUntraced(function* (activation: Activation) {
+      yield* acquire(activation).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable))
+      const sql = yield* SqlClient.SqlClient
 
-  /**
-   * Runs one subscription's handler on this activation. The subscriber reads
-   * `Started` first, then elements through a window of `STREAM_WINDOW`; a
-   * handler that ends by itself ends with `Done`, and every other end is an
-   * error, so an ended activation is never a silent completion.
-   */
-  const subscribe = (
-    activation: Activation,
-    request: {
-      readonly member: string
-      readonly caller: Caller
-      readonly input: string
-      readonly authorizedUntil: number
-    },
-  ) =>
-    Stream.unwrap(
-      Effect.gen(function* () {
-        const stream = registration.streams.get(request.member)
-
-        if (stream === undefined)
-          return yield* Effect.die(new Error(`Unregistered stream ${request.member}`))
-
-        if ((yield* now) >= request.authorizedUntil)
-          return yield* unauthorized("reauthorization_unavailable")
-
-        const allowed = yield* authorize({
-          caller: request.caller,
-          ref: activation.ref,
-          command: request.member,
-          kind: "stream",
-        })
-
-        if (!allowed) return yield* unauthorized("access_denied")
-
-        const queue = yield* Queue.bounded<
-          StreamItem,
-          ActorError | typeof StreamFailed.Type | Cause.Done
-        >(STREAM_WINDOW)
-
-        let producer: Fiber.Fiber<void> | undefined
-        let closed = false
-
-        const subscription: Subscription = {
-          member: request.member,
-          caller: request.caller,
-          lastAuthorized: yield* now,
-          checking: false,
-          stalledSince: undefined,
-          end: (error, discard) =>
-            Effect.gen(function* () {
-              if (closed) return
-              closed = true
-              activation.streams.delete(subscription)
-
-              if (producer !== undefined) yield* Fiber.interrupt(producer)
-
-              if (discard) yield* Queue.clear(queue).pipe(Effect.ignore)
-              yield* Queue.fail(queue, error)
-            }),
-        }
-
-        const admitted = yield* Effect.sync(() => {
-          if (activation.streams.size >= MAX_ACTOR_STREAMS) return false
-          activation.streams.add(subscription)
-
-          return true
-        })
-
-        if (!admitted) return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
-
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            closed = true
-            activation.streams.delete(subscription)
-
-            if (producer !== undefined) yield* Fiber.interrupt(producer)
-          }),
-        )
-
-        yield* acquire(activation).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable))
-
-        const sql = yield* SqlClient.SqlClient
-
-        const offer = (item: StreamItem) =>
-          Effect.gen(function* () {
-            if (Queue.offerUnsafe(queue, item)) return
-            subscription.stalledSince = yield* now
-            yield* Queue.offer(queue, item)
-            subscription.stalledSince = undefined
-          })
-
-        producer = yield* stream
-          .run(request.input, {
-            ref: activation.ref,
-            caller: request.caller,
-            cursor: activation.head,
-            state: [...(activation.cache.state ?? new Map<string, string>())],
-            events: events(activation, sql),
-            follow: follow(activation, sql),
-            progress: (tag, effectId) => progressFeed(activation, tag, effectId),
-          })
-          .pipe(
-            Stream.runForEach((value) => offer(StreamItem.cases.Element.make({ value }))),
-            Effect.andThen(offer(StreamItem.cases.Done.make({}))),
-            Effect.andThen(Queue.end(queue)),
-            Effect.catch(({ failure }) => Queue.fail(queue, StreamFailed.make({ value: failure }))),
-            Effect.catchDefect((cause) =>
-              Effect.andThen(
-                Effect.logError("Stream handler defect", Cause.die(cause)),
-                Queue.fail(queue, ActorError.make({ reason: ended("Defect", false) })),
-              ),
-            ),
-            Effect.asVoid,
-            Effect.ensuring(
-              Effect.sync(() => {
-                closed = true
-                activation.streams.delete(subscription)
-              }),
-            ),
-            Effect.forkDetach,
-          )
-
-        return Stream.succeed(
-          StreamItem.cases.Started.make({ owner: transport.holder, ownerEpoch: transport.epoch }),
-        ).pipe(Stream.concat(Stream.fromQueue(queue)))
-      }),
-    )
-
-  /** Ends every subscription of an activation that is ending. */
-  const endStreams = (activation: Activation) =>
-    Effect.forEach(
-      [...activation.streams],
-      (subscription) =>
-        subscription.end(ActorError.make({ reason: ended("ActivationEnded", false) }), false),
-      { discard: true },
-    )
-
-  const reauthorizeStream = (activation: Activation, subscription: Subscription, at: number) =>
-    Effect.gen(function* () {
-      subscription.checking = true
-
-      const every = registration.policy.reauthorizeMs
-
-      const allowed = yield* authorize({
-        caller: subscription.caller,
+      return {
         ref: activation.ref,
-        command: subscription.member,
-        kind: "reauthorize",
-        of: "stream",
-      }).pipe(Effect.timeout(Math.min(10_000, every / 2)), Effect.exit)
-
-      subscription.checking = false
-      const bound = subscription.lastAuthorized + every
-
-      if (Exit.isSuccess(allowed) && allowed.value && (yield* now) >= bound)
-        yield* subscription.end(unauthorized("reauthorization_unavailable"), true)
-      else if (Exit.isSuccess(allowed) && allowed.value) subscription.lastAuthorized = at
-      else if (Exit.isSuccess(allowed)) yield* subscription.end(unauthorized("access_denied"), true)
-    })
-
-  /**
-   * Reauthorizes each subscriber within `reauthorizeEvery` and ends a
-   * subscription whose window stayed full for `STREAM_STALL_MS`, on the
-   * owner's clock. Revocation discards the elements not yet delivered.
-   */
-  const watchStreams = Effect.gen(function* () {
-    const at = yield* now
-    const every = registration.policy.reauthorizeMs
-
-    for (const activation of activations.values())
-      for (const subscription of activation.streams) {
-        if (at >= subscription.lastAuthorized + every) {
-          yield* subscription
-            .end(unauthorized("reauthorization_unavailable"), true)
-            .pipe(Effect.forkDetach)
-
-          continue
-        }
-
-        if (
-          subscription.stalledSince !== undefined &&
-          at - subscription.stalledSince >= STREAM_STALL_MS
-        ) {
-          yield* subscription
-            .end(ActorError.make({ reason: ended("SlowConsumer", true) }), true)
-            .pipe(Effect.forkDetach)
-
-          continue
-        }
-
-        if (
-          !subscription.checking &&
-          at >= subscription.lastAuthorized + every - Math.min(10_000, every / 2)
-        )
-          yield* reauthorizeStream(activation, subscription, at).pipe(Effect.forkDetach)
+        cursor: activation.head,
+        state: [...(activation.cache.state ?? new Map<string, string>())],
+        events: events(activation, sql),
+        follow: follow(activation, sql),
+        progress: (tag: string, effectId: string | undefined) =>
+          progressFeed(activation, tag, effectId),
       }
-  }).pipe(Effect.repeat(Schedule.spaced(STREAM_TICK)), Effect.asVoid)
+    }),
+  })
 
   const progressFeed = (activation: Activation, tag: string, effectId: string | undefined) =>
     Stream.unwrap(
@@ -1719,7 +1502,7 @@ export const activationOwner = ({
       const activation = activations.get(entityId)
 
       if (activation === undefined) return
-      yield* endStreams(activation)
+      yield* streams.end(activation)
       yield* seal(activation)
       forget(activation)
       activation.opened.clear()
@@ -1740,9 +1523,9 @@ export const activationOwner = ({
     feedBroadcasts,
     watchBroadcasts,
     hibernate,
-    subscribe,
-    endStreams,
-    watchStreams,
+    subscribe: streams.subscribe,
+    endStreams: streams.end,
+    watchStreams: streams.watch,
     enter,
     prepare,
     list,
