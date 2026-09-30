@@ -1,6 +1,6 @@
 import { Effect, Layer, Option, Predicate } from "effect"
 import { User } from "../../../index.ts"
-import { InternalActors } from "../../../handles/actors.ts"
+import { InternalActors } from "../../../runtime/actors.ts"
 import type { ActorRef } from "../../../identity/caller.ts"
 import { SUBPROTOCOL } from "../../../serve/frames.ts"
 import { ActorTest } from "../../actor-test.ts"

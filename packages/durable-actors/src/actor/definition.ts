@@ -42,12 +42,10 @@ import type { ReadSet } from "../runtime/connections/reads.ts"
 import { ActorError, InvalidInput, SessionEnded } from "../errors/actor.ts"
 import { CallPhase, CurrentCallPhase, type WorkflowContext } from "../contexts/workflow.ts"
 import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
+import { Actors } from "../handles/actors.ts"
 import {
-  Actors,
   type BusinessResult,
   type EffectRoute,
-  InternalActors,
-  Outcome,
   type Broadcast,
   type ConnectionLister,
   type ConnectionResult,
@@ -64,8 +62,9 @@ import {
   type RegisteredWorkflow,
   type WorkflowStatus,
   type EmittedEvent,
-  Request,
-} from "../handles/actors.ts"
+} from "../runtime/members.ts"
+import { InternalActors } from "../runtime/actors.ts"
+import { Outcome, Request } from "../runtime/request.ts"
 import {
   currentStaging,
   Due,
@@ -78,22 +77,19 @@ import {
 
 import { ActorRef, Caller, CurrentCaller, Tenant, principal, System } from "../identity/caller.ts"
 import type { Access } from "../policies/access.ts"
-import {
-  CurrentCommandId,
-  CurrentConnectionCommands,
-  connectionCommandId,
-} from "../identity/command.ts"
+import { CurrentCommandId } from "../identity/command.ts"
+import { CurrentConnectionCommands, connectionCommandId } from "../identity/connection.ts"
 import { checkExecutionKey, decodeExecutionId, encodeExecutionId } from "../identity/execution.ts"
-import { type AnyWorkflow, exitCodec, isWorkflow } from "../members/workflow.ts"
+import { type AnyWorkflow, isWorkflow } from "../members/workflow.ts"
+import { exitCodec } from "../runtime/workflows/steps.ts"
 import {
   ExecutionIdOutput,
   INTERRUPT,
   START,
   StartPayload,
   ExecutionTarget,
-  workflowRun,
-  type WorkflowRun,
 } from "../handles/workflow.ts"
+import { workflowRun, type WorkflowRun } from "../handles/run.ts"
 import { isMintedId } from "../identity/mint.ts"
 import { childId, parseChildId } from "../identity/child.ts"
 import type { Placement } from "../runtime/storage/codec.ts"

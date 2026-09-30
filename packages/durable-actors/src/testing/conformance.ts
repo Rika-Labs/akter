@@ -21,7 +21,7 @@ import { CommandConflict, CommandExpired, InvalidCommandId, Unauthorized } from 
 import { principal } from "../identity/caller.ts"
 import { checkIdentity, databaseTime } from "../runtime/turn/admission.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
-import type { InternalActors } from "../handles/actors.ts"
+import type { InternalActors } from "../runtime/actors.ts"
 import type { RuntimeControl } from "../runtime/drain.ts"
 import { ActorTest } from "./actor-test.ts"
 import { admissionConformance, admissionLayer, payloadHash } from "./conformance/admission.ts"

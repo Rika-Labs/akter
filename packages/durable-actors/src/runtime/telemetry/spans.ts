@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import type { Request } from "../../handles/actors.ts"
+import type { Request } from "../request.ts"
 import { System } from "../../identity/caller.ts"
 
 /**

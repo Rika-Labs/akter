@@ -12,6 +12,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 
 import { type Exemption, exemptions } from "./exemptions.ts"
+import { ledgerPath, unknownLedgerCases } from "./ledger.ts"
 
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/
 
@@ -329,6 +330,22 @@ const checkNoUiPackage = (input: {
     })
 }
 
+const checkLedgerCases = (input: {
+  readonly files: ReadonlyArray<TreeFile>
+  readonly findings: Array<Finding>
+}) => {
+  const ledger = input.files.find((file) => file.path === ledgerPath)
+
+  if (ledger === undefined) return
+
+  for (const name of unknownLedgerCases({ ledger: ledger.text, files: input.files }))
+    input.findings.push({
+      path: ledgerPath,
+      rule: "ledger-cases",
+      message: `the ledger names \`${name}\`, which no source file declares`,
+    })
+}
+
 const checkStaleExemptions = (input: {
   readonly files: ReadonlyArray<TreeFile>
   readonly exemptions: ReadonlyArray<Exemption>
@@ -368,6 +385,7 @@ export const analyze = (input: {
   checkTests({ files: input.files, exemptions: input.exemptions, findings })
   checkLeafDirs({ files: input.files, exemptions: input.exemptions, findings })
   checkNoUiPackage({ files: input.files, findings })
+  checkLedgerCases({ files: input.files, findings })
 
   const report = findings.filter(
     (finding) => findExemption({ exemptions: input.exemptions, finding }) === undefined,

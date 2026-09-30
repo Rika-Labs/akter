@@ -13,7 +13,7 @@ import { Cancelled, DeadLetter, effect } from "./members/effect.ts"
 import { ActorStates } from "./state/migration.ts"
 import { blob, content } from "./members/blob.ts"
 import { table } from "./tables/owned.ts"
-import { WorkflowMember } from "./members/workflow.ts"
+import { WorkflowMember } from "./runtime/workflows/steps.ts"
 import { Delivery, SubscriptionMember } from "./members/subscription.ts"
 import { make as authMake, none as authNone } from "./serve/auth.ts"
 import { jwt } from "./serve/jwt.ts"
@@ -99,7 +99,7 @@ export { Intent } from "./handles/intents.ts"
 
 export { Content, ContentStore } from "./handles/content.ts"
 
-export type { WorkflowRun } from "./handles/workflow.ts"
+export type { WorkflowRun } from "./handles/run.ts"
 
 export type {
   ConnectionHandlers,

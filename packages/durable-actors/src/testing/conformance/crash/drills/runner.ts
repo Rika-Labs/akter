@@ -4,7 +4,7 @@ import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/Bun
 import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
 import { RunnerAddress, RunnerServer } from "effect/unstable/cluster"
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc"
-import { InternalActors } from "../../../../handles/actors.ts"
+import { InternalActors } from "../../../../runtime/actors.ts"
 import { Actor, Actors as ActorClient } from "../../../../index.ts"
 import { Actors, Database } from "../../../../runtime/index.ts"
 import { RunnerWiring } from "../../../../runtime/layer.ts"

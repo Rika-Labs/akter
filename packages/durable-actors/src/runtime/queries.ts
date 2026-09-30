@@ -2,14 +2,9 @@ import { type Context, type Crypto, Effect, Semaphore } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { ActorError, ActorUnavailable, InvalidInput, NotCreated, Timeout } from "../errors/actor.ts"
-import {
-  type InternalActors,
-  Outcome,
-  type QueryRegistration,
-  type Registration,
-  type Request,
-  type WorkflowStatus,
-} from "../handles/actors.ts"
+import { type InternalActors } from "./actors.ts"
+import { Outcome, type Request } from "./request.ts"
+import { type QueryRegistration, type Registration, type WorkflowStatus } from "./members.ts"
 import type { ActorRef } from "../identity/caller.ts"
 import type { Holder } from "./connections/holder.ts"
 import type { ReadSet } from "./connections/reads.ts"

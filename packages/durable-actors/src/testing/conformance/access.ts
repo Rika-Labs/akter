@@ -37,7 +37,9 @@ import {
   type AccessRequest,
   Caller,
 } from "../../index.ts"
-import { Actors as PublicActors, InternalActors, Outcome, Request } from "../../handles/actors.ts"
+import { Actors as PublicActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
+import { Outcome, Request } from "../../runtime/request.ts"
 import {
   Actors,
   Database,
