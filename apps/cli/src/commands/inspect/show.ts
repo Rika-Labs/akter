@@ -1,38 +1,29 @@
-import { Effect, Option, Schema } from "effect"
-import { UsageError } from "../workflows/check.ts"
-import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
+import { Effect, Schema } from "effect"
+import { Command, Flag } from "effect/unstable/cli"
+import {
+  actorArgument,
+  operatorCommand,
+  operatorFlags,
+  operatorRequest,
+  tenant,
+} from "../operator/request.ts"
 
-/** Usage text for `durable inspect`. */
-export const USAGE =
-  "Usage: durable inspect <Type>/<id> --url <runner> --tenant <tenant> [--receipts <n>] [--token-env <name>] [--json]"
+const flags = {
+  actor: actorArgument,
+  tenant,
+  limit: Flag.Int("receipts").pipe(
+    Flag.filter(
+      (count) => count >= 1 && count <= 1000,
+      () => "an integer from 1 to 1000",
+    ),
+    Flag.withDefault(20),
+    Flag.withDescription("How many of the newest receipts to show, 1 to 1000 (default 20)"),
+  ),
+  ...operatorFlags,
+}
 
-const Count = Schema.FiniteFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 1, maximum: 1000 }),
-)
-
-const decodeCount = Schema.decodeUnknownOption(Count)
-
-/** Parses the arguments after `inspect`. */
-export const parseInspect = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const flags = yield* parseOperatorFlags({ args, valued: ["--receipts"], switches: [] })
-    const actor = yield* parseActor(flags.positional[0])
-
-    if (flags.positional.length > 1)
-      return yield* UsageError.make({ message: `Unexpected argument: ${flags.positional[1]}` })
-
-    if (flags.tenant === undefined)
-      return yield* UsageError.make({ message: "--tenant is required" })
-
-    const receipts = flags.flags.get("--receipts")
-    const limit = receipts === undefined ? Option.some(20) : decodeCount(receipts)
-
-    if (Option.isNone(limit))
-      return yield* UsageError.make({ message: "--receipts must be an integer from 1 to 1000" })
-
-    return { ...flags, ...actor, tenant: flags.tenant, limit: limit.value }
-  })
+/** Parsed arguments of `inspect`. */
+export type InspectOptions = Command.Command.Config.Infer<typeof flags>
 
 const Decoded = Schema.Union([
   Schema.Struct({ json: Schema.Json }),
@@ -114,15 +105,24 @@ export const inspect = ({
   options,
   token,
 }: {
-  readonly options: Effect.Success<ReturnType<typeof parseInspect>>
+  readonly options: InspectOptions
   readonly token: string | undefined
 }) =>
   operatorRequest({
     url: options.urls[0]!,
-    path: `/operator/actors/${encodeURIComponent(options.actorType)}/${encodeURIComponent(options.actorId)}?${new URLSearchParams({ tenant: options.tenant, limit: String(options.limit) })}`,
+    path: `/operator/actors/${encodeURIComponent(options.actor.actorType)}/${encodeURIComponent(options.actor.actorId)}?${new URLSearchParams({ tenant: options.tenant, limit: String(options.limit) })}`,
     token,
   })
 
 /** Decodes the runner's actor page and formats it as `durable inspect` prints it. */
 export const formatInspection = (answer: Schema.Json) =>
   Effect.map(decodeActorPage(answer), formatActor)
+
+/** `durable inspect <Type>/<id>`: one actor's state, newest receipts, and dead letters. */
+export const inspectCommand = Command.make("inspect", flags, (options) =>
+  operatorCommand({ options, request: inspect, format: formatInspection }),
+).pipe(
+  Command.withDescription(
+    "Read one actor's state, newest receipts, and dead letters through the first runner named",
+  ),
+)

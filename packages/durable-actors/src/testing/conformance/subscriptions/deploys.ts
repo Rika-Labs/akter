@@ -4,7 +4,16 @@ import { Tenant } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { SubFollower, SubOrder, subOrderLayer } from "./actors.ts"
-import { drain, query, run, tagMismatches } from "./harness.ts"
+import {
+  drain,
+  followerLog,
+  handlerRuns,
+  query,
+  run,
+  sourceRows,
+  tagMismatches,
+} from "./harness.ts"
+import { CLAIM_LEASE } from "../outbox.ts"
 
 /** Deploy-time registration checks and tag-summary upkeep of event subscriptions. */
 export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
@@ -67,6 +76,52 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
           ),
         )
       }).pipe(Effect.runPromise),
+  },
+  {
+    name: "never claims a row widened with a class this runner does not declare, and leaves it due",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          yield* (yield* SubFollower.get("older-follower")).Follow({ source: "older-order" })
+          yield* drain
+          yield* query(
+            (sql) => sql`UPDATE actor_subscriptions
+              SET events = ARRAY['OrderCancelled', 'OrderNoted', 'OrderPlaced']
+              WHERE tenant_id = ${test.tenant} AND source_id = 'older-order'
+                AND subscriber_id = 'older-follower'`,
+          )
+          yield* (yield* SubOrder.get("older-order")).Place({ customerId: "o", amount: 1 })
+          yield* drain
+          yield* test.advance(CLAIM_LEASE)
+
+          expect(handlerRuns(fixture, "SubFollower/older-follower")).toBe(0)
+          expect(yield* followerLog("older-follower")).toEqual([])
+          expect(yield* sourceRows("older-order")).toMatchObject([
+            {
+              subscriber_id: "older-follower",
+              active: true,
+              delivered: "0",
+              due: true,
+              attempts: 0,
+            },
+          ])
+
+          yield* query(
+            (
+              sql,
+            ) => sql`UPDATE actor_subscriptions SET events = ARRAY['OrderCancelled', 'OrderPlaced']
+              WHERE tenant_id = ${test.tenant} AND source_id = 'older-order'
+                AND subscriber_id = 'older-follower'`,
+          )
+          yield* test.advance(CLAIM_LEASE)
+
+          expect(yield* followerLog("older-follower")).toEqual(["older-order#1:OrderPlaced"])
+          expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
   },
   {
     name: "fails registration of a source served without a subscriber type that routes from it",

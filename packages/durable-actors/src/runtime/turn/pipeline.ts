@@ -16,6 +16,8 @@ export class TurnConnections extends Context.Service<
     readonly lease: Effect.Effect<PgConnection.PgConnection, SqlError.SqlError, Scope.Scope>
     /** Takes a connection out of the pool, so its session never serves another turn. */
     readonly invalidate: (connection: PgConnection.PgConnection) => Effect.Effect<void>
+    /** Sessions turns hold now, and turns still waiting for one. */
+    readonly sessions: () => { readonly leased: number; readonly waiting: number }
   }
 >()("@durable-actors/core/runtime/turn/pipeline/TurnConnections") {}
 
@@ -49,9 +51,35 @@ export const turnConnections = (options: PgPool.Config) =>
         multiplexConcurrency: 1,
       })
 
+      const acquire = neki ? nekiLease(pool) : pool.get
+      let leased = 0
+      let waiting = 0
+
       return TurnConnections.of({
-        lease: neki ? nekiLease(pool) : pool.get,
+        lease: Effect.suspend(() => {
+          waiting += 1
+
+          return acquire.pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                waiting -= 1
+              }),
+            ),
+            Effect.tap(() =>
+              Effect.acquireRelease(
+                Effect.sync(() => {
+                  leased += 1
+                }),
+                () =>
+                  Effect.sync(() => {
+                    leased -= 1
+                  }),
+              ),
+            ),
+          )
+        }),
         invalidate: pool.invalidate,
+        sessions: () => ({ leased, waiting }),
       })
     }),
   )
@@ -72,14 +100,18 @@ export const asSqlConnection = ({
   readonly connection: PgConnection.PgConnection
   readonly send: Send
 }): SqlConnection.Connection => {
-  const run = (sql: string, params: ReadonlyArray<unknown>, prepare: boolean) =>
-    send(Effect.map(connection.query(sql, params, prepare), (result) => result.rows))
+  const rows =
+    (prepare: boolean): SqlConnection.Connection["execute"] =>
+    (sql, params, transformRows) => {
+      const found = send(
+        Effect.map(connection.query(sql, params, prepare), (result) => result.rows),
+      )
+
+      return transformRows === undefined ? found : Effect.map(found, transformRows)
+    }
 
   return {
-    execute: (sql, params, transformRows) =>
-      transformRows === undefined
-        ? run(sql, params, true)
-        : Effect.map(run(sql, params, true), transformRows),
+    execute: rows(true),
     executeRaw: (sql, params) => send(connection.query(sql, params)),
     executeStream: (sql, params, transformRows) =>
       Stream.unwrap(
@@ -92,10 +124,7 @@ export const asSqlConnection = ({
       ),
     executeValues: (sql, params) => send(connection.queryValues(sql, params)),
     executeValuesUnprepared: (sql, params) => send(connection.queryValues(sql, params, false)),
-    executeUnprepared: (sql, params, transformRows) =>
-      transformRows === undefined
-        ? run(sql, params, false)
-        : Effect.map(run(sql, params, false), transformRows),
+    executeUnprepared: rows(false),
   }
 }
 

@@ -1,30 +1,25 @@
 import { Seed, SeedJson } from "@durable-actors/core/runtime"
 import { Effect, FileSystem, Schema } from "effect"
-import { UsageError } from "../workflows/check.ts"
-import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
+import { Command, Flag } from "effect/unstable/cli"
+import {
+  actorArgument,
+  operatorCommand,
+  operatorFlags,
+  operatorRequest,
+  tenant,
+} from "../operator/request.ts"
 
-/** Usage text for `durable export`. */
-export const USAGE =
-  "Usage: durable export <Type>/<id> --url <runner> --tenant <tenant> --output <file> [--token-env <name>] [--json]"
+const flags = {
+  actor: actorArgument,
+  tenant,
+  output: Flag.File("output").pipe(
+    Flag.withDescription("The seed file to create; an existing file is never replaced"),
+  ),
+  ...operatorFlags,
+}
 
-/** Parses the arguments after `export`. */
-export const parseExport = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const flags = yield* parseOperatorFlags({ args, valued: ["--output"], switches: [] })
-    const actor = yield* parseActor(flags.positional[0])
-    const output = flags.flags.get("--output")
-
-    if (flags.positional.length > 1)
-      return yield* UsageError.make({ message: `Unexpected argument: ${flags.positional[1]}` })
-
-    if (flags.tenant === undefined)
-      return yield* UsageError.make({ message: "--tenant is required" })
-
-    if (output === undefined || output.length === 0)
-      return yield* UsageError.make({ message: "--output is required" })
-
-    return { ...flags, ...actor, tenant: flags.tenant, output }
-  })
+/** Parsed arguments of `export`. */
+export type ExportOptions = Command.Command.Config.Infer<typeof flags>
 
 const ExportAnswer = Schema.Struct({
   output: Schema.String,
@@ -52,12 +47,12 @@ export const exportSeed = Effect.fnUntraced(function* ({
   options,
   token,
 }: {
-  readonly options: Effect.Success<ReturnType<typeof parseExport>>
+  readonly options: ExportOptions
   readonly token: string | undefined
 }) {
   const answer = yield* operatorRequest({
     url: options.urls[0]!,
-    path: `/operator/actors/${encodeURIComponent(options.actorType)}/${encodeURIComponent(options.actorId)}/export?${new URLSearchParams({ tenant: options.tenant })}`,
+    path: `/operator/actors/${encodeURIComponent(options.actor.actorType)}/${encodeURIComponent(options.actor.actorId)}/export?${new URLSearchParams({ tenant: options.tenant })}`,
     token,
   })
 
@@ -89,3 +84,12 @@ export const formatExport = (answer: Schema.Json) =>
       `omits ${exported.omitted.receipts} receipts, ${exported.omitted.events} events, ${exported.omitted.workflows} workflows, ${exported.omitted.deadLetters} dead letters, ${exported.omitted.tableRows} owned-table rows, ${exported.omitted.blobs} blob entries`,
     ].join("\n"),
   )
+
+/** `durable export <Type>/<id> --output <file>`: one actor's seed, written to a new file. */
+export const exportCommand = Command.make("export", flags, (options) =>
+  operatorCommand({ options, request: exportSeed, format: formatExport }),
+).pipe(
+  Command.withDescription(
+    "Write one actor's state and pending intents and effects to a new seed file, through the first runner named",
+  ),
+)

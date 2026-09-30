@@ -1,51 +1,8 @@
 import { checkPayloads, clearPayloads, formatPayloadProblem } from "@durable-actors/core/runtime"
 import type { ClearResult, PayloadProblem } from "@durable-actors/core/runtime"
 import { Effect } from "effect"
-import { UsageError } from "../workflows/check.ts"
-
-/** Usage text for `durable payloads`. */
-export const USAGE =
-  "Usage: durable payloads check|clear --entry <module> --database-url <url> [--json]"
-
-/** Parsed arguments of `payloads check|clear`. */
-export interface PayloadsOptions {
-  readonly command: "check" | "clear"
-  readonly entry: string
-  readonly databaseUrl: string
-  readonly json: boolean
-}
-
-/** Parses the arguments after `payloads`: the command, then its flags. */
-export const parsePayloads = ([command, ...args]: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    if (command !== "check" && command !== "clear")
-      return yield* UsageError.make({ message: `Unknown payloads command: ${command ?? ""}` })
-
-    let entry: string | undefined
-    let databaseUrl: string | undefined
-    let json = false
-
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (arg === "--json") json = true
-      else if (arg === "--entry" || arg === "--database-url") {
-        const value = args[++index]
-
-        if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-        if (arg === "--entry") entry = value
-        else databaseUrl = value
-      } else return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-    }
-
-    if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
-
-    if (databaseUrl === undefined)
-      return yield* UsageError.make({ message: "--database-url is required" })
-
-    return { command, entry, databaseUrl, json } satisfies PayloadsOptions
-  })
+import { Command } from "effect/unstable/cli"
+import { entryCommand, entryFlags } from "../workflows/check.ts"
 
 /** What `payloads check` prints: exit 1 when a deployment of `actors` would be refused. */
 export const checkReport = ({
@@ -106,3 +63,29 @@ export const payloads = ({
   command === "check"
     ? checkPayloads(actors).pipe(Effect.map((problems) => checkReport({ problems, json })))
     : clearPayloads(actors).pipe(Effect.map((results) => clearReport({ results, json })))
+
+/** `durable payloads check`: exits 1 when a stored payload version would stop decoding. */
+export const checkCommand = Command.make("check", entryFlags, (options) =>
+  entryCommand({
+    options,
+    reading: "payload versions",
+    run: (actors) => payloads({ command: "check", actors, json: options.json }),
+  }),
+).pipe(
+  Command.withDescription(
+    "Check that every stored event and effect payload version still decodes, read-only; exit 1 when a deploy would be refused",
+  ),
+)
+
+/** `durable payloads clear`: marks superseded event versions past retention cleared; exits 1 when one stays. */
+export const clearCommand = Command.make("clear", entryFlags, (options) =>
+  entryCommand({
+    options,
+    reading: "payload versions",
+    run: (actors) => payloads({ command: "clear", actors, json: options.json }),
+  }),
+).pipe(
+  Command.withDescription(
+    "Mark superseded event versions past their retention horizon cleared; exit 1 when one stays uncleared",
+  ),
+)

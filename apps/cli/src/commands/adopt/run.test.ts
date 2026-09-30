@@ -1,13 +1,25 @@
 import { Actor, User } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { BunCrypto } from "@effect/platform-bun"
+import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { integer, pgTable, text } from "drizzle-orm/pg-core"
-import { Clock, Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import {
+  Clock,
+  Config,
+  Context,
+  Crypto,
+  Effect,
+  FileSystem,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Schema,
+} from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { UsageError } from "../workflows/check.ts"
-import { adopt, parseAdopt, parseWindow, type AdoptOptions } from "./run.ts"
+import { runCli } from "../../testing.ts"
+import { adopt, parseWindow, type AdoptOptions } from "./run.ts"
 
 const invoices = pgTable("cli_invoices", {
   id: text("id").primaryKey(),
@@ -30,7 +42,7 @@ const options = (
 ): AdoptOptions => ({
   command,
   entry: "entry.ts",
-  databaseUrl: "postgres://unused",
+  databaseUrl: Redacted.make("postgres://unused"),
   table: undefined,
   json: false,
   report: false,
@@ -40,7 +52,6 @@ const options = (
   writerRole: undefined,
   allow: [],
   quietMs: undefined,
-  to: undefined,
   ...rest,
 })
 
@@ -52,150 +63,122 @@ const postgres = runtime.runSync(Config.String("CLI_BACKEND")) === "postgres"
 
 describe("durable adopt arguments", () => {
   it("reads a table, the window, and every flag of each command", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        expect(
-          yield* parseAdopt({
-            args: [
-              "observe",
-              "invoices",
-              "--report",
-              "--since",
-              "7d",
-              "--clear",
-              "--entry",
-              "e.ts",
-              "--database-url",
-              "postgres://x",
-            ],
-            nowMs: 10 * 86_400_000,
-          }),
-        ).toEqual(
-          options("observe", {
-            entry: "e.ts",
-            databaseUrl: "postgres://x",
-            table: "invoices",
-            report: true,
-            clear: true,
-            sinceMs: 3 * 86_400_000,
-          }),
-        )
+    Effect.gen(function* () {
+      const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "durable-adopt-" })
+      const entry = `${directory}/e.ts`
 
-        expect(
-          yield* parseAdopt({
-            args: [
-              "backfill",
-              "invoices",
-              "--batch",
-              "50",
-              "--entry",
-              "e.ts",
-              "--database-url",
-              "u",
-            ],
-            nowMs: 0,
-          }),
-        ).toMatchObject({ command: "backfill", table: "invoices", batch: 50 })
+      yield* fs.writeFileString(entry, "export const actors = []\n")
 
-        expect(
-          yield* parseAdopt({ args: ["status", "--database-url", "u"], nowMs: 0 }),
-        ).toMatchObject({ command: "status", entry: undefined })
+      const database = ["--database-url", "postgres://127.0.0.1:1/none"]
 
-        expect(
-          yield* parseAdopt({
-            args: [
-              "enforce",
-              "invoices",
-              "--writer-role",
-              "durable_writer",
-              "--allow",
-              "batch_import",
-              "--allow",
-              "reports",
-              "--quiet",
-              "1d",
-              "--entry",
-              "e.ts",
-              "--database-url",
-              "u",
-            ],
-            nowMs: 0,
-          }),
-        ).toMatchObject({
-          command: "enforce",
-          table: "invoices",
-          writerRole: "durable_writer",
-          allow: ["batch_import", "reports"],
-          quietMs: 86_400_000,
-        })
+      for (const args of [
+        ["plan", "--table", "invoices", "--entry", entry, ...database, "--json"],
+        [
+          "observe",
+          "invoices",
+          "--report",
+          "--since",
+          "7d",
+          "--clear",
+          "--entry",
+          entry,
+          ...database,
+        ],
+        ["backfill", "invoices", "--batch", "50", "--entry", entry, ...database],
+        [
+          "enforce",
+          "invoices",
+          "--writer-role",
+          "durable_writer",
+          "--allow",
+          "batch_import",
+          "--allow",
+          "reports",
+          "--quiet",
+          "1d",
+          "--entry",
+          entry,
+          ...database,
+        ],
+        ["release", "invoices", "--to", "observe", "--entry", entry, ...database],
+        ["status", ...database],
+      ]) {
+        const unreachable = yield* runCli(["adopt", ...args])
 
-        expect(
-          yield* parseAdopt({
-            args: [
-              "release",
-              "invoices",
-              "--to",
-              "observe",
-              "--entry",
-              "e.ts",
-              "--database-url",
-              "u",
-            ],
-            nowMs: 0,
-          }),
-        ).toMatchObject({ command: "release", table: "invoices", to: "observe" })
+        expect(unreachable).toMatchObject({ exitCode: 2, reason: "SqlError" })
+        expect(unreachable.stderr).toContain("Cannot read adoption state")
+      }
 
-        expect(yield* parseWindow({ flag: "--since", text: "12h" })).toBe(43_200_000)
-      }),
-    ))
+      expect(parseWindow("12h")).toEqual(Option.some(43_200_000))
+      expect(parseWindow("7d")).toEqual(Option.some(7 * 86_400_000))
+      expect(parseWindow("week")).toEqual(Option.none())
+    }).pipe(Effect.scoped, Effect.runPromise))
 
   it("refuses an unknown command, a missing flag, a flag on the wrong command, and a bad window or batch", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const refused = (args: ReadonlyArray<string>) =>
-          parseAdopt({ args, nowMs: 0 }).pipe(Effect.flip)
+    Effect.gen(function* () {
+      const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "durable-adopt-" })
+      const entry = `${directory}/e.ts`
 
-        const base = ["--entry", "e.ts", "--database-url", "u"]
+      yield* fs.writeFileString(entry, "export const actors = []\n")
 
-        for (const [args, message] of [
-          [["migrate", ...base], "Unknown adopt command: migrate"],
-          [["plan", "--entry", "e.ts"], "--database-url is required"],
-          [["plan", "--database-url", "u"], "--entry is required"],
-          [["observe", ...base], "observe takes the table to observe"],
-          [["backfill", ...base], "backfill takes the table to backfill"],
-          [["plan", "--report", ...base], "--report belongs to observe"],
-          [
-            ["observe", "t", "--since", "7d", ...base],
-            "--since and --clear belong to observe --report",
-          ],
-          [["plan", "--batch", "5", ...base], "--batch belongs to backfill"],
-          [["backfill", "t", "--batch", "0", ...base], "--batch takes a positive integer"],
-          [
-            ["observe", "t", "--report", "--since", "week", ...base],
-            "--since takes a window such as 30m, 12h, or 7d",
-          ],
-          [["plan", "--force", ...base], "Unknown argument: --force"],
-          [["enforce", "t", ...base], "--writer-role is required"],
-          [
-            ["observe", "t", "--writer-role", "w", ...base],
-            "--writer-role, --allow, and --quiet belong to enforce",
-          ],
-          [
-            ["enforce", "t", "--writer-role", "w", "--quiet", "soon", ...base],
-            "--quiet takes a window such as 30m, 12h, or 7d",
-          ],
-          [["release", "t", ...base], "release takes --to observe"],
-          [["release", "t", "--to", "enforce", ...base], "release takes --to observe"],
-          [["plan", "--to", "observe", ...base], "--to belongs to release"],
-          [["release", ...base, "--to", "observe"], "release takes the table to release"],
-        ] as const) {
-          const error = yield* refused(args)
+      const base = ["--entry", entry, "--database-url", "u"]
 
-          expect(error).toBeInstanceOf(UsageError)
-          expect(error.message).toBe(message)
-        }
-      }),
-    ))
+      for (const [args, reason, message] of [
+        [["migrate", ...base], "UnknownSubcommand", 'Unknown subcommand "migrate"'],
+        [["plan", "--entry", entry], "MissingOption", "Missing required flag: --database-url"],
+        [["plan", "--database-url", "u"], "MissingOption", "Missing required flag: --entry"],
+        [["observe", ...base], "MissingArgument", "Missing required argument: table"],
+        [["backfill", ...base], "MissingArgument", "Missing required argument: table"],
+        [["plan", "--report", ...base], "UnrecognizedOption", "Unrecognized flag: --report"],
+        [
+          ["observe", "t", "--since", "7d", ...base],
+          "UsageError",
+          "--since and --clear belong to observe --report",
+        ],
+        [["plan", "--batch", "5", ...base], "UnrecognizedOption", "Unrecognized flag: --batch"],
+        [
+          ["backfill", "t", "--batch", "0", ...base],
+          "InvalidValue",
+          'Invalid value for flag --batch: "0"',
+        ],
+        [
+          ["observe", "t", "--report", "--since", "week", ...base],
+          "InvalidValue",
+          'Invalid value for flag --since: "week"',
+        ],
+        [["plan", "--force", ...base], "UnrecognizedOption", "Unrecognized flag: --force"],
+        [["enforce", "t", ...base], "MissingOption", "Missing required flag: --writer-role"],
+        [
+          ["observe", "t", "--writer-role", "w", ...base],
+          "UnrecognizedOption",
+          "Unrecognized flag: --writer-role",
+        ],
+        [
+          ["enforce", "t", "--writer-role", "w", "--quiet", "soon", ...base],
+          "InvalidValue",
+          'Invalid value for flag --quiet: "soon"',
+        ],
+        [["release", "t", ...base], "MissingOption", "Missing required flag: --to"],
+        [
+          ["release", "t", "--to", "enforce", ...base],
+          "InvalidValue",
+          'Invalid value for flag --to: "enforce"',
+        ],
+        [["plan", "--to", "observe", ...base], "UnrecognizedOption", "Unrecognized flag: --to"],
+        [
+          ["release", ...base, "--to", "observe"],
+          "MissingArgument",
+          "Missing required argument: table",
+        ],
+      ] as const) {
+        const refused = yield* runCli(["adopt", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
+    }).pipe(Effect.scoped, Effect.runPromise))
 })
 
 const provisioned = Effect.gen(function* () {
@@ -203,7 +186,7 @@ const provisioned = Effect.gen(function* () {
 
   const as = User.make({ subject: "alice" })
 
-  if (backend !== "postgres") return ActorTest.layer({ as })
+  if (backend !== "postgres") return { layer: ActorTest.layer({ as }), url: undefined }
 
   const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
   const name = `adopt_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
@@ -219,14 +202,14 @@ const provisioned = Effect.gen(function* () {
   )
   base.pathname = `/${name}`
 
-  return ActorTest.layer({ database: Redacted.make(base.href), as })
+  return { layer: ActorTest.layer({ database: Redacted.make(base.href), as }), url: base.href }
 })
 
 describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
   it("plans, observes, reports legacy writers, backfills, and reports status; each refusal exits 1", () =>
     Effect.gen(function* () {
       const database = yield* provisioned
-      const services = yield* Layer.build(database)
+      const services = yield* Layer.build(database.layer)
 
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient
@@ -260,7 +243,7 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
         })
 
         const unforced = yield* adopt({
-          options: options("release", { table: "cli_invoices", to: "observe" }),
+          options: options("release", { table: "cli_invoices" }),
           actors,
         })
 
@@ -281,7 +264,10 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
           actors,
         })
 
-        expect(observed).toEqual({ output: "public.cli_invoices is observing", exitCode: 0 })
+        expect(observed).toEqual({
+          output: "public.cli_invoices is observing",
+          exitCode: 0,
+        })
 
         yield* sql`UPDATE cli_invoices SET amount = 5 WHERE org_id = 'acme'`
         yield* sql`DELETE FROM cli_invoices WHERE id = 'i3'`
@@ -328,7 +314,7 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
         expect(filled.output).toBe("public.cli_invoices: filled routing_key on 2 rows in 2 passes")
 
         const unenforced = yield* adopt({
-          options: options("release", { table: "cli_invoices", to: "observe" }),
+          options: options("release", { table: "cli_invoices" }),
           actors,
         })
 
@@ -372,6 +358,13 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
         expect(decoded).toMatchObject({
           tables: [{ table: "public.cli_invoices", mode: "observe", unbackfilled: 0 }],
         })
+
+        if (database.url === undefined) return
+
+        const cli = yield* runCli(["adopt", "status", "--database-url", database.url, "--json"])
+
+        expect(cli.exitCode).toBe(0)
+        expect(cli.stdout).toBe(`${json.output}\n`)
       }).pipe(Effect.provideContext(services))
     }).pipe(Effect.scoped, (effect) => runtime.runPromise(effect)))
 })

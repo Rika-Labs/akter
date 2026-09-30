@@ -16,7 +16,7 @@ import type { ContentStoreImpl } from "../content/store.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
 
 /** UTF-8 bytes of an entry name; the name shares a btree key with the ownership columns. */
-export const MAX_NAME_BYTES = 512
+const MAX_NAME_BYTES = 512
 
 /**
  * Bytes one entry may hold. `get` returns an entry as one row, and the Postgres
@@ -120,6 +120,13 @@ export const bindBlobs = Effect.fnUntraced(function* (
       Effect.orDie,
     )
 
+  /** Runs `use` on the checked address of one entry of `blob`. */
+  const atEntry = <A, E>(
+    blob: AnyBlob,
+    name: string,
+    use: (where: Effect.Success<ReturnType<typeof entry>>) => Effect.Effect<A, E>,
+  ) => run(Effect.flatMap(entry(blob, name), use))
+
   const noted = (blob: AnyBlob) => Effect.sync(() => scope.wrote?.(blob.name))
 
   const contentAccess = (blob: AnyBlob): ContentRead | ContentWrite => {
@@ -142,15 +149,12 @@ export const bindBlobs = Effect.fnUntraced(function* (
     )
 
     const resolve = (name: string) =>
-      run(
-        Effect.gen(function* () {
-          const where = yield* entry(blob, name)
-
-          const [found] = yield* sql<{ hash: string; size: number }>`
-            SELECT hash, size::float8 AS size FROM actor_content_refs WHERE ${where}`
-
-          return Option.fromUndefinedOr(found)
-        }),
+      atEntry(blob, name, (where) =>
+        Effect.map(
+          sql<{ hash: string; size: number }>`
+            SELECT hash, size::float8 AS size FROM actor_content_refs WHERE ${where}`,
+          ([found]) => Option.fromUndefinedOr(found),
+        ),
       )
 
     if (!write)
@@ -224,13 +228,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
           yield* noted(blob)
         }),
       detach: (name) =>
-        run(
-          Effect.gen(function* () {
-            const where = yield* entry(blob, name)
-
-            yield* sql`DELETE FROM actor_content_refs WHERE ${where}`
-            yield* noted(blob)
-          }),
+        atEntry(blob, name, (where) =>
+          Effect.andThen(sql`DELETE FROM actor_content_refs WHERE ${where}`, noted(blob)),
         ),
       list,
     } satisfies ContentWrite
@@ -250,18 +249,14 @@ export const bindBlobs = Effect.fnUntraced(function* (
 
     const read: BlobRead = {
       get: (name) =>
-        run(
-          Effect.gen(function* () {
-            const where = yield* entry(blob, name)
-
-            const [found] = yield* sql<{ bytes: Uint8Array | null }>`
+        atEntry(blob, name, (where) =>
+          Effect.map(
+            sql<{ bytes: Uint8Array | null }>`
               SELECT string_agg(bytes, ''::bytea ORDER BY chunk) AS bytes
-              FROM actor_blobs WHERE ${where}`
-
-            const bytes = found?.bytes ?? null
-
-            return bytes === null ? Option.none<Uint8Array>() : Option.some(Uint8Array.from(bytes))
-          }),
+              FROM actor_blobs WHERE ${where}`,
+            ([found]) =>
+              Option.map(Option.fromNullishOr(found?.bytes), (bytes) => Uint8Array.from(bytes)),
+          ),
         ),
     }
 
@@ -283,9 +278,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
     return {
       ...read,
       set: (name, bytes) =>
-        run(
+        atEntry(blob, name, (where) =>
           Effect.gen(function* () {
-            const where = yield* entry(blob, name)
             const copied = yield* copy(bytes)
 
             const written = yield* sql`WITH used AS (
@@ -309,9 +303,8 @@ export const bindBlobs = Effect.fnUntraced(function* (
           }),
         ),
       append: (name, bytes) =>
-        run(
+        atEntry(blob, name, (where) =>
           Effect.gen(function* () {
-            const where = yield* entry(blob, name)
             const copied = yield* copy(bytes)
 
             const inserted =
@@ -335,26 +328,19 @@ export const bindBlobs = Effect.fnUntraced(function* (
           }),
         ),
       compact: (name) =>
-        run(
-          Effect.gen(function* () {
-            const where = yield* entry(blob, name)
-
-            yield* sql`WITH merged AS (
+        atEntry(blob, name, (where) =>
+          Effect.andThen(
+            sql`WITH merged AS (
                 DELETE FROM actor_blobs WHERE ${where} AND chunk > 0 RETURNING chunk, bytes)
               UPDATE actor_blobs AS head
               SET bytes = head.bytes || (SELECT string_agg(m.bytes, ''::bytea ORDER BY m.chunk) FROM merged AS m)
-              WHERE ${where} AND head.chunk = 0 AND EXISTS (SELECT 1 FROM merged)`
-            yield* noted(blob)
-          }),
+              WHERE ${where} AND head.chunk = 0 AND EXISTS (SELECT 1 FROM merged)`,
+            noted(blob),
+          ),
         ),
       delete: (name) =>
-        run(
-          Effect.gen(function* () {
-            const where = yield* entry(blob, name)
-
-            yield* sql`DELETE FROM actor_blobs WHERE ${where}`
-            yield* noted(blob)
-          }),
+        atEntry(blob, name, (where) =>
+          Effect.andThen(sql`DELETE FROM actor_blobs WHERE ${where}`, noted(blob)),
         ),
     } satisfies BlobWrite
   }

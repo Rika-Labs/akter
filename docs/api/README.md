@@ -12,6 +12,7 @@ This is the accepted API design, not a claim that every interface is implemented
 - [TypeScript SDK](03-typescript-sdk.md)
 - [Drizzle integration](04-drizzle.md)
 - [Generating clients](05-generated-clients.md)
+- [The `durable` CLI](06-cli.md)
 - [Generated contracts](generated-contracts.md)
 - [Naming](naming.md)
 - [Versioning](versioning.md)

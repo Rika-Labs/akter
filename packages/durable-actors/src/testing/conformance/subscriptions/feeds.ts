@@ -4,10 +4,114 @@ import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { CLAIM_LEASE, ExplainOutput, planNodes } from "../outbox.ts"
 import { SubFollower, SubOrder } from "./actors.ts"
-import { drain, followerLog, outboxOf, query, run, sourceRows } from "./harness.ts"
+import {
+  crashOnce,
+  drain,
+  followerLog,
+  handlerRuns,
+  outboxOf,
+  query,
+  run,
+  sourceRows,
+  tagMismatches,
+} from "./harness.ts"
 
 /** Feed rows, the tag summary, and wake-ups of event subscriptions. */
 export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "reactivates a subscription over its tombstone, so the source's next event is delivered",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const follower = yield* SubFollower.get("revive-follower")
+          yield* follower.Follow({ source: "revive-order" })
+          yield* drain
+          yield* follower.Unfollow("revive-order")
+          yield* drain
+          expect(yield* sourceRows("revive-order")).toMatchObject([
+            { subscriber_id: "revive-follower", epoch: "2", active: false, due: false },
+          ])
+          expect(yield* tagMismatches).toEqual([])
+
+          yield* follower.Follow({ source: "revive-order" })
+          yield* drain
+          yield* (yield* SubOrder.get("revive-order")).Place({ customerId: "r", amount: 1 })
+          yield* drain
+
+          expect(yield* followerLog("revive-follower")).toEqual(["revive-order#1:OrderPlaced"])
+          expect(yield* sourceRows("revive-order")).toMatchObject([
+            { subscriber_id: "revive-follower", epoch: "3", active: true, delivered: "1" },
+          ])
+          expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "tombstones a caught-up row and delivers Rejected when a resubscribe names a cursor above the source's head",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const follower = yield* SubFollower.get("above-follower")
+          const order = yield* SubOrder.get("above-order")
+          yield* follower.Follow({ source: "above-order" })
+          yield* drain
+          yield* order.Place({ customerId: "a", amount: 1 })
+          yield* drain
+          expect(yield* sourceRows("above-order")).toMatchObject([
+            { epoch: "1", active: true, delivered: "1", due: false },
+          ])
+
+          yield* follower.Follow({ source: "above-order", from: "9" })
+          yield* drain
+          yield* order.Place({ customerId: "a", amount: 2 })
+          yield* drain
+
+          expect(yield* followerLog("above-follower")).toEqual([
+            "above-order#1:OrderPlaced",
+            "above-order!rejected:9",
+          ])
+          expect(yield* sourceRows("above-order")).toMatchObject([
+            { subscriber_id: "above-follower", epoch: "2", active: false, due: false },
+          ])
+          expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
+  },
+  {
+    name: "expands a feed row once its lease ends when the relay dies after claiming it",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          yield* (yield* SubFollower.get("feeddie-follower")).Follow({ source: "feeddie-order" })
+          yield* drain
+
+          const crash = crashOnce(
+            fixture,
+            "afterClaim",
+            (request) => request.command === "$feed" && request.ref.id === "feeddie-order",
+          )
+
+          yield* (yield* SubOrder.get("feeddie-order")).Place({ customerId: "f", amount: 1 })
+          yield* drain
+          expect(crash.crashed).toBe(true)
+          expect(yield* followerLog("feeddie-follower")).toEqual([])
+          expect(yield* outboxOf("SubOrder", "feeddie-order", "feed")).toBe(1)
+
+          yield* test.advance(CLAIM_LEASE)
+
+          expect(yield* followerLog("feeddie-follower")).toEqual(["feeddie-order#1:OrderPlaced"])
+          expect(handlerRuns(fixture, "SubFollower/feeddie-follower")).toBe(1)
+          expect(yield* outboxOf("SubOrder", "feeddie-order", "feed")).toBe(0)
+        }),
+      ),
+  },
   {
     name: "writes one feed row per publishing turn whatever the subscriber count",
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>

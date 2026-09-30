@@ -3,11 +3,38 @@ import { Tenant } from "../../../index.ts"
 import { System } from "../../../identity/caller.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { OrderDelivery, SubFollower, SubOrder } from "./actors.ts"
-import { drain, followerLog, handlerRuns, run } from "./harness.ts"
+import { OrderDelivery, SubFollower, SubOrder, THROWING_ROUTE } from "./actors.ts"
+import { drain, followerLog, handlerRuns, logOf, run, sourceRows } from "./harness.ts"
+import { CLAIM_LEASE } from "../outbox.ts"
 
 /** Tenant isolation, System attribution, and handler access of event subscriptions. */
 export const subscriptionAccessConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "backs a routed row off with last_error when route throws, and holds its later events",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const order = yield* SubOrder.get("throwroute-order")
+          yield* order.Place({ customerId: THROWING_ROUTE, amount: 1 })
+          yield* order.Place({ customerId: "throwroute-ok", amount: 1 })
+          yield* drain
+
+          const [summary] = yield* sourceRows("throwroute-order", "SubSummary")
+          expect(summary!.delivered).toBe("0")
+          expect(summary!.last_error).toContain("Route failed")
+          expect(summary!.last_error).toContain("route threw")
+          expect(yield* logOf("SubSummary", "throwroute-ok")).toEqual([])
+          yield* test.advance(CLAIM_LEASE)
+          expect(yield* logOf("SubSummary", "throwroute-ok")).toEqual([])
+          expect(yield* logOf("SubAuditor", "throwroute-ok")).toEqual([
+            "throwroute-order#2:OrderPlaced",
+          ])
+        }),
+      ),
+  },
   {
     name: "keeps equal source ids in two tenants apart",
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>

@@ -30,6 +30,7 @@ const roomId = RoomId.make(location.pathname.split("/").at(-1) || "lobby")
 const rooms = Room.client({
   baseUrl: "/api",
   headers: () => ({ authorization: `Bearer ${user}` }),
+  identity: () => user,
   timeoutInMs: 2_000,
   offline: query.has("offline") ? Offline.indexedDb(`chat-react:${user}`) : undefined,
 })

@@ -34,6 +34,7 @@ export type Scenario =
   | "compensate-sleep"
   | "compensate-hold"
   | "compensate-last"
+  | "compensate-block"
 
 /** Counters and gates the bodies share with the cases, by label and execution key. */
 export interface EngineFixture {
@@ -97,6 +98,17 @@ export const probeBody = <R>({
 
     const compensated = once.pipe(Workflow.withCompensation(() => bump(fixture, "compensate", key)))
 
+    const blockingCompensation = once.pipe(
+      Workflow.withCompensation(() =>
+        Effect.gen(function* () {
+          yield* bump(fixture, "compensate", key)
+          const gate = fixture.gates.get(`compensate:${key}`)
+
+          if (gate !== undefined) yield* Deferred.await(gate)
+        }),
+      ),
+    )
+
     switch (input.scenario as Scenario) {
       case "plain":
         return yield* once
@@ -149,6 +161,11 @@ export const probeBody = <R>({
         return yield* hold
       case "compensate-last":
         yield* compensated
+
+        return yield* hold
+
+      case "compensate-block":
+        yield* blockingCompensation
 
         return yield* hold
 

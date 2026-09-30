@@ -134,6 +134,20 @@ const restarts = new WeakMap<Scope.Scope, number>()
  */
 const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 
+/**
+ * What a runner knows of one activation when a delivery to it times out: the
+ * handlers Cluster has built for it and whether one is being built, the
+ * worker's phase, the commands waiting in its mailbox and in its current
+ * batch, and whether an in-place restart is running.
+ */
+export interface ActivationDiagnosis {
+  readonly handlers: number
+  readonly building: boolean
+  readonly worker: "none" | "idle" | "turn" | "workflow kick" | "restarting"
+  readonly mailbox: number
+  readonly batch: number
+}
+
 /** A command in an activation's mailbox and the caller waiting on its reply. */
 interface Waiting {
   readonly request: Request
@@ -360,6 +374,9 @@ export const registerActor = Effect.fnUntraced(function* (
   )
 
   const resident = new Map<string, number>()
+  const building = new Set<string>()
+
+  const workers = new Map<string, () => Pick<ActivationDiagnosis, "worker" | "mailbox" | "batch">>()
 
   const lease = registration.singleton
     ? Option.getOrUndefined(yield* Effect.serviceOption(ShardLease))
@@ -433,9 +450,12 @@ export const registerActor = Effect.fnUntraced(function* (
 
       restarts.set(activation, rebuilt === undefined ? 0 : rebuilt + 1)
 
-      if (rebuilt !== undefined) yield* Effect.sleep(restartDelay(rebuilt))
-
       const { entityId } = yield* Entity.CurrentAddress
+
+      building.add(entityId)
+      yield* Effect.addFinalizer(() => Effect.sync(() => building.delete(entityId)))
+
+      if (rebuilt !== undefined) yield* Effect.sleep(restartDelay(rebuilt))
       const [tenant, id] = yield* decodeEntityId(entityId).pipe(Effect.orDie)
 
       const superseded = handlerScopes.get(activation)
@@ -505,6 +525,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
       const waiting: Array<Waiting> = []
       const ready = Latch.makeUnsafe(false)
+      let phase: ActivationDiagnosis["worker"] = "idle"
       const alone = aloneAfterFailure.get(activation) ?? new Set<string>()
       aloneAfterFailure.set(activation, alone)
 
@@ -523,6 +544,7 @@ export const registerActor = Effect.fnUntraced(function* (
             const kicked = yield* kickedExecution({ request, outcome: exit.value.outcome })
 
             if (kicked !== undefined) {
+              phase = "workflow kick"
               current.engine ??= yield* activationEngine({
                 registration,
                 ref: request.ref,
@@ -532,6 +554,7 @@ export const registerActor = Effect.fnUntraced(function* (
                 deliveryMs: policy.deliveryMs,
               })
               yield* current.engine.kick(kicked.executionId, kicked.interrupt)
+              phase = "turn"
             }
           }
         }
@@ -567,6 +590,7 @@ export const registerActor = Effect.fnUntraced(function* (
         Effect.gen(function* () {
           const failures = restarts.get(activation) ?? 0
 
+          phase = "restarting"
           restarts.set(activation, failures + 1)
           yield* Scope.close(current.scope, Exit.void)
           yield* Effect.sleep(restartDelay(failures))
@@ -804,6 +828,8 @@ export const registerActor = Effect.fnUntraced(function* (
 
       yield* Effect.gen(function* () {
         while (true) {
+          phase = "idle"
+          taken = []
           yield* ready.await
           const batch = resolve(takeBatch({ waiting, alone }))
 
@@ -811,6 +837,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
           if (batch.length === 0) continue
 
+          phase = "turn"
           taken = [...batch]
 
           if (Exit.isFailure(current.activated)) {
@@ -854,6 +881,16 @@ export const registerActor = Effect.fnUntraced(function* (
             )
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
+
+      const diagnose = () => ({ worker: phase, mailbox: waiting.length, batch: taken.length })
+
+      workers.set(entityId, diagnose)
+      building.delete(entityId)
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (workers.get(entityId) === diagnose) workers.delete(entityId)
+        }),
+      )
 
       return entity.of({
         Wake: () =>
@@ -955,5 +992,23 @@ export const registerActor = Effect.fnUntraced(function* (
 
   if (registration.singleton) yield* keepSingletonAwake(registration, entity, services)
 
-  return { isResident: (entityId: string) => resident.has(entityId), owner }
+  return {
+    isResident: (entityId: string) => resident.has(entityId),
+    owner,
+    /** This type's view of one activation, for a delivery that timed out. */
+    diagnose: (entityId: string): ActivationDiagnosis => ({
+      handlers: resident.get(entityId) ?? 0,
+      building: building.has(entityId),
+      ...(workers.get(entityId)?.() ?? { worker: "none", mailbox: 0, batch: 0 }),
+    }),
+    /** Activations of this type being rebuilt or restarted in place now. */
+    restarting: () => [
+      ...new Set([
+        ...building,
+        ...[...workers].flatMap(([entityId, diagnose]) =>
+          diagnose().worker === "restarting" ? [entityId] : [],
+        ),
+      ]),
+    ],
+  }
 })

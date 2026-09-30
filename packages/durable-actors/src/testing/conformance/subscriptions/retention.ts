@@ -1,9 +1,22 @@
-import { Effect, Stream } from "effect"
+import { Effect, Fiber, Schema, Stream } from "effect"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { CLAIM_LEASE } from "../outbox.ts"
 import { Live, ShipOrder, SubFollower, SubJournal, SubOrder, SubShipment } from "./actors.ts"
-import { crashOnce, drain, followerLog, logOf, query, run, subscriber } from "./harness.ts"
+import {
+  crashOnce,
+  drain,
+  followerLog,
+  logOf,
+  LogState,
+  pauseOnce,
+  query,
+  run,
+  sourceRows,
+  subscriber,
+  tagMismatches,
+} from "./harness.ts"
+import { Tenant } from "../../../index.ts"
 
 const journalRow = (source: string, subscriberType: string) =>
   Effect.gen(function* () {
@@ -171,6 +184,171 @@ export const subscriptionsRetentionConformance: ReadonlyArray<ConformanceCase> =
           })
         }),
       ),
+  },
+  {
+    name: "acknowledges a RetentionGap redelivered after its receipt was pruned without running the handler again",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* SubJournal.get("gapreceipt-j")
+          yield* (yield* SubFollower.get("gapreceipt-f")).FollowJournal({ source: "gapreceipt-j" })
+          yield* drain
+          fixture.behave = (entry) =>
+            entry.startsWith("SubFollower/gapreceipt-f/") ? "defect" : "apply"
+          yield* journal.Record({ customerId: "gapreceipt-c", count: 2 })
+          yield* drain
+          yield* test.advance("3 hours")
+          yield* test.cleanup
+          expect(yield* journalEvents("gapreceipt-j")).toBe(0)
+
+          fixture.behave = () => "apply"
+          const settle = crashOnce(fixture, "beforeSettle", subscriber("gapreceipt-f"))
+          yield* journal.Record({ customerId: "gapreceipt-c", count: 1 })
+          yield* test.advance("300 seconds")
+          expect(settle.crashed).toBe(true)
+          expect(yield* followerLog("gapreceipt-f")).toContain("gapreceipt-j~gap:0-2")
+          expect(yield* journalRow("gapreceipt-j", "SubFollower")).toMatchObject({
+            delivered: "0",
+          })
+
+          yield* query(
+            (sql) => sql`DELETE FROM actor_receipts WHERE tenant_id = ${test.tenant}
+              AND actor_type = 'SubFollower' AND actor_id = 'gapreceipt-f' AND command = 'OnOrder'`,
+          )
+          yield* test.advance(CLAIM_LEASE)
+          yield* test.advance("300 seconds")
+
+          expect(yield* followerLog("gapreceipt-f")).toEqual([
+            "gapreceipt-j~gap:0-2",
+            "gapreceipt-j#3:OrderPlaced",
+          ])
+
+          for (const entry of ["gapreceipt-j~gap:0-2", "gapreceipt-j#3:OrderPlaced"])
+            expect(
+              fixture.runs.filter((run) => run === `SubFollower/gapreceipt-f/${entry}`).length,
+            ).toBe(1)
+          expect(yield* journalRow("gapreceipt-j", "SubFollower")).toMatchObject({
+            delivered: "3",
+            gap_through: null,
+          })
+        }),
+      ),
+  },
+  {
+    name: "delivers a RetentionGap, never a skip, when retention prunes a claimed row's events before it reads them",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const journal = yield* SubJournal.get("claimrace-j")
+          yield* (yield* SubFollower.get("claimrace-f")).FollowJournal({ source: "claimrace-j" })
+          yield* drain
+          fixture.behave = (entry) =>
+            entry.startsWith("SubFollower/claimrace-f/") ? "defect" : "apply"
+          yield* journal.Record({ customerId: "claimrace-c", count: 2 })
+          yield* drain
+          yield* test.advance("3 hours")
+
+          fixture.behave = () => "apply"
+
+          const pause = yield* pauseOnce(
+            fixture,
+            "afterClaim",
+            (request) => request.ref.id === "claimrace-j" && request.commandId === "claimrace-f",
+          )
+
+          const delivering = yield* test.advance("300 seconds").pipe(Effect.forkChild)
+          yield* pause.reached
+          yield* test.cleanup
+          expect(yield* journalEvents("claimrace-j")).toBe(0)
+          yield* pause.release
+          yield* Fiber.join(delivering)
+          yield* test.advance("300 seconds")
+
+          expect(yield* followerLog("claimrace-f")).toEqual(["claimrace-j~gap:0-2"])
+          expect(yield* journalRow("claimrace-j", "SubFollower")).toMatchObject({
+            delivered: "2",
+            gap_through: null,
+          })
+        }),
+      ),
+  },
+  {
+    name: "widens no tombstone at startup, so it gains no tag and never becomes due",
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      Effect.gen(function* () {
+        const tenant = yield* Effect.promise(() =>
+          run(
+            environment,
+            fixture,
+            Effect.gen(function* () {
+              const test = yield* ActorTest
+              const follower = yield* SubFollower.get("tomb-follower")
+              yield* follower.Follow({ source: "tomb-order" })
+              yield* drain
+              yield* follower.Unfollow("tomb-order")
+              yield* drain
+              yield* query(
+                (sql) => sql`UPDATE actor_subscriptions SET events = ARRAY['OrderPlaced']
+                  WHERE tenant_id = ${test.tenant} AND source_id = 'tomb-order'
+                    AND subscriber_id = 'tomb-follower'`,
+              )
+              expect(yield* sourceRows("tomb-order")).toMatchObject([
+                { epoch: "2", active: false, due: false },
+              ])
+
+              return test.tenant
+            }),
+          ),
+        )
+
+        yield* environment.restart
+
+        yield* Effect.promise(() =>
+          run(
+            environment,
+            fixture,
+            Effect.gen(function* () {
+              const row = query(
+                (sql) => sql<{ events: string; active: boolean; due: boolean }>`
+                  SELECT to_jsonb(events)::text AS events, active, due_at_ms IS NOT NULL AS due
+                  FROM actor_subscriptions WHERE tenant_id = ${tenant}
+                    AND source_id = 'tomb-order' AND subscriber_id = 'tomb-follower'`,
+              )
+
+              const tags = query(
+                (sql) => sql<{ event: string }>`SELECT event FROM actor_subscription_tags
+                  WHERE tenant_id = ${tenant} AND source_id = 'tomb-order'`,
+              )
+
+              expect(yield* row).toEqual([{ events: '["OrderPlaced"]', active: false, due: false }])
+              expect(yield* tags).toEqual([])
+              expect(yield* tagMismatches).toEqual([])
+              yield* Effect.gen(function* () {
+                yield* (yield* SubOrder.get("tomb-order")).CancelOrder("t")
+              }).pipe(Effect.provideService(Tenant, tenant))
+              yield* drain
+
+              expect(yield* row).toEqual([{ events: '["OrderPlaced"]', active: false, due: false }])
+
+              const { state } = yield* (yield* ActorTest).inspect({
+                tenant,
+                actor: "SubFollower",
+                id: "tomb-follower",
+              })
+
+              expect(
+                (yield* Schema.decodeUnknownEffect(LogState)(state).pipe(Effect.orDie)).log ?? [],
+              ).toEqual([])
+            }),
+          ),
+        )
+      }).pipe(Effect.runPromise),
   },
   {
     name: "wakes a hibernated subscriber and commits the delivery",
