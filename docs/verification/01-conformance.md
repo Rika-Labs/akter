@@ -341,7 +341,7 @@ Postgres only (independent connections):
 
 Postgres SIGKILL, in [`crash/delivery/effects.test.ts`](../../packages/durable-actors/src/testing/conformance/crash/delivery/effects.test.ts): `recovers a SIGKILL beforeExecute and routes onSuccess once per effect id`, `recovers a SIGKILL afterExecute and routes onSuccess once per effect id` (a crash between executor success and the `onSuccess` commit, before the result is recorded), and `recovers a SIGKILL beforeCommit and routes onSuccess once per effect id` (the same window after the result is recorded, in the route's receiver turn). A child process commits the author's turn and is killed at the barrier; a separate pool sees one `Post` receipt, no `Moderated` receipt, and the effect row (still an `effect` with one claimed attempt, or already an `intent` to the route). A fresh process whose outbox clock runs past the execution lease settles the row: the provider ledger shows one idempotency key, the effect id, with one call (`beforeExecute`, `beforeCommit`) or two (`afterExecute`), and there is exactly one `Moderated` receipt, whose command id is that effect id, and one state change.
 
-The declaration test `types effects, executors, and routes against the executor's return type` is the compile-time part of the **Effect routes** check: an `onSuccess` command whose input does not accept the executor's return type, an `onDeadLetter` command whose input does not accept `Actor.DeadLetter(E)`, a route to another actor's command, a `policy.effects` key that is not a declared effect, an executor returning the wrong type, and performing an undeclared effect all fail to compile; `perform` is absent from `X.Read`. `rejects an executor that requires the SQL client` (in `runtime/effects/isolation.test.ts`) checks that an effect layer whose executors, or whose build Effect, require `SqlClient` does not compile.
+The declaration test `types jobs, executors, and routes against the executor's return type` is the compile-time part of the **Effect routes** check: an `onSuccess` command whose input does not accept the executor's return type, an `onDeadLetter` command whose input does not accept `Actor.DeadLetter(E)`, a route to another actor's command, a `policy.effects` key that is not a declared effect, an executor returning the wrong type, and performing an undeclared effect all fail to compile; `perform` is absent from `X.Read`. `rejects an executor that requires the SQL client` (in `runtime/effects/isolation.test.ts`) checks that an effect layer whose executors, or whose build Effect, require `SqlClient` does not compile.
 
 These cases cover a single runner. Effect cancellation and per-actor caps are recorded under [Effect cancellation and caps (M2.13)](#effect-cancellation-and-caps-m213).
 
@@ -485,7 +485,7 @@ The cases live in [`conformance/http.ts`](../../packages/durable-actors/src/test
 
 - `gives concurrent requests with different tokens different principals` — gate **Per-call caller over HTTP**: 16 concurrent requests, one per subject, each see their own tenant and subject.
 - `fails missing, invalid, and expired credentials with their codes before any turn and never as Anonymous` — 401 with `www-authenticate: Bearer` for commands, queries, and `/command-ids`; no handler runs.
-- `serves every caller as Anonymous in the default tenant under Actor.auth.none, ignoring credentials`.
+- `serves every caller as Anonymous in the default tenant under Auth.none, ignoring credentials`.
 - `takes the tenant only from the provider, and refuses a provider that returns a System caller` — tenant-looking query strings and headers are ignored; a `System` caller is an opaque 500 and runs nothing.
 - `serves a 512-byte subject and rejects 513 bytes and an encoded caller over 1 KiB` — gate **Cluster header size** at the served edge. `serializes a 512-byte subject through a cross-runner command` (`conformance/multi-runner.ts`, two runners on real Postgres) carries that largest subject through Cluster to an actor owned by the other runner and back from its turn.
 - `replays a committed output when a response is dropped and the same Idempotency-Key is retried` — row **Command response lost over HTTP**: one receipt, the handler runs once, and a quoted key is the same id.
@@ -817,7 +817,7 @@ Shared (PGlite and Postgres):
 - `cancels nothing when the cancelling turn rolls back` — row **Cancelling turn rolls back**: a declared failure, a defect, and a `beforeCommit` crash after `cancelEffect`; the effect runs and routes `onSuccess` once.
 - `does nothing when cancelling an effect that already completed` — `onSuccess` is delivered once and the key is free for a new effect.
 - `replaces a running keyed effect: reports the old one and runs the new one under a new id`.
-- `rejects reserved intent keys and a captured cancelEffect` — `Intent.cancel("$effect:…")` dies, and a `cancelEffect` captured in one turn and run in another dies with `Effect capability escaped its turn`.
+- `rejects reserved intent keys and a captured cancelJob` — `Intent.cancel("$effect:…")` dies, and a `cancelEffect` captured in one turn and run in another dies with `Effect capability escaped its turn`.
 
 Postgres only (independent connections, on the multi-runner harness):
 
