@@ -11,7 +11,7 @@ import {
   Scope,
 } from "effect"
 import { Actor, Intent } from "../../index.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import {
