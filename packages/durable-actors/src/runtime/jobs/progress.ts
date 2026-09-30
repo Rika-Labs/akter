@@ -13,8 +13,8 @@ export const RUNNER_PROGRESS_PER_SECOND = 2000
 /** One progress frame on its way from an executor attempt to the owner. */
 export interface ProgressMessage {
   readonly ref: ActorRef
-  readonly effectId: string
-  readonly effect: string
+  readonly jobId: string
+  readonly job: string
   /** The attempt number of the job, from 1. */
   readonly attempt: number
   /** Per attempt, from 1; counts the attempt's accepted `progress` calls. */
@@ -27,7 +27,7 @@ export interface ProgressMessage {
 /** Sent after a job's terminal settle commits; no attempt of it reports again. */
 export interface ProgressClosed {
   readonly ref: ActorRef
-  readonly effectId: string
+  readonly jobId: string
   readonly attempt: number
 }
 
@@ -151,8 +151,8 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
       sink
         .send({
           ref: attempt.ref,
-          effectId: attempt.jobId,
-          effect: attempt.job,
+          jobId: attempt.jobId,
+          job: attempt.job,
           attempt: attempt.attempt,
           seq: frame.seq,
           leaseUntil: attempt.leaseUntil(),
@@ -236,7 +236,7 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
       return (flush === undefined ? Effect.void : awaitBriefly(flush)).pipe(
         Effect.andThen(
-          sink.closed({ ref: attempt.ref, effectId: attempt.jobId, attempt: attempt.attempt }),
+          sink.closed({ ref: attempt.ref, jobId: attempt.jobId, attempt: attempt.attempt }),
         ),
         detached,
         Effect.asVoid,

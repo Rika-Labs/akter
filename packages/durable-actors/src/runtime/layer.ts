@@ -862,17 +862,16 @@ export const layer = (options: Options = {}) => {
         )
 
       const progressSink = ProgressSink.of({
-        wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
+        wants: (actor, job) => effectRegistrations.get(actor)?.progress.has(job) === true,
         send: (message) =>
           Effect.flatMap(progressTap.send(message), (deliver) =>
             deliver
               ? fireAndForget(deliverProgress(message)).pipe(
                   Effect.flatMap((fiber) =>
                     Effect.sync(() => {
-                      inflight.set(message.effectId, fiber)
+                      inflight.set(message.jobId, fiber)
                       fiber.addObserver(() => {
-                        if (inflight.get(message.effectId) === fiber)
-                          inflight.delete(message.effectId)
+                        if (inflight.get(message.jobId) === fiber) inflight.delete(message.jobId)
                       })
                     }),
                   ),
@@ -884,7 +883,7 @@ export const layer = (options: Options = {}) => {
             deliver
               ? fireAndForget(
                   Effect.suspend(() => {
-                    const last = inflight.get(message.effectId)
+                    const last = inflight.get(message.jobId)
 
                     return last === undefined ? Effect.void : Fiber.await(last)
                   }).pipe(

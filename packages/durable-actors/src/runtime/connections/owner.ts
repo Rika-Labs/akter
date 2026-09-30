@@ -69,11 +69,11 @@ const FOLLOW_PAGE = 1_000
 /** Progress frames one actor accepts per second, with a burst of as many. */
 const PROGRESS_PER_SECOND = 20
 
-/** How long an effect check's answer stands before a later frame reads the row again. */
-const EFFECT_CHECK_MS = 5_000
+/** How long a job check's answer stands before a later frame reads the row again. */
+const JOB_CHECK_MS = 5_000
 
-/** How long after a failed effect check the next one waits. */
-const EFFECT_CHECK_RETRY_MS = 1_000
+/** How long after a failed job check the next one waits. */
+const JOB_CHECK_RETRY_MS = 1_000
 
 /** Clock skew allowed between the executor's lease deadline and the owner's clock. */
 const PROGRESS_SKEW_MS = 1_000
@@ -81,9 +81,9 @@ const PROGRESS_SKEW_MS = 1_000
 /** Progress entries one `read.progress` subscription buffers; the oldest goes first. */
 const STREAM_PROGRESS_BUFFER = 16
 
-/** What this activation knows of one effect's progress. */
-interface EffectProgress {
-  /** False once the effect's route or settle committed, or its row is gone. */
+/** What this activation knows of one job's progress. */
+interface JobProgress {
+  /** False once the job's route or settle committed, or its row is gone. */
   open: boolean
   checkedAt: number
   /** The last frame, check, or close; the record goes `PROGRESS_RECORD_MS` after it. */
@@ -91,16 +91,16 @@ interface EffectProgress {
   attempt: number
   seq: number
   readonly principal: Option.Option<Principal>
-  /** The effect's encoded input, for stream subscribers. */
+  /** The job's encoded payload, for stream subscribers. */
   readonly payload: string
-  /** Channels this activation forwarded the effect's progress to. */
+  /** Channels this activation forwarded the job's progress to. */
   readonly holders: Set<string>
 }
 
 /** How long a progress record stays after its last frame, check, or close. */
 const PROGRESS_RECORD_MS = 60_000
 
-const closedEffect = (at: number): EffectProgress => ({
+const closedJob = (at: number): JobProgress => ({
   open: false,
   checkedAt: at,
   touchedAt: at,
@@ -117,8 +117,8 @@ const samePrincipal = (a: Option.Option<Principal>, b: Option.Option<Principal>)
 /** One progress message from an executor pool, as the owner receives it. */
 export interface ProgressDelivery {
   readonly ref: ActorRef
-  readonly effectId: string
-  readonly effect: string
+  readonly jobId: string
+  readonly job: string
   readonly attempt: number
   readonly seq: number
   readonly leaseUntil: number
@@ -172,15 +172,15 @@ export interface Activation {
   advanced: Deferred.Deferred<void>
   /** Open stream subscriptions, which end with this activation. */
   readonly streams: Set<Subscription>
-  /** Progress of effects this activation received frames for. */
-  readonly progress: Map<string, EffectProgress>
-  /** Effect ids whose check is reading the database now. */
+  /** Progress of jobs this activation received frames for. */
+  readonly progress: Map<string, JobProgress>
+  /** Job ids whose check is reading the database now. */
   readonly checking: Set<string>
-  /** When each effect's check last failed, so the next waits. */
+  /** When each job's check last failed, so the next waits. */
   readonly checkFailed: Map<string, number>
   readonly listeners: Set<{
     readonly tag: string
-    readonly effectId: string | undefined
+    readonly jobId: string | undefined
     readonly queue: Queue.Queue<StoredProgress>
   }>
   progressTokens: number
@@ -261,12 +261,12 @@ type Address = {
  * subscriber's live progress is a sliding buffer, so a slow reader loses the
  * oldest.
  *
- * Progress frames: a route or settle that committed while the effect check read
- * keeps the effect closed. A row that has not counted an attempt yet does not
- * prove a frame open. Every frame of an effect shares one activation record so its
+ * Progress frames: a route or settle that committed while the job check read
+ * keeps the job closed. A row that has not counted an attempt yet does not
+ * prove a frame open. Every frame of a job shares one activation record so its
  * order and holders stay whole, and a record decides after a permit wait, never a
  * copy taken before it. A record nothing touched for a while goes, and a late
- * frame runs the effect check again.
+ * frame runs the job check again.
  */
 export const activationOwner = ({
   registration,
@@ -293,7 +293,7 @@ export const activationOwner = ({
 
   const wanted = new Set([
     ...[...registration.connections.values()].flatMap((member) => [
-      ...(member.progress?.effects ?? []),
+      ...(member.progress?.jobs ?? []),
     ]),
     ...[...registration.streams.values()].flatMap((member) => [...member.progress]),
   ])
@@ -1233,17 +1233,16 @@ export const activationOwner = ({
         state: [...(activation.cache.state ?? new Map<string, string>())],
         events: events(activation, sql),
         follow: follow(activation, sql),
-        progress: (tag: string, effectId: string | undefined) =>
-          progressFeed(activation, tag, effectId),
+        progress: (tag: string, jobId: string | undefined) => progressFeed(activation, tag, jobId),
       }
     }),
   })
 
-  const progressFeed = (activation: Activation, tag: string, effectId: string | undefined) =>
+  const progressFeed = (activation: Activation, tag: string, jobId: string | undefined) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const queue = yield* Queue.sliding<StoredProgress>(STREAM_PROGRESS_BUFFER)
-        const listener = { tag, effectId, queue }
+        const listener = { tag, jobId, queue }
 
         yield* Effect.acquireRelease(
           Effect.sync(() => activation.listeners.add(listener)),
@@ -1269,24 +1268,24 @@ export const activationOwner = ({
   }
 
   /**
-   * Whether the effect is still open: one indexed read of its outbox row per
-   * effect id per `EFFECT_CHECK_MS`. A row that is gone or no longer an effect
+   * Whether the job is still open: one indexed read of its outbox row per
+   * job id per `JOB_CHECK_MS`. A row that is gone or no longer a job
    * closes it for this activation.
    */
-  const checkEffect = (activation: Activation, message: ProgressDelivery, at: number) =>
+  const checkJob = (activation: Activation, message: ProgressDelivery, at: number) =>
     Effect.gen(function* () {
-      const current = activation.progress.get(message.effectId)
+      const current = activation.progress.get(message.jobId)
 
-      if (current !== undefined && (!current.open || at - current.checkedAt < EFFECT_CHECK_MS))
+      if (current !== undefined && (!current.open || at - current.checkedAt < JOB_CHECK_MS))
         return current
 
-      const failed = activation.checkFailed.get(message.effectId)
+      const failed = activation.checkFailed.get(message.jobId)
 
-      if (failed !== undefined && at - failed < EFFECT_CHECK_RETRY_MS) return undefined
+      if (failed !== undefined && at - failed < JOB_CHECK_RETRY_MS) return undefined
 
       const sql = yield* SqlClient.SqlClient
       const actor = actorRow({ sql, actor: activation })
-      activation.checking.add(message.effectId)
+      activation.checking.add(message.jobId)
 
       const read = yield* sql<{
         kind: string
@@ -1296,34 +1295,34 @@ export const activationOwner = ({
         payload: string
       }>`SELECT kind, attempts, cancelled_at_ms IS NOT NULL AS cancelled, caller, payload
           FROM actor_outbox
-          WHERE ${actor} AND intent_id = ${message.effectId}`.pipe(
-        Effect.ensuring(Effect.sync(() => activation.checking.delete(message.effectId))),
+          WHERE ${actor} AND intent_id = ${message.jobId}`.pipe(
+        Effect.ensuring(Effect.sync(() => activation.checking.delete(message.jobId))),
         Effect.exit,
       )
 
       if (Exit.isFailure(read)) {
-        activation.checkFailed.set(message.effectId, at)
+        activation.checkFailed.set(message.jobId, at)
 
         return undefined
       }
 
-      activation.checkFailed.delete(message.effectId)
-      const closedMeanwhile = activation.progress.get(message.effectId)
+      activation.checkFailed.delete(message.jobId)
+      const closedMeanwhile = activation.progress.get(message.jobId)
 
       if (closedMeanwhile !== undefined && !closedMeanwhile.open) return closedMeanwhile
 
       const [row] = read.value
 
       if (row === undefined || row.kind !== "job" || row.cancelled) {
-        const closed = closedEffect(at)
-        activation.progress.set(message.effectId, closed)
+        const closed = closedJob(at)
+        activation.progress.set(message.jobId, closed)
 
         return closed
       }
 
       if (row.attempts < message.attempt) return undefined
 
-      const stored = activation.progress.get(message.effectId)
+      const stored = activation.progress.get(message.jobId)
 
       if (stored !== undefined && stored.open) {
         stored.checkedAt = at
@@ -1332,7 +1331,7 @@ export const activationOwner = ({
         return stored
       }
 
-      const checked: EffectProgress = {
+      const checked: JobProgress = {
         open: true,
         checkedAt: at,
         touchedAt: at,
@@ -1343,14 +1342,13 @@ export const activationOwner = ({
         holders: new Set(),
       }
 
-      activation.progress.set(message.effectId, checked)
+      activation.progress.set(message.jobId, checked)
 
       return checked
     })
 
-  const after = (message: ProgressDelivery, effect: EffectProgress) =>
-    message.attempt > effect.attempt ||
-    (message.attempt === effect.attempt && message.seq > effect.seq)
+  const after = (message: ProgressDelivery, job: JobProgress) =>
+    message.attempt > job.attempt || (message.attempt === job.attempt && message.seq > job.seq)
 
   /**
    * Admits one executor progress frame and forwards it through this
@@ -1366,7 +1364,7 @@ export const activationOwner = ({
         message.ref.tenant !== ref.tenant ||
         message.ref.actor !== ref.actor ||
         message.ref.id !== ref.id ||
-        !wanted.has(message.effect)
+        !wanted.has(message.job)
       )
         return
 
@@ -1375,12 +1373,12 @@ export const activationOwner = ({
       if (at - activation.progressSweptAt >= PROGRESS_RECORD_MS) {
         activation.progressSweptAt = at
 
-        for (const [effectId, record] of activation.progress)
-          if (at - record.touchedAt >= PROGRESS_RECORD_MS) activation.progress.delete(effectId)
+        for (const [jobId, record] of activation.progress)
+          if (at - record.touchedAt >= PROGRESS_RECORD_MS) activation.progress.delete(jobId)
       }
 
       if (at > message.leaseUntil + PROGRESS_SKEW_MS) return
-      const known = activation.progress.get(message.effectId)
+      const known = activation.progress.get(message.jobId)
 
       if (known !== undefined && (!known.open || !after(message, known))) return
 
@@ -1388,18 +1386,18 @@ export const activationOwner = ({
 
       yield* acquire(activation)
       yield* load(activation)
-      const effect = yield* checkEffect(activation, message, at)
+      const job = yield* checkJob(activation, message, at)
 
-      if (effect === undefined) return
+      if (job === undefined) return
 
       yield* activation.flush.withPermit(
         Effect.gen(function* () {
-          if (activation.progress.get(message.effectId) !== effect) return
+          if (activation.progress.get(message.jobId) !== job) return
 
-          if (!effect.open || !after(message, effect)) return
-          effect.attempt = message.attempt
-          effect.seq = message.seq
-          effect.touchedAt = at
+          if (!job.open || !after(message, job)) return
+          job.attempt = message.attempt
+          job.seq = message.seq
+          job.touchedAt = at
 
           const perChannel = new Map<Channel, Map<string, Array<string>>>()
 
@@ -1408,9 +1406,9 @@ export const activationOwner = ({
 
             if (
               wants === undefined ||
-              !wants.effects.has(message.effect) ||
+              !wants.jobs.has(message.job) ||
               row.buffered !== undefined ||
-              (wants.to === "performer" && !samePrincipal(principal(row.caller), effect.principal))
+              (wants.to === "principal" && !samePrincipal(principal(row.caller), job.principal))
             )
               continue
 
@@ -1421,7 +1419,7 @@ export const activationOwner = ({
           }
 
           for (const [channel, members] of perChannel) {
-            effect.holders.add(`${channel.holder}|${channel.epoch}`)
+            job.holders.add(`${channel.holder}|${channel.epoch}`)
             yield* send(
               activation,
               channel,
@@ -1429,8 +1427,8 @@ export const activationOwner = ({
                 HolderItem.cases.Progress.make({
                   member,
                   to,
-                  effect: message.effect,
-                  effectId: message.effectId,
+                  job: message.job,
+                  jobId: message.jobId,
                   attempt: message.attempt,
                   seq: message.seq,
                   frame: message.frame,
@@ -1441,12 +1439,12 @@ export const activationOwner = ({
 
           for (const listener of activation.listeners)
             if (
-              listener.tag === message.effect &&
-              (listener.effectId === undefined || listener.effectId === message.effectId)
+              listener.tag === message.job &&
+              (listener.jobId === undefined || listener.jobId === message.jobId)
             )
               Queue.offerUnsafe(listener.queue, {
-                effectId: message.effectId,
-                effect: effect.payload,
+                jobId: message.jobId,
+                job: job.payload,
                 attempt: message.attempt,
                 seq: message.seq,
                 frame: message.frame,
@@ -1456,21 +1454,21 @@ export const activationOwner = ({
     }).pipe(Effect.catchCause((cause) => Effect.logDebug("Progress frame dropped", cause)))
 
   /**
-   * Closes an effect's progress on this activation, once its route turn (whose
-   * command id is the effect id) commits or its settle is reported: holders
+   * Closes a job's progress on this activation, once its route turn (whose
+   * command id is the job id) commits or its settle is reported: holders
    * that received its progress discard what they still buffer, before the
    * route's own broadcasts.
    */
-  const closeProgress = (activation: Activation, effectId: string) =>
+  const closeProgress = (activation: Activation, jobId: string) =>
     Effect.suspend(() => {
-      const effect = activation.progress.get(effectId)
+      const job = activation.progress.get(jobId)
 
-      if (effect === undefined && !activation.checking.has(effectId)) return Effect.void
+      if (job === undefined && !activation.checking.has(jobId)) return Effect.void
 
       return activation.flush.withPermit(
         Effect.gen(function* () {
-          const current = activation.progress.get(effectId)
-          activation.progress.set(effectId, closedEffect(yield* now))
+          const current = activation.progress.get(jobId)
+          activation.progress.set(jobId, closedJob(yield* now))
 
           if (current === undefined || !current.open) return
 
@@ -1480,7 +1478,7 @@ export const activationOwner = ({
             const channel = activation.channels.get(name)
 
             if (channel !== undefined)
-              yield* send(activation, channel, [HolderItem.cases.ProgressEnd.make({ effectId })])
+              yield* send(activation, channel, [HolderItem.cases.ProgressEnd.make({ jobId })])
           }
         }),
       )
@@ -1488,13 +1486,13 @@ export const activationOwner = ({
 
   const progressClosed = (
     activation: Activation,
-    message: { readonly ref: ActorRef; readonly effectId: string; readonly attempt: number },
+    message: { readonly ref: ActorRef; readonly jobId: string; readonly attempt: number },
   ) => {
-    const effect = activation.progress.get(message.effectId)
+    const job = activation.progress.get(message.jobId)
 
-    return effect !== undefined && message.attempt < effect.attempt
+    return job !== undefined && message.attempt < job.attempt
       ? Effect.void
-      : closeProgress(activation, message.effectId)
+      : closeProgress(activation, message.jobId)
   }
 
   const hibernate = (entityId: string) =>

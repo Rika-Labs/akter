@@ -153,9 +153,9 @@ export interface ConnectionResult {
 /** A connection member bound to its handler. */
 export interface RegisteredConnection {
   readonly stampCursor: boolean
-  /** Effect tags whose progress this member receives, and its audience. */
+  /** Job tags whose progress this member receives, and its audience. */
   readonly progress:
-    | { readonly effects: ReadonlySet<string>; readonly to: "performer" | "all" }
+    | { readonly jobs: ReadonlySet<string>; readonly to: "principal" | "all" }
     | undefined
   readonly hasResync: boolean
   /** Fails with an encoded declared error only while opening. */
@@ -178,18 +178,18 @@ export interface StreamInput {
     tag: string,
     after: string | undefined,
   ) => Stream.Stream<StoredEvent, UnknownCursor | RetentionGap>
-  /** Accepted progress of one effect tag from now on; empty for a tag the member does not list. */
-  readonly progress: (tag: string, effectId: string | undefined) => Stream.Stream<StoredProgress>
+  /** Accepted progress of one job tag from now on; empty for a tag the member does not list. */
+  readonly progress: (tag: string, jobId: string | undefined) => Stream.Stream<StoredProgress>
 }
 
 /** One accepted progress frame, still encoded. */
 export interface StoredProgress {
-  readonly effectId: string
-  /** The effect's encoded input, as performed. */
-  readonly effect: string
+  readonly jobId: string
+  /** The job's encoded payload, as enqueued. */
+  readonly job: string
   readonly attempt: number
   readonly seq: number
-  /** The frame, JSON-encoded under the effect's progress schema. */
+  /** The frame, JSON-encoded under the job's progress schema. */
   readonly frame: string
 }
 
