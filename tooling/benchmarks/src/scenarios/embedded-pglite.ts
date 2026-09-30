@@ -53,8 +53,7 @@ export const embeddedPglite: Scenario = {
     "Warm turns, wakes after hibernation, and 16-caller throughput with 0 to 100,000 stored actors seeded into the database; run with --backend pglite-file for file-backed PGlite.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const sizes = quick ? [0, 1_000, 10_000] : [0, 10_000, 100_000]
+      const sizes = context.quick ? [0, 1_000, 10_000] : [0, 10_000, 100_000]
       const results: Array<CaseResult> = []
 
       for (const stored of sizes) {
@@ -70,7 +69,7 @@ export const embeddedPglite: Scenario = {
                 parameters: { workers: 1, stored },
                 instruments,
                 workers: 1,
-                operations: quick ? 200 : 2_000,
+                operations: context.quick ? 200 : 2_000,
                 operation: () => probe.Add(1),
               })
 
@@ -86,7 +85,7 @@ export const embeddedPglite: Scenario = {
           yield* context.withRuntime({}, (instruments) =>
             Effect.gen(function* () {
               yield* seed(stored)
-              const actors = quick ? 50 : 300
+              const actors = context.quick ? 50 : 300
 
               const wake = (index: number) =>
                 SleepyProbe.get(`embedded-wake-${index}`).pipe(
@@ -134,7 +133,7 @@ export const embeddedPglite: Scenario = {
                 parameters: { workers: 16, stored, actors },
                 instruments,
                 workers: 16,
-                operations: quick ? 1_000 : 10_000,
+                operations: context.quick ? 1_000 : 10_000,
                 operation: add,
               })
 

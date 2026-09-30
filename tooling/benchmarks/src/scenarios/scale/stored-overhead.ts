@@ -86,9 +86,8 @@ export const storedOverhead: Scenario = {
   description: `Relation and index bytes per stored actor after n first turns (Probe, one Add each, ${WORKERS} callers), split by table, with the receipt each turn leaves reported per turn.`,
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const postgres = context.backend.name === "postgres"
-      const counts = quick ? [1000] : postgres ? [10_000, 100_000] : [10_000]
+      const counts = context.quick ? [1000] : postgres ? [10_000, 100_000] : [10_000]
       const results: Array<CaseResult> = []
 
       for (const actors of counts)
