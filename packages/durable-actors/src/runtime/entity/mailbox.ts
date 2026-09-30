@@ -14,6 +14,29 @@ export const BATCH_CAP = 32
  */
 export const MERGE_CAP = 1024
 
+/**
+ * The most command ids an activation keeps to run alone after a failed batch.
+ * An id leaves the set when its retry is taken, and a caller that never
+ * retries would otherwise leave it for the activation's lifetime. Past the
+ * cap the oldest go first: an evicted id's late retry may join a batch again,
+ * which a retryable failure makes safe.
+ */
+export const ALONE_CAP = BATCH_CAP * 32
+
+/** Adds `ids` to `alone` as its newest entries, then drops the oldest past `ALONE_CAP`. */
+export const markAlone = (alone: Set<string>, ids: Iterable<string>) => {
+  for (const id of ids) {
+    alone.delete(id)
+    alone.add(id)
+  }
+
+  for (const oldest of alone) {
+    if (alone.size <= ALONE_CAP) return
+
+    alone.delete(oldest)
+  }
+}
+
 /** A waiting command, and whether its reducer merges with its neighbours. */
 interface Mergeable {
   readonly request: Request
