@@ -33,7 +33,7 @@ import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
-import { takeBatch } from "./mailbox.ts"
+import { markAlone, takeBatch } from "./mailbox.ts"
 import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
 import { activationOwner, type Authorize } from "../connections/owner.ts"
 import { TenantScope } from "../database/tenancy.ts"
@@ -130,7 +130,9 @@ const restarts = new WeakMap<Scope.Scope, number>()
 
 /**
  * Per entity scope, the command ids of a batch a retryable defect aborted;
- * they outlive the handler the defect rebuilt, so each runs alone once.
+ * they outlive the handler the defect rebuilt, so each runs alone once. The
+ * set is bounded by `ALONE_CAP`, so ids whose callers never retry do not
+ * accumulate.
  */
 const aloneAfterFailure = new WeakMap<Scope.Scope, Set<string>>()
 
@@ -785,7 +787,7 @@ export const registerActor = Effect.fnUntraced(function* (
         Effect.fnUntraced(function* ({ batch, orphan, cause, committed }) {
           if (committed || retryable(cause)) {
             if (!committed && batch.length > 1)
-              for (const { request } of batch) alone.add(request.commandId)
+              markAlone({ alone, ids: batch.map(({ request }) => request.commandId) })
 
             if (committed || lost) return yield* restart([...batch, ...(orphan ?? [])], cause)
 
