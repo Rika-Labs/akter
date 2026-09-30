@@ -5,10 +5,8 @@
  *   bun run start
  */
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Console, Effect, Layer, Option, Schedule } from "effect"
-import { authorize } from "./account/authorize.ts"
 import { Account, AccountId } from "./account/contract.ts"
 import { fakeGateway, ledger } from "./account/gateway.ts"
 import { AccountLive } from "./account/layer.ts"
@@ -22,7 +20,7 @@ const DatabaseLive = Layer.unwrap(
 
 const live = AccountLive.pipe(
   Layer.provide(fakeGateway(ledger())),
-  Layer.provideMerge(Actors.layer({ authorize })),
+  Layer.provideMerge(Actors.layer()),
   Layer.provide(DatabaseLive),
   Layer.provide(BunCrypto.layer),
 )
@@ -54,7 +52,7 @@ const program = Effect.gen(function* () {
   yield* Console.log("globex before a new card", yield* globex.Invoices())
   yield* globex.UpdateCard("tok_visa")
   yield* Console.log("globex", yield* invoicesUntil(globex, (s) => s.includes("paid")))
-}).pipe(Actor.as(User.make({ subject: "billing-demo" })))
+})
 
 Layer.effectDiscard(program).pipe(
   Layer.provide(live),

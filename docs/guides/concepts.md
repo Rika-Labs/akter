@@ -64,7 +64,7 @@ A turn cannot call another actor and wait, or call an external service. It stage
 
 ## Callers and authorization
 
-Every call carries a caller: a `User`, `Anonymous`, or a `System` caller for framework deliveries. `Actors.layer({ authorize })` requires an authorization callback, which sees the caller, the target actor, and the command before the turn runs. `Actor.as(caller)` and `Actor.tenant(tenant)` set the caller and tenant around acquiring a handle; `Actor.serve` sets them from the request. A retried command is authorized again. See [security](../contracts/10-security.md).
+Every call carries a caller: a `User`, `Anonymous`, or a `System` caller. The transport decides who the caller is and which tenant; actors decide what is allowed; ordinary code names neither. Code in your own process runs as `System({ source: "process" })` in tenant `"default"`, framework deliveries carry `System` attribution, and `Actor.serve` sets the caller and tenant from the request. An actor's `access` policy on `Actor.make` sees the caller, the actor, the command, and the kind of request before anything runs; an optional global `authorize` on `Actors.layer` must allow too. With neither, `System` callers are allowed and `User` and `Anonymous` callers are denied, so a served actor is closed until it declares `access` (`Actor.access.public` opens it to anyone, for demos). `Actor.as(caller)` and `Actor.tenant(tenant)` are for trusted code acting on behalf of a user or tenant. A retried command is authorized again. See [security](../contracts/10-security.md).
 
 ## Where actors run
 

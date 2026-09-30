@@ -71,7 +71,7 @@ To opt in:
 
    `durable_views` must not be a superuser or have `BYPASSRLS`, must not own a table with RLS on, and must not be granted to `durable_tenant`. Otherwise the views would ignore the policies, or the role that runs turns could alter or drop a view.
 
-3. Start every runner with `Actors.layer({ authorize, rowLevelSecurity: { role: "durable_tenant" } })`.
+3. Start every runner with `Actors.layer({ rowLevelSecurity: { role: "durable_tenant" } })`.
 
 Command turns, queries, and every read that serves a caller outside a turn (feed pages, workflow polls, and the reads a stream or connection handler makes) then run as `durable_tenant` with their actor's tenant set, and the inspection views return only the tenant the reader's transaction names. The relay, executors, retention, and other cross-tenant framework work keep the connecting role. With the option on, each query or read outside a turn costs a transaction (`BEGIN`, the tenant settings, `COMMIT`); turns cost nothing more.
 

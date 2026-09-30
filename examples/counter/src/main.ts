@@ -1,21 +1,11 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Console, Effect, Layer, Schema } from "effect"
+import { Config, Console, Effect, Layer } from "effect"
 import { Counter } from "./counter/contract.ts"
 import { CounterLive } from "./counter/layer.ts"
 
 const live = CounterLive.pipe(
-  Layer.provideMerge(
-    Actors.layer({
-      authorize: ({ caller, ref }) =>
-        Effect.succeed(
-          Schema.is(User)(caller) &&
-            caller.subject === "counter-demo" &&
-            ref.tenant === "counter-demo",
-        ),
-    }),
-  ),
+  Layer.provideMerge(Actors.layer()),
   Layer.provide(
     Layer.unwrap(Effect.map(Config.Redacted("DATABASE_URL"), (url) => Database.postgres({ url }))),
   ),
@@ -23,10 +13,7 @@ const live = CounterLive.pipe(
 )
 
 const program = Effect.gen(function* () {
-  const counter = yield* Counter.get("visits").pipe(
-    Actor.tenant("counter-demo"),
-    Actor.as(User.make({ subject: "counter-demo" })),
-  )
+  const counter = yield* Counter.get("visits")
 
   const increment = counter.Increment(1)
   const committed = yield* increment

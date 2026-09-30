@@ -7,7 +7,7 @@
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actor, Unauthorized, User } from "@durable-actors/core"
 import { Actors, Database } from "@durable-actors/core/runtime"
-import { Config, Effect, Layer, Option, Schema } from "effect"
+import { Config, Effect, Layer, Option } from "effect"
 import { Headers, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { Counter } from "../counter/contract.ts"
 import { CounterLive } from "../counter/layer.ts"
@@ -36,14 +36,7 @@ const demoAuth = Actor.auth.make((request) =>
 
 const api = Actor.serve({ actors: [Counter], auth: demoAuth, basePath: "/api" })
 
-const actors = CounterLive.pipe(
-  Layer.provideMerge(
-    Actors.layer({
-      authorize: ({ caller, ref }) =>
-        Effect.succeed(Schema.is(User)(caller) && ref.tenant === "counter-demo"),
-    }),
-  ),
-)
+const actors = CounterLive.pipe(Layer.provideMerge(Actors.layer()))
 
 /** The pages' scripts, bundled for browsers from their entry files once at startup, and their HTML. */
 const pages = HttpRouter.use(
