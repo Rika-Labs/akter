@@ -148,6 +148,7 @@ const program = Effect.gen(function* () {
       [staged.name]: `file:${path.join(tarballs, tarball)}`,
       ...staged.peerDependencies,
       "@effect/platform-bun": pinned("@effect/platform-bun"),
+      "@effect/platform-node-shared": pinned("@effect/platform-node-shared"),
     },
     devDependencies: {
       "@types/bun": pinned("@types/bun"),
