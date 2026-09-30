@@ -984,6 +984,7 @@ const make = <
         `Actor ${name} mints its ids and cannot adopt table ${info.name}: legacy rows carry ids it never minted`,
       )
     info.owner = name
+    info.placement = placement
   }
 
   const events = new Map<string, EventClass>()

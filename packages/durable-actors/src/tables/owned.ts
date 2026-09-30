@@ -148,6 +148,8 @@ export interface Ownership {
   readonly actorKey: string
   readonly tenantKind: MappedKind
   readonly actorKind: MappedKind
+  /** The owning actor type's placement; set with `owner`. */
+  placement: Placement | undefined
 }
 
 /**
@@ -457,6 +459,7 @@ const adopt = (
     columns: Object.keys(columns).filter((key) => key !== routingKey),
     primaryKey,
     owner: undefined,
+    placement: undefined,
     adopted: true,
     access,
     ownerKeys,
@@ -647,6 +650,7 @@ export const table = <
     actorKey: "actor_id",
     tenantKind: "text",
     actorKind: "text",
+    placement: undefined,
   })
 
   if (!isOwned(source)) throw new Error(`Table ${name} did not take ownership`)

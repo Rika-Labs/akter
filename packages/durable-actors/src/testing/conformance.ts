@@ -58,6 +58,7 @@ import { clientConformance } from "./conformance/client.ts"
 import { offlineConformance } from "./conformance/offline.ts"
 import { mintConformance, mintLayer } from "./conformance/mint.ts"
 import { readYourWritesConformance } from "./conformance/read-your-writes.ts"
+import { fleetConformance } from "./conformance/fleet.ts"
 import { observabilityConformance } from "./conformance/observability.ts"
 import { OperatorRuntime } from "../runtime/operators/repair.ts"
 import { exportConformance } from "./conformance/export.ts"
@@ -301,6 +302,8 @@ export interface ConformanceBackend {
    * `registrar.skip`.
    */
   readonly neki?: boolean
+  /** True when the server runs `wal_level=logical`, which fleet views need. */
+  readonly logicalDecoding?: boolean
   /** Extra services merged into every test runtime, e.g. BunCrypto.layer. */
   readonly services: Layer.Layer<Crypto.Crypto, never, never>
   /**
@@ -377,6 +380,8 @@ export interface ConformanceCase {
   readonly requiresEdge?: boolean
   /** Requires `backend.neki`; every other backend registers the case through `registrar.skip`. */
   readonly requiresNeki?: boolean
+  /** Requires a server with `wal_level=logical`; backends without one skip the case. */
+  readonly requiresLogicalDecoding?: boolean
   readonly run: (ctx: ConformanceContext) => Promise<void>
   readonly timeoutMs?: number
 }
@@ -1544,6 +1549,7 @@ export const conformanceGroups = {
   adoption: adoptionConformance,
   singleShard: singleShardConformance,
   crossShardOutbox: crossShardOutboxConformance,
+  fleet: fleetConformance,
 } satisfies Record<string, ReadonlyArray<ConformanceCase>>
 
 export type ConformanceGroup = keyof typeof conformanceGroups
@@ -1762,7 +1768,8 @@ export const describeConformance = (options: {
           backend.independentConnections === false) ||
         (conformanceCase.requiresReplica === true && backend.hasReplica !== true) ||
         (conformanceCase.requiresEdge === true && backend.edge === undefined) ||
-        (conformanceCase.requiresNeki === true && backend.neki !== true)
+        (conformanceCase.requiresNeki === true && backend.neki !== true) ||
+        (conformanceCase.requiresLogicalDecoding === true && backend.logicalDecoding !== true)
       ) {
         registrar.skip(conformanceCase.name)
         continue

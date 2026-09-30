@@ -94,6 +94,9 @@ import { committedReads } from "./queries.ts"
 import { servingReadiness } from "./readiness.ts"
 import { actorRegistration } from "./registration.ts"
 import { startSweeps } from "./sweeps.ts"
+import type { AnyFleetView } from "../tables/fleet.ts"
+import { checkFleet } from "./fleet/checks.ts"
+import { maintain } from "./fleet/maintainer.ts"
 
 /** Configuration for `Actors.layer`: authorization, actor and effect layers, timing, retention, and row-level security. */
 export interface Options {
@@ -217,6 +220,13 @@ export interface Options {
   readonly adoption?: {
     readonly role: string
   }
+  /**
+   * The fleet views this runtime maintains and serves. They need Postgres with
+   * `wal_level=logical`, a login with `REPLICATION`, and `durable fleet setup`;
+   * startup refuses otherwise, and PGlite refuses any view. One runner at a
+   * time maintains them, off the turn path.
+   */
+  readonly fleet?: ReadonlyArray<AnyFleetView>
 }
 
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1_000_000 }))
@@ -962,6 +972,22 @@ export const layer = (options: Options = {}) => {
       ).pipe(Effect.provideService(ProgressSink, progressSink))
 
       yield* relay.run.pipe(Effect.forkIn(scope))
+
+      if (options.fleet !== undefined && options.fleet.length > 0) {
+        if (Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient)))
+          return yield* Effect.die(
+            new Error(
+              "Fleet.view needs Postgres with wal_level=logical; PGlite has no logical replication",
+            ),
+          )
+
+        const views = yield* checkFleet(options.fleet, options.rowLevelSecurity?.role).pipe(
+          Effect.provideContext(services),
+          Effect.orDie,
+        )
+
+        yield* maintain(views).pipe(Effect.provideContext(services), Effect.forkIn(scope))
+      }
 
       const { cleanup, sweeping, sample } = yield* startSweeps({
         registrations,

@@ -14,6 +14,7 @@ import { discardCommand, retryCommand } from "./commands/dead-letters/repair.ts"
 import { listCommand as defectsListCommand } from "./commands/defects/list.ts"
 import { devCommand } from "./commands/dev/run.ts"
 import { exportCommand } from "./commands/export/run.ts"
+import { rebuildCommand, setupCommand } from "./commands/fleet/run.ts"
 import { inspectCommand } from "./commands/inspect/show.ts"
 import { checkCommand as payloadsCheckCommand, clearCommand } from "./commands/payloads/run.ts"
 import { showCommand } from "./commands/receipts/show.ts"
@@ -60,6 +61,10 @@ export const durable = Command.make("durable").pipe(
             releaseCommand,
           ],
         ),
+        group("fleet", "Set up fleet views' change feed and rebuild a view from its source", [
+          setupCommand,
+          rebuildCommand,
+        ]),
       ],
     },
     {

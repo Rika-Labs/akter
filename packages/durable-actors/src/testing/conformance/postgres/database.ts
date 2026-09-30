@@ -94,6 +94,8 @@ export interface PostgresBackendOptions {
   readonly replicaUrl?: string | undefined
   /** The server is a Neki router: turn sessions run single, and the Neki cases run. */
   readonly neki?: boolean
+  /** The server runs `wal_level=logical`, so the fleet cases run. */
+  readonly logicalDecoding?: boolean
 }
 
 /**
@@ -108,6 +110,7 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
   independentConnections: true,
   hasReplica: options.replicaUrl !== undefined,
   neki: options.neki === true,
+  logicalDecoding: options.logicalDecoding === true,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>

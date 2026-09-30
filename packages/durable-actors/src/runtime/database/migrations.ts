@@ -885,6 +885,25 @@ export const migrations = {
       END
       $$`)
   }),
+  /**
+   * Per-view state of the fleet maintainer: its source, the hash of the
+   * definition that built its rows, its status, and how far it has applied
+   * the change feed. Framework state without a tenant, like `actor_tables`,
+   * so it carries no policy and no `durable` view.
+   */
+  "0025_fleet": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE actor_fleet_views (
+        view_name text PRIMARY KEY,
+        source_schema text NOT NULL,
+        source_table text NOT NULL,
+        definition_hash text NOT NULL,
+        status text NOT NULL CHECK (status IN ('building', 'ready', 'stale')),
+        applied_lsn numeric,
+        updated_at_ms bigint NOT NULL,
+        last_error text
+      )`
+  }),
 }
 
 /**

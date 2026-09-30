@@ -162,6 +162,44 @@ const inAQuery = Effect.gen(function* () {
 
 The builder gets only `select` and `selectDistinct`, and its select is only read: the framework rebuilds every expression from values read once (fresh text chunks, parameters holding copied plain data, and the real columns of the query's tables) and runs that on a fresh select of its own, so getters, proxies, or hidden `getSQL` members on the caller's objects never render. The base table and every joined table must be owned tables that some actor type of this runtime lists in `tables` and that passed the startup check (not aliases, and never a table merely wrapped with `Actor.table`); the framework adds `routing_key = <group> AND tenant_id = <tenant>` to the base table's `WHERE` and to each join's `ON`. Only inner and left joins are supported. Expressions in the selection, `where`, `having`, `orderBy`, `groupBy`, and `ON` may use business columns, plain values, and Drizzle's comparison, boolean, pattern, null, and aggregate operators, and each must balance its parentheses, so the framework's parenthesized scope predicate cannot be closed from inside. Ownership columns cannot be selected or filtered (so `db.select()` without fields is rejected); raw SQL text beyond operator words, table references, subqueries, identifiers, SQL-valued parameters, set operators, `WITH`, locking clauses, lateral joins, placeholders, and `DISTINCT ON` are rejected. Fleet-wide reads are the target `Fleet.view` definitions of [ADR 0056](../decisions/0056-fleet-views.md), not implemented yet.
 
+## Fleet views
+
+A read across every actor of a tenant, beyond one placement group, is a declared fleet view ([ADR 0056](../decisions/0056-fleet-views.md)). It is a group-by over one owned table of a tenant-placed actor type, kept up to date outside every turn from the database's change feed:
+
+<!-- snippet file=fleet.ts
+import { Actor } from "@durable-actors/core"
+import { Actors } from "@durable-actors/core/runtime"
+import { Effect } from "effect"
+import { bigint, boolean, pgTable, text } from "drizzle-orm/pg-core"
+const OrderRows = Actor.table(pgTable("orders", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull(),
+  amountCents: bigint("amount_cents", { mode: "number" }).notNull(),
+  archived: boolean("archived").notNull(),
+}))
+const authorize = () => Effect.succeed(true)
+-->
+
+```ts
+import { Fleet } from "@durable-actors/core"
+
+const OrdersByStatus = Fleet.view("OrdersByStatus", {
+  from: OrderRows,
+  where: { archived: false },
+  groupBy: ["status"],
+  select: { orders: Fleet.count(), total: Fleet.sum("amountCents") },
+})
+
+Actors.layer({ authorize, fleet: [OrdersByStatus] })
+```
+
+- `from` may be an adopted table ([ADR 0054](../decisions/0054-existing-schema-adoption.md)) with `access: "write"`: the view reads its mapped tenant column and its `routing_key`, so rows are counted once backfilled, and legacy writers' changes reach the view through the WAL. A read-only adoption has no `routing_key` and is refused.
+- `where` is the scoped-read filter algebra; `groupBy` names business columns, which must be `NOT NULL`; `select` names aggregates. `Fleet.count()` and `Fleet.sum(column)` are `bigint` (a sum takes an integer column, and a sum past the `bigint` range poisons the view), `Fleet.avg(column)` is `double precision` over a numeric column, and `Fleet.min` and `Fleet.max` keep the column's type and are null when every value is. Joins, SQL, and cross-tenant views are not offered.
+- `OrdersByStatus.table` is the derived Drizzle table, `fleet_<snake_case name>` in the source's schema: `tenant_id`, the group columns, the aggregates, and `as_of` (the change-feed position of the batch that last wrote the row), keyed by `(tenant_id, …group columns)` and carrying the `durable_tenant` policy. Put it in the drizzle-kit schema. The maintainer is its only writer; plain SQL may read it, outside `authorize`.
+- The source needs an index leading with `(routing_key, tenant_id, …group columns)`, so recomputing a group is one indexed read. `Actor.table` prefixes its own indexes with `actor_id` as well, so create this one with a hand-written migration; startup refuses without it and prints the `CREATE INDEX`.
+- A view is eventually consistent: it reflects committed changes only, each group at or after its last applied change. `actor_fleet_views` shows each view's `status` (`building`, `ready`, or `stale`), `applied_lsn` (comparable with a command's `durable-version`: once `applied_lsn` is at least the token, the view has seen that command), and `last_error`.
+- Views need Postgres with `wal_level=logical`, a login with `REPLICATION`, and `durable fleet setup`; see [deployment](../operations/01-deployment.md#fleet-views). PGlite refuses `fleet` at layer build.
+
 ## Transactions and backends
 
 Writes use `drizzle-orm/effect-postgres` (or `drizzle-orm/effect-pglite`) on the framework's own `PgClient`/`PgliteClient`, joining the turn's transaction connection; there is no second pool. Successful business changes commit with the receipt; an unhandled declared failure rolls them back while retaining the terminal failure receipt. A turn that cannot find its transaction connection refuses to write.

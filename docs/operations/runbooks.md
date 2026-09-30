@@ -49,3 +49,10 @@ A drain does not hand the runner's shards to the others; its process exit does. 
 Do not leave a drained runner running, and do not restart it because it answers `503`. If the process is killed instead of exiting, the other runners take its shards only after its locks expire. A drain of one runner is not the deployment-wide quiescence that [restore](04-backup-restore.md) needs.
 
 Never delete receipts, generation rows, messages, outbox rows, or dead letters as a first-line fix. Escalate with trace ids, command ids, SQL evidence, deployed versions, and the exact recovery test.
+
+## Fleet views
+
+- **A view is `stale` with `last_error`.** A recompute failed deterministically, for example a `sum` past the `bigint` range. Its other groups stopped advancing and every other view continues. Fix the data or the definition, then run `durable fleet rebuild <View> --database-url <url>`: the view goes back to `building` and the maintainer rebuilds it from its source while writes continue.
+- **Every view is `stale` without an error.** The slot was dropped or invalidated (`wal_status = 'lost'` in `pg_replication_slots`, usually after `max_slot_wal_keep_size`). Run `durable fleet setup` again: it recreates the slot, and the maintainer rebuilds every view.
+- **Retained WAL grows.** No runner holds `durable-actors/fleet`, or the maintainer cannot keep up. Check `pg_replication_slots` for `durable_fleet` and `pg_locks` for the advisory lock, and alert on `pg_current_wal_lsn() - confirmed_flush_lsn` of the slot. Dropping the slot releases the WAL and marks every view stale; `durable fleet setup` then rebuilds them.
+- **A definition changed.** Startup marks the view `stale` and the maintainer rebuilds it; a newly registered view starts `building` and builds from the existing rows.
