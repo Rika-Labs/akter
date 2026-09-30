@@ -14,7 +14,6 @@ import {
   ManagedRuntime,
   Option,
   Predicate,
-  Redacted,
   Schedule,
   Schema,
   Stream,

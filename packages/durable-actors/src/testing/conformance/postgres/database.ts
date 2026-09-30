@@ -1,5 +1,5 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect"
+import { Crypto, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect"
 import type { Config } from "effect"
 import { Pool } from "pg"
 import type { ConformanceBackend, ConformanceDatabase } from "../../conformance.ts"
@@ -45,12 +45,13 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
     harness.runPromise(
       Effect.gen(function* () {
         const url = Redacted.make(yield* options.url)
+        const crypto = yield* Crypto.Crypto
         const scope = yield* Scope.make("parallel")
 
         const provision = (prefix: "actors" | "isolated" | "restored", template?: string) =>
           disposableDatabase({ url, prefix, template }).pipe(
             Scope.provide(scope),
-            Effect.provide(BunCrypto.layer),
+            Effect.provideService(Crypto.Crypto, crypto),
           )
 
         const main = yield* provision("actors", options.template?.())
