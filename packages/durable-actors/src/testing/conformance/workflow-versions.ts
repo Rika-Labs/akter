@@ -731,6 +731,76 @@ export const workflowVersionsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     requiresIndependentConnections: true,
+    name: "workflow versions: a runner of an older deployment doesn't settle a step a newer deployment's start manifest retyped, even before it ran",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          const newer = yield* hashOf(RestedRelabelled)
+
+          const open = yield* deploy(
+            database,
+            Rested.layer,
+            Effect.gen(function* () {
+              const executionId = yield* sleeping(Rested, "o")
+              const sql = yield* SqlClient.SqlClient
+              const { manifest } = yield* manifestOf("Versioned", RestedRelabelled.Order)
+
+              yield* sql`INSERT INTO actor_workflow_manifests
+                (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+                SELECT 'Versioned', 'Order', ${newer}, ${toJson(manifest)}::jsonb, max(accepted_at_ms) + 1
+                FROM actor_workflow_manifests WHERE actor_type = 'Versioned'`.pipe(Effect.orDie)
+              yield* sql`UPDATE actor_workflow_executions SET manifest_hash = ${newer}
+                WHERE execution_id = ${executionId}`.pipe(Effect.orDie)
+
+              yield* ActorTest.use((test) => test.advance("61 seconds"))
+              yield* Effect.sleep("200 millis")
+              expect(yield* status(executionId)).toBe("suspended")
+
+              const [row] = yield* sql<{ manifest_hash: string; label: number }>`SELECT
+                x.manifest_hash, (SELECT count(*)::int FROM actor_workflow_step s
+                  WHERE s.execution_id = x.execution_id AND s.step = 'label') AS label
+                FROM actor_workflow_executions x WHERE x.execution_id = ${executionId}`.pipe(
+                Effect.orDie,
+              )
+
+              expect(row).toEqual({ manifest_hash: newer, label: 0 })
+
+              return executionId
+            }),
+          )
+
+          expect(
+            yield* deploy(
+              database,
+              RestedRelabelled.layer,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                yield* ActorTest.use((test) => test.advance("2 minutes"))
+
+                yield* sql`SELECT 1 FROM actor_workflow_step
+                  WHERE execution_id = ${open} AND step = 'label' AND exit IS NOT NULL`.pipe(
+                  Effect.repeat({
+                    schedule: Schedule.spaced("25 millis"),
+                    until: (rows) => rows.length > 0,
+                  }),
+                  Effect.timeoutOrElse({
+                    duration: "30 seconds",
+                    orElse: () => Effect.die(new Error("Timed out waiting for the label step")),
+                  }),
+                  Effect.orDie,
+                )
+                yield* suspended(open)
+
+                return yield* finish(RestedRelabelled, open)
+              }),
+            ),
+          ).toBe("r-o:label:v0")
+        }),
+      ),
+  },
+  {
+    requiresIndependentConnections: true,
     name: "workflow versions: a start restores its start manifest when retention pruned it under a still-serving runner",
     run: ({ expect, environment }) =>
       environment.run(

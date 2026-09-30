@@ -46,8 +46,14 @@ import { databaseTime } from "../turn/admission.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import type { ActivationCache } from "../storage/generation.ts"
-import { changedSteps, decodeStoredManifest, missingSteps } from "./compatibility.ts"
-import { manifestOf, toJson } from "./manifest.ts"
+import {
+  decodeStoredManifest,
+  markerProblem,
+  recordedStepProblem,
+  type StartVerdict,
+  startVerdict,
+} from "./compatibility.ts"
+import { type Declared, manifestOf, toJson } from "./manifest.ts"
 
 /** A running activity re-arms its execution's timer this far ahead, so a lost runner's work resumes. */
 export const RECOVERY_MS = 30_000
@@ -529,56 +535,44 @@ export const activationEngine = (options: {
 
     const now = databaseTime
 
-    const startManifests = new Map<
-      string,
-      { readonly covered: boolean; readonly changed: ReadonlyArray<string> }
-    >()
+    const startVerdicts = new Map<string, StartVerdict>()
 
-    const coversStartManifest = (
-      workflow: RegisteredWorkflow,
-      hash: string,
-      settled: ReadonlySet<string>,
-    ) =>
+    /**
+     * The verdict on the manifest an execution started under, cached per hash
+     * for this activation. Unlike the startup check, it knows whether that
+     * manifest was accepted after this runner's own.
+     */
+    const startOf = (declared: Declared, workflow: RegisteredWorkflow, hash: string) =>
       Effect.gen(function* () {
-        const own = yield* manifestOf(ref.actor, workflow.member)
+        const known = hash === declared.hash ? undefined : startVerdicts.get(hash)
 
-        if (hash === own.hash) return true
-        let known = startManifests.get(hash)
+        if (hash === declared.hash || known !== undefined)
+          return known ?? startVerdict({ declared, hash, start: undefined, newer: false })
 
-        if (known === undefined) {
-          const [row] = yield* sql<{ manifest: string; newer: boolean }>`
-            SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
-              FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
-                AND o.manifest_hash = ${own.hash}), -1) AS newer
-            FROM actor_workflow_manifests m
-            WHERE m.actor_type = ${ref.actor} AND m.workflow = ${workflow.member.tag}
-              AND m.manifest_hash = ${hash}`
+        const [row] = yield* sql<{ manifest: string; newer: boolean }>`
+          SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
+            FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
+              AND o.manifest_hash = ${declared.hash}), -1) AS newer
+          FROM actor_workflow_manifests m
+          WHERE m.actor_type = ${ref.actor} AND m.workflow = ${workflow.member.tag}
+            AND m.manifest_hash = ${hash}`
 
-          if (row === undefined) known = { covered: false, changed: [] }
-          else {
-            const stored = yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie)
+        const verdict = startVerdict({
+          declared,
+          hash,
+          start:
+            row === undefined
+              ? undefined
+              : yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
+          newer: row?.newer === true,
+        })
 
-            const changed = changedSteps({
-              stored,
-              steps: new Map(own.manifest.steps.map((step) => [step.name, step])),
-            })
+        startVerdicts.set(hash, verdict)
 
-            known = {
-              covered:
-                missingSteps({ stored, steps: workflow.steps }).length === 0 &&
-                stored.input === own.manifest.input &&
-                (!row.newer || changed.length === 0),
-              changed,
-            }
-          }
-
-          startManifests.set(hash, known)
-        }
-
-        return known.covered && known.changed.every((name) => !settled.has(name))
+        return verdict
       })
 
-    /** An execution's recorded steps by slot, its version markers, and the steps that settled. */
+    /** An execution's recorded steps by slot and its version markers. */
     const readSteps = (executionId: string) =>
       Effect.gen(function* () {
         const rows = yield* sql<StepRow>`
@@ -590,72 +584,69 @@ export const activationEngine = (options: {
 
         const steps = new Map<string, StepRow>()
         const markers = new Map<string, number>()
-        const settledSteps = new Set<string>()
 
         for (const row of rows)
           if (row.kind === "version") markers.set(row.step, row.version!)
-          else {
-            steps.set(slot(row.step, row.attempt), row)
+          else steps.set(slot(row.step, row.attempt), row)
 
-            if (row.exit !== null) settledSteps.add(row.step)
-          }
-
-        return { steps, markers, settledSteps }
+        return { steps, markers }
       })
 
     /**
-     * Whether this runner can replay an execution: its start manifest is
-     * covered, its markers are within range and all known, and every recorded
-     * step is registered with the same kind.
+     * Why this runner cannot replay an execution, empty when it can, and the
+     * steps whose result schemas differ from its start manifest's. Every
+     * recorded step, settled or pending, has to be registered as the same kind.
      */
-    const replayable = (
+    const compatibility = (
       workflow: RegisteredWorkflow,
       execution: ExecutionRow,
       recorded: Effect.Success<ReturnType<typeof readSteps>>,
     ) =>
-      Effect.map(
-        coversStartManifest(workflow, execution.manifest_hash, recorded.settledSteps),
-        (covered) =>
-          covered &&
-          Object.entries(workflow.member.versions).every(([name, range]) => {
-            const value = recorded.markers.get(name) ?? 0
+      Effect.gen(function* () {
+        const declared = yield* manifestOf(ref.actor, workflow.member)
+        const start = yield* startOf(declared, workflow, execution.manifest_hash)
+        const { versions } = workflow.member
 
-            return value >= range.min && value <= range.current
-          }) &&
-          [...recorded.markers.keys()].every(
-            (name) => workflow.member.versions[name] !== undefined,
-          ) &&
-          [...recorded.steps.values()].every(
-            (row) => workflow.steps.get(row.step)?.kind === row.kind,
+        const problems = [
+          ...start.problems,
+          ...[...new Set([...Object.keys(versions), ...recorded.markers.keys()])].flatMap((name) =>
+            markerProblem({ versions, name, recorded: recorded.markers.get(name) }),
           ),
-      )
+          ...[...recorded.steps.values()].flatMap((row) =>
+            recordedStepProblem({
+              declared,
+              step: row.step,
+              kind: row.kind,
+              settled: row.exit !== null,
+              changed: start.changed,
+            }),
+          ),
+        ]
+
+        return { problems, changed: start.changed, declared }
+      })
 
     /**
      * Moves an execution started under an older manifest whose steps changed
      * onto this runner's manifest, recording that manifest if it is new.
      */
     const adoptManifest = (
+      declared: Declared,
       workflow: RegisteredWorkflow,
       execution: ExecutionRow,
       executionId: string,
+      changed: ReadonlyArray<string>,
     ) =>
-      Effect.gen(function* () {
-        const own = yield* manifestOf(ref.actor, workflow.member)
-
-        if (
-          execution.manifest_hash !== own.hash &&
-          (startManifests.get(execution.manifest_hash)?.changed.length ?? 0) > 0
-        ) {
-          yield* fenced(sql`
+      execution.manifest_hash === declared.hash || changed.length === 0
+        ? Effect.void
+        : fenced(sql`
             WITH m AS (INSERT INTO actor_workflow_manifests
                 (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
-              VALUES (${ref.actor}, ${workflow.member.tag}, ${own.hash}, ${toJson(own.manifest)}::jsonb, 0)
+              VALUES (${ref.actor}, ${workflow.member.tag}, ${declared.hash}, ${toJson(declared.manifest)}::jsonb, 0)
               ON CONFLICT DO NOTHING)
-            UPDATE actor_workflow_executions SET manifest_hash = ${own.hash}
+            UPDATE actor_workflow_executions SET manifest_hash = ${declared.hash}
             WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
-              AND manifest_hash = ${execution.manifest_hash}`)
-        }
-      })
+              AND manifest_hash = ${execution.manifest_hash}`).pipe(Effect.asVoid)
 
     /** Records an execution's result, then drops its steps and its timer. */
     const finish = (executionId: string, result: StoredResult) =>
@@ -1100,10 +1091,18 @@ export const activationEngine = (options: {
 
         const recorded = yield* readSteps(executionId)
 
-        if (workflow === undefined || !(yield* replayable(workflow, execution, recorded))) {
+        const verdict =
+          workflow === undefined ? undefined : yield* compatibility(workflow, execution, recorded)
+
+        if (workflow === undefined || verdict === undefined || verdict.problems.length > 0) {
           yield* Effect.logWarning(
             "Workflow execution incompatible with this runner; suspended",
-          ).pipe(Effect.annotateLogs({ executionId }))
+          ).pipe(
+            Effect.annotateLogs({
+              executionId,
+              problems: verdict?.problems ?? ["workflow not registered"],
+            }),
+          )
           yield* fenced(
             armTimer(routingKey, ref, executionId, (yield* now) + RECOVERY_MS, onBehalfOf),
           )
@@ -1111,7 +1110,7 @@ export const activationEngine = (options: {
           return "abandoned" as const
         }
 
-        yield* adoptManifest(workflow, execution, executionId)
+        yield* adoptManifest(verdict.declared, workflow, execution, executionId, verdict.changed)
 
         if (execution.status === "suspended")
           yield* fenced(sql`UPDATE actor_workflow_executions SET status = 'running'

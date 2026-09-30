@@ -29,7 +29,14 @@ const fingerprintOf = (schemas: ReadonlyArray<Schema.Top>) =>
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
 
-const cache = new WeakMap<AnyWorkflow, { readonly manifest: Manifest; readonly hash: string }>()
+/** A workflow's manifest, its hash, and its steps by name. */
+export interface Declared {
+  readonly manifest: Manifest
+  readonly hash: string
+  readonly steps: ReadonlyMap<string, Manifest["steps"][number]>
+}
+
+const cache = new WeakMap<AnyWorkflow, Declared>()
 
 /**
  * The member's manifest and its SHA-256. Constructors register at module
@@ -58,7 +65,12 @@ export const manifestOf = Effect.fnUntraced(function* (actorType: string, member
     .digest("SHA-256", utf8.encode(toJson([actorType, manifest])))
     .pipe(Effect.orDie)
 
-  const entry = { manifest, hash: hex(digest) }
+  const entry: Declared = {
+    manifest,
+    hash: hex(digest),
+    steps: new Map(manifest.steps.map((step) => [step.name, step])),
+  }
+
   cache.set(member, entry)
 
   return entry
