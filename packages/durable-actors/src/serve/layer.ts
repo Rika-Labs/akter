@@ -65,6 +65,7 @@ import { mcpTools } from "./mcp/tools.ts"
 import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
 import { MAX_AWAITING_HELLO, socketSession } from "./sessions/socket.ts"
 import { streamResponse } from "./sessions/stream.ts"
+import { watchResponse } from "./sessions/watch.ts"
 import {
   actorErrorBody,
   actorErrorResponse,
@@ -839,6 +840,40 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return elements.pipe(streamResponse, eventStream)
         })
 
+      const watchHandler = (definition: ServedDefinition, member: ServedMember) =>
+        Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          const id = yield* pathId(definition)
+          const authenticated = yield* authenticate(request)
+
+          if (!member.watch) return yield* invalidInput("not_watchable")
+
+          const bytes = yield* readBound(request, authenticated)
+          const body = yield* decodeJsonBody(request, bytes)
+
+          const payload = yield* member
+            .payload(body)
+            .pipe(Effect.mapError((error) => undecodable(error)))
+
+          const results = yield* actors.watch(
+            Request.make({
+              ref: refOf(definition, id, authenticated),
+              caller: authenticated.caller,
+              command: member.tag,
+              commandId: "",
+              payload,
+            }),
+            {
+              minVersion: yield* minVersion(request),
+              expiresAt:
+                authenticated.expiresAt === undefined
+                  ? undefined
+                  : DateTime.toEpochMillis(authenticated.expiresAt),
+            },
+          )
+
+          return results.pipe(watchResponse, eventStream)
+        })
+
       const awaiting = awaitingHello.get(actors) ?? { count: 0 }
       awaitingHello.set(actors, awaiting)
 
@@ -1064,6 +1099,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             memberPath({ definition, member }),
             streamHandler(definition, member),
           )
+
+        for (const member of definition.members)
+          if (member.kind === "query")
+            yield* route(
+              "POST",
+              `${memberPath({ definition, member })}/watch`,
+              watchHandler(definition, member),
+            )
 
         if (definition.feeds.length > 0)
           yield* route(

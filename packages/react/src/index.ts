@@ -14,3 +14,5 @@ export {
 export { type EventFeed, type EventFeedOptions, type FeedSource, useEventFeed } from "./feed.ts"
 
 export { type Handles, type QueryResult, useActor, useActorState, useQuery } from "./state.ts"
+
+export { useWatch, type WatchResult } from "./watch.ts"
