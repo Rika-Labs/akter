@@ -43,16 +43,16 @@ describe("takeBatch", () => {
     const alone = new Set<string>()
 
     for (let failed = 0; failed < 3; failed++)
-      markAlone(
+      markAlone({
         alone,
-        Array.from({ length: ALONE_CAP }, (_, index) => `f${failed}-${index}`),
-      )
+        ids: Array.from({ length: ALONE_CAP }, (_, index) => `f${failed}-${index}`),
+      })
 
     expect(alone.size).toBe(ALONE_CAP)
     expect(alone.has(`f2-0`)).toBe(true)
     expect(alone.has(`f1-${ALONE_CAP - 1}`)).toBe(false)
 
-    markAlone(alone, ["f2-0", "late"])
+    markAlone({ alone, ids: ["f2-0", "late"] })
 
     expect(alone.size).toBe(ALONE_CAP)
     expect([...alone].at(-1)).toBe("late")

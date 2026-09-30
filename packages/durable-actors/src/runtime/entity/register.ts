@@ -700,10 +700,7 @@ export const registerActor = Effect.fnUntraced(function* (
         Effect.fnUntraced(function* ({ batch, orphan, cause, committed }) {
           if (committed || retryable(cause)) {
             if (!committed && batch.length > 1)
-              markAlone(
-                alone,
-                batch.map(({ request }) => request.commandId),
-              )
+              markAlone({ alone, ids: batch.map(({ request }) => request.commandId) })
 
             if (committed || lost) return yield* restart([...batch, ...(orphan ?? [])], cause)
 

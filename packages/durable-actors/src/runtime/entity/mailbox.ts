@@ -24,7 +24,13 @@ export const MERGE_CAP = 1024
 export const ALONE_CAP = BATCH_CAP * 32
 
 /** Adds `ids` to `alone` as its newest entries, then drops the oldest past `ALONE_CAP`. */
-export const markAlone = (alone: Set<string>, ids: Iterable<string>) => {
+export const markAlone = ({
+  alone,
+  ids,
+}: {
+  readonly alone: Set<string>
+  readonly ids: Iterable<string>
+}) => {
   for (const id of ids) {
     alone.delete(id)
     alone.add(id)
