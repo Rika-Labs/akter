@@ -1,64 +1,26 @@
-import { randomUUID } from "node:crypto"
-import { type APIRequestContext, expect, type Page, test } from "@playwright/test"
+import { expect, test } from "@playwright/test"
 import { proxy } from "./proxy.ts"
-
-/**
- * The chat example served by examples/chat/src/web/serve.ts, on a fresh
- * in-memory database.
- */
-const CHAT = "http://127.0.0.1:3003"
-
-const bearer = (user: string) => ({ authorization: `Bearer ${user}` })
-
-/** Posts as `user` straight to the served API, as another client would. */
-const post = async (request: APIRequestContext, room: string, user: string, body: string) => {
-  const minted = await request.post(`${CHAT}/api/command-ids`, { headers: bearer(user) })
-  const { commandId } = (await minted.json()) as { readonly commandId: string }
-
-  const response = await request.post(`${CHAT}/api/actors/Room/${room}/Post`, {
-    headers: { ...bearer(user), "idempotency-key": commandId },
-    data: { body },
-  })
-
-  expect(response.status()).toBe(200)
-}
-
-const open = async (page: Page, room: string, user = "alice") => {
-  await page.goto(`${CHAT}/rooms/${room}?user=${user}`)
-  await expect(page.getByTestId("user")).toHaveText(user)
-}
-
-const say = async (page: Page, body: string) => {
-  await page.getByTestId("body").fill(body)
-  await page.getByRole("button", { name: "Post" }).click()
-}
-
-/**
- * Each test uses its own room, so tests share the server without sharing
- * state. Rooms are unique per run too: the server may keep rooms across runs
- * when DATABASE_URL names Postgres.
- */
-const roomOf = (name: string) => `${name}-${randomUUID()}`
+import { bearer, CHAT, openRoom, post, say, uniqueId } from "./room.ts"
 
 test("replays events after a dropped connection and never shows a gap as continuous", async ({
   page,
   context,
   request,
 }) => {
-  const room = roomOf("r1")
+  const room = uniqueId("r1")
   const network = await proxy()
 
   try {
-    await page.goto(`${network.url}/rooms/${room}?user=alice`)
-    await say(page, "one")
+    await openRoom({ page, room, origin: network.url })
+    await say({ page, body: "one" })
     await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: one"])
     await expect(page.getByTestId("feed-status")).toHaveAttribute("data-opened", "1")
 
     await context.setOffline(true)
     network.cut()
 
-    await post(request, room, "bob", "two")
-    await post(request, room, "bob", "three")
+    await post({ request, room: room, user: "bob", body: "two" })
+    await post({ request, room: room, user: "bob", body: "three" })
     await page.waitForTimeout(1_000)
     await expect(page.getByTestId("messages").locator("li")).toHaveCount(1)
 
@@ -86,8 +48,8 @@ test("replays events after a dropped connection and never shows a gap as continu
 })
 
 test("rolls back an optimistic reaction the server rejects", async ({ page, request }) => {
-  const room = roomOf("reactions")
-  await open(page, room)
+  const room = uniqueId("reactions")
+  await openRoom({ page, room })
 
   await page.getByTestId("react").click()
   await expect(page.getByTestId("reactions")).toHaveText("1")
@@ -111,7 +73,7 @@ test("rolls back an optimistic reaction the server rejects", async ({ page, requ
 test("keeps the original command id across a retried POST after a lost response", async ({
   page,
 }) => {
-  const room = roomOf("retry")
+  const room = uniqueId("retry")
   const keys: Array<string | undefined> = []
   let dropped = false
 
@@ -127,8 +89,8 @@ test("keeps the original command id across a retried POST after a lost response"
     return route.abort("connectionreset")
   })
 
-  await open(page, room)
-  await say(page, "once")
+  await openRoom({ page, room })
+  await say({ page, body: "once" })
 
   await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: once"])
   await expect.poll(() => keys.length).toBe(2)
@@ -139,7 +101,7 @@ test("keeps the original command id across a retried POST after a lost response"
 })
 
 test("rejects a request with no credentials before any turn runs", async ({ request }) => {
-  const room = roomOf("anonymous")
+  const room = uniqueId("anonymous")
 
   const refused = await request.post(`${CHAT}/api/actors/Room/${room}/Post`, {
     headers: { "idempotency-key": "v1.1.2.00000000-0000-4000-8000-000000000000" },

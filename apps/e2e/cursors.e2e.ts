@@ -1,15 +1,5 @@
-import { randomUUID } from "node:crypto"
 import { expect, test } from "@playwright/test"
-
-/**
- * The presence and cursors page in examples/chat/src/web, served by serve.ts on a fresh in-memory database.
- */
-const CHAT = "http://127.0.0.1:3003"
-
-/**
- * Each test uses its own document, so tests share the server without sharing state.
- */
-const docOf = (name: string) => `${name}-${randomUUID()}`
+import { CHAT, uniqueId } from "./room.ts"
 
 /**
  * The same page written twice: over the Promise client, and with @durable-actors/react.
@@ -19,7 +9,7 @@ for (const [flavor, prefix] of [
   ["React", "react/cursors"],
 ] as const) {
   test(`${flavor}: two pages see each other's cursor move, and one leave`, async ({ browser }) => {
-    const doc = docOf("doc")
+    const doc = uniqueId("doc")
     const alice = await (await browser.newContext()).newPage()
     const bob = await (await browser.newContext()).newPage()
 
@@ -67,7 +57,7 @@ for (const [flavor, prefix] of [
   test(`${flavor}: a page that opens late sees where the others already are`, async ({
     browser,
   }) => {
-    const doc = docOf("late")
+    const doc = uniqueId("late")
     const alice = await (await browser.newContext()).newPage()
     const bob = await (await browser.newContext()).newPage()
 
