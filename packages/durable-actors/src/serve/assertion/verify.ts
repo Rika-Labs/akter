@@ -298,8 +298,11 @@ export const assertion = <Keys extends URL | AssertionKeySet>(
     const authenticated: Authenticated = { caller, tenant, binding }
 
     if (cexp === undefined) return authenticated
+    const expiresAt = DateTime.make(cexp * 1000)
 
-    return { ...authenticated, expiresAt: DateTime.makeUnsafe(cexp * 1000) }
+    if (Option.isNone(expiresAt)) return yield* invalid
+
+    return { ...authenticated, expiresAt: expiresAt.value }
   })
 
   const refreshKeys = Effect.fnUntraced(function* (request: AuthRequest) {

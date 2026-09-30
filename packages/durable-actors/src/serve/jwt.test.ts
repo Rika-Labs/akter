@@ -81,6 +81,28 @@ const setup = Effect.gen(function* () {
 })
 
 describe("Actor.auth.jwt", () => {
+  it("refuses a verified token whose exp is past the representable time as invalid, not a defect", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { keys, provider, claims } = yield* setup
+
+        const token = yield* sign(
+          keys.privateKey,
+          { alg: "ES256", kid: "k1" },
+          { ...claims, exp: 1e20 },
+        )
+
+        const exit = yield* provider
+          .authenticate({
+            headers: Headers.fromInput({ authorization: `Bearer ${token}` }),
+            cookies: {},
+          })
+          .pipe(Effect.exit)
+
+        expect(exit).toEqual(Exit.fail(Unauthorized.make({ code: "invalid_credentials" })))
+      }),
+    ))
+
   it("accepts a valid token with its subject and tenant from verified claims", () =>
     Effect.runPromise(
       Effect.gen(function* () {

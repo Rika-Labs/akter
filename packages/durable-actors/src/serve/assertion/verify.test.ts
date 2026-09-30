@@ -37,6 +37,17 @@ const setup = Effect.gen(function* () {
 const refusal = (code: Unauthorized["code"]) => Exit.fail(Unauthorized.make({ code }))
 
 describe("Actor.auth.assertion", () => {
+  it("refuses a signed assertion whose cexp is past the representable time as invalid, not a defect", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { edge, claims, run } = yield* setup
+
+        expect(yield* run(yield* signAssertion(edge, { ...claims, cexp: 1e20 }))).toEqual(
+          refusal("invalid_credentials"),
+        )
+      }),
+    ))
+
   it("reads durable-assertion and returns the caller, tenant, and binding it signs", () =>
     Effect.runPromise(
       Effect.gen(function* () {
