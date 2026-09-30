@@ -96,11 +96,10 @@ const QUERIES: ReadonlyArray<Query> = [
 export const inspectionViews: Scenario = {
   name: "inspection-views",
   description:
-    "Operator SQL through the durable inspection views at 100k actors (10k in quick): point lookups, tenant scans, and due timers.",
+    "Operator SQL through the durable inspection views at 100k actors (10k in context.quick): point lookups, tenant scans, and due timers.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const actors = quick ? 10_000 : 100_000
+      const actors = context.quick ? 10_000 : 100_000
 
       return yield* context.withRuntime({}, (instruments) =>
         Effect.gen(function* () {
@@ -119,7 +118,7 @@ export const inspectionViews: Scenario = {
                 parameters: { actors, tenants: TENANTS, workers: 1 },
                 instruments,
                 workers: 1,
-                operations: quick ? 100 : 500,
+                operations: context.quick ? 100 : 500,
                 operation,
                 extra: { query: query.description },
               }),

@@ -21,8 +21,7 @@ export const rls: Scenario = {
     Effect.gen(function* () {
       if (context.backend.name !== "postgres") return []
 
-      const quick = context.profile === "quick"
-      const operations = quick ? 300 : 3000
+      const operations = context.quick ? 300 : 3000
 
       const cases: ReadonlyArray<{
         readonly name: string
