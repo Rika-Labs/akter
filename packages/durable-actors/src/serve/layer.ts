@@ -296,7 +296,9 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
  *   creates the actor it follows. A browser's reconnect resumes from
  *   `Last-Event-ID`.
  * - A content upload streams into the store hashed as it arrives; past the
- *   limit its transaction rolls back and nothing is stored. A sweep between
+ *   limit its transaction rolls back and nothing is stored. Under a credential
+ *   bound to its request it is read whole first, up to the same limit, so the
+ *   binding is checked before anything is stored. A sweep between
  *   resolving a download's name and reading its bytes ends the body before any
  *   byte, short of its declared length.
  * - `/ready` carries no credentials and is never cached, because a stale
@@ -521,11 +523,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           return authenticated
         })
 
-      const readBytes = (request: HttpServerRequest.HttpServerRequest) =>
+      const readBytes = (request: HttpServerRequest.HttpServerRequest, limit = requestBytes) =>
         Effect.gen(function* () {
           const length = Headers.get(request.headers, "content-length")
 
-          if (Option.isSome(length) && Number(length.value) > requestBytes)
+          if (Option.isSome(length) && Number(length.value) > limit)
             return yield* invalidInput("too_large")
 
           if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
@@ -544,7 +546,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               (acc, chunk) => {
                 const size = acc.size + chunk.byteLength
 
-                if (size > requestBytes) return Effect.fail(invalidInput("too_large"))
+                if (size > limit) return Effect.fail(invalidInput("too_large"))
                 received = size
                 acc.chunks.push(chunk)
 
@@ -603,6 +605,17 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
                   ? Effect.void
                   : Effect.fail(refuseBinding),
               ),
+            )
+
+      /** Checks a route that ignores its body against the credential's binding, reading the body only when bound. */
+      const checkUnreadBody = (
+        authenticated: Authenticated,
+        request: HttpServerRequest.HttpServerRequest,
+      ) =>
+        authenticated.binding === undefined
+          ? Effect.void
+          : readBytes(request).pipe(
+              Effect.flatMap((body) => checkBinding(authenticated, request, body)),
             )
 
       const checkRenewal = (
@@ -941,6 +954,18 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const uploadHandler = (store: ContentStore["Service"]) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const authenticated = yield* authenticate(request)
+
+          if (authenticated.binding !== undefined) {
+            const bytes = yield* readBytes(request, contentBytes)
+
+            yield* checkBinding(authenticated, request, bytes)
+
+            return yield* store.upload(authenticated.tenant, Stream.make(bytes), contentBytes).pipe(
+              Effect.catchTag("ContentTooLarge", () => invalidInput("too_large")),
+              Effect.map((ref) => HttpServerResponse.jsonUnsafe(ref, { status: 200 })),
+            )
+          }
+
           const length = Headers.get(request.headers, "content-length")
 
           if (Option.isSome(length) && Number(length.value) > contentBytes)
@@ -975,6 +1000,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const id = yield* pathId(definition)
           const { blob, name } = yield* contentParams(definition)
           const authenticated = yield* authenticate(request)
+
+          yield* checkUnreadBody(authenticated, request)
+
           const ref = refOf(definition, id, authenticated)
           const found = yield* store.download(ref, authenticated.caller, blob, name)
 
@@ -991,6 +1019,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const id = yield* pathId(definition)
           const { blob, name } = yield* contentParams(definition)
           const authenticated = yield* authenticate(request)
+
+          yield* checkUnreadBody(authenticated, request)
+
           const ref = refOf(definition, id, authenticated)
           const granted = yield* store.grant(ref, authenticated.caller, blob, name)
 
@@ -1085,8 +1116,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         Effect.gen(function* () {
           const authenticated = yield* authenticate(request)
 
-          if (authenticated.binding !== undefined)
-            yield* checkBinding(authenticated, request, yield* readBytes(request))
+          yield* checkUnreadBody(authenticated, request)
 
           return HttpServerResponse.jsonUnsafe({ commandId: yield* actors.mintCommandId })
         }),
