@@ -18,7 +18,7 @@ import type {
   RegisteredCommand,
 } from "../runtime/members.ts"
 import { Outcome, type Request } from "../runtime/request.ts"
-import type { MemberCodecs } from "./codecs.ts"
+import type { Decoded, Failure, Handler, MemberCodecs, StateValue } from "./codecs.ts"
 import { broadcastsTo } from "./connections.ts"
 import { type Descriptor, descriptorOf } from "./descriptor.ts"
 
@@ -29,8 +29,6 @@ const utf8 = new TextEncoder()
  * one statement inside its transaction, so the budget bounds that statement.
  */
 const MAX_EMIT_BYTES = 1_048_576
-
-type Handler = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
 
 /** When and under which key `turn.enqueue` stages a job. */
 const enqueueSchedule = (options: EnqueueOptions | undefined) => {
@@ -58,7 +56,7 @@ const enqueueSchedule = (options: EnqueueOptions | undefined) => {
 /** A declared failure as the turn's failure outcome; any other error is a defect. */
 const declaredFailure = Effect.fnUntraced(function* (
   { isError, encodeError }: MemberCodecs,
-  error: unknown,
+  error: Failure,
 ) {
   if (!isError(error)) return yield* Effect.die(error)
 
@@ -104,7 +102,7 @@ const warnUnrouted = (descriptor: Descriptor, tag: string) =>
  */
 const commandTurn = (
   descriptor: Descriptor,
-  Turn: Context.Key<unknown, unknown>,
+  Turn: Context.Key<object, object>,
   handle: Handler,
   codecs: MemberCodecs,
   services: Context.Context<never>,
@@ -131,7 +129,7 @@ const commandTurn = (
 
     if (loaded.upcast) for (const key of Object.keys(fields)) dirty.add(key)
 
-    const set = Effect.fnUntraced(function* (patch: Record<string, unknown>) {
+    const set = Effect.fnUntraced(function* (patch: StateValue) {
       if (!open || (yield* InsideTurn) !== turn)
         return yield* Effect.die(new Error("State capability escaped its turn"))
 
@@ -339,7 +337,7 @@ const commandTurn = (
       mint,
       enqueue,
       cancelJob,
-      broadcast: broadcastsTo(descriptor, broadcasts, escaped),
+      broadcast: broadcastsTo({ descriptor, broadcasts, guard: escaped }),
       subscribe: changeSubscription("subscribe"),
       unsubscribe: (declared: AnySubscription, id: string) =>
         changeSubscription("remove")(declared, id),
@@ -419,7 +417,7 @@ const reducerTurns = (
 
   const reduceOnce = Effect.fnUntraced(function* (
     rows: ReadonlyArray<readonly [string, string]>,
-    input: unknown,
+    input: Decoded,
   ) {
     const loaded = yield* descriptor.state.decodeStored(rows)
     const given = yield* descriptor.state.roundTrip(loaded.state)
@@ -481,13 +479,19 @@ const reducerTurns = (
 }
 
 /** Every command and reducer turn of one activation, keyed by tag. */
-export const turnsOf = (
-  descriptor: Descriptor,
-  Turn: Context.Key<unknown, unknown>,
-  handlers: Readonly<Record<string, Handler | undefined>>,
-  services: Context.Context<never>,
-  actors: InternalActors["Service"],
-) =>
+export const turnsOf = ({
+  descriptor,
+  Turn,
+  handlers,
+  services,
+  actors,
+}: {
+  readonly descriptor: Descriptor
+  readonly Turn: Context.Key<object, object>
+  readonly handlers: Readonly<Record<string, Handler>>
+  readonly services: Context.Context<never>
+  readonly actors: InternalActors["Service"]
+}) =>
   Effect.gen(function* () {
     const commands = new Map<string, RegisteredCommand>()
 

@@ -3,8 +3,8 @@ import { CurrentCaller, System, Tenant } from "../identity/caller.ts"
 import { payloadChain } from "../members/payload.ts"
 import { InternalActors } from "../runtime/actors.ts"
 import type { RegisteredConnection, RegisteredStream, Registration } from "../runtime/members.ts"
-import type { ConnectionEntry } from "./connections.ts"
-import { connectionOf } from "./connections.ts"
+import type { Handler, StreamHandler } from "./codecs.ts"
+import { type ConnectionEntry, connectionOf } from "./connections.ts"
 import type { Descriptor } from "./descriptor.ts"
 import { jobsOf } from "./jobs.ts"
 import { queriesOf, streamOf } from "./reads.ts"
@@ -13,20 +13,34 @@ import { workflowsOf } from "./workflows.ts"
 
 /** The per-actor phase services `Actor.make` creates, which the adapters provide. */
 export interface PhaseServices {
-  readonly Turn: Context.Key<unknown, unknown>
-  readonly Read: Context.Key<unknown, unknown>
-  readonly Connection: Context.Key<unknown, unknown>
-  readonly Workflow: Context.Key<unknown, unknown>
-  readonly Executor: Context.Key<unknown, unknown>
+  readonly Turn: Context.Key<object, object>
+  readonly Read: Context.Key<object, object>
+  readonly Connection: Context.Key<object, object>
+  readonly Workflow: Context.Key<object, object>
+  readonly Executor: Context.Key<object, object>
 }
 
-type Entries = Readonly<Record<string, unknown>>
+/** One layer's handlers, stream handlers, connection entries, and executors, by member tag. */
+type Entries = Readonly<Record<string, Handler | StreamHandler | ConnectionEntry>>
 
-/** A layer builder: the entries themselves, or an Effect that builds them. */
-export type Build = Entries | Effect.Effect<Entries, unknown, never>
+/**
+ * What a layer constructor receives: the descriptor, its phase services, the
+ * entries or an Effect that builds them, and the Effect that captures the
+ * services the entries require when the layer is built.
+ */
+export interface LayerOptions<H extends object, E, RB, RS> {
+  readonly descriptor: Descriptor
+  readonly phases: PhaseServices
+  readonly build: H | Effect.Effect<H, E, RB>
+  readonly services: Effect.Effect<Context.Context<RS>, never, RS>
+}
 
-const built = (build: Build): Effect.Effect<Entries, unknown> =>
-  Effect.isEffect(build) ? build : Effect.succeed(build)
+/** The entries themselves, or what the builder builds. */
+const built = <H extends object, E, RB>(build: H | Effect.Effect<H, E, RB>) =>
+  (Effect.isEffect(build) ? build : Effect.succeed(build)) as Effect.Effect<H, E, RB>
+
+/** The layer's entries as the adapters read them: by tag, with member types erased. */
+const erased = <H extends object>(entries: H) => entries as Entries
 
 const registrationOf = (descriptor: Descriptor, tenant: string) => ({
   name: descriptor.name,
@@ -67,17 +81,18 @@ const registrationOf = (descriptor: Descriptor, tenant: string) => ({
 const connectionsOf = (
   descriptor: Descriptor,
   phases: PhaseServices,
-  handlers: Entries,
+  entries: Entries,
   services: Context.Context<never>,
 ) =>
   Effect.gen(function* () {
     const connections = new Map<string, RegisteredConnection>()
 
     for (const member of descriptor.connections) {
-      const entry = handlers[member.tag] as Partial<ConnectionEntry> | undefined
+      const entry = entries[member.tag]
 
       if (
         entry === undefined ||
+        !Predicate.hasProperty(entry, "open") ||
         !Predicate.isFunction(entry.open) ||
         !Predicate.isFunction(entry.frame)
       )
@@ -85,7 +100,7 @@ const connectionsOf = (
 
       connections.set(
         member.tag,
-        connectionOf(descriptor, phases.Connection, member, entry as ConnectionEntry, services),
+        connectionOf({ descriptor, Connection: phases.Connection, member, entry, services }),
       )
     }
 
@@ -95,7 +110,7 @@ const connectionsOf = (
 const streamsOf = (
   descriptor: Descriptor,
   phases: PhaseServices,
-  handlers: Entries,
+  entries: Entries,
   services: Context.Context<never>,
   actors: InternalActors["Service"],
 ) =>
@@ -103,19 +118,33 @@ const streamsOf = (
     const streams = new Map<string, RegisteredStream>()
 
     for (const member of descriptor.streams) {
-      const handle = handlers[member.tag]
+      const handle = entries[member.tag]
 
       if (!Predicate.isFunction(handle))
         return yield* Effect.die(new Error(`Missing stream handler ${member.tag}`))
 
       streams.set(
         member.tag,
-        streamOf(descriptor, phases.Read, member, handle as never, services, actors),
+        streamOf({
+          descriptor,
+          Read: phases.Read,
+          member,
+          handle: handle as StreamHandler,
+          services,
+          actors,
+        }),
       )
     }
 
     return streams
   })
+
+const handlersOf = (entries: Entries) =>
+  Object.fromEntries(
+    Object.entries(entries).flatMap(([tag, entry]) =>
+      Predicate.isFunction(entry) ? [[tag, entry as Handler] as const] : [],
+    ),
+  )
 
 /**
  * The owner of an ordinary actor's handlers: the builder runs once, when the
@@ -123,94 +152,124 @@ const streamsOf = (
  * builder failure fails the layer. Workflow bodies receive the layer's context
  * without its `Scope`: a body's scope is its run's.
  */
-const ordinaryOwner = (descriptor: Descriptor, phases: PhaseServices, build: Build) =>
-  Effect.gen(function* () {
-    const actors = yield* InternalActors
-    const registration = registrationOf(descriptor, yield* Tenant)
-    const handlers = yield* built(build)
-    const services = yield* Effect.context<never>()
-    const connections = yield* connectionsOf(descriptor, phases, handlers, services)
-    const streams = yield* streamsOf(descriptor, phases, handlers, services, actors)
-    const commands = yield* turnsOf(descriptor, phases.Turn, handlers as never, services, actors)
+export const ordinaryLayer = <H extends object, E, RB, RS>({
+  descriptor,
+  phases,
+  build,
+  services: capture,
+}: LayerOptions<H, E, RB, RS>) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const actors = yield* InternalActors
+      const registration = registrationOf(descriptor, yield* Tenant)
+      const entries = erased(yield* built(build))
+      const services = (yield* capture) as Context.Context<never>
+      const connections = yield* connectionsOf(descriptor, phases, entries, services)
+      const streams = yield* streamsOf(descriptor, phases, entries, services, actors)
+      const handlers = handlersOf(entries)
 
-    return yield* actors.register({
-      ...registration,
-      workflows: yield* workflowsOf(
+      const commands = yield* turnsOf({
         descriptor,
-        phases.Workflow,
-        handlers as never,
-        Context.omit(Scope.Scope)(services) as Context.Context<never>,
-      ),
-      activate: () => Effect.succeed(commands),
-      connections,
-      streams,
-    } satisfies Registration)
-  })
+        Turn: phases.Turn,
+        handlers,
+        services,
+        actors,
+      })
+
+      const workflows = yield* workflowsOf({
+        descriptor,
+        Workflow: phases.Workflow,
+        bodies: handlers,
+        services: services.pipe(Context.omit(Scope.Scope)) as Context.Context<never>,
+      })
+
+      return yield* actors.register({
+        ...registration,
+        workflows,
+        activate: () => Effect.succeed(commands),
+        connections,
+        streams,
+      } satisfies Registration)
+    }),
+  )
 
 /**
  * The owner of a singleton's handlers: the builder runs once per activation,
  * in the activation's scope, as the actor with a `System({ source: "actor" })`
  * caller, so a fiber it forks with `Effect.forkScoped` lives exactly as long
  * as the one cluster-wide activation. A builder failure fails that activation,
- * whose queued commands then fail, rather than the layer.
+ * whose commands then fail, rather than the layer.
  */
-const singletonOwner = (descriptor: Descriptor, phases: PhaseServices, build: Build) =>
-  Effect.gen(function* () {
-    const actors = yield* InternalActors
-    const registration = registrationOf(descriptor, yield* Tenant)
-
-    if (
-      descriptor.connections.length > 0 ||
-      descriptor.streams.length > 0 ||
-      descriptor.feeds.size > 0 ||
-      descriptor.watches.size > 0
-    )
-      return yield* Effect.die(
-        new Error("Singleton actors cannot declare connections, streams, feeds, or watches yet"),
-      )
-
-    const services = yield* Effect.context<never>()
-
-    if (descriptor.workflows.length > 0)
-      return yield* Effect.die(
-        new Error(`Singleton actor ${descriptor.name} cannot declare workflows`),
-      )
-
-    yield* actors.register({
-      ...registration,
-      workflows: new Map(),
-      activate: Effect.fnUntraced(function* (ref) {
-        const scope = yield* Scope.Scope
-
-        const handlers = yield* built(build).pipe(
-          Effect.provideService(Scope.Scope, scope),
-          Effect.provideService(Tenant, ref.tenant),
-          Effect.provideService(CurrentCaller, System.make({ source: "actor", ref })),
-          Effect.provideContext(services),
-        )
-
-        return yield* turnsOf(descriptor, phases.Turn, handlers as never, services, actors)
-      }),
-      connections: new Map(),
-      streams: new Map(),
-    } satisfies Registration)
-  })
-
-/** Registers the handlers of every command, connection, stream, and workflow. */
-export const handlerLayer = (descriptor: Descriptor, phases: PhaseServices, build: Build) =>
-  Layer.effectDiscard(
-    descriptor.singleton
-      ? singletonOwner(descriptor, phases, build)
-      : ordinaryOwner(descriptor, phases, build),
-  )
-
-/** Registers every query's handler; queries run on the caller's node. */
-export const queryLayer = (descriptor: Descriptor, phases: PhaseServices, build: Build) =>
+export const singletonLayer = <H extends object, E, RB, RS>({
+  descriptor,
+  phases,
+  build,
+  services: capture,
+}: LayerOptions<H, E, RB, RS>) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
       const actors = yield* InternalActors
-      const handlers = yield* built(build)
-      const services = yield* Effect.context<never>()
+      const registration = registrationOf(descriptor, yield* Tenant)
+
+      if (
+        descriptor.connections.length > 0 ||
+        descriptor.streams.length > 0 ||
+        descriptor.feeds.size > 0 ||
+        descriptor.watches.size > 0
+      )
+        return yield* Effect.die(
+          new Error("Singleton actors cannot declare connections, streams, feeds, or watches yet"),
+        )
+
+      const services = (yield* capture) as Context.Context<never>
+      const buildServices = yield* Effect.context<RB>()
+
+      if (descriptor.workflows.length > 0)
+        return yield* Effect.die(
+          new Error(`Singleton actor ${descriptor.name} cannot declare workflows`),
+        )
+
+      yield* actors.register({
+        ...registration,
+        workflows: new Map(),
+        activate: Effect.fnUntraced(function* (ref) {
+          const scope = yield* Scope.Scope
+
+          const entries = erased(
+            yield* built(build).pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.provideService(Tenant, ref.tenant),
+              Effect.provideService(CurrentCaller, System.make({ source: "actor", ref })),
+              Effect.provideContext(buildServices),
+            ),
+          )
+
+          return yield* turnsOf({
+            descriptor,
+            Turn: phases.Turn,
+            handlers: handlersOf(entries),
+            services,
+            actors,
+          })
+        }),
+        connections: new Map(),
+        streams: new Map(),
+      } satisfies Registration)
+    }),
+  )
+
+/** Registers every query's handler; queries run on the caller's node. */
+export const queryLayer = <H extends object, E, RB, RS>({
+  descriptor,
+  phases,
+  build,
+  services: capture,
+}: LayerOptions<H, E, RB, RS>) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const actors = yield* InternalActors
+      const handlers = handlersOf(erased(yield* built(build)))
+      const services = (yield* capture) as Context.Context<never>
 
       yield* actors.registerQueries({
         name: descriptor.name,
@@ -219,25 +278,30 @@ export const queryLayer = (descriptor: Descriptor, phases: PhaseServices, build:
         timeoutMs: descriptor.policy.executionMs,
         tables: descriptor.tables,
         blobs: descriptor.blobs,
-        queries: yield* queriesOf(descriptor, phases.Read, handlers as never, services, actors),
+        queries: yield* queriesOf({ descriptor, Read: phases.Read, handlers, services, actors }),
         payloads: descriptor.payloads(false).filter((declared) => declared.kind === "event"),
       })
     }),
   )
 
 /** Registers every job's executor; executors run after the enqueueing turn commits. */
-export const jobLayer = (descriptor: Descriptor, phases: PhaseServices, build: Build) =>
+export const jobLayer = <H extends object, E, RB, RS>({
+  descriptor,
+  phases,
+  build,
+  services: capture,
+}: LayerOptions<H, E, RB, RS>) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
       const actors = yield* InternalActors
-      const executors = yield* built(build)
-      const services = yield* Effect.context<never>()
+      const executors = handlersOf(erased(yield* built(build)))
+      const services = (yield* capture) as Context.Context<never>
 
       yield* actors.registerEffects({
         name: descriptor.name,
         progress: descriptor.progressJobs,
         services,
-        effects: yield* jobsOf(descriptor, phases.Executor, executors as never),
+        effects: yield* jobsOf({ descriptor, Executor: phases.Executor, executors }),
         payloads: descriptor.payloads(false).filter((declared) => declared.kind === "effect"),
       })
     }),

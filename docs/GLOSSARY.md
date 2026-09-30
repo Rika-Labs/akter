@@ -21,14 +21,14 @@
 - **Query tier:** local (one actor), group (one placement key, one shard), or fleet (declared `Fleet.view`, eventually consistent, outside turns).
 - **Command:** authenticated request addressed to one actor, delivered directly and implemented by a server handler.
 - **Subscription:** an `Actor.subscription` member through which an actor follows another actor type's committed events, delivered as System command turns in source cursor order; routed by the event, or dynamic per source id.
-- **Reducer:** pure state transition declared in the contract; runs optimistically in browser handles and may merge commutatively.
+- **Reducer:** pure state transition declared in the contract; runs optimistically in browser handles, and a batched reducer folds queued calls in order with `batch.combine`.
 - **Context service:** the typed per-phase context (`X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`) a handler obtains with `yield*`.
 - **Receipt:** durable record of one logical command identity and outcome; the only durable admission record of a direct command.
 - **Command ID:** client-minted idempotency identity reused across delivery retries.
 - **Event:** committed fact available for delivery or replay.
 - **Intent:** durable actor message, timer, workflow start, or effect obligation written to `actor_outbox` by a turn and delivered after commit.
 - **Outbox:** the actor-shard `actor_outbox` table that carries every intent; its relay delivers due rows as direct commands.
-- **Effect:** external I/O requested by `turn.perform`, persisted with the turn, and executed after commit by `X.toEffectLayer`; its result and dead letter reach the actor through declared `onSuccess` and `onDeadLetter` routes, and a cancelled keyed effect's outcome through `onCancelled` (ADR 0024, M2.13).
+- **Job:** external I/O declared with `Actor.job`, bound by an actor in `jobs`, staged by `turn.enqueue`, persisted with the turn, and executed after commit by `X.toJobLayer`; its result and dead letter reach the actor through the binding's `onSuccess` and `onDeadLetter` routes, and a cancelled keyed job's outcome through `onCancelled` (ADR 0024, M2.13). It is at least once, keyed for providers by its stable `jobId`.
 - **Internal command:** a command in the `internal` section, callable only by System callers.
 - **Workflow:** durable orchestration declared as an actor member with `Actor.workflow`.
 - **WorkflowRun:** handle returned by a workflow start, exposing identity, result, polling, and interruption.

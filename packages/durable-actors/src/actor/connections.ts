@@ -10,6 +10,7 @@ import {
   type ConnectionResult,
   type RegisteredConnection,
 } from "../runtime/members.ts"
+import type { Decoded, Failure, StateValue } from "./codecs.ts"
 import type { Descriptor } from "./descriptor.ts"
 import { eventsWith } from "./reads.ts"
 
@@ -26,13 +27,11 @@ const isEventEntry = Schema.is(
 
 /** The handlers of one connection member, as `X.toLayer` receives them. */
 export interface ConnectionEntry {
-  readonly open: (params: unknown) => Effect.Effect<void, unknown, unknown>
-  readonly frame: (frame: unknown) => Effect.Effect<void, never, unknown>
-  readonly close?:
-    | ((reason: SessionEnded["cause"]) => Effect.Effect<void, never, unknown>)
-    | undefined
+  readonly open: (payload: Decoded) => Effect.Effect<void, Failure>
+  readonly frame: (frame: Decoded) => Effect.Effect<void>
+  readonly close?: ((reason: SessionEnded["cause"]) => Effect.Effect<void>) | undefined
   readonly resync?:
-    | ((input: { readonly after: string | undefined }) => Effect.Effect<void, never, unknown>)
+    | ((input: { readonly after: string | undefined }) => Effect.Effect<void>)
     | undefined
 }
 
@@ -41,7 +40,7 @@ export interface ConnectionEntry {
  * encodes as the member's server schema carries its cursor, which the client
  * deduplicates on.
  */
-const encodeFrame = (descriptor: Descriptor, member: string, frame: unknown) =>
+const encodeFrame = (descriptor: Descriptor, member: string, frame: Decoded) =>
   Effect.gen(function* () {
     const codec = descriptor.connectionCodecs.get(member)
 
@@ -58,12 +57,16 @@ const encodeFrame = (descriptor: Descriptor, member: string, frame: unknown) =>
 
 /** `broadcast` for a turn or connection handler, collecting frames the runtime sends after commit. */
 export const broadcastsTo =
-  (
-    descriptor: Descriptor,
-    broadcasts: Array<Broadcast>,
-    guard: (capability: string) => Effect.Effect<void>,
-  ) =>
-  (member: AnyConnection, frame: unknown, options?: BroadcastOptions) =>
+  ({
+    descriptor,
+    broadcasts,
+    guard,
+  }: {
+    readonly descriptor: Descriptor
+    readonly broadcasts: Array<Broadcast>
+    readonly guard: (capability: string) => Effect.Effect<void>
+  }) =>
+  (member: AnyConnection, frame: Decoded, options?: BroadcastOptions) =>
     Effect.gen(function* () {
       yield* guard("Broadcast")
 
@@ -83,13 +86,19 @@ export const broadcastsTo =
  * handler returns; a resync cannot change the session, and a declared `open`
  * failure refuses the connection.
  */
-export const connectionOf = (
-  descriptor: Descriptor,
-  Connection: Context.Key<unknown, unknown>,
-  member: AnyConnection,
-  entry: ConnectionEntry,
-  services: Context.Context<never>,
-): RegisteredConnection => {
+export const connectionOf = ({
+  descriptor,
+  Connection,
+  member,
+  entry,
+  services,
+}: {
+  readonly descriptor: Descriptor
+  readonly Connection: Context.Key<object, object>
+  readonly member: AnyConnection
+  readonly entry: ConnectionEntry
+  readonly services: Context.Context<never>
+}): RegisteredConnection => {
   const codec = descriptor.connectionCodecs.get(member.tag)!
   const memberCodec = descriptor.codecs.get(member.tag)!
 
@@ -107,10 +116,10 @@ export const connectionOf = (
       let open = true
       const { state } = yield* descriptor.state.decodeStored(input.state)
 
-      let session: unknown =
+      let session: StateValue | undefined =
         input.session === undefined || codec.decodeSession === undefined
           ? undefined
-          : (yield* codec.decodeSession(input.session).pipe(Effect.orDie)).value
+          : ((yield* codec.decodeSession(input.session).pipe(Effect.orDie)).value as StateValue)
 
       let changed = false
       let close = false
@@ -122,7 +131,7 @@ export const connectionOf = (
           ? Effect.void
           : Effect.die(new Error(`${capability} capability escaped its connection handler`))
 
-      const set = Effect.fnUntraced(function* (patch: object) {
+      const set = Effect.fnUntraced(function* (patch: StateValue) {
         yield* guard("Session")
 
         if (codec.encodeSession === undefined || codec.decodeSession === undefined)
@@ -133,7 +142,7 @@ export const connectionOf = (
 
         const next = Object.assign({}, session, patch)
         const encoded = yield* codec.encodeSession({ value: next }).pipe(Effect.orDie)
-        session = (yield* codec.decodeSession(encoded).pipe(Effect.orDie)).value
+        session = (yield* codec.decodeSession(encoded).pipe(Effect.orDie)).value as StateValue
         changed = true
       })
 
@@ -146,7 +155,7 @@ export const connectionOf = (
           : (target: string, command: string) =>
               connectionCommandId({ commands, index: calls++, target, command })
 
-      const context: ConnectionContext<Record<string, unknown>, never, unknown, object> = {
+      const context: ConnectionContext<StateValue, never, Decoded, StateValue> = {
         id: input.ref.id,
         ref: input.ref,
         connectionId: input.connectionId,
@@ -157,15 +166,15 @@ export const connectionOf = (
         cursor: input.cursor,
         resumed: input.resumed,
         session: {
-          get: Effect.sync(() => Option.fromUndefinedOr(session as object | undefined)),
+          get: Effect.sync(() => Option.fromUndefinedOr(session)),
           set,
         },
-        send: Effect.fnUntraced(function* (frame: unknown) {
+        send: Effect.fnUntraced(function* (frame: Decoded) {
           yield* guard("Send")
           sends.push(yield* encodeFrame(descriptor, member.tag, frame))
         }),
         broadcast: (frame, options) =>
-          broadcastsTo(descriptor, broadcasts, guard)(member, frame, options),
+          broadcastsTo({ descriptor, broadcasts, guard })(member, frame, options),
         connections: (options) =>
           Effect.gen(function* () {
             yield* guard("Connections")
@@ -183,7 +192,7 @@ export const connectionOf = (
                   connectionId: open.connectionId,
                   caller: open.caller,
                   session: (yield* codec.decodeSession(open.session).pipe(Effect.orDie))
-                    .value as object,
+                    .value as StateValue,
                 }
               }),
             )
@@ -195,8 +204,8 @@ export const connectionOf = (
         }),
         events: ((event, options) =>
           Effect.flatMap(guard("Events"), () =>
-            eventsWith(descriptor, input.events, "events")(event, options),
-          )) as ConnectionContext<Record<string, unknown>, never, unknown, object>["events"],
+            eventsWith({ descriptor, readEvents: input.events, label: "events" })(event, options),
+          )) as ConnectionContext<StateValue, never, Decoded, StateValue>["events"],
       }
 
       const program = ConnectionPhase.match(phase, {
@@ -224,7 +233,7 @@ export const connectionOf = (
         Resync: ({ after }) => entry.resync?.({ after }) ?? Effect.void,
       })
 
-      return yield* (program as Effect.Effect<void, { readonly failure: string }, never>).pipe(
+      return yield* program.pipe(
         Effect.flatMap(() =>
           Effect.gen(function* () {
             const encoded =

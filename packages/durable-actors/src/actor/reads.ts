@@ -21,20 +21,19 @@ import type {
 } from "../runtime/members.ts"
 import { Outcome } from "../runtime/request.ts"
 import { ownership } from "../tables/owned.ts"
+import type { Decoded, Handler, StateValue, StreamHandler } from "./codecs.ts"
 import type { Descriptor } from "./descriptor.ts"
 
-type AnyQueryContext = QueryContext<Record<string, unknown>, EventClass, never, never, AnyJob>
-
-type Handler = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
+type AnyQueryContext = QueryContext<StateValue, EventClass, never, never, AnyJob>
 
 /** A committed event decoded at the class's current version, with its cursor and command. */
-export const entryOf = (descriptor: Descriptor, event: EventClass, stored: StoredEvent) =>
+const entryOf = (descriptor: Descriptor, event: EventClass, stored: StoredEvent) =>
   Effect.map(
     descriptor.eventCodecs
       .get(event.identifier)!
       .decode(stored.value, stored.version)
       .pipe(Effect.orDie),
-    (decoded): EventEntry<unknown> => ({
+    (decoded): EventEntry<Decoded> => ({
       cursor: stored.cursor,
       event: decoded,
       commandId: stored.commandId,
@@ -48,7 +47,15 @@ export const entryOf = (descriptor: Descriptor, event: EventClass, stored: Store
  * in that defect.
  */
 export const eventsWith =
-  (descriptor: Descriptor, readEvents: EventReader, label = "read.events") =>
+  ({
+    descriptor,
+    readEvents,
+    label = "read.events",
+  }: {
+    readonly descriptor: Descriptor
+    readonly readEvents: EventReader
+    readonly label?: string
+  }) =>
   (
     event: EventClass,
     options?: { readonly after?: string | undefined; readonly limit?: number | undefined },
@@ -127,13 +134,19 @@ const recordingRead = (context: AnyQueryContext, reads: ReadSet): AnyQueryContex
  * and its capabilities die once it returns or from another fiber. A watched
  * run records what it reads; a `watch: true` handler gets no layer services.
  */
-export const queriesOf = (
-  descriptor: Descriptor,
-  Read: Context.Key<unknown, unknown>,
-  handlers: Readonly<Record<string, Handler | undefined>>,
-  services: Context.Context<never>,
-  actors: InternalActors["Service"],
-) =>
+export const queriesOf = ({
+  descriptor,
+  Read,
+  handlers,
+  services,
+  actors,
+}: {
+  readonly descriptor: Descriptor
+  readonly Read: Context.Key<object, object>
+  readonly handlers: Readonly<Record<string, Handler>>
+  readonly services: Context.Context<never>
+  readonly actors: InternalActors["Service"]
+}) =>
   Effect.gen(function* () {
     const registered = new Map<string, RegisteredQuery>()
 
@@ -146,6 +159,7 @@ export const queriesOf = (
       const { decodePayload, encodeSuccess, isError, encodeError } = descriptor.codecs.get(
         member.tag,
       )!
+
       const watch = descriptor.watches.has(member.tag)
 
       registered.set(member.tag, {
@@ -199,7 +213,7 @@ export const queriesOf = (
             principal: principal(request.caller),
             state: Object.freeze(state),
             cursor,
-            events: eventsWith(descriptor, readEvents) as AnyQueryContext["events"],
+            events: eventsWith({ descriptor, readEvents }) as AnyQueryContext["events"],
             rows: access.rows as AnyQueryContext["rows"],
             group: access.group,
             blob: blob as AnyQueryContext["blob"],
@@ -248,14 +262,21 @@ export const queriesOf = (
  * with its own `InsideTurn` marker and `InStream`, and its capabilities die
  * once the stream ends. `read.progress` reaches only jobs its member lists.
  */
-export const streamOf = (
-  descriptor: Descriptor,
-  Read: Context.Key<unknown, unknown>,
-  member: AnyStream,
-  handle: (input: unknown) => Stream.Stream<unknown, unknown, unknown>,
-  services: Context.Context<never>,
-  actors: InternalActors["Service"],
-): RegisteredStream => {
+export const streamOf = ({
+  descriptor,
+  Read,
+  member,
+  handle,
+  services,
+  actors,
+}: {
+  readonly descriptor: Descriptor
+  readonly Read: Context.Key<object, object>
+  readonly member: AnyStream
+  readonly handle: StreamHandler
+  readonly services: Context.Context<never>
+  readonly actors: InternalActors["Service"]
+}): RegisteredStream => {
   const { decodePayload, encodeSuccess, isError, encodeError } = descriptor.codecs.get(member.tag)!
 
   const progressCodecs = new Map(
@@ -312,7 +333,10 @@ export const streamOf = (
             principal: principal(input.caller),
             state: Object.freeze(state),
             cursor: input.cursor,
-            events: eventsWith(descriptor, input.events) as AnyQueryContext["events"],
+            events: eventsWith({
+              descriptor,
+              readEvents: input.events,
+            }) as AnyQueryContext["events"],
             rows: access.rows as AnyQueryContext["rows"],
             group: access.group,
             blob: blob as AnyQueryContext["blob"],

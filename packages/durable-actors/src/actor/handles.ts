@@ -22,7 +22,13 @@ import { type AnyWorkflow, isWorkflow } from "../members/workflow.ts"
 import { InternalActors } from "../runtime/actors.ts"
 import type { WorkflowStatus } from "../runtime/members.ts"
 import { Outcome, Request } from "../runtime/request.ts"
+import type { Decoded, Failure } from "./codecs.ts"
 import type { Descriptor } from "./descriptor.ts"
+
+/** One method of a handle: a call returning an Effect, or a stream, before `Handle` types it. */
+type HandleMethod = (
+  payload: Decoded,
+) => Effect.Effect<Decoded, Failure> | Stream.Stream<Decoded, Failure>
 
 const decodeCaller = Schema.decodeEffect(Caller)
 
@@ -84,7 +90,7 @@ export const handleOf = Effect.fnUntraced(function* (
   as?: Caller,
   tenant?: string,
 ): Effect.fn.Return<
-  Record<string, unknown> & { readonly ref: ActorRef },
+  Readonly<Record<string, HandleMethod>> & { readonly ref: ActorRef },
   never,
   Actors | InternalActors
 > {
@@ -170,7 +176,7 @@ export const handleOf = Effect.fnUntraced(function* (
         if (member.kind === "stream")
           return [
             member.tag,
-            (input: unknown) =>
+            (input: Decoded) =>
               Stream.unwrap(
                 Effect.gen(function* () {
                   yield* outsideTurn
@@ -189,7 +195,7 @@ export const handleOf = Effect.fnUntraced(function* (
         if (isWorkflow(member))
           return [
             member.tag,
-            (input: unknown) => {
+            (input: Decoded) => {
               const identify = callIdOnce(member.tag)
 
               return Effect.gen(function* () {
@@ -234,7 +240,7 @@ export const handleOf = Effect.fnUntraced(function* (
             },
           ]
 
-        const call = (input: unknown) => {
+        const call = (input: Decoded) => {
           const identify = callIdOnce(member.tag)
 
           return Effect.gen(function* () {
@@ -274,7 +280,7 @@ export const handleOf = Effect.fnUntraced(function* (
 
         if (!isWatchable(member)) return [member.tag, call]
 
-        const watch = (input: unknown) =>
+        const watch = (input: Decoded) =>
           Stream.unwrap(
             Effect.gen(function* () {
               yield* outsideTurn
@@ -346,7 +352,7 @@ export const intentsOf = Effect.fnUntraced(function* (descriptor: Descriptor, id
       return [
         [
           member.tag,
-          (input: unknown) =>
+          (input: Decoded) =>
             Effect.gen(function* () {
               const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)
 
@@ -363,7 +369,7 @@ export const intentsOf = Effect.fnUntraced(function* (descriptor: Descriptor, id
 
       return [
         member.tag,
-        (input: unknown) =>
+        (input: Decoded) =>
           Effect.gen(function* () {
             const { staging: current } = yield* currentStaging(marker)
             const payload = yield* encodePayload({ value: input }).pipe(Effect.orDie)

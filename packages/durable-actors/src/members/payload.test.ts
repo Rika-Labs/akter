@@ -23,21 +23,23 @@ describe("direct event and job values", () => {
         })
 
         const event = Titled.make({ title: "a" })
+
         expect(event).toBeInstanceOf(Titled)
-        expect(new Titled({ title: "a" })).toEqual(event)
-        expect(JSON.parse(JSON.stringify(event))).toEqual({ _tag: "Titled", title: "a" })
+        expect(yield* Schema.encodeEffect(Schema.fromJsonString(Titled))(event)).toBe(
+          '{"_tag":"Titled","title":"a"}',
+        )
         expect(payloadChain(Titled)).toMatchObject({ first: 0, current: 1, writeVersion: 1 })
         expect(payloadChain(Rolling)).toMatchObject({ current: 1, writeVersion: 0 })
 
         const events = payloadCodec({ schema: Titled, tag: Titled.identifier })
-        const old = yield* events.decode(JSON.stringify({ _tag: "Titled", name: "b" }), 0)
+        const old = yield* events.decode('{"_tag":"Titled","name":"b"}', 0)
         expect(old).toBeInstanceOf(Titled)
         expect(old).toEqual(Titled.make({ title: "b" }))
 
         const jobs = payloadCodec({ schema: Rolling, tag: Rolling.tag })
         const written = yield* jobs.encode(Rolling.make({ title: "c" }))
         expect(written.version).toBe(0)
-        expect(JSON.parse(written.value)).toEqual({ _tag: "Rolling", name: "c" })
+        expect(written.value).toBe('{"_tag":"Rolling","name":"c"}')
         expect(yield* jobs.decode(written.value, written.version)).toEqual(
           Rolling.make({ title: "c" }),
         )

@@ -62,8 +62,11 @@ describe("reducer declarations", () => {
   it("gives reducers no handler in toLayer", () => {
     const Counter = Actor.make("Counter", { state: CounterState, api: { Increment, Reset } })
 
-    // @ts-expect-error a reducer has no handler
-    Counter.toLayer({ Reset: () => Effect.void, Increment: () => Effect.void })
+    const _reducerHandler: Layer.Layer<never, never, InternalActors> = Counter.toLayer({
+      Reset: () => Effect.void,
+      // @ts-expect-error a reducer has no handler
+      Increment: () => Effect.void,
+    })
 
     expectTypeOf(Counter.toLayer(Effect.succeed({ Reset: () => Effect.void }))).toEqualTypeOf<
       Layer.Layer<never, never, InternalActors>
@@ -75,7 +78,7 @@ describe("reducer declarations", () => {
       Layer.Layer<never, never, InternalActors>
     >()
 
-    Counter.toLayer(
+    const _serverHandler: Layer.Layer<never, never, InternalActors> = Counter.toLayer(
       // @ts-expect-error a reducer has no server handler
       Effect.succeed({
         Reset: () => Effect.void,

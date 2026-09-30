@@ -1,4 +1,4 @@
-import { Context, type Duration, Effect, Layer, Schema, Stream } from "effect"
+import { Context, type Duration, Effect, Layer, Result, Schema, Stream } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import {
@@ -366,9 +366,9 @@ describe("actor declarations", () => {
     const commands = Box.toLayer(Effect.succeed({ Bump: () => Effect.void }))
     expectTypeOf(commands).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
     // @ts-expect-error every command needs a handler in toLayer
-    Box.toLayer({})
+    const _commands: Layer.Layer<never, never, InternalActors> = Box.toLayer({})
     // @ts-expect-error every query needs a handler in toQueryLayer
-    Box.toQueryLayer({})
+    const _queries: Layer.Layer<never, never, InternalActors> = Box.toQueryLayer({})
 
     const reads = Box.toQueryLayer(
       Effect.succeed({
@@ -480,7 +480,7 @@ describe("actor declarations", () => {
       return 1
     })
 
-    Box.toQueryLayer(
+    const _watched: Layer.Layer<never, never, InternalActors> = Box.toQueryLayer(
       // @ts-expect-error a watched handler may require nothing but X.Read
       Effect.succeed({
         Peek: watchesClock,
@@ -696,7 +696,7 @@ describe("actor declarations", () => {
     expectTypeOf(Target.intents("other")).not.toExtend<Effect.Effect<unknown>>()
     expectTypeOf(Intent.cancel("wake")).not.toExtend<Effect.Effect<unknown>>()
 
-    const _requestReply = Target.toLayer(
+    const _requestReply: Layer.Layer<never, never, InternalActors> = Target.toLayer(
       // @ts-expect-error a handle acquired inside a turn could only make a request/reply call
       Effect.succeed({
         Ping: Effect.fnUntraced(function* () {
@@ -749,11 +749,11 @@ describe("actor declarations", () => {
     })
 
     expect(Moderate.tag).toBe("Moderate")
-    expect(Moderate.make({ body: "hi" })).toBeInstanceOf(Moderate)
-    expect(new Moderate({ body: "hi" })).toEqual(Moderate.make({ body: "hi" }))
-    expect(Schema.decodeUnknownSync(Moderate)({ _tag: "Moderate", body: "hi" })).toBeInstanceOf(
-      Moderate,
-    )
+    const moderated = Moderate.make({ body: "hi" })
+    expect(moderated).toBeInstanceOf(Moderate)
+    expect(
+      Result.flatMap(Schema.encodeResult(Moderate)(moderated), Schema.decodeResult(Moderate)),
+    ).toEqual(Result.succeed(moderated))
     expectTypeOf(Moderate.make({ body: "hi" })).toEqualTypeOf<{
       readonly _tag: "Moderate"
       readonly body: string
@@ -814,10 +814,14 @@ describe("actor declarations", () => {
 
     const executors = Room.toJobLayer({ Moderate: () => Effect.succeed({ flagged: true }) })
     expectTypeOf(executors).toEqualTypeOf<Layer.Layer<never, never, InternalActors>>()
-    // @ts-expect-error an executor must return its job's success type
-    Room.toJobLayer({ Moderate: () => Effect.succeed("flagged") })
+
+    const _wrong: Layer.Layer<never, never, InternalActors> = Room.toJobLayer({
+      // @ts-expect-error an executor must return its job's success type
+      Moderate: () => Effect.succeed("flagged"),
+    })
+
     // @ts-expect-error every bound job needs an executor
-    Room.toJobLayer({})
+    const _none: Layer.Layer<never, never, InternalActors> = Room.toJobLayer({})
 
     const layer = Room.toLayer({
       Post: Effect.fn(function* () {

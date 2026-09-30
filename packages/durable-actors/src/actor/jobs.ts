@@ -5,17 +5,16 @@ import type { AnyCommand } from "../members/command.ts"
 import { type AnyJob, CancelledOutcome, type ProgressJob, type ProgressOf } from "../members/job.ts"
 import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
 import type { EffectRoute, RegisteredEffect } from "../runtime/members.ts"
+import type { Decoded, Handler } from "./codecs.ts"
 import type { CompiledJob, Descriptor } from "./descriptor.ts"
 
 const utf8 = new TextEncoder()
-
-type Executor = (job: unknown) => Effect.Effect<unknown, unknown, unknown>
 
 /** What the relay knows of a cancelled job whose provider call succeeded. */
 interface CancelledSuccess {
   readonly effectId: string
   readonly attempts: number
-  readonly outcome: { readonly _tag: "Succeeded"; readonly value: unknown }
+  readonly outcome: { readonly _tag: "Succeeded"; readonly value: Decoded }
   readonly ambiguous: boolean
 }
 
@@ -25,7 +24,7 @@ const routeCodec = (command: AnyCommand) => {
     Schema.fromJsonString(Schema.toCodecJson(Schema.Struct({ value: command.payload }))),
   )
 
-  return (value: unknown) =>
+  return (value: Decoded) =>
     encode({ value }).pipe(
       Effect.map((payload): EffectRoute => ({ command: command.tag, payload })),
     )
@@ -41,21 +40,23 @@ const routeCodec = (command: AnyCommand) => {
  * reaches the executor.
  */
 const jobOf = (
-  Executor: Context.Key<unknown, unknown>,
+  Executor: Context.Key<object, object>,
   { job, codec, policy }: CompiledJob,
-  execute: Executor,
+  execute: Handler,
 ): RegisteredEffect => {
   const onSuccess = policy.onSuccess === undefined ? undefined : routeCodec(policy.onSuccess)
+
   const onDeadLetter =
     policy.onDeadLetter === undefined ? undefined : routeCodec(policy.onDeadLetter)
+
   const onCancelled = policy.onCancelled === undefined ? undefined : routeCodec(policy.onCancelled)
 
   const cancelledRoute = (
-    decoded: unknown,
+    decoded: Decoded,
     letter: Parameters<RegisteredEffect["cancelled"]>[2] | CancelledSuccess,
   ): Effect.Effect<EffectRoute | undefined, Schema.SchemaError> =>
     onCancelled === undefined
-      ? Effect.succeed(undefined)
+      ? Effect.undefined
       : onCancelled({
           jobId: letter.effectId,
           job: decoded,
@@ -122,7 +123,7 @@ const jobOf = (
         Effect.provideService(Executor, context),
         Effect.provideService(Tenant, context.ref.tenant),
         Effect.exit,
-      ) as Effect.Effect<Exit.Exit<unknown, unknown>>
+      )
 
       if (Exit.isFailure(exit))
         return yield* Effect.fail({
@@ -196,11 +197,15 @@ const jobOf = (
 }
 
 /** Every declared job's registration; a job without an executor is a defect of the layer. */
-export const jobsOf = (
-  descriptor: Descriptor,
-  Executor: Context.Key<unknown, unknown>,
-  executors: Readonly<Record<string, Executor | undefined>>,
-) =>
+export const jobsOf = ({
+  descriptor,
+  Executor,
+  executors,
+}: {
+  readonly descriptor: Descriptor
+  readonly Executor: Context.Key<object, object>
+  readonly executors: Readonly<Record<string, Handler>>
+}) =>
   Effect.gen(function* () {
     const registered = new Map<string, RegisteredEffect>()
 

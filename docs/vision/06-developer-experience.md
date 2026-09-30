@@ -37,8 +37,8 @@ export const CounterLive = Counter.toLayer(
 
 There is one package, `@durable-actors/core`, with four entries:
 
-- `@durable-actors/core` for `Actor.make`, members, `Intent`, identity, `ActorError`, `Actor.serve`, and auth (and `Fleet`, once [ADR 0056](../decisions/0056-fleet-views.md) is built);
-- `@durable-actors/core/runtime` for `Actors.layer`, topology, database, and migrations;
+- `@durable-actors/core` for browser-safe declarations: `Actor.make`, members, `Intent`, identity, and `ActorError` (and `Fleet`, once [ADR 0056](../decisions/0056-fleet-views.md) is built);
+- `@durable-actors/core/runtime` for `Actors.layer`, `Actors.serve`, `Auth`, topology, database, and migrations;
 - `@durable-actors/core/client` for the browser-safe Promise client;
 - `@durable-actors/core/testing` for `ActorTest`.
 

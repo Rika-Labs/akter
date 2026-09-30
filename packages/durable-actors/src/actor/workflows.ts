@@ -2,9 +2,8 @@ import { Context, Effect, Option } from "effect"
 import { CurrentCaller, System, Tenant } from "../identity/caller.ts"
 import { checkExecutionKey } from "../identity/execution.ts"
 import type { RegisteredWorkflow } from "../runtime/members.ts"
+import type { Handler } from "./codecs.ts"
 import type { Descriptor } from "./descriptor.ts"
-
-type Body = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
 
 /**
  * Every workflow's body. A body runs outside turns with the layer's context
@@ -12,12 +11,17 @@ type Body = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
  * execution's recorded principal through a `System({ source: "workflow" })`
  * caller.
  */
-export const workflowsOf = (
-  descriptor: Descriptor,
-  Workflow: Context.Key<unknown, unknown>,
-  bodies: Readonly<Record<string, Body | undefined>>,
-  services: Context.Context<never>,
-) =>
+export const workflowsOf = ({
+  descriptor,
+  Workflow,
+  bodies,
+  services,
+}: {
+  readonly descriptor: Descriptor
+  readonly Workflow: Context.Key<object, object>
+  readonly bodies: Readonly<Record<string, Handler>>
+  readonly services: Context.Context<never>
+}) =>
   Effect.gen(function* () {
     const registered = new Map<string, RegisteredWorkflow>()
 
