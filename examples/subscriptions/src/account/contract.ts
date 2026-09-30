@@ -1,6 +1,7 @@
 import { Actor } from "@durable-actors/core"
 import { integer, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Effect, Schema } from "effect"
+import { accountAccess } from "./access.ts"
 
 /** An account's key: a non-empty string. */
 export const AccountId = Schema.NonEmptyString.pipe(Schema.brand("AccountId"))
@@ -135,7 +136,7 @@ export const Cancel = Actor.command("Cancel")
 
 /**
  * Records the outcome of `Collect`. It is public because a workflow reaches
- * its owner through an ordinary handle; `authorize` refuses it to every
+ * its owner through an ordinary handle; the account's `access` refuses it to every
  * external caller, as it does `Collect`.
  */
 export const Settle = Actor.command("Settle", { input: Settlement })
@@ -181,6 +182,7 @@ export const Account = Actor.make("Account", {
   effects: [AttachCard],
   api: { Subscribe, UpdateCard, Cancel, Settle, Summary, Invoices, Collect },
   internal: { Renew, CardAttached },
+  access: accountAccess,
   policy: {
     createdBy: Subscribe,
     cron: { "0 0 1 * *": Renew },

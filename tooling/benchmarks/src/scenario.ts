@@ -100,7 +100,6 @@ const runtimeLayer = (
   probes(subscriptions).pipe(
     Layer.provideMerge(
       Actors.layer({
-        authorize: () => Effect.succeed(true),
         maxResidentActors,
         content: { keys: [BENCH_CONTENT_KEY] },
         rowLevelSecurity,
@@ -244,7 +243,6 @@ export const withRuntime =
               runners,
               shardLockExpiration: SHARD_LOCK_EXPIRATION,
               actors: probes(options.subscriptions),
-              authorize: () => Effect.succeed(true),
               maxResidentActors: options.maxResidentActors,
             }).pipe(Layer.provide([BunCrypto.layer, hooks])),
           ).pipe(Effect.orDie)

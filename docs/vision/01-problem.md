@@ -23,7 +23,7 @@ An actor can:
 - run workflows, cron, timers, and external effects;
 - hold typed connections and broadcast live hints;
 - hibernate and rebuild its activation;
-- attribute work to an ambient caller;
+- attribute work to the caller its transport authenticated, and let each actor decide who may use it;
 - remain inspectable in Postgres and ordinary observability tools.
 
 ## Product intent

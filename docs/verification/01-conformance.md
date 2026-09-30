@@ -1091,6 +1091,23 @@ An enforced turn binds the writer role together with the actor's tenant, because
 
 Not covered: the proposed `adoption` benchmark (the cost of the observing insert and the guard is unmeasured), an enforced turn with `rowLevelSecurity` on together (only the mismatched-role refusal is exercised), a login shared by the application and the runtime beyond the refusal, and Neki. A superuser can still drop the guard.
 
+### Caller defaults and actor access (ADR 0059)
+
+The cases live in [`conformance/access.ts`](../../packages/durable-actors/src/testing/conformance/access.ts), group `access`, and run on PGlite (`pglite.test.ts`) and real Postgres (`conformance.test.ts`); the Neki suite skips the group because each case opens a fresh database. Each case builds its own runtime with no global `authorize` unless it names one, so it sees the runtime's real defaults.
+
+- `runs in-process code as System({ source: process }) in the default tenant, with no authorize and no Actor.as or Actor.tenant`: a runtime from `Actors.layer()` alone runs a command and a query, and the turn reports tenant `default` and caller `System/process`; the same call under `Actor.as(User)` is `access_denied`.
+- `allows System callers and denies User and Anonymous callers of every kind when there is no access and no authorize`: command, query, open, stream, feed, and content.
+- `asks an actor's access policy for each kind: command, query, open, stream, feed, and content each allow and deny on their own`, with the request's `caller`, `ref`, `command`, and `kind` checked.
+- `requires the global authorize and the actor's access to both allow, and lets either alone decide when the other is absent`: all four combinations.
+- `applies an actor's access policy to live sessions on reauthorize: a revoked connection, stream, and feed each end with access_denied`, with `of` set to `open`, `stream`, and `feed`.
+- `answers a served request from a User or Anonymous caller with 403 access_denied by default, and lets an actor's access, or Actor.access.public, allow them`, under `Actor.auth.none` and a bearer provider.
+- `sees Anonymous, never System, on every served entry point under Actor.auth.none, and denies it by default`: HTTP command and query, SSE stream and feed, WebSocket open, content download and grant, and MCP `tools/call` are refused on an actor with no policy; on a recording actor every request, including each live session's reauthorization, is `Anonymous` in tenant `default`; operator routes answer `401`, and `/metrics` and the inspector serve without touching an actor. `Actor.serve` runs every route with `Anonymous` as the ambient caller, so a path that forgot to pass the authenticated caller would be refused rather than run as `System`.
+- `keeps internal commands System-only and off public handles when an actor's access allows everyone`: a non-System attempt is a defect and `Seal` is absent from the public handle.
+
+The quickstart integration (`packages/create` `test:integration`) scaffolds the counter and chat templates on the new defaults, and the example suites run their demos without `Actor.as` or `Actor.tenant` except where a test checks attribution.
+
+Not covered: the served watch route (not built; the in-process watch handle authorizes with `kind: "watch"` through the same check) and Neki.
+
 ### Failure-matrix cases (M5.5)
 
 [#394](https://github.com/Rika-Labs/durable-actors/issues/394) adds a case for each [failure-matrix](02-failure-matrix.md) row that described a durable transition without one. Each row's **Evidence** cell names its cases.

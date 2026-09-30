@@ -12,6 +12,7 @@ export const FeedProbe = Actor.make("FeedProbe", {
   events: [Pinged],
   feeds: [Pinged],
   api: { Ping },
+  access: Actor.access.public,
 })
 
 export const FeedProbeLive = FeedProbe.toLayer(
