@@ -1,6 +1,6 @@
 import { Effect, type Option, Schema } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
-import { Actor } from "../index.ts"
+import { Actor } from "../../index.ts"
 
 class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", { sku: Schema.String }) {}
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { Request } from "../../handles/actors.ts"
+import type { Request } from "../request.ts"
 import { BATCH_CAP, MERGE_CAP, takeBatch } from "./mailbox.ts"
 
 const waiting = (ids: ReadonlyArray<string>) =>

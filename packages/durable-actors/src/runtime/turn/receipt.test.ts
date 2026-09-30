@@ -3,7 +3,7 @@ import { Crypto, Effect, ManagedRuntime, Predicate, Schema } from "effect"
 import { Arbitrary } from "effect/unstable/arbitrary"
 import { describe, expect, it } from "vitest"
 import { User } from "../../identity/caller.ts"
-import { Outcome } from "../../handles/actors.ts"
+import { Outcome } from "../request.ts"
 import { checkProperty } from "../../testing/property.ts"
 import { checkReceipt, encodeOutcome, hashCanonical } from "./receipt.ts"
 

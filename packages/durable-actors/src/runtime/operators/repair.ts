@@ -1,6 +1,6 @@
 import { Context, type Crypto, Effect, Option, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { RegisteredEffect } from "../../handles/actors.ts"
+import type { RegisteredEffect } from "../registration.ts"
 import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { decodeText, readOnly } from "../inspector/queries.ts"

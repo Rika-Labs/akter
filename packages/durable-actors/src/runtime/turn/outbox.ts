@@ -1,6 +1,6 @@
 import { Context, Crypto, Effect, Match, Schema } from "effect"
 import { SqlClient, type SqlError, type Statement } from "effect/unstable/sql"
-import type { RegisteredSubscription } from "../../handles/actors.ts"
+import type { RegisteredSubscription } from "../registration.ts"
 import {
   Due,
   effectKey,

@@ -7,7 +7,7 @@ import {
   withRetryAfter,
 } from "../../errors/actor.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
-import { InternalActors } from "../../handles/actors.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import {
   Closed,

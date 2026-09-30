@@ -1,4 +1,4 @@
-import type { Request } from "../../handles/actors.ts"
+import type { Request } from "../request.ts"
 
 /**
  * The most commands one turn batch runs. It stays below the 64 open

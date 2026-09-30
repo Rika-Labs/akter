@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import type { EmittedEvent, Request } from "../../handles/actors.ts"
+import type { EmittedEvent } from "../registration.ts"
+import type { Request } from "../request.ts"
 import { System } from "../../identity/caller.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { bucketOf, CallerJson, OutboxRuntime, textArray } from "../turn/outbox.ts"

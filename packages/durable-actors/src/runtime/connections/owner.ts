@@ -31,9 +31,9 @@ import {
   type OpenConnection,
   type Registration,
   type StoredProgress,
-} from "../../handles/actors.ts"
+} from "../registration.ts"
 import { type ActorRef, Caller, type Principal, principal } from "../../identity/caller.ts"
-import type { ConnectionCommands } from "../../identity/command.ts"
+import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"

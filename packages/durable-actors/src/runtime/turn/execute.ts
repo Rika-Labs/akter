@@ -6,10 +6,9 @@ import {
   type BusinessResult,
   type ConnectionLister,
   type EmittedEvent,
-  Outcome,
   type RegisteredCommand,
-  type Request,
-} from "../../handles/actors.ts"
+} from "../registration.ts"
+import { Outcome, type Request } from "../request.ts"
 import { callerKey, System } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { isMintedId, provesMint } from "../../identity/mint.ts"
