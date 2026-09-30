@@ -27,6 +27,16 @@ export interface RecordedDefect {
   readonly cause: string
 }
 
+/** The annotations of a `Delivery timed out` warning. */
+export interface RecordedTimeout {
+  readonly actor: unknown
+  readonly id: unknown
+  readonly commandId: unknown
+  readonly activation: unknown
+  readonly turnSessions: unknown
+  readonly restarting: unknown
+}
+
 export interface FoundationFixture {
   creates: number
   privateRuns: number
@@ -35,6 +45,8 @@ export interface FoundationFixture {
   deliveryRuns: number
   deliveryHold: Effect.Effect<void>
   defects: Array<RecordedDefect>
+  /** Each `Delivery timed out` warning the runtime logged. */
+  timeouts: Array<RecordedTimeout>
 }
 
 export const foundationFixture = (): FoundationFixture => ({
@@ -45,17 +57,31 @@ export const foundationFixture = (): FoundationFixture => ({
   deliveryRuns: 0,
   deliveryHold: Effect.void,
   defects: [],
+  timeouts: [],
 })
 
-/** Captures the runtime's deterministic-defect log records, which replace the removed defect hook. */
+/**
+ * Captures the runtime's deterministic-defect log records, which replace the
+ * removed defect hook, and the diagnostics of each delivery that timed out.
+ */
 export const defectRecorder = (fixture: FoundationFixture) =>
   Logger.layer(
     [
       Logger.make((options) => {
         const message = Array.isArray(options.message) ? options.message[0] : options.message
+        const annotations = options.fiber.getRef(References.CurrentLogAnnotations)
+
+        if (message === "Delivery timed out")
+          fixture.timeouts.push({
+            actor: annotations["actor"],
+            id: annotations["id"],
+            commandId: annotations["commandId"],
+            activation: annotations["activation"],
+            turnSessions: annotations["turnSessions"],
+            restarting: annotations["restarting"],
+          })
 
         if (message !== "Deterministic actor defect") return
-        const annotations = options.fiber.getRef(References.CurrentLogAnnotations)
 
         fixture.defects.push({
           actor: String(annotations["actor"]),
@@ -619,6 +645,7 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             Effect.andThen(Deferred.await(release)),
           )
           fixture.foundation.deliveryRuns = 0
+          fixture.foundation.timeouts.length = 0
           const id = yield* (yield* Actors).mintCommandId
           const pending = yield* actor.Bump().pipe(Actor.commandId(id), Effect.forkScoped)
           yield* Deferred.await(reached)
@@ -626,6 +653,17 @@ export const foundationConformance: ReadonlyArray<ConformanceCase> = [
             reason: Timeout.make({ commandId: id }),
             isRetryable: true,
           })
+          expect(fixture.foundation.timeouts[0]).toMatchObject({
+            actor: actor.ref.actor,
+            id: actor.ref.id,
+            commandId: id,
+            activation: { handlers: 1, building: false, worker: "turn", mailbox: 0, batch: 1 },
+            restarting: [],
+          })
+
+          const sessions = fixture.foundation.timeouts[0]?.turnSessions
+
+          if (sessions !== undefined) expect(sessions).toMatchObject({ leased: 1, waiting: 0 })
 
           const retry = yield* actor
             .Bump()
