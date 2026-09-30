@@ -1,7 +1,5 @@
 import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
-import type { ServedMember } from "../../actor/served.ts"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
-import type { ValueSchema } from "../../members/command.ts"
 import { aborted, decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
 import { readEvents } from "./feed.ts"
 
@@ -37,9 +35,9 @@ const later = (current: string | undefined, seen: string | undefined) =>
     ? seen
     : current
 
-interface WatchSource {
-  /** The served query watched. */
-  readonly member: ServedMember
+interface WatchSource<A> {
+  /** Decodes one result's JSON: the watched query's output, or a fleet page. */
+  readonly decode: (json: Schema.Json) => Effect.Effect<A, Failure>
   /**
    * Posts the watch with its encoded input and fresh headers. `version` is the
    * least commit version its first result must reflect, sent as
@@ -57,8 +55,8 @@ interface WatchSource {
 }
 
 /**
- * One watch on a query declared `watch: true`: its current result, then the
- * newest result after each commit that changed what the query read. A watch is
+ * One watch of served state, a query declared `watch: true` or a fleet view:
+ * its current result, then the newest result after each change. A watch is
  * state, not history, so a dropped connection is reopened after a jittered,
  * growing delay, or the server's `retryAfter`, with the greatest version any
  * result carried as `durable-min-version`; its first result is the current
@@ -66,17 +64,15 @@ interface WatchSource {
  * declared error or the `ActorError` that ended it when a retry cannot help,
  * and an expired credential is retried once.
  */
-export const watchStream = ({
-  member,
+export const watchStream = <A>({
+  decode,
   open,
   declared,
   token,
   options,
-}: WatchSource): Stream.Stream<ValueSchema["Type"], Failure> =>
-  Stream.callback<ValueSchema["Type"], Failure>((out) =>
+}: WatchSource<A>): Stream.Stream<A, Failure> =>
+  Stream.callback<A, Failure>((out) =>
     Effect.gen(function* () {
-      const decodeOutput = Schema.decodeUnknownEffect(Schema.toCodecJson(member.output))
-
       const failureOf = (text: string, status: number, headers = new Headers()) =>
         decodeFailure(declared)({ status, headers, text, sentAt: 0 })
 
@@ -100,7 +96,7 @@ export const watchStream = ({
             if (message.event === "end") return yield* failureOf(message.data, 0)
 
             const json = yield* decodeJson(message.data).pipe(Effect.mapError(undecodableFailure))
-            const value = yield* decodeOutput(json).pipe(Effect.mapError(undecodableFailure))
+            const value = yield* decode(json)
             last = later(last, message.id)
             failures = 0
             authRetried = false

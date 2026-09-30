@@ -2,7 +2,9 @@ import { Data, Schema } from "effect"
 import { createElement } from "react"
 import { renderToString } from "react-dom/server"
 import { describe, expect, expectTypeOf, it } from "vitest"
-import { Actor } from "@durable-actors/core"
+import { Actor, Fleet } from "@durable-actors/core"
+import { fleetClient } from "@durable-actors/core/client"
+import { pgTable, text } from "drizzle-orm/pg-core"
 import {
   useActor,
   useActorState,
@@ -45,6 +47,24 @@ const refuse = () => Promise.reject(new Error("rendering must not fetch"))
 
 const rooms = Room.client({ baseUrl: "http://server.invalid", fetch: refuse })
 
+const Posts = Actor.table(
+  pgTable("react_posts", { id: text("id").primaryKey(), author: text("author").notNull() }),
+)
+
+Actor.make("ReactAuthor", { key: Schema.String, tables: [Posts], api: {} })
+
+const PostsByAuthor = Fleet.view("PostsByAuthor", {
+  from: Posts,
+  groupBy: ["author"],
+  select: { posts: Fleet.count() },
+})
+
+const fleet = fleetClient({
+  views: [PostsByAuthor],
+  baseUrl: "http://server.invalid",
+  fetch: refuse,
+})
+
 const Page = () => {
   const room = useActor(rooms, "r1")
   const state = useActorState(room)
@@ -52,19 +72,22 @@ const Page = () => {
   const count = useQuery((options) => room.Count(options), [room])
   const feed = useEventFeed(room, Posted, { storageKey: "r1" })
   const watched = useWatch((options) => room.Count.watch(options), [room])
+  const authors = useWatch((options) => fleet.PostsByAuthor.subscribe({}, options), [])
   const presence = useConnection(room.Presence, undefined)
 
   return createElement(
     "p",
     null,
-    `${post.state.status} ${String(count.loading)} ${feed.entries.length} ${String(watched.data)} ${presence.status} ${JSON.stringify(state ?? null)}`,
+    `${post.state.status} ${String(count.loading)} ${feed.entries.length} ${String(watched.data)} ${String(authors.data?.rows.length)} ${presence.status} ${JSON.stringify(state ?? null)}`,
   )
 }
 
 describe("@durable-actors/react", () => {
   it("renders on a server without fetching, connecting, or touching browser globals", () => {
     expect("window" in globalThis).toBe(false)
-    expect(renderToString(createElement(Page))).toBe("<p>idle true 0 undefined connecting null</p>")
+    expect(renderToString(createElement(Page))).toBe(
+      "<p>idle true 0 undefined undefined connecting null</p>",
+    )
   })
 
   it("keeps at most `keep` recent connection frames, and none for zero", () => {

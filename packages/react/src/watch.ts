@@ -23,7 +23,8 @@ const NOT_CREATED_RETRY = "500 millis"
  * query's answer changes. The watch reopens when its connection drops and
  * shows the current state first. An actor no command has created yet is asked
  * for again until one does. Nothing runs on the server during rendering, so it
- * is safe under SSR. `watch` is a handle's `Query.watch` bound to its input;
+ * is safe under SSR. `watch` is a handle's `Query.watch` bound to its input,
+ * or a fleet client's `View.subscribe` bound to its filter;
  * `deps` is named by the caller, as for `useEffect`. `error` is the Promise
  * client's: a declared error or an `ActorError`.
  */

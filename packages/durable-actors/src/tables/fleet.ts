@@ -1,5 +1,9 @@
 import { getTableColumns, sql } from "drizzle-orm"
-import { Predicate } from "effect"
+import { Effect, Predicate, Schema, Stream } from "effect"
+import { FLEET_PAGE_DEFAULT, FleetPageJson, fleetFilterText } from "../client/fleet-page.ts"
+import { InternalActors } from "../runtime/actors.ts"
+import { CurrentCaller, Tenant } from "../identity/caller.ts"
+import type { ActorError } from "../errors/actor.ts"
 import {
   bigint,
   customType,
@@ -81,6 +85,52 @@ export interface SelectedAggregate {
   /** The source column's SQL name, or undefined for `count`. */
   readonly column: string | undefined
 }
+
+/** A value as it travels in a fleet page's JSON: dates as ISO strings, bigints as numbers. */
+type JsonValue<X> = X extends Date ? string : X extends bigint ? number : X
+
+type AggregateValue<T extends AnyOwnedTable, A> =
+  A extends Aggregate<"count" | "sum" | "avg", string>
+    ? number
+    : A extends Aggregate<"min" | "max", infer K>
+      ? JsonValue<ColumnData<T, K>> | null
+      : never
+
+/** One group of a fleet page: its group keys and its aggregates. */
+export type FleetRow<V extends AnyFleetView> =
+  V extends FleetView<string, infer T, infer G, infer S>
+    ? { readonly [K in G[number]]: JsonValue<ColumnData<T, K>> } & {
+        readonly [K in keyof S]: AggregateValue<T, S[K]>
+      }
+    : never
+
+/**
+ * One page of a fleet subscription: the caller's tenant's groups in
+ * group-key order, `asOf` the change-feed position the view has applied
+ * (comparable with a command's `durable-version`: once `asOf` is at least the
+ * token, the view has seen that command), and `stale` while the view is
+ * building or has stopped advancing.
+ */
+export interface FleetPage<Row> {
+  readonly asOf: string | null
+  readonly stale: boolean
+  readonly rows: ReadonlyArray<Row>
+}
+
+/** Equality filters on a view's group keys. */
+export type FleetFilter<V extends AnyFleetView> = {
+  readonly [K in V["groupBy"][number]]?: string | number | boolean
+}
+
+/** Options of one fleet subscription. */
+export interface FleetOptions {
+  /** The most groups a page holds: default 100, at most 1,000. */
+  readonly limit?: number
+}
+
+const decodeResult = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ value: FleetPageJson })),
+)
 
 /** A declared fleet view: one group-by over one owned table, kept in `table`. */
 export interface FleetView<
@@ -364,11 +414,49 @@ const max = <const K extends string>(column: K): Aggregate<"max", K> => ({
 })
 
 /**
+ * Follows `view` for the ambient tenant as the ambient caller: its current
+ * page, then a page each time the view changed and the page differs. It is
+ * authorized like a served subscription, with `kind: "fleet"`, and ends
+ * `Unauthorized` once reauthorization is refused. It needs the runtime that
+ * registered the view.
+ */
+const subscribe = <V extends AnyFleetView>(
+  view: V,
+  filter: FleetFilter<V> = {},
+  options: FleetOptions = {},
+): Stream.Stream<FleetPage<FleetRow<V>>, ActorError, InternalActors> =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const actors = yield* InternalActors
+
+      const results = yield* actors.fleet({
+        view: view.name,
+        caller: yield* CurrentCaller,
+        tenant: yield* Tenant,
+        filter: fleetFilterText(filter as Readonly<Record<string, string | number | boolean>>),
+        limit: options.limit ?? FLEET_PAGE_DEFAULT,
+        expiresAt: undefined,
+      })
+
+      return results.pipe(
+        Stream.mapEffect(({ value }) =>
+          decodeResult(value).pipe(
+            Effect.orDie,
+            Effect.map(({ value: page }) => page as FleetPage<FleetRow<V>>),
+          ),
+        ),
+      )
+    }),
+  )
+
+/**
  * Fleet reads: declared views over one owned table of a tenant-placed actor
  * type, grouped by tenant first and maintained from the change feed, outside
  * every turn.
  */
 export const Fleet = {
+  /** Follows a view for the ambient tenant; see `subscribe`. */
+  subscribe,
   /** Declares a fleet view; see `view`. */
   view,
   /** Counts a group's rows. */

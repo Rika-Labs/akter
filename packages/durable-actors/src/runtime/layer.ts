@@ -31,6 +31,7 @@ import { SqlClient, SqlError } from "effect/unstable/sql"
 import {
   ActorError,
   ActorUnavailable,
+  InvalidInput,
   Unauthorized,
   Timeout,
   MailboxFull,
@@ -97,6 +98,7 @@ import { startSweeps } from "./sweeps.ts"
 import type { AnyFleetView } from "../tables/fleet.ts"
 import { checkFleet } from "./fleet/checks.ts"
 import { maintain } from "./fleet/maintainer.ts"
+import { type FleetSubscribe, fleetSubscriptions } from "./fleet/subscribe.ts"
 
 /** Configuration for `Actors.layer`: authorization, actor and effect layers, timing, retention, and row-level security. */
 export interface Options {
@@ -237,6 +239,9 @@ const millis = (duration: Duration.Input) =>
   Millis.make(Math.floor(Duration.toMillis(Duration.fromInputUnsafe(duration))))
 
 const decodeTarget = Schema.decodeEffect(ExecutionTarget)
+
+/** How often a fleet subscription is authorized again when its source's actor type is not registered here. */
+const DEFAULT_REAUTHORIZE_MS = 60_000
 
 /** Added to the longest turn a claimed intent's receiver may take. */
 const CLAIM_MARGIN_MS = 5000
@@ -973,6 +978,8 @@ export const layer = (options: Options = {}) => {
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
+      let fleetSubscribe: FleetSubscribe | undefined
+
       if (options.fleet !== undefined && options.fleet.length > 0) {
         if (Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient)))
           return yield* Effect.die(
@@ -987,6 +994,14 @@ export const layer = (options: Options = {}) => {
         )
 
         yield* maintain(views).pipe(Effect.provideContext(services), Effect.forkIn(scope))
+
+        fleetSubscribe = yield* fleetSubscriptions({
+          views,
+          role: options.rowLevelSecurity?.role,
+          permitted,
+          reauthorizeMs: (actorType) =>
+            registrations.get(actorType)?.policy.reauthorizeMs ?? DEFAULT_REAUTHORIZE_MS,
+        }).pipe(Effect.provideContext(services))
       }
 
       const { cleanup, sweeping, sample } = yield* startSweeps({
@@ -1034,6 +1049,11 @@ export const layer = (options: Options = {}) => {
       })
 
       const internalActors = InternalActors.of({
+        fleet: (request) =>
+          fleetSubscribe === undefined
+            ? ActorError.make({ reason: InvalidInput.make({ code: "unknown_route" }) })
+            : fleetSubscribe(request),
+        fleetViews: new Set((options.fleet ?? []).map(({ name }) => name)),
         seed: seeding,
         mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
         mintChildId: (input) =>

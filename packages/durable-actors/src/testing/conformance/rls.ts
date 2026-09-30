@@ -189,7 +189,13 @@ const viewsTo = (owner: string) => `DO $$
  * runtime takes for tenant-scoped transactions, and a separate view-owner role
  * the policies bind, which the tenant role can't act as.
  */
-const grants = ({ role, viewOwner }: { readonly role: string; readonly viewOwner: string }) => [
+export const grants = ({
+  role,
+  viewOwner,
+}: {
+  readonly role: string
+  readonly viewOwner: string
+}) => [
   `CREATE ROLE ${role} NOLOGIN`,
   `GRANT USAGE ON SCHEMA public TO ${role}`,
   `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,

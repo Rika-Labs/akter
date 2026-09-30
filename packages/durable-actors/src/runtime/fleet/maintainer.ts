@@ -5,6 +5,7 @@ import { SqlClient, type SqlError } from "effect/unstable/sql"
 import type { AggregateKind, AnyFleetView } from "../../tables/fleet.ts"
 import type { AnyOwnedTable, Filter } from "../../tables/owned.ts"
 import { tenantRoutingKey } from "../storage/codec.ts"
+import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { filterSql } from "../turn/rows.ts"
 import { decode, type Relation, type Tuple } from "./pgoutput.ts"
 
@@ -29,13 +30,23 @@ export const LOCK_RETRY = "2 seconds"
 const REBUILD_GROUPS_PER_POLL = 40
 
 /**
- * Test points in a maintainer batch: `afterApply` runs after the batch's
- * derived rows commit and before the slot advances, where a crash replays
- * the batch.
+ * Test points of the fleet engine: `afterApply` runs after a batch's derived
+ * rows commit and before the slot advances, where a crash replays the batch;
+ * `poll` and `page` count a runner's subscription reads.
  */
 export const FleetHooks = Context.Reference<{
   readonly afterApply: Effect.Effect<void>
-}>("durable-actors/FleetHooks", { defaultValue: () => ({ afterApply: Effect.void }) })
+  /** Runs before each read of a view's state by a runner's subscription poller. */
+  readonly poll: (view: string) => Effect.Effect<void>
+  /** Runs before each page query of a subscription. */
+  readonly page: (view: string) => Effect.Effect<void>
+}>("durable-actors/FleetHooks", {
+  defaultValue: () => ({
+    afterApply: Effect.void,
+    poll: () => Effect.void,
+    page: () => Effect.void,
+  }),
+})
 
 const dialect = new PgDialect()
 
@@ -353,6 +364,20 @@ const run = Effect.fnUntraced(function* (
     if (behind.length > 0) yield* markAllStale
   })
 
+  let drained = yield* now
+
+  /** Sets each view's lag gauges: WAL bytes past what was applied, and time since the feed was last drained. */
+  const reportLag = (flush: string) =>
+    Effect.gen(function* () {
+      const bytes = position === undefined ? 0 : Number(BigInt(flush) - BigInt(position))
+      const ms = (yield* now) - drained
+
+      for (const name of names) {
+        yield* record(Metrics.fleetLagBytes, { view: name }, bytes)
+        yield* record(Metrics.fleetLag, { view: name }, ms)
+      }
+    })
+
   const batch = Effect.gen(function* () {
     const found = yield* slot
 
@@ -389,9 +414,16 @@ const run = Effect.fnUntraced(function* (
     const target =
       rows.length >= PEEK_CHANGES && lastEnd !== undefined ? String(lastEnd) : found.flush
 
-    if (BigInt(target) <= BigInt(position)) return false
+    if (BigInt(target) <= BigInt(position)) {
+      drained = yield* now
+      yield* reportLag(found.flush)
+
+      return false
+    }
 
     const status = yield* statuses
+
+    const recomputed = new Map<string, number>()
 
     yield* inTransaction(
       Effect.gen(function* () {
@@ -429,6 +461,8 @@ const run = Effect.fnUntraced(function* (
             }),
           )
 
+          if (ok) recomputed.set(name, groups.length)
+
           if (ok && row.status === "ready") advanced.push(name)
         }
 
@@ -447,6 +481,14 @@ const run = Effect.fnUntraced(function* (
       sql`SELECT 1 FROM pg_replication_slot_advance(${FLEET_SLOT}, '0/0'::pg_lsn + ${target}::numeric)`,
     )
     position = target
+
+    yield* count(Metrics.fleetBatches, {}, 1)
+
+    for (const [name, groups] of recomputed)
+      yield* count(Metrics.fleetGroupsRecomputed, { view: name }, groups)
+
+    if (target === found.flush) drained = yield* now
+    yield* reportLag(found.flush)
 
     return rows.length > 0
   })

@@ -17,6 +17,8 @@ const live = Layer.unwrap(
 
     const hooks = Layer.succeed(FleetHooks, {
       afterApply: crash ? Console.log("APPLIED").pipe(Effect.andThen(Effect.never)) : Effect.void,
+      poll: () => Effect.void,
+      page: () => Effect.void,
     })
 
     return FleetOrderLive.pipe(

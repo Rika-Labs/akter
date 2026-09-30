@@ -12,7 +12,10 @@ export interface AccessRequest {
    * event feed (with `command` set to the event tag), `watch` for a query
    * watch (with `command` set to the query tag), `reauthorize` for a live
    * session's periodic check, and `content` for a content operation on the
-   * actor, with `command` set to `<blob>.grant` or `<blob>.get`. A policy
+   * actor, with `command` set to `<blob>.grant` or `<blob>.get`, and `fleet`
+   * for a fleet view subscription, with `command` set to the view and `ref`
+   * naming the caller's tenant and the view's source actor type, with the view
+   * as its id, since a fleet read spans every actor of the type. A policy
    * should deny kinds it does not know.
    */
   readonly kind:
@@ -24,8 +27,9 @@ export interface AccessRequest {
     | "watch"
     | "reauthorize"
     | "content"
-  /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, or a `watch`. */
-  readonly of?: "open" | "stream" | "feed" | "watch"
+    | "fleet"
+  /** On `reauthorize`, what the session is: an `open` connection, a `stream`, a `feed`, a `watch`, or a `fleet` subscription. */
+  readonly of?: "open" | "stream" | "feed" | "watch" | "fleet"
 }
 
 /**

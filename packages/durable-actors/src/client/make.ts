@@ -41,6 +41,7 @@ import {
   type Reply,
   networkFailure,
   retryAfterHeader,
+  undecodableFailure,
 } from "./transport.ts"
 
 const JwtClaims = Schema.Struct({ iss: Schema.NonEmptyString, sub: Schema.NonEmptyString })
@@ -1093,7 +1094,10 @@ export const clientOf =
 
           return Stream.toAsyncIterable(
             watchStream({
-              member,
+              decode: (json) =>
+                Schema.decodeEffect(Schema.toCodecJson(member.output))(json).pipe(
+                  Effect.mapError(undecodableFailure),
+                ),
               declared: declaredDecoder(member),
               options: watchOptions,
               token: () => origin.token.value,
