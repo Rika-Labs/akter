@@ -15,8 +15,8 @@ import { Pool, type PoolClient } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { ActorRef } from "../../identity/caller.ts"
 import { Database } from "../layer.ts"
-import { fence, heldGeneration, type OwnedActor } from "../storage/generation.ts"
-import { migrate } from "./migrations.ts"
+import { migrate } from "../database/migrations.ts"
+import { fence, heldGeneration, type OwnedActor } from "./generation.ts"
 
 const actor: OwnedActor = {
   key: 42n,
