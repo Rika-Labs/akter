@@ -2,7 +2,7 @@ import { PGlite } from "@electric-sql/pglite"
 import { customType, integer, pgTable, text, uuid } from "drizzle-orm/pg-core"
 import { Cause, Crypto, Effect, Exit, Layer, Redacted, Schema, type Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, type Actors, User } from "../../index.ts"
+import { Actor, type Actors } from "../../index.ts"
 import type { InternalActors } from "../../handles/actors.ts"
 import { backfillAdoption } from "../../runtime/adoption/backfill.ts"
 import { adoptionWriters, observeAdoption } from "../../runtime/adoption/observe.ts"
@@ -304,7 +304,6 @@ const runtimeOn = (target: Target) =>
           Layer.provideMerge(
             ActorTest.layer({
               database: Redacted.isRedacted(target) ? target : { liveClient: target.liveClient },
-              as: User.make({ subject: "alice" }),
             }),
           ),
           Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
