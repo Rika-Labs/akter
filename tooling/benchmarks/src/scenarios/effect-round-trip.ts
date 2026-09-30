@@ -23,7 +23,6 @@ export const effectRoundTrip: Scenario = {
   multiRunner: true,
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       for (const workers of [1, 64])
@@ -43,8 +42,8 @@ export const effectRoundTrip: Scenario = {
                 instruments,
                 workers,
                 ...(workers === 1
-                  ? { operations: quick ? 100 : 1000 }
-                  : { durationMs: quick ? 2000 : 10_000 }),
+                  ? { operations: context.quick ? 100 : 1000 }
+                  : { durationMs: context.quick ? 2000 : 10_000 }),
                 operation: trip(name),
                 listStatements: workers === 1,
               })
@@ -52,7 +51,7 @@ export const effectRoundTrip: Scenario = {
           ),
         )
 
-      if (quick) return results
+      if (context.quick) return results
 
       const window = 10_000
 

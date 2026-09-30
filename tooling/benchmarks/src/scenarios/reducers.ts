@@ -17,9 +17,8 @@ export const reducers: Scenario = {
     "Server reducer turns on one warm actor: a reducer replying the new state, a commutative reducer replying void, a reducer failing with a declared error, and 64 concurrent callers.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
-      const operations = quick ? 300 : 3000
-      const durationMs = quick ? 2000 : 10_000
+      const operations = context.quick ? 300 : 3000
+      const durationMs = context.quick ? 2000 : 10_000
 
       const cases: ReadonlyArray<{
         readonly name: string

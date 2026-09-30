@@ -5,7 +5,7 @@ import type { AnyBlob } from "../members/blob.ts"
 import type { AnyEffect, ProgressEffect, ProgressOf } from "../members/effect.ts"
 import type { EventClass } from "../members/event.ts"
 import type { BlobReadOf, BlobWriteOf } from "../state/blob.ts"
-import type { Group, AnyOwnedTable, ScopedRead, ScopedRows } from "../tables/owned.ts"
+import type { Group, AnyOwnedTable, ScopedRead, TurnRows } from "../tables/owned.ts"
 
 /**
  * The running turn's marker while a command turn executes. Request/reply
@@ -54,7 +54,7 @@ export interface CommandContext<
   /** Appends a declared event that is stored, and replayable, only if this turn commits. */
   readonly emit: (event: Event["Type"]) => Effect.Effect<void>
   /** This actor's rows of a declared table, bound to the turn transaction. */
-  readonly rows: <T extends Tables>(table: T) => ScopedRows<T>
+  readonly rows: <T extends Tables>(table: T) => TurnRows<T>
   /** Read-only joins across the actor's placement group, inside the turn transaction. */
   readonly group: Group
   /**

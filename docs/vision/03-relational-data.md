@@ -25,11 +25,11 @@ SQL observation: who may read and relate rows
 Database schema: how business facts are represented
 ```
 
-`X.Turn` receives scoped write capabilities. `X.Read` and `X.Connection` receive read-only capabilities. `group` provides read-only joins across the actor's placement group; wider reads use declared `Fleet.view` definitions. Neither erases tenant or actor ownership rules.
+`X.Turn` receives scoped write capabilities. `X.Read` and `X.Connection` receive read-only capabilities. `group` provides read-only joins across the actor's placement group; wider reads will use declared `Fleet.view` definitions ([ADR 0056](../decisions/0056-fleet-views.md)). Neither erases tenant or actor ownership rules.
 
 ## Tenancy
 
-There is one Postgres database per deployment region, not one database per tenant. Every framework and business row carries `tenant_id`; composite indexes and optional row-level security reinforce isolation. `shardGroup` controls compute placement and can align with Neki data placement, but placement is not an authorization boundary.
+There is one Postgres database per deployment region, not one database per tenant. Every framework and business row carries `tenant_id`; composite indexes and optional row-level security reinforce isolation. Cluster sharding controls compute placement and `placement` controls which actors share a routing key for data placement, but placement is not an authorization boundary.
 
 Queries come in three tiers. A local query reads one actor's rows. A group query reads actors that share a placement key (by default, one tenant) from one shard and one snapshot. A fleet query spans placement keys or regions; it is explicit, eventually consistent, and never runs inside a turn. The tiers keep a query's cost the same at 100,000 actors and at a trillion. See [ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md).
 
