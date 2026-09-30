@@ -16,7 +16,7 @@ export interface Incompatibility {
 }
 
 /** An actor type as a deployment declares it: its name and its workflow members. */
-export interface DeclaredActor {
+interface DeclaredActor {
   readonly name: string
   readonly workflows: ReadonlyArray<AnyWorkflow>
 }

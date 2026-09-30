@@ -7,7 +7,7 @@ import { Metrics, record } from "./metrics.ts"
 const STUCK_ATTEMPTS = 8
 
 /** An actor type's event-retention settings, in milliseconds, as the sampler reads them. */
-export interface SampledType {
+interface SampledType {
   readonly actorType: string
   readonly keepEventsMs: number
   readonly holdEventsMs: number

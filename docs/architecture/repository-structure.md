@@ -35,6 +35,7 @@ tooling/
   structure/                @durable-actors/structure  tree checker and the exemptions file
   databases/                @durable-actors/databases  disposable Postgres, Neki and PGlite for tests
   benchmarks/               @durable-actors/benchmarks  `bun run bench` performance harness (ADR 0018)
+  doc-checks/               @durable-actors/doc-checks  typechecks doc examples and checks repository links (ADR 0061)
 benchmarks/                 committed benchmark results and how to read them; data only, no code
 docs/  research/  .github/src/
 ```
