@@ -1247,6 +1247,9 @@ export const activationEngine = (options: {
     /**
      * Runs or replays an execution after a committed workflow command. A live
      * run replays once more after it suspends; an interrupt stops it first.
+     * A pass with working steps gets its recovery timer back, since the relay
+     * consumed it; that write holds the generation row like `finish`, so it
+     * never re-arms an execution a replay already finished.
      */
     const kick = (executionId: string, interrupt: boolean) =>
       Effect.gen(function* () {
@@ -1278,7 +1281,8 @@ export const activationEngine = (options: {
               const [row] = yield* sql<{
                 caller: string
               }>`SELECT caller FROM actor_workflow_executions
-                WHERE routing_key = ${routingKey} AND execution_id = ${executionId}`
+                WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
+                  AND status <> 'finished'`
 
               if (row === undefined) return
               const caller = yield* decodeCaller(row.caller).pipe(Effect.orDie)
