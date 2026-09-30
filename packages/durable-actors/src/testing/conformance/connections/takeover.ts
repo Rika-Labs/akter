@@ -1,10 +1,10 @@
-import { Deferred, Effect, Predicate, Schedule, Schema } from "effect"
+import { Deferred, Effect, Fiber, Predicate, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { SessionEnded } from "../../../errors/actor.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { ActorCluster } from "../../cluster.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Hello, Live, Room, Said, Say, holdNext } from "./actors.ts"
+import { Hello, Live, Room, Said, Say, holdNext, type ConnectionsFixture } from "./actors.ts"
 import {
   connect,
   eventually,
@@ -21,7 +21,7 @@ import {
 } from "./harness.ts"
 
 /** Ownership takeover, cross-runner wakes, and owner loss of held connections. */
-export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
+export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase<ConnectionsFixture>> = [
   {
     name: "a failed generation acquisition caches nothing, so the retried frame acquires once and resumes the session",
     run: ({ expect, environment }) =>
@@ -66,7 +66,7 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const { room, connection } = yield* connect("connections-takeover")
           yield* next(connection)
-          const hold = yield* holdNext(fixture.connections)
+          const hold = yield* holdNext(fixture)
           yield* connection.send(Say.make({ text: "hold" }))
           yield* hold.reached
 
@@ -121,13 +121,90 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "an open that races a takeover waits for it, writes no session under the stale generation, and the reopened session handles the next frame once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const room = yield* Room.get("connections-open-takeover")
+          const hold = yield* holdNext(fixture)
+
+          const opening = yield* test
+            .connect(room.ref, Live, { name: "held" })
+            .pipe(Effect.forkChild({ startImmediately: true }))
+
+          yield* Effect.gen(function* () {
+            yield* hold.reached
+            const takeover = yield* environment.connect!
+            yield* takeover.query("BEGIN")
+
+            const bumped = (yield* takeover.query(
+              `UPDATE actor_generations SET generation = generation + 1
+               WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3
+               RETURNING generation::text AS generation`,
+              [room.ref.tenant, room.ref.actor, room.ref.id],
+            )) as ReadonlyArray<{ readonly generation: string }>
+
+            expect(bumped.length).toBe(1)
+            expect(yield* rows(room.ref)).toEqual([])
+            yield* hold.release
+
+            yield* eventually(
+              Effect.map(
+                sql<{
+                  waiting: number
+                }>`SELECT count(*)::int AS waiting FROM pg_locks
+                  JOIN pg_stat_activity USING (pid)
+                  WHERE NOT granted AND datname = current_database()`,
+                ([row]) => row!.waiting > 0,
+              ).pipe(Effect.orDie),
+              "the open's session write to wait on the takeover",
+            )
+
+            expect(yield* rows(room.ref)).toEqual([])
+            yield* takeover.query("COMMIT")
+
+            const connection = yield* Fiber.join(opening)
+            const [hello] = yield* next(connection)
+            const opened = frameOf(hello)
+
+            expect(
+              Predicate.isTagged(opened, "Hello")
+                ? { name: opened.name, frames: opened.frames }
+                : opened,
+            ).toEqual({ name: "held", frames: 0 })
+            expect((yield* rows(room.ref)).map(({ frame_seq }) => frame_seq)).toEqual(["0"])
+
+            yield* connection.send(Say.make({ text: "whoami" }))
+            const [answer] = yield* next(connection)
+            const whoami = frameOf(answer)
+
+            expect(
+              Predicate.isTagged(whoami, "Hello")
+                ? { name: whoami.name, frames: whoami.frames }
+                : whoami,
+            ).toEqual({ name: "held", frames: 1 })
+            expect(yield* quiet(connection)).toBe(true)
+            expect((yield* rows(room.ref)).map(({ frame_seq }) => frame_seq)).toEqual(["1"])
+            expect(BigInt((yield* test.inspect(room.ref)).generation!)).toBe(
+              BigInt(bumped[0]!.generation) + 1n,
+            )
+          }).pipe(Effect.scoped, Effect.ensuring(hold.release))
+        }),
+      ),
+  },
+  {
     name: "an owner deletes a dead holder's connection rows at its next delivery, and its turns still commit",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.connections,
+        fixture,
         { runners: 2, holdersOnly: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -172,12 +249,13 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "an intent, a timer, and an effect route each wake a parked actor on another runner, and its broadcast reaches the held connection",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.connections,
+        fixture,
         { runners: 3, holdersOnly: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -229,26 +307,27 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
           yield* woken("by timer", parked)
 
           const executed = yield* Deferred.make<void>()
-          fixture.connections.echo = Deferred.await(executed)
+          fixture.echo = Deferred.await(executed)
 
           yield* holder(Room.get(id).pipe(Effect.flatMap((room) => room.Shout("by effect route"))))
 
           parked = yield* park
           yield* Deferred.succeed(executed, undefined)
           yield* woken("by effect route", parked).pipe(
-            Effect.ensuring(Effect.sync(() => (fixture.connections.echo = Effect.void))),
+            Effect.ensuring(Effect.sync(() => (fixture.echo = Effect.void))),
           )
         }),
       ),
   },
   {
     name: "an owner killed between a turn's commit and its broadcast flush resyncs from the open's cursor, and the resync handler delivers the lost event",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.connections,
+        fixture,
         { runners: 3, holdersOnly: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -300,12 +379,13 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a third owner loss within five minutes closes with OwnerLost and a retry hint, and a loss during a replay from the beginning keeps that cursor",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 180_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.connections,
+        fixture,
         { runners: 4, holdersOnly: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -351,12 +431,13 @@ export const connectionTakeoverConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "an owner does not run a frame that reaches it past the session's authorization bound",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.connections,
+        fixture,
         { runners: 2, holdersOnly: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster

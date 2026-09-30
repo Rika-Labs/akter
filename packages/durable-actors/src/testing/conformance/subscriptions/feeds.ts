@@ -3,7 +3,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { CLAIM_LEASE, ExplainOutput, planNodes } from "../outbox.ts"
-import { SubFollower, SubOrder } from "./actors.ts"
+import { SubFollower, SubOrder, type SubscriptionsFixture } from "./actors.ts"
 import {
   crashOnce,
   drain,
@@ -17,10 +17,10 @@ import {
 } from "./harness.ts"
 
 /** Feed rows, the tag summary, and wake-ups of event subscriptions. */
-export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
+export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase<SubscriptionsFixture>> = [
   {
     name: "reactivates a subscription over its tombstone, so the source's next event is delivered",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -50,7 +50,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "tombstones a caught-up row and delivers Rejected when a resubscribe names a cursor above the source's head",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -83,7 +83,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "expands a feed row once its lease ends when the relay dies after claiming it",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -114,7 +114,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "writes one feed row per publishing turn whatever the subscriber count",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -149,7 +149,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "writes no feed row for an actor with no subscriptions",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -164,7 +164,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
     name: "probes the tag summary by key with 10^5 non-matching rows",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -216,7 +216,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "leases the rows an expansion makes due and starts their delivery without a claim pass",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -256,7 +256,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "loses no wake when a commit races a settle or an expansion",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -291,7 +291,7 @@ export const subscriptionFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps a backing-off row's due time when new commits expand the feed",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,

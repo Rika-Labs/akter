@@ -10,6 +10,7 @@ import {
   probeBody,
   ProbeInput,
 } from "../workflow-engine.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
 /** Shared by the workflow actors and every workflow case. */
 export interface WorkflowsFixture {
@@ -486,3 +487,9 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
 export const workflowsLive = (fixture: WorkflowsFixture) => Layer.mergeAll(workflowsLayer(fixture))
 
 export type { NodeInspectSymbol, Unify }
+
+/** Workflow actors. */
+export const workflowsSuite: ConformanceSuite<WorkflowsFixture> = {
+  fixture: workflowsFixture,
+  layer: workflowsLive,
+}

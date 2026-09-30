@@ -24,24 +24,24 @@ import { TurnHooks } from "../../../runtime/turn/hooks.ts"
  * parent SIGKILLs it or lets it finish. `PGLITE_MODE` picks the step.
  */
 
-class Incremented extends Actor.Event<Incremented>()("Incremented", { count: Schema.Int }) {}
+const Incremented = Actor.event("Incremented", { count: Schema.Int })
 
-class Charge extends Actor.effect<Charge>()("Charge", {
-  input: { amount: Schema.Int },
+const Charge = Actor.job("Charge", {
+  payload: { amount: Schema.Int },
   success: Schema.Int,
-}) {}
-
-const Increment = Actor.command("Increment", { input: Schema.Int, output: Schema.Int })
-
-const Send = Actor.command("Send", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
-const Bill = Actor.command("Bill", { input: Schema.Int })
+const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
 
-const Receive = Actor.command("Receive", { input: Schema.Int })
+const Send = Actor.command("Send", {
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+})
 
-const Charged = Actor.command("Charged", { input: Schema.Int })
+const Bill = Actor.command("Bill", { payload: Schema.Int })
+
+const Receive = Actor.command("Receive", { payload: Schema.Int })
+
+const Charged = Actor.command("Charged", { payload: Schema.Int })
 
 const Ledger = Actor.make("EmbeddedLedger", {
   key: Schema.String,
@@ -50,10 +50,9 @@ const Ledger = Actor.make("EmbeddedLedger", {
     charged: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
   events: [Incremented],
-  effects: [Charge],
+  jobs: { Charge: { job: Charge, retry: { times: 3 }, onSuccess: Charged } },
   api: { Increment, Send, Bill },
   internal: { Receive, Charged },
-  policy: { effects: { Charge: { retry: { times: 3 }, onSuccess: Charged } } },
 })
 
 /** Handler runs in this process, so a replay shows as zero. */
@@ -75,7 +74,7 @@ const LedgerLive = Layer.mergeAll(
         yield* (yield* Ledger.intents(to)).Receive(amount)
       }),
       Bill: Effect.fnUntraced(function* (amount: number) {
-        yield* (yield* Ledger.Turn).perform(Charge.make({ amount }))
+        yield* (yield* Ledger.Turn).enqueue(Charge.make({ amount }))
       }),
       Receive: Effect.fnUntraced(function* (amount: number) {
         const turn = yield* Ledger.Turn
@@ -88,7 +87,7 @@ const LedgerLive = Layer.mergeAll(
       }),
     }),
   ),
-  Ledger.toEffectLayer(
+  Ledger.toJobLayer(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const calls = yield* Config.String("PGLITE_CALLS").pipe(Config.withDefault(""), Effect.orDie)
@@ -96,7 +95,7 @@ const LedgerLive = Layer.mergeAll(
       return {
         Charge: Effect.fnUntraced(function* ({ amount }) {
           const exec = yield* Ledger.Executor
-          yield* fs.writeFileString(calls, `${exec.effectId}\n`, { flag: "a" }).pipe(Effect.orDie)
+          yield* fs.writeFileString(calls, `${exec.jobId}\n`, { flag: "a" }).pipe(Effect.orDie)
 
           return amount
         }),

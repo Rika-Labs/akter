@@ -5,8 +5,19 @@ import type { ActorRef } from "../../identity/caller.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
-import { type ConnectionsFixture, connectionsLayer, Live, Room } from "./connections/actors.ts"
+import type {
+  ConformanceCase,
+  ConformanceEnvironment,
+  ConformanceExpect,
+  ConformanceSuite,
+} from "../conformance.ts"
+import {
+  type ConnectionsFixture,
+  connectionsLayer,
+  Live,
+  Room,
+  connectionsSuite,
+} from "./connections/actors.ts"
 import { next } from "./connections/harness.ts"
 
 /** One executor attempt as the fake provider saw it. */
@@ -42,22 +53,22 @@ const reset = (fixture: DrainFixture) =>
     fixture.onDeposit = Effect.void
   })
 
-class Charge extends Actor.effect<Charge>()("Charge", {
-  input: { key: Schema.String },
+const Charge = Actor.job("Charge", {
+  payload: { key: Schema.String },
   success: Schema.String,
-}) {}
-
-const Deposit = Actor.command("Deposit", { input: Schema.Finite, output: Schema.Finite })
-
-const Bill = Actor.command("Bill", { input: Schema.String })
-
-const Transfer = Actor.command("Transfer", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Finite }),
 })
 
-const Charged = Actor.command("Charged", { input: Schema.String })
+const Deposit = Actor.command("Deposit", { payload: Schema.Finite, success: Schema.Finite })
 
-const ChargeFailed = Actor.command("ChargeFailed", { input: Actor.DeadLetter(Charge) })
+const Bill = Actor.command("Bill", { payload: Schema.String })
+
+const Transfer = Actor.command("Transfer", {
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Finite }),
+})
+
+const Charged = Actor.command("Charged", { payload: Schema.String })
+
+const ChargeFailed = Actor.command("ChargeFailed", { payload: Actor.DeadLetter(Charge) })
 
 const Letter = Schema.Struct({ attempts: Schema.Int, ambiguous: Schema.Boolean })
 
@@ -68,12 +79,11 @@ const Account = Actor.make("Account", {
     charged: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     letters: Schema.Array(Letter).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Charge],
+  jobs: {
+    Charge: { job: Charge, retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed },
+  },
   api: { Deposit, Bill },
   internal: { Charged, ChargeFailed },
-  policy: {
-    effects: { Charge: { retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed } },
-  },
 })
 
 /** Sends deposits to accounts as intents. */
@@ -104,7 +114,7 @@ const drainAccounts = (fixture: DrainFixture) =>
         return turn.state.balance
       }),
       Bill: Effect.fnUntraced(function* (key: string) {
-        yield* (yield* Account.Turn).perform(Charge.make({ key }))
+        yield* (yield* Account.Turn).enqueue(Charge.make({ key }))
       }),
       Charged: Effect.fnUntraced(function* (key: string) {
         const turn = yield* Account.Turn
@@ -119,7 +129,7 @@ const drainAccounts = (fixture: DrainFixture) =>
 
 /** The `Charge` executor of `runner`; a case builds it on the runners it chooses. */
 const chargeExecutor = (fixture: DrainFixture, runner: number) =>
-  Account.toEffectLayer(
+  Account.toJobLayer(
     Effect.succeed({
       Charge: ({ key }) =>
         Effect.gen(function* () {
@@ -323,13 +333,13 @@ const drainDuringTurn = (
   })
 
 /** Drain cases: readiness, clean drain, deadline rollback with a same-id retry, and survivor takeover. */
-export const drainConformance: ReadonlyArray<ConformanceCase> = [
+export const drainConformance: ReadonlyArray<ConformanceCase<DrainFixture>> = [
   {
     name: "drain: reports ready, then drains cleanly, turns unready, and refuses new commands",
     run: ({ expect, environment, fixture }) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          yield* reset(fixture.drain)
+          yield* reset(fixture)
 
           yield* Effect.promise(() =>
             environment.run(
@@ -357,7 +367,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          yield* reset(fixture.drain)
+          yield* reset(fixture)
           const hold = yield* Deferred.make<void>()
           const started = yield* Deferred.make<void>()
 
@@ -369,7 +379,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                 expect(yield* held.Deposit(1)).toBe(1)
                 const commandId = yield* (yield* Actors).mintCommandId
 
-                fixture.drain.onDeposit = Deferred.succeed(started, undefined).pipe(
+                fixture.onDeposit = Deferred.succeed(started, undefined).pipe(
                   Effect.andThen(Deferred.await(hold)),
                 )
 
@@ -395,7 +405,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             ),
           )
 
-          fixture.drain.onDeposit = Effect.void
+          fixture.onDeposit = Effect.void
           yield* environment.restart
 
           yield* Effect.promise(() =>
@@ -408,7 +418,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
                   state: { balance: 3 },
                   receipts: 2,
                 })
-                expect(fixture.drain.runs.get(commandId)).toBe(2)
+                expect(fixture.runs.get(commandId)).toBe(2)
               }),
             ),
           )
@@ -417,12 +427,13 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "drain: finishes an in-flight turn, refuses new commands, and a survivor takes the actors at once",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         {},
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -474,12 +485,13 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "drain: starts no following batch behind the turn it finishes, and the waiting command commits once on a survivor",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         {},
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -523,39 +535,41 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(yield* Fiber.join(first)).toBe(3)
 
-          expect(fixture.drain.runs.get(commandId) ?? 0).toBe(0)
+          expect(fixture.runs.get(commandId) ?? 0).toBe(0)
           expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 3 }, receipts: 2 })
 
           yield* cluster.shutdown(owner)
           expect(yield* Fiber.join(second)).toBe(6)
-          expect(fixture.drain.runs.get(commandId)).toBe(1)
+          expect(fixture.runs.get(commandId)).toBe(1)
           expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 6 }, receipts: 3 })
         }),
       ),
   },
   {
     name: "drain: rolls back a turn the deadline interrupts before its commit, reports it, and the caller's retry commits once on the next owner",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         {},
         Effect.gen(function* () {
-          const { commandId } = yield* drainDuringTurn(expect, fixture.drain, "beforeCommit")
-          expect(fixture.drain.runs.get(commandId)).toBe(2)
+          const { commandId } = yield* drainDuringTurn(expect, fixture, "beforeCommit")
+          expect(fixture.runs.get(commandId)).toBe(2)
         }),
       ),
   },
   {
     name: "drain: a turn the deadline interrupts while its sent COMMIT is still running commits once, and the caller's retry returns its output",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         {},
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -616,33 +630,35 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           yield* cluster.shutdown(owner)
           expect(yield* Fiber.join(call)).toBe(3)
           expect(yield* inspect(caller, ref)).toMatchObject({ state: { balance: 3 }, receipts: 2 })
-          expect(fixture.drain.runs.get(commandId)).toBe(2)
+          expect(fixture.runs.get(commandId)).toBe(2)
         }),
       ),
   },
   {
     name: "drain: replays the receipt of a turn the deadline interrupted after its commit, without running it again",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         {},
         Effect.gen(function* () {
-          const { commandId } = yield* drainDuringTurn(expect, fixture.drain, "afterCommit")
-          expect(fixture.drain.runs.get(commandId)).toBe(1)
+          const { commandId } = yield* drainDuringTurn(expect, fixture, "afterCommit")
+          expect(fixture.runs.get(commandId)).toBe(1)
         }),
       ),
   },
   {
     name: "drain: claims no effect while draining, and the pending effect runs once on a runner that starts later",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         { executors: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -656,7 +672,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* on(owner, account(id).pipe(Effect.flatMap((handle) => handle.Bill("late"))))
           yield* Effect.sleep("1500 millis")
-          expect(fixture.drain.attempts.length).toBe(0)
+          expect(fixture.attempts.length).toBe(0)
           expect(yield* chargeRow(owner)).toMatchObject([{ attempts: 0, ambiguous: false }])
 
           yield* cluster.shutdown(0)
@@ -664,32 +680,33 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           yield* eventually(
             Effect.map(
               stateOf(owner, id),
-              (inspection) => inspection.effects + inspection.outbox === 0,
+              (inspection) => inspection.jobs + inspection.outbox === 0,
             ),
             "the pending effect to run",
           )
           expect(yield* stateOf(owner, id)).toMatchObject({ state: { charged: ["late"] } })
-          expect(fixture.drain.attempts).toEqual([{ runner: 0, attempt: 1, interrupted: false }])
+          expect(fixture.attempts).toEqual([{ runner: 0, attempt: 1, interrupted: false }])
         }),
       ),
   },
   {
     name: "drain: interrupts an effect attempt at the deadline, keeps it ambiguous, and it dead-letters as ambiguous without running again",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         { executors: [0] },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
           const { id, owner } = yield* placed("ambiguous", (placedOn) => placedOn !== 0)
-          fixture.drain.provider = () => Effect.never
+          fixture.provider = () => Effect.never
 
           yield* on(owner, account(id).pipe(Effect.flatMap((handle) => handle.Bill("stuck"))))
           yield* eventually(
-            Effect.sync(() => fixture.drain.attempts.length === 1),
+            Effect.sync(() => fixture.attempts.length === 1),
             "the attempt to start",
           )
 
@@ -698,7 +715,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             interruptedTurns: 0,
             interruptedEffects: 1,
           })
-          expect(fixture.drain.attempts).toEqual([{ runner: 0, attempt: 1, interrupted: true }])
+          expect(fixture.attempts).toEqual([{ runner: 0, attempt: 1, interrupted: true }])
           expect(yield* chargeRow(owner)).toEqual([{ attempts: 1, ambiguous: true, leased: true }])
 
           yield* cluster.shutdown(0)
@@ -706,25 +723,26 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           yield* eventually(
             Effect.map(
               stateOf(owner, id),
-              (inspection) => inspection.effects + inspection.outbox === 0,
+              (inspection) => inspection.jobs + inspection.outbox === 0,
             ),
             "the interrupted effect to be taken over",
           )
           expect((yield* stateOf(owner, id)).state).toEqual({
             letters: [{ attempts: 1, ambiguous: true }],
           })
-          expect(fixture.drain.attempts.length).toBe(1)
+          expect(fixture.attempts.length).toBe(1)
         }),
       ),
   },
   {
     name: "drain: releases an intent delivery it had claimed, and a survivor delivers it once",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         { poll: "1 hour" },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -773,18 +791,19 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 1,
             outbox: 0,
           })
-          expect([...fixture.drain.runs.values()]).toEqual([1])
+          expect([...fixture.runs.values()]).toEqual([1])
         }),
       ),
   },
   {
     name: "drain: drains a runner under load without losing or repeating a command",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.drain,
+        fixture,
         {},
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
@@ -799,7 +818,7 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
           ).pipe(Effect.forkChild)
 
           yield* eventually(
-            Effect.sync(() => fixture.drain.runs.size >= 20),
+            Effect.sync(() => fixture.runs.size >= 20),
             "the load to start",
           )
           const report = yield* drain(drained, "5 seconds")
@@ -813,19 +832,20 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             expect(inspection).toMatchObject({ state: { balance: sent }, receipts: sent })
           }
 
-          expect(fixture.drain.runs.size).toBe(calls.length)
+          expect(fixture.runs.size).toBe(calls.length)
         }),
       ),
   },
   {
     name: "drain: returns within its deadline while a turn, a relay delivery, and a held connection are in flight, and reports the turn it cut off",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, fixture, fixtureOf }) =>
       withCluster(
         environment,
-        fixture.drain,
-        { connections: fixture.connections },
+        fixture,
+        { connections: fixtureOf(connectionsSuite) },
         Effect.gen(function* () {
           const cluster = yield* ActorCluster
           const drained = 0
@@ -914,8 +934,15 @@ export const drainConformance: ReadonlyArray<ConformanceCase> = [
             state: { balance: 3 },
             receipts: 2,
           })
-          expect([...fixture.drain.runs.values()].reduce((sum, runs) => sum + runs, 0)).toBe(4)
+          expect([...fixture.runs.values()].reduce((sum, runs) => sum + runs, 0)).toBe(4)
         }),
       ),
   },
 ]
+
+/** Drain actors, beside the connection room they hold open. */
+export const drainSuite: ConformanceSuite<DrainFixture> = {
+  fixture: drainFixture,
+  layer: drainLayer,
+  uses: [connectionsSuite],
+}

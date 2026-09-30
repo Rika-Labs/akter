@@ -34,7 +34,6 @@ infra/                      @durable-actors/infra      Alchemy: alchemy.run.ts, 
 tooling/
   oxlint/                   @durable-actors/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @durable-actors/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
-  databases/                @durable-actors/databases  disposable Postgres, Neki and PGlite for tests
   benchmarks/               @durable-actors/benchmarks  `bun run bench` performance harness (ADR 0018)
   doc-checks/               @durable-actors/doc-checks  typechecks doc examples and checks repository links (ADR 0061)
 benchmarks/                 committed benchmark results and how to read them; data only, no code

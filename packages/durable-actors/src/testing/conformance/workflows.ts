@@ -7,9 +7,10 @@ import { workflowRecoveryConformance } from "./workflows/recovery.ts"
 import { workflowStartConformance } from "./workflows/starts.ts"
 import { workflowSuspensionConformance } from "./workflows/suspension.ts"
 import { workflowWaitConformance } from "./workflows/waits.ts"
+import type { WorkflowsFixture } from "./workflows/actors.ts"
 
 /** Workflow cases: stable execution ids, once-recorded activities, interrupts, and recovery. */
-export const workflowsConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowsConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   ...engineConformance,
   ...workflowBasicConformance,
   ...workflowSuspensionConformance,

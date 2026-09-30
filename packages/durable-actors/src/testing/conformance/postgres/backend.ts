@@ -1,14 +1,15 @@
 import { Config, Effect, Option } from "effect"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest"
-import { type ConformanceGroup, conformanceGroups, describeConformance } from "../../conformance.ts"
+import { type ConformanceGroup, describeConformance } from "../../conformance.ts"
 import { postgresBackend } from "./database.ts"
-import { shards } from "./shards.ts"
 
 declare module "vitest" {
   interface ProvidedContext {
     /** A migrated database the run's main databases are copied from; absent outside the integration config. */
     readonly conformanceTemplate?: string
+    /** The `shards` entry, or `UNSHARDED`, this project's worker runs; absent outside the integration config. */
+    readonly conformanceShard?: string
   }
 }
 
@@ -76,12 +77,5 @@ export const describePostgres = (groups: ReadonlyArray<ConformanceGroup>) =>
       expect,
       skip: (name) => it.skip(name),
     },
-    cases: groups.flatMap((group) => conformanceGroups[group]),
+    groups,
   })
-
-const sharded = new Set<ConformanceGroup>(Object.values(shards).flat())
-
-/** Every group no `shards` entry names, in registration order. */
-export const unshardedGroups = (Object.keys(conformanceGroups) as Array<ConformanceGroup>).filter(
-  (group) => !sharded.has(group),
-)

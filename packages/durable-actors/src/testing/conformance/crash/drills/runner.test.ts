@@ -4,10 +4,10 @@ import {
   Clock,
   Config,
   Console,
-  Crypto,
   type Duration,
   Effect,
   ManagedRuntime,
+  Redacted,
   Schema,
   Stream,
 } from "effect"
@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { decompress } from "../../../../runtime/storage/codec.ts"
+import { disposableDatabase } from "../../../database.ts"
 
 const OPERATIONS = 120
 
@@ -62,19 +63,11 @@ describe("runner and relay process death with Postgres", () => {
     () =>
       runtime.runPromise(
         Effect.gen(function* () {
-          const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-          const name = `drill_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-          const admin = yield* Effect.acquireRelease(
-            Effect.sync(() => new Pool({ connectionString: database.href })),
-            (pool) => Effect.promise(() => pool.end()),
+          const database = new URL(
+            Redacted.value(
+              yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+            ),
           )
-
-          yield* Effect.acquireRelease(
-            Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-            () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-          )
-          database.pathname = `/${name}`
 
           const pool = yield* Effect.acquireRelease(
             Effect.sync(() => new Pool({ connectionString: database.href })),

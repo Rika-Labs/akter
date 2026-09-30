@@ -5,7 +5,7 @@ import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { BATCH_CAP, MERGE_CAP } from "../../runtime/entity/mailbox.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 const marks = Actor.table(pgTable("batch_marks", { id: text("id").primaryKey() }))
 
@@ -13,11 +13,11 @@ class Refused extends Schema.TaggedError<Refused>()("Refused", { label: Schema.S
 
 const Entry = Schema.Struct({ log: Schema.Array(Schema.String), marks: Schema.Finite })
 
-const Append = Actor.command("Append", { input: Schema.String, output: Entry })
+const Append = Actor.command("Append", { payload: Schema.String, success: Entry })
 
-const Refuse = Actor.command("Refuse", { input: Schema.String, errors: [Refused] })
+const Refuse = Actor.command("Refuse", { payload: Schema.String, error: Refused })
 
-const Explode = Actor.command("Explode", { input: Schema.String })
+const Explode = Actor.command("Explode", { payload: Schema.String })
 
 const Noted = Actor.command("Noted", {})
 
@@ -35,25 +35,25 @@ export const reductions = { count: 0 }
 /** Adds to the count; merged calls combine by summing. */
 export const Bump = Actor.reducer("Bump", {
   state: LedgerState,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: (state, amount) => {
     reductions.count += 1
 
     return Result.succeed({ ...state, count: state.count + amount })
   },
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 /** Like `Bump`, but models a reducer bug: an input above 10 throws. */
 export const Fragile = Actor.reducer("Fragile", {
   state: LedgerState,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: (state, amount) => {
     if (amount > 10) throw new Error("Fragile reducer bug")
 
     return Result.succeed({ ...state, count: state.count + amount })
   },
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 const Ledger = Actor.make("BatchLedger", {
@@ -515,3 +515,8 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The batch ledger actor. */
+export const batchesSuite: ConformanceSuite = {
+  layer: () => batchesLayer,
+}

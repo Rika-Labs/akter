@@ -1,8 +1,9 @@
 import { BunServices } from "@effect/platform-bun"
-import { Config, Crypto, Effect, ManagedRuntime, Stream } from "effect"
+import { Config, Effect, ManagedRuntime, Redacted, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
+import { disposableDatabase } from "../../../database.ts"
 
 const counts = `SELECT
   (SELECT count(*)::int FROM actor_events WHERE event = 'Posted') AS posted,
@@ -22,19 +23,11 @@ describe("subscription relay process death with Postgres", () => {
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
-            const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `subscriptions_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-            const admin = yield* Effect.acquireRelease(
-              Effect.sync(() => new Pool({ connectionString: database.href })),
-              (pool) => Effect.promise(() => pool.end()),
+            const database = new URL(
+              Redacted.value(
+                yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+              ),
             )
-
-            yield* Effect.acquireRelease(
-              Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-              () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-            )
-            database.pathname = `/${name}`
 
             const pool = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: database.href })),

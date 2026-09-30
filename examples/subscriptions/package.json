@@ -6,8 +6,8 @@
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "SUBSCRIPTIONS_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src",
-    "test:integration": "SUBSCRIPTIONS_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src"
+    "test": "TEST_BACKEND=pglite bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src",
+    "test:integration": "TEST_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. examples/subscriptions/src"
   },
   "dependencies": {
     "@durable-actors/core": "workspace:*",

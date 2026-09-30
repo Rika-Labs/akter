@@ -1,17 +1,17 @@
 import { Effect } from "effect"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Ledger, Ship, Shipper } from "./actors.ts"
+import { Ledger, Ship, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { reset } from "./harness.ts"
 
 /** Turn-staged starts, activity actor calls, and wait registration races of workflows. */
-export const workflowStartConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowStartConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: a turn stages a start whose wait sees that turn's own event",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("staged")
           const id = yield* shipper.Begin({ orderId: "s1", sku: "wait-s" })
           expect(yield* (yield* Shipper.run(Ship, id)).result).toBe("r-wait-s:paid-3")
@@ -26,7 +26,7 @@ export const workflowStartConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("deferred")
           const id = yield* shipper.Defer({ orderId: "d1", sku: "wait-d" })
           yield* shipper.Pay({ orderId: "d1", amount: 5 })
@@ -39,7 +39,7 @@ export const workflowStartConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("charging")
           const run = yield* shipper.Ship({ orderId: "c1", sku: "charge" })
@@ -56,7 +56,7 @@ export const workflowStartConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
 
           const results = yield* Effect.forEach(
             Array.from({ length: 20 }, (_, index) => index),

@@ -1,0 +1,1106 @@
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
+import { SqlClient, Statement } from "effect/unstable/sql"
+import { Actor, Actors, CurrentCaller, User } from "../../index.ts"
+import {
+  type ActorError,
+  CommandConflict,
+  CommandExpired,
+  InvalidCommandId,
+  Unauthorized,
+} from "../../errors/actor.ts"
+import { checkIdentity, databaseTime } from "../../runtime/turn/admission.ts"
+import { routingKey } from "../../runtime/storage/codec.ts"
+import { ActorTest } from "../actor-test.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
+import { payloadHash } from "./admission.ts"
+
+/** What the Counter's handlers count and the effects a case plants in them. */
+export interface CounterFixture {
+  executions: number
+  queries: number
+  captured: Effect.Effect<number, ActorError>
+  escaped: Effect.Effect<void>
+  holdHandler: Effect.Effect<void>
+  duringQuery: Effect.Effect<unknown, ActorError>
+}
+
+class Rejected extends Schema.TaggedError<Rejected>()("Rejected", { amount: Schema.Finite }) {}
+
+const Increment = Actor.command("Increment", { payload: Schema.Finite, success: Schema.Finite })
+
+const Reject = Actor.command("Reject", { payload: Schema.Finite, error: Rejected })
+
+const Nested = Actor.command("Nested")
+
+const Escape = Actor.command("Escape")
+
+const Hold = Actor.command("Hold")
+
+const Steal = Actor.command("Steal")
+
+class Forbidden extends Schema.TaggedError<Forbidden>()("Forbidden", { below: Schema.Finite }) {}
+
+const Count = Actor.query("Count", { success: Schema.Finite })
+
+const AtLeast = Actor.query("AtLeast", {
+  payload: Schema.Finite,
+  success: Schema.Finite,
+  error: Forbidden,
+})
+
+const Counter = Actor.make("Counter", {
+  key: Schema.String,
+  state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  api: { Increment, Reject, Nested, Escape, Hold, Steal, Count, AtLeast },
+})
+
+const CounterReads = (fixture: CounterFixture) =>
+  Counter.toQueryLayer(
+    Effect.succeed({
+      Count: Effect.fnUntraced(function* () {
+        fixture.queries += 1
+        yield* fixture.duringQuery.pipe(Effect.orDie)
+
+        return (yield* Counter.Read).state.count
+      }),
+      AtLeast: Effect.fnUntraced(function* (minimum: number) {
+        const count = (yield* Counter.Read).state.count
+
+        if (count < minimum) return yield* Forbidden.make({ below: minimum })
+
+        return count
+      }),
+    }),
+  )
+
+const CounterLive = (fixture: CounterFixture) =>
+  Counter.toLayer(
+    Effect.succeed({
+      Increment: Effect.fnUntraced(function* (amount: number) {
+        const turn = yield* Counter.Turn
+        fixture.executions += 1
+        yield* turn.state.set({ count: turn.state.count + amount })
+
+        return turn.state.count
+      }),
+      Reject: Effect.fnUntraced(function* (amount: number) {
+        const turn = yield* Counter.Turn
+        fixture.executions += 1
+        yield* turn.state.set({ count: 999 })
+
+        return yield* Rejected.make({ amount })
+      }),
+      Nested: Effect.fnUntraced(function* () {
+        const turn = yield* Counter.Turn
+        yield* turn.state.set({ count: 99 })
+        yield* fixture.captured.pipe(Effect.orDie)
+      }),
+      Escape: Effect.fnUntraced(function* () {
+        const turn = yield* Counter.Turn
+        fixture.escaped = turn.state.set({ count: 1000 })
+        yield* turn.state.set({ count: 3 })
+      }),
+      Hold: Effect.fnUntraced(function* () {
+        const turn = yield* Counter.Turn
+        fixture.escaped = turn.state.set({ count: 1000 })
+        yield* fixture.holdHandler
+        yield* turn.state.set({ count: 3 })
+      }),
+      Steal: () => Effect.suspend(() => fixture.escaped),
+    }),
+  )
+
+/** The Counter actor's handlers and queries, which count their runs and run what a case plants. */
+export const counterSuite: ConformanceSuite<CounterFixture> = {
+  fixture: () => ({
+    executions: 0,
+    queries: 0,
+    captured: Effect.succeed(0),
+    escaped: Effect.void,
+    holdHandler: Effect.void,
+    duringQuery: Effect.void,
+  }),
+  layer: (fixture) => Layer.merge(CounterLive(fixture), CounterReads(fixture)),
+}
+
+/** Durable-turn cases written against the Counter actor. */
+export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> = [
+  {
+    name: "commits state and receipt, replays an identical command effect, and keeps its generation",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("replay")
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+          const increment = counter.Increment(7)
+          expect(yield* increment).toBe(7)
+          expect(yield* increment).toBe(7)
+          expect(yield* counter.Increment(3)).toBe(10)
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: "1",
+            state: { count: 10 },
+            receipts: 2,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+        }),
+      ),
+  },
+  {
+    name: "rolls back declared failures and replays their class and payload without executing again",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("failure")
+          expect(yield* counter.Increment(5)).toBe(5)
+          const rejected = counter.Reject(13)
+          const before = fixture.executions
+          const first = yield* rejected.pipe(Effect.flip)
+          expect(first).toBeInstanceOf(Rejected)
+          expect(first).toEqual(Rejected.make({ amount: 13 }))
+          expect(yield* rejected.pipe(Effect.flip)).toEqual(first)
+          expect(fixture.executions - before).toBe(1)
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: "1",
+            state: { count: 5 },
+            receipts: 2,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+        }),
+      ),
+  },
+  {
+    name: "deduplicates concurrent deliveries and rejects changed input or command",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("concurrent")
+          const id = yield* (yield* Actors).mintCommandId
+          const before = fixture.executions
+          expect(
+            yield* Effect.forEach(
+              [counter.Increment(11), counter.Increment(11)],
+              (call) => call.pipe(Actor.commandId(id)),
+              { concurrency: 2 },
+            ),
+          ).toEqual([11, 11])
+          expect(fixture.executions - before).toBe(1)
+          expect(
+            (yield* counter.Increment(12).pipe(Actor.commandId(id), Effect.flip)).reason._tag,
+          ).toBe("CommandConflict")
+          expect(yield* counter.Reject(11).pipe(Actor.commandId(id), Effect.flip)).toMatchObject({
+            reason: CommandConflict.make({ commandId: id }),
+          })
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 11 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "captures callers, preserves same-subject access, and never partitions deduplication by caller",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const alice = yield* Counter.get("privacy")
+          const bob = yield* Counter.get("privacy").pipe(Actor.as(User.make({ subject: "bob" })))
+          const id = yield* (yield* Actors).mintCommandId
+          expect(
+            yield* alice
+              .Increment(17)
+              .pipe(
+                Actor.commandId(id),
+                Effect.provideService(CurrentCaller, User.make({ subject: "bob" })),
+              ),
+          ).toBe(17)
+
+          const rotated = yield* Counter.get("privacy").pipe(
+            Actor.as(User.make({ subject: "alice" })),
+          )
+
+          expect(yield* rotated.Increment(17).pipe(Actor.commandId(id))).toBe(17)
+          expect(yield* bob.Increment(17).pipe(Actor.commandId(id), Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "receipt_access_denied" }),
+          })
+
+          const otherTenant = yield* Counter.get("privacy").pipe(
+            Actor.tenant("other"),
+            Actor.as(User.make({ subject: "bob" })),
+          )
+
+          expect(yield* otherTenant.Increment(29).pipe(Actor.commandId(id))).toBe(29)
+          expect(yield* test.inspect(alice.ref)).toMatchObject({
+            state: { count: 17 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "recovers beforeHandler crashes with the same command and one committed transition",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("crash-beforeHandler")
+          const before = fixture.executions
+          yield* test.crashNext("beforeHandler")
+          expect(yield* counter.Increment(23)).toBe(23)
+          expect(fixture.executions - before).toBe(1)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 23 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "recovers beforeCommit crashes with the same command and one committed transition",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("crash-beforeCommit")
+          const before = fixture.executions
+          yield* test.crashNext("beforeCommit")
+          expect(yield* counter.Increment(23)).toBe(23)
+          expect(fixture.executions - before).toBe(2)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 23 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "recovers afterCommit crashes with the same command and one committed transition",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("crash-afterCommit")
+          const before = fixture.executions
+          yield* test.crashNext("afterCommit")
+          expect(yield* counter.Increment(23)).toBe(23)
+          expect(fixture.executions - before).toBe(1)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 23 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "keeps retries prompt after many crashed turns of one actor type",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+
+          for (let index = 0; index < 12; index++) {
+            yield* test.crashNext("beforeCommit")
+            yield* (yield* Counter.get(`crash-many-${index}`)).Increment(1)
+          }
+
+          yield* test.crashNext("beforeCommit")
+          const started = yield* Clock.currentTimeMillis
+          expect(yield* (yield* Counter.get("crash-many-last")).Increment(2)).toBe(2)
+          expect((yield* Clock.currentTimeMillis) - started < 2_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "backs off an actor whose turn dies on every attempt, and only that actor",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const crashing = yield* Counter.get("crash-always")
+
+          const elapsed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            Effect.gen(function* () {
+              const started = yield* Clock.currentTimeMillis
+              const value = yield* effect
+
+              return { value, ms: (yield* Clock.currentTimeMillis) - started }
+            })
+
+          for (let crash = 0; crash < 5; crash++) yield* test.crashNext("beforeCommit")
+          const before = fixture.executions
+          const backedOff = yield* elapsed(crashing.Increment(1))
+          expect(backedOff.value).toBe(1)
+          expect(fixture.executions - before).toBe(6)
+          expect(backedOff.ms >= 1_500).toBe(true)
+
+          yield* test.crashNext("beforeCommit")
+          const other = yield* elapsed((yield* Counter.get("crash-always-other")).Increment(2))
+          expect(other.value).toBe(2)
+          expect(other.ms < 1_000).toBe(true)
+
+          yield* test.crashNext("beforeCommit")
+          const reset = yield* elapsed(crashing.Increment(1))
+          expect(reset.value).toBe(2)
+          expect(reset.ms < 1_000).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "does not cancel an accepted turn with its waiter",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("disconnect")
+          const pause = yield* test.pauseNext("beforeCommit")
+          const call = counter.Increment(31)
+          const waiter = yield* call.pipe(Effect.forkChild)
+          yield* pause.reached
+          yield* Fiber.interrupt(waiter)
+          yield* pause.release
+          expect(yield* call).toBe(31)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 31 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "keeps uncommitted state invisible to a second connection",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("disconnect-visibility")
+          const pause = yield* test.pauseNext("beforeCommit")
+          const call = counter.Increment(31)
+          const waiter = yield* call.pipe(Effect.forkChild)
+          yield* pause.reached
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+          yield* Fiber.interrupt(waiter)
+          yield* pause.release
+          expect(yield* call).toBe(31)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 31 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "compresses state, keys rows by routing_key, and reads state once per activation",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("warm")
+          const sql = yield* SqlClient.SqlClient
+          expect(yield* counter.Increment(1)).toBe(1)
+
+          const stored = yield* sql<{ routing_key: string; magic: string }>`
+            SELECT routing_key::text AS routing_key, encode(substring(value FROM 1 FOR 4), 'hex') AS magic
+            FROM actor_state WHERE tenant_id = ${counter.ref.tenant} AND actor_id = 'warm'`
+
+          expect(stored).toEqual([
+            {
+              routing_key: String(routingKey({ ref: counter.ref, placement: "tenant" })),
+              magic: "28b52ffd",
+            },
+          ])
+
+          const statements: Array<string> = []
+
+          const recorded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+            effect.pipe(
+              Effect.provideService(Statement.CurrentTransformer, (statement) =>
+                Effect.sync(() => {
+                  statements.push(statement.compile()[0])
+
+                  return statement
+                }),
+              ),
+            )
+
+          for (const amount of [2, 3, 4]) yield* recorded(counter.Increment(amount))
+
+          expect(statements.some((text) => /INSERT INTO actor_receipts/.test(text))).toBe(true)
+
+          const stateReads = statements.filter((text) =>
+            /SELECT key, value FROM actor_state/.test(text),
+          )
+
+          expect(stateReads).toEqual([])
+          yield* test.invalidate(counter.ref)
+          statements.length = 0
+          expect(yield* recorded(counter.Increment(5))).toBe(15)
+          expect(
+            statements.filter((text) => /SELECT key, value FROM actor_state/.test(text)).length,
+          ).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "queries read committed state without activating, fencing, or receipting the actor",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("query-cold")
+          expect(yield* counter.Count()).toBe(0)
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+          expect(yield* counter.Increment(4)).toBe(4)
+          yield* test.invalidate(counter.ref)
+          const generation = (yield* test.inspect(counter.ref)).generation
+          expect(yield* counter.Count()).toBe(4)
+          expect(yield* counter.AtLeast(4)).toBe(4)
+          expect(yield* counter.AtLeast(5).pipe(Effect.flip)).toEqual(Forbidden.make({ below: 5 }))
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            generation,
+            state: { count: 4 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "queries never observe a running turn's uncommitted state",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("query-isolation")
+          expect(yield* counter.Increment(2)).toBe(2)
+          const pause = yield* test.pauseNext("beforeCommit")
+          const writer = yield* counter.Increment(40).pipe(Effect.forkChild)
+          yield* pause.reached
+          expect(yield* counter.Count()).toBe(2)
+          yield* pause.release
+          expect(yield* Fiber.join(writer)).toBe(42)
+          expect(yield* counter.Count()).toBe(42)
+        }),
+      ),
+  },
+  {
+    name: "applies the caller authorization to queries",
+    run: ({ expect, environment, fixture, access }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const counter = yield* Counter.get("query-denied")
+          const before = fixture.queries
+          access.allowed = false
+          expect(yield* counter.Count().pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          expect(fixture.queries).toBe(before)
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              access.allowed = true
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "withholds a query result from a caller revoked while the handler ran",
+    run: ({ expect, environment, fixture, access }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const counter = yield* Counter.get("query-revoked")
+          expect(yield* counter.Increment(6)).toBe(6)
+
+          fixture.duringQuery = Effect.sync(() => {
+            access.allowed = false
+          })
+
+          const before = fixture.queries
+          expect(yield* counter.Count().pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          expect(fixture.queries).toBe(before + 1)
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              access.allowed = true
+              fixture.duringQuery = Effect.void
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "rejects request/reply calls from a query handler without writing",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("query-guard")
+          fixture.duringQuery = counter.Increment(100)
+          const exit = yield* counter.Count().pipe(Effect.exit)
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+            "Request/reply inside a turn",
+          )
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.duringQuery = Effect.void
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "rejects a stale generation before rerunning the handler under new authority",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("stale")
+          expect(yield* counter.Increment(5)).toBe(5)
+          yield* test.invalidate(counter.ref)
+          const before = fixture.executions
+          expect(yield* counter.Increment(8)).toBe(13)
+          expect(fixture.executions - before).toBe(1)
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: "3",
+            state: { count: 13 },
+            receipts: 2,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+        }),
+      ),
+  },
+  {
+    name: "rolls back captured request/reply misuse and rejects escaped state capabilities",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("guard")
+          fixture.captured = counter.Increment(100)
+          const exit = yield* counter.Nested().pipe(Effect.exit)
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+            "Request/reply inside a turn",
+          )
+          expect(yield* test.inspect(counter.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+          yield* counter.Escape()
+          const escapedExit = yield* fixture.escaped.pipe(Effect.exit)
+          expect(Exit.isFailure(escapedExit) && Cause.pretty(escapedExit.cause)).toContain(
+            "State capability escaped its turn",
+          )
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "rejects a state setter from another still-active actor turn",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const owner = yield* Counter.get("capability-owner")
+          const thief = yield* Counter.get("capability-thief")
+          const test = yield* ActorTest
+          const ready = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          fixture.holdHandler = Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          )
+          const holder = yield* owner.Hold().pipe(Effect.forkChild)
+          yield* Deferred.await(ready)
+
+          const stolen = yield* thief
+            .Steal()
+            .pipe(Effect.exit, Effect.ensuring(Deferred.succeed(release, undefined)))
+
+          expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
+            "State capability escaped its turn",
+          )
+          yield* Fiber.join(holder)
+          expect(yield* test.inspect(owner.ref)).toMatchObject({
+            state: { count: 3 },
+            receipts: 1,
+          })
+          expect(yield* test.inspect(thief.ref)).toEqual({
+            generation: undefined,
+            state: {},
+            receipts: 0,
+            events: 0,
+            outbox: 0,
+            jobs: 0,
+          })
+        }),
+      ),
+  },
+  {
+    name: "denies a competing caller admitted while the original failure is still uncommitted",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const alice = yield* Counter.get("caller-race")
+
+          const bob = yield* Counter.get("caller-race").pipe(
+            Actor.as(User.make({ subject: "bob" })),
+          )
+
+          const id = yield* (yield* Actors).mintCommandId
+          const committing = yield* test.pauseNext("beforeCommit")
+          const before = fixture.executions
+
+          const original = yield* alice
+            .Reject(71)
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+
+          yield* committing.reached
+          const delivering = yield* test.pauseNext("beforeDelivery")
+
+          const competitor = yield* bob
+            .Reject(71)
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+
+          yield* delivering.reached
+          yield* committing.release
+          expect(yield* Fiber.join(original)).toEqual(Rejected.make({ amount: 71 }))
+          yield* delivering.release
+          expect(yield* Fiber.join(competitor)).toMatchObject({
+            reason: Unauthorized.make({ code: "receipt_access_denied" }),
+          })
+          expect(fixture.executions - before).toBe(1)
+          expect(yield* test.inspect(alice.ref)).toMatchObject({ state: {}, receipts: 1 })
+        }),
+      ),
+  },
+  {
+    name: "refuses to reinterpret retained identities under a changed retry window",
+    run: ({ expect, environment }) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          yield* environment.stop
+          const incompatible = environment.build({ retryWindowMs: 60_001 })
+          const exit = yield* Effect.promise(() => incompatible.runPromiseExit(Effect.void))
+          yield* Effect.promise(() => incompatible.dispose())
+          yield* environment.restart
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(
+            "differs from the deployment",
+          )
+        }),
+      ),
+  },
+  {
+    name: "revokes external access without cancelling an in-flight command or its retry",
+    run: ({ expect, environment, access }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("revoked")
+          const id = yield* (yield* Actors).mintCommandId
+          const pause = yield* test.pauseNext("beforeHandler")
+          yield* test.crashNext("beforeCommit")
+          const call = counter.Increment(37).pipe(Actor.commandId(id))
+          const waiter = yield* call.pipe(Effect.result, Effect.forkChild)
+          yield* pause.reached
+          access.allowed = false
+          yield* pause.release
+          const result = yield* Fiber.join(waiter)
+          expect(result).toMatchObject({
+            failure: { reason: Unauthorized.make({ code: "access_denied" }) },
+          })
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 37 },
+            receipts: 1,
+          })
+          expect(yield* counter.Increment(1).pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          expect(yield* call.pipe(Effect.flip)).toMatchObject({
+            reason: Unauthorized.make({ code: "access_denied" }),
+          })
+          access.allowed = true
+          expect(yield* call).toBe(37)
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              access.allowed = true
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "defines exact expiry boundaries and rejects invalid/future identities",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const id = "v1.1000.6000.17b3670b-3f17-4a9b-aade-037e1dd1bba8"
+          yield* checkIdentity(id, 5000, 5999)
+
+          for (const now of [6000, 6001])
+            expect(yield* checkIdentity(id, 5000, now).pipe(Effect.flip)).toMatchObject({
+              reason: CommandExpired.make({ commandId: id }),
+            })
+          expect(yield* checkIdentity(id, 5000, 999).pipe(Effect.flip)).toMatchObject({
+            reason: InvalidCommandId.make({ commandId: id, code: "future" }),
+          })
+          expect(
+            yield* checkIdentity(id.replace("6000", "7000"), 5000, 1000).pipe(Effect.flip),
+          ).toMatchObject({
+            reason: InvalidCommandId.make({
+              commandId: id.replace("6000", "7000"),
+              code: "window",
+            }),
+          })
+          const counter = yield* Counter.get("expiry-first")
+          const before = fixture.executions
+          const expired = id.replace("6000", "61000")
+          expect(
+            yield* counter.Increment(41).pipe(Actor.commandId(expired), Effect.flip),
+          ).toMatchObject({
+            reason: CommandExpired.make({ commandId: expired }),
+          })
+          expect(fixture.executions).toBe(before)
+        }),
+      ),
+  },
+  {
+    name: "canonicalizes object keys but preserves array order in payload hashes",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const first = yield* payloadHash('{"value":{"b":2,"a":[3,7]}}')
+          expect(yield* payloadHash('{"value":{"a":[3,7],"b":2}}')).toBe(first)
+          expect(yield* payloadHash('{"value":{"a":[7,3],"b":2}}')).not.toBe(first)
+        }),
+      ),
+  },
+  {
+    name: "decodes regclass so the migrator can reopen the database",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          expect(yield* sql`SELECT 128::regclass AS value`).toEqual([{ value: 128 }])
+        }),
+      ),
+  },
+  {
+    name: "recovers a declared failure beforeCommit without persisting dirty state",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("failure-beforeCommit")
+          yield* counter.Increment(19)
+          const before = fixture.executions
+          const call = counter.Reject(53)
+          yield* test.crashNext("beforeCommit")
+          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
+          expect(fixture.executions - before).toBe(2)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 19 },
+            receipts: 2,
+          })
+          yield* counter.Increment(2)
+          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 21 },
+            receipts: 3,
+          })
+        }),
+      ),
+  },
+  {
+    name: "recovers a declared failure afterCommit without persisting dirty state",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const counter = yield* Counter.get("failure-afterCommit")
+          yield* counter.Increment(19)
+          const before = fixture.executions
+          const call = counter.Reject(53)
+          yield* test.crashNext("afterCommit")
+          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
+          expect(fixture.executions - before).toBe(1)
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 19 },
+            receipts: 2,
+          })
+          yield* counter.Increment(2)
+          expect(yield* call.pipe(Effect.flip)).toEqual(Rejected.make({ amount: 53 }))
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 21 },
+            receipts: 3,
+          })
+        }),
+      ),
+  },
+  {
+    name: "retries a real generation lock timeout without entering the handler",
+    requiresIndependentConnections: true,
+    timeoutMs: 15_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const counter = yield* Counter.get("locked")
+          const test = yield* ActorTest
+          yield* counter.Increment(2)
+
+          const connect = environment.connect
+
+          if (connect === undefined)
+            return yield* Effect.die(new Error("backend lacks independent connections"))
+
+          const lock = yield* connect
+          yield* lock.query("BEGIN")
+          yield* lock.query(
+            "SELECT generation FROM actor_generations WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3 FOR UPDATE",
+            [counter.ref.tenant, counter.ref.actor, counter.ref.id],
+          )
+
+          yield* Effect.gen(function* () {
+            const before = fixture.executions
+            const waiter = yield* counter.Increment(59).pipe(Effect.forkChild)
+
+            const waitingAttempt = lock.query("SELECT pg_stat_clear_snapshot()").pipe(
+              Effect.andThen(
+                lock.query(
+                  `SELECT pid, query_start::text AS query_start
+                  FROM pg_stat_activity
+                  WHERE datname = current_database()
+                    AND pid <> pg_backend_pid()
+                    AND wait_event_type = 'Lock'
+                    AND query LIKE '%actor_generations%FOR UPDATE%'`,
+                ),
+              ),
+              Effect.map(
+                (rows) =>
+                  rows[0] as { readonly pid: number; readonly query_start: string } | undefined,
+              ),
+            )
+
+            const first = yield* waitingAttempt.pipe(
+              Effect.repeat({
+                while: (attempt) => attempt === undefined,
+                schedule: Schedule.spaced("10 millis"),
+              }),
+              Effect.timeout("5 seconds"),
+            )
+
+            const retry = yield* waitingAttempt.pipe(
+              Effect.repeat({
+                while: (attempt) =>
+                  attempt === undefined ||
+                  (attempt.pid === first!.pid && attempt.query_start === first!.query_start),
+                schedule: Schedule.spaced("10 millis"),
+              }),
+              Effect.timeout("5 seconds"),
+            )
+
+            expect(retry).not.toEqual(first)
+            expect(fixture.executions).toBe(before)
+            expect(yield* test.inspect(counter.ref)).toMatchObject({
+              state: { count: 2 },
+              receipts: 1,
+            })
+            yield* lock.query("COMMIT")
+            expect(yield* Fiber.join(waiter)).toBe(61)
+            expect(fixture.executions - before).toBe(1)
+            expect(yield* test.inspect(counter.ref)).toMatchObject({
+              state: { count: 61 },
+              receipts: 2,
+            })
+          }).pipe(Effect.ensuring(lock.query("ROLLBACK")))
+        }),
+      ),
+  },
+  {
+    name: "completes an in-flight command past expiry but refuses the external outcome",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const counter = yield* Counter.get("expired-pending")
+          const test = yield* ActorTest
+          const pause = yield* test.pauseNext("beforeHandler")
+          yield* test.crashNext("beforeCommit")
+          const now = yield* databaseTime
+          const id = `v1.${now - 59_500}.${now + 500}.17b3670b-3f17-4a9b-aade-037e1dd1bba8`
+
+          const waiter = yield* counter
+            .Increment(67)
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+
+          yield* pause.reached
+          yield* Effect.sleep("550 millis")
+          yield* pause.release
+          expect(yield* Fiber.join(waiter)).toMatchObject({
+            reason: CommandExpired.make({ commandId: id }),
+          })
+          expect(yield* test.inspect(counter.ref)).toMatchObject({
+            state: { count: 67 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
+  {
+    name: "rejects an expired identity after receipt pruning and runtime restart",
+    run: ({ expect, environment }) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const saved = yield* Effect.promise(() =>
+            environment.run(
+              Effect.gen(function* () {
+                const counter = yield* Counter.get("restart")
+                const now = yield* databaseTime
+                const id = `v1.${now - 59_500}.${now + 500}.17b3670b-3f17-4a9b-aade-037e1dd1bba8`
+                expect(yield* counter.Increment(43).pipe(Actor.commandId(id))).toBe(43)
+                const sql = yield* SqlClient.SqlClient
+                yield* Effect.sleep("550 millis")
+                yield* sql`DELETE FROM actor_receipts WHERE tenant_id = ${counter.ref.tenant} AND actor_type = ${counter.ref.actor} AND actor_id = ${counter.ref.id}`
+
+                return { ref: counter.ref, id }
+              }),
+            ),
+          )
+
+          yield* environment.restart
+
+          yield* Effect.promise(() =>
+            environment.run(
+              Effect.gen(function* () {
+                const counter = yield* Counter.get(saved.ref.id).pipe(
+                  Actor.tenant(saved.ref.tenant),
+                )
+
+                expect(
+                  yield* counter.Increment(43).pipe(Actor.commandId(saved.id), Effect.flip),
+                ).toMatchObject({ reason: CommandExpired.make({ commandId: saved.id }) })
+                const test = yield* ActorTest
+                expect(yield* test.inspect(counter.ref)).toMatchObject({
+                  state: { count: 43 },
+                  receipts: 0,
+                })
+                expect(yield* counter.Increment(2)).toBe(45)
+              }),
+            ),
+          )
+        }),
+      ),
+  },
+  {
+    name: "isolates durable state between fresh layer builds",
+    requiresFreshDatabase: true,
+    run: ({ expect, environment }) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const tenant = yield* Effect.promise(() =>
+            environment.run(
+              Effect.gen(function* () {
+                const counter = yield* Counter.get("isolated")
+                expect(yield* counter.Increment(4)).toBe(4)
+                const test = yield* ActorTest
+
+                return test.tenant
+              }),
+            ),
+          )
+
+          const database = yield* environment.freshDatabase
+
+          const isolated = yield* Effect.acquireRelease(
+            Effect.sync(() => environment.build({ database })),
+            (runtime) => Effect.promise(() => runtime.dispose()),
+          )
+
+          yield* Effect.promise(() =>
+            isolated.runPromise(
+              Effect.gen(function* () {
+                const counter = yield* Counter.get("isolated").pipe(Actor.tenant(tenant))
+                const test = yield* ActorTest
+                expect(yield* test.inspect(counter.ref)).toEqual({
+                  generation: undefined,
+                  state: {},
+                  receipts: 0,
+                  events: 0,
+                  outbox: 0,
+                  jobs: 0,
+                })
+                expect(yield* counter.Increment(6)).toBe(6)
+                expect(yield* test.inspect(counter.ref)).toMatchObject({
+                  state: { count: 6 },
+                  receipts: 1,
+                })
+              }),
+            ),
+          )
+
+          yield* Effect.promise(() =>
+            environment.run(
+              Effect.gen(function* () {
+                const counter = yield* Counter.get("isolated").pipe(Actor.tenant(tenant))
+                const test = yield* ActorTest
+                expect(yield* test.inspect(counter.ref)).toMatchObject({
+                  state: { count: 4 },
+                  receipts: 1,
+                })
+              }),
+            ),
+          )
+        }).pipe(Effect.scoped),
+      ),
+  },
+]

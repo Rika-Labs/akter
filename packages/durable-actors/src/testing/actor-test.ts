@@ -114,10 +114,10 @@ export interface Inspection {
   readonly state: Schema.JsonObject["Type"]
   readonly receipts: number
   readonly events: number
-  /** Pending intents and timers this actor sent, including effect routes awaiting delivery. */
+  /** Pending intents and timers this actor sent, including job routes awaiting delivery. */
   readonly outbox: number
-  /** Effects this actor performed whose executor has not yet settled them. */
-  readonly effects: number
+  /** Jobs this actor enqueued whose executor has not yet settled them. */
+  readonly jobs: number
   /**
    * The actor's row count per owned table, keyed by table name (schema-qualified
    * outside the current schema); present when its type owns tables.
@@ -262,8 +262,8 @@ export class ActorTest extends Context.Service<
     readonly connect: <C extends AnyConnection>(
       ref: ActorRef,
       member: C,
-      params: C["input"]["Type"],
-    ) => Effect.Effect<TestConnection<C>, ActorError | C["errors"][number]["Type"]>
+      params: C["payload"]["Type"],
+    ) => Effect.Effect<TestConnection<C>, ActorError | C["error"]["Type"]>
     /** Ends the actor's activation on this runner as `hibernateAfter` would; its connections stay open. */
     readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
     /**
@@ -530,9 +530,9 @@ export class ActorTest extends Context.Service<
 
                 const outbox = yield* sql<{
                   intents: number
-                  effects: number
+                  jobs: number
                 }>`SELECT count(*) FILTER (WHERE kind = 'intent')::integer AS intents,
-              count(*) FILTER (WHERE kind = 'job')::integer AS effects FROM actor_outbox
+              count(*) FILTER (WHERE kind = 'job')::integer AS jobs FROM actor_outbox
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
                 const tables = yield* sql<{
@@ -581,7 +581,7 @@ export class ActorTest extends Context.Service<
                   receipts: counted!.receipts,
                   events: counted!.events,
                   outbox: outbox[0]!.intents,
-                  effects: outbox[0]!.effects,
+                  jobs: outbox[0]!.jobs,
                 }
 
                 const withRows = tables.length > 0 ? { ...inspection, rows } : inspection
@@ -640,17 +640,17 @@ export class ActorTest extends Context.Service<
               connect: Effect.fnUntraced(function* <C extends AnyConnection>(
                 ref: ActorRef,
                 member: C,
-                params: C["input"]["Type"],
+                params: C["payload"]["Type"],
               ) {
                 const server = valueCodec(member.server)
                 const decodeServer = Schema.decodeEffect(server)
                 const encodeClient = Schema.encodeEffect(valueCodec(member.client))
 
                 const decodeError = Schema.decodeEffect(
-                  Schema.fromJsonString(Schema.toCodecJson(Schema.Union(member.errors))),
+                  Schema.fromJsonString(Schema.toCodecJson(member.error)),
                 )
 
-                const encoded = yield* Schema.encodeEffect(valueCodec(member.input))({
+                const encoded = yield* Schema.encodeEffect(valueCodec(member.payload))({
                   value: params,
                 }).pipe(Effect.orDie)
 
@@ -664,7 +664,7 @@ export class ActorTest extends Context.Service<
                   .pipe(
                     Effect.catchTag("OpenRejected", (rejected: OpenRejected) =>
                       Effect.flatMap(decodeError(rejected.value).pipe(Effect.orDie), (error) =>
-                        Effect.fail(error as C["errors"][number]["Type"]),
+                        Effect.fail(error as C["error"]["Type"]),
                       ),
                     ),
                   )

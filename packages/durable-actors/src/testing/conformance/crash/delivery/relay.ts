@@ -7,7 +7,7 @@ import { decompress } from "../../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 import { FrameworkClock } from "../../../../runtime/turn/admission.ts"
 
-const Add = Actor.command("Add", { input: Schema.Finite })
+const Add = Actor.command("Add", { payload: Schema.Finite })
 
 const Touch = Actor.command("Touch")
 
@@ -18,7 +18,7 @@ const Receiver = Actor.make("ProcessReceiver", {
   internal: { Add },
 })
 
-const Send = Actor.command("Send", { input: Schema.Finite })
+const Send = Actor.command("Send", { payload: Schema.Finite })
 
 const Sender = Actor.make("ProcessSender", { key: Schema.String, api: { Send } })
 

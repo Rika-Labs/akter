@@ -1,20 +1,8 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { ActorError, Unauthorized, User } from "@durable-actors/core"
-import { ActorTest } from "@durable-actors/core/testing"
-import {
-  Config,
-  Crypto,
-  DateTime,
-  Effect,
-  Layer,
-  ManagedRuntime,
-  Predicate,
-  Redacted,
-  Schedule,
-  Schema,
-} from "effect"
+import { ActorTest, testDatabase } from "@durable-actors/core/testing"
+import { DateTime, Effect, Layer, ManagedRuntime, Predicate, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { Account, AccountId } from "./contract.ts"
 import { fakeGateway, ledger } from "./gateway.ts"
@@ -22,36 +10,12 @@ import { AccountLive } from "./layer.ts"
 
 const book = ledger()
 
-/**
- * The same cases run on PGlite (`test`) and on a fresh Postgres database
- * (`test:integration`).
- */
-const database = Effect.gen(function* () {
-  if ((yield* Config.String("SUBSCRIPTIONS_BACKEND")) === "pglite") return undefined
-
-  const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
-  const name = `subscriptions_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-  const admin = yield* Effect.acquireRelease(
-    Effect.sync(() => new Pool({ connectionString: base.href })),
-    (pool) => Effect.promise(() => pool.end()),
-  )
-
-  yield* Effect.acquireRelease(
-    Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-    () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-  )
-  base.pathname = `/${name}`
-
-  return Redacted.make(base.href)
-})
-
 const live = Layer.unwrap(
   Effect.gen(function* () {
     return AccountLive.pipe(
       Layer.provide(fakeGateway(book)),
       Layer.provideMerge(
-        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
+        ActorTest.layer({ database: yield* testDatabase, as: User.make({ subject: "ada" }) }),
       ),
     )
   }),

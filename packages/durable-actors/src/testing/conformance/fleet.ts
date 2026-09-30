@@ -25,7 +25,7 @@ import type { AccessRequest } from "../../policies/access.ts"
 import { fleetClient } from "../../client/fleet.ts"
 import { FleetHooks } from "../../runtime/fleet/maintainer.ts"
 import { grants } from "./rls.ts"
-import { serveHttp } from "./http.ts"
+import { serveHttp, httpSuite } from "./http.ts"
 import type { AnyFleetView } from "../../tables/fleet.ts"
 import { Database } from "../../runtime/layer.ts"
 import { checkFleet } from "../../runtime/fleet/checks.ts"
@@ -38,7 +38,12 @@ import { migrate } from "../../runtime/database/migrations.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
+import type {
+  ConformanceCase,
+  ConformanceEnvironment,
+  ConformanceExpect,
+  ConformanceSuite,
+} from "../conformance.ts"
 
 /** The source table every fleet case reads. */
 export const fleetOrders = Actor.table(
@@ -135,11 +140,11 @@ type Order = typeof Order.Type
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
-const Put = Actor.command("Put", { input: Order })
+const Put = Actor.command("Put", { payload: Order })
 
-const Remove = Actor.command("Remove", { input: Schema.String })
+const Remove = Actor.command("Remove", { payload: Schema.String })
 
-const PutThenRefuse = Actor.command("PutThenRefuse", { input: Order, errors: [Refused] })
+const PutThenRefuse = Actor.command("PutThenRefuse", { payload: Order, error: Refused })
 
 /** A tenant-placed actor owning `fleet_orders`. */
 const FleetOrder = Actor.make("FleetOrder", {
@@ -741,6 +746,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: every aggregate equals a recompute over the source after inserts, updates, deletes, and the removal of a group's last row, per tenant",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -774,6 +780,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: an update that moves a row between groups changes both groups",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -799,6 +806,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a rolled-back turn changes no view",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -823,6 +831,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a writer outside any turn changes the source and the view follows",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -846,6 +855,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a legacy writer's change to an adopted table appears in the view",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -902,6 +912,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a maintainer killed between applying a batch and advancing the slot replays it and the view still equals the recompute",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
@@ -948,6 +959,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: of two runners exactly one maintains, and the other takes over within the retry interval after the first is killed",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
@@ -982,6 +994,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a lost slot marks every view stale and a rebuild restores them while writes continue",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -1020,6 +1033,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a changed definition marks its view stale, and a new view builds from the existing rows",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 90_000,
     run: ({ expect, environment }) =>
@@ -1071,6 +1085,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: a poisoned view goes stale and the other views keep advancing",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -1128,6 +1143,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: applied_lsn passes a command's durable-version after the view has seen its change, and never moves back",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -1166,6 +1182,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: startup refuses wal_level below logical, no publication or slot, a source without full replica identity, an actor-placed source, a missing index, a login without REPLICATION, and a derived table the tenant role owns",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -1275,6 +1292,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: the statements of a turn are unchanged when views are registered",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
@@ -1297,6 +1315,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: subscribe sends the caller's tenant's page first, then a changed page after a commit, suppresses an identical page, and shows stale and asOf",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
@@ -1374,6 +1393,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: subscribe denies at open, ends within reauthorizeEvery after revocation, never returns another tenant's rows, and refuses a foreign origin, a tenant parameter, and an unregistered view",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
@@ -1462,6 +1482,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: with row-level security on, a subscription's page runs as the tenant role",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
@@ -1540,6 +1561,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fleet: one poll per view per runner regardless of subscriber count, and a page query only when the view changed",
+    requiresFreshDatabase: true,
     requiresLogicalDecoding: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
@@ -1611,3 +1633,8 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Fleet cases serve the HTTP actors. */
+export const fleetSuite: ConformanceSuite = {
+  uses: [httpSuite],
+}

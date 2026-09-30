@@ -4,7 +4,7 @@ import type { AnyBlob } from "../../members/blob.ts"
 import { MAX_ENTRY_BYTES } from "../../runtime/turn/blobs.ts"
 import type { BlobWrite } from "../../state/blob.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 /** Blob names shared by two actor types, so only the scope keeps their entries apart. */
 export const files = Actor.blob("files")
@@ -31,23 +31,23 @@ const Misuse = Schema.Literals([
   "notBytes",
 ])
 
-const Store = Actor.command("Store", { input: Entry })
+const Store = Actor.command("Store", { payload: Entry })
 
 /** Appends a chunk and returns the entry as the turn itself reads it. */
-const Append = Actor.command("Append", { input: Entry, output: Schema.String })
+const Append = Actor.command("Append", { payload: Entry, success: Schema.String })
 
 /** Appends, compacts, and returns the entry as the turn reads it after compaction. */
-const AppendCompact = Actor.command("AppendCompact", { input: Entry, output: Schema.String })
+const AppendCompact = Actor.command("AppendCompact", { payload: Entry, success: Schema.String })
 
 const WriteThenReject = Actor.command("WriteThenReject", {
-  input: Schema.String,
-  errors: [DrawerRejected],
+  payload: Schema.String,
+  error: DrawerRejected,
 })
 
-const WriteThenMisuse = Actor.command("WriteThenMisuse", { input: Misuse })
+const WriteThenMisuse = Actor.command("WriteThenMisuse", { payload: Misuse })
 
 /** Sets, appends, and sets again in one turn; the last set wins. */
-const Rewrite = Actor.command("Rewrite", { input: Entry, output: Schema.String })
+const Rewrite = Actor.command("Rewrite", { payload: Entry, success: Schema.String })
 
 const WriteForked = Actor.command("WriteForked")
 
@@ -58,17 +58,17 @@ const WriteTimed = Actor.command("WriteTimed")
 const WriteRaced = Actor.command("WriteRaced")
 
 /** Appends `size` bytes to one growing entry. */
-const Grow = Actor.command("Grow", { input: Schema.Int })
+const Grow = Actor.command("Grow", { payload: Schema.Int })
 
-const Large = Actor.command("Large", { input: Schema.Int })
+const Large = Actor.command("Large", { payload: Schema.Int })
 
 const Capture = Actor.command("Capture")
 
 const Replay = Actor.command("Replay")
 
-const Get = Actor.query("Get", { input: Schema.String, output: Schema.Option(Schema.String) })
+const Get = Actor.query("Get", { payload: Schema.String, success: Schema.Option(Schema.String) })
 
-const Size = Actor.query("Size", { input: Schema.String, output: Schema.Int })
+const Size = Actor.query("Size", { payload: Schema.String, success: Schema.Int })
 
 const QueryWrite = Actor.query("QueryWrite")
 
@@ -102,9 +102,9 @@ const Drawer = Actor.make("Drawer", {
   policy: { maxStateBytes: 1_024 },
 })
 
-const Put = Actor.command("Put", { input: Entry })
+const Put = Actor.command("Put", { payload: Entry })
 
-const Peek = Actor.query("Peek", { input: Schema.String, output: Schema.Option(Schema.String) })
+const Peek = Actor.query("Peek", { payload: Schema.String, success: Schema.Option(Schema.String) })
 
 /** A second actor type declaring an equally named blob. */
 const Cabinet = Actor.make("Cabinet", { key: Schema.String, blobs: [files], api: { Put, Peek } })
@@ -263,7 +263,7 @@ const defect = (exit: Exit.Exit<unknown, unknown>) =>
 const blobsOf = (count: number) => ({ blobs: { files: count } })
 
 /** Actor blob cases: tenant and actor scoping, append/compact/set round trips, and rollback with a declared failure. */
-export const blobsConformance: ReadonlyArray<ConformanceCase> = [
+export const blobsConformance: ReadonlyArray<ConformanceCase<BlobsFixture>> = [
   {
     name: "scopes blob entries by tenant, actor type, and actor for equal names",
     run: ({ expect, environment }) =>
@@ -466,7 +466,7 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           const drawer = yield* Drawer.get("escape")
           expect(defect(yield* drawer.QueryWrite().pipe(Effect.exit))).toContain("set")
           yield* drawer.Capture()
-          expect(defect(yield* fixture.blobs.escaped.pipe(Effect.exit))).toContain(
+          expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
             "Blob capability escaped its turn",
           )
           expect(defect(yield* drawer.Replay().pipe(Effect.exit))).toContain(
@@ -476,7 +476,7 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* drawer.Get("escaped")).toEqual(Option.none())
           expect(yield* drawer.Get("from-query")).toEqual(Option.none())
           yield* drawer.CaptureRead()
-          expect(defect(yield* fixture.blobs.escaped.pipe(Effect.exit))).toContain(
+          expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
             "Blob capability escaped its query",
           )
 
@@ -512,3 +512,9 @@ export const blobsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The actor blob actors. */
+export const blobsSuite: ConformanceSuite<BlobsFixture> = {
+  fixture: blobsFixture,
+  layer: blobsLayer,
+}

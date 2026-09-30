@@ -266,6 +266,7 @@ export const transportClientConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "client resyncs a connection in place after its owner dies: onResync runs, then live frames resume without duplicates",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>

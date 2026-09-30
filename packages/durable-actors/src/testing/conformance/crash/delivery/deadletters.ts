@@ -10,39 +10,36 @@ import { FrameworkClock } from "../../../../runtime/turn/admission.ts"
 
 class ProviderDown extends Schema.TaggedError<ProviderDown>()("ProviderDown", {}) {}
 
-class Charge extends Actor.effect<Charge>()("Charge", { input: { amount: Schema.Finite } }) {}
+const Charge = Actor.job("Charge", { payload: { amount: Schema.Finite } })
 
-class Gauge extends Actor.effect<Gauge>()("Gauge", {
-  input: { value: Schema.Finite },
+const Gauge = Actor.job("Gauge", {
+  payload: { value: Schema.Finite },
   success: Schema.Finite,
-}) {}
+})
 
-const Order = Actor.command("Order", { input: Schema.Finite })
+const Order = Actor.command("Order", { payload: Schema.Finite })
 
 const Charged = Actor.command("Charged")
 
-const ChargeFailed = Actor.command("ChargeFailed", { input: Actor.DeadLetter(Charge) })
+const ChargeFailed = Actor.command("ChargeFailed", { payload: Actor.DeadLetter(Charge) })
 
-const Measure = Actor.command("Measure", { input: Schema.Finite })
+const Measure = Actor.command("Measure", { payload: Schema.Finite })
 
-const Gauged = Actor.command("Gauged", { input: Schema.Int })
+const Gauged = Actor.command("Gauged", { payload: Schema.Int })
 
-const GaugeFailed = Actor.command("GaugeFailed", { input: Actor.DeadLetter(Gauge) })
+const GaugeFailed = Actor.command("GaugeFailed", { payload: Actor.DeadLetter(Gauge) })
 
 const Buyer = Actor.make("ProcessBuyer", {
   key: Schema.String,
   state: Actor.state({
     failures: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [Charge, Gauge],
+  jobs: {
+    Charge: { job: Charge, retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed },
+    Gauge: { job: Gauge, retry: { times: 2 }, onSuccess: Gauged, onDeadLetter: GaugeFailed },
+  },
   api: { Order, Measure },
   internal: { Charged, ChargeFailed, Gauged, GaugeFailed },
-  policy: {
-    effects: {
-      Charge: { retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed },
-      Gauge: { retry: { times: 2 }, onSuccess: Gauged, onDeadLetter: GaugeFailed },
-    },
-  },
 })
 
 const runtime = Layer.unwrap(
@@ -60,7 +57,7 @@ const runtime = Layer.unwrap(
         provider.query(
           `INSERT INTO provider_calls (idempotency_key, calls) VALUES ($1, 1)
            ON CONFLICT (idempotency_key) DO UPDATE SET calls = provider_calls.calls + 1`,
-          [exec.effectId],
+          [exec.jobId],
         ),
       )
     })
@@ -74,18 +71,18 @@ const runtime = Layer.unwrap(
       Buyer.toLayer(
         Effect.succeed({
           Order: Effect.fnUntraced(function* (amount: number) {
-            yield* (yield* Buyer.Turn).perform(Charge.make({ amount }))
+            yield* (yield* Buyer.Turn).enqueue(Charge.make({ amount }))
           }),
           Charged: () => Effect.void,
           ChargeFailed: fail,
           Measure: Effect.fnUntraced(function* (value: number) {
-            yield* (yield* Buyer.Turn).perform(Gauge.make({ value }))
+            yield* (yield* Buyer.Turn).enqueue(Gauge.make({ value }))
           }),
           Gauged: () => Effect.void,
           GaugeFailed: fail,
         }),
       ),
-      Buyer.toEffectLayer(
+      Buyer.toJobLayer(
         Effect.succeed({
           Charge: () => call().pipe(Effect.andThen(ProviderDown.make({}))),
           Gauge: ({ value }) => call().pipe(Effect.as(value)),

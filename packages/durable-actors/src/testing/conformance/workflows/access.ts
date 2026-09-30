@@ -4,17 +4,17 @@ import { Actor, InvalidExecutionId, System, Unauthorized, User } from "../../../
 import { ActorTest } from "../../actor-test.ts"
 import { routingKey } from "../../../runtime/storage/codec.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Attributed, Quote, Ship, Shipper } from "./actors.ts"
+import { Attributed, Quote, Ship, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { advance, eventually, killOwner, on, reset, suspendedRow, withCluster } from "./harness.ts"
 
 /** Tenant separation, routing keys, and caller attribution of workflows. */
-export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowAccessConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: separates equal keys across tenants and owners",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const other = yield* Crypto.Crypto.use((crypto) => crypto.randomUUIDv4).pipe(Effect.orDie)
 
@@ -43,7 +43,7 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(results).toEqual(["r-sleep-a:v2", "r-sleep-other:v2", "r-sleep-b:v2"])
-          expect(fixture.workflows.runs.get("reserve:same")).toBe(3)
+          expect(fixture.runs.get("reserve:same")).toBe(3)
         }),
       ),
   },
@@ -52,7 +52,7 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const shipper = yield* Shipper.get("routed")
           const run = yield* shipper.Ship({ orderId: "routed", sku: "sleep-routed" })
@@ -92,7 +92,7 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const run = yield* (yield* Shipper.get("foreign")).Ship({ orderId: "f1", sku: "a" })
           expect(yield* run.result).toBe("r-a:v2")
           const other = yield* Crypto.Crypto.use((crypto) => crypto.randomUUIDv4).pipe(Effect.orDie)
@@ -111,15 +111,15 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "workflows: continues with recorded attribution after the starting caller loses access",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, fixture, access }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("revoked")
           const run = yield* shipper.Attributed({ key: "h2" })
           yield* suspendedRow(run.executionId)
-          fixture.revoked.add("alice")
+          access.revoked.add("alice")
 
           expect(yield* shipper.Pay({ orderId: "h2", amount: 1 }).pipe(Effect.flip)).toMatchObject({
             reason: Unauthorized.make({ code: "access_denied" }),
@@ -133,7 +133,7 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(result).toBe("alice")
-          expect(fixture.workflows.audits.get("h2")).toEqual({
+          expect(fixture.audits.get("h2")).toEqual({
             tenant: test.tenant,
             caller: System.make({
               source: "workflow",
@@ -141,19 +141,19 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
               onBehalfOf: { subject: "alice" },
             }),
           })
-        }).pipe(Effect.ensuring(Effect.sync(() => fixture.revoked.delete("alice")))),
+        }).pipe(Effect.ensuring(Effect.sync(() => access.revoked.delete("alice")))),
       ),
   },
   {
     name: "workflows: denies poll to a revoked caller",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, fixture, access }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("poll-revoked")
           const run = yield* shipper.Ship({ orderId: "pr1", sku: "sleep-pr" })
           yield* suspendedRow(run.executionId)
-          fixture.revoked.add("alice")
+          access.revoked.add("alice")
           const denied = { reason: Unauthorized.make({ code: "access_denied" }) }
           expect(yield* run.poll.pipe(Effect.flip)).toMatchObject(denied)
           expect(yield* run.result.pipe(Effect.flip)).toMatchObject(denied)
@@ -165,17 +165,18 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(Option.isSome(polled) && polled.value._tag).toBe("Suspended")
-        }).pipe(Effect.ensuring(Effect.sync(() => fixture.revoked.delete("alice")))),
+        }).pipe(Effect.ensuring(Effect.sync(() => access.revoked.delete("alice")))),
       ),
   },
   {
     name: "workflows: restores tenant and onBehalfOf on resume elsewhere",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.workflows,
+        fixture,
         Effect.gen(function* () {
           const { id, ref, tenant } = yield* on(
             0,
@@ -209,7 +210,7 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(result).toBe("alice")
-          expect(fixture.workflows.audits.get("elsewhere")).toEqual({
+          expect(fixture.audits.get("elsewhere")).toEqual({
             tenant,
             caller: System.make({ source: "workflow", ref, onBehalfOf: { subject: "alice" } }),
           })

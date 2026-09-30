@@ -282,6 +282,7 @@
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
         "@effect/sql-pglite": "catalog:",
+        "@effect/vitest": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-kit": "catalog:",
         "drizzle-orm": "catalog:",
@@ -384,9 +385,6 @@
         "vitest": "catalog:",
       },
     },
-    "tooling/databases": {
-      "name": "@durable-actors/databases",
-    },
     "tooling/doc-checks": {
       "name": "@durable-actors/doc-checks",
       "dependencies": {
@@ -417,6 +415,7 @@
     "tooling/structure": {
       "name": "@durable-actors/structure",
       "dependencies": {
+        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
@@ -646,8 +645,6 @@
     "@durable-actors/counter": ["@durable-actors/counter@workspace:examples/counter"],
 
     "@durable-actors/create": ["@durable-actors/create@workspace:packages/create"],
-
-    "@durable-actors/databases": ["@durable-actors/databases@workspace:tooling/databases"],
 
     "@durable-actors/deployments": ["@durable-actors/deployments@workspace:packages/deployments"],
 

@@ -3,15 +3,17 @@ import { SqlClient } from "effect/unstable/sql"
 import { SessionEnded, Unauthorized } from "../../../errors/actor.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Hello, Room, Said, Say } from "./actors.ts"
+import { Hello, Room, Said, Say, type ConnectionsFixture } from "./actors.ts"
 import { connect, endOf, frameOf, next, posts, reasonOf, rows } from "./harness.ts"
 import { Actor, User } from "../../../index.ts"
 
 /** Reauthorization, holder liveness checks, and server-side closes of connections. */
-export const connectionReauthorizationConformance: ReadonlyArray<ConformanceCase> = [
+export const connectionReauthorizationConformance: ReadonlyArray<
+  ConformanceCase<ConnectionsFixture>
+> = [
   {
     name: "a denied reauthorization ends the session with access_denied and never wakes the actor",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const { test, room, connection } = yield* connect("connections-revoked")
@@ -19,11 +21,11 @@ export const connectionReauthorizationConformance: ReadonlyArray<ConformanceCase
           yield* test.hibernate(room.ref)
           const generation = (yield* test.inspect(room.ref)).generation
 
-          fixture.allowed = false
+          access.allowed = false
           yield* test.advance("55 seconds")
 
           const ended = yield* endOf(connection).pipe(
-            Effect.ensuring(Effect.sync(() => (fixture.allowed = true))),
+            Effect.ensuring(Effect.sync(() => (access.allowed = true))),
           )
 
           expect(reasonOf(ended)).toMatchObject(Unauthorized.make({ code: "access_denied" }))

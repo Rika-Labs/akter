@@ -7,23 +7,23 @@ import { decompress } from "../../../../runtime/storage/codec.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 import { FrameworkClock } from "../../../../runtime/turn/admission.ts"
 
-class Posted extends Actor.Event<Posted>()("Posted", { body: Schema.String }) {}
+const Posted = Actor.event("Posted", { body: Schema.String })
 
-const Post = Actor.command("Post", { input: Schema.String })
+const Post = Actor.command("Post", { payload: Schema.String })
 
 const Source = Actor.make("ProcessSource", { key: Schema.String, events: [Posted], api: { Post } })
 
 const Record = Actor.command("Record", {
-  input: Actor.Delivery({ source: Source, events: [Posted] }),
+  payload: Actor.Delivery({ source: Source, events: [Posted] }),
 })
 
 const Followed = Actor.subscription("Followed", {
-  source: Source,
-  events: [Posted],
+  delivery: Actor.Delivery({ source: Source, events: [Posted] }),
+
   handler: Record,
 })
 
-const Follow = Actor.command("Follow", { input: Schema.String })
+const Follow = Actor.command("Follow", { payload: Schema.String })
 
 const Subscriber = Actor.make("ProcessSubscriber", {
   key: Schema.String,

@@ -1,10 +1,9 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
-import { Pool } from "pg"
+import { Config, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect"
 import type { TestProject } from "vitest/node"
 import { migrate } from "../../../runtime/database/migrations.ts"
 import { Database } from "../../../runtime/layer.ts"
-import { databaseName, sweepStaleDatabases } from "./database.ts"
+import { disposableDatabase, sweepStaleDatabases } from "../../database.ts"
 
 const harness = ManagedRuntime.make(BunCrypto.layer)
 
@@ -17,25 +16,22 @@ const harness = ManagedRuntime.make(BunCrypto.layer)
 export default (project: TestProject) =>
   harness.runPromise(
     Effect.gen(function* () {
-      const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
-      const name = yield* databaseName(yield* Crypto.Crypto, "actors_template")
-      const admin = new Pool({ connectionString: base.href })
-      yield* sweepStaleDatabases(admin)
-      yield* Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`))
-      const database = new URL(base.href)
-      database.pathname = `/${name}`
+      const url = yield* Config.Redacted("TEST_DATABASE_URL")
+      yield* sweepStaleDatabases(url)
+
+      const scope = yield* Scope.make()
+
+      const template = yield* disposableDatabase({ url, prefix: "actors_template" }).pipe(
+        Scope.provide(scope),
+      )
 
       yield* Effect.gen(function* () {
-        const client = yield* Layer.build(Database.postgres({ url: Redacted.make(database.href) }))
+        const client = yield* Layer.build(Database.postgres({ url: template }))
         yield* Effect.provide(migrate, client)
       }).pipe(Effect.scoped)
 
-      project.provide("conformanceTemplate", name)
+      project.provide("conformanceTemplate", new URL(Redacted.value(template)).pathname.slice(1))
 
-      return () =>
-        admin
-          .query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)
-          .then(() => admin.end())
-          .then(() => harness.dispose())
+      return () => harness.runPromise(Scope.close(scope, Exit.void)).then(() => harness.dispose())
     }),
   )
