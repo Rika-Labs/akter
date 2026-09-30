@@ -92,6 +92,23 @@
       "cache": false,
       "passThroughEnv": ["TEST_DATABASE_URL", "TEST_REPLICA_DATABASE_URL", "CI"]
     },
+    "@durable-actors/create#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "inputs": [
+        "templates/manifest.json",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/packages/durable-actors/package.json",
+        "$TURBO_ROOT$/.github/src/release/manifest.ts",
+        "$TURBO_ROOT$/.github/src/release/template.ts"
+      ]
+    },
+    "@durable-actors/create#test": {
+      "dependsOn": ["build", "transit"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/vitest.config.ts"],
+      "outputs": [],
+      "env": ["CI"]
+    },
     "@durable-actors/create#test:integration": {
       "dependsOn": ["^build", "transit"],
       "inputs": [
