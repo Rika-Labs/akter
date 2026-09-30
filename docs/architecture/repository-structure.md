@@ -23,6 +23,7 @@ packages/
   billing/                  @durable-actors/billing    Polar
   email/                    @durable-actors/email      Resend
   contracts/                @durable-actors/contracts  control-plane HttpApi shared by api, console, cli
+  python-client/            @durable-actors/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests
   observability/            @durable-actors/observability
   postgres/                 @durable-actors/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
   ui/                       @durable-actors/ui         exempt: StyleX compile unit (see tooling/structure/src/exemptions.ts)
