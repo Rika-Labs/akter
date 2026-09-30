@@ -62,16 +62,16 @@ import { WatchTap } from "./watch.ts"
 export const MAX_SESSION_BYTES = 16_384
 
 /** Open connections one actor may have per connection member. */
-export const MAX_MEMBER_CONNECTIONS = 10_000
+const MAX_MEMBER_CONNECTIONS = 10_000
 
 /** Open stream subscriptions one actor may have. */
-export const MAX_ACTOR_STREAMS = 256
+const MAX_ACTOR_STREAMS = 256
 
 /** Stream elements the owner holds for one subscriber before the handler waits. */
-export const STREAM_WINDOW = 256
+const STREAM_WINDOW = 256
 
 /** How long a stream's window may stay full before the subscription ends. */
-export const STREAM_STALL_MS = 30_000
+const STREAM_STALL_MS = 30_000
 
 /** Events one `read.follow` page reads at most. */
 const FOLLOW_PAGE = 1_000
@@ -247,6 +247,10 @@ const emptyResult: ConnectionResult = {
 
 const ended = (cause: SessionEnded["cause"], resync: boolean) =>
   SessionEnded.make({ cause, resync })
+
+/** Answers a database failure as `ActorUnavailable`, so the caller retries. */
+const sqlUnavailable = (cause: SqlError.SqlError) =>
+  Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) }))
 
 const unavailable = (message: string) =>
   ActorError.make({ reason: ActorUnavailable.make({ cause: new Error(message) }) })
@@ -1025,9 +1029,7 @@ export const activationOwner = ({
               activation.rows.delete(request.connectionId)
           }),
         ),
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
+        Effect.catchIf(SqlError.isSqlError, sqlUnavailable),
       ),
     )
 
@@ -1047,15 +1049,50 @@ export const activationOwner = ({
       yield* setKeepAwake(activation)
     })
 
-  const owned = (activation: Activation, request: Address) => {
-    const row = activation.rows?.get(request.connectionId)
+  /**
+   * Runs `body` under the connection's lock with the activation fenced and
+   * its rows loaded, on the connection's row when the requesting holder still
+   * owns it. A database failure answers `ActorUnavailable`, so the holder retries.
+   */
+  const onOwnedRow = <A, E, R>(
+    activation: Activation,
+    request: Address,
+    body: (row: Row | undefined) => Effect.Effect<A, E, R>,
+  ) =>
+    withLock(
+      activation,
+      request.connectionId,
+      Effect.gen(function* () {
+        yield* acquire(activation)
+        yield* load(activation)
+        const row = activation.rows?.get(request.connectionId)
 
-    return row !== undefined &&
-      row.holder === request.holder &&
-      row.holderEpoch === request.holderEpoch
-      ? row
-      : undefined
-  }
+        return yield* body(
+          row !== undefined &&
+            row.holder === request.holder &&
+            row.holderEpoch === request.holderEpoch
+            ? row
+            : undefined,
+        )
+      }).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable)),
+    )
+
+  /** Whether a request's authorization has lapsed on the framework clock. */
+  const lapsed = (authorizedUntil: number) =>
+    Effect.gen(function* () {
+      const clock = yield* FrameworkClock
+
+      return (yield* Clock.currentTimeMillis) + clock.offsetMillis() >= authorizedUntil
+    })
+
+  /** Drops a connection the server ended and answers it `ServerClosed`. */
+  const serverClosed = (activation: Activation, connectionId: string) =>
+    Effect.gen(function* () {
+      yield* dropRows(activation, [connectionId])
+      yield* setKeepAwake(activation)
+
+      return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
+    })
 
   const frame = (
     activation: Activation,
@@ -1066,27 +1103,15 @@ export const activationOwner = ({
       readonly commands: ConnectionCommands
     },
   ) =>
-    withLock(
-      activation,
-      request.connectionId,
+    onOwnedRow(activation, request, (row) =>
       Effect.gen(function* () {
-        yield* acquire(activation)
-        yield* load(activation)
-        const row = owned(activation, request)
-
         if (row === undefined)
           return { _tag: "Closed" as const, ended: ended("ServerClosed", true) }
 
         if (request.seq <= row.frameSeq) return { _tag: "Acked" as const, ...identity(activation) }
 
-        const clock = yield* FrameworkClock
-
-        if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
-          yield* dropRows(activation, [request.connectionId])
-          yield* setKeepAwake(activation)
-
-          return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-        }
+        if (yield* lapsed(request.authorizedUntil))
+          return yield* serverClosed(activation, request.connectionId)
 
         return yield* Effect.gen(function* () {
           const result = yield* run(
@@ -1132,31 +1157,16 @@ export const activationOwner = ({
             frames: result.sends,
           })
 
-          if (result.close) {
-            yield* dropRows(activation, [request.connectionId])
-            yield* setKeepAwake(activation)
-
-            return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-          }
+          if (result.close) return yield* serverClosed(activation, request.connectionId)
 
           return { _tag: "Acked" as const, ...identity(activation) }
         }).pipe(Effect.catchDefect(closeOnDefect(activation, request.connectionId)))
-      }).pipe(
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      ),
+      }),
     )
 
   const close = (activation: Activation, request: Address & { readonly cause: SessionEnded }) =>
-    withLock(
-      activation,
-      request.connectionId,
+    onOwnedRow(activation, request, (row) =>
       Effect.gen(function* () {
-        yield* acquire(activation)
-        yield* load(activation)
-        const row = owned(activation, request)
-
         if (row === undefined) return
 
         const result =
@@ -1182,35 +1192,19 @@ export const activationOwner = ({
         yield* setKeepAwake(activation)
 
         if (result !== undefined) yield* flush(activation, result.broadcasts, activation.head)
-      }).pipe(
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      ),
+      }),
     )
 
   const resync = (
     activation: Activation,
     request: Address & { readonly after?: string | undefined; readonly authorizedUntil: number },
   ) =>
-    withLock(
-      activation,
-      request.connectionId,
+    onOwnedRow(activation, request, (row) =>
       Effect.gen(function* () {
-        yield* acquire(activation)
-        yield* load(activation)
-        const row = owned(activation, request)
-
         if (row === undefined) return { _tag: "Closed" as const, ended: ended("OwnerLost", true) }
 
-        const clock = yield* FrameworkClock
-
-        if ((yield* Clock.currentTimeMillis) + clock.offsetMillis() >= request.authorizedUntil) {
-          yield* dropRows(activation, [request.connectionId])
-          yield* setKeepAwake(activation)
-
-          return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-        }
+        if (yield* lapsed(request.authorizedUntil))
+          return yield* serverClosed(activation, request.connectionId)
 
         if (
           row.member === FEED_MEMBER ||
@@ -1233,20 +1227,11 @@ export const activationOwner = ({
             replay: true,
           })
 
-          if (result.close) {
-            yield* dropRows(activation, [request.connectionId])
-            yield* setKeepAwake(activation)
-
-            return { _tag: "Closed" as const, ended: ended("ServerClosed", false) }
-          }
+          if (result.close) return yield* serverClosed(activation, request.connectionId)
 
           return { _tag: "Replayed" as const, ...identity(activation) }
         }).pipe(Effect.catchDefect(closeOnDefect(activation, request.connectionId)))
-      }).pipe(
-        Effect.catchIf(SqlError.isSqlError, (cause) =>
-          Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-        ),
-      ),
+      }),
     )
 
   const follow =
@@ -1364,11 +1349,7 @@ export const activationOwner = ({
           }),
         )
 
-        yield* acquire(activation).pipe(
-          Effect.catchIf(SqlError.isSqlError, (cause) =>
-            Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-          ),
-        )
+        yield* acquire(activation).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable))
 
         const sql = yield* SqlClient.SqlClient
 

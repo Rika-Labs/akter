@@ -43,6 +43,7 @@ export const actorRegistration = ({
   queryRegistrations,
   effectRegistrations,
   residency,
+  diagnostics,
   owners,
   heldTypes,
   heldType,
@@ -69,6 +70,11 @@ export const actorRegistration = ({
   readonly queryRegistrations: Map<string, QueryRegistration>
   readonly effectRegistrations: Map<string, EffectRegistration>
   readonly residency: Map<string, (entityId: string) => boolean>
+  /** Each actor type's view of its activations, for a delivery that timed out. */
+  readonly diagnostics: Map<
+    string,
+    Pick<Effect.Success<ReturnType<typeof registerActor>>, "diagnose" | "restarting">
+  >
   readonly owners: Map<string, Owner>
   readonly heldTypes: Map<string, HeldActorType>
   readonly heldType: (registration: Registration) => HeldActorType
@@ -282,13 +288,14 @@ export const actorRegistration = ({
         Effect.sync(() => {
           registrations.delete(registration.name)
           residency.delete(registration.name)
+          diagnostics.delete(registration.name)
           owners.delete(registration.name)
           heldTypes.delete(registration.name)
           sweepsWorkflows.delete(registration.name)
         }),
       )
 
-      const { isResident, owner } = yield* registerActor(
+      const { isResident, owner, diagnose, restarting } = yield* registerActor(
         registration,
         transport,
         authorize,
@@ -301,6 +308,7 @@ export const actorRegistration = ({
       )
 
       residency.set(registration.name, isResident)
+      diagnostics.set(registration.name, { diagnose, restarting })
       owners.set(registration.name, owner)
     }),
     registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
