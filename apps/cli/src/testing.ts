@@ -1,14 +1,28 @@
 import { BunServices } from "@effect/platform-bun"
-import { Cause, ConfigProvider, Console, Effect, Exit, Fiber, Layer, Runtime, Schema } from "effect"
+import {
+  Cause,
+  ConfigProvider,
+  Console,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Predicate,
+  Runtime,
+  Schema,
+} from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 
 import { run } from "./cli.ts"
+import { CommandFailed } from "./failure.ts"
 
 /** What one `durable` invocation printed, and the exit status the bin would end with. */
 export interface CliRun {
   readonly stdout: string
   readonly stderr: string
   readonly exitCode: number
+  /** The tag of the failure that ended the command: a `CliError` such as `MissingOption`, or a refusal such as `OperatorRefused`; empty on success. */
+  readonly reason: string
 }
 
 /** How a test runs `durable`: `fetch` answers its HTTP requests and `env` replaces the environment it reads. */
@@ -87,10 +101,17 @@ export const runCliWith = (options: CliOptions) => (args: ReadonlyArray<string>)
         ? Cause.pretty(exit.cause)
         : ""
 
+    const failure = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+
     return {
       stdout: printed.stdout,
       stderr: `${printed.stderr}${unreported}`,
       exitCode,
+      reason: Schema.is(CommandFailed)(failure)
+        ? failure.reason
+        : Predicate.hasProperty(failure, "_tag")
+          ? String(failure._tag)
+          : "",
     } satisfies CliRun
   }).pipe(Effect.scoped)
 

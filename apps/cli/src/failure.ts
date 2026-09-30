@@ -7,10 +7,12 @@ export class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {
 
 /**
  * A command ended unsuccessfully after printing why. It carries the process
- * exit status and is not printed again when the process ends.
+ * exit status and `reason`, the tag of the failure that ended it, and is not
+ * printed again when the process ends.
  */
 export class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", {
   exitCode: Schema.Int,
+  reason: Schema.String,
 }) {
   override readonly [Runtime.errorReported] = false
 
@@ -19,8 +21,19 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandF
   }
 }
 
-/** Prints `failure.message` to stderr and ends the command with `failure.exitCode`, 2 unless given. */
-export const fail = (failure: { readonly message: string; readonly exitCode?: number }) =>
+/**
+ * Prints `failure.message` to stderr and ends the command for `failure.reason`
+ * with `failure.exitCode`, 2 unless given.
+ */
+export const fail = (failure: {
+  readonly reason: string
+  readonly message: string
+  readonly exitCode?: number
+}) =>
   Console.error(failure.message).pipe(
-    Effect.andThen(Effect.fail(CommandFailed.make({ exitCode: failure.exitCode ?? 2 }))),
+    Effect.andThen(
+      Effect.fail(
+        CommandFailed.make({ exitCode: failure.exitCode ?? 2, reason: failure.reason }),
+      ),
+    ),
   )

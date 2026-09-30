@@ -105,15 +105,15 @@ describe("durable workflows check", () => {
         "--json",
       ])
 
-      expect(unreachable.exitCode).toBe(2)
+      expect(unreachable).toMatchObject({ exitCode: 2, reason: "SqlError" })
       expect(unreachable.stderr).toContain("Cannot read workflow state")
 
       const missing = yield* runCli(["workflows", "check", "--entry", entry])
-      expect(missing.exitCode).toBe(2)
+      expect(missing).toMatchObject({ exitCode: 2, reason: "MissingOption" })
       expect(missing.stderr).toContain("Missing required flag: --database-url")
 
       const unknown = yield* runCli(["workflows", "check", "--verbose"])
-      expect(unknown.exitCode).toBe(2)
+      expect(unknown).toMatchObject({ exitCode: 2, reason: "UnrecognizedOption" })
       expect(unknown.stderr).toContain("Unrecognized flag: --verbose")
 
       const nowhere = yield* runCli([
@@ -125,7 +125,7 @@ describe("durable workflows check", () => {
         "postgres://x",
       ])
 
-      expect(nowhere.exitCode).toBe(2)
+      expect(nowhere).toMatchObject({ exitCode: 2, reason: "InvalidValue" })
       expect(nowhere.stderr).toContain("Path does not exist")
 
       const broken = `${directory}/broken.ts`
@@ -140,7 +140,7 @@ describe("durable workflows check", () => {
         "postgres://x",
       ])
 
-      expect(unloadable.exitCode).toBe(2)
+      expect(unloadable).toMatchObject({ exitCode: 2, reason: "UsageError" })
       expect(unloadable.stderr).toContain(`Cannot load ${broken}`)
 
       const absent = yield* Effect.exit(loadEntry("./does-not-exist.ts"))

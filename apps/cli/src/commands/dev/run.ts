@@ -135,7 +135,7 @@ export const devCommand = Command.make("dev", flags, (options) =>
     )
   }).pipe(
     Effect.flatMap(Layer.launch),
-    Effect.catchTag("UsageError", (error) => fail({ message: error.message })),
+    Effect.catchTag("UsageError", (error) => fail({ reason: error._tag, message: error.message })),
   ),
 ).pipe(
   Command.withDescription(

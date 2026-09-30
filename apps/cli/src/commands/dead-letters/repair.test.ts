@@ -85,7 +85,7 @@ describe("durable dead-letters", () => {
         "--provider-checked",
       ])
 
-      expect(retried).toEqual({ stdout: '{"effectId":"e1"}\n', stderr: "", exitCode: 0 })
+      expect(retried).toEqual({ stdout: '{"effectId":"e1"}\n', stderr: "", exitCode: 0, reason: "" })
       expect(
         runner.requests.map(({ method, url, authorization }) => ({ method, url, authorization })),
       ).toEqual([
@@ -103,12 +103,16 @@ describe("durable dead-letters", () => {
         providerChecked: true,
       })
 
-      for (const args of [
-        ["e1", "--actor", "CliPager/p1", "--url", "u", "--tenant", "t"],
-        ["e1", "--url", "u", "--tenant", "t", "--reason", "r"],
-        ["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"],
-      ])
-        expect((yield* runCli(["dead-letters", "retry", ...args])).exitCode).toBe(2)
+      for (const [args, reason, message] of [
+        [["e1", "--actor", "CliPager/p1", "--url", "u", "--tenant", "t"], "MissingOption", 'Missing required flag: --reason'],
+        [["e1", "--url", "u", "--tenant", "t", "--reason", "r"], "MissingOption", 'Missing required flag: --actor'],
+        [["e1", "--actor", "CliPager", "--url", "u", "--tenant", "t", "--reason", "r"], "InvalidValue", 'Invalid value for flag --actor: "CliPager". Expected: an actor named as <Type>/<id>'],
+      ] as const) {
+        const refused = yield* runCli(["dead-letters", "retry", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
 
       const discard = yield* runCli([
         "dead-letters",
@@ -125,7 +129,7 @@ describe("durable dead-letters", () => {
         "--provider-checked",
       ])
 
-      expect(discard.exitCode).toBe(2)
+      expect(discard).toMatchObject({ exitCode: 2, reason: "UnrecognizedOption" })
       expect(discard.stderr).toContain("Unrecognized flag: --provider-checked")
     }).pipe(Effect.runPromise))
 
@@ -179,12 +183,12 @@ describe("durable dead-letters", () => {
 
       const again = yield* repair("discard", "repair-token")
 
-      expect(again.exitCode).toBe(1)
+      expect(again).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
       expect(again.stderr).toMatch(/^Refused \(404\): /)
 
       const unauthorized = yield* repair("retry", "app-token")
 
-      expect(unauthorized.exitCode).toBe(1)
+      expect(unauthorized).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
       expect(unauthorized.stderr).toMatch(/^Refused \(401\): /)
     }).pipe(Effect.scoped, Effect.runPromise))
 })

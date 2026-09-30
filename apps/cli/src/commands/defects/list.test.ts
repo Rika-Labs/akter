@@ -2,7 +2,7 @@ import { Actor, User } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Clock, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Clock, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
@@ -63,7 +63,7 @@ describe("durable defects list", () => {
         "1h",
       ])
 
-      expect(listed).toEqual({ stdout: "No defects.\n", stderr: "", exitCode: 0 })
+      expect(listed).toEqual({ stdout: "No defects.\n", stderr: "", exitCode: 0, reason: "" })
       expect(runners.requests.map(({ url }) => new URL(url).origin)).toEqual([
         "http://a",
         "http://b",
@@ -92,14 +92,18 @@ describe("durable defects list", () => {
       expect(ago).toBeLessThan(5_460_000)
       expect(query.get("limit")).toBe("5")
 
-      for (const args of [
-        [],
-        ["--url"],
-        ["--url", "u", "--limit", "0"],
-        ["--url", "u", "--x"],
-        ["--url", "u", "--since", "soon"],
-      ])
-        expect((yield* runCli(["defects", "list", ...args])).exitCode).toBe(2)
+      for (const [args, reason, message] of [
+        [[], "MissingOption", 'Missing required flag: --url'],
+        [["--url"], "MissingOption", 'Missing value for flag --url'],
+        [["--url", "u", "--limit", "0"], "InvalidValue", 'Invalid value for flag --limit: "0". Expected: an integer from 1 to 1000'],
+        [["--url", "u", "--x"], "UnrecognizedOption", 'Unrecognized flag: --x'],
+        [["--url", "u", "--since", "soon"], "InvalidValue", 'Invalid value for flag --since: "soon"'],
+      ] as const) {
+        const refused = yield* runCli(["defects", "list", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("lists a runner's defect spans for the operator's tenant, newest last", () =>
@@ -156,10 +160,47 @@ describe("durable defects list", () => {
         "b1",
         "b2",
       ])
-      expect(Exit.isFailure(yield* read("plant-token", "other").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("plant-token", "*").pipe(Effect.exit))).toBe(true)
+      expect(yield* read("plant-token", "other").pipe(Effect.flip)).toMatchObject({
+        _tag: "OperatorRefused",
+        status: 403,
+      })
+      expect(yield* read("plant-token", "*").pipe(Effect.flip)).toMatchObject({
+        _tag: "OperatorRefused",
+        status: 403,
+      })
       expect(yield* read("plant-token", "plant", "Kettle")).toEqual([])
-      expect(Exit.isFailure(yield* read(undefined, "plant").pipe(Effect.exit))).toBe(true)
+      expect(yield* read(undefined, "plant").pipe(Effect.flip)).toMatchObject({
+        _tag: "OperatorRefused",
+        status: 401,
+      })
+
+      const fetch = ((input, init) =>
+        web.handler(new Request(input, init))) as typeof globalThis.fetch
+
+      const cli = (token: string, tenant: string) =>
+        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+          "defects",
+          "list",
+          "--url",
+          "http://runner",
+          "--tenant",
+          tenant,
+        ])
+
+      const listed = yield* cli("plant-token", "plant")
+
+      expect(listed).toMatchObject({ exitCode: 0, reason: "" })
+      expect(listed.stdout.split("\n").filter((line) => line.includes("Boiler/b1  Break "))).toHaveLength(2)
+
+      for (const [token, tenant, status] of [
+        ["plant-token", "other", 403],
+        ["nobody", "plant", 401],
+      ] as const) {
+        const refused = yield* cli(token, tenant)
+
+        expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
+        expect(refused.stderr).toMatch(new RegExp(`^Refused \\(${status}\\): `))
+      }
 
       const browse = (origin: string) =>
         web.handler(

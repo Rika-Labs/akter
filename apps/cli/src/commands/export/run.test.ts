@@ -81,19 +81,23 @@ describe("durable export", () => {
         "/nowhere/v.seed",
       ])
 
-      expect(exported.exitCode).toBe(2)
+      expect(exported).toMatchObject({ exitCode: 2, reason: "SchemaError" })
       expect(exported.stderr).toContain("Unexpected answer")
       expect(runner.requests.map(({ url }) => url)).toEqual([
         "http://x/operator/actors/Vault/v%2F1/export?tenant=t",
       ])
 
-      for (const args of [
-        ["Vault", "--url", "u", "--tenant", "t", "--output", "f"],
-        ["Vault/v1", "--url", "u", "--output", "f"],
-        ["Vault/v1", "--url", "u", "--tenant", "t"],
-        ["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"],
-      ])
-        expect((yield* runCli(["export", ...args])).exitCode).toBe(2)
+      for (const [args, reason, message] of [
+        [["Vault", "--url", "u", "--tenant", "t", "--output", "f"], "InvalidValue", 'Invalid value for argument <actor>: "Vault". Expected: an actor named as <Type>/<id>'],
+        [["Vault/v1", "--url", "u", "--output", "f"], "MissingOption", 'Missing required flag: --tenant'],
+        [["Vault/v1", "--url", "u", "--tenant", "t"], "MissingOption", 'Missing required flag: --output'],
+        [["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"], "UnexpectedArgument", 'Unexpected positional argument: "extra"'],
+      ] as const) {
+        const refused = yield* runCli(["export", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("writes an owner-only seed file, never replaces one, and starts an actor from it in another tenant", () =>
@@ -134,7 +138,7 @@ describe("durable export", () => {
 
       const refused = yield* exportAs("look-token")
 
-      expect(refused.exitCode).toBe(1)
+      expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
       expect(refused.stderr).toMatch(/^Refused \(403\): /)
       expect(yield* fs.exists(output)).toBe(false)
 
@@ -149,6 +153,7 @@ describe("durable export", () => {
         ].join("\n"),
         stderr: "",
         exitCode: 0,
+        reason: "",
       })
       expect(((yield* fs.stat(output)).mode & 0o777).toString(8)).toBe("600")
 
@@ -159,7 +164,7 @@ describe("durable export", () => {
 
       const again = yield* exportAs("export-token")
 
-      expect(again.exitCode).toBe(2)
+      expect(again).toMatchObject({ exitCode: 2, reason: "PlatformError" })
       expect(again.stderr).toMatch(/^Cannot write the file: /)
       expect(yield* fs.readFileString(output)).toBe(written)
       expect(yield* Schema.decodeEffect(SeedJson)(written)).toMatchObject({

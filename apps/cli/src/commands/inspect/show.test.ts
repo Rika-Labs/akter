@@ -75,13 +75,17 @@ describe("durable inspect and durable receipts show", () => {
         "http://x/operator/actors/Room/r1?tenant=t&limit=20",
       ])
 
-      for (const args of [
-        ["inspect", "Room", "--url", "u", "--tenant", "t"],
-        ["inspect", "Room/r1", "--url", "u"],
-        ["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--receipts", "0"],
-        ["receipts", "show", "Room/r1", "--url", "u", "--tenant", "t"],
-      ])
-        expect((yield* runCli(args)).exitCode).toBe(2)
+      for (const [args, reason, message] of [
+        [["inspect", "Room", "--url", "u", "--tenant", "t"], "InvalidValue", 'Invalid value for argument <actor>: "Room"'],
+        [["inspect", "Room/r1", "--url", "u"], "MissingOption", 'Missing required flag: --tenant'],
+        [["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--receipts", "0"], "InvalidValue", 'Invalid value for flag --receipts: "0". Expected: an integer from 1 to 1000'],
+        [["receipts", "show", "Room/r1", "--url", "u", "--tenant", "t"], "MissingArgument", 'Missing required argument: commandId'],
+      ] as const) {
+        const refused = yield* runCli([...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("prints an actor's state and receipts, with outcomes only under receipts.read", () =>
@@ -132,7 +136,7 @@ describe("durable inspect and durable receipts show", () => {
 
       const shown = yield* cli(["receipts", "show", "CliRoom/r1", commandId], "read-token")
 
-      expect(shown.exitCode).toBe(0)
+      expect(shown).toMatchObject({ exitCode: 0, reason: "" })
       expect(yield* decodeJson(shown.stdout)).toMatchObject({
         commandId,
         command: "Post",
@@ -141,7 +145,7 @@ describe("durable inspect and durable receipts show", () => {
 
       const refused = yield* cli(["receipts", "show", "CliRoom/r1", commandId], "look-token")
 
-      expect(refused.exitCode).toBe(1)
+      expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
       expect(refused.stderr).toMatch(/^Refused \(403\): /)
     }).pipe(Effect.scoped, Effect.runPromise))
 })

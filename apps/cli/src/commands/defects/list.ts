@@ -1,9 +1,8 @@
 import { DefectRecords, type DefectRecord } from "@durable-actors/core/runtime"
-import { Clock, Console, DateTime, Duration, Effect, Option } from "effect"
+import { Clock, Console, DateTime, Duration, Effect, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { fail } from "../../failure.ts"
-import { RunnerUnreachable, operatorFlags, operatorToken } from "../operator/request.ts"
+import { operatorFlags, operatorRequest, operatorToken } from "../operator/request.ts"
 
 const units = { s: "seconds", m: "minutes", h: "hours", d: "days" } as const
 
@@ -17,6 +16,8 @@ const parseSince = (value: string) => {
       : `${compact[1]} ${units[compact[2] as keyof typeof units]}`) as Duration.Input,
   )
 }
+
+const decodeDefects = Schema.decodeUnknownEffect(DefectRecords)
 
 const flags = {
   ...operatorFlags,
@@ -64,8 +65,6 @@ export const listDefects = Effect.fnUntraced(function* (
   options: ListOptions,
   token: string | undefined,
 ) {
-  const client = yield* HttpClient.HttpClient
-
   const read = (url: string) => {
     const query = new URLSearchParams({ tenant: options.tenant })
 
@@ -75,14 +74,8 @@ export const listDefects = Effect.fnUntraced(function* (
 
     if (options.limit !== undefined) query.set("limit", String(options.limit))
 
-    const request = HttpClientRequest.get(`${url}/operator/defects?${query}`).pipe(
-      token === undefined ? (same) => same : HttpClientRequest.bearerToken(token),
-    )
-
-    return client.execute(request).pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(DefectRecords)),
-      Effect.mapError((error) => RunnerUnreachable.make({ url, message: error.message })),
+    return operatorRequest({ url, path: `/operator/defects?${query}`, token }).pipe(
+      Effect.flatMap(decodeDefects),
     )
   }
 
@@ -141,8 +134,11 @@ export const listCommand = Command.make("list", flags, (options) =>
   }).pipe(
     Effect.catchTags({
       RunnerUnreachable: (error) =>
-        fail({ message: `Cannot read defects from ${error.url}: ${error.message}` }),
-      ConfigError: (error) => fail({ message: `Cannot read the operator token: ${error.message}` }),
+        fail({ reason: error._tag, message: `Cannot read defects from ${error.url}: ${error.message}` }),
+      OperatorRefused: (error) =>
+        fail({ reason: error._tag, message: `Refused (${error.status}): ${error.body}`, exitCode: 1 }),
+      SchemaError: (error) => fail({ reason: error._tag, message: `Unexpected answer: ${error.message}` }),
+      ConfigError: (error) => fail({ reason: error._tag, message: `Cannot read the operator token: ${error.message}` }),
     }),
   ),
 ).pipe(

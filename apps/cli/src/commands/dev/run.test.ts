@@ -71,20 +71,20 @@ describe("durable dev", () => {
 
         yield* Fiber.interrupt(fiber)
 
-        for (const [args, message] of [
-          [[], "Missing required flag: --entry"],
-          [["--entry"], "Missing value for flag --entry"],
-          [["--entry", entry, "--json"], "Unrecognized flag: --json"],
-          [["--entry", entry, "--port", "70000"], 'Invalid value for flag --port: "70000"'],
-          [["--entry", entry, "--port", "1.5"], 'Invalid value for flag --port: "1.5"'],
+        for (const [args, reason, message] of [
+          [[], "MissingOption", "Missing required flag: --entry"],
+          [["--entry"], "MissingOption", "Missing value for flag --entry"],
+          [["--entry", entry, "--json"], "UnrecognizedOption", "Unrecognized flag: --json"],
+          [["--entry", entry, "--port", "70000"], "InvalidValue", 'Invalid value for flag --port: "70000"'],
+          [["--entry", entry, "--port", "1.5"], "InvalidValue", 'Invalid value for flag --port: "1.5"'],
           [
             ["--entry", entry, "--database-url", "postgres://x", "--data-dir", directory],
-            "--data-dir is for PGlite; drop it or --database-url",
+            "UsageError", "--data-dir is for PGlite; drop it or --database-url",
           ],
         ] as const) {
           const refused = yield* runCli(["dev", ...args])
 
-          expect(refused.exitCode).toBe(2)
+          expect(refused).toMatchObject({ exitCode: 2, reason })
           expect(refused.stderr).toContain(message)
         }
       }).pipe(Effect.scoped, Effect.runPromise),
@@ -98,9 +98,10 @@ describe("durable dev", () => {
       expect(yield* appOf({ module: { app }, entry: "app.ts" })).toBe(app)
 
       for (const module of [{}, { app: () => app }, { routes: app }])
-        expect(Exit.isFailure(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.exit))).toBe(
-          true,
-        )
+        expect(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.flip)).toMatchObject({
+          _tag: "UsageError",
+          message: "app.ts must export `app`: a Layer of its routes that needs only the database",
+        })
     }).pipe(Effect.runPromise))
 
   it("serves the app's commands and an inspector that reads only its tenant", () =>

@@ -33,6 +33,7 @@ describe("durable subscriptions skip", () => {
         stdout: '{"skipped":true}\n',
         stderr: "",
         exitCode: 0,
+        reason: "",
       })
       expect(runner.requests.map(({ method, url }) => ({ method, url }))).toEqual([
         {
@@ -60,11 +61,15 @@ describe("durable subscriptions skip", () => {
         return base.filter((_, index) => index !== at && index !== at + 1)
       }
 
-      for (const args of [
-        without("--reason"),
-        without("--tenant"),
-        [...without("--through"), "--through", "0x2"],
-      ])
-        expect((yield* runCli(["subscriptions", "skip", ...args])).exitCode).toBe(2)
+      for (const [args, reason, message] of [
+        [without("--reason"), "MissingOption", 'Missing required flag: --reason'],
+        [without("--tenant"), "MissingOption", 'Missing required flag: --tenant'],
+        [[...without("--through"), "--through", "0x2"], "InvalidValue", 'Invalid value for flag --through: "0x2". Expected: a positive event cursor'],
+      ] as const) {
+        const refused = yield* runCli(["subscriptions", "skip", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 })

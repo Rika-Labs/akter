@@ -81,7 +81,7 @@ describe("durable payloads", () => {
   it("rejects an unknown payloads command and missing flags", () =>
     Effect.gen(function* () {
       const unknown = yield* runCli(["payloads", "migrate"])
-      expect(unknown.exitCode).toBe(2)
+      expect(unknown).toMatchObject({ exitCode: 2, reason: "UnknownSubcommand" })
       expect(unknown.stderr).toContain('Unknown subcommand "migrate"')
 
       const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
@@ -90,7 +90,7 @@ describe("durable payloads", () => {
       yield* fs.writeFileString(entry, "export const actors = []\n")
 
       const missing = yield* runCli(["payloads", "check", "--entry", entry])
-      expect(missing.exitCode).toBe(2)
+      expect(missing).toMatchObject({ exitCode: 2, reason: "MissingOption" })
       expect(missing.stderr).toContain("Missing required flag: --database-url")
 
       const args = (command: string) => [
@@ -104,13 +104,14 @@ describe("durable payloads", () => {
       ]
 
       const unreachable = yield* runCli(args("check"))
-      expect(unreachable.exitCode).toBe(2)
+      expect(unreachable).toMatchObject({ exitCode: 2, reason: "SqlError" })
       expect(unreachable.stderr).toContain("Cannot read payload versions")
 
       expect(yield* runCli(args("clear"))).toEqual({
         stdout: '{\n  "results": []\n}\n',
         stderr: "",
         exitCode: 0,
+        reason: "",
       })
     }).pipe(Effect.scoped, Effect.runPromise))
 })

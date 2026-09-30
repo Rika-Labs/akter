@@ -87,7 +87,7 @@ describe("durable adopt arguments", () => {
       ]) {
         const unreachable = yield* runCli(["adopt", ...args])
 
-        expect(unreachable.exitCode).toBe(2)
+        expect(unreachable).toMatchObject({ exitCode: 2, reason: "SqlError" })
         expect(unreachable.stderr).toContain("Cannot read adoption state")
       }
 
@@ -106,28 +106,28 @@ describe("durable adopt arguments", () => {
 
       const base = ["--entry", entry, "--database-url", "u"]
 
-      for (const [args, message] of [
-        [["migrate", ...base], 'Unknown subcommand "migrate"'],
-        [["plan", "--entry", entry], "Missing required flag: --database-url"],
-        [["plan", "--database-url", "u"], "Missing required flag: --entry"],
-        [["observe", ...base], "Missing required argument: table"],
-        [["backfill", ...base], "Missing required argument: table"],
-        [["plan", "--report", ...base], "Unrecognized flag: --report"],
+      for (const [args, reason, message] of [
+        [["migrate", ...base], "UnknownSubcommand", 'Unknown subcommand "migrate"'],
+        [["plan", "--entry", entry], "MissingOption", "Missing required flag: --database-url"],
+        [["plan", "--database-url", "u"], "MissingOption", "Missing required flag: --entry"],
+        [["observe", ...base], "MissingArgument", "Missing required argument: table"],
+        [["backfill", ...base], "MissingArgument", "Missing required argument: table"],
+        [["plan", "--report", ...base], "UnrecognizedOption", "Unrecognized flag: --report"],
         [
           ["observe", "t", "--since", "7d", ...base],
-          "--since and --clear belong to observe --report",
+          "UsageError", "--since and --clear belong to observe --report",
         ],
-        [["plan", "--batch", "5", ...base], "Unrecognized flag: --batch"],
-        [["backfill", "t", "--batch", "0", ...base], 'Invalid value for flag --batch: "0"'],
+        [["plan", "--batch", "5", ...base], "UnrecognizedOption", "Unrecognized flag: --batch"],
+        [["backfill", "t", "--batch", "0", ...base], "InvalidValue", 'Invalid value for flag --batch: "0"'],
         [
           ["observe", "t", "--report", "--since", "week", ...base],
-          'Invalid value for flag --since: "week"',
+          "InvalidValue", 'Invalid value for flag --since: "week"',
         ],
-        [["plan", "--force", ...base], "Unrecognized flag: --force"],
+        [["plan", "--force", ...base], "UnrecognizedOption", "Unrecognized flag: --force"],
       ] as const) {
         const refused = yield* runCli(["adopt", ...args])
 
-        expect(refused.exitCode).toBe(2)
+        expect(refused).toMatchObject({ exitCode: 2, reason })
         expect(refused.stderr).toContain(message)
       }
     }).pipe(Effect.scoped, Effect.runPromise))
@@ -206,7 +206,7 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
           actors,
         })
 
-        expect(observed).toEqual({ output: "public.cli_invoices is observing", exitCode: 0 })
+        expect(observed).toEqual({ output: "public.cli_invoices is observing", exitCode: 0, reason: "" })
 
         yield* sql`UPDATE cli_invoices SET amount = 5 WHERE org_id = 'acme'`
         yield* sql`DELETE FROM cli_invoices WHERE id = 'i3'`

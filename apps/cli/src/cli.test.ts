@@ -55,6 +55,7 @@ describe("durable", () => {
         stdout: `durable v${version}\n`,
         stderr: "",
         exitCode: 0,
+        reason: "",
       })
 
       const completions = yield* runCli(["--completions", "bash"])
@@ -66,25 +67,25 @@ describe("durable", () => {
 
   it("refuses an unknown flag, a missing required flag, an invalid integer, and an unknown command with help and exit 2", () =>
     Effect.gen(function* () {
-      for (const [args, error] of [
+      for (const [args, reason, error] of [
         [
           ["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--bogus"],
-          "Unrecognized flag: --bogus",
+          "UnrecognizedOption", "Unrecognized flag: --bogus",
         ],
         [
           ["export", "Room/r1", "--url", "u", "--output", "f.seed"],
-          "Missing required flag: --tenant",
+          "MissingOption", "Missing required flag: --tenant",
         ],
         [
           ["inspect", "Room/r1", "--url", "u", "--tenant", "t", "--receipts", "many"],
-          'Invalid value for flag --receipts: "many"',
+          "InvalidValue", 'Invalid value for flag --receipts: "many"',
         ],
-        [["inspect", "--url", "u", "--tenant", "t"], "Missing required argument: actor"],
-        [["deploy"], 'Unknown subcommand "deploy"'],
+        [["inspect", "--url", "u", "--tenant", "t"], "MissingArgument", "Missing required argument: actor"],
+        [["deploy"], "UnknownSubcommand", 'Unknown subcommand "deploy"'],
       ] as const) {
         const refused = yield* runCli(args)
 
-        expect(refused.exitCode).toBe(2)
+        expect(refused).toMatchObject({ exitCode: 2, reason })
         expect(refused.stderr).toContain(error)
         expect(refused.stdout).toContain("USAGE")
       }

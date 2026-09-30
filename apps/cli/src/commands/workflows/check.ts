@@ -49,12 +49,12 @@ export const entryCommand = <R>({
 
     yield* Console.log(output)
 
-    if (exitCode !== 0) return yield* CommandFailed.make({ exitCode })
+    if (exitCode !== 0) return yield* CommandFailed.make({ exitCode, reason: "Refused" })
   }).pipe(
     Effect.scoped,
     Effect.catchTags({
-      SqlError: (error) => fail({ message: `Cannot read ${reading}: ${error.message}` }),
-      UsageError: (error) => fail({ message: error.message }),
+      SqlError: (error) => fail({ reason: error._tag, message: `Cannot read ${reading}: ${error.message}` }),
+      UsageError: (error) => fail({ reason: error._tag, message: error.message }),
     }),
   )
 

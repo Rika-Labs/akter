@@ -39,22 +39,22 @@ describe("durable tenants create arguments", () => {
     Effect.gen(function* () {
       const refused = [
         [valid.slice(0, 9), "Missing required flag: --operator"],
-        [[...valid, "--force"], "Unrecognized flag: --force"],
+        [[...valid, "--force"], "UnrecognizedOption", "Unrecognized flag: --force"],
         [
           [...valid.slice(0, 2), "bad tenant", ...valid.slice(3)],
-          'Invalid value for argument <tenant>: "bad tenant"',
+          "InvalidValue", 'Invalid value for argument <tenant>: "bad tenant"',
         ],
         [
           [...valid.slice(0, 6), "US East", ...valid.slice(7)],
-          'Invalid value for flag --region: "US East"',
+          "InvalidValue", 'Invalid value for flag --region: "US East"',
         ],
-        [[...valid.slice(0, 2), ...valid.slice(3)], "Missing required argument: tenant"],
+        [[...valid.slice(0, 2), ...valid.slice(3)], "MissingArgument", "Missing required argument: tenant"],
       ] as const
 
-      for (const [args, error] of refused) {
+      for (const [args, reason, error] of refused) {
         const exit = yield* runCli(args)
 
-        expect(exit.exitCode).toBe(2)
+        expect(exit).toMatchObject({ exitCode: 2, reason })
         expect(exit.stderr).toContain(error)
       }
     }).pipe(Effect.runPromise))
@@ -118,11 +118,12 @@ describe.skipIf(!postgres)("durable tenants create on Postgres", () => {
               stdout: "dep-1/acme lives in us-east (active)\n",
               stderr: "",
               exitCode: 0,
+              reason: "",
             })
 
             const refused = yield* runCli(args("eu-west"))
 
-            expect(refused.exitCode).toBe(2)
+            expect(refused).toMatchObject({ exitCode: 2, reason: "UsageError" })
             expect(refused.stderr).toContain("already lives in us-east")
 
             const rows = yield* Effect.promise(() =>

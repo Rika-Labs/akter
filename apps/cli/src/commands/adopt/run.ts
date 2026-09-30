@@ -151,15 +151,16 @@ const run = (options: AdoptOptions) =>
 
     yield* Console.log(output)
 
-    if (exitCode !== 0) return yield* CommandFailed.make({ exitCode })
+    if (exitCode !== 0) return yield* CommandFailed.make({ exitCode, reason: "Refused" })
   }).pipe(
     Effect.scoped,
     Effect.catchTags({
       SqlError: (error) =>
         fail({
+          reason: error._tag,
           message: `Cannot read adoption state (is the database migrated to 0024_adoption?): ${error.message}`,
         }),
-      UsageError: (error) => fail({ message: error.message }),
+      UsageError: (error) => fail({ reason: error._tag, message: error.message }),
     }),
   )
 
@@ -221,7 +222,7 @@ export const observeCommand = Command.make(
   (options) =>
     Effect.gen(function* () {
       if ((Option.isSome(options.since) || options.clear) && !options.report)
-        return yield* fail({ message: "--since and --clear belong to observe --report" })
+        return yield* fail({ reason: "UsageError", message: "--since and --clear belong to observe --report" })
 
       const nowMs = yield* Clock.currentTimeMillis
 

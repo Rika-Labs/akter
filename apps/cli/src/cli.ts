@@ -85,7 +85,17 @@ export const durable = Command.make("durable").pipe(
 export const run = (args: ReadonlyArray<string>) =>
   Command.runWith(durable, { version })(args).pipe(
     Effect.catchIf(
-      (error) => CliError.isCliError(error) && Runtime.getErrorExitCode(error) !== 0,
-      () => Effect.fail(CommandFailed.make({ exitCode: 2 })),
+      (error): error is CliError.CliError =>
+        CliError.isCliError(error) && Runtime.getErrorExitCode(error) !== 0,
+      (error) =>
+        Effect.fail(
+          CommandFailed.make({
+            exitCode: 2,
+            reason:
+              error._tag === "ShowHelp"
+                ? error.errors.map((cause) => cause._tag).join(", ")
+                : error._tag,
+          }),
+        ),
     ),
   )

@@ -47,19 +47,23 @@ describe("durable subscriptions list --lagging", () => {
         "5",
       ])
 
-      expect(listed).toEqual({ stdout: "no lagging subscriptions\n", stderr: "", exitCode: 0 })
+      expect(listed).toEqual({ stdout: "no lagging subscriptions\n", stderr: "", exitCode: 0, reason: "" })
       expect(runner.requests.map(({ url }) => url)).toEqual([
         "http://a/operator/subscriptions/lagging?tenant=t&minAttempts=3&limit=5",
       ])
 
-      for (const args of [
-        ["--url", "u", "--tenant", "t"],
-        ["--lagging", "--url", "u"],
-        ["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"],
-        ["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"],
-        ["--lagging", "--url", "u", "--tenant", "t", "extra"],
-      ])
-        expect((yield* runCli(["subscriptions", "list", ...args])).exitCode).toBe(2)
+      for (const [args, reason, message] of [
+        [["--url", "u", "--tenant", "t"], "MissingOption", 'Missing required flag: --lagging'],
+        [["--lagging", "--url", "u"], "MissingOption", 'Missing required flag: --tenant'],
+        [["--lagging", "--url", "u", "--tenant", "t", "--min-attempts", "0"], "InvalidValue", 'Invalid value for flag --min-attempts: "0"'],
+        [["--lagging", "--url", "u", "--tenant", "t", "--limit", "1001"], "InvalidValue", 'Invalid value for flag --limit: "1001"'],
+        [["--lagging", "--url", "u", "--tenant", "t", "extra"], "UnexpectedArgument", 'Unexpected positional argument: "extra"'],
+      ] as const) {
+        const refused = yield* runCli(["subscriptions", "list", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("prints each failing row with its lag, and reads only under a tenant-wide inspect grant", () =>
@@ -87,6 +91,7 @@ describe("durable subscriptions list --lagging", () => {
         stdout: "no lagging subscriptions\n",
         stderr: "",
         exitCode: 0,
+        reason: "",
       })
 
       const json = yield* runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: "look-token" } })([
@@ -122,7 +127,15 @@ describe("durable subscriptions list --lagging", () => {
         "Order/o1 -> Follower.FollowedOrders/f1  delivered 1 of 3  lag 2  attempts 9\n  Error: bad payload",
       )
 
-      for (const token of ["actor-token", "skip-token", "nobody"])
-        expect((yield* read(token)).exitCode).toBe(1)
+      for (const [token, status] of [
+        ["actor-token", 403],
+        ["skip-token", 403],
+        ["nobody", 401],
+      ] as const) {
+        const refused = yield* read(token)
+
+        expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
+        expect(refused.stderr).toMatch(new RegExp(`^Refused \\(${status}\\): `))
+      }
     }).pipe(Effect.scoped, Effect.runPromise))
 })
