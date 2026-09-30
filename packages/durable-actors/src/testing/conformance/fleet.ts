@@ -381,6 +381,7 @@ const withFleet = <A, E>(
           shardLockExpiration: "3 seconds",
           actors: FleetOrderLive,
           as: User.make({ subject: "alice" }),
+          authorize: () => Effect.succeed(true),
           fleet: options.views ?? [OrdersByStatus, OrdersByRegion],
         }),
       )
@@ -605,7 +606,9 @@ const turnStatements = (
 
       const context = yield* Layer.build(
         FleetOrderLive.pipe(
-          Layer.provideMerge(ActorTest.layer({ database, fleet: views })),
+          Layer.provideMerge(
+            ActorTest.layer({ database, fleet: views, authorize: () => Effect.succeed(true) }),
+          ),
           Layer.provide(
             Layer.succeed(TurnPoolSettings, {
               stream: () => connect({ host: "127.0.0.1", port: relay.port, noDelay: true }),
@@ -959,6 +962,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
                 runners: 1,
                 shardLockExpiration: "3 seconds",
                 actors: FleetOrderLive,
+                authorize: () => Effect.succeed(true),
                 fleet: views,
               }),
             )
@@ -1114,9 +1118,9 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
               Effect.exit,
             )
 
-          const runtime = yield* Layer.build(ActorTest.layer({ database, fleet: views })).pipe(
-            Effect.exit,
-          )
+          const runtime = yield* Layer.build(
+            ActorTest.layer({ database, fleet: views, authorize: () => Effect.succeed(true) }),
+          ).pipe(Effect.exit)
 
           expect(refusal(runtime)).toContain(
             "public.fleet_orders is not in publication durable_fleet; run durable fleet setup",
