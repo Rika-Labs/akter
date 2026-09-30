@@ -13,8 +13,8 @@ import {
 } from "effect"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent } from "../../index.ts"
-import type { Cancelled } from "../../members/effect.ts"
-import type { PerformOptions } from "../../contexts/effect.ts"
+import type { Cancelled } from "../../members/job.ts"
+import type { EnqueueOptions } from "../../contexts/job.ts"
 import type { Request } from "../../runtime/request.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import type { Options as RuntimeOptions } from "../../runtime/layer.ts"
@@ -29,7 +29,7 @@ interface ControlAttempt {
   readonly label: string
   readonly actor: string
   readonly effect: string
-  readonly effectId: string
+  readonly jobId: string
   readonly attempt: number
   readonly runner: number
   readonly startedAt: number
@@ -61,32 +61,32 @@ const reset = (fixture: EffectControlFixture) =>
 
 class ControlDown extends Schema.TaggedError<ControlDown>()("ControlDown", {}) {}
 
-class Job extends Actor.effect<Job>()("Job", {
-  input: { label: Schema.String },
+const Job = Actor.job("Job", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class Capped extends Actor.effect<Capped>()("Capped", {
-  input: { label: Schema.String },
+const Capped = Actor.job("Capped", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class Serial extends Actor.effect<Serial>()("Serial", {
-  input: { label: Schema.String },
+const Serial = Actor.job("Serial", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class Picky extends Actor.effect<Picky>()("Picky", {
-  input: { label: Schema.String },
+const Picky = Actor.job("Picky", {
+  payload: { label: Schema.String },
   success: Schema.String,
-}) {}
+})
 
 const EffectName = Schema.Literals(["Job", "Capped", "Serial", "Picky"])
 
 type EffectName = typeof EffectName.Type
 
 const Perform = Actor.command("Perform", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     effect: EffectName,
     labels: Schema.Array(Schema.String),
     keyed: Schema.optional(Schema.Boolean),
@@ -94,34 +94,34 @@ const Perform = Actor.command("Perform", {
   }),
 })
 
-const CancelEffect = Actor.command("CancelEffect", { input: Schema.Array(Schema.String) })
+const CancelEffect = Actor.command("CancelEffect", { payload: Schema.Array(Schema.String) })
 
-const PerformThenCancel = Actor.command("PerformThenCancel", { input: Schema.String })
+const PerformThenCancel = Actor.command("PerformThenCancel", { payload: Schema.String })
 
 const CancelThenRefuse = Actor.command("CancelThenRefuse", {
-  input: Schema.String,
-  errors: [ControlDown],
+  payload: Schema.String,
+  error: ControlDown,
 })
 
-const CancelThenDie = Actor.command("CancelThenDie", { input: Schema.String })
+const CancelThenDie = Actor.command("CancelThenDie", { payload: Schema.String })
 
 const CaptureCancel = Actor.command("CaptureCancel", {})
 
-const UseCaptured = Actor.command("UseCaptured", { input: Schema.String })
+const UseCaptured = Actor.command("UseCaptured", { payload: Schema.String })
 
-const Done = Actor.command("Done", { input: Schema.String })
+const Done = Actor.command("Done", { payload: Schema.String })
 
-const JobCancelled = Actor.command("JobCancelled", { input: Actor.Cancelled(Job) })
+const JobCancelled = Actor.command("JobCancelled", { payload: Actor.Cancelled(Job) })
 
-const CappedCancelled = Actor.command("CappedCancelled", { input: Actor.Cancelled(Capped) })
+const CappedCancelled = Actor.command("CappedCancelled", { payload: Actor.Cancelled(Capped) })
 
-const SerialFailed = Actor.command("SerialFailed", { input: Actor.DeadLetter(Serial) })
+const SerialFailed = Actor.command("SerialFailed", { payload: Actor.DeadLetter(Serial) })
 
 const PickyDone = Actor.command("PickyDone", {
-  input: Schema.String.check(Schema.isPattern(/^accepted$/)),
+  payload: Schema.String.check(Schema.isPattern(/^accepted$/)),
 })
 
-const PickyCancelled = Actor.command("PickyCancelled", { input: Actor.Cancelled(Picky) })
+const PickyCancelled = Actor.command("PickyCancelled", { payload: Actor.Cancelled(Picky) })
 
 const Report = Schema.Struct({
   label: Schema.String,
@@ -139,7 +139,29 @@ const Controlled = Actor.make("Controlled", {
     cancelled: Schema.Array(Report).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     letters: Schema.Array(Report).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Job, Capped, Serial, Picky],
+  jobs: {
+    Job: {
+      job: Job,
+      retry: { times: 2, backoff: { base: "1 second", max: "1 second" } },
+      onSuccess: Done,
+      onCancelled: JobCancelled,
+    },
+    Capped: {
+      job: Capped,
+      retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
+      concurrency: { perActor: 2 },
+      onSuccess: Done,
+      onCancelled: CappedCancelled,
+    },
+    Serial: {
+      job: Serial,
+      retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
+      concurrency: { perActor: 1 },
+      onSuccess: Done,
+      onDeadLetter: SerialFailed,
+    },
+    Picky: { job: Picky, retry: { times: 0 }, onSuccess: PickyDone, onCancelled: PickyCancelled },
+  },
   api: {
     Perform,
     CancelEffect,
@@ -150,32 +172,6 @@ const Controlled = Actor.make("Controlled", {
     UseCaptured,
   },
   internal: { Done, JobCancelled, CappedCancelled, SerialFailed, PickyDone, PickyCancelled },
-  policy: {
-    effects: {
-      Job: {
-        retry: { times: 2, backoff: { base: "1 second", max: "1 second" } },
-        onSuccess: Done,
-        onCancelled: JobCancelled,
-      },
-      Capped: {
-        retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
-        concurrency: { perActor: 2 },
-        onSuccess: Done,
-        onCancelled: CappedCancelled,
-      },
-      Serial: {
-        retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
-        concurrency: { perActor: 1 },
-        onSuccess: Done,
-        onDeadLetter: SerialFailed,
-      },
-      Picky: {
-        retry: { times: 0 },
-        onSuccess: PickyDone,
-        onCancelled: PickyCancelled,
-      },
-    },
-  },
 })
 
 const reportCancelled = (cancelled: Cancelled<typeof Job>) =>
@@ -187,8 +183,8 @@ const reportCancelled = (cancelled: Cancelled<typeof Job>) =>
       cancelled: [
         ...turn.state.cancelled,
         {
-          label: cancelled.effect.label,
-          effectId: cancelled.effectId,
+          label: cancelled.job.label,
+          effectId: cancelled.jobId,
           outcome: outcome._tag,
           ambiguous: cancelled.ambiguous,
           ...("value" in outcome ? { value: String(outcome.value) } : { cause: outcome.cause }),
@@ -208,36 +204,36 @@ export const effectControlLayer = Controlled.toLayer(
       for (const label of labels) {
         const instance = { Job, Capped, Serial, Picky }[effect].make({ label })
 
-        const options: Mutable<PerformOptions> = {}
+        const options: Mutable<EnqueueOptions> = {}
 
         if (keyed === true) options.key = label
 
         if (afterMs !== undefined) options.after = Duration.millis(afterMs)
-        yield* turn.perform(instance, options)
+        yield* turn.enqueue(instance, options)
       }
     }),
     CancelEffect: Effect.fnUntraced(function* (keys) {
       const turn = yield* Controlled.Turn
 
-      for (const key of keys) yield* turn.cancelEffect(key)
+      for (const key of keys) yield* turn.cancelJob(key)
     }),
     PerformThenCancel: Effect.fnUntraced(function* (label) {
       const turn = yield* Controlled.Turn
-      yield* turn.perform(Job.make({ label }), { key: label })
-      yield* turn.cancelEffect(label)
+      yield* turn.enqueue(Job.make({ label }), { key: label })
+      yield* turn.cancelJob(label)
     }),
     CancelThenRefuse: Effect.fnUntraced(function* (key) {
-      yield* (yield* Controlled.Turn).cancelEffect(key)
+      yield* (yield* Controlled.Turn).cancelJob(key)
 
       return yield* ControlDown.make({})
     }),
     CancelThenDie: Effect.fnUntraced(function* (key) {
-      yield* (yield* Controlled.Turn).cancelEffect(key)
+      yield* (yield* Controlled.Turn).cancelJob(key)
 
       return yield* Effect.die(new Error("Canceller defect"))
     }),
     CaptureCancel: Effect.fnUntraced(function* () {
-      captured = (yield* Controlled.Turn).cancelEffect
+      captured = (yield* Controlled.Turn).cancelJob
     }),
     UseCaptured: Effect.fnUntraced(function* (key) {
       if (captured !== undefined) yield* captured(key)
@@ -260,8 +256,8 @@ export const effectControlLayer = Controlled.toLayer(
         letters: [
           ...turn.state.letters,
           {
-            label: letter.effect.label,
-            effectId: letter.effectId,
+            label: letter.job.label,
+            effectId: letter.jobId,
             outcome: "DeadLetter",
             ambiguous: letter.ambiguous,
             cause: letter.cause,
@@ -282,7 +278,7 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
         label,
         actor: exec.ref.id,
         effect,
-        effectId: exec.effectId,
+        jobId: exec.jobId,
         attempt: exec.attempt,
         runner,
         startedAt: yield* Clock.currentTimeMillis,
@@ -302,7 +298,7 @@ const runnerEffects = (fixture: EffectControlFixture, runner: number) => {
       )
     })
 
-  return Controlled.toEffectLayer(
+  return Controlled.toJobLayer(
     Effect.succeed({
       Job: ({ label }) => execute("Job", label),
       Capped: ({ label }) => execute("Capped", label),
@@ -752,9 +748,8 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase<EffectContr
             expect(
               thrown(() =>
                 Actor.make("BadCap", {
-                  effects: [Job],
+                  jobs: { Job: { job: Job, concurrency: { perActor } } },
                   api: { Done },
-                  policy: { effects: { Job: { concurrency: { perActor } } } },
                 }),
               ),
             ).toContain("perActor")
@@ -836,17 +831,17 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase<EffectContr
           const [first, second] = fixture.attempts
 
           expect(first!.interrupted).toBe(true)
-          expect(second!.effectId === first!.effectId).toBe(false)
+          expect(second!.jobId === first!.jobId).toBe(false)
           const state = yield* stateOf("rerun")
           expect(state.done).toEqual(["second"])
           expect(state.cancelled).toMatchObject([
-            { effectId: first!.effectId, outcome: "Unknown", ambiguous: true },
+            { effectId: first!.jobId, outcome: "Unknown", ambiguous: true },
           ])
         }),
       ),
   },
   {
-    name: "rejects reserved intent keys and a captured cancelEffect",
+    name: "rejects reserved intent keys and a captured cancelJob",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
@@ -1195,7 +1190,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
             )
 
             expect(maxInFlight(fixture.attempts, "capped", "Capped") <= 2).toBe(true)
-            expect(new Set(fixture.attempts.map(({ effectId }) => effectId)).size).toBe(18)
+            expect(new Set(fixture.attempts.map(({ jobId }) => jobId)).size).toBe(18)
             expect(fixture.attempts.every(({ attempt }) => attempt === 1)).toBe(true)
           }),
         ),

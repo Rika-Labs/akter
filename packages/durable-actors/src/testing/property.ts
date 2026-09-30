@@ -60,7 +60,7 @@ type ReducerState = Parameters<AnyReducer["reduce"]>[0]
 type ReducerInput = Parameters<AnyReducer["reduce"]>[1]
 
 /** The combiner that lets the runtime fold consecutive queued calls into one turn. */
-const batchOf = (reducer: AnyReducer) => reducer.commutative
+const batchOf = (reducer: AnyReducer) => reducer.batch
 
 /**
  * Runs `reduce` on a private copy of `state`, as the runtime does, and
@@ -110,7 +110,7 @@ export const checkBatchLaw = (options: {
   const stateSchema = Schema.Struct(reducer.state.fields)
   const valid = Schema.is(stateSchema)
   const state = options.state ?? Arbitrary.schema(stateSchema)
-  const input = options.input ?? Arbitrary.schema(reducer.input)
+  const input = options.input ?? Arbitrary.schema(reducer.payload)
 
   return checkProperty({
     name: `batch law of ${reducer.tag}`,

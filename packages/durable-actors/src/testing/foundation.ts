@@ -90,7 +90,7 @@ export const defectRecorder = (fixture: FoundationFixture) =>
     })
   })
 
-const Ping = Actor.command("Ping", { output: Schema.String })
+const Ping = Actor.command("Ping", { success: Schema.String })
 
 const Minted = Actor.make("Minted", { api: { Ping } })
 
@@ -100,31 +100,32 @@ const Singleton = Actor.make("Singleton", { key: Actor.singleton, api: { Ping } 
 
 class CreationRejected extends Schema.TaggedError<CreationRejected>()("CreationRejected", {}) {}
 
-const Create = Actor.command("Create", { input: Schema.Boolean, errors: [CreationRejected] })
+const Create = Actor.command("Create", { payload: Schema.Boolean, error: CreationRejected })
 
-const Read = Actor.command("Read", { output: Schema.Finite })
+const Read = Actor.command("Read", { success: Schema.Finite })
 
 const Created = Actor.make("Created", {
   key: Schema.NonEmptyString,
   state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Create, Read },
-  policy: { createdBy: Create },
+
+  createdBy: Create,
 })
 
-const SetText = Actor.command("SetText", { input: Schema.String, output: Schema.String })
+const SetText = Actor.command("SetText", { payload: Schema.String, success: Schema.String })
 
 const Small = Actor.make("Small", {
   key: Schema.NonEmptyString,
   state: Actor.state({ text: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) }),
   api: { SetText },
-  policy: { maxStateBytes: 15, commandTimeout: "500 millis" },
+  policy: { maxStateBytes: 15, executionTimeout: "500 millis" },
 })
 
 const Attribution = Schema.Struct({ caller: Caller, principal: Schema.NullOr(Principal) })
 
-const Who = Actor.command("Who", { output: Attribution })
+const Who = Actor.command("Who", { success: Attribution })
 
-const Internal = Actor.command("Internal", { output: Attribution })
+const Internal = Actor.command("Internal", { success: Attribution })
 
 const Private = Actor.make("Private", {
   key: Schema.NonEmptyString,
@@ -132,13 +133,13 @@ const Private = Actor.make("Private", {
   internal: { Internal },
 })
 
-const Bump = Actor.command("Bump", { output: Schema.Finite })
+const Bump = Actor.command("Bump", { success: Schema.Finite })
 
 const Slow = Actor.make("Slow", {
   key: Schema.NonEmptyString,
   state: Actor.state({ count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: { Read, Bump },
-  policy: { commandTimeout: "500 millis" },
+  policy: { executionTimeout: "500 millis" },
 })
 
 const DeliveryActor = Actor.make("DeliveryActor", {
@@ -161,12 +162,12 @@ const ProfileV2 = {
 class Rename extends Schema.TaggedError<Rename>()("Rename", {}) {}
 
 const Describe = Actor.command("Describe", {
-  input: Schema.Boolean,
-  output: Schema.String,
-  errors: [Rename],
+  payload: Schema.Boolean,
+  success: Schema.String,
+  error: Rename,
 })
 
-const Show = Actor.query("Show", { output: Schema.String })
+const Show = Actor.query("Show", { success: Schema.String })
 
 const Profile = Actor.make("Profile", {
   key: Schema.NonEmptyString,

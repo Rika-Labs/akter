@@ -80,22 +80,22 @@ const Line = Schema.Struct({
 })
 
 const Add = Actor.command("Add", {
-  input: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
 })
 
 const Put = Actor.command("Put", {
-  input: Schema.Array(Schema.Struct({ id: Schema.String, amount: Schema.Int })),
+  payload: Schema.Array(Schema.Struct({ id: Schema.String, amount: Schema.Int })),
 })
 
 const Bump = Actor.command("Bump", {
-  input: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ id: Schema.String, amount: Schema.Int }),
 })
 
-const Remove = Actor.command("Remove", { input: Schema.String })
+const Remove = Actor.command("Remove", { payload: Schema.String })
 
-const Lines = Actor.query("Lines", { output: Schema.Array(Line) })
+const Lines = Actor.query("Lines", { success: Schema.Array(Line) })
 
-const Find = Actor.query("Find", { input: Schema.String, output: Schema.Array(Line) })
+const Find = Actor.query("Find", { payload: Schema.String, success: Schema.Array(Line) })
 
 const Account = Actor.make("Account", {
   key: Schema.String,
@@ -103,11 +103,11 @@ const Account = Actor.make("Account", {
   api: { Add, Put, Bump, Remove, Lines, Find },
 })
 
-const Names = Actor.query("Names", { output: Schema.Array(Schema.String) })
+const Names = Actor.query("Names", { success: Schema.Array(Schema.String) })
 
-const Peek = Actor.command("Peek", { output: Schema.Array(Schema.String) })
+const Peek = Actor.command("Peek", { success: Schema.Array(Schema.String) })
 
-const Probe = Actor.command("Probe", { output: Schema.Boolean })
+const Probe = Actor.command("Probe", { success: Schema.Boolean })
 
 const Grouped = Actor.command("Grouped")
 
@@ -118,10 +118,10 @@ const Directory = Actor.make("Directory", {
 })
 
 const Ship = Actor.command("Ship", {
-  input: Schema.Struct({ id: Schema.String, label: Schema.String }),
+  payload: Schema.Struct({ id: Schema.String, label: Schema.String }),
 })
 
-const Labels = Actor.query("Labels", { output: Schema.Array(Schema.String) })
+const Labels = Actor.query("Labels", { success: Schema.Array(Schema.String) })
 
 const Carrier = Actor.make("Carrier", {
   key: Schema.String,
@@ -748,7 +748,8 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
               Actor.make("Minted", {
                 tables: [mintedRows],
                 api: { Open },
-                policy: { createdBy: Open },
+
+                createdBy: Open,
               }),
             ),
           ).toContain("mints its ids and cannot adopt table conformance_minted")

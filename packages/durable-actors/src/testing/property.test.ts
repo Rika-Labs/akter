@@ -18,47 +18,47 @@ const Logged = Actor.state({
 
 const Sum = Actor.reducer("Sum", {
   state: Counted,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: (state, amount) => Result.succeed({ count: state.count + amount }),
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 /** Every reduction fails, so sequential and folded paths fail alike. */
 const AlwaysThrows = Actor.reducer("AlwaysThrows", {
   state: Counted,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: () => {
     throw new Error("reducer bug")
   },
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 /** Returns the same count on both paths, one the Int state schema rejects. */
 const Invalid = Actor.reducer("Invalid", {
   state: Counted,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: () => Result.succeed({ count: 0.5 }),
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 /** Appends in place: ordered and noncommutative, and it mutates the state it receives. */
 const Append = Actor.reducer("Append", {
   state: Logged,
-  input: Schema.mutable(Schema.Array(Schema.Int)),
+  payload: Schema.mutable(Schema.Array(Schema.Int)),
   reduce: (state, items) => {
     state.log.push(...items)
 
     return Result.succeed(state)
   },
-  commutative: { combine: (first, second) => [...first, ...second] },
+  batch: { combine: (first, second) => [...first, ...second] },
 })
 
 /** Appends correctly but combines in reverse order, so a fold of two or more distinct inputs differs. */
 const Reversed = Actor.reducer("Reversed", {
   state: Logged,
-  input: Schema.mutable(Schema.Array(Schema.Int)),
+  payload: Schema.mutable(Schema.Array(Schema.Int)),
   reduce: (state, items) => Result.succeed({ log: [...state.log, ...items] }),
-  commutative: { combine: (first, second) => [...second, ...first] },
+  batch: { combine: (first, second) => [...second, ...first] },
 })
 
 /**
@@ -67,13 +67,13 @@ const Reversed = Actor.reducer("Reversed", {
  */
 const ReversedInPlace = Actor.reducer("ReversedInPlace", {
   state: Logged,
-  input: Schema.mutable(Schema.Array(Schema.Int)),
+  payload: Schema.mutable(Schema.Array(Schema.Int)),
   reduce: (state, items) => {
     state.log.push(...items)
 
     return Result.succeed(state)
   },
-  commutative: { combine: (first, second) => [...second, ...first] },
+  batch: { combine: (first, second) => [...second, ...first] },
 })
 
 const bounded = Arbitrary.schema(
@@ -185,7 +185,7 @@ describe("checkBatchLaw", () => {
     Effect.gen(function* () {
       const Plain = Actor.reducer("Plain", {
         state: Counted,
-        input: Schema.Int,
+        payload: Schema.Int,
         reduce: (state, amount) => Result.succeed({ count: state.count + amount }),
       })
 

@@ -21,52 +21,52 @@ export interface RetentionFixture {
 
 export const retentionFixture = (): RetentionFixture => ({ adds: 0, receives: 0 })
 
-class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
+const Noted = Actor.event("Noted", { body: Schema.String })
 
 const files = Actor.blob("files")
 
-const Note = Actor.command("Note", { input: Schema.String, output: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String, success: Schema.String })
 
 const NoteMany = Actor.command("NoteMany", {
-  input: Schema.Struct({ count: Schema.Int, bytes: Schema.Int }),
+  payload: Schema.Struct({ count: Schema.Int, bytes: Schema.Int }),
 })
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
-const Forward = Actor.command("Forward", { input: Schema.String })
+const Forward = Actor.command("Forward", { payload: Schema.String })
 
-const Receive = Actor.command("Receive", { input: Schema.String })
+const Receive = Actor.command("Receive", { payload: Schema.String })
 
 const Put = Actor.command("Put", {
-  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
 })
 
 const Grow = Actor.command("Grow", {
-  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
 })
 
-const Drop = Actor.command("Drop", { input: Schema.String })
+const Drop = Actor.command("Drop", { payload: Schema.String })
 
 /** Replaces an entry and swallows the defect, so the turn commits whatever the write left. */
 const PutCaught = Actor.command("PutCaught", {
-  input: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
-  output: Schema.Boolean,
+  payload: Schema.Struct({ name: Schema.String, bytes: Schema.Int }),
+  success: Schema.Boolean,
 })
 
 const Entry = Schema.Struct({ cursor: Schema.String, body: Schema.String })
 
 const History = Actor.query("History", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     after: Schema.optional(Schema.String),
     limit: Schema.optional(Schema.Finite),
   }),
-  output: Schema.Array(Entry),
-  errors: [UnknownCursor, RetentionGap],
+  success: Schema.Array(Entry),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
-const Size = Actor.query("Size", { input: Schema.String, output: Schema.Int })
+const Size = Actor.query("Size", { payload: Schema.String, success: Schema.Int })
 
-const Total = Actor.query("Total", { output: Schema.Int })
+const Total = Actor.query("Total", { success: Schema.Int })
 
 const Journal = Actor.make("Journal", {
   key: Schema.String,
@@ -80,12 +80,12 @@ const Journal = Actor.make("Journal", {
     keepEvents: "1 day",
     maxBlobBytes: 1024,
     maxBlobEntries: 3,
-    commandTimeout: "2 seconds",
+    executionTimeout: "2 seconds",
   },
 })
 
 /** The same events under a longer horizon, so one sweep applies each type's own policy. */
-const Tally = Actor.command("Tally", { input: Schema.Int, output: Schema.Int })
+const Tally = Actor.command("Tally", { payload: Schema.Int, success: Schema.Int })
 
 /** Keeps receipts for less than the retry window, so only the delivery-timeout grace holds them. */
 const Brief = Actor.make("Brief", {

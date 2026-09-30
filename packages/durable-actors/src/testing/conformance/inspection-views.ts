@@ -5,24 +5,24 @@ import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
-class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
+const Noted = Actor.event("Noted", { body: Schema.String })
 
 class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {}) {}
 
 class Undeliverable extends Schema.TaggedError<Undeliverable>()("Undeliverable", {}) {}
 
-class Deliver extends Actor.effect<Deliver>()("Deliver", {
-  input: { body: Schema.String },
-}) {}
-
-const Write = Actor.command("Record", { input: Schema.String })
-
-const RecordThenReject = Actor.command("RecordThenReject", {
-  input: Schema.String,
-  errors: [Rejected],
+const Deliver = Actor.job("Deliver", {
+  payload: { body: Schema.String },
 })
 
-const RecordThenDie = Actor.command("RecordThenDie", { input: Schema.String })
+const Write = Actor.command("Record", { payload: Schema.String })
+
+const RecordThenReject = Actor.command("RecordThenReject", {
+  payload: Schema.String,
+  error: Rejected,
+})
+
+const RecordThenDie = Actor.command("RecordThenDie", { payload: Schema.String })
 
 const Remind = Actor.command("Remind")
 
@@ -32,10 +32,9 @@ const Specimen = Actor.make("Specimen", {
     notes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   events: [Noted],
-  effects: [Deliver],
+  jobs: { Deliver: { job: Deliver, retry: { times: 0 } } },
   api: { Record: Write, RecordThenReject, RecordThenDie },
   internal: { Remind },
-  policy: { effects: { Deliver: { retry: { times: 0 } } } },
 })
 
 const record = Effect.fnUntraced(function* (body: string) {
@@ -44,7 +43,7 @@ const record = Effect.fnUntraced(function* (body: string) {
   yield* turn.emit(Noted.make({ body }))
   const self = yield* Specimen.intents(turn.id)
   yield* self.Remind().pipe(Intent.after("1 hour"), Intent.key("remind"))
-  yield* turn.perform(Deliver.make({ body }))
+  yield* turn.enqueue(Deliver.make({ body }))
 })
 
 /** Handlers for the actors whose rows the inspection views expose. */
@@ -65,7 +64,7 @@ export const inspectionViewsLayer = Layer.mergeAll(
       Remind: () => Effect.void,
     }),
   ),
-  Specimen.toEffectLayer(
+  Specimen.toJobLayer(
     Effect.succeed({
       Deliver: Effect.fnUntraced(function* () {
         return yield* Undeliverable.make({})

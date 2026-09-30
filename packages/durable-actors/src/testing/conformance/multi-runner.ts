@@ -7,14 +7,14 @@ import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
 
-class Tallied extends Actor.Event<Tallied>()("Tallied", { amount: Schema.Finite }) {}
+const Tallied = Actor.event("Tallied", { amount: Schema.Finite })
 
-const Add = Actor.command("Add", { input: Schema.Finite, output: Schema.Finite })
+const Add = Actor.command("Add", { payload: Schema.Finite, success: Schema.Finite })
 
-const Whoami = Actor.command("Whoami", { output: Schema.String })
+const Whoami = Actor.command("Whoami", { success: Schema.String })
 
 const Log = Actor.query("Log", {
-  output: Schema.Array(Schema.Struct({ cursor: Schema.String, commandId: Schema.String })),
+  success: Schema.Array(Schema.Struct({ cursor: Schema.String, commandId: Schema.String })),
 })
 
 const TallyState = Actor.state({
@@ -29,13 +29,13 @@ const addRuns = { count: 0 }
 /** A commutative reducer: calls already waiting on the owner merge into one turn. */
 export const Tick = Actor.reducer("Tick", {
   state: TallyState,
-  input: Schema.Finite,
+  payload: Schema.Finite,
   reduce: (state, amount) => {
     tickReductions.count += 1
 
     return Result.succeed({ count: state.count + amount })
   },
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 const Tally = Actor.make("Tally", {
@@ -74,11 +74,11 @@ const TallyLive = Layer.mergeAll(
   ),
 )
 
-const Dispatch = Actor.command("Dispatch", { input: Schema.String })
+const Dispatch = Actor.command("Dispatch", { payload: Schema.String })
 
 const Hear = Actor.command("Hear")
 
-const Heard = Actor.query("Heard", { output: Schema.String })
+const Heard = Actor.query("Heard", { success: Schema.String })
 
 /** Hears the principal a relay-delivered intent carries: the sender's caller as `onBehalfOf`. */
 const Envoy = Actor.make("Envoy", {

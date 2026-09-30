@@ -38,11 +38,12 @@ import type { ContentStore } from "../../handles/content.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import { type AuthProvider, type AuthRequest, Credential } from "../../serve/auth.ts"
-import type { ServeOptions } from "../../serve/layer.ts"
+import { serve, type ServeOptions } from "../../serve/layer.ts"
 import { actorErrorBody } from "../../serve/wire.ts"
 import { buildServedApi, openApiDocument } from "../../serve/api.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
+import { Auth } from "../../runtime/index.ts"
 
 export class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
@@ -53,22 +54,22 @@ export class Closed extends Schema.TaggedError<Closed>()(
 ) {}
 
 const Post = Actor.command("Post", {
-  input: Schema.Struct({ text: Schema.String }),
-  output: Schema.Int,
-  errors: [Full, Closed],
+  payload: Schema.Struct({ text: Schema.String }),
+  success: Schema.Int,
+  error: Schema.Union([Full, Closed]),
 })
 
-const Whoami = Actor.command("Whoami", { output: Schema.String })
+const Whoami = Actor.command("Whoami", { success: Schema.String })
 
-const Hold = Actor.command("Hold", { output: Schema.Int })
+const Hold = Actor.command("Hold", { success: Schema.Int })
 
 const Crash = Actor.command("Crash")
 
 const Secret = Actor.command("Secret")
 
-const Count = Actor.query("Count", { output: Schema.Int })
+const Count = Actor.query("Count", { success: Schema.Int })
 
-const Peek = Actor.query("Peek", { output: Schema.UndefinedOr(Schema.Int) })
+const Peek = Actor.query("Peek", { success: Schema.UndefinedOr(Schema.Int) })
 
 const count = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -81,7 +82,7 @@ export const HttpRoom = Actor.make("HttpRoom", {
   internal: { Secret },
 })
 
-const Level = Actor.query("Level", { output: Schema.Int, watch: true })
+const Level = Actor.query("Level", { success: Schema.Int, watch: true })
 
 /** A room whose `Level` can be watched and whose `Count` cannot. */
 export const HttpWatched = Actor.make("HttpWatched", {
@@ -90,7 +91,7 @@ export const HttpWatched = Actor.make("HttpWatched", {
   api: { Post, Level, Count },
 })
 
-const Join = Actor.command("Join", { output: Schema.Int })
+const Join = Actor.command("Join", { success: Schema.Int })
 
 const Leave = Actor.command("Leave")
 
@@ -106,8 +107,8 @@ export class TooMany extends Schema.TaggedError<TooMany>()("TooMany", { count: S
 
 const Add = Actor.reducer("Add", {
   state: count,
-  input: Schema.Struct({ by: Schema.Int }),
-  errors: [TooMany],
+  payload: Schema.Struct({ by: Schema.Int }),
+  error: TooMany,
   reduce: (state, { by }) =>
     state.count + by > 10
       ? Result.fail(TooMany.make({ count: state.count }))
@@ -117,10 +118,10 @@ const Add = Actor.reducer("Add", {
 const Bump = Actor.reducer("Bump", {
   state: count,
   reduce: (state) => Result.succeed({ count: state.count + 1 }),
-  commutative: { combine: () => undefined },
+  batch: { combine: () => undefined },
 })
 
-const Snapshot = Actor.query("Snapshot", { output: Schema.Struct({ count: Schema.Int }) })
+const Snapshot = Actor.query("Snapshot", { success: Schema.Struct({ count: Schema.Int }) })
 
 /** Reducers only, so a client can run every command optimistically. */
 export const HttpTally = Actor.make("HttpTally", {
@@ -256,7 +257,7 @@ const bearer = (request: AuthRequest) =>
     onSome: (header) => principal(header.replace(/^Bearer /, "")),
   })
 
-export const tokens = Actor.auth.make(bearer)
+export const tokens = Auth.make(bearer)
 
 const session = (request: AuthRequest) => {
   const value = request.cookies["session"]
@@ -325,7 +326,7 @@ export const serveHttp = Effect.fnUntraced(function* (
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
   const context = yield* Effect.context<InternalActors | RuntimeControl | ContentStore>()
 
-  const app = Actor.serve({ actors: served, auth: tokens, ...options }).pipe(
+  const app = serve({ actors: served, auth: tokens, ...options }).pipe(
     Layer.provide(Layer.succeedContext(context)),
   )
 
@@ -622,11 +623,11 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "serves every caller as Anonymous in the default tenant under Actor.auth.none, ignoring credentials",
+    name: "serves every caller as Anonymous in the default tenant under Auth.none, ignoring credentials",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          const server = yield* serveHttp({ auth: Actor.auth.none })
+          const server = yield* serveHttp({ auth: Auth.none })
 
           const reply = yield* server.send("/actors/HttpRoom/public/Whoami", {
             token: "tenant:alice",
@@ -1187,12 +1188,12 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           const openapi = { path: "/openapi.json" as const }
 
           const cookieOnly = yield* serveHttp({
-            auth: Actor.auth.make({ authenticate: session, cookies: { name: "session" } }),
+            auth: Auth.make({ authenticate: session, cookies: { name: "session" } }),
             openapi,
           })
 
           const either = yield* serveHttp({
-            auth: Actor.auth.make({
+            auth: Auth.make({
               authenticate: (request) =>
                 request.cookies["session"] === undefined ? bearer(request) : session(request),
               cookies: { name: "session" },
@@ -1245,7 +1246,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           expect((yield* whoami(either, { token: `${tenant}:dave` })).body).toBe(`${tenant}/dave`)
 
-          const ignored = yield* whoami(yield* serveHttp({ auth: Actor.auth.make(session) }), {
+          const ignored = yield* whoami(yield* serveHttp({ auth: Auth.make(session) }), {
             cookie: `session=${tenant}:erin`,
           })
 
@@ -1444,7 +1445,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           const short = InternalActors.of({ ...actors, retryWindowMs: 59_999 })
 
           const exit = yield* HttpRouter.toHttpEffect(
-            Actor.serve({ actors: served, auth: tokens }).pipe(
+            serve({ actors: served, auth: tokens }).pipe(
               Layer.provide(Layer.succeed(InternalActors, short)),
             ),
           ).pipe(Effect.exit)
@@ -1515,11 +1516,11 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           const Durable = Actor.make("durable", {
             key: Actor.singleton,
             state: count,
-            api: { protocol: Actor.query("protocol", { output: Schema.Int }) },
+            api: { protocol: Actor.query("protocol", { success: Schema.Int }) },
           })
 
           const exit = yield* HttpRouter.toHttpEffect(
-            Actor.serve({ actors: [Durable], auth: tokens }).pipe(
+            serve({ actors: [Durable], auth: tokens }).pipe(
               Layer.provide(Layer.succeed(InternalActors, yield* InternalActors)),
             ),
           ).pipe(Effect.exit)
@@ -1539,7 +1540,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const path of ["/protocol", "/command-ids", "/ready", "/actors/Room"] as const) {
             const exit = yield* HttpRouter.toHttpEffect(
-              Actor.serve({ actors: [HttpRoom], auth: tokens, openapi: { path } }).pipe(
+              serve({ actors: [HttpRoom], auth: tokens, openapi: { path } }).pipe(
                 Layer.provide(internal),
               ),
             ).pipe(Effect.exit)
@@ -1563,7 +1564,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             [Credential.Bearer(), Credential.Jwt()],
           ]) {
             const exit = yield* HttpRouter.toHttpEffect(
-              Actor.serve({ actors: [HttpRoom], auth: { ...tokens, credentials } }).pipe(
+              serve({ actors: [HttpRoom], auth: { ...tokens, credentials } }).pipe(
                 Layer.provide(internal),
               ),
             ).pipe(Effect.exit)

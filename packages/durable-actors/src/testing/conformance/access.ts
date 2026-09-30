@@ -62,22 +62,24 @@ import type {
   ConformanceSuite,
 } from "../conformance.ts"
 import { serveHttp, httpSuite } from "./http.ts"
+import { serve } from "../../serve/layer.ts"
+import { Auth } from "../../runtime/index.ts"
 
-class Posted extends Actor.Event<Posted>()("AccessPosted", { amount: Schema.Finite }) {}
+const Posted = Actor.event("AccessPosted", { amount: Schema.Finite })
 
 class Ping extends Schema.TaggedClass<Ping>()("AccessPing", {}) {}
 
-const Post = Actor.command("Post", { input: Schema.Finite, output: Schema.Finite })
+const Post = Actor.command("Post", { payload: Schema.Finite, success: Schema.Finite })
 
-const Whoami = Actor.command("Whoami", { output: Schema.String })
+const Whoami = Actor.command("Whoami", { success: Schema.String })
 
-const Seal = Actor.command("Seal", { output: Schema.String })
+const Seal = Actor.command("Seal", { success: Schema.String })
 
-const Balance = Actor.query("Balance", { output: Schema.Finite })
+const Balance = Actor.query("Balance", { success: Schema.Finite })
 
 const Watch = Actor.connection("Watch", { server: Ping })
 
-const Ticks = Actor.stream("Ticks", { output: Schema.Finite })
+const Ticks = Actor.stream("Ticks", { success: Schema.Finite })
 
 const Files = Actor.content("files")
 
@@ -668,7 +670,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
         {},
         Effect.gen(function* () {
           const { tenant } = yield* ActorTest
-          const publicServer = yield* serveHttp({ actors: served, auth: Actor.auth.none })
+          const publicServer = yield* serveHttp({ actors: served, auth: Auth.none })
           const tokenServer = yield* serveHttp({ actors: served })
 
           const whoami = (server: typeof publicServer, name: string, token?: string) =>
@@ -767,7 +769,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
     },
   },
   {
-    name: "sees Anonymous, never System, on every served entry point under Actor.auth.none, and denies it by default",
+    name: "sees Anonymous, never System, on every served entry point under Auth.none, and denies it by default",
     requiresFreshDatabase: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) => {
@@ -799,15 +801,15 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
           const context = yield* Effect.context<Services>()
 
           const app = Layer.mergeAll(
-            Actor.serve({
+            serve({
               actors: [closed.Ledger, open.Ledger],
-              auth: Actor.auth.none,
+              auth: Auth.none,
               basePath: "/api",
               mcp: { path: "/mcp" },
             }),
             Operators.serve({ auth: OperatorAuth.tokens([]) }),
             Telemetry.serve(),
-            Inspector.serve({ auth: Actor.auth.none }),
+            Inspector.serve({ auth: Auth.none }),
           ).pipe(Layer.provide(Layer.succeedContext(context)))
 
           const built = yield* Layer.build(

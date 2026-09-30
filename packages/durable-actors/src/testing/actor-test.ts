@@ -266,8 +266,8 @@ export class ActorTest extends Context.Service<
     readonly connect: <C extends AnyConnection>(
       ref: ActorRef,
       member: C,
-      params: C["input"]["Type"],
-    ) => Effect.Effect<TestConnection<C>, ActorError | C["errors"][number]["Type"]>
+      params: C["payload"]["Type"],
+    ) => Effect.Effect<TestConnection<C>, ActorError | C["error"]["Type"]>
     /** Ends the actor's activation on this runner as `hibernateAfter` would; its connections stay open. */
     readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
     /**
@@ -644,17 +644,17 @@ export class ActorTest extends Context.Service<
               connect: Effect.fnUntraced(function* <C extends AnyConnection>(
                 ref: ActorRef,
                 member: C,
-                params: C["input"]["Type"],
+                params: C["payload"]["Type"],
               ) {
                 const server = valueCodec(member.server)
                 const decodeServer = Schema.decodeEffect(server)
                 const encodeClient = Schema.encodeEffect(valueCodec(member.client))
 
                 const decodeError = Schema.decodeEffect(
-                  Schema.fromJsonString(Schema.toCodecJson(Schema.Union(member.errors))),
+                  Schema.fromJsonString(Schema.toCodecJson(member.error)),
                 )
 
-                const encoded = yield* Schema.encodeEffect(valueCodec(member.input))({
+                const encoded = yield* Schema.encodeEffect(valueCodec(member.payload))({
                   value: params,
                 }).pipe(Effect.orDie)
 
@@ -668,7 +668,7 @@ export class ActorTest extends Context.Service<
                   .pipe(
                     Effect.catchTag("OpenRejected", (rejected: OpenRejected) =>
                       Effect.flatMap(decodeError(rejected.value).pipe(Effect.orDie), (error) =>
-                        Effect.fail(error as C["errors"][number]["Type"]),
+                        Effect.fail(error as C["error"]["Type"]),
                       ),
                     ),
                   )

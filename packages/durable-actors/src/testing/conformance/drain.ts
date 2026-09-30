@@ -53,22 +53,22 @@ const reset = (fixture: DrainFixture) =>
     fixture.onDeposit = Effect.void
   })
 
-class Charge extends Actor.effect<Charge>()("Charge", {
-  input: { key: Schema.String },
+const Charge = Actor.job("Charge", {
+  payload: { key: Schema.String },
   success: Schema.String,
-}) {}
-
-const Deposit = Actor.command("Deposit", { input: Schema.Finite, output: Schema.Finite })
-
-const Bill = Actor.command("Bill", { input: Schema.String })
-
-const Transfer = Actor.command("Transfer", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Finite }),
 })
 
-const Charged = Actor.command("Charged", { input: Schema.String })
+const Deposit = Actor.command("Deposit", { payload: Schema.Finite, success: Schema.Finite })
 
-const ChargeFailed = Actor.command("ChargeFailed", { input: Actor.DeadLetter(Charge) })
+const Bill = Actor.command("Bill", { payload: Schema.String })
+
+const Transfer = Actor.command("Transfer", {
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Finite }),
+})
+
+const Charged = Actor.command("Charged", { payload: Schema.String })
+
+const ChargeFailed = Actor.command("ChargeFailed", { payload: Actor.DeadLetter(Charge) })
 
 const Letter = Schema.Struct({ attempts: Schema.Int, ambiguous: Schema.Boolean })
 
@@ -79,12 +79,11 @@ const Account = Actor.make("Account", {
     charged: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     letters: Schema.Array(Letter).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [Charge],
+  jobs: {
+    Charge: { job: Charge, retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed },
+  },
   api: { Deposit, Bill },
   internal: { Charged, ChargeFailed },
-  policy: {
-    effects: { Charge: { retry: { times: 0 }, onSuccess: Charged, onDeadLetter: ChargeFailed } },
-  },
 })
 
 /** Sends deposits to accounts as intents. */
@@ -115,7 +114,7 @@ const drainAccounts = (fixture: DrainFixture) =>
         return turn.state.balance
       }),
       Bill: Effect.fnUntraced(function* (key: string) {
-        yield* (yield* Account.Turn).perform(Charge.make({ key }))
+        yield* (yield* Account.Turn).enqueue(Charge.make({ key }))
       }),
       Charged: Effect.fnUntraced(function* (key: string) {
         const turn = yield* Account.Turn
@@ -130,7 +129,7 @@ const drainAccounts = (fixture: DrainFixture) =>
 
 /** The `Charge` executor of `runner`; a case builds it on the runners it chooses. */
 const chargeExecutor = (fixture: DrainFixture, runner: number) =>
-  Account.toEffectLayer(
+  Account.toJobLayer(
     Effect.succeed({
       Charge: ({ key }) =>
         Effect.gen(function* () {

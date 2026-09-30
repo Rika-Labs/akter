@@ -32,16 +32,16 @@ import { reasonOf, receipts, runs, serveHttp, tenantOf, httpSuite } from "./http
  * the edge asks its provider for one.
  */
 
-const Deposit = Actor.command("Deposit", { input: Schema.Int, output: Schema.Int })
+const Deposit = Actor.command("Deposit", { payload: Schema.Int, success: Schema.Int })
 
-const Hold = Actor.command("Hold", { output: Schema.Int })
+const Hold = Actor.command("Hold", { success: Schema.Int })
 
 const Plan = Actor.command("Plan")
 
 const Remind = Actor.command("Remind")
 
 const Balance = Actor.query("Balance", {
-  output: Schema.Struct({ balance: Schema.Int, holds: Schema.Int, reminded: Schema.Int }),
+  success: Schema.Struct({ balance: Schema.Int, holds: Schema.Int, reminded: Schema.Int }),
 })
 
 const zero = Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0)))

@@ -13,11 +13,11 @@ import { Misuse, Notebook, tablesSuite } from "./tables.ts"
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", { amount: Schema.Int }) {}
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
-const Refuse = Actor.command("Refuse", { input: Schema.Int, errors: [Refused] })
+const Refuse = Actor.command("Refuse", { payload: Schema.Int, error: Refused })
 
-const Echo = Actor.command("Echo", { input: Schema.String, output: Schema.String })
+const Echo = Actor.command("Echo", { payload: Schema.String, success: Schema.String })
 
 const Tally = Actor.make("PropertyTally", {
   key: Schema.String,

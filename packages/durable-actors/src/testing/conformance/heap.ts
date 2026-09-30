@@ -3,7 +3,7 @@ import { Actor, Actors } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
 
-const Touch = Actor.command("Touch", { output: Schema.Finite })
+const Touch = Actor.command("Touch", { success: Schema.Finite })
 
 const Sleeper = Actor.make("HeapSleeper", {
   key: Schema.String,

@@ -13,6 +13,8 @@ import type { AuthRequest } from "../../serve/auth.ts"
 import type { Group } from "../../tables/owned.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
+import { serve } from "../../serve/layer.ts"
+import { Auth } from "../../runtime/index.ts"
 
 const orderRows = Actor.table(pgTable("placement_orders", { id: text("id").primaryKey() }))
 
@@ -43,7 +45,7 @@ const placementDdl = [
 
 const labels = Actor.blob("placementLabels")
 
-class Shipped extends Actor.Event<Shipped>()("PlacementShipped", { carrier: Schema.String }) {}
+const Shipped = Actor.event("PlacementShipped", { carrier: Schema.String })
 
 const Family = Schema.Struct({
   orders: Schema.Array(Schema.String),
@@ -57,17 +59,21 @@ const ShipmentKey = Schema.String.check(Schema.isPattern(/^s-/))
 const Place = Actor.command("Place")
 
 const Ship = Actor.command("Ship", {
-  input: Schema.Struct({ shipment: Schema.String, carrier: Schema.String, later: Schema.Boolean }),
-  output: Schema.String,
+  payload: Schema.Struct({
+    shipment: Schema.String,
+    carrier: Schema.String,
+    later: Schema.Boolean,
+  }),
+  success: Schema.String,
 })
 
-const MintParcel = Actor.command("MintParcel", { output: Schema.String })
+const MintParcel = Actor.command("MintParcel", { success: Schema.String })
 
-const Acknowledge = Actor.command("Acknowledge", { input: Schema.String })
+const Acknowledge = Actor.command("Acknowledge", { payload: Schema.String })
 
-const Acknowledged = Actor.query("Acknowledged", { output: Schema.Array(Schema.String) })
+const Acknowledged = Actor.query("Acknowledged", { success: Schema.Array(Schema.String) })
 
-const OrderFamily = Actor.command("OrderFamily", { output: Family })
+const OrderFamily = Actor.command("OrderFamily", { success: Family })
 
 const Order = Actor.make("PlacementOrder", {
   key: OrderKey,
@@ -79,13 +85,13 @@ const Order = Actor.make("PlacementOrder", {
   api: { Place, Ship, MintParcel, Acknowledge, Acknowledged, OrderFamily },
 })
 
-const Open = Actor.command("Open", { input: Schema.String })
+const Open = Actor.command("Open", { payload: Schema.String })
 
-const Report = Actor.command("Report", { input: Schema.String })
+const Report = Actor.command("Report", { payload: Schema.String })
 
-const Carrier = Actor.query("Carrier", { output: Schema.String })
+const Carrier = Actor.query("Carrier", { success: Schema.String })
 
-const ShipmentFamily = Actor.query("ShipmentFamily", { output: Family })
+const ShipmentFamily = Actor.query("ShipmentFamily", { success: Family })
 
 const Shipment = Actor.make("PlacementShipment", {
   key: ShipmentKey,
@@ -111,7 +117,7 @@ const Label = Actor.make("PlacementLabel", {
   api: { Print },
 })
 
-const Title = Actor.query("Title", { output: Schema.String })
+const Title = Actor.query("Title", { success: Schema.String })
 
 const MintStray = Actor.command("MintStray")
 
@@ -119,7 +125,8 @@ const Parcel = Actor.make("PlacementParcel", {
   placement: { parent: Order },
   state: Actor.state({ title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))) }),
   api: { Open, Title, MintStray },
-  policy: { createdBy: Open },
+
+  createdBy: Open,
 })
 
 const familyOf = Effect.fnUntraced(function* (group: Group) {
@@ -296,7 +303,7 @@ const served = Effect.fnUntraced(function* (tenant: string) {
   const context = yield* Effect.context<InternalActors | RuntimeControl | ContentStore>()
 
   const web = HttpRouter.toWebHandler(
-    Actor.serve({ actors: [Order, Shipment, Parcel], auth: Actor.auth.make(bearer) }).pipe(
+    serve({ actors: [Order, Shipment, Parcel], auth: Auth.make(bearer) }).pipe(
       Layer.provide(Layer.succeedContext(context)),
     ),
     { disableLogger: true },
@@ -573,7 +580,7 @@ export const placementConformance: ReadonlyArray<ConformanceCase> = [
             thrown(() =>
               Actor.make("PlacementUnkeyed", { placement: { parent: Order }, api: { Ping } }),
             ),
-          ).toContain("Parent-placed PlacementUnkeyed needs a key or policy.createdBy")
+          ).toContain("Parent-placed PlacementUnkeyed needs a key or createdBy")
 
           expect(
             thrown(() =>

@@ -33,10 +33,12 @@ import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { gate, HttpRoom, receipts, runs, tenantOf, httpSuite } from "./http.ts"
 import { endReason, opened, serveSockets, socket } from "./transports/wire.ts"
 import { transportsSuite } from "./transports/actors.ts"
+import { serve } from "../../serve/layer.ts"
+import { Auth } from "../../runtime/index.ts"
 
 /**
  * The runner half of hosted assertions: a runner serving with
- * `Actor.auth.assertion` admits a request only with a valid assertion bound
+ * `Auth.assertion` admits a request only with a valid assertion bound
  * to exactly that request. The cases sign assertions as an edge would, with
  * their own Ed25519 keys.
  */
@@ -190,7 +192,7 @@ const serveAsserted = Effect.fnUntraced(function* (
   const fetchLayer = yield* Layer.build(FetchHttpClient.layer)
   const client = Context.get(fetchLayer, HttpClient.HttpClient)
 
-  const app = Actor.serve({ actors: [HttpRoom], auth }).pipe(
+  const app = serve({ actors: [HttpRoom], auth }).pipe(
     Layer.provide(Layer.succeedContext(context)),
     Layer.provide(Layer.succeedContext(fetchLayer)),
   )
@@ -231,7 +233,7 @@ const serveAsserted = Effect.fnUntraced(function* (
 
 /** A runner's assertion provider trusting exactly `keys`. */
 export const staticAuth = (keys: ReadonlyArray<EdgeKey>) =>
-  Actor.auth.assertion({
+  Auth.assertion({
     issuer: ISSUER,
     audience: DEPLOYMENT,
     region: REGION,
@@ -561,7 +563,7 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const keySet = yield* keySetServer([old])
 
           const server = yield* serveAsserted(
-            Actor.auth.assertion({
+            Auth.assertion({
               issuer: ISSUER,
               audience: DEPLOYMENT,
               region: REGION,
@@ -607,7 +609,7 @@ export const assertionsConformance: ReadonlyArray<ConformanceCase> = [
           const keySet = yield* keySetServer([old, rotated])
 
           const server = yield* serveAsserted(
-            Actor.auth.assertion({
+            Auth.assertion({
               issuer: ISSUER,
               audience: DEPLOYMENT,
               region: REGION,
@@ -812,7 +814,7 @@ export const clientFor = Effect.fnUntraced(function* (url: string) {
 /** A runner in `region` that trusts `edge`, rereading its key set every second. */
 export const edgeRunner = Effect.fnUntraced(function* (edge: HostedEdge, region: string) {
   return yield* serveAsserted(
-    Actor.auth.assertion({
+    Auth.assertion({
       issuer: edge.issuer,
       audience: edge.deployment,
       region,
@@ -1126,7 +1128,7 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           const host = yield* serveSockets(environment, {
-            auth: Actor.auth.assertion({
+            auth: Auth.assertion({
               issuer: edge.issuer,
               audience: edge.deployment,
               region: REGION,
@@ -1204,7 +1206,7 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           const runner = yield* serveAsserted(
-            Actor.auth.assertion({
+            Auth.assertion({
               issuer: edge.issuer,
               audience: edge.deployment,
               region: REGION,
@@ -1281,7 +1283,7 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           const host = yield* serveSockets(environment, {
-            auth: Actor.auth.assertion({
+            auth: Auth.assertion({
               issuer: edge.issuer,
               audience: edge.deployment,
               region: REGION,

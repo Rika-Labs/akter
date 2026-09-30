@@ -26,8 +26,8 @@ const reductions = { count: 0 }
 
 const Add = Actor.reducer("Add", {
   state: TallyState,
-  input: Schema.Int,
-  errors: [Overflow],
+  payload: Schema.Int,
+  error: Overflow,
   reduce: (state, amount) => {
     reductions.count += 1
 
@@ -39,20 +39,20 @@ const Add = Actor.reducer("Add", {
 
 const Label = Actor.reducer("Label", {
   state: TallyState,
-  input: Schema.String,
+  payload: Schema.String,
   reduce: (state, label) => Result.succeed({ ...state, label }),
 })
 
 const Tick = Actor.reducer("Tick", {
   state: TallyState,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: (state, amount) => Result.succeed({ ...state, count: state.count + amount }),
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 const Corrupt = Actor.reducer("Corrupt", {
   state: TallyState,
-  input: Schema.Boolean,
+  payload: Schema.Boolean,
   reduce: (state, raise) => {
     if (raise) throw new Error("Reducer bug")
 
@@ -68,7 +68,7 @@ const BasketState = Actor.state({
 
 const Put = Actor.reducer("Put", {
   state: BasketState,
-  input: Schema.String,
+  payload: Schema.String,
   reduce: (state, item) => {
     state.items.push(item)
 

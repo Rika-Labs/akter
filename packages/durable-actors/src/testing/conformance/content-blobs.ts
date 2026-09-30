@@ -34,36 +34,36 @@ class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
 const Attaching = Schema.Struct({ name: Schema.String, ref: ContentRef })
 
-const Attach = Actor.command("Attach", { input: Attaching, errors: [InvalidContentRef] })
+const Attach = Actor.command("Attach", { payload: Attaching, error: InvalidContentRef })
 
-const AttachThenRefuse = Actor.command("AttachThenRefuse", { input: Attaching, errors: [Refused] })
+const AttachThenRefuse = Actor.command("AttachThenRefuse", { payload: Attaching, error: Refused })
 
-const AttachThenDie = Actor.command("AttachThenDie", { input: Attaching })
+const AttachThenDie = Actor.command("AttachThenDie", { payload: Attaching })
 
 /** Attaches, then waits for the fixture's gate before the turn commits. */
-const AttachHeld = Actor.command("AttachHeld", { input: Attaching, errors: [InvalidContentRef] })
+const AttachHeld = Actor.command("AttachHeld", { payload: Attaching, error: InvalidContentRef })
 
-const Detach = Actor.command("Detach", { input: Schema.String })
+const Detach = Actor.command("Detach", { payload: Schema.String })
 
 const DetachThenRefuse = Actor.command("DetachThenRefuse", {
-  input: Schema.String,
-  errors: [Refused],
+  payload: Schema.String,
+  error: Refused,
 })
 
 const Entry = Schema.Struct({ name: Schema.String, hash: Schema.String, size: Schema.Int })
 
-const Listed = Actor.query("Listed", { output: Schema.Array(Entry) })
+const Listed = Actor.query("Listed", { success: Schema.Array(Entry) })
 
-const Text = Actor.query("Text", { input: Schema.String, output: Schema.Option(Schema.String) })
+const Text = Actor.query("Text", { payload: Schema.String, success: Schema.Option(Schema.String) })
 
 const Streamed = Actor.query("Streamed", {
-  input: Schema.String,
-  output: Schema.Option(Schema.String),
+  payload: Schema.String,
+  success: Schema.Option(Schema.String),
 })
 
 const Digest = Actor.query("Digest", {
-  input: Schema.String,
-  output: Schema.Option(Schema.Struct({ size: Schema.Int, sha: Schema.String })),
+  payload: Schema.String,
+  success: Schema.Option(Schema.Struct({ size: Schema.Int, sha: Schema.String })),
 })
 
 const Document = Actor.make("Document", {

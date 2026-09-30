@@ -20,6 +20,7 @@ import {
   tokens,
   httpSuite,
 } from "./http.ts"
+import { serve } from "../../serve/layer.ts"
 
 const options = { openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } } as const
 
@@ -838,7 +839,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const path of ["/protocol", "/command-ids", "/ready", "/actors/Room"] as const) {
             const exit = yield* HttpRouter.toHttpEffect(
-              Actor.serve({ actors: [HttpRoom], auth: tokens, mcp: { path } }).pipe(
+              serve({ actors: [HttpRoom], auth: tokens, mcp: { path } }).pipe(
                 Layer.provide(internal),
               ),
             ).pipe(Effect.exit)
@@ -849,7 +850,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           }
 
           const same = yield* HttpRouter.toHttpEffect(
-            Actor.serve({
+            serve({
               actors: [HttpRoom],
               auth: tokens,
               openapi: { path: "/docs" },
@@ -862,7 +863,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           const lobby = yield* HttpRouter.toHttpEffect(
-            Actor.serve({ actors: [HttpLobby], auth: tokens, mcp: { path: "/mcp" } }).pipe(
+            serve({ actors: [HttpLobby], auth: tokens, mcp: { path: "/mcp" } }).pipe(
               Layer.provide(internal),
             ),
           ).pipe(Effect.exit)

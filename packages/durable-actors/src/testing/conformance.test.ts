@@ -10,7 +10,7 @@ import {
   registerConformance,
 } from "./conformance.ts"
 
-const Poke = Actor.command("Poke", { output: Schema.Finite })
+const Poke = Actor.command("Poke", { success: Schema.Finite })
 
 const Probe = Actor.make("HarnessProbe", { key: Schema.String, api: { Poke } })
 

@@ -10,27 +10,27 @@ class Declined extends Schema.TaggedError<Declined>()("OpDeclined", { reason: Sc
 
 class ProviderDown extends Schema.TaggedError<ProviderDown>()("OpProviderDown", {}) {}
 
-class Charge extends Actor.effect<Charge>()("OpCharge", {
-  input: { amount: Schema.Finite },
-}) {}
+const Charge = Actor.job("OpCharge", {
+  payload: { amount: Schema.Finite },
+})
 
-class Ship extends Actor.effect<Ship>()("OpShip", { input: { parcel: Schema.String } }) {}
+const Ship = Actor.job("OpShip", { payload: { parcel: Schema.String } })
 
-const Pay = Actor.command("Pay", { input: Schema.Finite, output: Schema.String })
+const Pay = Actor.command("Pay", { payload: Schema.Finite, success: Schema.String })
 
-const Refuse = Actor.command("Refuse", { input: Schema.String, errors: [Declined] })
+const Refuse = Actor.command("Refuse", { payload: Schema.String, error: Declined })
 
-const Send = Actor.command("Send", { input: Schema.String })
+const Send = Actor.command("Send", { payload: Schema.String })
 
 const Jam = Actor.command("Jam")
 
 const Till = Actor.make("OpTill", {
   key: Schema.String,
-  effects: [Charge, Ship],
-  api: { Pay, Refuse, Send, Jam },
-  policy: {
-    effects: { OpCharge: { retry: { times: 0 } }, OpShip: { retry: { times: 0 } } },
+  jobs: {
+    OpCharge: { job: Charge, retry: { times: 0 } },
+    OpShip: { job: Ship, retry: { times: 0 } },
   },
+  api: { Pay, Refuse, Send, Jam },
 })
 
 /** Counts handler runs and executor calls, and decides whether the provider is up. */
@@ -46,7 +46,7 @@ const live = Layer.mergeAll(
     Effect.succeed({
       Pay: Effect.fnUntraced(function* (amount: number) {
         fixture.handlerRuns += 1
-        yield* (yield* Till.Turn).perform(Charge.make({ amount }))
+        yield* (yield* Till.Turn).enqueue(Charge.make({ amount }))
 
         return `paid ${amount}`
       }),
@@ -59,21 +59,21 @@ const live = Layer.mergeAll(
       Jam: () => Effect.die(new Error("till jammed")),
       Send: Effect.fnUntraced(function* (parcel: string) {
         fixture.handlerRuns += 1
-        yield* (yield* Till.Turn).perform(Ship.make({ parcel }))
+        yield* (yield* Till.Turn).enqueue(Ship.make({ parcel }))
       }),
     }),
   ),
-  Till.toEffectLayer(
+  Till.toJobLayer(
     Effect.succeed({
       OpCharge: Effect.fnUntraced(function* () {
         const executor = yield* Till.Executor
-        fixture.charges.push(executor.effectId)
+        fixture.charges.push(executor.jobId)
 
         if (!fixture.up) return yield* ProviderDown.make({})
       }),
       OpShip: Effect.fnUntraced(function* () {
         const executor = yield* Till.Executor
-        fixture.ships.push(executor.effectId)
+        fixture.ships.push(executor.jobId)
 
         if (!fixture.up) return yield* Effect.die(new Error("carrier reply lost"))
       }),

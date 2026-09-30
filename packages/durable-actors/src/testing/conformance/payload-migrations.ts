@@ -100,32 +100,32 @@ const deployment = (variant: Variant) => {
     writeVersion: variant.chain === "v1-write0" ? 0 : undefined,
   }
 
-  class Placed extends Actor.Event<Placed>()("Placed", current, options) {}
+  const Placed = Actor.event("Placed", current, options)
 
-  class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+  const Noted = Actor.event("Noted", { text: Schema.String })
 
-  class Charge extends Actor.effect<Charge>()("Charge", { input: current, ...options }) {}
+  const Charge = Actor.job("Charge", { payload: current, ...options })
 
   const Place = Actor.command("Place", {
-    input: Schema.Struct({
+    payload: Schema.Struct({
       orderId: Schema.String,
       amount: Schema.Finite,
       after: Schema.optional(Schema.Finite),
     }),
   })
 
-  const Note = Actor.command("Note", { input: Schema.String })
+  const Note = Actor.command("Note", { payload: Schema.String })
 
   const History = Actor.query("History", {
-    output: Schema.Array(Schema.Json),
-    errors: [UnknownCursor, RetentionGap],
+    success: Schema.Array(Schema.Json),
+    error: Schema.Union([UnknownCursor, RetentionGap]),
   })
 
-  const Lost = Actor.command("Lost", { input: Actor.DeadLetter(Charge) })
+  const Lost = Actor.command("Lost", { payload: Actor.DeadLetter(Charge) })
 
   const Watch = Actor.workflow("Watch", {
-    input: { id: Schema.String },
-    output: Schema.String,
+    payload: { id: Schema.String },
+    success: Schema.String,
     key: ({ id }) => id,
   })
 
@@ -134,24 +134,24 @@ const deployment = (variant: Variant) => {
   const Ledger = Actor.make("Ledger", {
     key: Schema.String,
     events: [Placed, Noted],
-    effects: [Charge],
+    jobs: {
+      Charge: {
+        job: Charge,
+        retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
+        onDeadLetter: Lost,
+      },
+    },
     api: { Place, Note, History, Watch },
     internal: { Lost },
     policy: {
       deliveryTimeout: "3 seconds",
-      effects: {
-        Charge: {
-          retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
-          onDeadLetter: Lost,
-        },
-      },
     },
   })
 
-  const encodePlaced = (event: Placed) =>
+  const encodePlaced = (event: typeof Placed.Type) =>
     Schema.encodeUnknownEffect(Schema.toCodecJson(Placed))(event).pipe(Effect.orDie)
 
-  const encodeCharge = (charge: Charge) =>
+  const encodeCharge = (charge: typeof Charge.Type) =>
     Schema.encodeUnknownEffect(Schema.toCodecJson(Charge))(charge).pipe(Effect.orDie)
 
   const valueOf = (orderId: string, amount: number) =>
@@ -164,7 +164,7 @@ const deployment = (variant: Variant) => {
 
         yield* turn.emit(Placed.make(valueOf(orderId, amount) as never))
 
-        yield* turn.perform(
+        yield* turn.enqueue(
           Charge.make(valueOf(orderId, amount) as never),
           after === undefined ? undefined : { after: `${after} millis` },
         )
@@ -174,7 +174,7 @@ const deployment = (variant: Variant) => {
       }),
       Watch: () => AwaitPlaced().pipe(Effect.as("placed")),
       Lost: (letter) =>
-        encodeCharge(letter.effect).pipe(
+        encodeCharge(letter.job).pipe(
           Effect.map((effect) => {
             seen.deadLetters.push({ effect, ambiguous: letter.ambiguous })
           }),
@@ -192,9 +192,9 @@ const deployment = (variant: Variant) => {
     }),
   )
 
-  const executors = Ledger.toEffectLayer(
+  const executors = Ledger.toJobLayer(
     Effect.succeed({
-      Charge: (charge: Charge) =>
+      Charge: (charge: typeof Charge.Type) =>
         encodeCharge(charge).pipe(
           Effect.flatMap((encoded) => {
             seen.executed.push(encoded)
@@ -212,11 +212,11 @@ const deployment = (variant: Variant) => {
   const auditLayer = () => {
     const Delivery = Actor.Delivery({ source: Ledger, events: [Placed] })
 
-    const Record = Actor.command("Record", { input: Delivery })
+    const Record = Actor.command("Record", { payload: Delivery })
 
     const Placements = Actor.subscription("Placements", {
-      source: Ledger,
-      events: [Placed],
+      delivery: Actor.Delivery({ source: Ledger, events: [Placed] }),
+
       handler: Record,
       route: (event) => event.orderId,
     })
@@ -293,9 +293,9 @@ const FirstPhase = deployment({ chain: "v1-write0" })
 
 /** `Ledger` after its `Placed` class, and the workflow waiting on it, were removed. */
 const Unplaced = (() => {
-  class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+  const Noted = Actor.event("Noted", { text: Schema.String })
 
-  const Note = Actor.command("Note", { input: Schema.String })
+  const Note = Actor.command("Note", { payload: Schema.String })
 
   const Ledger = Actor.make("Ledger", { key: Schema.String, events: [Noted], api: { Note } })
 

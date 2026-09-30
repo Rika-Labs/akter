@@ -4,8 +4,9 @@ import { Actor, User } from "../../../index.ts"
 import { Unauthorized } from "../../../errors/actor.ts"
 import { type Authenticated, bearerToken } from "../../../serve/auth.ts"
 import type { ConformanceSuite } from "../../conformance.ts"
+import { Auth } from "../../../runtime/index.ts"
 
-export class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
+export const Said = Actor.event("Said", { text: Schema.String })
 
 export class Hello extends Schema.TaggedClass<Hello>()("Hello", {
   name: Schema.String,
@@ -20,42 +21,41 @@ export class Banned extends Schema.TaggedError<Banned>()("Banned", { name: Schem
 export const ForgedResync = Schema.TaggedStruct("Resync", { after: Schema.String })
 
 export const Chat = Actor.connection("Chat", {
-  params: Schema.Struct({ name: Schema.String }),
+  payload: Schema.Struct({ name: Schema.String }),
   server: Schema.Union([Said, Hello]),
   client: Say,
   session: Schema.Struct({ name: Schema.String }),
-  errors: [Banned],
+  error: Banned,
 })
 
 const Blind = Actor.connection("Blind", { server: Said, stampCursor: false })
 
-const Post = Actor.command("Post", { input: Schema.String })
+const Post = Actor.command("Post", { payload: Schema.String })
 
 export const Percent = Schema.Struct({ percent: Schema.Finite })
 
 /** An effect whose executor reports how far it got, one step at a time. */
-class Render extends Actor.effect<Render>()("Render", {
-  input: { steps: Schema.Int },
+const Render = Actor.job("Render", {
+  payload: { steps: Schema.Int },
   progress: Percent,
-}) {}
+})
 
-const Start = Actor.command("Start", { input: Schema.Int })
+const Start = Actor.command("Start", { payload: Schema.Int })
 
 /** Receives Render's progress on every open connection, and no member frames. */
 const Watch = Actor.connection("Watch", {
   server: Said,
-  progress: { effects: [Render], to: "all" },
+  progress: { jobs: [Render], to: "all" },
 })
 
 /** The actor served over WebSocket; its short revocation bound keeps revocation cases fast. */
 export const SocketRoom = Actor.make("SocketRoom", {
   key: Schema.String,
   events: [Said],
-  effects: [Render],
+  jobs: { Render: { job: Render, retry: { times: 0 }, progressEvery: "50 millis" } },
   api: { Chat, Blind, Post, Start, Watch },
   policy: {
     reauthorizeEvery: "2 seconds",
-    effects: { Render: { retry: { times: 0 }, progressEvery: "50 millis" } },
   },
 })
 
@@ -101,13 +101,13 @@ const socketLayer = SocketRoom.toLayer(
     },
     Blind: { open: () => Effect.void, frame: () => Effect.void },
     Start: Effect.fnUntraced(function* (steps: number) {
-      yield* (yield* SocketRoom.Turn).perform(Render.make({ steps }))
+      yield* (yield* SocketRoom.Turn).enqueue(Render.make({ steps }))
     }),
     Watch: { open: () => Effect.void, frame: () => Effect.void },
   }),
 )
 
-const renderLayer = SocketRoom.toEffectLayer(
+const renderLayer = SocketRoom.toJobLayer(
   Effect.succeed({
     Render: Effect.fnUntraced(function* ({ steps }) {
       const exec = yield* SocketRoom.Executor
@@ -120,27 +120,27 @@ const renderLayer = SocketRoom.toEffectLayer(
   }),
 )
 
-class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+const Noted = Actor.event("Noted", { text: Schema.String })
 
-const Tell = Actor.command("Tell", { input: Schema.String })
+const Tell = Actor.command("Tell", { payload: Schema.String })
 
-const Note = Actor.command("Note", { input: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String })
 
-const Burst = Actor.command("Burst", { input: Schema.Int })
+const Burst = Actor.command("Burst", { payload: Schema.Int })
 
 export class Refused extends Schema.TaggedError<Refused>()("Refused", { at: Schema.Finite }) {}
 
 /** `count` numbers, then its own end; a count over 100 is refused after the first element. */
 const Count = Actor.stream("Count", {
-  input: Schema.Finite,
-  output: Schema.Finite,
-  errors: [Refused],
+  payload: Schema.Finite,
+  success: Schema.Finite,
+  error: Refused,
 })
 
 /** Committed `Said` texts after `after`, then each new one as it commits. */
 const Heard = Actor.stream("Heard", {
-  input: Schema.Struct({ after: Schema.optional(Schema.String) }),
-  output: Schema.String,
+  payload: Schema.Struct({ after: Schema.optional(Schema.String) }),
+  success: Schema.String,
 })
 
 /** The actor served as an event feed: `Said` is served, `Noted` is declared but not a feed. */
@@ -184,7 +184,7 @@ const feedLayer = FeedRoom.toLayer(
  * expiry, which the holder enforces on its own clock; `expired` is refused.
  * Read from `hello`, `reauthenticate`, or the upgrade's `authorization`.
  */
-export const tokens = Actor.auth.make((request) =>
+export const tokens = Auth.make((request) =>
   Effect.gen(function* () {
     const token = yield* bearerToken(request)
 

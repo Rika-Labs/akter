@@ -25,11 +25,11 @@ class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
 const Open = Actor.command("Open")
 
-const Refuse = Actor.command("Refuse", { errors: [Refused] })
+const Refuse = Actor.command("Refuse", { error: Refused })
 
 const Stop = Actor.command("Stop")
 
-const Hijack = Actor.command("Hijack", { input: Schema.Literals(["key", "cancel"]) })
+const Hijack = Actor.command("Hijack", { payload: Schema.Literals(["key", "cancel"]) })
 
 const Beat = Actor.command("Beat")
 
@@ -51,9 +51,9 @@ const Heartbeat = Actor.make("CronHeartbeat", {
   api: { Open, Refuse, Stop, Hijack },
   internal: { Beat, Yearly },
   policy: {
-    cron: { "*  * * * *": Beat, "0 0 1 1 *": Yearly },
-    cronSkipIfOlderThan: SKIP,
+    maxScheduleLag: SKIP,
   },
+  schedules: { "*  * * * *": Beat, "0 0 1 1 *": Yearly },
 })
 
 const Peek = Actor.command("Peek")
@@ -62,14 +62,17 @@ const Gated = Actor.make("CronGated", {
   key: Schema.String,
   api: { Open, Peek },
   internal: { Beat },
-  policy: { createdBy: Open, cron: { "* * * * *": Beat } },
+
+  createdBy: Open,
+  schedules: { "* * * * *": Beat },
 })
 
 const Secondly = Actor.make("CronSecondly", {
   key: Schema.String,
   api: { Open },
   internal: { Beat },
-  policy: { cron: { "* * * * * *": Beat } },
+
+  schedules: { "* * * * * *": Beat },
 })
 
 const Pulse = Actor.command("Pulse")
@@ -79,7 +82,8 @@ const Beacon = Actor.make("CronBeacon", {
   state: Actor.state({ pulses: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: {},
   internal: { Pulse },
-  policy: { cron: { "* * * * *": Pulse } },
+
+  schedules: { "* * * * *": Pulse },
 })
 
 const Gap = Actor.command("Gap")
@@ -104,13 +108,13 @@ const Zoned = Actor.make("CronZoned", {
   api: { Open },
   internal: { Gap, Fold, FoldUtc, Interval },
   policy: {
-    cron: {
-      "CRON_TZ=America/New_York 30 2 * * *": Gap,
-      "CRON_TZ=America/New_York 30 1 * * *": Fold,
-      "30 1 * * *": FoldUtc,
-      "@every 5 minutes": Interval,
-    },
-    cronSkipIfOlderThan: "1 hour",
+    maxScheduleLag: "1 hour",
+  },
+  schedules: {
+    "CRON_TZ=America/New_York 30 2 * * *": Gap,
+    "CRON_TZ=America/New_York 30 1 * * *": Fold,
+    "30 1 * * *": FoldUtc,
+    "@every 5 minutes": Interval,
   },
 })
 

@@ -34,22 +34,22 @@ export const restoreFixture = (): RestoreFixture => ({
   versions: { v1: 0, v2: 0, receives: 0 },
 })
 
-class Charge extends Actor.effect<Charge>()("Charge", {
-  input: { amount: Schema.Int },
+const Charge = Actor.job("Charge", {
+  payload: { amount: Schema.Int },
   success: Schema.Int,
-}) {}
-
-const Deposit = Actor.command("Deposit", { input: Schema.Int, output: Schema.Int })
-
-const Transfer = Actor.command("Transfer", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
-const Bill = Actor.command("Bill", { input: Schema.Int })
+const Deposit = Actor.command("Deposit", { payload: Schema.Int, success: Schema.Int })
 
-const Receive = Actor.command("Receive", { input: Schema.Int })
+const Transfer = Actor.command("Transfer", {
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+})
 
-const Charged = Actor.command("Charged", { input: Schema.Int })
+const Bill = Actor.command("Bill", { payload: Schema.Int })
+
+const Receive = Actor.command("Receive", { payload: Schema.Int })
+
+const Charged = Actor.command("Charged", { payload: Schema.Int })
 
 const Vault = Actor.make("Vault", {
   key: Schema.String,
@@ -57,10 +57,9 @@ const Vault = Actor.make("Vault", {
     total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
     charged: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [Charge],
+  jobs: { Charge: { job: Charge, retry: { times: 3 }, onSuccess: Charged } },
   api: { Deposit, Transfer, Bill },
   internal: { Receive, Charged },
-  policy: { effects: { Charge: { retry: { times: 3 }, onSuccess: Charged } } },
 })
 
 export const restoreLayer = (fixture: RestoreFixture) =>
@@ -79,7 +78,7 @@ export const restoreLayer = (fixture: RestoreFixture) =>
           yield* (yield* Vault.intents(to)).Receive(amount).pipe(Intent.after("1 minute"))
         }),
         Bill: Effect.fnUntraced(function* (amount: number) {
-          yield* (yield* Vault.Turn).perform(Charge.make({ amount }))
+          yield* (yield* Vault.Turn).enqueue(Charge.make({ amount }))
         }),
         Receive: Effect.fnUntraced(function* (amount: number) {
           const turn = yield* Vault.Turn
@@ -92,11 +91,11 @@ export const restoreLayer = (fixture: RestoreFixture) =>
         }),
       }),
     ),
-    Vault.toEffectLayer(
+    Vault.toJobLayer(
       Effect.succeed({
         Charge: Effect.fnUntraced(function* ({ amount }) {
           const exec = yield* Vault.Executor
-          fixture.charges.push({ effectId: exec.effectId, attempt: exec.attempt })
+          fixture.charges.push({ effectId: exec.jobId, attempt: exec.attempt })
 
           if (fixture.hold) return yield* Effect.never
 
@@ -136,13 +135,13 @@ const session = <A, E>(
 
 const vaultOf = (tenant: string, id: string) => Vault.get(id).pipe(Actor.tenant(tenant))
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
 const Forward = Actor.command("Forward", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
-const Credit = Actor.command("Credit", { input: Schema.Int })
+const Credit = Actor.command("Credit", { payload: Schema.Int })
 
 const Account = Actor.make("RollingAccount", {
   key: Schema.String,

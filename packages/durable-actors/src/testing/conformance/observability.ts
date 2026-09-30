@@ -22,51 +22,49 @@ import { SpanNames } from "../../runtime/telemetry/spans.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
-class Ticked extends Actor.Event<Ticked>()("ObsTicked", { n: Schema.Int }) {}
+const Ticked = Actor.event("ObsTicked", { n: Schema.Int })
 
-class Ping extends Actor.effect<Ping>()("ObsPing", { input: { body: Schema.String } }) {}
+const Ping = Actor.job("ObsPing", { payload: { body: Schema.String } })
 
-class Orphan extends Actor.effect<Orphan>()("ObsOrphan", { input: { body: Schema.String } }) {}
+const Orphan = Actor.job("ObsOrphan", { payload: { body: Schema.String } })
 
-const Bump = Actor.command("Bump", { input: Schema.Int, output: Schema.Int })
+const Bump = Actor.command("Bump", { payload: Schema.Int, success: Schema.Int })
 
 const Break = Actor.command("Break")
 
-const Send = Actor.command("Send", { input: Schema.String })
+const Send = Actor.command("Send", { payload: Schema.String })
 
-const Perform = Actor.command("Perform", { input: Schema.String })
+const Perform = Actor.command("Perform", { payload: Schema.String })
 
-const Strand = Actor.command("Strand", { input: Schema.String })
+const Strand = Actor.command("Strand", { payload: Schema.String })
 
 const Orphanage = Actor.make("ObsOrphanage", {
   key: Schema.String,
-  effects: [Orphan],
+  jobs: { ObsOrphan: { job: Orphan, retry: { times: 0 } } },
   api: { Strand },
-  policy: { effects: { ObsOrphan: { retry: { times: 0 } } } },
 })
 
-const Receive = Actor.command("Receive", { input: Schema.String })
+const Receive = Actor.command("Receive", { payload: Schema.String })
 
 const Author = Actor.make("ObsAuthor", {
   key: Schema.String,
   state: Actor.state({ n: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Ticked],
-  effects: [Ping],
+  jobs: { ObsPing: { job: Ping, retry: { times: 0 } } },
   api: { Bump, Break, Send, Perform },
   policy: {
     keepEvents: "1 hour",
     holdEventsForSubscribers: "1 hour",
-    effects: { ObsPing: { retry: { times: 0 } } },
   },
 })
 
 const TickDelivery = Actor.Delivery({ source: Author, events: [Ticked] })
 
-const OnTick = Actor.command("OnTick", { input: TickDelivery })
+const OnTick = Actor.command("OnTick", { payload: TickDelivery })
 
 const Watch = Actor.subscription("ObsWatch", {
-  source: Author,
-  events: [Ticked],
+  delivery: Actor.Delivery({ source: Author, events: [Ticked] }),
+
   handler: OnTick,
   route: () => "w1",
 })
@@ -99,15 +97,15 @@ const live = Layer.mergeAll(
         yield* (yield* Inbox.intents(to)).Receive("hello")
       }),
       Perform: Effect.fnUntraced(function* (body: string) {
-        yield* (yield* Author.Turn).perform(Ping.make({ body }))
+        yield* (yield* Author.Turn).enqueue(Ping.make({ body }))
       }),
     }),
   ),
-  Author.toEffectLayer(Effect.succeed({ ObsPing: () => Effect.void })),
+  Author.toJobLayer(Effect.succeed({ ObsPing: () => Effect.void })),
   Orphanage.toLayer(
     Effect.succeed({
       Strand: Effect.fnUntraced(function* (body: string) {
-        yield* (yield* Orphanage.Turn).perform(Orphan.make({ body }))
+        yield* (yield* Orphanage.Turn).enqueue(Orphan.make({ body }))
       }),
     }),
   ),

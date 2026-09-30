@@ -14,7 +14,7 @@ import { Actor, ActorError, Actors, MailboxFull, RunnerAtCapacity } from "../../
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
-const Touch = Actor.command("Touch", { output: Schema.Finite })
+const Touch = Actor.command("Touch", { success: Schema.Finite })
 
 const Hold = Actor.command("Hold")
 

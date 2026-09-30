@@ -10,11 +10,11 @@ import { Actors, Database } from "../../../../runtime/index.ts"
 import { RunnerWiring } from "../../../../runtime/layer.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 
-const Increment = Actor.command("Increment", { input: Schema.Int })
+const Increment = Actor.command("Increment", { payload: Schema.Int })
 
-const Add = Actor.command("Add", { input: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int })
 
-const Send = Actor.command("Send", { input: Schema.String })
+const Send = Actor.command("Send", { payload: Schema.String })
 
 const count = Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) })
 

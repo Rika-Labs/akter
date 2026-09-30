@@ -5,12 +5,12 @@ import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceExpect } from "../conformance.ts"
 import { clusterSimulationSeeds, type ClusterSimulationOptions } from "../simulate-cluster.ts"
 
-const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
-const Credit = Actor.command("Credit", { input: Schema.Int })
+const Credit = Actor.command("Credit", { payload: Schema.Int })
 
 const Pay = Actor.command("Pay", {
-  input: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
+  payload: Schema.Struct({ to: Schema.String, amount: Schema.Int }),
 })
 
 const total = Actor.state({ total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) })

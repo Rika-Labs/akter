@@ -140,11 +140,11 @@ type Order = typeof Order.Type
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
-const Put = Actor.command("Put", { input: Order })
+const Put = Actor.command("Put", { payload: Order })
 
-const Remove = Actor.command("Remove", { input: Schema.String })
+const Remove = Actor.command("Remove", { payload: Schema.String })
 
-const PutThenRefuse = Actor.command("PutThenRefuse", { input: Order, errors: [Refused] })
+const PutThenRefuse = Actor.command("PutThenRefuse", { payload: Order, error: Refused })
 
 /** A tenant-placed actor owning `fleet_orders`. */
 const FleetOrder = Actor.make("FleetOrder", {

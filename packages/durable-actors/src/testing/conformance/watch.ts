@@ -41,10 +41,11 @@ import { pauseReplay, replayedThrough, withReplica } from "./read-your-writes.ts
 import type { Server } from "./http.ts"
 import { preparedForRowLevelSecurity } from "./rls.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
+import { Auth } from "../../runtime/index.ts"
 
-class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
+const Said = Actor.event("Said", { text: Schema.String })
 
-class Aside extends Actor.Event<Aside>()("Aside", {}) {}
+const Aside = Actor.event("Aside", {})
 
 /** The one owned table of `Gauge`, created by `watchLayer` when it is missing. */
 export const watchRows = Actor.table(
@@ -82,37 +83,37 @@ export interface WatchFixture {
 
 export const watchFixture = (): WatchFixture => ({ runs: new Map(), gate: Effect.void })
 
-const Bump = Actor.command("Bump", { input: Schema.Finite })
+const Bump = Actor.command("Bump", { payload: Schema.Finite })
 
-const Say = Actor.command("Say", { input: Schema.String })
+const Say = Actor.command("Say", { payload: Schema.String })
 
 const Glance = Actor.command("Glance")
 
-const Label = Actor.command("Label", { input: Schema.String })
+const Label = Actor.command("Label", { payload: Schema.String })
 
-const Store = Actor.command("Store", { input: Schema.String })
+const Store = Actor.command("Store", { payload: Schema.String })
 
 const Idle = Actor.command("Idle")
 
-const Total = Actor.query("Total", { output: Schema.Finite, watch: true })
+const Total = Actor.query("Total", { success: Schema.Finite, watch: true })
 
-const Gated = Actor.query("Gated", { output: Schema.Finite, watch: true })
+const Gated = Actor.query("Gated", { success: Schema.Finite, watch: true })
 
-const Sayings = Actor.query("Sayings", { output: Schema.Array(Schema.String), watch: true })
+const Sayings = Actor.query("Sayings", { success: Schema.Array(Schema.String), watch: true })
 
-const Retained = Actor.query("Retained", { output: Schema.Int, watch: true })
+const Retained = Actor.query("Retained", { success: Schema.Int, watch: true })
 
-const Labels = Actor.query("Labels", { output: Schema.Array(Schema.String), watch: true })
+const Labels = Actor.query("Labels", { success: Schema.Array(Schema.String), watch: true })
 
-const Stored = Actor.query("Stored", { output: Schema.String, watch: true })
+const Stored = Actor.query("Stored", { success: Schema.String, watch: true })
 
-const Asides = Actor.query("Asides", { output: Schema.Int, watch: true })
+const Asides = Actor.query("Asides", { success: Schema.Int, watch: true })
 
-const Grouped = Actor.query("Grouped", { output: Schema.Int, watch: true })
+const Grouped = Actor.query("Grouped", { success: Schema.Int, watch: true })
 
-const Plain = Actor.query("Plain", { output: Schema.Finite })
+const Plain = Actor.query("Plain", { success: Schema.Finite })
 
-const Flood = Actor.stream("Flood", { output: Schema.Finite })
+const Flood = Actor.stream("Flood", { success: Schema.Finite })
 
 const gaugeState = Actor.state({
   count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -535,7 +536,7 @@ const post = (
 ) => Effect.flatMap(server.mint(), (key) => server.send(path, { token, key, body: { text: "a" } }))
 
 /** `tenant:subject:expiresAtMs`, so a credential can expire while a watch is open. */
-const expiring = Actor.auth.make((request) =>
+const expiring = Auth.make((request) =>
   Effect.gen(function* () {
     const header = Option.getOrUndefined(HttpHeaders.get(request.headers, "authorization")) ?? ""
     const match = /^Bearer ([^:]+):([^:]+):(\d+)$/.exec(header)

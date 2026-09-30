@@ -11,17 +11,17 @@ const log = Actor.blob("log")
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
 /** Appends one chunk and returns the entry's length as the turn reads it. */
-const Append = Actor.command("Append", { input: Schema.String, output: Schema.Int })
+const Append = Actor.command("Append", { payload: Schema.String, success: Schema.Int })
 
 const AppendThenRefuse = Actor.command("AppendThenRefuse", {
-  input: Schema.String,
-  output: Schema.Int,
-  errors: [Refused],
+  payload: Schema.String,
+  success: Schema.Int,
+  error: Refused,
 })
 
-class Appended extends Actor.Event<Appended>()("Appended", { text: Schema.String }) {}
+const Appended = Actor.event("Appended", { text: Schema.String })
 
-const Note = Actor.command("Note", { input: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String })
 
 const Reader = Actor.make("ProcessBlobReader", {
   key: Schema.String,

@@ -7,27 +7,27 @@ import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 
-class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+const Noted = Actor.event("Noted", { text: Schema.String })
 
 class Entry extends Schema.TaggedClass<Entry>()("Entry", {
   cursor: Schema.String,
   text: Schema.String,
 }) {}
 
-const Note = Actor.command("Note", { input: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String })
 
 /** Committed notes after `after`, then each new one as it commits. */
 const Notes = Actor.stream("Notes", {
-  input: Schema.Struct({ after: Schema.optional(Schema.String) }),
-  output: Entry,
-  errors: [UnknownCursor, RetentionGap],
+  payload: Schema.Struct({ after: Schema.optional(Schema.String) }),
+  success: Entry,
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 /** Emits `count` elements, then ends by itself. */
-const Count = Actor.stream("Count", { input: Schema.Finite, output: Schema.Finite })
+const Count = Actor.stream("Count", { payload: Schema.Finite, success: Schema.Finite })
 
 /** Emits forever, as fast as the subscriber takes it. */
-const Flood = Actor.stream("Flood", { output: Schema.Finite })
+const Flood = Actor.stream("Flood", { success: Schema.Finite })
 
 const Journal = Actor.make("StreamJournal", {
   key: Schema.String,

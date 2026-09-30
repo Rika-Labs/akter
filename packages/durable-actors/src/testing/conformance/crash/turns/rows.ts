@@ -12,19 +12,19 @@ const entries = Actor.table(pgTable("crash_entries", { id: text("id").primaryKey
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
 const Append = Actor.command("Append", {
-  input: Schema.String,
-  output: Schema.Int,
+  payload: Schema.String,
+  success: Schema.Int,
 })
 
 const AppendThenRefuse = Actor.command("AppendThenRefuse", {
-  input: Schema.String,
-  output: Schema.Int,
-  errors: [Refused],
+  payload: Schema.String,
+  success: Schema.Int,
+  error: Refused,
 })
 
-class Appended extends Actor.Event<Appended>()("Appended", { id: Schema.String }) {}
+const Appended = Actor.event("Appended", { id: Schema.String })
 
-const Note = Actor.command("Note", { input: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String })
 
 const Reader = Actor.make("ProcessJournalReader", {
   key: Schema.String,

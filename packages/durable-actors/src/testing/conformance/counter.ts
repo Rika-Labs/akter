@@ -26,9 +26,9 @@ export interface CounterFixture {
 
 class Rejected extends Schema.TaggedError<Rejected>()("Rejected", { amount: Schema.Finite }) {}
 
-const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
+const Increment = Actor.command("Increment", { payload: Schema.Finite, success: Schema.Finite })
 
-const Reject = Actor.command("Reject", { input: Schema.Finite, errors: [Rejected] })
+const Reject = Actor.command("Reject", { payload: Schema.Finite, error: Rejected })
 
 const Nested = Actor.command("Nested")
 
@@ -40,12 +40,12 @@ const Steal = Actor.command("Steal")
 
 class Forbidden extends Schema.TaggedError<Forbidden>()("Forbidden", { below: Schema.Finite }) {}
 
-const Count = Actor.query("Count", { output: Schema.Finite })
+const Count = Actor.query("Count", { success: Schema.Finite })
 
 const AtLeast = Actor.query("AtLeast", {
-  input: Schema.Finite,
-  output: Schema.Finite,
-  errors: [Forbidden],
+  payload: Schema.Finite,
+  success: Schema.Finite,
+  error: Forbidden,
 })
 
 const Counter = Actor.make("Counter", {

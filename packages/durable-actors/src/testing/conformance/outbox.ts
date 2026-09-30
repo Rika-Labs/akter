@@ -25,7 +25,7 @@ const Delivery = Schema.Struct({ body: Schema.String, commandId: Schema.String, 
 
 const InboxLog = Schema.Struct({ log: Schema.optional(Schema.Array(Delivery)) })
 
-const Receive = Actor.command("Receive", { input: Schema.String })
+const Receive = Actor.command("Receive", { payload: Schema.String })
 
 const Touch = Actor.command("Touch")
 
@@ -42,14 +42,14 @@ class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
 const Message = Schema.Struct({ to: Schema.String, body: Schema.String })
 
-const Send = Actor.command("Send", { input: Message })
+const Send = Actor.command("Send", { payload: Message })
 
-const SendThenRefuse = Actor.command("SendThenRefuse", { input: Message, errors: [Refused] })
+const SendThenRefuse = Actor.command("SendThenRefuse", { payload: Message, error: Refused })
 
-const SendThenDie = Actor.command("SendThenDie", { input: Message })
+const SendThenDie = Actor.command("SendThenDie", { payload: Message })
 
 const Schedule = Actor.command("Schedule", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     ...Message.fields,
     afterMs: Schema.optional(Schema.Int),
     atMs: Schema.optional(Schema.Int),
@@ -57,14 +57,14 @@ const Schedule = Actor.command("Schedule", {
   }),
 })
 
-const Cancel = Actor.command("Cancel", { input: Schema.String })
+const Cancel = Actor.command("Cancel", { payload: Schema.String })
 
 const CancelThenRefuse = Actor.command("CancelThenRefuse", {
-  input: Schema.String,
-  errors: [Refused],
+  payload: Schema.String,
+  error: Refused,
 })
 
-const Escape = Actor.command("Escape", { input: Schema.String })
+const Escape = Actor.command("Escape", { payload: Schema.String })
 
 const Steal = Actor.command("Steal")
 

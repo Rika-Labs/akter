@@ -17,23 +17,23 @@ export const eventsFixture = (): EventsFixture => ({
   duringQuery: Effect.void,
 })
 
-class Posted extends Actor.Event<Posted>()("Posted", { body: Schema.String }) {}
+const Posted = Actor.event("Posted", { body: Schema.String })
 
-class Archived extends Actor.Event<Archived>()("Archived", {}) {}
+const Archived = Actor.event("Archived", {})
 
-class Stray extends Actor.Event<Stray>()("Posted", { body: Schema.Finite }) {}
+const Stray = Actor.event("Posted", { body: Schema.Finite })
 
 class Closed extends Schema.TaggedError<Closed>()("Closed", {}) {}
 
-const Post = Actor.command("Post", { input: Schema.String, output: Schema.String })
+const Post = Actor.command("Post", { payload: Schema.String, success: Schema.String })
 
 const Archive = Actor.command("Archive")
 
-const PostThenFail = Actor.command("PostThenFail", { input: Schema.String, errors: [Closed] })
+const PostThenFail = Actor.command("PostThenFail", { payload: Schema.String, error: Closed })
 
-const PostThenDie = Actor.command("PostThenDie", { input: Schema.String })
+const PostThenDie = Actor.command("PostThenDie", { payload: Schema.String })
 
-const PostCaught = Actor.command("PostCaught", { input: Schema.String })
+const PostCaught = Actor.command("PostCaught", { payload: Schema.String })
 
 const Leak = Actor.command("Leak")
 
@@ -49,21 +49,21 @@ const Entry = Schema.Struct({
 })
 
 const History = Actor.query("History", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     after: Schema.optional(Schema.String),
     archived: Schema.optional(Schema.Boolean),
   }),
-  output: Schema.Array(Entry),
-  errors: [UnknownCursor, RetentionGap],
+  success: Schema.Array(Entry),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 const Snapshot = Actor.query("Snapshot", {
-  output: Schema.Struct({
+  success: Schema.Struct({
     cursor: Schema.String,
     first: Schema.Array(Schema.String),
     second: Schema.Array(Schema.String),
   }),
-  errors: [UnknownCursor, RetentionGap],
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 /** @internal */
