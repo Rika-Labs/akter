@@ -70,7 +70,7 @@ it("sends the latest frame at most once per progressEvery and flushes it on clos
         [3, 3],
         [4, 4],
       ])
-      expect(sent[0]).toMatchObject({ effectId: "a", attempt: 1, leaseUntil: 60_000 })
+      expect(sent[0]).toMatchObject({ jobId: "a", attempt: 1, leaseUntil: 60_000 })
     }),
   ))
 
@@ -124,7 +124,7 @@ it("caps a runner's progress messages per second across attempts and still sends
         }),
       )
 
-      expect(sent.slice(4).map((message) => [message.effectId, message.frame[0]])).toEqual([
+      expect(sent.slice(4).map((message) => [message.jobId, message.frame[0]])).toEqual([
         ["a", 2],
         ["b", 2],
         ["c", 2],
@@ -146,7 +146,7 @@ it("closes a slot without waiting on or failing with its sink", () =>
             send,
             closed: (message) =>
               Effect.sync(() => {
-                closed.push(message.effectId)
+                closed.push(message.jobId)
               }),
           }),
         )
@@ -247,7 +247,7 @@ it("spends no token on a wakeup whose frame was already sent", () =>
           const b = yield* pool.open(attempt("b", 250))
           yield* b.offer(frame(1))
           yield* TestClock.adjust(0)
-          expect(sent.map((message) => [message.effectId, message.seq])).toEqual([
+          expect(sent.map((message) => [message.jobId, message.seq])).toEqual([
             ["a", 1],
             ["a", 3],
             ["b", 1],
@@ -276,7 +276,7 @@ it("closes a slot and its job within the bound while a send ignores interruption
             ),
           closed: (message) =>
             Effect.sync(() => {
-              closed.push(message.effectId)
+              closed.push(message.jobId)
             }),
         }),
       )

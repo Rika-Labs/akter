@@ -108,7 +108,7 @@ export const connectionOf = ({
       member.progress === undefined
         ? undefined
         : {
-            effects: new Set(member.progress.jobs.map((job) => job.tag)),
+            jobs: new Set(member.progress.jobs.map((job) => job.tag)),
             to: member.progress.to,
           },
     hasResync: entry.resync !== undefined,

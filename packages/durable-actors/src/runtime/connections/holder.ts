@@ -222,7 +222,7 @@ interface Held {
   resyncs: Array<number>
   loop: Fiber.Fiber<void> | undefined
   /**
-   * The undelivered progress frame of each effect, newest only. Its place in
+   * The undelivered progress frame of each job, newest only. Its place in
    * `outbound` is a marker that takes whatever frame is here when the client
    * reaches it, so newer frames replace older ones in place.
    */
@@ -277,7 +277,7 @@ const ended = (cause: SessionEnded["cause"], resync: boolean, retryAfterMs?: num
  * Buffering: a member frame evicts buffered progress oldest first before the
  * connection counts as a slow consumer. A newer progress frame that would not fit
  * is dropped and the waiting one stays. A progress marker delivers the newest
- * frame of its effect, or nothing if it was discarded.
+ * frame of its job, or nothing if it was discarded.
  *
  * Owner ordering: an owner acknowledges each message before sending the next, so
  * the first message a record sees follows everything its connections could have
@@ -389,11 +389,11 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       if (deleteOwnRow) yield* deleteRow(connection)
     })
 
-  const discardProgress = (connection: Held, effectId: string) => {
-    const pending = connection.progress.get(effectId)
+  const discardProgress = (connection: Held, jobId: string) => {
+    const pending = connection.progress.get(jobId)
 
     if (pending === undefined) return
-    connection.progress.delete(effectId)
+    connection.progress.delete(jobId)
     connection.outFrames -= 1
     connection.outBytes -= pending.bytes
     heldBytes -= pending.bytes
@@ -405,7 +405,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     heldBytes + bytes <= MAX_HELD_BYTES
 
   /**
-   * Buffers a progress frame. A newer frame of the same effect replaces the
+   * Buffers a progress frame. A newer frame of the same job replaces the
    * waiting one in place; one that does not fit is dropped. Progress never
    * ends a session.
    */
@@ -413,7 +413,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     Effect.gen(function* () {
       if (connection.ended || connection.resync !== undefined) return
       const bytes = utf8.encode(message.frame).byteLength
-      const waiting = connection.progress.get(message.effectId)
+      const waiting = connection.progress.get(message.jobId)
 
       if (waiting !== undefined) {
         if (
@@ -430,7 +430,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       }
 
       if (!fits(connection, bytes)) return
-      connection.progress.set(message.effectId, { message, bytes })
+      connection.progress.set(message.jobId, { message, bytes })
       connection.outFrames += 1
       connection.outBytes += bytes
       heldBytes += bytes
@@ -443,9 +443,9 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const bytes = ClientMessage.guards.Frame(message) ? utf8.encode(message.frame).byteLength : 0
 
       if (!control)
-        for (const effectId of connection.progress.keys()) {
+        for (const jobId of connection.progress.keys()) {
           if (fits(connection, bytes)) break
-          discardProgress(connection, effectId)
+          discardProgress(connection, jobId)
         }
 
       if (
@@ -464,10 +464,10 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
   const takenProgress = (connection: Held, marker: ProgressMessage) =>
     Effect.sync((): Option.Option<ClientMessage> => {
-      const pending = connection.progress.get(marker.effectId)
+      const pending = connection.progress.get(marker.jobId)
 
       if (connection.ended || pending === undefined) return Option.none()
-      discardProgress(connection, marker.effectId)
+      discardProgress(connection, marker.jobId)
 
       return Option.some(pending.message)
     })
@@ -543,7 +543,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
       if (generation > actor.generation) {
         for (const connection of actor.connections.values())
-          for (const effectId of connection.progress.keys()) discardProgress(connection, effectId)
+          for (const jobId of connection.progress.keys()) discardProgress(connection, jobId)
 
         if (actor.generation > 0n) yield* ownerLost(actor)
         actor.generation = generation
@@ -670,8 +670,8 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
                 return pushProgress(
                   connection,
                   ClientMessage.cases.Progress.make({
-                    effect: item.effect,
-                    effectId: item.effectId,
+                    job: item.job,
+                    jobId: item.jobId,
                     attempt: item.attempt,
                     seq: item.seq,
                     frame: item.frame,
@@ -683,7 +683,7 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
           ProgressEnd: (item) =>
             Effect.sync(() => {
               for (const connection of actor.connections.values())
-                discardProgress(connection, item.effectId)
+                discardProgress(connection, item.jobId)
             }),
         })
 

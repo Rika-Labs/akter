@@ -37,12 +37,12 @@ export interface Connection<
 
 /**
  * The jobs whose executor progress a connection member receives, and to
- * whom: `"performer"` (the default) only connections whose caller has the
+ * whom: `"principal"` (the default) only connections whose caller has the
  * enqueueing turn's principal, `"all"` every open connection of the member.
  */
 interface ConnectionProgress<Jobs extends ProgressJob> {
   readonly jobs: ReadonlyArray<Jobs>
-  readonly to: "performer" | "all"
+  readonly to: "principal" | "all"
 }
 
 /** Any connection member, whatever its schemas. */
@@ -89,7 +89,7 @@ const make = <
     readonly stampCursor?: boolean
     readonly progress?: {
       readonly jobs: ReadonlyArray<Jobs>
-      readonly to?: "performer" | "all"
+      readonly to?: "principal" | "all"
     }
   },
 ): Connection<Tag, PayloadOf<P>, Server, Client, Session, Error, Jobs> => {
@@ -113,7 +113,7 @@ const make = <
     progress:
       options.progress === undefined
         ? undefined
-        : { jobs: options.progress.jobs, to: options.progress.to ?? "performer" },
+        : { jobs: options.progress.jobs, to: options.progress.to ?? "principal" },
   }
 }
 
