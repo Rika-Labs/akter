@@ -18,11 +18,11 @@ export const ShipmentState = Actor.state({
  * `Open`, `Release` and `Cancel`, delivered by the relay.
  */
 export const Open = Actor.command("Open", {
-  input: Schema.Struct({
+  payload: {
     order: Schema.String,
     package: Schema.String,
     skus: Schema.Array(Schema.String),
-  }),
+  },
 })
 
 /** Marks a pending shipment ready. */
@@ -33,7 +33,7 @@ export const Cancel = Actor.command("Cancel")
 
 /** The shipment's order, package, SKUs and status. */
 export const Tracking = Actor.query("Tracking", {
-  output: Schema.Struct({
+  success: Schema.Struct({
     order: Schema.String,
     package: Schema.String,
     skus: Schema.Array(Schema.String),
@@ -51,5 +51,5 @@ export const Shipment = Actor.make("Shipment", {
   access: shopper,
   api: { Tracking },
   internal: { Open, Release, Cancel },
-  policy: { createdBy: Open },
+  createdBy: Open,
 })

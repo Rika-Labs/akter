@@ -32,32 +32,32 @@ export const invoicesDdl = `CREATE TABLE IF NOT EXISTS billing_invoices (
   PRIMARY KEY (routing_key, tenant_id, actor_id, id))`
 
 /** An invoice was issued for the period, in cents. */
-export class InvoiceIssued extends Actor.Event<InvoiceIssued>()("InvoiceIssued", {
+export const InvoiceIssued = Actor.event("InvoiceIssued", {
   invoiceId: Schema.String,
   amountCents: Schema.Int,
-}) {}
+})
 
 /** An invoice was paid after `attempts` charges. */
-export class InvoicePaid extends Actor.Event<InvoicePaid>()("InvoicePaid", {
+export const InvoicePaid = Actor.event("InvoicePaid", {
   invoiceId: Schema.String,
   attempts: Schema.Int,
-}) {}
+})
 
 /** An invoice stayed unpaid after `attempts` charges. */
-export class InvoiceFailed extends Actor.Event<InvoiceFailed>()("InvoiceFailed", {
+export const InvoiceFailed = Actor.event("InvoiceFailed", {
   invoiceId: Schema.String,
   attempts: Schema.Int,
-}) {}
+})
 
 /** A new card reached the provider; `version` counts the account's cards. */
-export class CardUpdated extends Actor.Event<CardUpdated>()("CardUpdated", {
+export const CardUpdated = Actor.event("CardUpdated", {
   version: Schema.Int,
-}) {}
+})
 
 /** Attaches a card token to the provider's customer after the turn commits. */
-export class AttachCard extends Actor.effect<AttachCard>()("AttachCard", {
-  input: { token: Schema.String },
-}) {}
+export const AttachCard = Actor.job("AttachCard", {
+  payload: { token: Schema.String },
+})
 
 /** An account's billing status. */
 export const Status = Schema.Literals(["active", "past_due", "cancelled"])
@@ -93,19 +93,25 @@ export const ChargeRequest = Schema.Struct({ invoiceId: Schema.String, amountCen
  * three days, or less if the customer adds a newer card first.
  */
 export const Collect = Actor.workflow("Collect", {
-  input: ChargeRequest.fields,
-  output: Schema.Literals(["paid", "failed"]),
+  payload: ChargeRequest.fields,
+  success: Schema.Literals(["paid", "failed"]),
   key: ({ invoiceId }) => invoiceId,
 })
 
 /** Workflow step: the first charge. */
-export const Charge = Collect.step("charge", { input: ChargeRequest, success: ChargeOutcome })
+export const Charge = Collect.step("charge", { payload: ChargeRequest, success: ChargeOutcome })
 
 /** Workflow step: the first retry. */
-export const FirstRetry = Collect.step("retry-1", { input: ChargeRequest, success: ChargeOutcome })
+export const FirstRetry = Collect.step("retry-1", {
+  payload: ChargeRequest,
+  success: ChargeOutcome,
+})
 
 /** Workflow step: the second retry. */
-export const SecondRetry = Collect.step("retry-2", { input: ChargeRequest, success: ChargeOutcome })
+export const SecondRetry = Collect.step("retry-2", {
+  payload: ChargeRequest,
+  success: ChargeOutcome,
+})
 
 /** Waits for a card newer than the one that was declined, before the first retry. */
 export const FirstCard = Collect.wait("card-1", CardUpdated)
@@ -121,15 +127,15 @@ export const Settlement = Schema.Struct({
 })
 
 /** Workflow step that reports the settlement to the account. */
-export const Report = Collect.step("report", { input: Settlement })
+export const Report = Collect.step("report", { payload: Settlement })
 
 /** Creates the account on a plan with its first card. */
 export const Subscribe = Actor.command("Subscribe", {
-  input: Schema.Struct({ plan: Plan, card: Schema.String }),
+  payload: { plan: Plan, card: Schema.String },
 })
 
 /** Attaches a new card token, which a waiting collection picks up. */
-export const UpdateCard = Actor.command("UpdateCard", { input: Schema.String })
+export const UpdateCard = Actor.command("UpdateCard", { payload: Schema.String })
 
 /** Cancels the account; its cron schedule keeps ticking but issues nothing. */
 export const Cancel = Actor.command("Cancel")
@@ -139,11 +145,11 @@ export const Cancel = Actor.command("Cancel")
  * its owner through an ordinary handle; the account's `access` refuses it to every
  * external caller, as it does `Collect`.
  */
-export const Settle = Actor.command("Settle", { input: Settlement })
+export const Settle = Actor.command("Settle", { payload: Settlement })
 
 /** The account's plan, status, period and card version. */
 export const Summary = Actor.query("Summary", {
-  output: Schema.Struct({
+  success: Schema.Struct({
     plan: Plan,
     status: Status,
     period: Schema.Int,
@@ -153,7 +159,7 @@ export const Summary = Actor.query("Summary", {
 
 /** The account's invoices, oldest period first. */
 export const Invoices = Actor.query("Invoices", {
-  output: Schema.Array(
+  success: Schema.Array(
     Schema.Struct({
       id: Schema.String,
       period: Schema.Int,
@@ -172,20 +178,17 @@ export const CardAttached = Actor.command("CardAttached")
 
 /**
  * A subscription account that bills itself. `Renew` and `CardAttached` are
- * internal: only System callers (cron and the effect route) reach them.
+ * internal: only System callers (cron and the job route) reach them.
  */
 export const Account = Actor.make("Account", {
   key: AccountId,
   state: AccountState,
   tables: [invoices],
   events: [InvoiceIssued, InvoicePaid, InvoiceFailed, CardUpdated],
-  effects: [AttachCard],
+  jobs: { AttachCard: { job: AttachCard, onSuccess: CardAttached } },
   api: { Subscribe, UpdateCard, Cancel, Settle, Summary, Invoices, Collect },
   internal: { Renew, CardAttached },
   access: accountAccess,
-  policy: {
-    createdBy: Subscribe,
-    cron: { "0 0 1 * *": Renew },
-    effects: { AttachCard: { onSuccess: CardAttached } },
-  },
+  createdBy: Subscribe,
+  schedules: { "0 0 1 * *": Renew },
 })

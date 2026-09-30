@@ -1,10 +1,5 @@
-import {
-  Actor,
-  type Authenticated,
-  type AuthProvider,
-  Unauthorized,
-  User,
-} from "@durable-actors/core"
+import { Unauthorized, User } from "@durable-actors/core"
+import { Auth, type Authenticated, type AuthProvider } from "@durable-actors/core/runtime"
 import { Clock, Duration, Effect, Option, Schema } from "effect"
 import { Headers, type HttpClient } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
@@ -141,7 +136,7 @@ export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) 
     const provider =
       settings === undefined
         ? undefined
-        : Actor.auth.jwt({
+        : Auth.jwt({
             issuer: settings.issuer,
             audience: settings.audience,
             jwks: new URL(settings.jwksUrl),

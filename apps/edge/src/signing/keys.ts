@@ -1,4 +1,5 @@
-import { ASSERTION_TYPE, type AssertionClaims, KEY_REFRESH_TYPE } from "@durable-actors/core"
+import { ASSERTION_TYPE, KEY_REFRESH_TYPE } from "@durable-actors/core"
+import type { AssertionClaims } from "@durable-actors/core/runtime"
 import { Clock, Duration, Effect, Encoding, Ref, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { EdgeOptions, SigningKey } from "../config.ts"

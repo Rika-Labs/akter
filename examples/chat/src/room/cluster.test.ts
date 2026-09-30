@@ -21,7 +21,7 @@ import {
 import { afterAll, expect, it } from "vitest"
 import { threeRunners } from "./cluster.ts"
 import { Appeal, Digest, Presence, Room, RoomId, Thread } from "./contract.ts"
-import { RoomEffects, RoomHandlers, RoomLive } from "./layer.ts"
+import { RoomJobs, RoomHandlers, RoomLive } from "./layer.ts"
 import { ModerationApi, Moderators } from "./moderation.ts"
 
 /** Moderator notifications per appealed message, across every runner. */
@@ -263,7 +263,7 @@ clusterCase(
 /** One moderation call as the provider saw it; `endedAt` stays unset while it runs. */
 interface ModerationCall {
   readonly body: string
-  readonly effectId: string
+  readonly jobId: string
   readonly runner: number
   readonly startedAt: number
   endedAt?: number
@@ -294,7 +294,7 @@ const cappedProvider = (runner: number) =>
       Effect.gen(function* () {
         const call: ModerationCall = {
           body,
-          effectId: idempotencyKey,
+          jobId: idempotencyKey,
           runner,
           startedAt: yield* Clock.currentTimeMillis,
         }
@@ -366,11 +366,11 @@ clusterCase(
 
     yield* eventually(moderated(survivor, 8), "every post's moderation to route")
 
-    const retried = moderationCalls.filter((call) => call.effectId === hung.effectId)
+    const retried = moderationCalls.filter((call) => call.jobId === hung.jobId)
     const afterKill = moderationCalls.filter((call) => call.startedAt >= killedAt)
 
     expect(mostInFlight(moderationCalls)).toBe(2)
-    expect(new Set(moderationCalls.map(({ effectId }) => effectId)).size).toBe(8)
+    expect(new Set(moderationCalls.map(({ jobId }) => jobId)).size).toBe(8)
     expect(moderationCalls).toHaveLength(9)
     expect(retried.map(({ runner }) => runner === hung.runner)).toEqual([true, false])
     expect(mostInFlight(afterKill)).toBe(1)
@@ -378,7 +378,7 @@ clusterCase(
   }),
   {
     actors: RoomHandlers.pipe(Layer.provide(CountingModerators)),
-    runnerActors: (runner) => RoomEffects.pipe(Layer.provide(cappedProvider(runner))),
+    runnerActors: (runner) => RoomJobs.pipe(Layer.provide(cappedProvider(runner))),
     executors: { lease: `${CAP_LEASE_MS} millis` },
   },
 )

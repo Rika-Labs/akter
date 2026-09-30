@@ -34,7 +34,7 @@ export const Left = Schema.TaggedStruct("Left", { connectionId: Schema.String })
  * has no state, events, or tables, and parks between frames.
  */
 export const Live = Actor.connection("Live", {
-  params: Schema.Struct({ color: Schema.String }),
+  payload: { color: Schema.String },
   client: Point,
   server: Schema.Union([Here, Joined, Moved, Left]),
   session: Schema.Struct({ user: Schema.String, color: Schema.String, at: Schema.optional(Point) }),

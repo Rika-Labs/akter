@@ -15,7 +15,7 @@ export const ChargeReceipt = Schema.Struct({ chargeId: Schema.String })
 const Declined = Schema.Struct({ reason: Schema.String })
 
 /**
- * The payment provider. `idempotencyKey` is the effect id: the provider
+ * The payment provider. `idempotencyKey` is the job id: the provider
  * applies at most one charge per key, however many attempts reach it.
  */
 export class Payments extends Context.Service<

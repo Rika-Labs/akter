@@ -44,7 +44,7 @@ const piano = {
 
 const shipment = (id: string) => Shipment.get(id as Parameters<typeof Shipment.get>[0])
 
-/** Ledger keys first seen after `before`: the effect ids of charges this case performed. */
+/** Ledger keys first seen after `before`: the job ids of charges this case enqueued. */
 const newKeys = (before: ReadonlySet<string>) =>
   [...ledger.calls.keys()].filter((key) => !before.has(key))
 
@@ -62,7 +62,7 @@ const settled = Effect.fnUntraced(function* (id: string) {
 
     const pending = yield* test.inspect(order.ref)
 
-    if (summary.status !== "awaiting_payment" && pending.outbox === 0 && pending.effects === 0) {
+    if (summary.status !== "awaiting_payment" && pending.outbox === 0 && pending.jobs === 0) {
       const tracking = yield* Effect.forEach(summary.shipments, (child) =>
         shipment(child).pipe(Effect.flatMap((handle) => handle.Tracking())),
       )
@@ -110,7 +110,7 @@ it("places an order: owned lines, an event, a minted shipment per package, and o
         rows: { order_lines: 3 },
         events: 2,
         outbox: 0,
-        effects: 0,
+        jobs: 0,
       })
 
       for (const child of placed.shipments)

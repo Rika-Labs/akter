@@ -69,7 +69,7 @@ Every call carries a caller: a `User`, `Anonymous`, or a `System` caller. The tr
 ## Where actors run
 
 - **Embedded.** Your process provides `Actors.layer` and calls actors as Effects. The quickstart app runs this way.
-- **Served.** `Actors.serve` exposes public commands, reducers, and queries over HTTP with an OpenAPI document. WebSocket and SSE are not served yet.
+- **Served.** `Actors.serve` exposes public commands, reducers, and queries over HTTP with an OpenAPI document, connections over WebSocket, and feeds, streams, and watches over SSE.
 - **Hosted.** Managed runners are planned, not available.
 
 Today, run one runtime process per database. The [support matrix](../operations/support-matrix.md) lists what has been verified on each backend, and [deploy](deploy.md) covers running in production.

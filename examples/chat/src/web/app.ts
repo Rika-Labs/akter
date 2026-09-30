@@ -53,7 +53,7 @@ const rooms = Room.client({
 
 const room = rooms.get(roomId)
 
-const render = (entry: { readonly cursor: string; readonly event: MessagePosted }) => {
+const render = (entry: { readonly cursor: string; readonly event: typeof MessagePosted.Type }) => {
   const item = document.createElement("li")
   item.dataset.cursor = entry.cursor
   item.textContent = `${entry.event.author}: ${entry.event.body}`

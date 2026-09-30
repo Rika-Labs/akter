@@ -4,18 +4,16 @@ import { AgentId, CodingAgent } from "../coding-agent/contract.ts"
 import { type SandboxInfo, Sandboxes } from "../coding-agent/sandbox.ts"
 import { SandboxReaper, SweepSandboxes } from "./contract.ts"
 
-/** Handlers for `SandboxReaper`; `Sweep` performs a sweep of sandboxes older than 24 hours. */
-export const SandboxReaperCommands = SandboxReaper.toLayer(
-  Effect.succeed({
-    Sweep: Effect.fnUntraced(function* () {
-      yield* (yield* SandboxReaper.Turn).perform(SweepSandboxes.make({ olderThanHours: 24 }))
-    }),
-    Swept: Effect.fnUntraced(function* () {
-      const turn = yield* SandboxReaper.Turn
-      yield* turn.state.set({ sweeps: turn.state.sweeps + 1 })
-    }),
+/** Handlers for `SandboxReaper`; `Sweep` enqueues a sweep of sandboxes older than 24 hours. */
+export const SandboxReaperCommands = SandboxReaper.toLayer({
+  Sweep: Effect.fnUntraced(function* () {
+    yield* (yield* SandboxReaper.Turn).enqueue(SweepSandboxes.make({ olderThanHours: 24 }))
   }),
-)
+  Swept: Effect.fnUntraced(function* () {
+    const turn = yield* SandboxReaper.Turn
+    yield* turn.state.set({ sweeps: turn.state.sweeps + 1 })
+  }),
+})
 
 /**
  * At least once: killing a sandbox that is already gone does nothing, so a
@@ -25,7 +23,7 @@ export const SandboxReaperCommands = SandboxReaper.toLayer(
  *
  * An agent that cannot be asked keeps its sandbox until a later sweep.
  */
-export const SandboxReaperEffects = SandboxReaper.toEffectLayer(
+export const SandboxReaperJobs = SandboxReaper.toJobLayer(
   Effect.gen(function* () {
     const sandboxes = yield* Sandboxes
 
@@ -52,4 +50,4 @@ export const SandboxReaperEffects = SandboxReaper.toEffectLayer(
 )
 
 /** Every handler and executor of the reaper. */
-export const SandboxReaperLive = Layer.mergeAll(SandboxReaperCommands, SandboxReaperEffects)
+export const SandboxReaperLive = Layer.mergeAll(SandboxReaperCommands, SandboxReaperJobs)

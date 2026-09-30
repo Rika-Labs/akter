@@ -51,7 +51,7 @@ const moderated = Effect.fnUntraced(function* (room: { readonly ref: ActorRef },
 
   while ((yield* test.receiptsFor(room.ref, "Moderated")) < posts) yield* Effect.sleep("20 millis")
 
-  while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+  while ((yield* test.inspect(room.ref)).jobs > 0) yield* Effect.sleep("20 millis")
 })
 
 const bytes = new TextEncoder().encode("attachment")
@@ -75,7 +75,7 @@ it("posts a message with its row, blob, event, moderation, and idle timer", () =
         blobs: { attachments: 1 },
         events: 1,
         outbox: 1,
-        effects: 0,
+        jobs: 0,
         state: { reactions: 2 },
       })
     }),
@@ -94,7 +94,7 @@ it("a declared failure commits nothing but its receipt", () =>
         blobs: { attachments: 0 },
         events: 1,
         outbox: 0,
-        effects: 0,
+        jobs: 0,
         receipts: 2,
       })
     }),
@@ -233,7 +233,7 @@ it("retracts a message and settles its moderation call once", () =>
       const id = yield* room.Post({ body: "oops" })
       yield* room.Retract(id)
 
-      while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+      while ((yield* test.inspect(room.ref)).jobs > 0) yield* Effect.sleep("20 millis")
 
       const settled =
         (yield* test.receiptsFor(room.ref, "Moderated")) +

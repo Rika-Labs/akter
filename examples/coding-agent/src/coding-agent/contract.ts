@@ -44,50 +44,50 @@ export const turnsDdl = `CREATE TABLE IF NOT EXISTS agent_turns (
 export const Outcome = Schema.Literals(["replied", "aborted", "failed"])
 
 /** A sandbox was created for the agent. */
-export class SandboxStarted extends Actor.Event<SandboxStarted>()("SandboxStarted", {
+export const SandboxStarted = Actor.event("SandboxStarted", {
   sandboxId: Schema.String,
-}) {}
+})
 
 /** A prompt was accepted as a new turn. */
-export class Prompted extends Actor.Event<Prompted>()("Prompted", {
+export const Prompted = Actor.event("Prompted", {
   turnId: Schema.String,
   text: Schema.String,
-}) {}
+})
 
 /** A turn ended, with its outcome and the reply text (empty unless it replied). */
-export class TurnEnded extends Actor.Event<TurnEnded>()("TurnEnded", {
+export const TurnEnded = Actor.event("TurnEnded", {
   turnId: Schema.String,
   outcome: Outcome,
   text: Schema.String,
-}) {}
+})
 
 /** The agent went idle and its sandbox was paused. */
-export class SandboxPaused extends Actor.Event<SandboxPaused>()("SandboxPaused", {
+export const SandboxPaused = Actor.event("SandboxPaused", {
   sandboxId: Schema.String,
-}) {}
+})
 
 /**
- * Effects touch the sandbox provider after the turn commits, at least once.
+ * Jobs touch the sandbox provider after the turn commits, at least once.
  */
-export class StartSandbox extends Actor.effect<StartSandbox>()("StartSandbox", {
-  input: { repo: Schema.String },
+export const StartSandbox = Actor.job("StartSandbox", {
+  payload: { repo: Schema.String },
   success: Schema.String,
-}) {}
+})
 
 /** A finished reply for one turn. */
 export const Reply = Schema.Struct({ turnId: Schema.String, text: Schema.String })
 
 /** Runs one prompt; the reply streams as progress frames while it is written. */
-export class RunPrompt extends Actor.effect<RunPrompt>()("RunPrompt", {
-  input: { turnId: Schema.String, text: Schema.String, sandboxId: Schema.String },
+export const RunPrompt = Actor.job("RunPrompt", {
+  payload: { turnId: Schema.String, text: Schema.String, sandboxId: Schema.String },
   success: Reply,
   progress: Schema.Struct({ turnId: Schema.String, delta: Schema.String }),
-}) {}
+})
 
 /** Pauses the sandbox; performed by the idle timer. */
-export class PauseSandbox extends Actor.effect<PauseSandbox>()("PauseSandbox", {
-  input: { sandboxId: Schema.String },
-}) {}
+export const PauseSandbox = Actor.job("PauseSandbox", {
+  payload: { sandboxId: Schema.String },
+})
 
 /** The turn currently running. */
 export const ActiveTurn = Schema.Struct({ turnId: Schema.String, text: Schema.String })
@@ -102,22 +102,22 @@ export const AgentState = Actor.state({
 })
 
 /** Boots the agent's sandbox for `repo`; repeating it does nothing. */
-export const Start = Actor.command("Start", { input: Schema.Struct({ repo: Schema.String }) })
+export const Start = Actor.command("Start", { payload: { repo: Schema.String } })
 
 /** Returns the turn id; the reply arrives as a `TurnEnded` event. */
 export const Prompt = Actor.command("Prompt", {
-  input: Schema.Struct({ text: Schema.String }),
-  output: Schema.String,
-  errors: [TurnInProgress],
+  payload: { text: Schema.String },
+  success: Schema.String,
+  error: TurnInProgress,
 })
 
 /** Ends the running turn as aborted; fails with `NoActiveTurn` when none runs. */
-export const Abort = Actor.command("Abort", { errors: [NoActiveTurn] })
+export const Abort = Actor.command("Abort", { error: NoActiveTurn })
 
 /** The latest turns, newest first, up to `limit` (1 to 100). */
 export const Transcript = Actor.query("Transcript", {
-  input: Schema.Struct({ limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) }),
-  output: Schema.Array(
+  payload: { limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) },
+  success: Schema.Array(
     Schema.Struct({
       turnId: Schema.String,
       prompt: Schema.String,
@@ -128,20 +128,20 @@ export const Transcript = Actor.query("Transcript", {
 })
 
 /** The sandbox the agent uses now, if any; the reaper kills only sandboxes no agent uses. */
-export const Sandbox = Actor.query("Sandbox", { output: Schema.NullOr(Schema.String) })
+export const Sandbox = Actor.query("Sandbox", { success: Schema.NullOr(Schema.String) })
 
 /** Implements a task in two turns: one to write it, one to test and commit it. */
 export const Ship = Actor.workflow("Ship", {
-  input: { task: Schema.String },
-  output: Schema.Struct({ turns: Schema.Int, summary: Schema.String }),
-  errors: [TurnFailed],
+  payload: { task: Schema.String },
+  success: Schema.Struct({ turns: Schema.Int, summary: Schema.String }),
+  error: TurnFailed,
 })
 
 /** Workflow step that prompts the agent to write the task. */
 export const Implement = Ship.step("implement", {
-  input: Schema.String,
+  payload: Schema.String,
   success: Schema.String,
-  errors: [TurnInProgress],
+  error: TurnInProgress,
 })
 
 /** Waits for the end of the implementing turn. */
@@ -149,9 +149,9 @@ export const Implemented = Ship.wait("implemented", TurnEnded)
 
 /** Workflow step that prompts the agent to test and commit. */
 export const Verify = Ship.step("verify", {
-  input: Schema.String,
+  payload: Schema.String,
   success: Schema.String,
-  errors: [TurnInProgress],
+  error: TurnInProgress,
 })
 
 /** Waits for the end of the verifying turn. */
@@ -159,18 +159,18 @@ export const Verified = Ship.wait("verified", TurnEnded)
 
 /**
  * Records the started sandbox and runs the turn that was waiting for it. Internal:
- * only the effect routes and the idle timer reach the internal commands.
+ * only the job routes and the idle timer reach the internal commands.
  */
-export const SandboxReady = Actor.command("SandboxReady", { input: Schema.String })
+export const SandboxReady = Actor.command("SandboxReady", { payload: Schema.String })
 
 /** A prompt's reply arrived from the executor. */
-export const Replied = Actor.command("Replied", { input: Reply })
+export const Replied = Actor.command("Replied", { payload: Reply })
 
 /** A prompt exhausted its retries. */
-export const PromptFailed = Actor.command("PromptFailed", { input: Actor.DeadLetter(RunPrompt) })
+export const PromptFailed = Actor.command("PromptFailed", { payload: Actor.DeadLetter(RunPrompt) })
 
 /** Idle timer: pauses the sandbox unless a newer turn has replaced the token. */
-export const Idle = Actor.command("Idle", { input: Schema.Struct({ token: Schema.String }) })
+export const Idle = Actor.command("Idle", { payload: { token: Schema.String } })
 
 /** A piece of the reply as the executor writes it: live, never stored, and lossy under load. */
 export const Delta = Schema.TaggedStruct("Delta", { text: Schema.String })
@@ -184,10 +184,10 @@ export const Ended = Schema.TaggedStruct("Ended", { outcome: Outcome, text: Sche
  * misses deltas still gets the whole reply in `Ended`.
  */
 export const Streaming = Actor.stream("Streaming", {
-  input: Schema.Struct({ turnId: Schema.String }),
-  output: Schema.Union([Delta, Ended]),
-  errors: [UnknownCursor, RetentionGap],
-  progress: { effects: [RunPrompt] },
+  payload: { turnId: Schema.String },
+  success: Schema.Union([Delta, Ended]),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
+  progress: { jobs: [RunPrompt] },
 })
 
 /**
@@ -199,14 +199,17 @@ export const CodingAgent = Actor.make("CodingAgent", {
   state: AgentState,
   tables: [turns],
   events: [SandboxStarted, Prompted, TurnEnded, SandboxPaused],
-  effects: [StartSandbox, RunPrompt, PauseSandbox],
+  jobs: {
+    StartSandbox: { job: StartSandbox, onSuccess: SandboxReady },
+    RunPrompt: {
+      job: RunPrompt,
+      timeout: "10 minutes",
+      onSuccess: Replied,
+      onDeadLetter: PromptFailed,
+    },
+    PauseSandbox: { job: PauseSandbox },
+  },
   api: { Start, Prompt, Abort, Sandbox, Transcript, Ship, Streaming },
   internal: { SandboxReady, Replied, PromptFailed, Idle },
-  policy: {
-    createdBy: Start,
-    effects: {
-      StartSandbox: { onSuccess: SandboxReady },
-      RunPrompt: { timeout: "10 minutes", onSuccess: Replied, onDeadLetter: PromptFailed },
-    },
-  },
+  createdBy: Start,
 })

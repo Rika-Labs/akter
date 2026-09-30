@@ -1,5 +1,5 @@
 /**
- * The chat room served to a browser: Actor.serve under /api, the page at
+ * The chat room served to a browser: Actors.serve under /api, the page at
  * /rooms/<id>?user=<name>, and the same room with @durable-actors/react at
  * /react/rooms/<id>. Presence and live cursors are at /cursors/<doc> and
  * /react/cursors/<doc>, and the room with a persisted offline queue is at
@@ -8,8 +8,7 @@
  *                          # http://localhost:3003/cursors/notes?user=alice
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Actor } from "@durable-actors/core"
-import { Database } from "@durable-actors/core/runtime"
+import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Option } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { actors } from "../app.ts"
@@ -18,7 +17,7 @@ import { CursorLive } from "../cursor/layer.ts"
 import { Room } from "../room/contract.ts"
 import { demoAuth } from "../server.ts"
 
-const api = Actor.serve({ actors: [Room, Cursor], auth: demoAuth, basePath: "/api" })
+const api = Actors.serve({ actors: [Room, Cursor], auth: demoAuth, basePath: "/api" })
 
 const served = CursorLive.pipe(Layer.provideMerge(actors))
 

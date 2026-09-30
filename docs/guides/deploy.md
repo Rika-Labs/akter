@@ -11,7 +11,7 @@ Durable Actors is alpha. Before you deploy, know the limits the [support matrix]
 
 - **Postgres only.** PGlite is for development and tests, one process per data directory. Production PGlite is not supported.
 - **One runtime process per database.** Multi-runner operation has in-process evidence for some features but is not claimed for production.
-- **Embedded or served over HTTP.** `Actors.serve` serves commands, reducers, and queries over HTTP, verified behind Bun's HTTP server on loopback. WebSocket and SSE are not served yet, and no proxy, load balancer, or hosting provider has been verified.
+- **Embedded or served.** `Actors.serve` serves commands, reducers, and queries over HTTP, connections over WebSocket, and feeds, streams, and watches over SSE. These transports are verified behind Bun's HTTP server on loopback; no proxy, load balancer, or hosting provider has been verified.
 - **No managed hosting.** Hosted runners are planned.
 - **Not on npm yet.** Install `@durable-actors/core` from a locally packed tarball, as in the [quickstart](../quickstart.md), until the first alpha release.
 

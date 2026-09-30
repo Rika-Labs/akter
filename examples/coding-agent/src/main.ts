@@ -1,5 +1,5 @@
 /**
- * A coding agent is an ordinary actor: effects run the sandbox, a workflow ships a task in two
+ * A coding agent is an ordinary actor: jobs run the sandbox, a workflow ships a task in two
  * turns, and a singleton reaps orphaned sandboxes. Uses Postgres when DATABASE_URL is set,
  * otherwise an in-memory PGlite, and a stand-in sandbox provider:
  *   bun run start "add a --dry-run flag"

@@ -4,7 +4,7 @@ import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
 
 /**
  * The hosted edge's published verification keys, which every hosted runner
- * polls through `Actor.auth.assertion({ keys: <this URL> })`. Public keys
+ * polls through `Auth.assertion({ keys: <this URL> })`. Public keys
  * only, so the route needs no credential.
  */
 export const edgeKeysRoute = HttpRouter.add(

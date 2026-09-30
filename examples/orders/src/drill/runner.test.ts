@@ -297,8 +297,8 @@ describe.skipIf(pglite)("orders crash drill with Postgres", () => {
               { chargeId: summary.chargeId, customerId: "ada", amount: TOTAL },
             ])
 
-            const [effectId] = [...ledger.charges.keys()]
-            const calls = ledger.calls.get(effectId!) ?? 0
+            const [jobId] = [...ledger.charges.keys()]
+            const calls = ledger.calls.get(jobId!) ?? 0
 
             if (fault === "afterExecute:Charge") expect(calls).toBeGreaterThanOrEqual(2)
             else expect(calls).toBeGreaterThanOrEqual(1)

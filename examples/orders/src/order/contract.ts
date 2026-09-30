@@ -47,32 +47,32 @@ export const Customer = Schema.Struct({
 })
 
 /** An order was placed, with its total in cents and its shipment ids. */
-export class OrderPlaced extends Actor.Event<OrderPlaced>()("OrderPlaced", {
+export const OrderPlaced = Actor.event("OrderPlaced", {
   customerId: Schema.String,
   total: Schema.Int,
   shipments: Schema.Array(Schema.String),
-}) {}
+})
 
 /** The charge succeeded. */
-export class PaymentCaptured extends Actor.Event<PaymentCaptured>()("PaymentCaptured", {
+export const PaymentCaptured = Actor.event("PaymentCaptured", {
   chargeId: Schema.String,
-}) {}
+})
 
 /** The charge failed for good; `ambiguous` says whether it may have been applied. */
-export class PaymentFailed extends Actor.Event<PaymentFailed>()("PaymentFailed", {
+export const PaymentFailed = Actor.event("PaymentFailed", {
   /** The provider may have applied the charge; an operator must check before anything else. */
   ambiguous: Schema.Boolean,
-}) {}
+})
 
 /**
  * Charges the customer after `Place` commits. The executor runs outside any
- * transaction, possibly more than once, and passes its effect id to the
+ * transaction, possibly more than once, and passes its job id to the
  * provider as the idempotency key.
  */
-export class Charge extends Actor.effect<Charge>()("Charge", {
-  input: { customerId: Schema.String, amount: Schema.Int },
+export const Charge = Actor.job("Charge", {
+  payload: { customerId: Schema.String, amount: Schema.Int },
   success: Schema.Struct({ chargeId: Schema.String }),
-}) {}
+})
 
 /** Declared failure of `Place` for an order that already exists. */
 export class OrderAlreadyPlaced extends Schema.TaggedError<OrderAlreadyPlaced>()(
@@ -113,14 +113,14 @@ const Lines = Schema.Array(Line).check(
  * route calls it, never a client directly.
  */
 export const Place = Actor.command("Place", {
-  input: Schema.Struct({ customer: Customer, lines: Lines }),
-  output: Schema.Struct({ total: Schema.Int, shipments: Schema.Array(Schema.String) }),
-  errors: [OrderAlreadyPlaced],
+  payload: { customer: Customer, lines: Lines },
+  success: Schema.Struct({ total: Schema.Int, shipments: Schema.Array(Schema.String) }),
+  error: OrderAlreadyPlaced,
 })
 
 /** The order's status, total, charge, shipments and lines. */
 export const Summary = Actor.query("Summary", {
-  output: Schema.Struct({
+  success: Schema.Struct({
     status: OrderStatus,
     customerId: Schema.String,
     total: Schema.Int,
@@ -132,17 +132,17 @@ export const Summary = Actor.query("Summary", {
 
 /**
  * Marks the order paid and releases its shipments. Internal: the relay delivers
- * `Charged` and `ChargeFailed` as the `Charge` effect's routes.
+ * `Charged` and `ChargeFailed` as the `Charge` job's routes.
  */
 export const Charged = Actor.command("Charged", {
-  input: Schema.Struct({ chargeId: Schema.String }),
+  payload: { chargeId: Schema.String },
 })
 
 /**
  * The charge exhausted its retries or was declined; cancels the shipments only
  * when the provider applied nothing.
  */
-export const ChargeFailed = Actor.command("ChargeFailed", { input: Actor.DeadLetter(Charge) })
+export const ChargeFailed = Actor.command("ChargeFailed", { payload: Actor.DeadLetter(Charge) })
 
 /** One customer order: its lines, payment and shipments. */
 export const Order = Actor.make("Order", {
@@ -150,17 +150,15 @@ export const Order = Actor.make("Order", {
   state: OrderState,
   tables: [orderLines],
   events: [OrderPlaced, PaymentCaptured, PaymentFailed],
-  effects: [Charge],
+  jobs: {
+    Charge: {
+      job: Charge,
+      retry: { times: 3, backoff: { base: "200 millis", max: "2 seconds" } },
+      onSuccess: Charged,
+      onDeadLetter: ChargeFailed,
+    },
+  },
   access: shopper,
   api: { Place, Summary },
   internal: { Charged, ChargeFailed },
-  policy: {
-    effects: {
-      Charge: {
-        retry: { times: 3, backoff: { base: "200 millis", max: "2 seconds" } },
-        onSuccess: Charged,
-        onDeadLetter: ChargeFailed,
-      },
-    },
-  },
 })

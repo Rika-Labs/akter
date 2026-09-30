@@ -20,7 +20,7 @@ export interface SandboxInfo {
 /**
  * The sandbox provider: one VM per agent running a coding agent server.
  * Calls that create or charge for work take an idempotency key, so a retried
- * effect reuses the sandbox or reply its first attempt produced.
+ * job reuses the sandbox or reply its first attempt produced.
  */
 export class Sandboxes extends Context.Service<
   Sandboxes,

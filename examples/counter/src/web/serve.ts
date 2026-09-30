@@ -1,22 +1,22 @@
 /**
- * The counter served to a browser: Actor.serve under /api, the page at
+ * The counter served to a browser: Actors.serve under /api, the page at
  * /counters/<id>?user=<name>, and the same counter with @durable-actors/react
  * at /react/counters/<id>. PGlite in memory unless DATABASE_URL names Postgres.
  *   bun run web            # http://localhost:3004/counters/visits?user=alice
  */
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Actor, Unauthorized, User } from "@durable-actors/core"
-import { Actors, Database } from "@durable-actors/core/runtime"
+import { Unauthorized, User } from "@durable-actors/core"
+import { Actors, Auth, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Option } from "effect"
 import { Headers, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { Counter } from "../counter/contract.ts"
 import { CounterLive } from "../counter/layer.ts"
 
 /**
- * A stand-in for a real identity provider: the bearer token is the user's name. Use Actor.auth.jwt in production.
+ * A stand-in for a real identity provider: the bearer token is the user's name. Use Auth.jwt in production.
  * A browser's WebSocket can't send headers, so a connection's `hello` frame carries it as `credential`.
  */
-const demoAuth = Actor.auth.make((request) =>
+const demoAuth = Auth.make((request) =>
   Option.match(
     request.credential === undefined
       ? Headers.get(request.headers, "authorization")
@@ -34,7 +34,7 @@ const demoAuth = Actor.auth.make((request) =>
   ),
 )
 
-const api = Actor.serve({ actors: [Counter], auth: demoAuth, basePath: "/api" })
+const api = Actors.serve({ actors: [Counter], auth: demoAuth, basePath: "/api" })
 
 const actors = CounterLive.pipe(Layer.provideMerge(Actors.layer()))
 

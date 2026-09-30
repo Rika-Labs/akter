@@ -3,7 +3,7 @@ import { Payments } from "../payments/client.ts"
 import { Order } from "./contract.ts"
 
 /** May run in another process: it gets no database, only the payment provider. */
-export const OrderEffects = Order.toEffectLayer(
+export const OrderJobs = Order.toJobLayer(
   Effect.gen(function* () {
     const payments = yield* Payments
 
@@ -11,7 +11,7 @@ export const OrderEffects = Order.toEffectLayer(
       Charge: Effect.fnUntraced(function* ({ customerId, amount }) {
         const exec = yield* Order.Executor
 
-        return yield* payments.charge({ customerId, amount }, { idempotencyKey: exec.effectId })
+        return yield* payments.charge({ customerId, amount }, { idempotencyKey: exec.jobId })
       }),
     }
   }),

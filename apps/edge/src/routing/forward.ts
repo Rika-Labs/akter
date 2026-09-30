@@ -1,13 +1,12 @@
 import {
   ActorError,
   ActorUnavailable,
-  actorErrorBody,
   ASSERTION_HEADER,
   InvalidInput,
   requestDigest,
-  statusOf,
   Unauthorized,
 } from "@durable-actors/core"
+import { actorErrorBody, statusOf } from "@durable-actors/core/runtime"
 import { Clock, Effect, Option, Result, Schema, Stream } from "effect"
 import {
   type HttpClient,
