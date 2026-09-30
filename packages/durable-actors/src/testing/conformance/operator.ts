@@ -141,7 +141,6 @@ const reasonOf = (answer: Answer) =>
 export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "refuses an application credential on every operator route and repairs nothing",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -175,7 +174,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses a grant outside its action or resource scope, audits the denial, and changes nothing",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -220,7 +218,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "inspects an actor with receipt tags only, and outcomes only under receipts.read",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -269,7 +266,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "reads a success and a declared-failure outcome under a receipt-scoped grant without running the handler",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(environment, {}, ({ tenant, send, audit, grant }) =>
         Effect.gen(function* () {
@@ -332,7 +328,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "retries a dead letter as a new effect and records operator, scope, reason, and the new effect id in the same transaction",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -394,7 +389,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "lets one of two concurrent repairs of a dead letter through",
-    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       withOperators(
@@ -424,7 +418,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses to retry an ambiguous dead letter until the operator states the provider was checked",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -471,7 +464,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "discards a dead letter with its audit row and never records its payload",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -516,7 +508,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rolls the repair back when its audit row cannot be written",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
@@ -561,7 +552,6 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "lists defects only under defects.read, for the grant's tenants",
-    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
       withOperators(
         environment,
