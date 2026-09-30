@@ -1,13 +1,35 @@
-import { Effect, Schedule, Schema } from "effect"
-import { afterEach, describe, expect, it } from "vitest"
+import { Effect, Predicate, Schedule, Schema, Stream } from "effect"
+import { afterEach, describe, expect, expectTypeOf, it } from "vitest"
 import { ActorError, RunnerAtCapacity, TransportError } from "../../errors/actor.ts"
 import { Actor } from "../../index.ts"
 import { SUBPROTOCOL, type ServerWireMessage } from "../../serve/frames.ts"
 import { socketUrl } from "../make.ts"
+import type { ConnectionMessage, ProgressMessage, ProgressOfConnection } from "./connection.ts"
 
 const Live = Actor.connection("Live", { client: Schema.String, server: Schema.String })
 
 const Room = Actor.make("ConnectionClientRoom", { key: Schema.String, api: { Live } })
+
+class Render extends Actor.effect<Render>()("Render", {
+  input: { steps: Schema.Int },
+  progress: Schema.Struct({ percent: Schema.Finite }),
+}) {}
+
+class Scan extends Actor.effect<Scan>()("Scan", {
+  progress: Schema.Struct({ found: Schema.Int, path: Schema.String }),
+}) {}
+
+const Watch = Actor.connection("Watch", {
+  server: Schema.String,
+  client: Schema.Finite,
+  progress: { effects: [Render, Scan] },
+})
+
+const Jobs = Actor.make("ConnectionProgressRoom", {
+  key: Schema.String,
+  effects: [Render, Scan],
+  api: { Live, Watch },
+})
 
 type Script = (send: (message: ServerWireMessage) => void, raw: (text: string) => void) => void
 
@@ -239,4 +261,128 @@ describe("client event feeds", () => {
         expect(opened[1]! - opened[0]!).toBeGreaterThanOrEqual(990)
       }),
     ))
+})
+
+describe("client connection progress", () => {
+  /** The server's `end` closes the session with `ServerClosed`, after the messages before it. */
+  it("yields a progress frame decoded by its effect's schema, typed by effect", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { url } = serve((send) => {
+          send({
+            t: "progress",
+            effect: "Render",
+            effectId: "e1",
+            attempt: 1,
+            seq: 2,
+            frame: { percent: 40 },
+          })
+          send({
+            t: "progress",
+            effect: "Scan",
+            effectId: "e2",
+            attempt: 1,
+            seq: 1,
+            frame: { found: 3, path: "/a" },
+          })
+          send({
+            t: "progress",
+            effect: "Render",
+            effectId: "e1",
+            attempt: 1,
+            seq: 3,
+            frame: { percent: "x" },
+          })
+          send({ t: "progress", effect: "Unlisted", effectId: "e3", attempt: 1, seq: 1, frame: {} })
+          send({ t: "end" })
+        })
+
+        const connection = yield* Effect.promise(() =>
+          Jobs.client({ baseUrl: url }).get("j1").Watch.connect(),
+        )
+
+        const received = Array.from(
+          yield* Stream.fromAsyncIterable(connection.messages, (thrown) => thrown).pipe(
+            Stream.catch(() => Stream.empty),
+            Stream.runCollect,
+          ),
+        )
+
+        expect(
+          received.map((message) =>
+            Predicate.isTagged(message, "Progress")
+              ? [message.effect, message.effectId, message.seq, message.frame]
+              : message._tag,
+          ),
+        ).toEqual([
+          ["Render", "e1", 2, { percent: 40 }],
+          ["Scan", "e2", 1, { found: 3, path: "/a" }],
+        ])
+
+        const [first] = received
+
+        if (first?._tag === "Progress" && first.effect === "Render")
+          expectTypeOf(first.frame).toEqualTypeOf<{ readonly percent: number }>()
+      }),
+    ))
+})
+
+describe("progress types", () => {
+  type Watched = typeof Watch
+
+  it("types each progress message's frame by its effect, and none for a member without progress", () => {
+    type Update = ProgressOfConnection<Watched>
+
+    expectTypeOf<Update>().toEqualTypeOf<
+      | { readonly effect: "Render"; readonly frame: { readonly percent: number } }
+      | {
+          readonly effect: "Scan"
+          readonly frame: { readonly found: number; readonly path: string }
+        }
+    >()
+
+    expectTypeOf<Extract<Update, { readonly effect: "Scan" }>["frame"]>().toEqualTypeOf<{
+      readonly found: number
+      readonly path: string
+    }>()
+
+    expectTypeOf<ProgressOfConnection<typeof Live>>().toEqualTypeOf<never>()
+  })
+
+  it("narrows a Progress message on `effect`, and carries the attempt's identity beside it", () => {
+    const narrow = (message: ConnectionMessage<string, ProgressOfConnection<Watched>>) => {
+      if (!Predicate.isTagged(message, "Progress")) return
+
+      expectTypeOf(message.effectId).toEqualTypeOf<string>()
+      expectTypeOf(message.attempt).toEqualTypeOf<number>()
+      expectTypeOf(message.seq).toEqualTypeOf<number>()
+      expectTypeOf(message.effect).toEqualTypeOf<"Render" | "Scan">()
+
+      if (message.effect === "Render")
+        expectTypeOf(message.frame).toEqualTypeOf<{ readonly percent: number }>()
+      else expectTypeOf(message.frame.path).toEqualTypeOf<string>()
+    }
+
+    expect(narrow).toBeTypeOf("function")
+  })
+
+  it("has no Progress message for a connection that lists no effects, and `unknown` frames by default", () => {
+    type Messages = ConnectionMessage<string, ProgressOfConnection<typeof Live>>
+
+    expectTypeOf<Extract<Messages, { readonly _tag: "Progress" }>>().toEqualTypeOf<never>()
+    expectTypeOf<ProgressMessage["frame"]>().toEqualTypeOf<unknown>()
+    expectTypeOf<ProgressMessage["effect"]>().toEqualTypeOf<string>()
+  })
+
+  it("types connect() on the client handle with the member's progress", () => {
+    const handle = Jobs.client({ baseUrl: "http://progress.test" }).get("j1")
+
+    type Opened = Awaited<ReturnType<typeof handle.Watch.connect>>
+
+    type Message = Opened["messages"] extends AsyncIterable<infer M> ? M : never
+
+    expectTypeOf<Extract<Message, { readonly _tag: "Progress" }>["effect"]>().toEqualTypeOf<
+      "Render" | "Scan"
+    >()
+  })
 })

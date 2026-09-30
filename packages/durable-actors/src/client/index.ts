@@ -18,7 +18,14 @@ export { Offline, OfflineStoreError } from "./offline/store.ts"
 
 export type { OfflineStore, QueuedCommand } from "./offline/store.ts"
 
-export type { ClientConnection, ConnectionMessage, ConnectOptions } from "./sessions/connection.ts"
+export type {
+  ClientConnection,
+  ConnectionMessage,
+  ConnectOptions,
+  ProgressMessage,
+  ProgressOfConnection,
+  ProgressUpdate,
+} from "./sessions/connection.ts"
 
 export type { FeedEntry, FeedOptions } from "./sessions/feed.ts"
 
