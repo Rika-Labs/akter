@@ -383,10 +383,6 @@
     },
     "tooling/databases": {
       "name": "@durable-actors/databases",
-      "dependencies": {
-        "@effect/platform-bun": "catalog:",
-        "effect": "catalog:",
-      },
     },
     "tooling/oxlint": {
       "name": "@durable-actors/oxlint",
