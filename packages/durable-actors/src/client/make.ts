@@ -30,6 +30,7 @@ import { openCommandQueue, type OfflineQueue, type Refused } from "./offline/que
 import type { OfflineStore } from "./offline/store.ts"
 import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {
+  aborted,
   CREDENTIAL_CODES,
   decodeFailure,
   decodeSuccess,
@@ -510,6 +511,37 @@ export const clientOf =
         return reply
       })
 
+    /** Opens an SSE response at `path` with fresh headers and `init.headers` set over them. */
+    const openEvents = (
+      path: Effect.Effect<string, ActorError>,
+      signal: AbortSignal,
+      init: {
+        readonly method?: string
+        readonly body?: string | undefined
+        readonly headers: Readonly<Record<string, string>>
+      },
+    ) =>
+      Effect.gen(function* () {
+        const headers = new Headers(yield* provided)
+
+        for (const [name, value] of Object.entries(init.headers)) headers.set(name, value)
+
+        headers.set("accept", "text/event-stream")
+        headers.set("durable-protocol", "1")
+        const url = joinUrl(options.baseUrl, yield* path)
+
+        return yield* Effect.tryPromise({
+          try: () =>
+            fetch(url, {
+              method: init.method,
+              headers,
+              body: init.body,
+              signal,
+            }),
+          catch: networkFailure,
+        })
+      })
+
     const isOk = (reply: Reply) => reply.status >= 200 && reply.status < 300
 
     const retryWindow = Effect.suspend(() => {
@@ -610,19 +642,6 @@ export const clientOf =
         )
       })
 
-      const aborted = Effect.callback<never, Failure>((resume) => {
-        const signal = call.signal
-
-        if (signal === undefined) return
-
-        if (signal.aborted) return resume(unanswered)
-
-        const onAbort = () => resume(unanswered)
-        signal.addEventListener("abort", onAbort, { once: true })
-
-        return Effect.sync(() => signal.removeEventListener("abort", onAbort))
-      })
-
       const bounded = work.pipe(
         Effect.timeoutOrElse({
           duration: Duration.millis(call.timeoutInMs ?? options.timeoutInMs ?? DEFAULT_TIMEOUT_MS),
@@ -630,7 +649,9 @@ export const clientOf =
         }),
       )
 
-      return Effect.runPromise(Effect.raceFirst(bounded, aborted))
+      return Effect.runPromise(
+        Effect.raceFirst(bounded, aborted(call.signal).pipe(Effect.andThen(unanswered))),
+      )
     }
 
     /**
@@ -1037,17 +1058,12 @@ export const clientOf =
                   open: (signal) =>
                     Effect.gen(function* () {
                       const payload = yield* body
-                      const headers = new Headers(yield* provided)
-                      headers.set("accept", "text/event-stream")
-                      headers.set("durable-protocol", "1")
 
-                      if (payload !== undefined) headers.set("content-type", "application/json")
-
-                      const url = joinUrl(options.baseUrl, yield* path(member.tag))
-
-                      return yield* Effect.tryPromise({
-                        try: () => fetch(url, { method: "POST", headers, body: payload, signal }),
-                        catch: networkFailure,
+                      return yield* openEvents(path(member.tag), signal, {
+                        method: "POST",
+                        body: payload,
+                        headers:
+                          payload === undefined ? {} : { "content-type": "application/json" },
                       })
                     }),
                 }),
@@ -1061,25 +1077,15 @@ export const clientOf =
               event,
               options: feedOptions ?? {},
               open: (cursor, signal) =>
-                Effect.gen(function* () {
-                  const query = new URLSearchParams({ event: event.identifier })
-                  const headers = new Headers(yield* provided)
-
-                  if (cursor !== undefined) headers.set("last-event-id", cursor)
-
-                  headers.set("accept", "text/event-stream")
-                  headers.set("durable-protocol", "1")
-                  const url = joinUrl(options.baseUrl, `${yield* path("events")}?${query}`)
-
-                  return yield* Effect.tryPromise({
-                    try: () =>
-                      fetch(url, {
-                        headers,
-                        signal,
-                      }),
-                    catch: networkFailure,
-                  })
-                }),
+                openEvents(
+                  path("events").pipe(
+                    Effect.map(
+                      (events) => `${events}?${new URLSearchParams({ event: event.identifier })}`,
+                    ),
+                  ),
+                  signal,
+                  { headers: cursor === undefined ? {} : { "last-event-id": cursor } },
+                ),
             }),
           ),
         ref: { actor: definition.name, id },
