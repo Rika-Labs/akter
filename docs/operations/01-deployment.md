@@ -13,7 +13,7 @@ The intended deployment has one shared relational database and one `Actors.layer
 
 The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, routes each tenant to its home region from the tenant directory, signs a per-request assertion, enforces limits, and proxies client sockets to the runners that hold them ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). Infrastructure is Alchemy plus Railway.
 
-The planned `durable` CLI lives in `apps/cli`: `login`, `dev`, `deploy`, `migrate`, and `dead-letters`. These commands are not implemented; the package has no bin until the first command exists. Customer-served deployments do not require the hosted control plane.
+The `durable` CLI in `apps/cli` runs an app locally (`durable dev`), checks a deploy against stored workflows and payloads, adopts existing tables, and inspects and repairs a running deployment through its operator routes ([CLI reference](../api/06-cli.md)). It has no hosted `login` or `deploy` command. Customer-served deployments do not require the hosted control plane.
 
 Before enabling multiple Railway replicas, prove that every replica advertises a private `railnet0` address reachable by every other replica. A one-service-per-runner alternative requires its own reachability and failover evidence; `Topology.k8s` is not part of the current API. Also verify singleton failover and Neki conformance before claiming those capabilities.
 

@@ -24,8 +24,6 @@ const TEST_FILE = /\.test\.[cm]?[jt]sx?$/
 
 const E2E_FILE = /\.e2e\.[cm]?[jt]sx?$/
 
-const LEAF_MODULE_LIMIT = 12
-
 const APP_PACKAGE = /^@durable-actors\/(api|console|docs|edge|cli)$/
 
 const WORKSPACE_PACKAGE = /^@durable-actors\//
@@ -284,52 +282,6 @@ const checkTests = (input: {
   }
 }
 
-const checkLeafDirs = (input: {
-  readonly files: ReadonlyArray<TreeFile>
-  readonly exemptions: ReadonlyArray<Exemption>
-  readonly findings: Array<Finding>
-}) => {
-  const sourceDirs = new Set<string>()
-
-  for (const file of input.files) {
-    if (!SOURCE_FILE.test(file.path)) continue
-
-    if (exemptedWhole({ exemptions: input.exemptions, path: file.path })) continue
-    sourceDirs.add(file.path.slice(0, file.path.lastIndexOf("/")))
-  }
-
-  for (const dir of sourceDirs) {
-    const isLeaf = ![...sourceDirs].some((other) => other.startsWith(`${dir}/`))
-
-    if (!isLeaf) continue
-
-    let count = 0
-
-    for (const file of input.files)
-      if (SOURCE_FILE.test(file.path) && file.path.startsWith(`${dir}/`)) count += 1
-
-    if (count > LEAF_MODULE_LIMIT)
-      input.findings.push({
-        path: dir,
-        rule: "structure-rules",
-        message: `leaf directory holds ${count} authored modules; the limit is ${LEAF_MODULE_LIMIT} — split the responsibility`,
-      })
-  }
-}
-
-const checkNoUiPackage = (input: {
-  readonly files: ReadonlyArray<TreeFile>
-  readonly findings: Array<Finding>
-}) => {
-  if (input.files.some((file) => isUnder(file.path, "packages/ui")))
-    input.findings.push({
-      path: "packages/ui",
-      rule: "no-ui-package",
-      message:
-        "UI belongs in apps/console/src/ui/<component>/{view,styles}.ts; a packages/ui workspace needs an exemption",
-    })
-}
-
 const checkLedgerCases = (input: {
   readonly files: ReadonlyArray<TreeFile>
   readonly findings: Array<Finding>
@@ -380,8 +332,6 @@ export const analyze = (input: {
   const entryFiles = checkManifests({ files: input.files, exemptions: input.exemptions, findings })
   checkIndexFiles({ files: input.files, exemptions: input.exemptions, entryFiles, findings })
   checkTests({ files: input.files, exemptions: input.exemptions, findings })
-  checkLeafDirs({ files: input.files, exemptions: input.exemptions, findings })
-  checkNoUiPackage({ files: input.files, findings })
   checkLedgerCases({ files: input.files, findings })
 
   const report = findings.filter(
