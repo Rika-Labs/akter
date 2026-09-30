@@ -30,7 +30,7 @@ import {
 import { actorErrorBody } from "../../serve/wire.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import { gate, HttpRoom, receipts, runs, tenantOf } from "./http.ts"
-import { endReason, opened, serveSockets, socket } from "./transports.ts"
+import { endReason, opened, serveSockets, socket } from "./transports/wire.ts"
 
 /**
  * The runner half of hosted assertions: a runner serving with
