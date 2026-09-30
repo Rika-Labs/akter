@@ -1160,6 +1160,59 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "keeps a newer attempt's row when an attempt that lost its lease fails late",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL, executors: SHORT_LEASE },
+        Effect.gen(function* () {
+          const { owner, other } = yield* ownerAndOther(yield* refOf("stale"))
+          const first = yield* Deferred.make<void>()
+          const second = yield* Deferred.make<void>()
+          fixture.provider = (attempt) =>
+            attempt.attempt === 1
+              ? Deferred.await(first).pipe(Effect.andThen(Effect.fail(ProviderDown.make({}))))
+              : Deferred.await(second).pipe(Effect.as(attempt.key))
+
+          const renewal = yield* faults(owner, (test) => test.pauseNext("beforeRenew"))
+          yield* perform(owner, "stale")
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+          const takeover = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 2))
+
+          yield* Deferred.succeed(first, undefined)
+          yield* eventually(Effect.sync(() => fixture.attempts[0]?.endedAt !== undefined))
+          expect(fixture.attempts[0]!.interrupted).toBe(false)
+          yield* Effect.sleep("1 second")
+
+          const [held] = yield* outboxRows(other)
+          expect(held).toMatchObject({ kind: "job", attempts: 2, ambiguous: true })
+          expect(held!.last_error).toContain("Attempt 2")
+
+          yield* Deferred.succeed(second, undefined)
+          yield* Fiber.join(takeover)
+          yield* renewal.release
+          yield* eventually(
+            receipts(other, "Called").pipe(Effect.map((count) => count === 1)),
+            "10 seconds",
+            "attempt 2's route",
+          )
+
+          expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
+            [1, owner],
+            [2, other],
+          ])
+          expect((yield* callerState(other, "stale")).called).toEqual(["stale"])
+          expect(yield* deadLetters(other)).toEqual([])
+          expect(yield* receipts(other, "CallFailed")).toBe(0)
+        }),
+      ),
+  },
+  {
     name: "marks the dead letter ambiguous when a stale success arrives after it",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,

@@ -6,7 +6,6 @@ import {
   Effect,
   Exit,
   FiberSet,
-  Option,
   Queue,
   Random,
   Result,
@@ -17,8 +16,14 @@ import { SqlClient, Statement } from "effect/unstable/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request } from "../request.ts"
 import { type RegisteredJob } from "../members.ts"
-import { ActorRef, principal } from "../../identity/caller.ts"
 import { progressPool } from "../jobs/progress.ts"
+import {
+  type CappedGroup,
+  type ClaimedJob,
+  groupLock,
+  groupRow,
+  jobAttempts,
+} from "../jobs/attempt.ts"
 import { CRON_PREFIX } from "../cron/key.ts"
 import { type CronSchedule, cronTicks } from "../cron/schedule.ts"
 import { TurnHooks } from "./hooks.ts"
@@ -72,50 +77,61 @@ interface LocalExecutor {
   readonly registered: RegisteredJob
 }
 
-interface ClaimedRow {
-  /**
-   * `skipped-*` rows claim nothing; they report a probe whose candidates were
-   * all taken or locked. A `work` row carries claimed subscription work in `work`.
-   */
+/**
+ * The claim statement's result columns before its last three, in order: each
+ * outbox column's source in the claimed row aliased `o`, and the value a
+ * result row that claimed no outbox row carries in its place.
+ */
+const CLAIMED_COLUMNS = [
+  ["kind", "o.kind", "NULL::text"],
+  ["routing_key", "o.routing_key::text", "NULL::text"],
+  ["intent_id", "o.intent_id", "NULL::text"],
+  ["attempts", "o.attempts", "0"],
+  ["last_error", "o.last_error", "NULL::text"],
+  ["ambiguous", "o.ambiguous", "false"],
+  ["tenant_id", "o.tenant_id", "NULL::text"],
+  ["actor_type", "o.actor_type", "NULL::text"],
+  ["actor_id", "o.actor_id", "NULL::text"],
+  ["target_type", "o.target_type", "NULL::text"],
+  ["target_id", "o.target_id", "NULL::text"],
+  ["command", "o.command", "NULL::text"],
+  ["payload", "o.payload", "NULL::text"],
+  ["payload_version", "o.payload_version", "0"],
+  ["caller", "o.caller", "NULL::text"],
+  ["claimed_until", "o.due_at_ms::text", "NULL::text"],
+  ["timer_key", "o.timer_key", "NULL::text"],
+  ["scheduled_at", "o.scheduled_at_ms::text", "NULL::text"],
+  ["cancelled", "o.cancelled_at_ms IS NOT NULL", "false"],
+  ["maybe_applied", "o.maybe_applied", "false"],
+] as const
+
+/**
+ * One row of the claim statement. An `intent` or `job` row is a claimed
+ * outbox row; a `skipped-*` row claims nothing and reports a probe whose
+ * candidates were all taken or locked; a `work` row carries claimed
+ * subscription work in `work`.
+ */
+interface ClaimedRow extends ClaimedJob {
   readonly kind: "intent" | "job" | "skipped-intent" | "skipped-job" | "work"
-  readonly routing_key: string
-  readonly intent_id: string
-  readonly attempts: number
-  readonly last_error: string | null
-  readonly ambiguous: boolean
-  readonly tenant_id: string
-  readonly actor_type: string
-  readonly actor_id: string
   readonly target_type: string
   readonly target_id: string
-  readonly command: string
-  readonly payload: string
-  /** The payload version of a job row's `payload`; 0 for every other kind. */
-  readonly payload_version: number
-  readonly caller: string
-  /** The claim's `due_at_ms`, which every settling write of an intent names. */
-  readonly claimed_until: string
   readonly timer_key: string | null
   readonly scheduled_at: string
-  /** Cancelled by a turn: settled with what is known, never attempted again. */
-  readonly cancelled: boolean
-  /** An earlier attempt of the job may have applied the call. */
-  readonly maybe_applied: boolean
   readonly candidates: number
   readonly work: string | null
 }
 
-interface ClaimedJob extends ClaimedRow {
-  readonly exhausted: boolean
-}
-
-/** The `ClaimedRow` columns of the outbox row aliased `o`. */
+/** The claimed columns of the outbox row aliased `o`. */
 const claimedColumns = (sql: SqlClient.SqlClient) =>
-  sql`o.kind, o.routing_key::text AS routing_key, o.intent_id, o.attempts, o.last_error,
-    o.ambiguous, o.tenant_id, o.actor_type, o.actor_id, o.target_type, o.target_id, o.command,
-    o.payload, o.payload_version, o.caller, o.due_at_ms::text AS claimed_until, o.timer_key,
-    o.scheduled_at_ms::text AS scheduled_at, o.cancelled_at_ms IS NOT NULL AS cancelled,
-    o.maybe_applied`
+  sql.literal(CLAIMED_COLUMNS.map(([name, source]) => `${source} AS ${name}`).join(", "))
+
+/** The claimed columns of a result row that claimed no outbox row, with `kind` set. */
+const unclaimedColumns = (sql: SqlClient.SqlClient, kind: string) =>
+  sql`${kind}::text, ${sql.literal(
+    CLAIMED_COLUMNS.slice(1)
+      .map(([, , empty]) => empty)
+      .join(", "),
+  )}`
 
 /**
  * The due-work probe: up to `limit` due rows of `kind` from one
@@ -168,18 +184,18 @@ interface JobClaim {
 }
 
 /**
- * Claims due intents and due jobs in one autocommit statement. `now` is
- * the outbox clock: the database's statement start time plus the test
- * offset, which is never earlier than a row committed before the claim was
- * sent. A pass therefore costs one round trip whatever it claims.
+ * Claims due intents and due jobs in one autocommit statement. `now` is the
+ * outbox clock: the database's statement start time plus the test offset,
+ * which is never earlier than a row committed before the claim was sent. A
+ * pass therefore costs one round trip whatever it claims.
  *
  * `SKIP LOCKED` passes over rows another runner is claiming, and each claim
  * moves the row's `due_at_ms` past its lease, so no runner scans it again
  * until the lease ends. An intent whose settle dies therefore waits
- * `max(lease, backoff(attempts))` instead of sorting ahead of newer work. An
- * job with no executor on this runner is never claimed here; it stays due
- * for a runner that has one. The two kinds never share a row, so the two
- * updates are disjoint. A kind that claims nothing although its probe found
+ * `max(lease, backoff(attempts))` instead of sorting ahead of newer work. A
+ * job with no executor on this runner is never claimed here; it stays due for
+ * a runner that has one. The two kinds never share a row, so the two updates
+ * are disjoint. A kind that claims nothing although its probe found
  * candidates returns one `skipped-*` row with the candidate count, so the
  * relay can widen the next probe past rows other transactions hold locked.
  * Subscription work rides in the same statement, so a pass stays one round
@@ -273,27 +289,23 @@ const claimDue = ({
     parts.push(...subscriptions.parts)
 
     for (const result of subscriptions.results)
-      results.push(sql`SELECT 'work'::text, NULL::text, NULL::text, 0, NULL::text, false,
-          NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, NULL::text, 0,
-          NULL::text, NULL::text, NULL::text, NULL::text, false, false, 0, false,
-          claimed.work
+      results.push(sql`SELECT ${unclaimedColumns(sql, "work")}, 0, false, claimed.work
         FROM (${result}) AS claimed`)
   }
 
-  if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedJob>)
+  if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedRow>)
 
-  return sql<ClaimedJob>`WITH ${sql.csv(parts)}
+  return sql<ClaimedRow>`WITH ${sql.csv(parts)}
     ${sql.join(" UNION ALL ", false)(results)}`
 }
 
 /**
- * Claims the job rows `locked` names. A cancelled row is claimed only to
- * be settled, so it keeps its attempts; any other row starts its next attempt
+ * Claims the job rows `locked` names. A cancelled row is claimed only to be
+ * settled, so it keeps its attempts; any other row starts its next attempt
  * and runs, unless its last attempt already ended without an outcome or an
  * attempt's failure was final, either of which exhausts it. `maybe_applied`
- * then covers every attempt before this one.
- * RETURNING sees the updated row, so exhaustion is judged on the attempts
- * before this claim.
+ * then covers every attempt before this one. RETURNING sees the updated row,
+ * so exhaustion is judged on the attempts before this claim.
  */
 const claimJobs = (
   sql: SqlClient.SqlClient,
@@ -323,24 +335,15 @@ const claimJobs = (
         AND (c.previous >= c.max_attempts OR o.final_failure) AS exhausted`
 }
 
-/** One job type of one actor whose attempts run under a per-actor cap. */
-interface CappedGroup {
-  readonly routing_key: string
-  readonly tenant_id: string
-  readonly actor_type: string
-  readonly actor_id: string
-  readonly command: string
-}
-
 /** A due group, with the due rows the probe read: at `limit` or more it may have hidden others. */
 interface DueGroup extends CappedGroup {
   readonly due_rows: number
 }
 
 /**
- * The actors with due rows of capped jobs this runner executes, oldest
- * first; at most `limit`. Like the uncapped probe, it reads one index range
- * per bucket and takes no locks.
+ * The actors with due rows of capped jobs this runner executes, oldest first;
+ * at most `limit`. Like the uncapped probe, it reads one index range per
+ * bucket and takes no locks.
  */
 const cappedGroups = ({
   sql,
@@ -371,25 +374,11 @@ const cappedGroups = ({
     GROUP BY o.routing_key, o.tenant_id, o.actor_type, o.actor_id, o.command
     ORDER BY min(o.due_at_ms) LIMIT ${limit}`
 
-const groupRow = (sql: SqlClient.SqlClient, group: CappedGroup) =>
-  sql`o.routing_key = ${BigInt(group.routing_key)} AND o.tenant_id = ${group.tenant_id}
-    AND o.actor_type = ${group.actor_type} AND o.actor_id = ${group.actor_id}
-    AND o.command = ${group.command} AND o.kind = 'job'`
-
-/** The advisory lock that serializes every runner's claims of one capped group. */
-const groupLock = (sql: SqlClient.SqlClient, group: CappedGroup) =>
-  sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
-    group.tenant_id,
-    group.actor_type,
-    group.actor_id,
-    group.command,
-  ])}, 0))`
-
 /**
- * Claims one capped group's jobs in its own transaction, under the
- * group's advisory lock, so claims on every runner see each other's running
- * rows. It settles cancelled rows whose attempt ended, starts the oldest rows
- * by `(ready_at_ms, intent_id)` while fewer than `cap` attempts hold a live
+ * Claims one capped group's jobs in its own transaction, under the group's
+ * advisory lock, so claims on every runner see each other's running rows. It
+ * settles cancelled rows whose attempt ended, starts the oldest rows by
+ * `(ready_at_ms, intent_id)` while fewer than `cap` attempts hold a live
  * lease, and moves the group's other due rows out of the due range as
  * waiting, so they never fill a probe ahead of other actors' work. A waiting
  * row becomes due again when an attempt of its group settles, or after one
@@ -424,7 +413,7 @@ export const claimCapped = ({
       const inGroup = groupRow(sql, group)
       yield* sql`SELECT 1 FROM actor_outbox o WHERE ${inGroup} AND o.running FOR UPDATE OF o`
 
-      return yield* sql<ClaimedJob>`WITH live AS (
+      return yield* sql<ClaimedRow>`WITH live AS (
           SELECT count(*)::int AS n FROM actor_outbox o
           WHERE ${inGroup} AND o.running AND o.due_at_ms > ${now}
         ),
@@ -464,48 +453,13 @@ export const claimCapped = ({
     }),
   )
 
-/**
- * Makes the oldest waiting row of `group` due now, after one of its attempts
- * settled. It takes the group's lock like a claim, so it never overlaps one:
- * a claim's `SKIP LOCKED` would pass over the row this update holds and start
- * a younger row ahead of it, breaking perform order. The lock also means no
- * claim is taking the row while the update reads it. The outer guard refuses
- * a row that is running by the time the update reaches it, so a wake never
- * moves a claimed attempt's lease end to now, which would stop the cap
- * counting an attempt that still runs.
- */
-export const wakeWaiting = ({
-  sql,
-  group,
-  at,
-}: {
-  readonly sql: SqlClient.SqlClient
-  readonly group: CappedGroup
-  readonly at: number
-}) =>
-  sql.withTransaction(
-    Effect.andThen(
-      groupLock(sql, group),
-      sql`UPDATE actor_outbox SET due_at_ms = least(due_at_ms, ${at}), waiting = false
-        WHERE waiting AND NOT running AND cancelled_at_ms IS NULL
-          AND (routing_key, intent_id) IN (
-            SELECT o.routing_key, o.intent_id FROM actor_outbox o
-            WHERE ${groupRow(sql, group)} AND o.waiting AND NOT o.running
-              AND o.cancelled_at_ms IS NULL
-            ORDER BY o.ready_at_ms, o.intent_id LIMIT 1
-            FOR UPDATE OF o SKIP LOCKED
-          ) RETURNING 1`,
-    ),
-  )
-
 /** One row reporting `kind`'s candidates when its claim took none of them. */
 const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "job") => {
   const claimed = sql.literal(`${kind}_claimed`)
   const found = sql.literal(`${kind}_candidates`)
 
-  return sql`SELECT ${`skipped-${kind}`}::text, NULL, NULL, 0, NULL, false, NULL, NULL, NULL,
-      NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, false, false, (SELECT count(*) FROM ${found})::int,
-      false, NULL::text
+  return sql`SELECT ${unclaimedColumns(sql, `skipped-${kind}`)},
+      (SELECT count(*) FROM ${found})::int, false, NULL::text
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
@@ -529,29 +483,12 @@ export const claimIntents = ({
     sql,
     now: sql`${now}::bigint`,
     intents,
-  }) as Statement.Statement<ClaimedJob>
+  }) as Statement.Statement<ClaimedRow>
 
 /** The widest probe, as a multiple of twice the free capacity. */
 const MAX_WIDEN = 64
 
-/**
- * The next probe multiple: doubled when a claim left capacity free although
- * it found more due candidates than it took, which happens when other
- * transactions hold the earliest rows locked; reset otherwise.
- */
-const widened = (
-  current: number,
-  rows: ReadonlyArray<ClaimedRow>,
-  kind: "intent" | "job",
-  capacity: number,
-) => {
-  const taken = rows.filter((row) => row.kind === kind)
-  const found = (taken[0] ?? rows.find((row) => row.kind === `skipped-${kind}`))?.candidates ?? 0
-
-  return taken.length < capacity && found > taken.length ? Math.min(current * 2, MAX_WIDEN) : 1
-}
-
-/** Logs a non-interrupt failure of the job under `message` and completes with `void`; an interruption stays one. */
+/** Logs a non-interrupt failure of the work under `message` and completes with `void`; an interruption stays one. */
 const logFailure =
   (message: string) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A | void, never, R> =>
@@ -560,16 +497,54 @@ const logFailure =
     )
 
 /**
+ * One family of claimed work on this runner: its running fibers, how many may
+ * run at once, and what its last claim saw. A claim takes at most `free` rows
+ * of the family, so no claimed row waits locally while its lease runs down.
+ * When the last claim saw more due candidates than it took, each finishing
+ * fiber wakes the relay to claim again instead of waiting for the poll; when
+ * it also left room, which happens when other transactions hold the earliest
+ * rows locked, the next probe doubles, up to `MAX_WIDEN`.
+ */
+const lane = Effect.fnUntraced(function* (capacity: number, wake: Effect.Effect<void>) {
+  const fibers = yield* FiberSet.make<unknown, unknown>()
+  let more = false
+  let widen = 1
+
+  return {
+    fibers,
+    /** Rows a claim may take now. */
+    free: Effect.map(FiberSet.size(fibers), (running) => capacity - running),
+    /** The probe size for `free` rows. */
+    probe: (free: number) => 2 * free * widen,
+    get more() {
+      return more
+    },
+    /** Records what a claim of up to `free` rows took and how many due candidates it found. */
+    claimed: (free: number, taken: number, found: number) => {
+      more = taken > 0 && found > taken
+      widen = taken < free && found > taken ? Math.min(widen * 2, MAX_WIDEN) : 1
+    },
+    /** Records whether a claim may have left due rows of the family behind. */
+    backlog: (left: boolean) => {
+      more = left
+    },
+    /** Runs `work` on the family; its end wakes the relay when rows were left due. */
+    start: <A, E, R>(work: Effect.Effect<A, E, R>) =>
+      FiberSet.run(
+        fibers,
+        work.pipe(Effect.ensuring(Effect.suspend(() => (more ? wake : Effect.void)))),
+      ).pipe(Effect.asVoid),
+  }
+})
+
+/**
  * The outbox relay of one runner among any number sharing the database. Each
- * pass claims only as many due intents as it has free delivery slots and only
- * as many jobs as its executor pool has permits, then starts each one at
- * once, so no claimed row waits locally while its lease runs down. A pass runs
- * uninterruptibly under a lock so every row a claim returns reaches a fiber
- * that can release it. A claim that saw more due candidates than it took
- * makes each freed slot claim again instead of waiting for the poll, and one
- * that left capacity free although it found more candidates doubles the next
- * probe. When both capped and uncapped jobs are due, passes alternate which
- * claims first, so a steady stream of either can't take every permit.
+ * pass claims, for every family of work (intents, job attempts, and feed,
+ * control, and subscription work), only as many rows as the family has free
+ * fibers, then starts each one at once. A pass runs uninterruptibly under a
+ * lock, so every row a claim returns reaches a fiber that can release it.
+ * When both capped and uncapped jobs are due, passes alternate which claims
+ * first, so a steady stream of either can't take every permit.
  *
  * An intent is delivered as a direct command whose command id is the intent
  * id, and its row is deleted only after the receiver's receipt has committed.
@@ -580,67 +555,33 @@ const logFailure =
  * failure is a committed receipt, so only a missing receipt retries. An
  * interrupted delivery makes its row due at once.
  *
- * A job attempt runs on the pool, outside the pass, and renews its claim
- * every `cancelCheckMs` (at most a third of the lease) while it runs, which
- * also picks up a cancellation committed on another runner; a local one
- * signals the attempt directly. The lease is measured on this runner from when
- * the last claim or renewal was sent, so the database's lease can only end
- * later, and an attempt that outlives it is interrupted, or never started,
- * since another runner may hold the row and a started call can't be undone. A
- * failed renewal retries at the next interval, and a renewal never shortens a
- * deadline, so it can't undo a test clock's lease shift. The attempt is raced
- * against its renewals, which are stopped and awaited before any settling
- * write, so a late renewal can't overwrite a failure's backoff with a fresh
- * lease.
+ * A job attempt runs on its own family and settles its row itself; see
+ * `jobAttempts`. A running attempt is registered before the pass releases its
+ * lock and until its outcome is written, so every clock jump after the claim
+ * moves its lease; a local cancellation signals running attempts directly.
  *
- * The first success of any attempt turns the row into an intent to its
- * `onSuccess` route; exhausting retries turns it into one to `onDeadLetter`.
- * The route is then delivered like any intent, so it commits once per job
- * id however often the executor ran. A success of a capped job waits while
- * a newer attempt's lease is live, so it does not free the slot early, and a
- * settled attempt of a capped job wakes the oldest waiting row of its
- * actor. Failures and dead letters name the attempt they settle, so a stale
- * attempt changes nothing, and a failure is recorded before its dead letter so
- * a failed dead-letter transaction is retried with this attempt's cause. A
- * final failure is never followed by another attempt. An attempt that never
- * started applied nothing, so the row stays as ambiguous as its earlier
- * attempts left it (`maybe_applied`). A running attempt is registered before
- * the pass releases its lock and until its outcome is written, so every clock
- * jump after the claim moves its lease. A committed terminal settle closes the
- * job's progress; a retryable one leaves it open. A dead letter is recorded
- * even when its row's request is unreadable, since only the fault hook needs
- * the request.
- *
- * A cancelled job is claimed only to be settled, with what is known: `Failed`
- * only when no attempt can have applied the call, otherwise `Unknown`,
- * because interrupting a started call does not undo it. A result `onSuccess`
- * rejects still reaches `onCancelled` if the job was cancelled, and a
- * success that lands after the row was cancelled is reported as the
- * cancellation's outcome. A success no settle matched is recorded as an
- * ambiguous dead letter instead of routing a second outcome. A dead letter
- * that loses to a cancellation settles the row as cancelled instead.
- *
- * Subscription work runs in its own slots, so a subscription backlog never
+ * Subscription work runs in its own families, so a subscription backlog never
  * delays intents, timers, or jobs; expansion work starts the rows it leased
  * without a claim pass; `schedules` names the cron actors whose ticks this
- * runner claims. The returned handle: `run` loops passes on a jittered
- * poll and `wake`; `drain` waits for in-flight work, which may stage more,
- * then claims again until a claim finds nothing while nothing was running
- * (work runs only on fibers a pass starts, so none running means nothing can
- * stage rows after that claim read), failing if deliveries keep staging due
- * work, and counting toward that limit only rounds that drained every due row; `stop` ends claims and
- * interrupts deliveries at once, since a delivery only waits on a turn its
- * receiver's owner finishes or rolls back on its own, and the receiver's
- * receipt answers a redelivery of work that did commit; `interruptAttempts`
- * interrupts running attempts and returns how many, leaving their claims and
- * `ambiguous` marks because the provider may have applied the call, so another
- * runner takes the job over once the lease ends; `attemptsIdle` waits for
- * attempts to end; `extendLeases` moves running attempts' leases with a jump of
- * the outbox clock, as the renewals during that time would have, holding the
- * pass lock so no claim reads the clock between the moved leases and the jump;
- * `cancelled` makes running attempts check for cancellation now. Closing the
- * scope stops further claims, after taking the lock so a pass in progress hands
- * its rows to fibers first and they are interrupted and released.
+ * runner claims. The returned handle: `run` loops passes on a jittered poll
+ * and `wake`; `drain` waits for in-flight work, which may stage more, then
+ * claims again until a claim finds nothing while nothing was running (work
+ * runs only on fibers a pass starts, so none running means nothing can stage
+ * rows after that claim read), failing if deliveries keep staging due work,
+ * and counting toward that limit only rounds that drained every due row;
+ * `stop` ends claims and interrupts deliveries at once, since a delivery only
+ * waits on a turn its receiver's owner finishes or rolls back on its own, and
+ * the receiver's receipt answers a redelivery of work that did commit;
+ * `interruptAttempts` interrupts running attempts and returns how many,
+ * leaving their claims and `ambiguous` marks because the provider may have
+ * applied the call, so another runner takes the job over once the lease ends;
+ * `attemptsIdle` waits for attempts to end; `extendLeases` moves running
+ * attempts' leases with a jump of the outbox clock, as the renewals during
+ * that time would have, holding the pass lock so no claim reads the clock
+ * between the moved leases and the jump; `cancelled` makes running attempts
+ * check for cancellation now. Closing the scope stops further claims, after
+ * taking the lock so a pass in progress hands its rows to fibers first and
+ * they are interrupted and released.
  */
 export const outboxRelay = Effect.fnUntraced(function* (
   deliver: (request: Request) => Effect.Effect<Outcome, ActorError>,
@@ -663,18 +604,30 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const lock = Semaphore.makeUnsafe(1)
   const signals = yield* Queue.sliding<void>(1)
   const wakeRelay = Queue.offer(signals, undefined).pipe(Effect.asVoid)
-  const deliveries = yield* FiberSet.make<unknown, unknown>()
-  const attempts = yield* FiberSet.make<unknown, unknown>()
+  const workConcurrency = subscriptions?.concurrency ?? 0
 
-  const subscriptionWork = {
-    feed: yield* FiberSet.make<unknown, unknown>(),
-    control: yield* FiberSet.make<unknown, unknown>(),
-    subscription: yield* FiberSet.make<unknown, unknown>(),
+  const lanes = {
+    intents: yield* lane(settings.deliveryConcurrency, wakeRelay),
+    jobs: yield* lane(settings.executorConcurrency, wakeRelay),
+    feed: yield* lane(workConcurrency, wakeRelay),
+    control: yield* lane(workConcurrency, wakeRelay),
+    subscription: yield* lane(workConcurrency, wakeRelay),
   }
 
   const hooks = yield* TurnHooks
-  const progress = yield* progressPool()
-  const ended = new Set<string>()
+  let cancelChecks = Deferred.makeUnsafe<void>()
+
+  const renewEveryMs = Math.min(
+    settings.cancelCheckMs ?? settings.executorLeaseMs / 3,
+    settings.executorLeaseMs / 3,
+  )
+
+  const attempt = yield* jobAttempts({
+    progress: yield* progressPool(),
+    leaseMs: settings.executorLeaseMs,
+    renewEveryMs,
+    wake: wakeRelay,
+  })
 
   const ticks = cronTicks({
     sql,
@@ -686,27 +639,12 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const startWork = (work: SubscriptionWork): Effect.Effect<void> =>
     subscriptions === undefined
       ? Effect.void
-      : FiberSet.run(
-          subscriptionWork[work.kind],
-          subscriptions
-            .run(work, handoff)
-            .pipe(
-              logFailure("Subscription relay work failed"),
-              Effect.ensuring(freed("subscriptions")),
-            ),
-        ).pipe(Effect.asVoid)
+      : lanes[work.kind].start(
+          subscriptions.run(work, handoff).pipe(logFailure("Subscription relay work failed")),
+        )
 
-  const handoff: Handoff = {
-    free: Effect.map(
-      FiberSet.size(subscriptionWork.subscription),
-      (running) => (subscriptions?.concurrency ?? 0) - running,
-    ),
-    start: startWork,
-  }
-
-  const more = { intents: false, jobs: false, subscriptions: false }
+  const handoff: Handoff = { free: lanes.subscription.free, start: startWork }
   let cappedTurn = false
-  const widen = { intents: 1, jobs: 1 }
   let stopping = false
 
   const running = new Map<
@@ -721,14 +659,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const backoffMs = (attempts: number) =>
     Math.min(1000 * 2 ** Math.max(attempts - 1, 0), settings.maxBackoffMs)
 
-  const requestOf = (row: ClaimedRow, target: "receiver" | "sender") =>
+  const requestOf = (row: ClaimedRow) =>
     Schema.decodeEffect(CallerJson)(row.caller).pipe(
       Effect.flatMap((caller) =>
         Schema.decodeEffect(Request)({
-          ref:
-            target === "receiver"
-              ? { tenant: row.tenant_id, actor: row.target_type, id: row.target_id }
-              : { tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id },
+          ref: { tenant: row.tenant_id, actor: row.target_type, id: row.target_id },
           caller,
           command: row.command,
           commandId: row.intent_id,
@@ -766,7 +701,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       if (route === undefined) return
 
-      const decoded = yield* requestOf({ ...row, ...route }, "receiver").pipe(Effect.result)
+      const decoded = yield* requestOf({ ...row, ...route }).pipe(Effect.result)
 
       if (Result.isFailure(decoded)) return yield* retryLater("UnreadableRow", decoded.failure)
 
@@ -813,493 +748,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
     )
   })
 
-  let cancelChecks = Deferred.makeUnsafe<void>()
-
   const cancelled = Effect.sync(() => {
     const previous = cancelChecks
     cancelChecks = Deferred.makeUnsafe<void>()
     Deferred.doneUnsafe(previous, Exit.void)
   })
 
-  const renewEveryMs = Math.min(
-    settings.cancelCheckMs ?? settings.executorLeaseMs / 3,
-    settings.executorLeaseMs / 3,
-  )
-
-  const groupOf = (row: ClaimedRow): CappedGroup => ({
-    routing_key: row.routing_key,
-    tenant_id: row.tenant_id,
-    actor_type: row.actor_type,
-    actor_id: row.actor_id,
-    command: row.command,
-  })
-
-  const runAttempt = Effect.fnUntraced(function* (
-    row: ClaimedJob,
-    registered: RegisteredJob,
-    claimedAt: bigint,
-    claimSignal: Deferred.Deferred<void>,
-  ) {
-    const routingKey = BigInt(row.routing_key)
-
-    const annotate = Effect.annotateLogs({
-      actor: row.actor_type,
-      id: row.actor_id,
-      tenant: row.tenant_id,
-      job: row.command,
-      jobId: row.intent_id,
-    })
-
-    const jobRow = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
-      AND kind = 'job'`
-
-    const attemptRow = (attempts: number) => sql`${jobRow} AND attempts = ${attempts}`
-
-    const settleTo = (
-      route: { readonly command: string; readonly payload: string } | undefined,
-      guard: typeof jobRow,
-    ) =>
-      Effect.gen(function* () {
-        const at = yield* databaseTime
-
-        const settled =
-          route === undefined
-            ? yield* sql`DELETE FROM actor_outbox WHERE ${guard} RETURNING 1`
-            : yield* sql`UPDATE actor_outbox SET kind = 'intent', command = ${route.command},
-                payload = ${route.payload}, payload_version = 0, due_at_ms = ${at}, scheduled_at_ms = ${at},
-                attempts = 0, last_error = NULL, ambiguous = false, running = false,
-                timer_key = NULL
-              WHERE ${guard} RETURNING 1`
-
-        if (settled.length === 0) return false
-        ended.add(row.intent_id)
-
-        if (route !== undefined) yield* wakeRelay
-
-        return true
-      })
-
-    const exhaust = (attempts: number, cause: string, ambiguous: boolean, cancelled: boolean) =>
-      sql.withTransaction(
-        Effect.gen(function* () {
-          const letter = {
-            jobId: row.intent_id,
-            attempts,
-            cause,
-            ambiguous,
-          }
-
-          if (
-            !(yield* settleTo(
-              yield* registered.deadLetter(row.payload, row.payload_version, letter),
-              sql`${attemptRow(attempts)} AND cancelled_at_ms IS ${sql.literal(
-                cancelled ? "NOT NULL" : "NULL",
-              )}`,
-            ))
-          )
-            return false
-
-          yield* Effect.logWarning("Job dead-lettered after its last attempt", cause).pipe(annotate)
-          yield* tally(Metrics.deadLetters, { actor_type: row.actor_type, job: row.command }, 1)
-          yield* sql`INSERT INTO actor_dead_letters (routing_key, job_id, tenant_id, actor_type,
-              actor_id, job, payload, payload_version, attempts, cause, ambiguous, dead_at_ms)
-            VALUES (${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
-              ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempts},
-              ${cause}, ${ambiguous}, ${yield* databaseTime})`
-
-          const request = yield* requestOf(row, "sender").pipe(Effect.option)
-
-          if (Option.isSome(request)) yield* hooks.at("beforeDeadLetterCommit", request.value)
-
-          return true
-        }),
-      )
-
-    /**
-     * Settles a cancelled job that has no result. It is `Failed` only when
-     * no attempt can have applied the call; otherwise `Unknown`. Without an
-     * `onCancelled` route, an unknown outcome is dead-lettered as ambiguous
-     * and a failed one is dropped with a log line.
-     */
-    const settleCancelled = (attempts: number, known: "Failed" | "Unknown", cause: string) =>
-      Effect.gen(function* () {
-        const guard = sql`${attemptRow(attempts)} AND cancelled_at_ms IS NOT NULL`
-        const ambiguous = known === "Unknown"
-
-        if (registered.routesCancelled) {
-          const route = yield* registered.cancelled(row.payload, row.payload_version, {
-            jobId: row.intent_id,
-            attempts,
-            outcome: { _tag: known, cause },
-            ambiguous,
-          })
-
-          if (route !== undefined) return yield* settleTo(route, guard)
-        }
-
-        if (ambiguous) return yield* exhaust(attempts, cause, true, true)
-
-        const dropped = yield* settleTo(undefined, guard)
-
-        if (dropped)
-          yield* Effect.logInfo("Cancelled job dropped after a failed attempt", cause).pipe(
-            Effect.annotateLogs({ attempt: attempts }),
-            annotate,
-          )
-
-        return dropped
-      })
-
-    const cancelledCause = (attempts: number) =>
-      `Cancelled while attempt ${attempts} was running; the provider may have applied it`
-
-    const exhaustUnlessCancelled = (attempts: number, cause: string, ambiguous: boolean) =>
-      Effect.gen(function* () {
-        if (yield* exhaust(attempts, cause, ambiguous, false)) return
-
-        const [cancelled] = yield* sql<{ maybe_applied: boolean }>`SELECT maybe_applied
-          FROM actor_outbox WHERE ${attemptRow(attempts)} AND cancelled_at_ms IS NOT NULL`
-
-        if (cancelled !== undefined)
-          yield* settleCancelled(
-            attempts,
-            ambiguous || cancelled.maybe_applied ? "Unknown" : "Failed",
-            cause,
-          )
-      })
-
-    if (row.cancelled) {
-      if (row.attempts === 0) return yield* settleTo(undefined, sql`${attemptRow(0)}`)
-
-      return yield* settleCancelled(
-        row.attempts,
-        row.ambiguous || row.maybe_applied ? "Unknown" : "Failed",
-        row.ambiguous || row.maybe_applied
-          ? (row.last_error ?? cancelledCause(row.attempts))
-          : (row.last_error ?? "Failed before it was cancelled"),
-      )
-    }
-
-    if (row.exhausted)
-      return yield* exhaustUnlessCancelled(
-        row.attempts,
-        row.last_error ?? "No attempt reported",
-        row.ambiguous,
-      )
-
-    const attempt = row.attempts
-
-    const warnAttempt = (message: string) =>
-      Effect.logWarning(message).pipe(Effect.annotateLogs({ attempt }), annotate)
-
-    const request = yield* requestOf(row, "sender").pipe(Effect.orDie)
-    const ref = ActorRef.make(request.ref)
-    const lease = running.get(row.intent_id)?.lease ?? { until: Number(row.claimed_until) }
-    const leaseNanos = BigInt(settings.executorLeaseMs) * 1_000_000n
-    let confirmed = claimedAt
-
-    yield* hooks.at("afterClaim", request)
-    yield* hooks.at("beforeExecute", request)
-
-    if ((yield* Clock.currentTimeNanos) - confirmed >= leaseNanos)
-      return yield* warnAttempt("Job attempt outlived its lease before it started")
-
-    let signal = claimSignal
-
-    const renewals = Effect.gen(function* () {
-      while (true) {
-        yield* Deferred.await(signal).pipe(
-          Effect.timeoutOrElse({ duration: renewEveryMs, orElse: () => Effect.void }),
-        )
-        signal = cancelChecks
-        const sent = yield* Clock.currentTimeNanos
-
-        const renewed = yield* Effect.gen(function* () {
-          yield* hooks.at("beforeRenew", request)
-
-          return yield* sql<{ cancelled: boolean; due_at_ms: string }>`UPDATE actor_outbox
-              SET due_at_ms = greatest(due_at_ms, ${(yield* databaseTime) + settings.executorLeaseMs})
-              WHERE ${attemptRow(attempt)}
-              RETURNING cancelled_at_ms IS NOT NULL AS cancelled, due_at_ms::text AS due_at_ms`.pipe(
-            Effect.uninterruptible,
-          )
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.interrupt
-              : Effect.logWarning("Job lease renewal failed", cause).pipe(
-                  annotate,
-                  Effect.as(undefined),
-                ),
-          ),
-        )
-
-        if (renewed === undefined) continue
-
-        if (renewed.length === 0) return "lost" as const
-        confirmed = sent
-        lease.until = Number(renewed[0]!.due_at_ms)
-
-        if (renewed[0]!.cancelled) return "cancelled" as const
-      }
-    })
-
-    const deadline = Effect.gen(function* () {
-      while (true) {
-        const left = confirmed + leaseNanos - (yield* Clock.currentTimeNanos)
-
-        if (left <= 0n) return "deadline" as const
-        yield* Effect.sleep(Number(left / 1_000_000n) + 1)
-      }
-    })
-
-    const slot = yield* progress.open({
-      ref,
-      jobId: row.intent_id,
-      job: row.command,
-      attempt,
-      everyMs: registered.progressEveryMs,
-      leaseUntil: () => lease.until,
-    })
-
-    return yield* Effect.gen(function* () {
-      const outcome = yield* registered
-        .execute(row.payload, row.payload_version, {
-          jobId: row.intent_id,
-          attempt,
-          principal: principal(request.caller),
-          ref,
-          reporting: slot.active,
-          report: slot.offer,
-        })
-        .pipe(
-          Effect.withSpan(
-            SpanNames.job(row.actor_type, row.command),
-            {
-              kind: "client",
-              attributes: {
-                "actor.type": row.actor_type,
-                "actor.tenant": row.tenant_id,
-                "actor.id": row.actor_id,
-                "job.name": row.command,
-                "job.id": row.intent_id,
-                "job.attempt": attempt,
-              },
-            },
-            { captureStackTrace: false },
-          ),
-          Effect.result,
-          Effect.raceFirst(renewals),
-          Effect.raceFirst(deadline),
-          Effect.ensuring(slot.close),
-        )
-
-      if (outcome === "lost") return yield* warnAttempt("Job attempt lost its lease")
-
-      if (outcome === "deadline")
-        return yield* warnAttempt("Job attempt outlived its lease; interrupted")
-
-      if (outcome === "cancelled") {
-        yield* Effect.logInfo("Job attempt interrupted by its cancellation").pipe(
-          Effect.annotateLogs({ attempt }),
-          annotate,
-        )
-
-        return yield* settleCancelled(attempt, "Unknown", cancelledCause(attempt))
-      }
-
-      const recordLate = (routes: {
-        readonly cancelled?: { readonly command: string } | undefined
-      }) =>
-        Effect.gen(function* () {
-          const late = yield* sql`UPDATE actor_dead_letters SET ambiguous = true
-          WHERE routing_key = ${routingKey} AND job_id = ${row.intent_id} RETURNING 1`
-
-          if (late.length > 0) return yield* warnAttempt("Job succeeded after it was dead-lettered")
-
-          const reported = routes.cancelled?.command
-
-          if (registered.routesCancelled && reported !== undefined) {
-            const recorded = yield* sql`INSERT INTO actor_dead_letters (routing_key, job_id,
-              tenant_id, actor_type, actor_id, job, payload, payload_version, attempts, cause,
-              ambiguous, dead_at_ms)
-            SELECT ${routingKey}, ${row.intent_id}, ${row.tenant_id}, ${row.actor_type},
-              ${row.actor_id}, ${row.command}, ${row.payload}, ${row.payload_version}, ${attempt},
-              'Succeeded after it was cancelled', true, ${yield* databaseTime}
-            WHERE EXISTS (
-              SELECT 1 FROM actor_outbox WHERE ${sql`routing_key = ${routingKey}`}
-                AND intent_id = ${row.intent_id} AND kind = 'intent' AND command = ${reported}
-              UNION ALL
-              SELECT 1 FROM actor_receipts WHERE routing_key = ${routingKey}
-                AND tenant_id = ${row.tenant_id} AND actor_type = ${row.actor_type}
-                AND actor_id = ${row.actor_id} AND command_id = ${row.intent_id}
-                AND command = ${reported}
-            )
-            ON CONFLICT (routing_key, job_id) DO UPDATE SET ambiguous = true
-            RETURNING 1`
-
-            if (recorded.length > 0)
-              yield* warnAttempt("Job succeeded after its cancellation settled")
-          }
-        })
-
-      const settleSuccess = (
-        route: { readonly command: string; readonly payload: string } | undefined,
-        guard: typeof jobRow,
-      ) =>
-        registered.perActor === undefined
-          ? settleTo(route, guard)
-          : Effect.gen(function* () {
-              while (true) {
-                const newer = (at: number) =>
-                  sql`(attempts > ${attempt} AND running AND due_at_ms > ${at})`
-
-                if (yield* settleTo(route, sql`${guard} AND NOT ${newer(yield* databaseTime)}`))
-                  return true
-
-                const held = yield* sql<{ live: boolean }>`SELECT ${newer(
-                  yield* databaseTime,
-                )} AS live FROM actor_outbox WHERE ${guard}`
-
-                if (held.length === 0) return false
-
-                if (held[0]!.live) yield* Effect.sleep(renewEveryMs)
-              }
-            })
-
-      const rejected = Result.isSuccess(outcome) ? outcome.success.rejected : undefined
-
-      if (rejected !== undefined && registered.routesCancelled && Result.isSuccess(outcome)) {
-        yield* hooks.at("afterExecute", request)
-
-        if (
-          yield* settleSuccess(
-            outcome.success.cancelled,
-            sql`${jobRow} AND cancelled_at_ms IS NOT NULL`,
-          )
-        )
-          return
-      }
-
-      if (Result.isSuccess(outcome) && rejected === undefined) {
-        yield* hooks.at("afterExecute", request)
-        const routes = outcome.success
-
-        if (yield* settleSuccess(routes.success, sql`${jobRow} AND cancelled_at_ms IS NULL`))
-          return yield* tally(Metrics.relayDelivered, { kind: "job" }, 1)
-
-        if (
-          yield* settleSuccess(
-            registered.routesCancelled ? routes.cancelled : routes.success,
-            sql`${jobRow} AND cancelled_at_ms IS NOT NULL`,
-          )
-        )
-          return
-
-        return yield* recordLate(routes)
-      }
-
-      const failure = Result.isFailure(outcome) ? outcome.failure : rejected
-
-      if (failure === undefined) return
-
-      const { cause, final, notStarted } = failure
-      const last = final === true || attempt >= registered.attempts
-      const { baseMs, maxMs } = registered.backoff
-
-      const recorded = yield* sql<{
-        cancelled: boolean
-        maybe_applied: boolean
-        ambiguous: boolean
-      }>`UPDATE actor_outbox
-        SET last_error = ${cause},
-          ambiguous = ${notStarted === true ? sql`maybe_applied` : sql`${failure.ambiguous}`},
-          running = false, final_failure = ${final === true},
-          due_at_ms = ${(yield* databaseTime) + Math.min(baseMs * 2 ** (attempt - 1), maxMs)}
-        WHERE ${attemptRow(attempt)}
-        RETURNING cancelled_at_ms IS NOT NULL AS cancelled, maybe_applied, ambiguous`
-
-      const ambiguous = recorded[0]?.ambiguous ?? failure.ambiguous
-
-      if (recorded.length === 0 && rejected !== undefined && Result.isSuccess(outcome))
-        return yield* recordLate(outcome.success)
-
-      if (
-        recorded[0]?.cancelled === true &&
-        rejected !== undefined &&
-        registered.routesCancelled &&
-        Result.isSuccess(outcome) &&
-        (yield* settleTo(
-          outcome.success.cancelled,
-          sql`${attemptRow(attempt)} AND cancelled_at_ms IS NOT NULL`,
-        ))
-      )
-        return
-
-      if (recorded[0]?.cancelled === true)
-        return yield* settleCancelled(
-          attempt,
-          ambiguous || recorded[0].maybe_applied ? "Unknown" : "Failed",
-          cause,
-        )
-
-      if (last) return yield* exhaustUnlessCancelled(attempt, cause, ambiguous)
-
-      yield* Effect.logWarning("Job attempt failed; retrying with backoff", cause).pipe(
-        Effect.annotateLogs({ attempt, ambiguous }),
-        annotate,
-      )
-      yield* tally(Metrics.relayRetried, { kind: "job" }, 1)
-    }).pipe(Effect.ensuring(progress.forget(row.intent_id)))
-  })
-
-  const settleAttempt = (
-    row: ClaimedJob,
-    registered: RegisteredJob,
-    claimedAt: bigint,
-    claimSignal: Deferred.Deferred<void>,
-  ) => {
-    const attempt = runAttempt(row, registered, claimedAt, claimSignal).pipe(
-      Effect.tap(() =>
-        ended.delete(row.intent_id)
-          ? requestOf(row, "sender").pipe(
-              Effect.flatMap((request) =>
-                progress.closed({
-                  ref: ActorRef.make(request.ref),
-                  jobId: row.intent_id,
-                  job: row.command,
-                  attempt: row.attempts,
-                  everyMs: registered.progressEveryMs,
-                }),
-              ),
-              Effect.ignore,
-            )
-          : Effect.void,
-      ),
-      Effect.ensuring(Effect.sync(() => ended.delete(row.intent_id))),
-    )
-
-    return registered.perActor === undefined
-      ? attempt
-      : attempt.pipe(
-          Effect.ensuring(
-            Effect.gen(function* () {
-              const woke = yield* wakeWaiting({ sql, group: groupOf(row), at: yield* databaseTime })
-
-              if (woke.length > 0) yield* wakeRelay
-            }).pipe(Effect.ignore),
-          ),
-        )
-  }
-
-  const freed = (kind: "intents" | "jobs" | "subscriptions") =>
-    Effect.suspend(() => (more[kind] ? wakeRelay : Effect.void))
-
-  const interruptible = [deliveries, ...Object.values(subscriptionWork)]
-  const everything = [deliveries, attempts, ...Object.values(subscriptionWork)]
-
-  const inFlight = Effect.map(Effect.forEach(everything, FiberSet.size), (sizes) =>
-    sizes.reduce((sum, size) => sum + size, 0),
+  const all = Object.values(lanes)
+  const interruptible = all.filter((family) => family !== lanes.jobs)
+
+  const inFlight = Effect.map(
+    Effect.forEach(all, (family) => FiberSet.size(family.fibers)),
+    (sizes) => sizes.reduce((sum, size) => sum + size, 0),
   )
 
   const pass = lock
@@ -1309,16 +769,11 @@ export const outboxRelay = Effect.fnUntraced(function* (
           if (stopping) return { claimed: 0, backlog: false, quiet: true }
 
           const quiet = (yield* inFlight) === 0
-
-          const slots = Math.min(
-            settings.deliveryConcurrency - (yield* FiberSet.size(deliveries)),
-            settings.passLimit,
-          )
-
-          const all = executors()
-          const local = all.filter(({ registered }) => registered.perActor === undefined)
-          const capped = all.filter(({ registered }) => registered.perActor !== undefined)
-          const permits = settings.executorConcurrency - (yield* FiberSet.size(attempts))
+          const slots = Math.min(yield* lanes.intents.free, settings.passLimit)
+          const local = executors()
+          const uncapped = local.filter(({ registered }) => registered.perActor === undefined)
+          const capped = local.filter(({ registered }) => registered.perActor !== undefined)
+          const permits = yield* lanes.jobs.free
           const claimedAt = yield* Clock.currentTimeNanos
           const claimSignal = cancelChecks
           const clock = yield* FrameworkClock
@@ -1327,19 +782,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
             subscriptions === undefined
               ? undefined
               : {
-                  feed: subscriptions.concurrency - (yield* FiberSet.size(subscriptionWork.feed)),
-                  control:
-                    subscriptions.concurrency - (yield* FiberSet.size(subscriptionWork.control)),
-                  subscription:
-                    subscriptions.concurrency -
-                    (yield* FiberSet.size(subscriptionWork.subscription)),
+                  feed: yield* lanes.feed.free,
+                  control: yield* lanes.control.free,
+                  subscription: yield* lanes.subscription.free,
                 }
 
           const now = outboxNow({ sql, offsetMillis: clock.offsetMillis() })
 
           const claimGroups = (limit: number) =>
             Effect.gen(function* () {
-              const claimed: Array<ClaimedJob> = []
+              const claimed: Array<ClaimedRow> = []
               const groups = yield* cappedGroups({ sql, now, executors: capped, limit })
 
               for (const group of groups) {
@@ -1369,16 +821,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
               return { claimed, backlog }
             })
 
-          const cappedFirst = capped.length > 0 && local.length > 0 && cappedTurn
+          const cappedFirst = capped.length > 0 && uncapped.length > 0 && cappedTurn
 
-          if (capped.length > 0 && local.length > 0) cappedTurn = !cappedTurn
+          if (capped.length > 0 && uncapped.length > 0) cappedTurn = !cappedTurn
 
           const early =
             cappedFirst && permits > 0
               ? yield* claimGroups(permits)
               : { claimed: [], backlog: false }
 
-          const localPermits = permits - early.claimed.length
+          const uncappedPermits = permits - early.claimed.length
 
           const rows = yield* claimDue({
             sql,
@@ -1389,42 +841,41 @@ export const outboxRelay = Effect.fnUntraced(function* (
                     limit: slots,
                     leaseMs: settings.claimLeaseMs(),
                     maxBackoffMs: settings.maxBackoffMs,
-                    probe: 2 * slots * widen.intents,
+                    probe: lanes.intents.probe(slots),
                     cronActors: [...schedules().keys()],
                   }
                 : undefined,
             jobs:
-              localPermits > 0 && local.length > 0
+              uncappedPermits > 0 && uncapped.length > 0
                 ? {
-                    permits: localPermits,
+                    permits: uncappedPermits,
                     leaseMs: settings.executorLeaseMs,
-                    executors: local,
-                    probe: 2 * localPermits * widen.jobs,
+                    executors: uncapped,
+                    probe: lanes.jobs.probe(uncappedPermits),
                   }
                 : undefined,
             subscriptions: workSlots === undefined ? undefined : subscriptions!.claim(workSlots),
           })
 
+          const found = (kind: "intent" | "job", taken: ReadonlyArray<ClaimedRow>) =>
+            (taken[0] ?? rows.find((row) => row.kind === `skipped-${kind}`))?.candidates ?? 0
+
           const intents = rows.filter((row) => row.kind === "intent")
-          const uncapped = rows.filter((row) => row.kind === "job")
+          const uncappedRows = rows.filter((row) => row.kind === "job")
 
           const late =
-            !cappedFirst && capped.length > 0 && localPermits - uncapped.length > 0
-              ? yield* claimGroups(localPermits - uncapped.length)
+            !cappedFirst && capped.length > 0 && uncappedPermits - uncappedRows.length > 0
+              ? yield* claimGroups(uncappedPermits - uncappedRows.length)
               : { claimed: [], backlog: false }
 
-          const jobs = [...early.claimed, ...uncapped, ...late.claimed]
-          const cappedBacklog = early.backlog || late.backlog
+          const jobs = [...early.claimed, ...uncappedRows, ...late.claimed]
 
-          if (slots > 0) {
-            more.intents = intents.length > 0 && intents[0]!.candidates > intents.length
-            widen.intents = widened(widen.intents, rows, "intent", slots)
-          }
+          if (slots > 0) lanes.intents.claimed(slots, intents.length, found("intent", intents))
 
-          if (permits > 0 && all.length > 0) {
-            more.jobs =
-              cappedBacklog || (uncapped.length > 0 && uncapped[0]!.candidates > uncapped.length)
-            widen.jobs = widened(widen.jobs, rows, "job", localPermits)
+          if (permits > 0 && local.length > 0) {
+            lanes.jobs.claimed(uncappedPermits, uncappedRows.length, found("job", uncappedRows))
+
+            if (early.backlog || late.backlog) lanes.jobs.backlog(true)
           }
 
           let claimedWork = 0
@@ -1436,48 +887,50 @@ export const outboxRelay = Effect.fnUntraced(function* (
             )
 
             claimedWork = work.length
-            more.subscriptions = (["feed", "control", "subscription"] as const).some(
-              (kind) =>
-                workSlots[kind] > 0 &&
-                work.filter((item) => item.kind === kind).length >= workSlots[kind],
-            )
+
+            for (const kind of ["feed", "control", "subscription"] as const) {
+              const taken = work.filter((item) => item.kind === kind).length
+
+              lanes[kind].backlog(workSlots[kind] > 0 && taken >= workSlots[kind])
+            }
 
             for (const item of work) yield* startWork(item)
           }
 
           for (const row of intents)
-            yield* FiberSet.run(
-              deliveries,
-              deliverIntent(row).pipe(
-                logFailure("Outbox relay crashed settling a row"),
-                Effect.ensuring(freed("intents")),
-              ),
+            yield* lanes.intents.start(
+              deliverIntent(row).pipe(logFailure("Outbox relay crashed settling a row")),
             )
 
           for (const row of jobs) {
-            const registered = all.find(
+            const registered = local.find(
               ({ actor, job }) => actor === row.actor_type && job === row.command,
             )!.registered
+
+            const lease = { until: Number(row.claimed_until) }
 
             running.set(row.intent_id, {
               routingKey: BigInt(row.routing_key),
               attempt: row.attempts,
-              lease: { until: Number(row.claimed_until) },
+              lease,
             })
 
-            yield* FiberSet.run(
-              attempts,
-              settleAttempt(row, registered, claimedAt, claimSignal).pipe(
+            yield* lanes.jobs.start(
+              attempt(row, registered, {
+                at: claimedAt,
+                signal: claimSignal,
+                next: () => cancelChecks,
+                lease,
+              }).pipe(
                 Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
                 logFailure("Job attempt crashed before it settled"),
-                Effect.ensuring(freed("jobs")),
               ),
             )
           }
 
           return {
             claimed: intents.length + jobs.length + claimedWork,
-            backlog: more.intents || more.jobs || more.subscriptions,
+            backlog: all.some((family) => family.more),
             quiet,
           }
         }),
@@ -1493,7 +946,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
     }
   })
 
-  const idle = Effect.forEach(everything, FiberSet.awaitEmpty, { discard: true })
+  const idle = Effect.forEach(all, (family) => FiberSet.awaitEmpty(family.fibers), {
+    discard: true,
+  })
 
   const drain = Effect.gen(function* () {
     for (let rounds = 0; rounds < DRAIN_ROUNDS;) {
@@ -1521,10 +976,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
       .withPermit(
         Effect.forEach(
           [...running],
-          ([intentId, { routingKey, attempt, lease }]) =>
+          ([intentId, { routingKey, attempt: current, lease }]) =>
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-              AND kind = 'job' AND attempts = ${attempt}`.pipe(
+              AND kind = 'job' AND attempts = ${current}`.pipe(
               Effect.tap(
                 Effect.sync(() => {
                   lease.until += millis
@@ -1538,18 +993,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
   const stop = Effect.andThen(
     halt,
-    Effect.forEach(interruptible, FiberSet.clear, { discard: true }),
+    Effect.forEach(interruptible, (family) => FiberSet.clear(family.fibers), { discard: true }),
   )
 
-  const interruptAttempts = Effect.flatMap(FiberSet.size(attempts), (running) =>
-    FiberSet.clear(attempts).pipe(Effect.as(running)),
+  const interruptAttempts = Effect.flatMap(FiberSet.size(lanes.jobs.fibers), (count) =>
+    FiberSet.clear(lanes.jobs.fibers).pipe(Effect.as(count)),
   )
 
   return {
     run,
     drain,
     stop,
-    attemptsIdle: FiberSet.awaitEmpty(attempts),
+    attemptsIdle: FiberSet.awaitEmpty(lanes.jobs.fibers),
     interruptAttempts,
     extendLeases,
     wake: wakeRelay,
