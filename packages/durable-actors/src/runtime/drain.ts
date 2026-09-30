@@ -1,4 +1,4 @@
-import { Context, Deferred, Duration, Effect, Exit, Option, type Scope } from "effect"
+import { Context, Deferred, Duration, Effect, Exit, Fiber, Option, type Scope } from "effect"
 import { ActorError, ActorUnavailable } from "../errors/actor.ts"
 
 /**
@@ -23,8 +23,9 @@ export type Readiness =
 /** What a drain did. */
 export interface DrainReport {
   /**
-   * `clean` when every in-flight turn and effect attempt finished before the
-   * deadline; `deadline-expired` when the deadline interrupted some.
+   * `clean` when claims and background work stopped and every in-flight turn
+   * and effect attempt finished before the deadline; `deadline-expired`
+   * otherwise, when the deadline interrupted what was still in flight.
    */
   readonly outcome: "clean" | "deadline-expired"
   /**
@@ -124,8 +125,12 @@ export const turnGate = () => {
 
       return Deferred.await(idle)
     }),
-    /** Interrupts every turn in flight and returns how many it interrupted, once they have ended. */
+    /**
+     * Refuses new turns, interrupts every turn in flight, and returns how many
+     * it interrupted, once they have ended.
+     */
     expire: Effect.suspend(() => {
+      open = false
       Deferred.doneUnsafe(expired, Exit.void)
 
       if (inFlight > 0) idle ??= Deferred.makeUnsafe<void>()
@@ -157,6 +162,13 @@ interface Drainable {
 /**
  * The drain runs in the runtime's scope, so a caller that stops waiting
  * neither cancels it nor leaves a later caller without its report.
+ *
+ * The deadline counts from the call and covers stopping claims and background
+ * work too: releasing a claimed delivery or ending a sweep writes to the
+ * database, which a slow or contended database can hold for longer than the
+ * deadline. That stop runs on in the runtime's scope, so claims still end,
+ * while the deadline interrupts the turns and effect attempts in flight and
+ * the report says it expired.
  */
 export const runtimeControl = ({
   scope,
@@ -167,13 +179,20 @@ export const runtimeControl = ({
 
   const run = (deadline: Duration.Duration) =>
     Effect.gen(function* () {
-      yield* runtime.stopClaims
-      yield* runtime.stopBackground
+      const stopping = yield* runtime.stopClaims.pipe(
+        Effect.andThen(runtime.stopBackground),
+        Effect.forkIn(scope),
+      )
 
-      const finished = yield* Effect.all([runtime.gate.close, runtime.attemptsIdle], {
-        concurrency: 2,
-        discard: true,
-      }).pipe(Effect.timeoutOption(deadline))
+      const finished = yield* Fiber.join(stopping).pipe(
+        Effect.andThen(
+          Effect.all([runtime.gate.close, runtime.attemptsIdle], {
+            concurrency: 2,
+            discard: true,
+          }),
+        ),
+        Effect.timeoutOption(deadline),
+      )
 
       const done: DrainReport = Option.isSome(finished)
         ? { outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 }
