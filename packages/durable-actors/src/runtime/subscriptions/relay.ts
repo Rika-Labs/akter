@@ -437,6 +437,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     for (;;) {
       const free = local.length === 0 ? 0 : Math.max(0, yield* handoff.free)
+
       const leasable =
         free === 0
           ? sql`leasable AS MATERIALIZED (
@@ -1133,9 +1134,10 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
               { captureStackTrace: false },
             ),
           )
-        : work.kind === "feed"
-          ? expand(work, handoff)
-          : register(work)
+        : Match.value(work.kind).pipe(
+            Match.when("feed", () => expand(work, handoff)),
+            Match.orElse(() => register(work)),
+          )
 
     return running.pipe(Effect.onInterrupt(() => release(work, claim)))
   }
