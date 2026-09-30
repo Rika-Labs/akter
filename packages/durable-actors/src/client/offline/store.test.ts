@@ -167,7 +167,7 @@ describe("IndexedDB offline store", () => {
           store.save(Object.assign(saved("b", 2), { hook: () => undefined })),
         )
 
-        expect(unstorable).toBeDefined()
+        expect(unstorable).toHaveProperty("name", "DataCloneError")
         expect(yield* ids(store)).toEqual(["a"])
       }),
     ))

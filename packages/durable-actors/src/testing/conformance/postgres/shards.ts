@@ -29,6 +29,7 @@ export const shards = {
   streams: ["streams"],
   subscriptions: ["subscriptions", "subscriptionsRetention", "subscriptionsCluster"],
   transports: ["transports"],
+  watch: ["watch"],
   "workflow-versions": ["workflowVersions"],
   workflows: ["workflows"],
 } as const satisfies Record<string, ReadonlyArray<ConformanceGroup>>
