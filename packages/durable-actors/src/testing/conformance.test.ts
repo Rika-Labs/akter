@@ -1,6 +1,6 @@
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Fiber, Layer, Schema } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { Actor } from "../index.ts"
 import {
   type ConformanceBackend,
@@ -114,12 +114,16 @@ const collect = () => {
 
 /** Runs one registered case and returns its failure message, if it failed. */
 const run = (registered: Registered, signal?: AbortSignal) =>
-  Effect.promise(() =>
-    registered.body({ signal }).then(
-      () => undefined,
-      (error: unknown) => String(error),
-    ),
+  Effect.tryPromise(() => registered.body({ signal })).pipe(
+    Effect.exit,
+    Effect.map((exit) => (Exit.isFailure(exit) ? Cause.pretty(exit.cause) : undefined)),
   )
+
+/** Runs each lifecycle hook the harness registered, in order. */
+const hooks = (registered: ReadonlyArray<() => Promise<void> | void>) =>
+  Effect.forEach(registered, (hook) => Effect.promise(() => Promise.resolve(hook())), {
+    discard: true,
+  })
 
 describe("conformance harness", () => {
   it.live(
@@ -145,28 +149,27 @@ describe("conformance harness", () => {
         )
         expect(skipped).toEqual(["needs a second connection"])
         expect(built).toEqual([])
-        yield* Effect.promise(async () => {
-          for (const hook of before) await hook()
-        })
+        yield* hooks(before)
         expect(built).toEqual(["dependency", "probe"])
 
         const [hang, next, undeclared, declared] = registered
-        const timeout = new AbortController()
-        const hanging = yield* run(hang!, timeout.signal).pipe(Effect.forkChild)
+
+        const hanging = yield* Effect.abortSignal.pipe(
+          Effect.flatMap((signal) => run(hang!, signal)),
+          Effect.scoped,
+          Effect.forkChild,
+        )
+
         yield* Effect.sleep("100 millis")
         expect(fixture.events).toEqual(["hang started"])
-        timeout.abort()
+        yield* Fiber.interrupt(hanging)
 
-        const following = yield* run(next!).pipe(Effect.forkChild)
-        expect(yield* Fiber.join(hanging)).toBeDefined()
-        expect(yield* Fiber.join(following)).toBeUndefined()
+        expect(yield* run(next!)).toBeUndefined()
         expect(fixture.events).toEqual(["hang started", "hang finalized", "next started"])
         expect(yield* run(undeclared!)).toContain("without declaring requiresFreshDatabase")
         expect(yield* run(declared!)).toBeUndefined()
 
-        yield* Effect.promise(async () => {
-          for (const hook of after) await hook()
-        })
+        yield* hooks(after)
       }),
     30_000,
   )

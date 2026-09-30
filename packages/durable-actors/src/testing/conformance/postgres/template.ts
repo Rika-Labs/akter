@@ -18,7 +18,9 @@ export default (project: TestProject) =>
     Effect.gen(function* () {
       const url = yield* Config.Redacted("TEST_DATABASE_URL")
       yield* sweepStaleDatabases(url)
+
       const scope = yield* Scope.make()
+
       const template = yield* disposableDatabase({ url, prefix: "actors_template" }).pipe(
         Scope.provide(scope),
       )

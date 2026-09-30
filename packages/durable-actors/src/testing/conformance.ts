@@ -279,7 +279,7 @@ export interface ConformanceAccess {
 export interface ConformanceSuite<F = undefined> {
   readonly fixture?: () => F
   /** Declared as a method so its parameter stays bivariant and any suite fits `ConformanceSuite<unknown>`. */
-  layer?(fixture: F): Layer.Layer<never, unknown, ConformanceSuiteServices>
+  layer?(fixture: F): Layer.Layer<never, never, ConformanceSuiteServices>
   /** Other suites whose actors this suite's cases call. */
   readonly uses?: ReadonlyArray<ConformanceSuite<unknown>>
   /** Runs at every turn fault point, as the process-level `TurnHooks`. */
@@ -611,7 +611,7 @@ export const registerConformance = (options: {
   const contentHooks = suites.flatMap((suite) => suite.content?.(fixtureOf(suite)) ?? [])
   const loggers = suites.flatMap((suite) => suite.logger?.(fixtureOf(suite)) ?? [])
 
-  let live: Layer.Layer<never, unknown, ConformanceSuiteServices> = Layer.empty
+  let live: Layer.Layer<never, never, ConformanceSuiteServices> = Layer.empty
 
   for (const suite of suites)
     if (suite.layer !== undefined) live = Layer.merge(live, suite.layer(fixtureOf(suite)))

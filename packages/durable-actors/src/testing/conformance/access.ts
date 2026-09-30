@@ -649,7 +649,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "answers a served request from a User or Anonymous caller with 403 access_denied by default, and lets an actor's access, or Actor.access.public, allow them",
     requiresFreshDatabase: true,
-    run: ({ expect, environment, access }) => {
+    run: ({ expect, environment }) => {
       const closed = ledgerOf("AccessServedClosed")
       const anonymous = ledgerOf("AccessServedPublic", ({ caller }) => isAnonymous(caller))
 
@@ -731,7 +731,7 @@ export const accessConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "keeps internal commands System-only and off public handles when an actor's access allows everyone",
     requiresFreshDatabase: true,
-    run: ({ expect, environment, access }) => {
+    run: ({ expect, environment }) => {
       const { Ledger, layer } = ledgerOf("AccessInternal", Actor.access.public)
 
       return deploy(

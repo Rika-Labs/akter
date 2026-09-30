@@ -1255,7 +1255,7 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "refuses a request whose Origin is neither the server's nor listed, and serves requests without Origin",
-    run: ({ expect, environment, access }) =>
+    run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
           const server = yield* serveHttp({ origins: ["https://app.example.com"] })

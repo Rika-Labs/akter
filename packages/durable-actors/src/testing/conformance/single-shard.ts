@@ -5,7 +5,6 @@ import type {
   ConformanceCase,
   ConformanceEnvironment,
   ConformanceServices,
-  ConformanceSuite,
 } from "../conformance.ts"
 import { touchesOneShard } from "./neki/plan.ts"
 import { mintWorkload } from "./mint.ts"

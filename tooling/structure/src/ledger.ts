@@ -55,22 +55,28 @@ const registeredCase = (registered: ReadonlySet<string>) => {
  * text, because crash, example and browser suites build names in loops over
  * fault points and flavors. Only test files declare names.
  */
-const declaredPatterns = (text: string): ReadonlyArray<RegExp | string> =>
-  Array.from(
-    text.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g),
-    (match): RegExp | string => {
-      const template = match[3]
+const declaredPatterns = (text: string) => {
+  const literals: Array<string> = []
+  const templates: Array<RegExp> = []
 
-      if (template === undefined || !template.includes("${"))
-        return match[1] ?? match[2] ?? template ?? ""
+  for (const match of text.matchAll(
+    /"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g,
+  )) {
+    const template = match[3]
 
-      const parts = template.split(/\$\{[^}]*\}/)
+    if (template === undefined || !template.includes("${")) {
+      literals.push(match[1] ?? match[2] ?? template ?? "")
+      continue
+    }
 
-      if (Math.max(...parts.map((part) => part.length)) < 12) return ""
+    const parts = template.split(/\$\{[^}]*\}/)
 
-      return new RegExp(`^${parts.map(escape).join(".+")}$`)
-    },
-  ).filter((pattern) => pattern !== "")
+    if (Math.max(...parts.map((part) => part.length)) >= 12)
+      templates.push(new RegExp(`^${parts.map(escape).join(".+")}$`))
+  }
+
+  return { literals, templates }
+}
 
 /**
  * Returns the ledger's case names that nothing executable declares. A name is
@@ -96,10 +102,12 @@ export const unknownLedgerCases = (input: {
       TEST_FILE.test(file.path) &&
       sourceRoots.some((root) => file.path.startsWith(root)) &&
       !file.path.startsWith("tooling/structure/")
-    )
-      for (const pattern of declaredPatterns(file.text))
-        if (typeof pattern === "string") literals.add(pattern)
-        else templates.push(pattern)
+    ) {
+      const declared = declaredPatterns(file.text)
+
+      for (const literal of declared.literals) literals.add(literal)
+      templates.push(...declared.templates)
+    }
 
   const declared = (name: string) =>
     literals.has(name) ||
