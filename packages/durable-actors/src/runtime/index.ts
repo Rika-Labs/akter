@@ -47,3 +47,21 @@ export { Seed, SeedJson } from "./operators/seed.ts"
 export { checkPayloads, clearPayloads, formatPayloadProblem } from "./payloads/versions.ts"
 
 export type { ClearResult, PayloadProblem } from "./payloads/versions.ts"
+
+export { AdoptionRefused } from "./adoption/target.ts"
+
+export { formatAdoptionPlan, planAdoption } from "./adoption/plan.ts"
+
+export type { AdoptionPlan } from "./adoption/plan.ts"
+
+export { adoptionWriters, formatObservedWriter, observeAdoption } from "./adoption/observe.ts"
+
+export type { ObservedWriter } from "./adoption/observe.ts"
+
+export { backfillAdoption, formatBackfill } from "./adoption/backfill.ts"
+
+export type { BackfillResult } from "./adoption/backfill.ts"
+
+export { adoptionStatus, formatAdoptionStatus } from "./adoption/status.ts"
+
+export type { AdoptionStatus } from "./adoption/status.ts"

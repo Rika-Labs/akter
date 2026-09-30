@@ -147,7 +147,7 @@ export const candidates = ({
     ) o`
 
 /** Intents to claim in one statement: up to `limit` free delivery slots. */
-export interface IntentClaim {
+interface IntentClaim {
   readonly limit: number
   readonly leaseMs: number
   readonly maxBackoffMs: number
