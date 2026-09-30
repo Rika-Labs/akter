@@ -862,7 +862,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase<EffectContr
           yield* actor.CaptureCancel().pipe(Effect.orDie)
           const stolen = yield* actor.UseCaptured("k").pipe(Effect.exit)
           expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
-            "Effect capability escaped its turn",
+            "Job capability escaped its turn",
           )
         }),
       ),

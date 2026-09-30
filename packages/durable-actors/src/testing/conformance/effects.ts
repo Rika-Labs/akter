@@ -520,7 +520,7 @@ export const effectsConformance: ReadonlyArray<ConformanceCase<EffectsFixture>> 
           yield* author.Escape()
           const stolen = yield* author.Steal().pipe(Effect.exit)
           expect(Exit.isFailure(stolen) && Cause.pretty(stolen.cause)).toContain(
-            "Effect capability escaped its turn",
+            "Job capability escaped its turn",
           )
           yield* test.advance(0)
           expect(attemptsOf(fixture, "escape")).toEqual([])
