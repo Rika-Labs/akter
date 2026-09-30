@@ -1,10 +1,5 @@
-import { type Cause, Effect, Option, Schema } from "effect"
-import {
-  Headers,
-  HttpRouter,
-  type HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http"
+import { Effect, type Option, Schema } from "effect"
+import { HttpRouter, type HttpServerRequest } from "effect/unstable/http"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, User } from "../../identity/caller.ts"
@@ -15,8 +10,8 @@ import {
   readsCookies,
   withinLimits,
 } from "../../serve/auth.ts"
-import { isSameOrigin } from "../../serve/layer.ts"
-import { actorErrorResponse, Defect, invalidInput, undecodable } from "../../serve/wire.ts"
+import { invalidInput, undecodable } from "../../serve/wire.ts"
+import { foundOrNotFound, operatorResponse, refuseCrossOrigin } from "./http.ts"
 import * as Queries from "./queries.ts"
 
 /** Configuration for `Inspector.serve`. */
@@ -55,22 +50,6 @@ const WorkflowsParams = Schema.Struct({
 })
 
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
-
-/** The body of a 404: the tenant has no such actor. */
-const NotFound = Schema.TaggedStruct("NotFound", {})
-
-const traceId = Effect.currentSpan.pipe(
-  Effect.map((span) => span.traceId),
-  Effect.orElseSucceed(() => "0".repeat(32)),
-)
-
-const defectResponse = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>) {
-  const trace = yield* traceId
-
-  yield* Effect.logError("Inspector request failed", cause)
-
-  return HttpServerResponse.jsonUnsafe(Defect.make({ traceId: trace }), { status: 500 })
-})
 
 /**
  * Serves read-only JSON over the `durable` inspection views as routes on the
@@ -136,10 +115,7 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
           `${basePath}${path}` as HttpRouter.PathInput,
           (request: HttpServerRequest.HttpServerRequest) =>
             Effect.gen(function* () {
-              const origin = Headers.get(request.headers, "origin")
-
-              if (Option.isSome(origin) && !isSameOrigin({ request, origin: origin.value }))
-                return yield* invalidInput("origin_not_allowed")
+              yield* refuseCrossOrigin(request)
 
               const tenant = yield* authenticate(request)
 
@@ -147,22 +123,13 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
                 Effect.mapError(undecodable),
               )
 
-              const body = yield* Queries.readOnly(tenant)(read(tenant, decoded)).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.orDie,
+              return foundOrNotFound(
+                yield* Queries.readOnly(tenant)(read(tenant, decoded)).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.orDie,
+                ),
               )
-
-              return Option.match(body, {
-                onNone: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
-                onSome: (value) => HttpServerResponse.jsonUnsafe(value),
-              })
-            }).pipe(
-              Effect.catch(actorErrorResponse),
-              Effect.catchCause(defectResponse),
-              Effect.map((response) =>
-                HttpServerResponse.setHeaders(response, { "cache-control": "no-store" }),
-              ),
-            ),
+            }).pipe(operatorResponse("Inspector request failed")),
         )
 
       yield* route("/overview", Schema.Struct({}), (tenant) =>
