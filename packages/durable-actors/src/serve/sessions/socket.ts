@@ -292,8 +292,8 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
         Effect.orDie,
         Effect.map((frame): ServerWireMessage => ({
           t: "progress",
-          job: message.effect,
-          jobId: message.effectId,
+          job: message.job,
+          jobId: message.jobId,
           attempt: message.attempt,
           seq: message.seq,
           frame,

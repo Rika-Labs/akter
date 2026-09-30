@@ -360,8 +360,8 @@ export const streamOf = ({
                 Stream.mapEffect((stored) =>
                   Effect.gen(function* () {
                     const entry: ProgressEntry<never> = {
-                      jobId: stored.effectId,
-                      job: (yield* codecs.job(stored.effect)) as never,
+                      jobId: stored.jobId,
+                      job: (yield* codecs.job(stored.job)) as never,
                       attempt: stored.attempt,
                       seq: stored.seq,
                       frame: (yield* codecs.frame(stored.frame)) as never,

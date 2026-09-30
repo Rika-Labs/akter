@@ -63,18 +63,18 @@ export const HolderItem = Schema.TaggedUnion({
   Flushed: { through: Schema.String },
   End: { connectionId: Schema.String, ended: SessionEnded },
   Seal: {},
-  /** Executor progress: replaces an undelivered frame of the same effect, never closes a session. */
+  /** Executor progress: replaces an undelivered frame of the same job, never closes a session. */
   Progress: {
     member: Schema.String,
     to: Schema.Array(Schema.String),
-    effect: Schema.String,
-    effectId: Schema.String,
+    job: Schema.String,
+    jobId: Schema.String,
     attempt: Schema.Finite,
     seq: Schema.Finite,
     frame: Schema.String,
   },
-  /** The effect's route or settle committed: undelivered progress of it is discarded. */
-  ProgressEnd: { effectId: Schema.String },
+  /** The job's route or settle committed: undelivered progress of it is discarded. */
+  ProgressEnd: { jobId: Schema.String },
 })
 
 /** One item of an ordered owner-to-holder message. */
@@ -94,8 +94,8 @@ export const ClientMessage = Schema.TaggedUnion({
   },
   ResyncReplayed: {},
   Progress: {
-    effect: Schema.String,
-    effectId: Schema.String,
+    job: Schema.String,
+    jobId: Schema.String,
     attempt: Schema.Finite,
     seq: Schema.Finite,
     frame: Schema.String,
@@ -251,8 +251,8 @@ export const connectionsEntity = (name: string) =>
     Rpc.make("Progress", {
       payload: {
         ref: ActorRef,
-        effectId: Schema.String,
-        effect: Schema.String,
+        jobId: Schema.String,
+        job: Schema.String,
         attempt: Schema.Finite,
         seq: Schema.Finite,
         leaseUntil: Schema.Finite,
@@ -260,7 +260,7 @@ export const connectionsEntity = (name: string) =>
       },
     }).annotate(ClusterSchema.Uninterruptible, true),
     Rpc.make("ProgressClosed", {
-      payload: { ref: ActorRef, effectId: Schema.String, attempt: Schema.Finite },
+      payload: { ref: ActorRef, jobId: Schema.String, attempt: Schema.Finite },
     }).annotate(ClusterSchema.Uninterruptible, true),
     Rpc.make("Subscribe", {
       payload: {
