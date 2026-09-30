@@ -820,8 +820,11 @@ export const migrations = {
           THEN session_user::text ELSE current_setting('role') END;
         changed bigint := 0;
       BEGIN
-        IF coalesce(current_setting('durable.backfill', true), '') = 'on'
-          AND pg_has_role(caller, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER') THEN
+        IF coalesce(current_setting('durable.backfill', true), '') = 'on' AND (
+          pg_has_role(caller, (SELECT relowner FROM pg_class WHERE oid = TG_RELID), 'MEMBER')
+          OR EXISTS (SELECT 1 FROM ${schema}.actor_adoptions a
+            WHERE a.table_schema = TG_TABLE_SCHEMA AND a.table_name = TG_TABLE_NAME
+              AND a.changed_by = session_user::text)) THEN
           RETURN NULL;
         END IF;
         IF TG_NARGS > 0 AND caller = TG_ARGV[0] THEN
