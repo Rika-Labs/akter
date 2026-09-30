@@ -4,11 +4,11 @@
 
 _An Effect-native actor framework with durable identity, transactional turns, and ordinary relational data. One database per deployment, not per actor._
 
-[![Status](https://img.shields.io/badge/status-M0--foundation-blue)](docs/milestones/M0-foundation.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
+[![Status](https://img.shields.io/badge/status-alpha-blue)](docs/milestones/README.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
 
 </div>
 
-**M0 foundation is complete; the framework is not production-ready.** Embedded actors have typed commands, minted/named/singleton identities, creation and size policies, bounded turns, receipts, rollback, and caller attribution. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Broader actor members, transports, multi-runner operation, and provider support remain gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
+**The framework is in alpha and not production-ready.** M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)). Actors have typed commands, reducers, and queries; keyed state, owned tables, and blobs; events, intents, timers, effects, workflows, cron, connections, streams, and cross-actor subscriptions. `Actor.serve` serves them over HTTP, WebSocket, SSE, OpenAPI, and MCP, and `@durable-actors/core/client` is the Promise client. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection, multi-runner, and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Provider support (Neki) remains gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
 ## Quickstart
 
@@ -108,7 +108,7 @@ An actor framework has to coordinate state, ownership, retries, resources, and f
 - **Dependency injection:** actor handlers compose through services and layers; database and transport wiring stay at the application boundary.
 - **Structured concurrency:** activations own their resources. A fiber forked in an actor's layer starts on wake and is interrupted on sleep, rather than becoming an orphaned background task.
 - **Durable execution:** Cluster, SQL, Workflow, Clock, and Deferred primitives underpin placement, turns, activities, timers, and waits; the framework does not introduce a second runtime beside Effect.
-- **Faithful testing:** the intended `ActorTest` uses real turns, SQL storage, and serialization with controlled time and injected faults—not a fake context that bypasses the transaction.
+- **Faithful testing:** `ActorTest` uses real turns, SQL storage, and serialization with controlled time and injected faults—not a fake context that bypasses the transaction.
 
 These are design requirements. The [verification gates](docs/verification/01-conformance.md#design-verification-gates) determine when each can be claimed as implemented.
 
@@ -122,7 +122,7 @@ One constructor, `Actor.make`, with one definition object. Its sections define t
 - **Intents and effects:** turns record work for other actors, timers, and external providers in one actor-shard outbox. Delivery follows commit; external effects remain at least once unless a provider proves stronger guarantees.
 - **Workflows and schedules:** workflows are members of their owning actor. `policy.cron` schedules commands; `key: Actor.singleton` expresses cluster-wide ownership without another actor constructor.
 
-The framework has no AI-specific toolkit or MCP surface. Coding agents are applications built from these same primitives; external tools can consume the planned OpenAPI surface.
+The framework has no AI-specific toolkit. `Actor.serve` derives OpenAPI and an MCP endpoint from the same definitions as transports, and coding agents are applications built from these same primitives.
 
 ## The model
 
@@ -150,18 +150,18 @@ Handlers do not hold that transaction open while waiting for another actor, a so
 
 **…the backend is Neki?** Every intent is written to an outbox on the sending actor's shard and delivered after commit, so no write needs a cross-shard transaction. Neki locking, pinning, and outbox recovery remain provider-specific verification gates.
 
-The command/receipt recovery subset has completed fault tests; hibernation, providers, and Neki remain design contracts.
+Crash and runner-loss recovery have fault tests on Postgres ([conformance](docs/verification/01-conformance.md)); Neki remains a provider-specific verification gate.
 
 ## One package, four entries
 
-| Entry                          | Responsibility                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, and handles; served composition is planned. |
-| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.                |
-| `@durable-actors/core/client`  | The planned browser-safe Promise client (M3.4); a placeholder in the alpha.                       |
-| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                                 |
+| Entry                          | Responsibility                                                                                  |
+| ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, handles, `Actor.serve`, and `Actor.auth`. |
+| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.              |
+| `@durable-actors/core/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections.  |
+| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                               |
 
-The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Only the embedded Postgres foundation subset is implemented. Serving is optional; embedded callers do not need an HTTP hop.
+The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Embedded and served use are implemented, and hosted runners behind the edge are built (M4.8). Serving is optional; embedded callers do not need an HTTP hop.
 
 ## Documentation
 
@@ -189,4 +189,4 @@ Database integration checks use `bun run check:ci` with an explicitly configured
 
 ## Status
 
-Durable Actors is in design and foundation work, before a usable framework release. The public shape is agreed, but runtime behavior, PGlite compatibility, Neki support, and hosted deployment still need implementation and evidence. Feedback is welcome; a documented API is not yet a production guarantee.
+Durable Actors is in alpha, before a production release. M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)); Neki support and production claims still need provider-specific evidence. Feedback is welcome; a documented API is not yet a production guarantee.
