@@ -395,8 +395,14 @@ const groupLock = (sql: SqlClient.SqlClient, group: CappedGroup) =>
  * waiting, so they never fill a probe ahead of other actors' work. A waiting
  * row becomes due again when an attempt of its group settles, or after one
  * lease.
+ *
+ * An attempt renews, backs off, and settles its own row without the group's
+ * lock, so before it counts live leases the claim waits for those writes on
+ * the group's running rows. Otherwise `SKIP LOCKED` would pass over an older
+ * row whose lost lease is being renewed and start a younger one, and the
+ * renewal would then leave two attempts holding leases under a cap of one.
  */
-const claimCapped = ({
+export const claimCapped = ({
   sql,
   now,
   group,
@@ -417,6 +423,7 @@ const claimCapped = ({
     Effect.gen(function* () {
       yield* groupLock(sql, group)
       const inGroup = groupRow(sql, group)
+      yield* sql`SELECT 1 FROM actor_outbox o WHERE ${inGroup} AND o.running FOR UPDATE OF o`
 
       return yield* sql<ClaimedEffect>`WITH live AS (
           SELECT count(*)::int AS n FROM actor_outbox o
