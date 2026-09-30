@@ -1,0 +1,23 @@
+{
+  "name": "@durable-actors/python-client",
+  "private": true,
+  "description": "Generates a Python client from a served OpenAPI document: typed models, one method per public member, and a runtime that keeps one command id across retries.",
+  "type": "module",
+  "exports": {
+    ".": "./src/generate.ts"
+  },
+  "scripts": {
+    "generate": "bun src/main.ts",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/python-client/src && python3 -m unittest discover -s python -p 'test_*.py'"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@durable-actors/core": "workspace:*",
+    "vitest": "catalog:"
+  }
+}
