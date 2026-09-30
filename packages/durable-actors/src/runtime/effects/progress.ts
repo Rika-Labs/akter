@@ -58,7 +58,7 @@ export const ProgressTap = Context.Reference<{
 })
 
 /** One attempt's progress slot: latest wins, sent at most once per `everyMs`. */
-export interface ProgressSlot {
+interface ProgressSlot {
   /** False once nothing more will be sent, so a caller can skip encoding frames. */
   readonly active: () => boolean
   /** Replaces the pending frame; ignored once closed. */
@@ -243,5 +243,3 @@ export const progressPool = Effect.fnUntraced(function* (options?: {
 
   return { open, closed, forget }
 })
-
-export type ProgressPool = Effect.Success<ReturnType<typeof progressPool>>

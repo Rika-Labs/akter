@@ -303,7 +303,7 @@ export const bootstrapTicks = Effect.fnUntraced(function* (
 })
 
 /** The claimed tick row the relay settles. */
-export interface ClaimedTick {
+interface ClaimedTick {
   readonly tenant_id: string
   readonly actor_type: string
   readonly actor_id: string

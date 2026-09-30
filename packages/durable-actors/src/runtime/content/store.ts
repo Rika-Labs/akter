@@ -26,7 +26,7 @@ const SWEEP_BATCH = 500
 const SWEEP_TENANTS = 100
 
 /** The runtime's content configuration: grant keys, sweep timing, and connection limits. */
-export interface ContentSettings {
+interface ContentSettings {
   readonly grants: Grants
   /** How long unreferenced content outlives its last grant, before the turn and skew margins. */
   readonly graceMs: number

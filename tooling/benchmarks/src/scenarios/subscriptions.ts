@@ -72,7 +72,6 @@ export const subscriptions: Scenario = {
     "Cross-actor subscriptions: the hand-rolled intent fan-out baseline; the publisher's turn beside 1 to 1,024 subscriptions; commit-to-delivery latency, awake and hibernated; one pair's throughput; fan-in; subscribe churn; a backlog drain across 64 subscribers; the retention pass beside 10,000 subscriptions; and lag beside one poison row.",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
       const dueAt = DateTime.toEpochMillis(yield* DateTime.now) + 86_400_000
 
@@ -99,7 +98,7 @@ export const subscriptions: Scenario = {
                 workers: 1,
                 operations: Math.max(
                   20,
-                  Math.round((quick ? 20_000 : 200_000) / (subscribers + 99)),
+                  Math.round((context.quick ? 20_000 : 200_000) / (subscribers + 99)),
                 ),
                 operation: publish,
                 listStatements: true,
@@ -127,7 +126,7 @@ export const subscriptions: Scenario = {
                   parameters: { subscribers, publishers: 1, workers: 1 },
                   instruments,
                   workers: 1,
-                  operations: quick ? 300 : 2000,
+                  operations: context.quick ? 300 : 2000,
                   operation: publish,
                   listStatements: true,
                 })
@@ -158,7 +157,7 @@ export const subscriptions: Scenario = {
                 parameters: { subscribers: 1, route: "id", workers: 1 },
                 instruments,
                 workers: 1,
-                operations: quick ? 100 : 1000,
+                operations: context.quick ? 100 : 1000,
                 operation: trip,
                 listStatements: true,
               })
@@ -171,7 +170,7 @@ export const subscriptions: Scenario = {
         yield* context
           .withRuntime({ subscriptions: true }, (instruments) =>
             Effect.gen(function* () {
-              const operations = quick ? 50 : 300
+              const operations = context.quick ? 50 : 300
               const source = yield* PulseSource.get("hibernated-latency")
 
               yield* Effect.forEach(
@@ -221,7 +220,7 @@ export const subscriptions: Scenario = {
         yield* context
           .withRuntime({ subscriptions: true }, (instruments) =>
             Effect.gen(function* () {
-              const events = quick ? 200 : 2000
+              const events = context.quick ? 200 : 2000
               const follower = yield* BeatFollower.get("pair-follower")
               const source = yield* BeatSource.get("pair-source")
               yield* follower.Follow("pair-source")
@@ -260,7 +259,7 @@ export const subscriptions: Scenario = {
           .pipe(Effect.orDie),
       )
 
-      for (const sources of [quick ? 1000 : 10_000])
+      for (const sources of [context.quick ? 1000 : 10_000])
         results.push(
           yield* context
             .withRuntime({ subscriptions: true, maxConnections: 20 }, (instruments) =>
@@ -315,7 +314,7 @@ export const subscriptions: Scenario = {
                 parameters: { subscribers: 1, sources: 1, workers: 1 },
                 instruments,
                 workers: 1,
-                operations: quick ? 200 : 2000,
+                operations: context.quick ? 200 : 2000,
                 operation: churn,
                 listStatements: true,
               })
@@ -324,7 +323,7 @@ export const subscriptions: Scenario = {
           .pipe(Effect.orDie),
       )
 
-      for (const backlog of [quick ? 1024 : 8192])
+      for (const backlog of [context.quick ? 1024 : 8192])
         results.push(
           yield* context
             .withRuntime({ subscriptions: true }, (instruments) =>
@@ -381,7 +380,7 @@ export const subscriptions: Scenario = {
           yield* context
             .withRuntime({ subscriptions: true }, (instruments) =>
               Effect.gen(function* () {
-                const events = quick ? 1000 : 10_000
+                const events = context.quick ? 1000 : 10_000
                 const source = yield* PruneSource.get("pruned")
                 yield* source.EmitMany(1)
 
@@ -414,7 +413,7 @@ export const subscriptions: Scenario = {
             .withRuntime({ subscriptions: true }, (instruments) =>
               Effect.gen(function* () {
                 const followers = 63
-                const perFollower = quick ? 16 : 128
+                const perFollower = context.quick ? 16 : 128
                 const name = poison ? "lag-with-one-poison-row" : "lag-without-poison-row"
                 const source = yield* BeatSource.get(name)
 

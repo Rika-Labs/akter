@@ -94,10 +94,9 @@ export const retainedHeap: Scenario = {
   description: `Heap per resident activation (resident-<n>: ${WORKERS} callers first-touch n actors that stay resident), and heap retained after work finishes: ${WORKERS} callers first-touch n actors that all hibernate (touch-<n>, per actor), and n sequential commands to one actor that hibernates (one-actor-<n>, per command). Excludes ArrayBuffers, where PGlite keeps its pages.`,
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const postgres = context.backend.name === "postgres"
       const results: Array<CaseResult> = []
-      const counts = quick ? [1000] : postgres ? [10_000, 100_000] : [10_000]
+      const counts = context.quick ? [1000] : postgres ? [10_000, 100_000] : [10_000]
 
       for (const actors of counts)
         results.push(
@@ -182,7 +181,7 @@ export const retainedHeap: Scenario = {
           ),
         )
 
-      const commands = quick ? 1000 : 10_000
+      const commands = context.quick ? 1000 : 10_000
 
       results.push(
         yield* context.withRuntime({}, (instruments) =>

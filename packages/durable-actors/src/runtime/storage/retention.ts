@@ -5,7 +5,7 @@ import { CleanupHooks } from "../turn/hooks.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
 
 /** One actor type's retention horizons, in milliseconds on the framework clock, and whether it has workflows to sweep. */
-export interface RetentionPolicy {
+interface RetentionPolicy {
   readonly actorType: string
   readonly keepReceiptsMs: number
   readonly keepEventsMs: number
