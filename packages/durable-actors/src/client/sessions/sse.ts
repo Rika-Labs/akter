@@ -1,4 +1,15 @@
-import { Duration, Effect, Option, Queue, Random, Schema, type Scope, Stream } from "effect"
+import {
+  Cause,
+  Clock,
+  Duration,
+  Effect,
+  Option,
+  Queue,
+  Random,
+  Schema,
+  type Scope,
+  Stream,
+} from "effect"
 import { Sse } from "effect/unstable/encoding"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { aborted, type Failure, networkFailure, undecodableFailure } from "../transport.ts"
@@ -29,6 +40,49 @@ export const IDLE_MS = 45_000
 const MAX_BACKOFF_MS = 5_000
 
 /**
+ * The chunks of `body`, read in the consuming fiber so the first read is
+ * issued as soon as the response arrives, ending when the body closes or,
+ * with `idleMs`, once no chunk arrived for that long. The idle watchdog
+ * cancels the body, which ends the pending read, instead of racing each read
+ * against a timer: a raced or forked read can miss a chunk that arrives just
+ * before the body fails. Closing the stream cancels the body.
+ */
+const chunks = (body: ReadableStream<Uint8Array>, idleMs: number | undefined) =>
+  Stream.unwrap(
+    Effect.gen(function* () {
+      const reader = body.getReader()
+      const cancel = Effect.promise(() => reader.cancel().catch(() => undefined))
+      let last = yield* Clock.currentTimeMillis
+
+      yield* Effect.addFinalizer(() => cancel)
+
+      if (idleMs !== undefined)
+        yield* Effect.gen(function* () {
+          while (true) {
+            const wait = last + idleMs - (yield* Clock.currentTimeMillis)
+
+            if (wait <= 0) return yield* cancel
+
+            yield* Effect.sleep(Duration.millis(wait))
+          }
+        }).pipe(Effect.forkScoped)
+
+      return Stream.fromEffectRepeat(
+        Effect.tryPromise({ try: () => reader.read(), catch: networkFailure }).pipe(
+          Effect.flatMap((read) => (read.done ? Cause.done() : Effect.succeed(read.value))),
+          Effect.tap(() =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => {
+                last = now
+              }),
+            ),
+          ),
+        ),
+      )
+    }),
+  )
+
+/**
  * The messages of an SSE response, parsed by the standard parser: CR, LF, and
  * CRLF line ends split anywhere across chunks, a leading BOM, UTF-8 split
  * across chunks, and an `id` containing NUL ignored. A `200` without a body
@@ -56,9 +110,7 @@ export const readEvents = ({
 
   if (body === null) return Stream.fail(undecodableFailure())
 
-  const bytes = Stream.fromReadableStream({ evaluate: () => body, onError: networkFailure })
-
-  return (idleMs === undefined ? bytes : Stream.timeout(bytes, idleMs)).pipe(
+  return chunks(body, idleMs).pipe(
     Stream.decodeText,
     Stream.pipeThroughChannel(Sse.decode(DECODE)),
     Stream.mapError((error) =>

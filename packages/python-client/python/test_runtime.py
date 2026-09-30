@@ -56,7 +56,10 @@ class Stub:
                 self.reply(status, payload, headers)
 
             def reply(self, status: int, payload: Any, headers: Dict[str, str]) -> None:
-                data = b"" if payload is None else json.dumps(payload).encode()
+                if isinstance(payload, bytes):
+                    data = payload
+                else:
+                    data = b"" if payload is None else json.dumps(payload).encode()
                 self.send_response(status)
                 for name, value in headers.items():
                     self.send_header(name, value)
@@ -136,12 +139,12 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(calls[0]["headers"]["authorization"], "Bearer t:alice")
         self.assertEqual(self.clock.sleeps, [2.0, 1.0])
 
-    def test_retries_a_timeout_after_at_most_a_quarter_second_with_the_same_id(self) -> None:
+    def test_retries_a_timeout_after_about_fifty_milliseconds_with_the_same_id(self) -> None:
         self.stub.script = [(504, envelope("Timeout", True, elapsed=1), {}), (200, 1, {})]
         self.assertEqual(self.command(self.make()), 1)
         calls = self.stub.calls()
         self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
-        self.assertLessEqual(self.clock.sleeps[0], runtime.TIMEOUT_JITTER_S)
+        self.assertEqual(self.clock.sleeps, [runtime.TIMEOUT_DELAY_S])
 
     def test_retries_a_lost_reply_with_the_same_id_and_backs_off_exponentially(self) -> None:
         self.stub.script = ["drop", "drop", (200, 9, {})]
@@ -239,7 +242,7 @@ class RuntimeTest(unittest.TestCase):
         self.stub.script = [
             (422, {"_tag": "Full", "capacity": 3}, {}),
             (500, {"_tag": "Defect", "traceId": "abc"}, {}),
-            (502, None, {}),
+            (400, b"<html>bad request</html>", {}),
         ]
         client = self.make()
         with self.assertRaises(runtime.DeclaredError) as declared:
@@ -248,8 +251,19 @@ class RuntimeTest(unittest.TestCase):
         with self.assertRaises(runtime.Defect) as defect:
             self.command(client)
         self.assertEqual(defect.exception.trace_id, "abc")
-        with self.assertRaises(runtime.UnexpectedResponse):
+        with self.assertRaises(runtime.UnexpectedResponse) as unexpected:
             self.command(client)
+        self.assertFalse(unexpected.exception.retryable)
+        self.assertEqual(len(self.stub.calls()), 3)
+
+    def test_gives_up_on_a_gateway_status_after_max_attempts_with_one_id(self) -> None:
+        self.stub.script = [(502, b"Bad Gateway", {}) for _ in range(3)]
+        with self.assertRaises(runtime.UnexpectedResponse) as unexpected:
+            self.command(self.make(max_attempts=3))
+        self.assertEqual(unexpected.exception.status, 502)
+        calls = self.stub.calls()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len({c["headers"]["idempotency-key"] for c in calls}), 1)
 
     def test_encodes_the_actor_id_as_one_path_segment(self) -> None:
         self.assertEqual(runtime.path("/actors/Room/{id}/Post", "a/b c"), "/actors/Room/a%2Fb%20c/Post")

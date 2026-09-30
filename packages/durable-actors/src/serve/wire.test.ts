@@ -10,7 +10,8 @@ import {
   Timeout,
 } from "../errors/actor.ts"
 import { checkDeclaredErrors } from "../actor/served.ts"
-import { actorErrorBody, actorErrorResponse, statusOf } from "./wire.ts"
+import { actorErrorBody, statusOf } from "../protocol/wire.ts"
+import { actorErrorResponse } from "./wire.ts"
 
 const RetryBody = Schema.Struct({ retryAfter: Schema.Finite })
 

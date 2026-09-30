@@ -248,7 +248,7 @@ export const transportClientConformance: ReadonlyArray<ConformanceCase> = [
           yield* room.Start(10)
 
           const [wire] = (yield* ws.until("progress")).filter((message) => message.t === "progress")
-          expect(wire).toMatchObject({ t: "progress", effect: "Render", attempt: 1 })
+          expect(wire).toMatchObject({ t: "progress", job: "Render", attempt: 1 })
           expect(
             Predicate.hasProperty(wire, "cursor") || Predicate.hasProperty(wire, "event"),
           ).toBe(false)
@@ -257,7 +257,7 @@ export const transportClientConformance: ReadonlyArray<ConformanceCase> = [
 
           const received = yield* Effect.promise(() => iterator.next())
           const progress = received.value?._tag === "Progress" ? received.value : undefined
-          expect([progress?.effect, progress?.attempt]).toEqual(["Render", 1])
+          expect([progress?.job, progress?.attempt]).toEqual(["Render", 1])
           expect(Schema.is(Percent)(progress?.frame)).toBe(true)
 
           yield* Effect.promise(() => connection.close())

@@ -61,7 +61,7 @@ import {
   requestDigest,
 } from "./assertion/binding.ts"
 import { databaseClock } from "./clock.ts"
-import { SUBPROTOCOL } from "./frames.ts"
+import { SUBPROTOCOL } from "../protocol/frames.ts"
 import { handleMcp, type ToolCall, type ToolResult } from "./mcp/endpoint.ts"
 import { mcpTools } from "./mcp/tools.ts"
 import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
@@ -70,14 +70,8 @@ import { streamResponse } from "./sessions/stream.ts"
 import { watchResponse } from "./sessions/watch.ts"
 import type { AnyFleetView } from "../tables/fleet.ts"
 import { FLEET_PAGE_DEFAULT, FLEET_PAGE_LIMIT } from "../client/fleet-page.ts"
-import {
-  actorErrorBody,
-  actorErrorResponse,
-  Defect,
-  invalidInput,
-  PROTOCOL,
-  undecodable,
-} from "./wire.ts"
+import { actorErrorBody, Defect, PROTOCOL } from "../protocol/wire.ts"
+import { actorErrorResponse, invalidInput, undecodable } from "./wire.ts"
 
 /** Options of `Actor.serve`; `R` is what `auth` needs from the environment. */
 export interface ServeOptions<R> {

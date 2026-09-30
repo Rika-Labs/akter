@@ -1,0 +1,351 @@
+{
+  "description": "Served command exchanges every generated client must handle alike. Each case scripts the server's answers to one command call; a client sends the command id and body unchanged on every attempt. `$commandId` in a body stands for the id the call sent. `minWaitMs` and `maxWaitMs` bound each wait between consecutive attempts. `refresh` says the credential can be read afresh before each attempt.",
+  "cases": [
+    {
+      "name": "returns a committed output",
+      "responses": [
+        {
+          "status": 200,
+          "body": 7
+        }
+      ],
+      "outcome": {
+        "result": 7
+      },
+      "attempts": 1
+    },
+    {
+      "name": "waits out an ActorUnavailable body's retryAfter as sent, then succeeds with the same id",
+      "responses": [
+        {
+          "status": 503,
+          "headers": {
+            "retry-after": "1"
+          },
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "ActorUnavailable"
+            },
+            "isRetryable": true,
+            "retryAfter": 300
+          }
+        },
+        {
+          "status": 200,
+          "body": 1
+        }
+      ],
+      "outcome": {
+        "result": 1
+      },
+      "attempts": 2,
+      "minWaitMs": [300],
+      "maxWaitMs": [900]
+    },
+    {
+      "name": "prefers a MailboxFull body's retryAfter to its retry-after header",
+      "responses": [
+        {
+          "status": 429,
+          "headers": {
+            "retry-after": "2"
+          },
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "MailboxFull"
+            },
+            "isRetryable": true,
+            "retryAfter": 120
+          }
+        },
+        {
+          "status": 200,
+          "body": 2
+        }
+      ],
+      "outcome": {
+        "result": 2
+      },
+      "attempts": 2,
+      "minWaitMs": [120],
+      "maxWaitMs": [1500]
+    },
+    {
+      "name": "falls back to the retry-after header when the body carries no retryAfter",
+      "responses": [
+        {
+          "status": 503,
+          "headers": {
+            "retry-after": "1"
+          },
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "RunnerAtCapacity"
+            },
+            "isRetryable": true
+          }
+        },
+        {
+          "status": 200,
+          "body": 3
+        }
+      ],
+      "outcome": {
+        "result": 3
+      },
+      "attempts": 2,
+      "minWaitMs": [1000]
+    },
+    {
+      "name": "retries a Timeout promptly with the same id, since the turn may still commit",
+      "responses": [
+        {
+          "status": 504,
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "Timeout",
+              "commandId": "$commandId"
+            },
+            "isRetryable": true
+          }
+        },
+        {
+          "status": 200,
+          "body": 4
+        }
+      ],
+      "outcome": {
+        "result": 4
+      },
+      "attempts": 2,
+      "maxWaitMs": [500]
+    },
+    {
+      "name": "retries a response lost on the network with the same id",
+      "responses": [
+        {
+          "drop": true
+        },
+        {
+          "status": 200,
+          "body": 5
+        }
+      ],
+      "outcome": {
+        "result": 5
+      },
+      "attempts": 2
+    },
+    {
+      "name": "retries a gateway's non-protocol 502 with the same id",
+      "responses": [
+        {
+          "status": 502,
+          "text": "Bad Gateway"
+        },
+        {
+          "status": 200,
+          "body": 6
+        }
+      ],
+      "outcome": {
+        "result": 6
+      },
+      "attempts": 2
+    },
+    {
+      "name": "waits a gateway's retry-after date before retrying its 503",
+      "responses": [
+        {
+          "status": 503,
+          "headers": {
+            "retry-after": "Wed, 21 Oct 2026 07:28:01 GMT",
+            "date": "Wed, 21 Oct 2026 07:28:00 GMT"
+          },
+          "text": "Service Unavailable"
+        },
+        {
+          "status": 200,
+          "body": 8
+        }
+      ],
+      "outcome": {
+        "result": 8
+      },
+      "attempts": 2,
+      "minWaitMs": [900]
+    },
+    {
+      "name": "refreshes an expired credential once and fails when it expires again",
+      "refresh": true,
+      "responses": [
+        {
+          "status": 401,
+          "headers": {
+            "www-authenticate": "Bearer"
+          },
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "Unauthorized",
+              "code": "expired"
+            },
+            "isRetryable": false
+          }
+        },
+        {
+          "status": 401,
+          "headers": {
+            "www-authenticate": "Bearer"
+          },
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "Unauthorized",
+              "code": "expired"
+            },
+            "isRetryable": false
+          }
+        }
+      ],
+      "outcome": {
+        "actorError": "Unauthorized",
+        "code": "expired"
+      },
+      "attempts": 2,
+      "freshCredentials": true
+    },
+    {
+      "name": "never retries missing credentials",
+      "refresh": true,
+      "responses": [
+        {
+          "status": 401,
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "Unauthorized",
+              "code": "missing_credentials"
+            },
+            "isRetryable": false
+          }
+        }
+      ],
+      "outcome": {
+        "actorError": "Unauthorized",
+        "code": "missing_credentials"
+      },
+      "attempts": 1
+    },
+    {
+      "name": "resends an id the server finds in its future once, and then gives up",
+      "responses": [
+        {
+          "status": 400,
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "InvalidCommandId",
+              "commandId": "$commandId",
+              "code": "future"
+            },
+            "isRetryable": false
+          }
+        },
+        {
+          "status": 400,
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "InvalidCommandId",
+              "commandId": "$commandId",
+              "code": "future"
+            },
+            "isRetryable": false
+          }
+        }
+      ],
+      "outcome": {
+        "actorError": "InvalidCommandId",
+        "code": "future"
+      },
+      "attempts": 2
+    },
+    {
+      "name": "surfaces an expired id without retrying or minting another",
+      "responses": [
+        {
+          "status": 410,
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "CommandExpired",
+              "commandId": "$commandId"
+            },
+            "isRetryable": false
+          }
+        }
+      ],
+      "outcome": {
+        "actorError": "CommandExpired"
+      },
+      "attempts": 1
+    },
+    {
+      "name": "surfaces a conflicting reuse of the id without retrying",
+      "responses": [
+        {
+          "status": 409,
+          "body": {
+            "_tag": "ActorError",
+            "reason": {
+              "_tag": "CommandConflict",
+              "commandId": "$commandId"
+            },
+            "isRetryable": false
+          }
+        }
+      ],
+      "outcome": {
+        "actorError": "CommandConflict"
+      },
+      "attempts": 1
+    },
+    {
+      "name": "surfaces a declared failure unwrapped",
+      "responses": [
+        {
+          "status": 422,
+          "body": {
+            "_tag": "RoomClosed",
+            "reason": "archived"
+          }
+        }
+      ],
+      "outcome": {
+        "declared": "RoomClosed"
+      },
+      "attempts": 1
+    },
+    {
+      "name": "surfaces a defect opaquely without retrying",
+      "responses": [
+        {
+          "status": 500,
+          "body": {
+            "_tag": "Defect",
+            "traceId": "t-1"
+          }
+        }
+      ],
+      "outcome": {
+        "defect": true
+      },
+      "attempts": 1
+    }
+  ]
+}

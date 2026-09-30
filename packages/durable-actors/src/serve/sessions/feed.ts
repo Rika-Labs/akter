@@ -5,7 +5,8 @@ import type { InternalActors } from "../../runtime/actors.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import type { HeldConnection } from "../../runtime/connections/holder.ts"
 import { FEED_MEMBER, FeedFrame } from "../../runtime/connections/protocol.ts"
-import { actorErrorBody } from "../wire.ts"
+import { actorErrorBody } from "../../protocol/wire.ts"
+import { message, withKeepalive } from "./sse.ts"
 
 /** Events a feed reads from `actor_events` per statement. */
 const FEED_PAGE = 256
@@ -13,14 +14,9 @@ const FEED_PAGE = 256
 /** At most this many `event` filters per feed. */
 export const MAX_FEED_FILTERS = 16
 
-/** A comment line this often keeps idle proxies from closing the stream. */
-export const FEED_KEEPALIVE_MS = 15_000
-
 const decodeFeedFrame = Schema.decodeEffect(Schema.fromJsonString(FeedFrame))
 
 const decodeStored = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
-
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
 const encodeCursorError = Schema.encodeEffect(Schema.Union([UnknownCursor, RetentionGap]))
 
@@ -35,7 +31,7 @@ const FeedData = Schema.Struct({
   timestamp: Schema.Finite,
 })
 
-const encodeData = Schema.encodeEffect(Schema.fromJsonString(FeedData))
+const encodeData = Schema.encodeEffect(FeedData)
 
 type FeedEvent = {
   readonly cursor: string
@@ -45,8 +41,11 @@ type FeedEvent = {
   readonly timestampMs: number
 }
 
-/** An SSE message: one event, identified by its cursor so `Last-Event-ID` resumes after it. */
-const message = (event: FeedEvent) =>
+/**
+ * An SSE message: one event named by its tag and identified by its cursor, so
+ * `Last-Event-ID` resumes after it.
+ */
+const eventMessage = (event: FeedEvent) =>
   Effect.gen(function* () {
     const data = yield* encodeData({
       event: yield* decodeStored(event.value),
@@ -54,17 +53,21 @@ const message = (event: FeedEvent) =>
       timestamp: event.timestampMs,
     })
 
-    return `id: ${event.cursor}\nevent: ${event.tag}\ndata: ${data}\n\n`
+    return yield* message({ event: event.tag, data, id: event.cursor })
   }).pipe(Effect.orDie)
 
-/** The feed's last message: the error that ended it, as a served response body would carry it. */
+/**
+ * The feed's last message: the error that ended it, as a served response body
+ * would carry it. It has no `id` line, so it introduces no cursor: a reader
+ * tells it from an event named `end`, which always carries a new one.
+ */
 const endMessage = (error: ActorError | UnknownCursor | RetentionGap) =>
   Effect.gen(function* () {
     const body = Predicate.isTagged(error, "ActorError")
       ? yield* actorErrorBody(error)
       : yield* cursorErrorBody(error)
 
-    return `event: end\ndata: ${yield* encodeJson(body).pipe(Effect.orDie)}\n\n`
+    return yield* message({ event: "end", data: body })
   })
 
 /** Ends that a feed survives by reopening at its holder and rereading from its cursor. */
@@ -111,9 +114,7 @@ export const openFeed = (options: FeedOptions) =>
  * it sent instead of ending, so a client sees one gap-free stream; any other
  * end is its last message. The `actor_events` table is the source of truth: the
  * holder resyncs a feed itself, and once the new owner answers the feed rereads
- * and goes on. A feed lists no effect, so the owner never sends it progress. A
- * comment line every `FEED_KEEPALIVE_MS` keeps idle proxies from closing the
- * stream.
+ * and goes on. A feed lists no job, so the owner never sends it progress.
  */
 export const feedStream = ({
   options,
@@ -137,7 +138,7 @@ export const feedStream = ({
         Effect.gen(function* () {
           if (BigInt(event.cursor) <= last) return
           last = BigInt(event.cursor)
-          yield* Queue.offer(out, yield* message(event))
+          yield* Queue.offer(out, yield* eventMessage(event))
         })
 
       const catchUp = Effect.gen(function* () {
@@ -203,13 +204,4 @@ export const feedStream = ({
         Effect.forkScoped,
       )
     }),
-  ).pipe(
-    Stream.merge(
-      Stream.tick(FEED_KEEPALIVE_MS).pipe(
-        Stream.drop(1),
-        Stream.map(() => ": keepalive\n\n"),
-      ),
-      { haltStrategy: "left" },
-    ),
-    Stream.encodeText,
-  )
+  ).pipe(withKeepalive)

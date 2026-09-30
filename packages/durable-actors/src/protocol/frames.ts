@@ -24,7 +24,7 @@ export type ClientWireMessage = typeof ClientWireMessage.Type
 /**
  * Messages a server sends on a connection's socket. Times are milliseconds
  * since the epoch, except `deadline`, which is how long the client has to
- * answer `resync`. `progress` is executor progress apart from member frames:
+ * answer `resync`. `progress` is a job executor's progress apart from member frames:
  * display-only, lossy, never replayed, and without cursors.
  */
 export const ServerWireMessage = Schema.Union([
@@ -49,8 +49,8 @@ export const ServerWireMessage = Schema.Union([
   Schema.Struct({ t: Schema.Literal("resyncReplayed"), through: Schema.optional(Schema.String) }),
   Schema.Struct({
     t: Schema.Literal("progress"),
-    effect: Schema.String,
-    effectId: Schema.String,
+    job: Schema.String,
+    jobId: Schema.String,
     attempt: Schema.Finite,
     seq: Schema.Finite,
     frame: Schema.Json,

@@ -1,158 +1,7 @@
-import { Effect, Match, Option, Schema, SchemaIssue } from "effect"
+import { Effect, Option, Schema, SchemaIssue } from "effect"
 import { HttpServerResponse } from "effect/unstable/http"
-import {
-  ActorError,
-  CommandConflict,
-  CommandExpired,
-  InvalidCommandId,
-  InvalidInput,
-  type Reason,
-  SessionEnded,
-  Timeout,
-  Unauthorized,
-} from "../errors/actor.ts"
-
-/** The served protocol's major version. */
-export const PROTOCOL = 1
-
-const reasonSchemas = {
-  CommandConflict: Schema.TaggedStruct("CommandConflict", CommandConflict.fields),
-  CommandExpired: Schema.TaggedStruct("CommandExpired", CommandExpired.fields),
-  InvalidCommandId: Schema.TaggedStruct("InvalidCommandId", {
-    commandId: InvalidCommandId.fields.commandId,
-    code: InvalidCommandId.fields.code,
-  }),
-  Unauthorized: Schema.TaggedStruct("Unauthorized", Unauthorized.fields),
-  ActorUnavailable: Schema.TaggedStruct("ActorUnavailable", {}),
-  Timeout: Schema.TaggedStruct("Timeout", Timeout.fields),
-  NotCreated: Schema.TaggedStruct("NotCreated", {}),
-  MailboxFull: Schema.TaggedStruct("MailboxFull", {}),
-  RunnerAtCapacity: Schema.TaggedStruct("RunnerAtCapacity", {}),
-  InvalidInput: Schema.TaggedStruct("InvalidInput", InvalidInput.fields),
-  SessionEnded: Schema.TaggedStruct("SessionEnded", SessionEnded.fields),
-} as const
-
-/** The tag of a reason a served route can answer. */
-export type WireTag = keyof typeof reasonSchemas
-
-/**
- * An `ActorError` as a served response carries it: public reason fields plus
- * the computed getters. `ActorUnavailable` carries no fields because its
- * `cause` holds internal errors and never crosses the wire.
- */
-export const envelope = (route: {
-  readonly tags: ReadonlyArray<WireTag>
-  readonly identifier: string
-}) =>
-  Schema.TaggedStruct("ActorError", {
-    reason: Schema.Union(route.tags.map((tag) => reasonSchemas[tag])),
-    isRetryable: Schema.Boolean,
-    retryAfter: Schema.optionalKey(Schema.Finite),
-  }).annotate({ identifier: route.identifier })
-
-const WireReason = Schema.Union(Object.values(reasonSchemas))
-
-const encodeReason = Schema.encodeUnknownEffect(Schema.toCodecJson(WireReason))
-
-/** The body of a `500`: a defect reported by trace id only, never its message. */
-export const Defect = Schema.TaggedStruct("Defect", { traceId: Schema.String }).annotate({
-  identifier: "Defect",
-})
-
-const CREDENTIAL_CODES: ReadonlySet<Unauthorized["code"]> = new Set([
-  "missing_credentials",
-  "invalid_credentials",
-  "expired",
-])
-
-const inputStatus = (code: InvalidInput["code"]) => {
-  switch (code) {
-    case "unknown_route":
-    case "unknown_event":
-    case "unknown_content":
-      return 404
-    case "too_large":
-      return 413
-    case "unsupported_media_type":
-      return 415
-    case "origin_not_allowed":
-      return 403
-    default:
-      return 400
-  }
-}
-
-/**
- * The HTTP status a reason is served with. `SessionEnded` maps to `410` but
- * only connection sessions end this way; no served command or query returns it.
- */
-export const statusOf = (reason: Reason): number =>
-  Match.value(reason).pipe(
-    Match.tagsExhaustive({
-      CommandConflict: () => 409,
-      CommandExpired: () => 410,
-      InvalidCommandId: () => 400,
-      Unauthorized: (unauthorized) => (CREDENTIAL_CODES.has(unauthorized.code) ? 401 : 403),
-      ActorUnavailable: () => 503,
-      RunnerAtCapacity: () => 503,
-      Timeout: () => 504,
-      NotCreated: () => 404,
-      MailboxFull: () => 429,
-      InvalidInput: (input) => inputStatus(input.code),
-      TransportError: () => 502,
-      SessionEnded: () => 410,
-    }),
-  )
-
-/** The close code a WebSocket session ends with; the `end` message before it is authoritative. */
-export const closeCodeOf = (reason: Reason): number =>
-  Match.value(reason).pipe(
-    Match.tagsExhaustive({
-      ActorUnavailable: () => 1013,
-      RunnerAtCapacity: () => 1013,
-      NotCreated: () => 4404,
-      Unauthorized: (unauthorized) =>
-        unauthorized.code === "reauthorization_unavailable" ? 1013 : 1008,
-      InvalidInput: () => 4400,
-      SessionEnded: (session) => {
-        switch (session.cause) {
-          case "ClientClosed":
-          case "ServerClosed":
-          case "Terminated":
-            return 1000
-          case "HolderShutdown":
-            return 1012
-          case "Defect":
-            return 1011
-          default:
-            return 1013
-        }
-      },
-      CommandConflict: () => 1011,
-      CommandExpired: () => 1011,
-      InvalidCommandId: () => 1011,
-      Timeout: () => 1011,
-      MailboxFull: () => 1011,
-      TransportError: () => 1011,
-    }),
-  )
-
-const ActorErrorBody = Schema.TaggedStruct("ActorError", {
-  reason: Schema.Json,
-  isRetryable: Schema.Boolean,
-  retryAfter: Schema.optionalKey(Schema.Finite),
-})
-
-/** The JSON body an `ActorError` is served as. */
-export const actorErrorBody = Effect.fnUntraced(function* (error: ActorError) {
-  const reason = yield* encodeReason(error.reason).pipe(Effect.orDie)
-
-  return Option.match(error.retryAfter, {
-    onNone: () => ActorErrorBody.make({ reason, isRetryable: error.isRetryable }),
-    onSome: (retryAfter) =>
-      ActorErrorBody.make({ reason, isRetryable: error.isRetryable, retryAfter }),
-  })
-})
+import { ActorError, InvalidInput, Unauthorized } from "../errors/actor.ts"
+import { actorErrorBody, retryAfterSeconds, statusOf } from "../protocol/wire.ts"
 
 /**
  * The HTTP response an `ActorError` is served as: its status, the JSON body,
@@ -164,9 +13,9 @@ export const actorErrorResponse = Effect.fnUntraced(function* (error: ActorError
   const body = yield* actorErrorBody(error)
   const headers: Record<string, string> = {}
 
-  if (Option.isSome(retryAfter)) headers["retry-after"] = String(Math.ceil(retryAfter.value / 1000))
+  if (Option.isSome(retryAfter)) headers["retry-after"] = retryAfterSeconds(retryAfter.value)
 
-  if (Schema.is(Unauthorized)(error.reason) && CREDENTIAL_CODES.has(error.reason.code))
+  if (Schema.is(Unauthorized)(error.reason) && error.reason.isCredential)
     headers["www-authenticate"] = "Bearer"
 
   return HttpServerResponse.jsonUnsafe(body, { status: statusOf(error.reason), headers })

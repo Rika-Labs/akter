@@ -28,7 +28,7 @@ import {
   reauthenticationDigest,
   requestDigest,
 } from "../../serve/assertion/binding.ts"
-import { actorErrorBody } from "../../serve/wire.ts"
+import { actorErrorBody } from "../../protocol/wire.ts"
 import type { ConformanceCase } from "../conformance.ts"
 import { gate, HttpRoom, receipts, runs, tenantOf } from "./http.ts"
 import { endReason, opened, serveSockets, socket } from "./transports/wire.ts"

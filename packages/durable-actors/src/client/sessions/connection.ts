@@ -4,19 +4,19 @@ import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import type { ValueSchema } from "../../members/command.ts"
 import type { AnyConnection } from "../../members/connection.ts"
 import type { ProgressEffect } from "../../members/effect.ts"
-import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../serve/frames.ts"
+import { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "../../protocol/frames.ts"
 import { aborted, decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
 
 /**
- * One effect's progress as its client receives it: the effect's tag and a
- * frame decoded by that effect's `progress` schema. Unions over the effects a
- * connection member lists, so narrowing on `effect` types `frame`.
+ * One job's progress as its client receives it: the job's tag and a frame
+ * decoded by that job's `progress` schema. Unions over the jobs a connection
+ * member lists, so narrowing on `job` types `frame`.
  */
 export type ProgressUpdate<E extends ProgressEffect = ProgressEffect> = E extends ProgressEffect
-  ? { readonly effect: E["tag"]; readonly frame: E["progress"]["Type"] }
+  ? { readonly job: E["tag"]; readonly frame: E["progress"]["Type"] }
   : never
 
-/** The progress a connection member's client receives: one update per effect the member lists. */
+/** The progress a connection member's client receives: one update per job the member lists. */
 export type ProgressOfConnection<M extends AnyConnection> = ProgressUpdate<
   NonNullable<M["progress"]>["effects"][number]
 >
@@ -38,16 +38,16 @@ type Messages<Frame> = Data.TaggedEnum<{
   }
   ResyncReplayed: {}
   Progress: ProgressUpdate & {
-    readonly effectId: string
+    readonly jobId: string
     readonly attempt: number
     readonly seq: number
   }
 }>
 
 /**
- * An executor's progress on an effect the member lists: display-only, lossy,
- * and never replayed after a resync. `frame` is decoded by that effect's
- * `progress` schema; `seq` counts the attempt's reports, so a gap is a dropped one.
+ * An executor's progress on a job the member lists: display-only, lossy, and
+ * never replayed after a resync. `frame` is decoded by that job's `progress`
+ * schema; `seq` counts the attempt's reports, so a gap is a dropped one.
  */
 export type ProgressMessage<Progress extends ProgressUpdate = ProgressUpdate> = Extract<
   Messages<never>,
@@ -57,8 +57,8 @@ export type ProgressMessage<Progress extends ProgressUpdate = ProgressUpdate> = 
 
 /**
  * What a connection's client receives, in order: member frames, the holder's
- * resync notices, and executor progress for a member that lists effects.
- * `Progress` is the member's `ProgressUpdate`, so its messages narrow by `effect`.
+ * resync notices, and executor progress for a member that lists jobs.
+ * `Progress` is the member's `ProgressUpdate`, so its messages narrow by `job`.
  */
 export type ConnectionMessage<Frame, Progress extends ProgressUpdate = ProgressUpdate> =
   | Exclude<Messages<Frame>, { readonly _tag: "Progress" }>
@@ -275,7 +275,7 @@ export const connect = <Server, Client>({
         )
 
       const progress = (message: Extract<ServerWireMessage, { readonly t: "progress" }>) =>
-        Option.match(Option.fromNullishOr(progressDecoders.get(message.effect)), {
+        Option.match(Option.fromNullishOr(progressDecoders.get(message.job)), {
           onNone: () => Effect.void,
           onSome: (decode) =>
             decode(message.frame).pipe(
@@ -283,8 +283,8 @@ export const connect = <Server, Client>({
                 Queue.offer(
                   messages,
                   ConnectionMessage.Progress<Server>({
-                    effect: message.effect,
-                    effectId: message.effectId,
+                    job: message.job,
+                    jobId: message.jobId,
                     attempt: message.attempt,
                     seq: message.seq,
                     frame,

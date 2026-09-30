@@ -34,7 +34,6 @@ import type { OfflineStore } from "./offline/store.ts"
 import { Optimistic, type PendingInput } from "./optimistic.ts"
 import {
   aborted,
-  CREDENTIAL_CODES,
   decodeFailure,
   decodeSuccess,
   type Failure,
@@ -312,7 +311,7 @@ const refusedBeforeTurn = (failure: Failure) =>
     Match.tags({
       InvalidCommandId: () => true,
       InvalidInput: () => true,
-      Unauthorized: (reason) => CREDENTIAL_CODES.has(reason.code),
+      Unauthorized: (reason) => reason.isCredential,
     }),
     Match.orElse(() => false),
   )

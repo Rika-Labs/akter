@@ -9,7 +9,7 @@ import {
   withRetryAfter,
 } from "../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
-import { actorErrorBody } from "../../serve/wire.ts"
+import { actorErrorBody } from "../../protocol/wire.ts"
 import { undecodableFailure } from "../transport.ts"
 import { feedStream } from "./feed.ts"
 import { readEvents } from "./sse.ts"
@@ -140,6 +140,41 @@ describe("readEvents", () => {
       ])
       expect(held.cancelled.value).toBe(true)
     }))
+
+  test("delivers the message a chunk completes even when the body fails right after it", () => {
+    let pulls = 0
+
+    const cut = new ReadableStream<Uint8Array>({
+      pull: (controller) => {
+        pulls += 1
+
+        if (pulls > 1) return
+
+        return Promise.resolve().then(() => {
+          controller.enqueue(encoder.encode("id: 1\nevent: a\ndata: 1\n\n"))
+          controller.error(new Error("connection lost"))
+        })
+      },
+    })
+
+    return Effect.gen(function* () {
+      const delivered: Array<string | undefined> = []
+
+      const failure = yield* readEvents({
+        response: new Response(cut, { status: 200 }),
+        refused: () => undecodableFailure(),
+        idleMs: 1_000,
+      }).pipe(
+        Stream.runForEach((message) => Effect.sync(() => delivered.push(message.id))),
+        Effect.flip,
+      )
+
+      expect(delivered).toEqual(["1"])
+      expect(failure).toMatchObject({
+        reason: TransportError.make({ code: "network", retryable: true }),
+      })
+    })
+  })
 
   test("fails with the refusal of a non-200 body", () =>
     Effect.gen(function* () {

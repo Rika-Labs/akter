@@ -262,6 +262,6 @@ export {
 
 export type { BoundRequest } from "./serve/assertion/binding.ts"
 
-export { actorErrorBody, closeCodeOf, statusOf } from "./serve/wire.ts"
+export { actorErrorBody, closeCodeOf, statusOf } from "./protocol/wire.ts"
 
-export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./serve/frames.ts"
+export { ClientWireMessage, ServerWireMessage, SUBPROTOCOL } from "./protocol/frames.ts"
