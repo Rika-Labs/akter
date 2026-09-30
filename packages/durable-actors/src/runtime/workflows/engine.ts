@@ -83,7 +83,7 @@ const success = (value: string): BusinessResult => ({
 })
 
 /** Writes the execution's one keyed resume timer, replacing any pending one. */
-export const armTimer = Effect.fnUntraced(function* (
+const armTimer = Effect.fnUntraced(function* (
   routingKey: bigint,
   ref: ActorRef,
   executionId: string,

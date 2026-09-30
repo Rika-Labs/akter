@@ -158,37 +158,31 @@ const retryable = (cause: Cause.Cause<unknown>) => {
   return Schema.is(RetryTurn)(defect) || (SqlError.isSqlError(defect) && defect.isRetryable)
 }
 
-const commandEntities = new Map<string, ReturnType<typeof makeCommandEntity>>()
-
 /**
- * Sharding keeps one RPC client per entity object, by identity, until the
- * runtime closes; a fresh entity per command would retain a client per command.
+ * One entity definition per actor type name, created on first use. Sharding
+ * keeps one RPC client per entity object, by identity, until the runtime
+ * closes; a fresh entity per call would retain a client per call.
  */
-/** The command entity definition for an actor type, created once per name. */
-export const commandEntity = (name: string) => {
-  const cached = commandEntities.get(name)
+const oncePerName = <A>(make: (name: string) => A) => {
+  const made = new Map<string, A>()
 
-  if (cached !== undefined) return cached
+  return (name: string) => {
+    const cached = made.get(name)
 
-  const entity = makeCommandEntity(name)
-  commandEntities.set(name, entity)
+    if (cached !== undefined) return cached
 
-  return entity
+    const entity = make(name)
+    made.set(name, entity)
+
+    return entity
+  }
 }
 
-const connectionEntities = new Map<string, ReturnType<typeof connectionsEntity>>()
+/** The command entity definition for an actor type, created once per name. */
+export const commandEntity = oncePerName(makeCommandEntity)
 
 /** The connection entity definition for an actor type, created once per name. */
-export const connectionEntity = (name: string) => {
-  const cached = connectionEntities.get(name)
-
-  if (cached !== undefined) return cached
-
-  const entity = connectionsEntity(name)
-  connectionEntities.set(name, entity)
-
-  return entity
-}
+export const connectionEntity = oncePerName(connectionsEntity)
 
 /**
  * Registers an actor type's command entity with Cluster and starts its
