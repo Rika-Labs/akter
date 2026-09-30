@@ -323,7 +323,9 @@ const recoversToEachRestorePoint: ConformanceCase<RestoreFixture> = {
     ),
 }
 
-const restoreCases = conformanceGroups.restore.cases.filter(({ name }) => !name.includes("rolling deploy"))
+const restoreCases = conformanceGroups.restore.cases.filter(
+  ({ name }) => !name.includes("rolling deploy"),
+)
 
 for (const [backup, extra] of [
   [dumped, []],
