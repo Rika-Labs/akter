@@ -35,21 +35,13 @@ export type MintProof = typeof MintProof.Type
  * A caller the framework creates for its own deliveries, and the caller of
  * code that runs in the application's own process. `source` names the
  * mechanism (the process itself, an actor's intent, a timer, cron, a workflow,
- * an effect route, or a subscription), `ref` the actor that sent it, and
+ * a job route, or a subscription), `ref` the actor that sent it, and
  * `onBehalfOf` the principal of the turn that caused it. `mint` is set only on
  * a minted child's creating intent, and proves the child's id was derived by
  * its parent.
  */
 export const System = Schema.TaggedStruct("System", {
-  source: Schema.Literals([
-    "process",
-    "actor",
-    "timer",
-    "cron",
-    "workflow",
-    "effect",
-    "subscription",
-  ]),
+  source: Schema.Literals(["process", "actor", "timer", "cron", "workflow", "job", "subscription"]),
   ref: Schema.optional(ActorRef),
   onBehalfOf: Schema.optional(Principal),
   mint: Schema.optional(MintProof),

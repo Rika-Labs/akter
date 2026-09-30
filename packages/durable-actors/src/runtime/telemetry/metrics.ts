@@ -7,7 +7,7 @@ const milliseconds = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_0
  * Metric names and attribute keys are public, like span names. Prometheus
  * exposition replaces `.` and `-` with `_`, so `durable-actors.turns` is
  * scraped as `durable_actors_turns`. Attributes are bounded by the
- * deployment's declarations (actor types, commands, effects, subscriptions)
+ * deployment's declarations (actor types, commands, jobs, subscriptions)
  * or by fixed sets; no metric carries a tenant, actor id, or command id.
  *
  * The database gauges (`outboxRows` and the other sampled series) are read
@@ -62,21 +62,20 @@ export const Metrics = {
     incremental: true,
   }),
   outboxStaged: Metric.counter("durable-actors.outbox.staged", {
-    description: "Outbox rows committed by turns on this runner, by kind (intent, effect).",
+    description: "Outbox rows committed by turns on this runner, by kind (intent, job).",
     incremental: true,
   }),
   relayDelivered: Metric.counter("durable-actors.relay.delivered", {
     description:
-      "Outbox and subscription deliveries this runner settled, by kind (intent, effect, subscription).",
+      "Outbox and subscription deliveries this runner settled, by kind (intent, job, subscription).",
     incremental: true,
   }),
   relayRetried: Metric.counter("durable-actors.relay.retried", {
-    description:
-      "Deliveries this runner backed off to retry, by kind (intent, effect, subscription).",
+    description: "Deliveries this runner backed off to retry, by kind (intent, job, subscription).",
     incremental: true,
   }),
-  deadLetters: Metric.counter("durable-actors.effect.dead_letters", {
-    description: "Effects dead-lettered on this runner, by actor_type and effect.",
+  deadLetters: Metric.counter("durable-actors.job.dead_letters", {
+    description: "Jobs dead-lettered on this runner, by actor_type and job.",
     incremental: true,
   }),
   undeliverableGaps: Metric.counter("durable-actors.subscription.undeliverable_gaps", {
@@ -85,11 +84,11 @@ export const Metrics = {
     incremental: true,
   }),
   outboxRows: Metric.gauge("durable-actors.outbox.rows", {
-    description: "Outbox rows waiting, by kind (intent, effect, feed, control).",
+    description: "Outbox rows waiting, by kind (intent, job, feed, control).",
   }),
   relayLag: Metric.gauge("durable-actors.relay.lag_ms", {
     description:
-      "How long the oldest due, unclaimed row has been due, by kind (intent, effect, subscription); 0 when none is due.",
+      "How long the oldest due, unclaimed row has been due, by kind (intent, job, subscription); 0 when none is due.",
   }),
   stuckRows: Metric.gauge("durable-actors.relay.stuck_rows", {
     description: "Rows claimed at least 8 times and still pending, by kind (intent, subscription).",

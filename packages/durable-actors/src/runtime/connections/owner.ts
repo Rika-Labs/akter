@@ -1531,7 +1531,7 @@ export const activationOwner = ({
 
       const [row] = read.value
 
-      if (row === undefined || row.kind !== "effect" || row.cancelled) {
+      if (row === undefined || row.kind !== "job" || row.cancelled) {
         const closed = closedEffect(at)
         activation.progress.set(message.effectId, closed)
 

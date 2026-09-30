@@ -416,18 +416,18 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(descends(spans, received!, delivery!)).toBe(true)
 
-          const [attempt] = named(spans, SpanNames.effect("ObsAuthor", "ObsPing"))
+          const [attempt] = named(spans, SpanNames.job("ObsAuthor", "ObsPing"))
 
           expect(Object.fromEntries(attempt!.attributes)).toMatchObject({
             "actor.type": "ObsAuthor",
             "actor.id": "a4",
-            "effect.name": "ObsPing",
-            "effect.attempt": 1,
+            "job.name": "ObsPing",
+            "job.attempt": 1,
           })
           expect(yield* valueOf("durable-actors.relay.delivered", { kind: "intent" })).toBe(1)
-          expect(yield* valueOf("durable-actors.relay.delivered", { kind: "effect" })).toBe(1)
+          expect(yield* valueOf("durable-actors.relay.delivered", { kind: "job" })).toBe(1)
           expect(yield* valueOf("durable-actors.outbox.staged", { kind: "intent" })).toBe(1)
-          expect(yield* valueOf("durable-actors.outbox.staged", { kind: "effect" })).toBe(1)
+          expect(yield* valueOf("durable-actors.outbox.staged", { kind: "job" })).toBe(1)
         }),
       ),
   },
@@ -485,11 +485,9 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           yield* sample
 
           expect(yield* valueOf(Metrics.outboxRows.id, { kind: "intent" })).toBe(1)
-          expect(yield* valueOf(Metrics.outboxRows.id, { kind: "effect" })).toBe(1)
+          expect(yield* valueOf(Metrics.outboxRows.id, { kind: "job" })).toBe(1)
           expect(yield* valueOf(Metrics.stuckRows.id, { kind: "intent" })).toBe(1)
-          expect(((yield* valueOf(Metrics.relayLag.id, { kind: "effect" })) ?? -1) >= 5000).toBe(
-            true,
-          )
+          expect(((yield* valueOf(Metrics.relayLag.id, { kind: "job" })) ?? -1) >= 5000).toBe(true)
           expect(yield* valueOf(Metrics.relayLag.id, { kind: "intent" })).toBe(0)
           expect(yield* valueOf("durable-actors.relay.retried", { kind: "intent" })).toBe(1)
 

@@ -5,7 +5,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { ContentStore } from "../../handles/content.ts"
 
 /**
- * Makes an effect layer unassignable when its executors or its build need a
+ * Makes a job layer unassignable when its executors or its build need a
  * SQL client or the content store, since a capability captured at build time
  * would reach executors.
  */

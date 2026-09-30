@@ -74,7 +74,7 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
         (SELECT count(*)::int FROM durable.events WHERE tenant_id = ${tenant}) AS events,
         (SELECT count(*)::int FROM durable.outbox WHERE tenant_id = ${tenant}) AS outbox,
         (SELECT count(*)::int FROM durable.timers WHERE tenant_id = ${tenant}) AS timers,
-        (SELECT count(*)::int FROM durable.effects WHERE tenant_id = ${tenant}) AS effects,
+        (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = ${tenant}) AS jobs,
         (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = ${tenant}) AS "deadLetters",
         (SELECT count(*)::int FROM durable.workflows WHERE tenant_id = ${tenant}) AS workflows,
         (SELECT count(*)::int FROM durable.workflows
@@ -157,7 +157,7 @@ type OutboxRow = Omit<Inspection.OutboxRow, "payload" | "caller"> & {
   readonly caller: string
 }
 
-type EffectRow = Omit<Inspection.EffectRow, "payload" | "caller"> & {
+type JobRow = Omit<Inspection.JobRow, "payload" | "caller"> & {
   readonly payload: string
   readonly caller: string
 }
@@ -183,7 +183,7 @@ const outboxOf = (row: OutboxRow) => ({
   caller: decodeText(row.caller),
 })
 
-const effectOf = (row: EffectRow) => ({
+const jobOf = (row: JobRow) => ({
   ...row,
   payload: decodeText(row.payload),
   caller: decodeText(row.caller),
@@ -218,10 +218,10 @@ const OUTBOX_COLUMNS = `${IDENTITY}, intent_id AS "intentId", timer_key AS "time
   target_type AS "targetType", target_id AS "targetId", command, payload, caller,
   attempts::int AS attempts, last_error AS "lastError", due_at_ms::float8 AS "dueAtMs"`
 
-const EFFECT_COLUMNS = `${IDENTITY}, effect_id AS "effectId", effect, payload, caller,
+const JOB_COLUMNS = `${IDENTITY}, job_id AS "jobId", job, payload, caller,
   attempts::int AS attempts, last_error AS "lastError", ambiguous, due_at_ms::float8 AS "dueAtMs"`
 
-const DEAD_LETTER_COLUMNS = `${IDENTITY}, effect_id AS "effectId", effect, payload,
+const DEAD_LETTER_COLUMNS = `${IDENTITY}, job_id AS "jobId", job, payload,
   attempts::int AS attempts, cause, ambiguous, dead_at_ms::float8 AS "deadAtMs"`
 
 const WORKFLOW_COLUMNS = `${IDENTITY}, execution_id AS "executionId", workflow,
@@ -239,7 +239,7 @@ interface ActorPage extends Page, ActorIdentity {}
 /**
  * One actor as the inspector shows it, read through the actor's routing key:
  * its generation, decoded state, newest receipts with the events each
- * committed, newest events, pending outbox rows and effects, dead letters, and
+ * committed, newest events, pending outbox rows and jobs, dead letters, and
  * workflow executions with their recorded steps. `None` when the tenant has
  * no such actor. Every runtime index leads with `routing_key`, so each read is
  * a key lookup, and the steps read for the same page of executions give each
@@ -286,17 +286,17 @@ export const actor = (page: ActorPage) =>
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
-    const effects = yield* sql.unsafe<EffectRow>(
-      `SELECT ${EFFECT_COLUMNS} FROM durable.effects
+    const jobs = yield* sql.unsafe<JobRow>(
+      `SELECT ${JOB_COLUMNS} FROM durable.jobs
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
-        ORDER BY due_at_ms, effect_id COLLATE "C" LIMIT $5`,
+        ORDER BY due_at_ms, job_id COLLATE "C" LIMIT $5`,
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
     const deadLetters = yield* sql.unsafe<DeadLetterRow>(
       `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
-        ORDER BY dead_at_ms DESC, effect_id COLLATE "C" LIMIT $5`,
+        ORDER BY dead_at_ms DESC, job_id COLLATE "C" LIMIT $5`,
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
@@ -322,7 +322,7 @@ export const actor = (page: ActorPage) =>
         (SELECT count(*)::int FROM durable.receipts WHERE ${owned}) AS receipts,
         (SELECT count(*)::int FROM durable.events WHERE ${owned}) AS events,
         (SELECT count(*)::int FROM durable.outbox WHERE ${owned}) AS outbox,
-        (SELECT count(*)::int FROM durable.effects WHERE ${owned}) AS effects,
+        (SELECT count(*)::int FROM durable.jobs WHERE ${owned}) AS jobs,
         (SELECT count(*)::int FROM durable.dead_letters WHERE ${owned}) AS "deadLetters",
         (SELECT count(*)::int FROM durable.workflows WHERE ${owned}) AS workflows`
 
@@ -337,7 +337,7 @@ export const actor = (page: ActorPage) =>
       })),
       events: events.map(({ value, ...event }) => ({ ...event, value: decodeBytes(value) })),
       outbox: outbox.map(outboxOf),
-      effects: effects.map(effectOf),
+      jobs: jobs.map(jobOf),
       deadLetters: deadLetters.map(deadLetterOf),
       workflows: workflows.map((workflow) => workflowOf(workflow, steps)),
       totals: totals!,
@@ -358,18 +358,18 @@ export const outbox = ({ tenant, limit }: Page) =>
     return { outbox: rows.map(outboxOf) } satisfies typeof Inspection.OutboxPage.Type
   })
 
-/** The tenant's performed effects not yet settled, soonest first. */
-export const effects = ({ tenant, limit }: Page) =>
+/** The tenant's enqueued jobs not yet settled, soonest first. */
+export const jobs = ({ tenant, limit }: Page) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    const rows = yield* sql.unsafe<EffectRow>(
-      `SELECT ${EFFECT_COLUMNS} FROM durable.effects WHERE tenant_id = $1
-        ORDER BY due_at_ms, effect_id COLLATE "C" LIMIT $2`,
+    const rows = yield* sql.unsafe<JobRow>(
+      `SELECT ${JOB_COLUMNS} FROM durable.jobs WHERE tenant_id = $1
+        ORDER BY due_at_ms, job_id COLLATE "C" LIMIT $2`,
       [tenant, limit],
     )
 
-    return { effects: rows.map(effectOf) } satisfies typeof Inspection.EffectsPage.Type
+    return { jobs: rows.map(jobOf) } satisfies typeof Inspection.JobsPage.Type
   })
 
 /** The tenant's dead letters, newest first. */
@@ -379,7 +379,7 @@ export const deadLetters = ({ tenant, limit }: Page) =>
 
     const rows = yield* sql.unsafe<DeadLetterRow>(
       `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters WHERE tenant_id = $1
-        ORDER BY dead_at_ms DESC, effect_id COLLATE "C" LIMIT $2`,
+        ORDER BY dead_at_ms DESC, job_id COLLATE "C" LIMIT $2`,
       [tenant, limit],
     )
 

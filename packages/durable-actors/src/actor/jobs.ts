@@ -3,8 +3,8 @@ import type { ExecutorContext } from "../contexts/job.ts"
 import { Tenant } from "../identity/caller.ts"
 import type { AnyCommand } from "../members/command.ts"
 import { type AnyJob, CancelledOutcome, type ProgressJob, type ProgressOf } from "../members/job.ts"
-import { MAX_PROGRESS_BYTES } from "../runtime/effects/progress.ts"
-import type { EffectRoute, RegisteredEffect } from "../runtime/members.ts"
+import { MAX_PROGRESS_BYTES } from "../runtime/jobs/progress.ts"
+import type { JobRoute, RegisteredJob } from "../runtime/members.ts"
 import type { CompiledJob, Descriptor } from "./descriptor.ts"
 
 const utf8 = new TextEncoder()
@@ -13,7 +13,7 @@ type Executor = (job: unknown) => Effect.Effect<unknown, unknown, unknown>
 
 /** What the relay knows of a cancelled job whose provider call succeeded. */
 interface CancelledSuccess {
-  readonly effectId: string
+  readonly jobId: string
   readonly attempts: number
   readonly outcome: { readonly _tag: "Succeeded"; readonly value: unknown }
   readonly ambiguous: boolean
@@ -27,7 +27,7 @@ const routeCodec = (command: AnyCommand) => {
 
   return (value: unknown) =>
     encode({ value }).pipe(
-      Effect.map((payload): EffectRoute => ({ command: command.tag, payload })),
+      Effect.map((payload): JobRoute => ({ command: command.tag, payload })),
     )
 }
 
@@ -44,7 +44,7 @@ const jobOf = (
   Executor: Context.Key<unknown, unknown>,
   { job, codec, policy }: CompiledJob,
   execute: Executor,
-): RegisteredEffect => {
+): RegisteredJob => {
   const onSuccess = policy.onSuccess === undefined ? undefined : routeCodec(policy.onSuccess)
   const onDeadLetter =
     policy.onDeadLetter === undefined ? undefined : routeCodec(policy.onDeadLetter)
@@ -52,12 +52,12 @@ const jobOf = (
 
   const cancelledRoute = (
     decoded: unknown,
-    letter: Parameters<RegisteredEffect["cancelled"]>[2] | CancelledSuccess,
-  ): Effect.Effect<EffectRoute | undefined, Schema.SchemaError> =>
+    letter: Parameters<RegisteredJob["cancelled"]>[2] | CancelledSuccess,
+  ): Effect.Effect<JobRoute | undefined, Schema.SchemaError> =>
     onCancelled === undefined
       ? Effect.succeed(undefined)
       : onCancelled({
-          jobId: letter.effectId,
+          jobId: letter.jobId,
           job: decoded,
           attempts: letter.attempts,
           outcome: letter.outcome,
@@ -107,7 +107,7 @@ const jobOf = (
               )
 
       const context: ExecutorContext = {
-        jobId: identity.effectId,
+        jobId: identity.jobId,
         attempt: identity.attempt,
         principal: identity.principal,
         ref: identity.ref,
@@ -137,14 +137,14 @@ const jobOf = (
         onCancelled === undefined
           ? undefined
           : yield* cancelledRoute(decoded, {
-              effectId: context.jobId,
+              jobId: context.jobId,
               attempts: context.attempt,
               outcome: CancelledOutcome.cases.Succeeded.make({ value: exit.value }),
               ambiguous: false,
             }).pipe(
               Effect.catch((error) =>
                 cancelledRoute(decoded, {
-                  effectId: context.jobId,
+                  jobId: context.jobId,
                   attempts: context.attempt,
                   outcome: CancelledOutcome.cases.Unknown.make({
                     cause: `The onCancelled route cannot accept the result: ${String(error)}`,
@@ -171,7 +171,7 @@ const jobOf = (
         }
 
       return { success: success.success, cancelled, rejected: undefined }
-    }) as RegisteredEffect["execute"],
+    }) as RegisteredJob["execute"],
     cancelled: Effect.fnUntraced(function* (payload, version, letter) {
       const decoded = yield* codec.decode(payload, version).pipe(Effect.option)
 
@@ -185,7 +185,7 @@ const jobOf = (
       if (onDeadLetter === undefined || Option.isNone(decoded)) return undefined
 
       return yield* onDeadLetter({
-        jobId: letter.effectId,
+        jobId: letter.jobId,
         job: decoded.value,
         attempts: letter.attempts,
         cause: letter.cause,
@@ -202,7 +202,7 @@ export const jobsOf = (
   executors: Readonly<Record<string, Executor | undefined>>,
 ) =>
   Effect.gen(function* () {
-    const registered = new Map<string, RegisteredEffect>()
+    const registered = new Map<string, RegisteredJob>()
 
     for (const compiled of descriptor.jobs.values()) {
       const execute = executors[compiled.job.tag]
@@ -213,5 +213,5 @@ export const jobsOf = (
       registered.set(compiled.job.tag, jobOf(Executor, compiled, execute))
     }
 
-    return registered as ReadonlyMap<string, RegisteredEffect>
+    return registered as ReadonlyMap<string, RegisteredJob>
   })

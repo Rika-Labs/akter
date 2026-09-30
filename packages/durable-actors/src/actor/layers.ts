@@ -233,12 +233,12 @@ export const jobLayer = (descriptor: Descriptor, phases: PhaseServices, build: B
       const executors = yield* built(build)
       const services = yield* Effect.context<never>()
 
-      yield* actors.registerEffects({
+      yield* actors.registerJobs({
         name: descriptor.name,
         progress: descriptor.progressJobs,
         services,
-        effects: yield* jobsOf(descriptor, phases.Executor, executors as never),
-        payloads: descriptor.payloads(false).filter((declared) => declared.kind === "effect"),
+        jobs: yield* jobsOf(descriptor, phases.Executor, executors as never),
+        payloads: descriptor.payloads(false).filter((declared) => declared.kind === "job"),
       })
     }),
   )

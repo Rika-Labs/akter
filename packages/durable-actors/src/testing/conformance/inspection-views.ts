@@ -80,7 +80,7 @@ const VIEWS = [
   "events",
   "outbox",
   "timers",
-  "effects",
+  "jobs",
   "dead_letters",
   "workflows",
   "workflow_steps",
@@ -128,9 +128,9 @@ const counts = Effect.fnUntraced(function* (tenant: string, id: string) {
     [tenant, id],
   )
 
-  const { effects = 0, dead_letters = 0, ...rest } = row ?? {}
+  const { jobs = 0, dead_letters = 0, ...rest } = row ?? {}
 
-  return { ...rest, effects: effects + dead_letters }
+  return { ...rest, jobs: jobs + dead_letters }
 })
 
 const rejection = (exit: Exit.Exit<unknown, unknown>) =>
@@ -163,7 +163,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             events: 1,
             outbox: 1,
             timers: 1,
-            effects: 1,
+            jobs: 1,
           })
           expect(
             yield* rowsOf(
@@ -221,7 +221,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             events: 1,
             outbox: 1,
             timers: 1,
-            effects: 1,
+            jobs: 1,
           })
           expect(yield* rowsOf("receipts", tenant, "flow", "command, outcome_tag")).toEqual([
             { command: "Record", outcome_tag: "Success" },
@@ -229,10 +229,10 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           ])
 
           yield* test.advance(0)
-          expect(yield* rowsOf("effects", tenant, "flow", "effect")).toEqual([])
-          expect(
-            yield* rowsOf("dead_letters", tenant, "flow", "effect, attempts, ambiguous"),
-          ).toEqual([{ effect: "Deliver", attempts: 1, ambiguous: false }])
+          expect(yield* rowsOf("jobs", tenant, "flow", "job")).toEqual([])
+          expect(yield* rowsOf("dead_letters", tenant, "flow", "job, attempts, ambiguous")).toEqual(
+            [{ job: "Deliver", attempts: 1, ambiguous: false }],
+          )
 
           yield* test.advance("1 hour")
           expect(yield* counts(tenant, "flow")).toMatchObject({
@@ -261,13 +261,13 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             actors: 1,
             receipts: 1,
             events: 1,
-            effects: 1,
+            jobs: 1,
           })
           expect(other).toMatchObject({
             actors: 1,
             receipts: 2,
             events: 2,
-            effects: 2,
+            jobs: 2,
           })
 
           const sql = yield* SqlClient.SqlClient
@@ -296,7 +296,11 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           expect(
             yield* sql<{ view_name: string; version: number }>`
               SELECT view_name, version FROM durable.views ORDER BY view_name COLLATE "C"`,
-          ).toEqual([...VIEWS].sort().map((view_name) => ({ view_name, version: 1 })))
+          ).toEqual(
+            [...VIEWS]
+              .sort()
+              .map((view_name) => ({ view_name, version: view_name === "dead_letters" ? 2 : 1 })),
+          )
 
           for (const view of VIEWS) {
             const column = view === "views" ? "view_name" : "tenant_id"
@@ -371,7 +375,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             actors: 1,
             receipts: 1,
             events: 1,
-            effects: 1,
+            jobs: 1,
           })
 
           for (const reason of Object.values(probe.denied))

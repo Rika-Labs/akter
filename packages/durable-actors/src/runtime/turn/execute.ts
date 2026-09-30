@@ -819,7 +819,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         for (const blob of result.writes?.blobs ?? []) blobs.add(blob)
         intents += result.outbox.intents.length
-        effects += result.outbox.effects.length
+        effects += result.outbox.jobs.length
 
         if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 

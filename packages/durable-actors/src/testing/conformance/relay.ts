@@ -934,7 +934,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
           const draining = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
           yield* takeover.reached
           expect(yield* outboxRows(other)).toMatchObject([
-            { kind: "effect", attempts: 2, ambiguous: true },
+            { kind: "job", attempts: 2, ambiguous: true },
           ])
           yield* takeover.release
           yield* Fiber.join(draining)
@@ -1045,7 +1045,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
                   RETURN NEW;
                 END $$`
               yield* sql`CREATE TRIGGER relay_record_wait AFTER UPDATE ON actor_outbox FOR EACH ROW
-                WHEN (NEW.kind = 'effect' AND NEW.last_error NOT LIKE 'Attempt % ended without%')
+                WHEN (NEW.kind = 'job' AND NEW.last_error NOT LIKE 'Attempt % ended without%')
                 EXECUTE FUNCTION relay_record_wait()`
             }),
           )
@@ -1184,6 +1184,59 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
       ),
   },
   {
+    name: "keeps a newer attempt's row when an attempt that lost its lease fails late",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL, executors: SHORT_LEASE },
+        Effect.gen(function* () {
+          const { owner, other } = yield* ownerAndOther(yield* refOf("stale"))
+          const first = yield* Deferred.make<void>()
+          const second = yield* Deferred.make<void>()
+          fixture.provider = (attempt) =>
+            attempt.attempt === 1
+              ? Deferred.await(first).pipe(Effect.andThen(Effect.fail(ProviderDown.make({}))))
+              : Deferred.await(second).pipe(Effect.as(attempt.key))
+
+          const renewal = yield* faults(owner, (test) => test.pauseNext("beforeRenew"))
+          yield* perform(owner, "stale")
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+          const takeover = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 2))
+
+          yield* Deferred.succeed(first, undefined)
+          yield* eventually(Effect.sync(() => fixture.attempts[0]?.endedAt !== undefined))
+          expect(fixture.attempts[0]!.interrupted).toBe(false)
+          yield* Effect.sleep("1 second")
+
+          const [held] = yield* outboxRows(other)
+          expect(held).toMatchObject({ kind: "job", attempts: 2, ambiguous: true })
+          expect(held!.last_error).toContain("Attempt 2")
+
+          yield* Deferred.succeed(second, undefined)
+          yield* Fiber.join(takeover)
+          yield* renewal.release
+          yield* eventually(
+            receipts(other, "Called").pipe(Effect.map((count) => count === 1)),
+            "10 seconds",
+            "attempt 2's route",
+          )
+
+          expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
+            [1, owner],
+            [2, other],
+          ])
+          expect((yield* callerState(other, "stale")).called).toEqual(["stale"])
+          expect(yield* deadLetters(other)).toEqual([])
+          expect(yield* receipts(other, "CallFailed")).toBe(0)
+        }),
+      ),
+  },
+  {
     name: "marks the dead letter ambiguous when a stale success arrives after it",
     requiresFreshDatabase: true,
     requiresIndependentConnections: true,
@@ -1258,7 +1311,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
           const [held] = yield* outboxRows(other)
           expect(ran >= 2900 && ran < 4000).toBe(true)
           expect(fixture.attempts.length).toBe(1)
-          expect(held).toMatchObject({ kind: "effect", attempts: 1, ambiguous: true })
+          expect(held).toMatchObject({ kind: "job", attempts: 1, ambiguous: true })
           expect(first!.endedAt! <= Number(held!.due) + 100).toBe(true)
 
           fixture.hook = () => Effect.void
@@ -1332,7 +1385,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
           yield* Effect.sleep("200 millis")
 
           const [row] = yield* outboxRows(0)
-          expect(row).toMatchObject({ kind: "effect", attempts: 1, ambiguous: false })
+          expect(row).toMatchObject({ kind: "job", attempts: 1, ambiguous: false })
           expect(Number(row!.due) - Number(row!.now) <= 1000).toBe(true)
         }),
       ),
@@ -1646,7 +1699,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
               payload, caller, kind, ready_at_ms)
             SELECT ((i % 256) - 128)::bigint << 56 | i, 'ghost-' || i, (i % 256) - 128, 0, 0,
-              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'effect', 0
+              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'job', 0
             FROM generate_series(1, 10000) AS i`
           yield* sql`ANALYZE actor_outbox`
 
@@ -1724,7 +1777,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
               payload, caller, kind, ready_at_ms)
             SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan-' || i, ${placed!.bucket}, 0, 0,
-              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'effect', 0
+              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'job', 0
             FROM generate_series(1, 200) AS i`
 
           yield* Effect.gen(function* () {

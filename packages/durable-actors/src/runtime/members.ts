@@ -32,7 +32,7 @@ export interface BusinessResult {
   readonly complete: boolean
   /** Encoded events in emit order, appended with the commit. */
   readonly events: ReadonlyArray<EmittedEvent>
-  /** Intents and effects to commit with the turn; a declared failure stages none. */
+  /** Intents and jobs to commit with the turn; a declared failure stages none. */
   readonly outbox: StagedOutbox
   /** Frames to send to open connections once the turn commits; a declared failure sends none. */
   readonly broadcasts?: ReadonlyArray<Broadcast>
@@ -204,18 +204,18 @@ export interface RegisteredStream {
   ) => Stream.Stream<string, { readonly failure: string }>
 }
 
-/** A command an effect's outcome is delivered to, with its encoded input. */
-export interface EffectRoute {
+/** A command a job's outcome is delivered to, with its encoded input. */
+export interface JobRoute {
   readonly command: string
   readonly payload: string
 }
 
 /** How one executor attempt ended without a result. */
-interface EffectFailure {
+export interface JobFailure {
   readonly cause: string
   /** True when the provider may have applied the call anyway. */
   readonly ambiguous: boolean
-  /** Retrying cannot help, so the effect is dead-lettered now. */
+  /** Retrying cannot help, so the job is dead-lettered now. */
   readonly final?: boolean
   /**
    * The executor never ran, as when the stored payload does not decode, so
@@ -226,29 +226,39 @@ interface EffectFailure {
 }
 
 /** What the relay gives one attempt; the executor sees it as `X.Executor`. */
-type AttemptContext = {
-  readonly effectId: string
+export interface AttemptContext {
+  /** Stable across every attempt of the job. */
+  readonly jobId: string
+  /** 1 on the first attempt. */
   readonly attempt: number
+  /** The principal of the turn that enqueued the job. */
   readonly principal: Option.Option<Principal>
+  /** The actor that enqueued the job. */
   readonly ref: ActorRef
-
   /** False when progress reports go nowhere, so frames need not be encoded. */
   readonly reporting: () => boolean
   /** Offers one encoded progress frame to the attempt's slot. */
   readonly report: (frame: Uint8Array) => Effect.Effect<void>
 }
 
-/** An effect class bound to its executor and retry policy. */
-export interface RegisteredEffect {
-  /** Total attempts before the effect is dead-lettered. */
+/** What a settled job reports to its `onCancelled` or `onDeadLetter` route. */
+export interface JobLetter {
+  readonly jobId: string
   readonly attempts: number
-  /** The least time between two progress frames of one attempt; undefined when the effect declares no progress. */
+  readonly ambiguous: boolean
+}
+
+/** A job class bound to its executor and retry policy. */
+export interface RegisteredJob {
+  /** Total attempts before the job is dead-lettered. */
+  readonly attempts: number
+  /** The least time between two progress frames of one attempt; undefined when the job declares no progress. */
   readonly progressEveryMs: number | undefined
   /** The wait after failed attempt `n` is `min(baseMs × 2^(n − 1), maxMs)`. */
   readonly backoff: { readonly baseMs: number; readonly maxMs: number }
   /** Attempts running at once per actor across runners; unlimited when undefined. */
   readonly perActor: number | undefined
-  /** Whether the effect declares an `onCancelled` route. */
+  /** Whether the job declares an `onCancelled` route. */
   readonly routesCancelled: boolean
   /**
    * Runs one attempt; succeeds with the `onSuccess` route and the
@@ -261,46 +271,38 @@ export interface RegisteredEffect {
     context: AttemptContext,
   ) => Effect.Effect<
     {
-      readonly success: EffectRoute | undefined
-      readonly cancelled: EffectRoute | undefined
+      readonly success: JobRoute | undefined
+      readonly cancelled: JobRoute | undefined
       /** Why `onSuccess` cannot accept the result, when it cannot. */
-      readonly rejected: EffectFailure | undefined
+      readonly rejected: JobFailure | undefined
     },
-    EffectFailure
+    JobFailure
   >
-  /** The `onCancelled` route for a cancelled effect without a result, if declared. */
+  /** The `onCancelled` route for a cancelled job without a result, if declared. */
   readonly cancelled: (
     payload: string,
     version: number,
-    letter: {
-      readonly effectId: string
-      readonly attempts: number
+    letter: JobLetter & {
       readonly outcome: { readonly _tag: "Failed" | "Unknown"; readonly cause: string }
-      readonly ambiguous: boolean
     },
-  ) => Effect.Effect<EffectRoute | undefined>
-  /** The `onDeadLetter` route for an exhausted effect, if declared. */
+  ) => Effect.Effect<JobRoute | undefined>
+  /** The `onDeadLetter` route for an exhausted job, if declared. */
   readonly deadLetter: (
     payload: string,
     version: number,
-    letter: {
-      readonly effectId: string
-      readonly attempts: number
-      readonly cause: string
-      readonly ambiguous: boolean
-    },
-  ) => Effect.Effect<EffectRoute | undefined>
+    letter: JobLetter & { readonly cause: string },
+  ) => Effect.Effect<JobRoute | undefined>
 }
 
-/** What an actor type's effect layer registers with the runtime. */
-export interface EffectRegistration {
+/** What an actor type's job layer registers with the runtime. */
+export interface JobRegistration {
   readonly name: string
-  /** Effect tags some connection or stream member of the actor receives progress of. */
+  /** Job tags some connection or stream member of the actor receives progress of. */
   readonly progress: ReadonlySet<string>
-  /** The effect layer's build context; executor attempts run in it. */
+  /** The job layer's build context; executor attempts run in it. */
   readonly services: Context.Context<never>
-  readonly effects: ReadonlyMap<string, RegisteredEffect>
-  /** The effect classes the layer reads, for the startup payload check. */
+  readonly jobs: ReadonlyMap<string, RegisteredJob>
+  /** The job classes the layer reads, for the startup payload check. */
   readonly payloads: ReadonlyArray<PayloadDeclaration>
 }
 
@@ -376,7 +378,7 @@ export interface Registration {
   /** `policy.subscribers` of this actor type as a source; undefined allows every type. */
   readonly subscribers: ReadonlyArray<string> | undefined
   /**
-   * Every event and effect class the layer writes or reads, its
+   * Every event and job class the layer writes or reads, its
    * subscriptions' source events included, for the startup payload check.
    */
   readonly payloads: ReadonlyArray<PayloadDeclaration>

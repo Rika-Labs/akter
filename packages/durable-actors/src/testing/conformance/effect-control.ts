@@ -19,7 +19,8 @@ import type { Request } from "../../runtime/request.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import type { Options as RuntimeOptions } from "../../runtime/layer.ts"
 import { TurnHooks } from "../../runtime/turn/hooks.ts"
-import { claimCapped, wakeWaiting } from "../../runtime/turn/relay.ts"
+import { wakeWaiting } from "../../runtime/jobs/attempt.ts"
+import { claimCapped } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
@@ -501,7 +502,7 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase<EffectContr
           const test = yield* ActorTest
           yield* perform("pending", "Job", ["later"], { keyed: true, afterMs: 60_000 })
           expect(yield* effectRows(sql)).toMatchObject([
-            { command: "Job", timer_key: "$effect:later", attempts: 0 },
+            { command: "Job", timer_key: "$job:later", attempts: 0 },
           ])
           yield* cancel("pending", ["later", "never-performed"])
           const actor = yield* Controlled.get("pending")
@@ -845,17 +846,17 @@ export const effectControlConformance: ReadonlyArray<ConformanceCase<EffectContr
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {
-          expect(thrown(() => Intent.key("$effect:x"))).toContain(
-            'Intent key "$effect:x" is reserved for effects',
+          expect(thrown(() => Intent.key("$job:x"))).toContain(
+            'Intent key "$job:x" is reserved for jobs',
           )
 
-          const inTurn = yield* Intent.cancel("$effect:x").pipe(
+          const inTurn = yield* Intent.cancel("$job:x").pipe(
             Effect.provideService(Actor.InTurn, Actor.InTurn.of({ turn: Symbol() })),
             Effect.exit,
           )
 
           expect(Exit.isFailure(inTurn) && Cause.pretty(inTurn.cause)).toContain(
-            "is reserved for effects",
+            "is reserved for jobs",
           )
           const actor = yield* Controlled.get("escape")
           yield* actor.CaptureCancel().pipe(Effect.orDie)
@@ -897,7 +898,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
               ["oldest", "next"].map((intentId, index) => ({
                 routing_key: 7,
                 intent_id: intentId,
-                kind: "effect",
+              kind: "job",
                 bucket: 0,
                 due_at_ms: leaseEnd,
                 scheduled_at_ms: now + index,
@@ -992,7 +993,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
             yield* sql`INSERT INTO actor_outbox ${sql.insert({
               routing_key: 8,
               intent_id: "oldest",
-              kind: "effect",
+            kind: "job",
               bucket: 0,
               due_at_ms: now + 60_000,
               scheduled_at_ms: now,
@@ -1086,7 +1087,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
               ].map(({ due, ...row }, index) => ({
                 ...row,
                 routing_key: 9,
-                kind: "effect",
+              kind: "job",
                 bucket: 0,
                 due_at_ms: due,
                 scheduled_at_ms: now + index,

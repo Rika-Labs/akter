@@ -24,7 +24,7 @@ export const Overview = Schema.Struct({
     events: Schema.Finite,
     outbox: Schema.Finite,
     timers: Schema.Finite,
-    effects: Schema.Finite,
+    jobs: Schema.Finite,
     deadLetters: Schema.Finite,
     workflows: Schema.Finite,
     openWorkflows: Schema.Finite,
@@ -68,13 +68,13 @@ export const OutboxRow = Schema.Struct({
 export type OutboxRow = typeof OutboxRow.Type
 
 /**
- * A pending effect with its attempts, last error, due time in epoch
+ * A pending job with its attempts, last error, due time in epoch
  * milliseconds and whether an earlier attempt's outcome is ambiguous.
  */
-export const EffectRow = Schema.Struct({
+export const JobRow = Schema.Struct({
   ...Identity,
-  effectId: Schema.String,
-  effect: Schema.String,
+  jobId: Schema.String,
+  job: Schema.String,
   payload: Stored,
   caller: Stored,
   attempts: Schema.Finite,
@@ -83,13 +83,13 @@ export const EffectRow = Schema.Struct({
   dueAtMs: Millis,
 })
 
-export type EffectRow = typeof EffectRow.Type
+export type JobRow = typeof JobRow.Type
 
-/** An effect that gave up, with its cause and the epoch millisecond it died. */
+/** A job that gave up, with its cause and the epoch millisecond it died. */
 export const DeadLetterRow = Schema.Struct({
   ...Identity,
-  effectId: Schema.String,
-  effect: Schema.String,
+  jobId: Schema.String,
+  job: Schema.String,
   payload: Stored,
   attempts: Schema.Finite,
   cause: Schema.String,
@@ -173,14 +173,14 @@ export const ActorDetail = Schema.Struct({
   receipts: Schema.Array(ReceiptRow),
   events: Schema.Array(EventRow),
   outbox: Schema.Array(OutboxRow),
-  effects: Schema.Array(EffectRow),
+  jobs: Schema.Array(JobRow),
   deadLetters: Schema.Array(DeadLetterRow),
   workflows: Schema.Array(WorkflowRow),
   totals: Schema.Struct({
     receipts: Schema.Finite,
     events: Schema.Finite,
     outbox: Schema.Finite,
-    effects: Schema.Finite,
+    jobs: Schema.Finite,
     deadLetters: Schema.Finite,
     workflows: Schema.Finite,
   }),
@@ -202,8 +202,8 @@ export const OperatorActorDetail = ActorDetail.mapFields((fields) => ({
 /** A tenant-wide page of outbox rows. */
 export const OutboxPage = Schema.Struct({ outbox: Schema.Array(OutboxRow) })
 
-/** A tenant-wide page of effect rows. */
-export const EffectsPage = Schema.Struct({ effects: Schema.Array(EffectRow) })
+/** A tenant-wide page of job rows. */
+export const JobsPage = Schema.Struct({ jobs: Schema.Array(JobRow) })
 
 /** A tenant-wide page of dead letters. */
 export const DeadLettersPage = Schema.Struct({ deadLetters: Schema.Array(DeadLetterRow) })

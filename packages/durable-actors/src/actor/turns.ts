@@ -2,7 +2,7 @@ import { Context, DateTime, Duration, Effect, Fiber, Option, Result, Schema } fr
 import { InsideTurn, type Mintable } from "../contexts/command.ts"
 import type { ConnectionInfo } from "../contexts/connection.ts"
 import type { EnqueueOptions } from "../contexts/job.ts"
-import { Due, effectKey, emptyOutbox, InTurn, openOutbox } from "../handles/intents.ts"
+import { Due, emptyOutbox, InTurn, jobKey, openOutbox } from "../handles/intents.ts"
 import { ActorRef, principal } from "../identity/caller.ts"
 import { childId } from "../identity/child.ts"
 import type { AnyConnection } from "../members/connection.ts"
@@ -34,7 +34,7 @@ type Handler = (input: unknown) => Effect.Effect<unknown, unknown, unknown>
 
 /** When and under which key `turn.enqueue` stages a job. */
 const enqueueSchedule = (options: EnqueueOptions | undefined) => {
-  if (options?.key !== undefined) effectKey(options.key)
+  if (options?.key !== undefined) jobKey(options.key)
 
   if (options?.after !== undefined && options.at !== undefined)
     throw new Error("turn.enqueue takes after or at, not both")
@@ -274,8 +274,8 @@ const commandTurn = (
       if (scheduled.key !== undefined) yield* warnUnrouted(descriptor, instance._tag)
       const { value, version } = yield* declared.codec.encode(instance).pipe(Effect.orDie)
 
-      outbox.perform({
-        effect: instance._tag,
+      outbox.enqueue({
+        job: instance._tag,
         payload: value,
         version,
         capped: declared.policy.perActor !== undefined,
@@ -321,8 +321,8 @@ const commandTurn = (
       if (!open || (yield* InsideTurn) !== turn)
         return yield* Effect.die(new Error("Job capability escaped its turn"))
 
-      yield* Effect.sync(() => effectKey(key))
-      outbox.cancelEffect(key)
+      yield* Effect.sync(() => jobKey(key))
+      outbox.cancelJob(key)
     })
 
     const context = {

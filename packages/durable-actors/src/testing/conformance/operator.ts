@@ -159,8 +159,8 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
                 ["GET", at.receipt("v1.0.0.x"), undefined],
                 ["GET", at.defects, undefined],
                 ["GET", at.audit, undefined],
-                ["POST", at.retry(letter!.effect_id), body],
-                ["POST", at.discard(letter!.effect_id), body],
+                ["POST", at.retry(letter!.job_id), body],
+                ["POST", at.discard(letter!.job_id), body],
               ] as const) {
                 const answer = yield* send(method, path, token, payload)
 
@@ -191,7 +191,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             const [letter] = yield* deadLetters
             const at = paths(tenant)
 
-            const refused = yield* send("POST", at.retry(letter!.effect_id), "narrow-token", {
+            const refused = yield* send("POST", at.retry(letter!.job_id), "narrow-token", {
               ...till(tenant),
               reason: "try again",
             })
@@ -209,7 +209,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
                 operator: "op-narrow-token",
                 action: "dead-letters.retry",
                 actor_id: "t1",
-                target: letter!.effect_id,
+                target: letter!.job_id,
                 capability: null,
                 outcome: '"denied"',
               },
@@ -347,7 +347,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             const retried = yield* send(
               "POST",
-              paths(tenant).retry(letter!.effect_id),
+              paths(tenant).retry(letter!.job_id),
               "repair-token",
               {
                 ...till(tenant),
@@ -357,11 +357,11 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             expect(retried.status).toBe(200)
             const { effectId } = retried.body as { effectId: string }
-            expect(effectId).not.toBe(letter!.effect_id)
+            expect(effectId).not.toBe(letter!.job_id)
 
             yield* (yield* ActorTest).advance(0)
 
-            expect(fixture.charges).toEqual([letter!.effect_id, effectId])
+            expect(fixture.charges).toEqual([letter!.job_id, effectId])
             expect(yield* deadLetters).toEqual([])
 
             const [row] = yield* audit
@@ -370,22 +370,17 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
               operator: "op-repair-token",
               action: "dead-letters.retry",
               actor_id: "t1",
-              target: letter!.effect_id,
+              target: letter!.job_id,
               reason: "provider back up",
               capability: '{"action":"dead-letters.retry","tenant":"*","actorType":"OpTill"}',
             })
             expect(row!.outcome).toContain(`"effectId":"${effectId}"`)
             expect(row!.outcome).toContain('"providerChecked":false')
 
-            const again = yield* send(
-              "POST",
-              paths(tenant).retry(letter!.effect_id),
-              "repair-token",
-              {
-                ...till(tenant),
-                reason: "again",
-              },
-            )
+            const again = yield* send("POST", paths(tenant).retry(letter!.job_id), "repair-token", {
+              ...till(tenant),
+              reason: "again",
+            })
 
             expect(again.status).toBe(404)
             expect(fixture.charges.length).toBe(2)
@@ -409,7 +404,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             const answers = yield* Effect.forEach(
               [1, 2],
-              () => send("POST", paths(tenant).retry(letter!.effect_id), "repair-token", body),
+              () => send("POST", paths(tenant).retry(letter!.job_id), "repair-token", body),
               { concurrency: "unbounded" },
             )
 
@@ -438,14 +433,14 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             const refused = yield* send(
               "POST",
-              paths(tenant).retry(letter!.effect_id),
+              paths(tenant).retry(letter!.job_id),
               "repair-token",
               body,
             )
 
             expect(refused).toMatchObject({
               status: 409,
-              body: { effectId: letter!.effect_id },
+              body: { effectId: letter!.job_id },
             })
             expect((yield* deadLetters).length).toBe(1)
             expect(yield* audit).toEqual([])
@@ -454,7 +449,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             const checked = yield* send(
               "POST",
-              paths(tenant).retry(letter!.effect_id),
+              paths(tenant).retry(letter!.job_id),
               "repair-token",
               {
                 ...body,
@@ -483,21 +478,21 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             const body = { ...till(tenant), reason: "refunded by hand" }
 
             expect(
-              (yield* send("POST", paths(tenant).retry(letter!.effect_id), "repair-token", body))
+              (yield* send("POST", paths(tenant).retry(letter!.job_id), "repair-token", body))
                 .status,
             ).toBe(403)
 
             const discarded = yield* send(
               "POST",
-              paths(tenant).discard(letter!.effect_id),
+              paths(tenant).discard(letter!.job_id),
               "repair-token",
               body,
             )
 
-            expect(discarded).toMatchObject({ status: 200, body: { discarded: letter!.effect_id } })
+            expect(discarded).toMatchObject({ status: 200, body: { discarded: letter!.job_id } })
             expect(yield* deadLetters).toEqual([])
             expect(
-              (yield* send("POST", paths(tenant).discard(letter!.effect_id), "repair-token", body))
+              (yield* send("POST", paths(tenant).discard(letter!.job_id), "repair-token", body))
                 .status,
             ).toBe(404)
 
@@ -535,7 +530,7 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
 
             const failed = yield* send(
               "POST",
-              paths(tenant).retry(letter!.effect_id),
+              paths(tenant).retry(letter!.job_id),
               "repair-token",
               {
                 ...till(tenant),
@@ -544,14 +539,10 @@ export const operatorConformance: ReadonlyArray<ConformanceCase> = [
             )
 
             expect(failed.status).toBe(500)
-            expect((yield* deadLetters).map(({ effect_id }) => effect_id)).toEqual([
-              letter!.effect_id,
-            ])
+            expect((yield* deadLetters).map(({ job_id }) => job_id)).toEqual([letter!.job_id])
 
             const [pending] = yield* sql<{ count: number }>`
-              SELECT count(*)::int AS count FROM actor_outbox WHERE kind = 'effect'`.pipe(
-              Effect.orDie,
-            )
+              SELECT count(*)::int AS count FROM actor_outbox WHERE kind = 'job'`.pipe(Effect.orDie)
 
             expect(pending!.count).toBe(0)
             yield* (yield* ActorTest).advance(0)

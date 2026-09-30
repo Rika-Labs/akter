@@ -31,16 +31,16 @@ interface StagedIntent {
   readonly key: string | undefined
 }
 
-/** An effect a turn performed: its tag, encoded instance, and the caller its routes see. */
-interface StagedEffect {
-  readonly effect: string
+/** A job a turn enqueued: its tag, encoded instance, and the caller its routes see. */
+interface StagedJob {
+  readonly job: string
   readonly payload: string
   /** The payload version `payload` is encoded at. */
   readonly version: number
   readonly caller: Caller
   readonly due: Due | undefined
   readonly key: string | undefined
-  /** Whether the effect declares `concurrency.perActor`, so its claims follow `ready_at_ms`. */
+  /** Whether the job declares `concurrency.perActor`, so its claims follow `ready_at_ms`. */
   readonly capped: boolean
 }
 
@@ -61,28 +61,28 @@ export interface StagedSubscription {
 /**
  * Everything one turn asked the outbox to do. `replaced` lists keys whose
  * committed rows the turn deletes before inserting `intents`;
- * `cancelledEffects` lists effect keys whose committed effects it cancels
- * before inserting `effects`.
+ * `cancelledJobs` lists job keys whose committed jobs it cancels before
+ * inserting `jobs`.
  */
 export interface StagedOutbox {
   readonly intents: ReadonlyArray<StagedIntent>
   readonly replaced: ReadonlyArray<string>
-  readonly effects: ReadonlyArray<StagedEffect>
+  readonly jobs: ReadonlyArray<StagedJob>
   readonly subscriptions: ReadonlyArray<StagedSubscription>
-  readonly cancelledEffects: ReadonlyArray<string>
+  readonly cancelledJobs: ReadonlyArray<string>
 }
 
 /** The outbox of a turn that staged nothing. */
 export const emptyOutbox: StagedOutbox = {
   intents: [],
   replaced: [],
-  effects: [],
+  jobs: [],
   subscriptions: [],
-  cancelledEffects: [],
+  cancelledJobs: [],
 }
 
-/** Effect keys live in the actor's key namespace under this prefix, which intent keys may not use. */
-const EFFECT_KEY_PREFIX = "$effect:"
+/** Job keys live in the actor's key namespace under this prefix, which intent keys may not use. */
+export const JOB_KEY_PREFIX = "$job:"
 
 const checkKey = (what: string, key: string) => {
   if (key.length === 0 || key.length > 200) throw new Error(`${what} must be 1-200 characters`)
@@ -120,9 +120,9 @@ interface Staging {
   open: boolean
   intents: Array<StagedIntent>
   readonly replaced: Set<string>
-  effects: Array<StagedEffect>
+  jobs: Array<StagedJob>
   readonly subscriptions: Map<string, StagedSubscription>
-  readonly cancelledEffects: Set<string>
+  readonly cancelledJobs: Set<string>
 }
 
 /** Keyed by the provided marker, so a hand-built `InTurn` value stages nothing. */
@@ -139,8 +139,8 @@ const creates = (intent: StagedIntent, child: ActorRef, createdBy: string) =>
 
 /**
  * Opens the outbox of one command turn; `close` returns what it staged and
- * seals it. A staged effect's routes deliver to the performing actor as the
- * effect, on the turn's principal.
+ * seals it. A staged job's routes deliver to the enqueuing actor as the job,
+ * on the turn's principal.
  */
 export const openOutbox = ({
   sender,
@@ -164,27 +164,25 @@ export const openOutbox = ({
     open: true,
     intents: [],
     replaced: new Set(),
-    effects: [],
+    jobs: [],
     subscriptions: new Map(),
-    cancelledEffects: new Set(),
+    cancelledJobs: new Set(),
   }
 
   stagings.set(marker, staging)
 
   return {
     marker,
-    /** Stages an effect; the caller checks that its turn is still running. */
-    perform: (
-      effect: Pick<StagedEffect, "effect" | "payload" | "version" | "due" | "key" | "capped">,
-    ) => {
-      if (effect.key !== undefined) cancelEffectKey(staging, effect.key)
-      staging.effects.push({
-        ...effect,
-        caller: System.make({ source: "effect", ref: sender, onBehalfOf }),
+    /** Stages a job; the caller checks that its turn is still running. */
+    enqueue: (job: Pick<StagedJob, "job" | "payload" | "version" | "due" | "key" | "capped">) => {
+      if (job.key !== undefined) cancelJobKey(staging, job.key)
+      staging.jobs.push({
+        ...job,
+        caller: System.make({ source: "job", ref: sender, onBehalfOf }),
       })
     },
-    /** Stages the cancellation of the effect with `key`; the caller checks the turn. */
-    cancelEffect: (key: string) => cancelEffectKey(staging, key),
+    /** Stages the cancellation of the job with `key`; the caller checks the turn. */
+    cancelJob: (key: string) => cancelJobKey(staging, key),
     /** The proof the next `turn.mint` call of this turn carries. */
     nextMint: (): MintProof => ({ commandId, ordinal: staging.minted.size }),
     /** Records a minted id; its creating intent then carries `proof`. */
@@ -249,9 +247,9 @@ export const openOutbox = ({
       return {
         intents: staging.intents,
         replaced: [...staging.replaced],
-        effects: staging.effects,
+        jobs: staging.jobs,
         subscriptions: [...staging.subscriptions.values()],
-        cancelledEffects: [...staging.cancelledEffects],
+        cancelledJobs: [...staging.cancelledJobs],
       }
     },
   }
@@ -261,16 +259,16 @@ const IntentSettings = Context.Reference<IntentOptions>("durable-actors/IntentSe
   defaultValue: () => ({}),
 })
 
-/** Validates an effect key (1-200 characters) and returns it prefixed as it is staged and stored. */
-export const effectKey = (key: string) => {
-  checkKey("An effect key", key)
+/** Validates a job key (1-200 characters) and returns it prefixed as it is staged and stored. */
+export const jobKey = (key: string) => {
+  checkKey("A job key", key)
 
-  return `${EFFECT_KEY_PREFIX}${key}`
+  return `${JOB_KEY_PREFIX}${key}`
 }
 
-const cancelEffectKey = (staging: Staging, key: string) => {
-  staging.effects = staging.effects.filter((effect) => effect.key !== key)
-  staging.cancelledEffects.add(key)
+const cancelJobKey = (staging: Staging, key: string) => {
+  staging.jobs = staging.jobs.filter((job) => job.key !== key)
+  staging.cancelledJobs.add(key)
 }
 
 const replaceKey = (staging: Staging, key: string) => {
@@ -352,8 +350,7 @@ export const Intent = {
   key: (key: string) => {
     checkKey("Intent.key", key)
 
-    if (key.startsWith(EFFECT_KEY_PREFIX))
-      throw new Error(`Intent key "${key}" is reserved for effects`)
+    if (key.startsWith(JOB_KEY_PREFIX)) throw new Error(`Intent key "${key}" is reserved for jobs`)
 
     if (isFrameworkKey(key)) throw new Error("Intent.key values starting with $ are reserved")
 
@@ -362,8 +359,8 @@ export const Intent = {
   /** Removes the sending actor's pending intent with `key` when this turn commits. */
   cancel: (key: string): Effect.Effect<void, never, InTurn> =>
     Effect.gen(function* () {
-      if (key.startsWith(EFFECT_KEY_PREFIX))
-        return yield* Effect.die(new Error(`Intent key "${key}" is reserved for effects`))
+      if (key.startsWith(JOB_KEY_PREFIX))
+        return yield* Effect.die(new Error(`Intent key "${key}" is reserved for jobs`))
 
       if (isFrameworkKey(key))
         return yield* Effect.die(new Error("Intent.key values starting with $ are reserved"))

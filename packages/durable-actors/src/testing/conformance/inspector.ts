@@ -217,7 +217,7 @@ const tenantCounts = Effect.fnUntraced(function* (tenant: string) {
       (SELECT count(*)::int FROM durable.events WHERE tenant_id = ${tenant}) AS events,
       (SELECT count(*)::int FROM durable.outbox WHERE tenant_id = ${tenant}) AS outbox,
       (SELECT count(*)::int FROM durable.timers WHERE tenant_id = ${tenant}) AS timers,
-      (SELECT count(*)::int FROM durable.effects WHERE tenant_id = ${tenant}) AS effects,
+      (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = ${tenant}) AS jobs,
       (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = ${tenant}) AS "deadLetters",
       (SELECT count(*)::int FROM durable.workflows WHERE tenant_id = ${tenant}) AS workflows,
       (SELECT count(*)::int FROM durable.workflows
@@ -334,10 +334,10 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             SELECT payload FROM durable.dead_letters
             WHERE tenant_id = ${test.tenant} AND actor_type = 'Inspected' AND actor_id = 'flow'`
 
-          expect(field(detail.body, "effects")).toEqual([])
+          expect(field(detail.body, "jobs")).toEqual([])
           expect(field(detail.body, "deadLetters")).toMatchObject([
             {
-              effect: "Notify",
+              job: "Notify",
               attempts: 1,
               ambiguous: false,
               payload: { json: decodeJsonSync(dead!.payload) },
@@ -347,7 +347,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             receipts: 2,
             events: 1,
             outbox: 1,
-            effects: 0,
+            jobs: 0,
             deadLetters: 1,
             workflows: 0,
           })
@@ -564,7 +564,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             "/actors",
             "/actor?type=Inspected&id=untouched",
             "/outbox",
-            "/effects",
+            "/jobs",
             "/dead-letters",
             "/workflows?status=all",
           ])
@@ -587,7 +587,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
                 yield* Queries.overview(page)
                 const listed = yield* Queries.actors(page)
                 yield* Queries.outbox(page)
-                yield* Queries.effects(page)
+                yield* Queries.jobs(page)
                 yield* Queries.deadLetters(page)
                 yield* Queries.workflows({ ...page, status: "all" })
 

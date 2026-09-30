@@ -89,9 +89,7 @@ describe("minted actor ids", () => {
             System.make({ source: "actor", ref: { ...parent, id: "p2" }, mint: proof }),
           ),
         ).toBe(false)
-        expect(yield* proves(System.make({ source: "effect", ref: parent, mint: proof }))).toBe(
-          false,
-        )
+        expect(yield* proves(System.make({ source: "job", ref: parent, mint: proof }))).toBe(false)
       }),
     ))
 

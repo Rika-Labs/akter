@@ -1,12 +1,7 @@
 import { Context, Crypto, Effect, Match, Schema } from "effect"
 import { SqlClient, type SqlError, type Statement } from "effect/unstable/sql"
 import type { RegisteredSubscription } from "../members.ts"
-import {
-  Due,
-  effectKey,
-  type StagedOutbox,
-  type StagedSubscription,
-} from "../../handles/intents.ts"
+import { Due, jobKey, type StagedOutbox, type StagedSubscription } from "../../handles/intents.ts"
 import { type ActorRef, Caller, System } from "../../identity/caller.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 
@@ -82,19 +77,19 @@ export const CallerJson = Schema.fromJsonString(Caller)
 export interface OutboxReplies {
   /** Some row is due now, so the relay should wake. */
   wake: boolean
-  /** The turn cancelled an effect attempt that is running. */
+  /** The turn cancelled a job attempt that is running. */
   cancelled: boolean
-  /** Started effects the turn cancelled; their owner stops showing their progress. */
+  /** Started jobs the turn cancelled; their owner stops showing their progress. */
   cancelledIds: Array<string>
 }
 
 /**
- * The statements that write one turn's intents, effects, and subscription
- * changes inside its transaction, and the effect ids of the new effect rows in
- * `outbox.effects` order. In order they: delete committed rows whose keys the
- * turn replaced; cancel committed effects whose keys it cancelled or performed
+ * The statements that write one turn's intents, jobs, and subscription
+ * changes inside its transaction, and the job ids of the new job rows in
+ * `outbox.jobs` order. In order they: delete committed rows whose keys the
+ * turn replaced; cancel committed jobs whose keys it cancelled or enqueued
  * again; insert the staged rows; upsert each subscription's cursor row and
- * stage its control row; shift delayed rows; order capped effects. No
+ * stage its control row; shift delayed rows; order capped jobs. No
  * statement takes a parameter from another's reply, so they can be sent as one
  * group; `replies` is complete once every statement has replied.
  *
@@ -106,13 +101,13 @@ export interface OutboxReplies {
  * possible run.
  *
  * A row's id is the receiver's command id, and its expiry keeps that receipt
- * at least one retry window past the due time. An effect row names its effect
+ * at least one retry window past the due time. A job row names its job
  * in `command` and targets its own actor, where its routes deliver; the relay
  * runs its executor when it is due.
  *
- * A never-claimed cancelled effect is deleted; a claim that won the row lock
+ * A never-claimed cancelled job is deleted; a claim that won the row lock
  * first makes that delete skip it, and the later update statement then sees it
- * running. A started effect keeps its row as evidence and gives up its key:
+ * running. A started job keeps its row as evidence and gives up its key:
  * one not running is settled by the next claim, a running one by its attempt
  * or, once its lease ends, by any runner.
  *
@@ -147,11 +142,11 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
       ),
     )
 
-  if (outbox.cancelledEffects.length > 0) {
-    const keys = sql.in(outbox.cancelledEffects.map(effectKey))
+  if (outbox.cancelledJobs.length > 0) {
+    const keys = sql.in(outbox.cancelledJobs.map(jobKey))
 
     statements.push(
-      Effect.asVoid(sql`DELETE FROM actor_outbox WHERE ${actorRow} AND kind = 'effect'
+      Effect.asVoid(sql`DELETE FROM actor_outbox WHERE ${actorRow} AND kind = 'job'
         AND timer_key IN ${keys} AND attempts = 0 AND NOT running`),
     )
 
@@ -161,7 +156,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
           SET cancelled_at_ms = stamp.at, timer_key = NULL, waiting = false,
             due_at_ms = CASE WHEN running THEN due_at_ms ELSE least(due_at_ms, stamp.at) END
           FROM (SELECT ${statementNow} AS at) AS stamp
-          WHERE ${actorRow} AND kind = 'effect' AND timer_key IN ${keys}
+          WHERE ${actorRow} AND kind = 'job' AND timer_key IN ${keys}
           RETURNING running, intent_id`,
         (marked) => {
           replies.cancelledIds.push(...marked.map((row) => row.intent_id))
@@ -172,12 +167,8 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     )
   }
 
-  if (
-    outbox.intents.length === 0 &&
-    outbox.effects.length === 0 &&
-    outbox.subscriptions.length === 0
-  )
-    return { statements, replies, effectIds: [] }
+  if (outbox.intents.length === 0 && outbox.jobs.length === 0 && outbox.subscriptions.length === 0)
+    return { statements, replies, jobIds: [] }
 
   const crypto = yield* Crypto.Crypto
   const { retryWindowMs } = yield* OutboxRuntime
@@ -236,22 +227,22 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
     })
   }
 
-  const capped: Array<{ readonly id: string; readonly effect: string; readonly dueAt: number }> = []
-  const effectIds: Array<string> = []
+  const capped: Array<{ readonly id: string; readonly job: string; readonly dueAt: number }> = []
+  const jobIds: Array<string> = []
 
-  for (const effect of outbox.effects) {
-    const dueAt = dueOf(effect.due)
-    const intentId = yield* rowIdOf(effect.due, dueAt)
+  for (const job of outbox.jobs) {
+    const dueAt = dueOf(job.due)
+    const intentId = yield* rowIdOf(job.due, dueAt)
 
     replies.wake ||= dueAt <= now
 
-    if (effect.capped) capped.push({ id: intentId, effect: effect.effect, dueAt })
-    effectIds.push(intentId)
+    if (job.capped) capped.push({ id: intentId, job: job.job, dueAt })
+    jobIds.push(intentId)
 
     rows.push({
       routing_key: routingKey,
       intent_id: intentId,
-      kind: "effect",
+      kind: "job",
       bucket: bucketOf(routingKey),
       due_at_ms: dueAt,
       scheduled_at_ms: dueAt,
@@ -259,13 +250,13 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
       tenant_id: tenant,
       actor_type: actor,
       actor_id: id,
-      timer_key: effect.key === undefined ? null : effectKey(effect.key),
+      timer_key: job.key === undefined ? null : jobKey(job.key),
       target_type: actor,
       target_id: id,
-      command: effect.effect,
-      payload: effect.payload,
-      payload_version: effect.version,
-      caller: yield* Schema.encodeEffect(CallerJson)(effect.caller).pipe(Effect.orDie),
+      command: job.job,
+      payload: job.payload,
+      payload_version: job.version,
+      caller: yield* Schema.encodeEffect(CallerJson)(job.caller).pipe(Effect.orDie),
     })
   }
 
@@ -323,20 +314,20 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
 
   if (capped.length > 0) statements.push(orderCapped({ sql, routingKey, sender, capped }))
 
-  return { statements, replies, effectIds }
+  return { statements, replies, jobIds }
 })
 
 /**
- * Orders a turn's capped effects behind every earlier effect of their type on
+ * Orders a turn's capped jobs behind every earlier job of their type on
  * this actor that became due no later. Claims take capped rows by
  * `(ready_at_ms, intent_id)`, but the turn's clock has only millisecond
- * resolution and is read before the actor's lock is taken, and effect ids
- * end in a random UUID: effects performed in one turn, or in turns that read
+ * resolution and is read before the actor's lock is taken, and job ids
+ * end in a random UUID: jobs enqueued in one turn, or in turns that read
  * the same millisecond, would otherwise run in any order. The actor's lock
  * serializes its turns, so the rows this statement reads are every earlier
- * perform. It runs after any delay shift, so `scheduled_at_ms` is final.
+ * enqueue. It runs after any delay shift, so `scheduled_at_ms` is final.
  *
- * Within the turn, an earlier row of one effect type that is due at the same
+ * Within the turn, an earlier row of one job type that is due at the same
  * time or no later always ends ahead of the rows after it. The latest
  * `ready_at_ms` of earlier committed rows is probed twice, over rows not
  * running and over running rows, each reading one partial index.
@@ -352,12 +343,12 @@ export const orderCapped = ({
   readonly sender: ActorRef
   readonly capped: ReadonlyArray<{
     readonly id: string
-    readonly effect: string
+    readonly job: string
     readonly dueAt: number
   }>
 }) => {
   const ranked = capped.map((row, index) => {
-    const earlier = capped.slice(0, index).filter(({ effect }) => effect === row.effect)
+    const earlier = capped.slice(0, index).filter(({ job }) => job === row.job)
 
     return {
       id: row.id,
@@ -372,7 +363,7 @@ export const orderCapped = ({
     FROM actor_outbox e
     WHERE e.routing_key = o.routing_key AND e.tenant_id = o.tenant_id
       AND e.actor_type = o.actor_type AND e.actor_id = o.actor_id AND e.command = o.command
-      AND e.kind = 'effect' AND ${rows}
+      AND e.kind = 'job' AND ${rows}
       AND e.scheduled_at_ms <= o.scheduled_at_ms
       AND e.intent_id NOT IN ${sql.in(ids)})`
 
@@ -390,7 +381,7 @@ export const orderCapped = ({
 }
 
 /**
- * Writes one turn's intents and effects now, reading the database time only
+ * Writes one turn's intents and jobs now, reading the database time only
  * when there are rows to insert. Returns the `OutboxReplies`, so the caller can
  * wake the relay after commit when a row is due and tell it about cancelled
  * attempts.

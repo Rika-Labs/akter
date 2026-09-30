@@ -9,7 +9,7 @@ const counts = `SELECT
   (SELECT count(*)::int FROM actor_receipts WHERE command IN ('Order', 'Measure')) AS ordered,
   (SELECT count(*)::int FROM actor_receipts WHERE command LIKE '%Failed') AS routed,
   (SELECT coalesce(sum(calls), 0)::int FROM provider_calls) AS calls,
-  (SELECT json_agg(json_build_array(attempts, ambiguous, CASE effect
+  (SELECT json_agg(json_build_array(attempts, ambiguous, CASE job
       WHEN 'Charge' THEN cause LIKE '%ProviderDown%'
       ELSE cause LIKE '%onSuccess route cannot accept%' END))
     FROM actor_dead_letters) AS letters,
@@ -26,7 +26,7 @@ describe("effect dead-letter process death with Postgres", () => {
       "beforeDeadLetterCommit",
       null,
       0,
-      ["effect", "Charge", 1],
+      ["job", "Charge", 1],
       [1, false, true],
     ],
     [
@@ -62,7 +62,7 @@ describe("effect dead-letter process death with Postgres", () => {
       "beforeDeadLetterCommit",
       null,
       0,
-      ["effect", "Gauge", 1],
+      ["job", "Gauge", 1],
       [1, true, true],
     ],
   ] as const) {
