@@ -37,11 +37,8 @@ import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
-import {
-  type ActivationCache,
-  type CommittedEvents,
-  emptyActivationCache,
-} from "../turn/execute.ts"
+import { type ActivationCache, emptyActivationCache } from "../storage/generation.ts"
+import type { CommittedEvents } from "../turn/execute.ts"
 import {
   Committed,
   type Deliver,

@@ -25,6 +25,7 @@ import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
+import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -41,23 +42,6 @@ import { MERGE_CAP, merges } from "../entity/mailbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 const isSystem = Schema.is(System)
-
-/**
- * What one activation remembers between turns. `generation` is the
- * fenced authority epoch it acquired; `state` is the committed state it last
- * read or wrote. The generation fence proves no other writer committed since,
- * so a cached activation skips the state read. Only a commit replaces either.
- */
-export interface ActivationCache {
-  generation: string | undefined
-  state: ReadonlyMap<string, string> | undefined
-}
-
-/** A fresh activation has acquired no generation and read no state. */
-export const emptyActivationCache = (): ActivationCache => ({
-  generation: undefined,
-  state: undefined,
-})
 
 /** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
 export interface CommittedEvents {
@@ -462,7 +446,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const role =
     scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
 
-  const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
+  const actorRow = rowOf({ sql, actor: { key: routingKey, ref } })
 
   const canonicalsOf = (batch: ReadonlyArray<Delivery>) =>
     Effect.forEach(batch, ({ request }) => hashedPayload(request))
@@ -546,8 +530,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
           ${cursorJoin}
-          WHERE g.routing_key = ${routingKey} AND g.tenant_id = ${tenant}
-            AND g.actor_type = ${actor} AND g.actor_id = ${id}
+          WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
           ORDER BY c.ordinal
           FOR UPDATE OF g`,
         (rows) => {
@@ -584,8 +567,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const first = admissions[0]
 
       if (first === undefined || (!cold && view.generation !== first.generation)) {
-        cache.generation = undefined
-        cache.state = undefined
+        forget(cache)
 
         return yield* Effect.die(RetryTurn.make({ message: "Stale actor generation" }))
       }
