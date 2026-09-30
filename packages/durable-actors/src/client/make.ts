@@ -347,7 +347,7 @@ const retryDelay = (retry: Retry, clock: DatabaseClock) => (attempted: Attempted
 
           retry.futureRetried = true
 
-          return Effect.succeedSome(Math.max(50, issued.issuedAt - clock.now() + 50))
+          return Effect.succeedSome(Math.max(50, clock.untilReached(issued.issuedAt) + 50))
         },
         Unauthorized: (reason) => {
           if (reason.code !== "expired" || retry.authRetried) return Effect.succeedNone

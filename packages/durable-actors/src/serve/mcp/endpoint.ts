@@ -81,7 +81,7 @@ export type ToolResult =
   | { readonly ok: true; readonly value: Schema.Json | undefined }
   | { readonly ok: false; readonly body: Schema.Json }
 
-export interface McpEndpoint {
+interface McpEndpoint {
   readonly tools: ReadonlyArray<McpTool>
   readonly info: { readonly name: string; readonly version: string }
   readonly call: (call: ToolCall) => Effect.Effect<ToolResult>

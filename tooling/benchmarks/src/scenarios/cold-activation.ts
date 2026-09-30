@@ -35,7 +35,6 @@ export const coldActivation: Scenario = {
     "First turn of a new activation, sequentially: a never-seen actor, and an existing actor after it hibernated (new generation, state read from storage).",
   run: (context) =>
     Effect.gen(function* () {
-      const quick = context.profile === "quick"
       const results: Array<CaseResult> = []
 
       results.push(
@@ -53,7 +52,7 @@ export const coldActivation: Scenario = {
               parameters: { workers: 1 },
               instruments,
               workers: 1,
-              operations: quick ? 100 : 1000,
+              operations: context.quick ? 100 : 1000,
               operation: (index) =>
                 Probe.get(`new-${index}`).pipe(Effect.flatMap((probe) => probe.Add(1))),
               listStatements: true,
@@ -65,7 +64,7 @@ export const coldActivation: Scenario = {
       results.push(
         yield* context.withRuntime({}, (instruments) =>
           Effect.gen(function* () {
-            const actors = quick ? 50 : 500
+            const actors = context.quick ? 50 : 500
 
             const wake = (index: number) =>
               SleepyProbe.get(`sleepy-${index}`).pipe(Effect.flatMap((probe) => probe.Add(1)))

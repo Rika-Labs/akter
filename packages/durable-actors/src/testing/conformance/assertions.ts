@@ -74,7 +74,7 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
 const segment = (value: Schema.Json) =>
   encodeJson(value).pipe(Effect.orDie, Effect.map(Encoding.encodeBase64Url))
 
-export interface JwsHeader {
+interface JwsHeader {
   readonly alg: string
   readonly typ: string
   readonly kid: string
@@ -226,7 +226,8 @@ const serveAsserted = Effect.fnUntraced(function* (
   }
 })
 
-const staticAuth = (keys: ReadonlyArray<EdgeKey>) =>
+/** A runner's assertion provider trusting exactly `keys`. */
+export const staticAuth = (keys: ReadonlyArray<EdgeKey>) =>
   Actor.auth.assertion({
     issuer: ISSUER,
     audience: DEPLOYMENT,
