@@ -24,6 +24,7 @@ export const shards = {
   properties: ["properties"],
   relay: ["relay", "relayCluster"],
   simulation: ["simulation"],
+  "single-shard": ["singleShard"],
   singleton: ["singleton"],
   streams: ["streams"],
   subscriptions: ["subscriptions", "subscriptionsRetention", "subscriptionsCluster"],
