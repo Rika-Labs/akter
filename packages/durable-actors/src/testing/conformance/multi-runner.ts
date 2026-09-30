@@ -23,6 +23,9 @@ const TallyState = Actor.state({
 
 const tickReductions = { count: 0 }
 
+/** Runs of the `Add` handler, committed or not, across every runner. */
+const addRuns = { count: 0 }
+
 /** A commutative reducer: calls already waiting on the owner merge into one turn. */
 export const Tick = Actor.reducer("Tick", {
   state: TallyState,
@@ -46,6 +49,7 @@ const TallyLive = Layer.mergeAll(
   Tally.toLayer(
     Effect.succeed({
       Add: Effect.fnUntraced(function* (amount: number) {
+        addRuns.count += 1
         const turn = yield* Tally.Turn
         yield* turn.state.set({ count: turn.state.count + amount })
         yield* turn.emit(Tallied.make({ amount }))
@@ -434,6 +438,55 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
           const inspection = yield* inspect(rival, ref)
           expect(inspection).toMatchObject({ state: { count: 111 }, receipts: 3, events: 3 })
           expect(Number(inspection.generation) >= first + 2).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "runs a brand-new actor's first command once when two runners race it under one command id",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        2,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const ref = yield* refOf("brand-new")
+          const paused = (yield* cluster.owner(ref))!
+          const rival = 1 - paused
+          expect((yield* inspect(rival, ref)).generation).toBe(undefined)
+
+          const heartbeat = yield* cluster.pauseHeartbeat(paused)
+          yield* awaitOwner(ref, (current) => current === rival)
+
+          const id = yield* cluster.on(rival)(
+            Effect.gen(function* () {
+              return yield* (yield* Actors).mintCommandId
+            }),
+          )
+
+          const before = addRuns.count
+
+          const replies = yield* Effect.forEach(
+            [paused, rival],
+            (runner) =>
+              cluster.on(runner)(
+                Tally.get("brand-new").pipe(
+                  Effect.flatMap((tally) => tally.Add(5).pipe(Actor.commandId(id))),
+                ),
+              ),
+            { concurrency: 2 },
+          )
+
+          yield* heartbeat.resume
+
+          expect(replies).toEqual([5, 5])
+          expect(addRuns.count - before).toBe(1)
+          expect(yield* inspect(rival, ref)).toMatchObject({
+            state: { count: 5 },
+            receipts: 1,
+            events: 1,
+          })
         }),
       ),
   },
