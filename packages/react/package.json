@@ -1,7 +1,7 @@
 {
   "name": "@durable-actors/react",
   "private": true,
-  "description": "React hooks for durable actors over the Promise client: commands with one id per intent, queries, event feeds, connections, and optimistic state.",
+  "description": "React hooks for durable actors over the Promise client: commands with one id per intent, queries, query watches, event feeds, connections, and optimistic state.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

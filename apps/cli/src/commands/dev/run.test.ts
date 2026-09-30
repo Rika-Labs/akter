@@ -1,11 +1,13 @@
 import { Actor } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
-import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Schema } from "effect"
+import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
+import { Context, Effect, Fiber, FileSystem, Layer, Schedule, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
-import { INSPECTOR_PATH, appOf, devRoutes, parseDev } from "./run.ts"
+import { UsageError } from "../../failure.ts"
+import { runCli, startCli } from "../../testing.ts"
+import { INSPECTOR_PATH, appOf, devRoutes } from "./run.ts"
 
 const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
 
@@ -37,51 +39,68 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json)
 const decodeMinted = Schema.decodeUnknownEffect(Schema.Struct({ commandId: Schema.String }))
 
 describe("durable dev", () => {
-  it("parses its options with PGlite in memory, port 3000, loopback, and the default tenant", () =>
-    Effect.gen(function* () {
-      expect(yield* parseDev(["--entry", "app.ts"])).toEqual({
-        entry: "app.ts",
-        databaseUrl: undefined,
-        dataDir: undefined,
-        port: 3000,
-        hostname: "127.0.0.1",
-        tenant: "default",
-      })
-      expect(
-        yield* parseDev([
-          "--entry",
-          "app.ts",
-          "--database-url",
-          "postgres://localhost/app",
-          "--port",
-          "0",
-          "--hostname",
-          "0.0.0.0",
-          "--tenant",
-          "acme",
-        ]),
-      ).toEqual({
-        entry: "app.ts",
-        databaseUrl: "postgres://localhost/app",
-        dataDir: undefined,
-        port: 0,
-        hostname: "0.0.0.0",
-        tenant: "acme",
-      })
+  it(
+    "runs the entry on PGlite in memory on loopback for the default tenant, and refuses bad options",
+    () =>
+      Effect.gen(function* () {
+        const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
+        const cache = new URL("../../../.cache", import.meta.url).pathname
+        yield* fs.makeDirectory(cache, { recursive: true })
+        const directory = yield* fs.makeTempDirectoryScoped({ directory: cache, prefix: "dev-" })
+        const entry = `${directory}/app.ts`
+        yield* fs.writeFileString(
+          entry,
+          'import { Layer } from "effect"\nexport const app = Layer.empty\n',
+        )
 
-      for (const [args, message] of [
-        [[], "--entry is required"],
-        [["--entry"], "--entry needs a value"],
-        [["--entry", "a.ts", "--json"], "Unknown argument: --json"],
-        [["--entry", "a.ts", "--port", "70000"], "--port must be an integer 0-65535"],
-        [["--entry", "a.ts", "--port", "1.5"], "--port must be an integer 0-65535"],
-        [
-          ["--entry", "a.ts", "--database-url", "postgres://x", "--data-dir", "d"],
-          "--data-dir is for PGlite; drop it or --database-url",
-        ],
-      ] as const)
-        expect(yield* parseDev(args).pipe(Effect.flip)).toMatchObject({ message })
-    }).pipe(Effect.runPromise))
+        const help = yield* runCli(["dev", "--help"])
+        expect(help.stdout).toMatch(/--port integer +.*\(default 3000\)/)
+        expect(help.stdout).toMatch(/--hostname string +.*\(default 127\.0\.0\.1\)/)
+        expect(help.stdout).toMatch(/--tenant string +.*\(default default\)/)
+        expect(help.stdout).toMatch(/--data-dir directory +.*\(default in memory\)/)
+
+        const { printed, fiber } = yield* startCli(["dev", "--entry", entry, "--port", "0"])
+
+        const origin = yield* Effect.suspend(() => {
+          const found = /^ {2}app +(http:\/\/\S+)$/m.exec(printed.stdout)
+
+          return found === null ? Effect.fail("not listening yet") : Effect.succeed(found[1]!)
+        }).pipe(Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }))
+
+        expect(printed.stdout.split("\n")[0]).toBe(`durable dev: ${entry} on PGlite (in memory)`)
+        expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+        expect(printed.stdout).toContain(`  inspector  ${origin}${INSPECTOR_PATH} (tenant default)`)
+
+        yield* Fiber.interrupt(fiber)
+
+        for (const [args, reason, message] of [
+          [[], "MissingOption", "Missing required flag: --entry"],
+          [["--entry"], "InvalidValue", "Missing value for flag --entry"],
+          [["--entry", entry, "--json"], "UnrecognizedOption", "Unrecognized flag: --json"],
+          [
+            ["--entry", entry, "--port", "70000"],
+            "InvalidValue",
+            'Invalid value for flag --port: "70000"',
+          ],
+          [
+            ["--entry", entry, "--port", "1.5"],
+            "InvalidValue",
+            'Invalid value for flag --port: "1.5"',
+          ],
+          [
+            ["--entry", entry, "--database-url", "postgres://x", "--data-dir", directory],
+            "UsageError",
+            "--data-dir is for PGlite; drop it or --database-url",
+          ],
+        ] as const) {
+          const refused = yield* runCli(["dev", ...args])
+
+          expect(refused).toMatchObject({ exitCode: 2, reason })
+          expect(refused.stderr).toContain(message)
+        }
+      }).pipe(Effect.scoped, Effect.runPromise),
+    60_000,
+  )
 
   it("requires the entry to export an app layer", () =>
     Effect.gen(function* () {
@@ -90,8 +109,10 @@ describe("durable dev", () => {
       expect(yield* appOf({ module: { app }, entry: "app.ts" })).toBe(app)
 
       for (const module of [{}, { app: () => app }, { routes: app }])
-        expect(Exit.isFailure(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.exit))).toBe(
-          true,
+        expect(yield* appOf({ module, entry: "app.ts" }).pipe(Effect.flip)).toEqual(
+          UsageError.make({
+            message: "app.ts must export `app`: a Layer of its routes that needs only the database",
+          }),
         )
     }).pipe(Effect.runPromise))
 

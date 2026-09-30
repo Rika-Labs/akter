@@ -89,6 +89,18 @@ export interface HeldConnection {
   readonly close: Effect.Effect<void>
 }
 
+/** What a transport asks a holder to open. */
+export interface OpenRequest {
+  readonly ref: ActorRef
+  readonly member: string
+  readonly caller: Caller
+  readonly params: string
+  /** The credential's own expiry, if it has one; the session never outlives it. */
+  readonly expiresAt?: number | undefined
+  /** The event tags of a feed, which opens the framework feed member. */
+  readonly feed?: ReadonlyArray<string> | undefined
+}
+
 /** The declared failure an `open` handler returned, still encoded. */
 export class OpenRejected extends Schema.TaggedError<OpenRejected>()("OpenRejected", {
   value: Schema.String,
@@ -997,247 +1009,306 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
 
   yield* tick.pipe(Effect.repeat(Schedule.spaced(TICK)), Effect.forkIn(scope))
 
-  const open = Effect.fnUntraced(function* (request: {
-    readonly ref: ActorRef
-    readonly member: string
-    readonly caller: Caller
-    readonly params: string
-    /** The credential's own expiry, if it has one; the session never outlives it. */
-    readonly expiresAt?: number | undefined
-    /** The event tags of a feed, which opens the framework feed member. */
-    readonly feed?: ReadonlyArray<string> | undefined
-  }) {
-    const type = options.actorType(request.ref.actor)
+  /**
+   * Refuses an open the holder can't take, before anything is held: an
+   * unregistered actor or member, oversized params, a full holder, an expired
+   * credential, or a caller `authorize` denies. Expiry is checked again after
+   * `authorize`, which may have outlasted the credential. Answers the actor type.
+   */
+  const admit = (request: OpenRequest) =>
+    Effect.gen(function* () {
+      const type = options.actorType(request.ref.actor)
 
-    if (type === undefined)
-      return yield* ActorError.make({
-        reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
-      })
+      if (type === undefined)
+        return yield* ActorError.make({
+          reason: ActorUnavailable.make({ cause: new Error("Actor not registered") }),
+        })
 
-    if (!type.hasMember(request.member))
-      return yield* ActorError.make({
-        reason: ActorUnavailable.make({ cause: new Error("Connection not declared") }),
-      })
+      if (!type.hasMember(request.member))
+        return yield* ActorError.make({
+          reason: ActorUnavailable.make({ cause: new Error("Connection not declared") }),
+        })
 
-    if (utf8.encode(request.params).byteLength > MAX_INBOUND_BYTES)
-      return yield* Effect.die(new Error("Connection params exceed 64 KiB"))
+      if (utf8.encode(request.params).byteLength > MAX_INBOUND_BYTES)
+        return yield* Effect.die(new Error("Connection params exceed 64 KiB"))
 
-    if (held.size >= MAX_HELD_CONNECTIONS)
-      return yield* ActorError.make({
-        reason: ActorUnavailable.make({ cause: new Error("Holder is at its connection limit") }),
-      })
+      if (held.size >= MAX_HELD_CONNECTIONS)
+        return yield* ActorError.make({
+          reason: ActorUnavailable.make({ cause: new Error("Holder is at its connection limit") }),
+        })
 
-    if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
-      return yield* credentialExpired
+      if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
+        return yield* credentialExpired
 
-    const allowed = yield* check(request, request.feed, "first")
+      const allowed = yield* check(request, request.feed, "first")
 
-    if (!allowed)
-      return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
+      if (!allowed)
+        return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
 
-    if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
-      return yield* credentialExpired
+      if (request.expiresAt !== undefined && (yield* now) >= request.expiresAt)
+        return yield* credentialExpired
 
-    const connection: Held = {
-      id: yield* crypto.randomUUIDv7.pipe(Effect.orDie),
-      ref: request.ref,
-      key: actorKey(request.ref),
-      member: request.member,
-      feed: request.feed,
-      caller: request.caller,
-      type,
-      outbound: yield* Queue.unbounded<ClientMessage, ActorError | Cause.Done>(),
-      secret: connectionSecret(yield* crypto.randomBytes(32).pipe(Effect.orDie)),
-      inbound: [],
-      wake: yield* Queue.sliding<void>(1),
-      drained: yield* Queue.sliding<void>(1),
-      expiresAt: request.expiresAt,
-      open: false,
-      ended: false,
-      outFrames: 0,
-      outBytes: 0,
-      inBytes: 0,
-      nextSeq: 0,
-      lastAuthorized: yield* now,
-      openedAt: 0,
-      checking: false,
-      resync: undefined,
-      resyncs: [],
-      loop: undefined,
-      progress: new Map(),
-    }
-
-    const actor = actorOf(request.ref)
-    actor.connections.set(connection.id, connection)
-    held.set(connection.id, connection)
-
-    const issuedAt = (yield* now) - COMMAND_SKEW_MS
-
-    const openCall = type.channel.open({
-      ...address(connection),
-      member: request.member,
-      caller: request.caller,
-      params: request.params,
-      commands: {
-        secret: connection.secret,
-        seq: 0,
-        issuedAt,
-        expiresAt: issuedAt + type.retryWindowMs,
-      },
+      return type
     })
 
-    const attempt = yield* retried(
-      connection,
-      openCall,
-      (error) =>
-        isWatchMember(request.member) && Predicate.isTagged(error.reason, "RunnerAtCapacity"),
-    ).pipe(Effect.forkIn(scope))
+  /** A new, not yet open connection, held on this holder and its actor. */
+  const hold = (request: OpenRequest, type: HeldActorType) =>
+    Effect.gen(function* () {
+      const connection: Held = {
+        id: yield* crypto.randomUUIDv7.pipe(Effect.orDie),
+        ref: request.ref,
+        key: actorKey(request.ref),
+        member: request.member,
+        feed: request.feed,
+        caller: request.caller,
+        type,
+        outbound: yield* Queue.unbounded<ClientMessage, ActorError | Cause.Done>(),
+        secret: connectionSecret(yield* crypto.randomBytes(32).pipe(Effect.orDie)),
+        inbound: [],
+        wake: yield* Queue.sliding<void>(1),
+        drained: yield* Queue.sliding<void>(1),
+        expiresAt: request.expiresAt,
+        open: false,
+        ended: false,
+        outFrames: 0,
+        outBytes: 0,
+        inBytes: 0,
+        nextSeq: 0,
+        lastAuthorized: yield* now,
+        openedAt: 0,
+        checking: false,
+        resync: undefined,
+        resyncs: [],
+        loop: undefined,
+        progress: new Map(),
+      }
 
-    const abandon = Effect.gen(function* () {
-      connection.ended = true
-      release(connection)
-      yield* deleteRow(connection)
+      const actor = actorOf(request.ref)
+      actor.connections.set(connection.id, connection)
+      held.set(connection.id, connection)
 
-      yield* Fiber.await(attempt).pipe(
-        Effect.flatMap((exit) =>
-          Exit.isSuccess(exit) && Predicate.isTagged(exit.value, "Opened")
-            ? retrying(
-                connection,
-                type.channel.close({
-                  ...address(connection),
-                  cause: SessionEnded.make({ cause: "ActorUnavailable", resync: true }),
-                }),
-                type.deliveryMs,
-              ).pipe(Effect.catch(() => deleteRow(connection)))
-            : Effect.void,
-        ),
-        Effect.forkIn(scope),
+      return { actor, connection }
+    })
+
+  /**
+   * Asks the owner to open the connection, within the delivery timeout. A
+   * caller that stops waiting abandons the open: the connection is released
+   * and, should the owner still answer `Opened`, closed there again.
+   */
+  const openAtOwner = (request: OpenRequest, connection: Held) =>
+    Effect.gen(function* () {
+      const { type } = connection
+      const issuedAt = (yield* now) - COMMAND_SKEW_MS
+
+      const openCall = type.channel.open({
+        ...address(connection),
+        member: request.member,
+        caller: request.caller,
+        params: request.params,
+        commands: {
+          secret: connection.secret,
+          seq: 0,
+          issuedAt,
+          expiresAt: issuedAt + type.retryWindowMs,
+        },
+      })
+
+      const attempt = yield* retried(
+        connection,
+        openCall,
+        (error) =>
+          isWatchMember(request.member) && Predicate.isTagged(error.reason, "RunnerAtCapacity"),
+      ).pipe(Effect.forkIn(scope))
+
+      const abandon = Effect.gen(function* () {
+        connection.ended = true
+        release(connection)
+        yield* deleteRow(connection)
+
+        yield* Fiber.await(attempt).pipe(
+          Effect.flatMap((exit) =>
+            Exit.isSuccess(exit) && Predicate.isTagged(exit.value, "Opened")
+              ? retrying(
+                  connection,
+                  type.channel.close({
+                    ...address(connection),
+                    cause: SessionEnded.make({ cause: "ActorUnavailable", resync: true }),
+                  }),
+                  type.deliveryMs,
+                ).pipe(Effect.catch(() => deleteRow(connection)))
+              : Effect.void,
+          ),
+          Effect.forkIn(scope),
+        )
+      })
+
+      const answer = yield* Fiber.join(attempt).pipe(
+        Effect.timeoutOrElse({
+          duration: type.deliveryMs,
+          orElse: () => Effect.fail(ended("ActorUnavailable", true)),
+        }),
+        Effect.onError(() => abandon),
       )
+
+      if (Predicate.isTagged(answer, "Failed")) {
+        release(connection)
+
+        return yield* OpenRejected.make({ value: answer.value })
+      }
+
+      return answer
     })
 
-    const answer = yield* Fiber.join(attempt).pipe(
-      Effect.timeoutOrElse({
-        duration: type.deliveryMs,
-        orElse: () => Effect.fail(ended("ActorUnavailable", true)),
-      }),
-      Effect.onError(() => abandon),
-    )
+  /**
+   * Marks an opened connection live under the owner that answered: its
+   * inbound loop starts, and a connection the owner recovered resyncs from
+   * its baseline first.
+   */
+  const start = (
+    actor: HeldActor,
+    connection: Held,
+    answer: Owner & { readonly baseline: string; readonly recovered?: boolean },
+  ) =>
+    Effect.gen(function* () {
+      yield* observe(actor, answer)
 
-    if (Predicate.isTagged(answer, "Failed")) {
-      release(connection)
+      if (BigInt(answer.baseline) > BigInt(actor.through)) actor.through = answer.baseline
 
-      return yield* OpenRejected.make({ value: answer.value })
-    }
+      if (connection.ended) return
 
-    yield* observe(actor, answer)
-
-    if (BigInt(answer.baseline) > BigInt(actor.through)) actor.through = answer.baseline
-
-    if (!connection.ended) {
       connection.openedAt = yield* now
       connection.open = true
 
       if (answer.recovered === true) yield* resync(actor, connection, yield* now, answer.baseline)
       connection.loop = yield* inboundLoop(connection).pipe(Effect.forkIn(scope))
-    }
+    })
 
-    const held_: HeldConnection = {
+  /** The client's messages: frames as they are taken, and progress still current. */
+  const clientMessages = (connection: Held) =>
+    Stream.fromQueue(connection.outbound).pipe(
+      Stream.mapEffect((message) =>
+        ClientMessage.guards.Progress(message)
+          ? takenProgress(connection, message)
+          : Effect.as(taken(connection, message), Option.some(message)),
+      ),
+      Stream.filter(Option.isSome),
+      Stream.map((message) => message.value),
+    )
+
+  /** Queues one client frame for the inbound loop; a client over the held limits is slow. */
+  const receive = (connection: Held, frame: string) =>
+    Effect.gen(function* () {
+      if (connection.ended) return yield* ended("ClientClosed", false)
+      const bytes = utf8.encode(frame).byteLength
+
+      if (bytes > MAX_INBOUND_BYTES)
+        return yield* Effect.die(new Error("Connection frame exceeds 64 KiB"))
+
+      if (heldBytes + bytes > MAX_HELD_BYTES || connection.inbound.length >= MAX_INBOUND_FRAMES)
+        return yield* end(connection, ended("SlowConsumer", true), true)
+
+      connection.inbound.push({ frame, issuedAt: (yield* now) - COMMAND_SKEW_MS })
+      connection.inBytes += bytes
+      heldBytes += bytes
+      yield* Queue.offer(connection.wake, undefined)
+    })
+
+  /**
+   * Ends a resync once the owner answered it and, for a member with a resync
+   * handler, replayed it: the messages deferred meanwhile go out, less the
+   * events the replay already carried.
+   */
+  const finishResync = (connection: Held) =>
+    Effect.gen(function* () {
+      const pending = connection.resync
+
+      if (
+        pending === undefined ||
+        !pending.answered ||
+        (connection.type.hasResync(connection.member) && !pending.replayed)
+      )
+        return
+      connection.resync = undefined
+      heldBytes -= pending.deferredBytes
+      pending.deferredBytes = 0
+
+      for (const message of pending.deferred)
+        if (
+          !ClientMessage.guards.Frame(message) ||
+          message.event === undefined ||
+          !pending.replayedEvents.has(message.event)
+        )
+          yield* push(connection, message, false)
+      yield* Queue.offer(connection.wake, undefined)
+    })
+
+  /**
+   * Renews a connection's authorization; any refusal ends the session. The
+   * answer must come back before the current authorization lapses, and within
+   * the new credential's expiry.
+   */
+  const reauthenticate = (connection: Held, expiresAt: number | undefined) =>
+    Effect.gen(function* () {
+      const fail = (error: ActorError) =>
+        Effect.andThen(end(connection, error, true), Effect.fail(error))
+
+      if (connection.ended) return yield* ended("ClientClosed", false)
+      const at = yield* now
+
+      if (expiresAt !== undefined && at >= expiresAt) return yield* fail(credentialExpired)
+
+      const allowed = yield* check(connection, connection.feed, "reauthorize")
+
+      if (connection.ended) return yield* ended("ClientClosed", false)
+      const answered = yield* now
+
+      if (answered >= authorizedUntil(connection)) return yield* fail(lapsed(connection, answered))
+
+      if (!allowed)
+        return yield* fail(
+          ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
+        )
+
+      if (expiresAt !== undefined && answered >= expiresAt) return yield* fail(credentialExpired)
+
+      connection.lastAuthorized = at
+      connection.expiresAt = expiresAt
+    })
+
+  /** Ends a connection its client closed, and closes it at the owner. */
+  const closeByClient = (connection: Held) =>
+    Effect.gen(function* () {
+      if (connection.ended) return
+      const cause = SessionEnded.make({ cause: "ClientClosed", resync: false })
+      yield* end(connection, ActorError.make({ reason: cause }), false)
+      yield* retrying(
+        connection,
+        connection.type.channel.close({ ...address(connection), cause }),
+        connection.type.deliveryMs,
+      ).pipe(Effect.catch(() => deleteRow(connection)))
+    })
+
+  const open = Effect.fnUntraced(function* (request: OpenRequest) {
+    const type = yield* admit(request)
+    const { actor, connection } = yield* hold(request, type)
+    const answer = yield* openAtOwner(request, connection)
+
+    yield* start(actor, connection, answer)
+
+    return {
       connectionId: connection.id,
       cursor: answer.baseline,
-      messages: Stream.fromQueue(connection.outbound).pipe(
-        Stream.mapEffect((message) =>
-          ClientMessage.guards.Progress(message)
-            ? takenProgress(connection, message)
-            : Effect.as(taken(connection, message), Option.some(message)),
-        ),
-        Stream.filter(Option.isSome),
-        Stream.map((message) => message.value),
-      ),
-      send: (frame) =>
-        Effect.gen(function* () {
-          if (connection.ended) return yield* ended("ClientClosed", false)
-          const bytes = utf8.encode(frame).byteLength
-
-          if (bytes > MAX_INBOUND_BYTES)
-            return yield* Effect.die(new Error("Connection frame exceeds 64 KiB"))
-
-          if (heldBytes + bytes > MAX_HELD_BYTES || connection.inbound.length >= MAX_INBOUND_FRAMES)
-            return yield* end(connection, ended("SlowConsumer", true), true)
-
-          connection.inbound.push({ frame, issuedAt: (yield* now) - COMMAND_SKEW_MS })
-          connection.inBytes += bytes
-          heldBytes += bytes
-          yield* Queue.offer(connection.wake, undefined)
-        }),
-      resyncDone: Effect.gen(function* () {
-        const pending = connection.resync
-
-        if (
-          pending === undefined ||
-          !pending.answered ||
-          (type.hasResync(connection.member) && !pending.replayed)
-        )
-          return
-        connection.resync = undefined
-        heldBytes -= pending.deferredBytes
-        pending.deferredBytes = 0
-
-        for (const message of pending.deferred)
-          if (
-            !ClientMessage.guards.Frame(message) ||
-            message.event === undefined ||
-            !pending.replayedEvents.has(message.event)
-          )
-            yield* push(connection, message, false)
-        yield* Queue.offer(connection.wake, undefined)
-      }),
+      messages: clientMessages(connection),
+      send: (frame) => receive(connection, frame),
+      resyncDone: finishResync(connection),
       authorized: Effect.map(now, (at) => !connection.ended && at < authorizedUntil(connection)),
       writable: Effect.gen(function* () {
         while (!connection.ended && connection.inbound.length >= MAX_INFLIGHT_FRAMES)
           yield* Queue.take(connection.drained)
       }),
-      reauthenticate: (expiresAt) =>
-        Effect.gen(function* () {
-          const fail = (error: ActorError) =>
-            Effect.andThen(end(connection, error, true), Effect.fail(error))
-
-          if (connection.ended) return yield* ended("ClientClosed", false)
-          const at = yield* now
-
-          if (expiresAt !== undefined && at >= expiresAt) return yield* fail(credentialExpired)
-
-          const allowed = yield* check(connection, connection.feed, "reauthorize")
-
-          if (connection.ended) return yield* ended("ClientClosed", false)
-          const answered = yield* now
-
-          if (answered >= authorizedUntil(connection))
-            return yield* fail(lapsed(connection, answered))
-
-          if (!allowed)
-            return yield* fail(
-              ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
-            )
-
-          if (expiresAt !== undefined && answered >= expiresAt)
-            return yield* fail(credentialExpired)
-
-          connection.lastAuthorized = at
-          connection.expiresAt = expiresAt
-        }),
-      close: Effect.gen(function* () {
-        if (connection.ended) return
-        const cause = SessionEnded.make({ cause: "ClientClosed", resync: false })
-        yield* end(connection, ActorError.make({ reason: cause }), false)
-        yield* retrying(
-          connection,
-          type.channel.close({ ...address(connection), cause }),
-          type.deliveryMs,
-        ).pipe(Effect.catch(() => deleteRow(connection)))
-      }),
-    }
-
-    return held_
+      reauthenticate: (expiresAt) => reauthenticate(connection, expiresAt),
+      close: closeByClient(connection),
+    } satisfies HeldConnection
   })
 
   yield* Effect.addFinalizer(() =>

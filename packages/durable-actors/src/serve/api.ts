@@ -277,6 +277,49 @@ const streamEndpoint = (basePath: string, definition: ServedDefinition, member: 
     }
   })
 
+/** A refused watch; one that ends later sends an `end` message instead. */
+const WATCH_ERRORS = {
+  400: ["InvalidInput"],
+  401: ["Unauthorized"],
+  403: ["Unauthorized", "InvalidInput"],
+  404: ["NotCreated", "InvalidInput"],
+  413: ["InvalidInput"],
+  415: ["InvalidInput"],
+  503: ["ActorUnavailable", "RunnerAtCapacity"],
+} as const
+
+const watchErrors = errorSchemas(WATCH_ERRORS, "Watch")
+
+const watchEndpoint = (basePath: string, definition: ServedDefinition, member: ServedMember) =>
+  HttpApiEndpoint.post(
+    `${member.tag}.watch`,
+    `${basePath}${memberPath({ definition, member })}/watch` as `/${string}`,
+    {
+      params: definition.key === "singleton" ? undefined : { id: Schema.String },
+      payload: SchemaAST.isVoid(member.input.ast) ? undefined : member.input,
+      error: [...watchErrors, defect],
+    },
+  ).annotate(OpenApi.Transform, (operation) => {
+    const { 204: _, ...refusals }: { readonly [status: string]: Schema.Json } =
+      operation.responses ?? {}
+
+    return {
+      ...operation,
+      responses: {
+        200: {
+          description:
+            "Server-sent events: `result` with each encoded output, whose `id` is the commit version the rerun waited for when there was one, then `end` with the error that ended the watch. A watch is state, not history: intermediate results are skipped, and a reconnect sends the current result first",
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        ...refusals,
+      },
+      "x-durable-transport": "sse",
+      "x-durable-element": {
+        $ref: `#/components/schemas/${definition.name}.${member.tag}.element`,
+      },
+    }
+  })
+
 const frameSchemas = (definition: ServedDefinition, connection: ServedConnection) =>
   Object.entries(frameParts(connection)).map(([part, schema]) =>
     schema.annotate({ identifier: frameSchemaName(definition, connection, part) }),
@@ -401,6 +444,9 @@ export const buildServedApi = ({ definitions, basePath, content }: ServedRoutes)
       ...(definition.feeds.length > 0 ? [feedEndpoint(basePath, definition)] : []),
       ...(content && definition.contents.length > 0 ? contentEndpoints(basePath, definition) : []),
       ...definition.streams.map((member) => streamEndpoint(basePath, definition, member)),
+      ...definition.members
+        .filter((member) => member.watch)
+        .map((member) => watchEndpoint(basePath, definition, member)),
     ]
 
     if (endpoints.length > 0)
@@ -413,8 +459,9 @@ export const buildServedApi = ({ definitions, basePath, content }: ServedRoutes)
       HttpApi.AdditionalSchemas,
       definitions.flatMap((definition) => [
         ...definition.connections.flatMap((connection) => frameSchemas(definition, connection)),
-        ...definition.streams.map((member) =>
-          member.output.annotate({ identifier: `${definition.name}.${member.tag}.element` }),
+        ...[...definition.streams, ...definition.members.filter((member) => member.watch)].map(
+          (member) =>
+            member.output.annotate({ identifier: `${definition.name}.${member.tag}.element` }),
         ),
       ]),
     )

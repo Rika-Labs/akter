@@ -80,6 +80,15 @@ export const HttpRoom = Actor.make("HttpRoom", {
   internal: { Secret },
 })
 
+const Level = Actor.query("Level", { output: Schema.Int, watch: true })
+
+/** A room whose `Level` can be watched and whose `Count` cannot. */
+export const HttpWatched = Actor.make("HttpWatched", {
+  key: Schema.String,
+  state: count,
+  api: { Post, Level, Count },
+})
+
 const Join = Actor.command("Join", { output: Schema.Int })
 
 const Leave = Actor.command("Leave")
@@ -176,6 +185,26 @@ export const httpLayer = Layer.mergeAll(
       }),
     }),
   ),
+  HttpWatched.toLayer(
+    Effect.succeed({
+      Post: Effect.fnUntraced(function* () {
+        const turn = yield* HttpWatched.Turn
+        yield* turn.state.set({ count: turn.state.count + 1 })
+
+        return turn.state.count
+      }),
+    }),
+  ),
+  HttpWatched.toQueryLayer(
+    Effect.succeed({
+      Level: Effect.fnUntraced(function* () {
+        return (yield* HttpWatched.Read).state.count
+      }),
+      Count: Effect.fnUntraced(function* () {
+        return (yield* HttpWatched.Read).state.count
+      }),
+    }),
+  ),
   HttpLobby.toLayer(
     Effect.succeed({
       Join: Effect.fnUntraced(function* () {
@@ -251,7 +280,7 @@ const systemCaller: AuthProvider = {
     }),
 }
 
-const served = [HttpRoom, HttpLobby, HttpTicket, HttpTally]
+const served = [HttpRoom, HttpLobby, HttpTicket, HttpTally, HttpWatched]
 
 const encodeFull = (value: Full) => Schema.encodeEffect(Full)(value).pipe(Effect.orDie)
 
@@ -1086,6 +1115,10 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               "HttpTally.Bump",
               "HttpTally.Snapshot",
               "HttpTicket.Join",
+              "HttpWatched.Count",
+              "HttpWatched.Level",
+              "HttpWatched.Level.watch",
+              "HttpWatched.Post",
               "durable.commandIds",
               "durable.protocol",
               "durable.ready",
@@ -1100,7 +1133,9 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
               path.startsWith("/actors/") &&
               !path.endsWith("/Count") &&
               !path.endsWith("/Peek") &&
-              !path.endsWith("/Snapshot")
+              !path.endsWith("/Snapshot") &&
+              !path.endsWith("/Level") &&
+              !path.endsWith("/watch")
 
             expect(headers.map((parameter) => parameter.name)).toEqual(
               isCommand ? ["idempotency-key"] : [],
@@ -1112,6 +1147,15 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
             if (path === "/actors/HttpRoom/{id}/Crash" || path === "/actors/HttpRoom/{id}/Hold")
               continue
+
+            if (path.endsWith("/watch")) {
+              expect(operation).toMatchObject({
+                "x-durable-transport": "sse",
+                "x-durable-element": { $ref: "#/components/schemas/HttpWatched.Level.element" },
+              })
+
+              continue
+            }
 
             const concrete = path.replace(
               "{id}",

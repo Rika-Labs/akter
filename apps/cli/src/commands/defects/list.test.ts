@@ -2,11 +2,13 @@ import { Actor } from "@durable-actors/core"
 import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
-import { Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Clock, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
-import { formatDefects, listDefects, parseList } from "./list.ts"
+import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
+import { OperatorRefused } from "../operator/request.ts"
+import { formatDefects, listDefects } from "./list.ts"
 
 const Break = Actor.command("Break", { input: Schema.String })
 
@@ -43,26 +45,74 @@ const operators = OperatorAuth.tokens([
 describe("durable defects list", () => {
   it("parses runners, filters, and compact durations", () =>
     Effect.gen(function* () {
-      const options = yield* parseList({
-        args: ["--url", "http://a/", "--url", "http://b", "--actor", "Room", "--since", "1h"],
-        nowMs: 10_000_000,
-      })
+      const runners = recordingFetch([])
+      const before = yield* Clock.currentTimeMillis
 
-      expect(options).toEqual({
-        urls: ["http://a", "http://b"],
-        tenant: "*",
-        actor: "Room",
-        sinceMs: 10_000_000 - 3_600_000,
-        limit: undefined,
-        tokenEnv: "DURABLE_OPERATOR_TOKEN",
-        json: false,
-      })
+      const listed = yield* runCliWith({
+        fetch: runners.fetch,
+        env: { DURABLE_OPERATOR_TOKEN: "ops-token" },
+      })([
+        "defects",
+        "list",
+        "--url",
+        "http://a/",
+        "--url",
+        "http://b",
+        "--actor",
+        "Room",
+        "--since",
+        "1h",
+      ])
 
-      const long = yield* parseList({ args: ["--url", "u", "--since", "90 minutes"], nowMs: 0 })
-      expect(long.sinceMs).toBe(-5_400_000)
+      expect(listed).toEqual({ stdout: "No defects.\n", stderr: "", exitCode: 0, reason: "" })
+      expect(runners.requests.map(({ url }) => new URL(url).origin)).toEqual([
+        "http://a",
+        "http://b",
+      ])
 
-      for (const args of [[], ["--url"], ["--url", "u", "--limit", "0"], ["--url", "u", "--x"]])
-        expect(Exit.isFailure(yield* parseList({ args, nowMs: 0 }).pipe(Effect.exit))).toBe(true)
+      for (const { url, authorization } of runners.requests) {
+        const query = new URL(url).searchParams
+        const sinceMs = Number(query.get("sinceMs"))
+
+        expect(new URL(url).pathname).toBe("/operator/defects")
+        expect(query.get("tenant")).toBe("*")
+        expect(query.get("actor")).toBe("Room")
+        expect(query.has("limit")).toBe(false)
+        expect(sinceMs).toBeGreaterThanOrEqual(before - 3_600_000 - 1)
+        expect(sinceMs).toBeLessThanOrEqual((yield* Clock.currentTimeMillis) - 3_600_000)
+        expect(authorization).toBe("Bearer ops-token")
+      }
+
+      const long = recordingFetch([])
+      yield* runCliWith({
+        fetch: long.fetch,
+      })(["defects", "list", "--url", "http://c", "--since", "90 minutes", "--limit", "5"])
+      const query = new URL(long.requests[0]!.url).searchParams
+      const ago = (yield* Clock.currentTimeMillis) - Number(query.get("sinceMs"))
+      expect(ago).toBeGreaterThanOrEqual(5_400_000)
+      expect(ago).toBeLessThan(5_460_000)
+      expect(query.get("limit")).toBe("5")
+
+      for (const [args, reason, message] of [
+        [[], "MissingOption", "Missing required flag: --url"],
+        [["--url"], "InvalidValue", "Missing value for flag --url"],
+        [
+          ["--url", "u", "--limit", "0"],
+          "InvalidValue",
+          'Invalid value for flag --limit: "0". Expected: an integer from 1 to 1000',
+        ],
+        [["--url", "u", "--x"], "UnrecognizedOption", "Unrecognized flag: --x"],
+        [
+          ["--url", "u", "--since", "soon"],
+          "InvalidValue",
+          'Invalid value for flag --since: "soon"',
+        ],
+      ] as const) {
+        const refused = yield* runCli(["defects", "list", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("lists a runner's defect spans for the operator's tenant, newest last", () =>
@@ -119,10 +169,49 @@ describe("durable defects list", () => {
         "b1",
         "b2",
       ])
-      expect(Exit.isFailure(yield* read("plant-token", "other").pipe(Effect.exit))).toBe(true)
-      expect(Exit.isFailure(yield* read("plant-token", "*").pipe(Effect.exit))).toBe(true)
+      const foreignTenant = yield* read("plant-token", "other").pipe(Effect.flip)
+
+      expect(foreignTenant).toBeInstanceOf(OperatorRefused)
+      expect(foreignTenant).toMatchObject({ status: 403 })
+      const everyTenant = yield* read("plant-token", "*").pipe(Effect.flip)
+
+      expect(everyTenant).toBeInstanceOf(OperatorRefused)
+      expect(everyTenant).toMatchObject({ status: 403 })
       expect(yield* read("plant-token", "plant", "Kettle")).toEqual([])
-      expect(Exit.isFailure(yield* read(undefined, "plant").pipe(Effect.exit))).toBe(true)
+      const anonymous = yield* read(undefined, "plant").pipe(Effect.flip)
+
+      expect(anonymous).toBeInstanceOf(OperatorRefused)
+      expect(anonymous).toMatchObject({ status: 401 })
+
+      const fetch = ((input, init) =>
+        web.handler(new Request(input, init))) as typeof globalThis.fetch
+
+      const cli = (token: string, tenant: string) =>
+        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+          "defects",
+          "list",
+          "--url",
+          "http://runner",
+          "--tenant",
+          tenant,
+        ])
+
+      const listed = yield* cli("plant-token", "plant")
+
+      expect(listed).toMatchObject({ exitCode: 0, reason: "" })
+      expect(
+        listed.stdout.split("\n").filter((line) => line.includes("Boiler/b1  Break ")),
+      ).toHaveLength(2)
+
+      for (const [token, tenant, status] of [
+        ["plant-token", "other", 403],
+        ["nobody", "plant", 401],
+      ] as const) {
+        const refused = yield* cli(token, tenant)
+
+        expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
+        expect(refused.stderr).toMatch(new RegExp(`^Refused \\(${status}\\): `))
+      }
 
       const browse = (origin: string) =>
         web.handler(

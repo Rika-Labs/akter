@@ -1,6 +1,6 @@
 import { Effect, Fiber, Layer, Result, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Actor, Actors, User } from "../../index.ts"
+import { Actor, Actors, System, User } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -70,6 +70,47 @@ const TallyLive = Layer.mergeAll(
   ),
 )
 
+const Dispatch = Actor.command("Dispatch", { input: Schema.String })
+
+const Hear = Actor.command("Hear")
+
+const Heard = Actor.query("Heard", { output: Schema.String })
+
+/** Hears the principal a relay-delivered intent carries: the sender's caller as `onBehalfOf`. */
+const Envoy = Actor.make("Envoy", {
+  key: Schema.String,
+  state: Actor.state({
+    heard: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  }),
+  api: { Dispatch, Heard },
+  internal: { Hear },
+})
+
+const EnvoyLive = Layer.mergeAll(
+  Envoy.toLayer(
+    Effect.succeed({
+      Dispatch: Effect.fnUntraced(function* (target: string) {
+        yield* Envoy.Turn
+        yield* (yield* Envoy.intents(target)).Hear()
+      }),
+      Hear: Effect.fnUntraced(function* () {
+        const turn = yield* Envoy.Turn
+
+        yield* turn.state.set({
+          heard: Schema.is(System)(turn.caller) ? (turn.caller.onBehalfOf?.subject ?? "") : "",
+        })
+      }),
+    }),
+  ),
+  Envoy.toQueryLayer(
+    Effect.succeed({
+      Heard: Effect.fnUntraced(function* () {
+        return (yield* Envoy.Read).state.heard
+      }),
+    }),
+  ),
+)
+
 const EXPIRATION_SECONDS = 3
 
 /** Builds a fresh database and a cluster of `runners` on it for one case. */
@@ -87,7 +128,7 @@ const withCluster = <A, E>(
           database,
           runners,
           shardLockExpiration: `${EXPIRATION_SECONDS} seconds`,
-          actors: TallyLive,
+          actors: Layer.merge(TallyLive, EnvoyLive),
           as: User.make({ subject: "alice" }),
           authorize: () => Effect.succeed(true),
         }),
@@ -494,6 +535,48 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
             expect(owner === 0 || owner === 1).toBe(true)
             expect(echoed).toBe(subject)
           }
+        }),
+      ),
+  },
+  {
+    name: "carries the largest supported principal as onBehalfOf through a relay-delivered intent between runners",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        2,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const subject = "é".repeat(256)
+          const receivers = Array.from({ length: 12 }, (_, index) => `receiver-${index}`)
+
+          for (const receiver of receivers)
+            yield* cluster.on(0)(
+              Envoy.get("sender").pipe(
+                Effect.flatMap((envoy) => envoy.Dispatch(receiver)),
+                Actor.as(User.make({ subject })),
+              ),
+            )
+
+          const owners = new Set<number | undefined>()
+
+          for (const receiver of receivers) {
+            owners.add(yield* cluster.owner((yield* cluster.on(0)(Envoy.get(receiver))).ref))
+
+            const heard = yield* cluster
+              .on(1)(
+                Envoy.get(receiver).pipe(
+                  Effect.flatMap((envoy) => envoy.Heard()),
+                  Effect.filterOrFail((value) => value !== ""),
+                ),
+              )
+              .pipe(Effect.retry({ times: 60, schedule: Schedule.spaced("500 millis") }))
+
+            expect(heard).toBe(subject)
+          }
+
+          expect(owners.size).toBe(2)
         }),
       ),
   },

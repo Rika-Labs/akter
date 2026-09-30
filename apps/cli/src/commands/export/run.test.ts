@@ -2,11 +2,11 @@ import { Actor, Intent, User } from "@durable-actors/core"
 import { OperatorAuth, Operators, SeedJson } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
-import { Context, Duration, Effect, Exit, FileSystem, Layer, Redacted, Schema } from "effect"
-import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
+import { Context, Duration, Effect, FileSystem, Layer, Redacted, Schema } from "effect"
+import { HttpRouter } from "effect/unstable/http"
 import { describe, expect, it } from "vitest"
 
-import { exportSeed, formatExport, parseExport } from "./run.ts"
+import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
 
 const Note = Actor.command("Note", { input: Schema.String })
 
@@ -70,25 +70,52 @@ const operators = OperatorAuth.tokens([
 describe("durable export", () => {
   it("parses an actor name, tenant, and output file, and needs all three", () =>
     Effect.gen(function* () {
-      expect(
-        yield* parseExport([
-          "Vault/v/1",
-          "--url",
-          "http://x",
-          "--tenant",
-          "t",
-          "--output",
-          "v.seed",
-        ]),
-      ).toMatchObject({ actorType: "Vault", actorId: "v/1", tenant: "t", output: "v.seed" })
+      const runner = recordingFetch({})
 
-      for (const args of [
-        ["Vault", "--url", "u", "--tenant", "t", "--output", "f"],
-        ["Vault/v1", "--url", "u", "--output", "f"],
-        ["Vault/v1", "--url", "u", "--tenant", "t"],
-        ["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"],
+      const exported = yield* runCliWith({ fetch: runner.fetch })([
+        "export",
+        "Vault/v/1",
+        "--url",
+        "http://x",
+        "--tenant",
+        "t",
+        "--output",
+        "/nowhere/v.seed",
       ])
-        expect(Exit.isFailure(yield* parseExport(args).pipe(Effect.exit))).toBe(true)
+
+      expect(exported).toMatchObject({ exitCode: 2, reason: "SchemaError" })
+      expect(exported.stderr).toContain("Unexpected answer")
+      expect(runner.requests.map(({ url }) => url)).toEqual([
+        "http://x/operator/actors/Vault/v%2F1/export?tenant=t",
+      ])
+
+      for (const [args, reason, message] of [
+        [
+          ["Vault", "--url", "u", "--tenant", "t", "--output", "f"],
+          "InvalidValue",
+          'Invalid value for argument <actor>: "Vault". Expected: an actor named as <Type>/<id>',
+        ],
+        [
+          ["Vault/v1", "--url", "u", "--output", "f"],
+          "MissingOption",
+          "Missing required flag: --tenant",
+        ],
+        [
+          ["Vault/v1", "--url", "u", "--tenant", "t"],
+          "MissingOption",
+          "Missing required flag: --output",
+        ],
+        [
+          ["Vault/v1", "extra", "--url", "u", "--tenant", "t", "--output", "f"],
+          "UnexpectedArgument",
+          'Unexpected positional argument: "extra"',
+        ],
+      ] as const) {
+        const refused = yield* runCli(["export", ...args])
+
+        expect(refused).toMatchObject({ exitCode: 2, reason })
+        expect(refused.stderr).toContain(message)
+      }
     }).pipe(Effect.runPromise))
 
   it("writes an owner-only seed file, never replaces one, and starts an actor from it in another tenant", () =>
@@ -112,40 +139,40 @@ describe("durable export", () => {
 
       yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
 
-      const fetcher = Layer.succeed(FetchHttpClient.Fetch, ((input, init) =>
-        web.handler(new Request(input, init))) as typeof fetch)
+      const fetch = ((input, init) =>
+        web.handler(new Request(input, init))) as typeof globalThis.fetch
 
-      const services = yield* Layer.build(
-        Layer.mergeAll(FetchHttpClient.layer.pipe(Layer.provide(fetcher)), BunFileSystem.layer),
-      )
+      const exportAs = (token: string) =>
+        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+          "export",
+          "CliVault/v1",
+          "--url",
+          "http://runner",
+          "--tenant",
+          tenant,
+          "--output",
+          output,
+        ])
 
-      const options = yield* parseExport([
-        "CliVault/v1",
-        "--url",
-        "http://runner",
-        "--tenant",
-        tenant,
-        "--output",
-        output,
-      ])
+      const refused = yield* exportAs("look-token")
 
-      const refused = yield* exportSeed({ options, token: "look-token" }).pipe(
-        Effect.provideContext(services),
-        Effect.flip,
-      )
-
-      expect(refused).toMatchObject({ status: 403 })
+      expect(refused).toMatchObject({ exitCode: 1, reason: "OperatorRefused" })
+      expect(refused.stderr).toMatch(/^Refused \(403\): /)
       expect(yield* fs.exists(output)).toBe(false)
 
-      const answer = yield* exportSeed({ options, token: "export-token" }).pipe(
-        Effect.provideContext(services),
-      )
+      const answer = yield* exportAs("export-token")
 
-      expect((yield* formatExport(answer)).split("\n")).toEqual([
-        `Exported CliVault/v1 to ${output}`,
-        "carries 1 state keys, 1 pending intents, 0 pending effects",
-        "omits 2 receipts, 0 events, 0 workflows, 0 dead letters, 0 owned-table rows, 0 blob entries",
-      ])
+      expect(answer).toEqual({
+        stdout: [
+          `Exported CliVault/v1 to ${output}`,
+          "carries 1 state keys, 1 pending intents, 0 pending effects",
+          "omits 2 receipts, 0 events, 0 workflows, 0 dead letters, 0 owned-table rows, 0 blob entries",
+          "",
+        ].join("\n"),
+        stderr: "",
+        exitCode: 0,
+        reason: "",
+      })
       expect(((yield* fs.stat(output)).mode & 0o777).toString(8)).toBe("600")
 
       const written = yield* fs.readFileString(output)
@@ -153,12 +180,10 @@ describe("durable export", () => {
       expect(written.includes(tenant)).toBe(false)
       expect(written.includes("alice")).toBe(false)
 
-      const again = yield* exportSeed({ options, token: "export-token" }).pipe(
-        Effect.provideContext(services),
-        Effect.flip,
-      )
+      const again = yield* exportAs("export-token")
 
-      expect(again._tag).toBe("PlatformError")
+      expect(again).toMatchObject({ exitCode: 2, reason: "PlatformError" })
+      expect(again.stderr).toMatch(/^Cannot write the file: /)
       expect(yield* fs.readFileString(output)).toBe(written)
       expect(yield* Schema.decodeEffect(SeedJson)(written)).toMatchObject({
         actor: { type: "CliVault", id: "v1" },
@@ -183,6 +208,9 @@ describe("durable export", () => {
           notes: ["first", "second"],
           reminded: true,
         })
-      }).pipe(Effect.provideContext(replay), Effect.provideContext(services))
+      }).pipe(
+        Effect.provideContext(replay),
+        Effect.provideContext(yield* Layer.build(BunFileSystem.layer)),
+      )
     }).pipe(Effect.scoped, Effect.runPromise))
 })

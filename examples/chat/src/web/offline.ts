@@ -18,6 +18,7 @@ const element = <E extends HTMLElement>(id: string) =>
 const rooms = Room.client({
   baseUrl: "/api",
   headers: () => ({ authorization: `Bearer ${user}` }),
+  identity: () => user,
   timeoutInMs: 1_000,
   offline: Offline.indexedDb(`chat:${user}`),
 })

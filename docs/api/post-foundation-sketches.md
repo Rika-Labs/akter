@@ -4,17 +4,6 @@
 
 **Authority:** illustrative proposal only. These names and signatures are not exported and are subject to API/versioning review.
 
-## Observe an actor-local query
-
-<!-- snippet target -->
-
-```ts
-const room = Chat.client({ baseUrl }).get("room-42")
-for await (const page of room.Recent.watch({ limit: 50 })) render(page)
-```
-
-`watch` is only defined for supported scoped queries. The runtime must capture dependencies and notify subscribers after commit, then rerun at a consistent version. A rerun may coalesce intermediate states; it is not an event history. Group queries need explicit cost controls and fleet queries are not live by default.
-
 ## Work offline
 
 Shipped in M6.5: see [Offline queue](03-typescript-sdk.md#offline-queue-m65) and [ADR 0058](../decisions/0058-offline-command-queue.md).

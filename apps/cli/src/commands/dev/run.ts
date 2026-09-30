@@ -1,88 +1,45 @@
 import { Actor, User } from "@durable-actors/core"
-import { Inspector } from "@durable-actors/core/runtime"
-import { Effect, Layer, Schema } from "effect"
+import { Database, Inspector } from "@durable-actors/core/runtime"
+import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
+import { Console, Effect, Layer, Option, Schema } from "effect"
 import type { Cause, Crypto } from "effect"
-import type { HttpRouter } from "effect/unstable/http"
+import { Command, Flag } from "effect/unstable/cli"
+import { HttpRouter, HttpServer } from "effect/unstable/http"
 import type { SqlClient } from "effect/unstable/sql"
 
-import { UsageError } from "../workflows/check.ts"
+import { UsageError, fail } from "../../failure.ts"
+import { loadEntry } from "../workflows/check.ts"
 import { pageRoutes } from "./inspector/page.ts"
 
-/** Usage text for `durable dev`. */
-export const USAGE =
-  "Usage: durable dev --entry <module> [--database-url <url> | --data-dir <dir>] [--port <port>] [--hostname <host>] [--tenant <tenant>]"
-
-/** Parsed arguments of `dev`. */
-export interface DevOptions {
-  readonly entry: string
-  /** Postgres to run on; PGlite when absent. */
-  readonly databaseUrl: string | undefined
-  /** Where PGlite keeps its files; in memory when absent. */
-  readonly dataDir: string | undefined
-  readonly port: number
-  readonly hostname: string
-  /** The one tenant the inspector reads. */
-  readonly tenant: string
+const flags = {
+  entry: Flag.File("entry", { mustExist: true }).pipe(
+    Flag.withDescription("The entry module; it exports `app`, a Layer of its routes"),
+  ),
+  databaseUrl: Flag.Redacted("database-url").pipe(
+    Flag.optional,
+    Flag.withDescription("Run on this Postgres instead of PGlite"),
+  ),
+  dataDir: Flag.Directory("data-dir").pipe(
+    Flag.optional,
+    Flag.withDescription("Where PGlite keeps its files (default in memory)"),
+  ),
+  port: Flag.Int("port").pipe(
+    Flag.filter(
+      (port) => port >= 0 && port <= 65_535,
+      () => "an integer 0-65535",
+    ),
+    Flag.withDefault(3000),
+    Flag.withDescription("The port to listen on; 0 picks a free one (default 3000)"),
+  ),
+  hostname: Flag.String("hostname").pipe(
+    Flag.withDefault("127.0.0.1"),
+    Flag.withDescription("The address to listen on (default 127.0.0.1)"),
+  ),
+  tenant: Flag.String("tenant").pipe(
+    Flag.withDefault("default"),
+    Flag.withDescription("The one tenant the inspector reads (default default)"),
+  ),
 }
-
-const Port = Schema.FiniteFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 0, maximum: 65_535 }),
-)
-
-const decodePort = Schema.decodeUnknownEffect(Port)
-
-const VALUED = new Set([
-  "--entry",
-  "--database-url",
-  "--data-dir",
-  "--port",
-  "--hostname",
-  "--tenant",
-])
-
-/** Parses the arguments after `dev`. */
-export const parseDev = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const values = new Map<string, string>()
-
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index]!
-
-      if (!VALUED.has(arg)) return yield* UsageError.make({ message: `Unknown argument: ${arg}` })
-
-      const value = args[++index]
-
-      if (value === undefined) return yield* UsageError.make({ message: `${arg} needs a value` })
-
-      values.set(arg, value)
-    }
-
-    const entry = values.get("--entry")
-
-    if (entry === undefined) return yield* UsageError.make({ message: "--entry is required" })
-
-    const databaseUrl = values.get("--database-url")
-    const dataDir = values.get("--data-dir")
-
-    if (databaseUrl !== undefined && dataDir !== undefined)
-      return yield* UsageError.make({
-        message: "--data-dir is for PGlite; drop it or --database-url",
-      })
-
-    const port = yield* decodePort(values.get("--port") ?? "3000").pipe(
-      Effect.mapError(() => UsageError.make({ message: "--port must be an integer 0-65535" })),
-    )
-
-    return {
-      entry,
-      databaseUrl,
-      dataDir,
-      port,
-      hostname: values.get("--hostname") ?? "127.0.0.1",
-      tenant: values.get("--tenant") ?? "default",
-    } satisfies DevOptions
-  })
 
 /** What `durable dev` provides to an entry's `app`: the database, crypto, and the router. */
 export type DevServices = SqlClient.SqlClient | Crypto.Crypto | HttpRouter.HttpRouter
@@ -128,3 +85,60 @@ export const devRoutes = ({ app, tenant }: { readonly app: DevApp; readonly tena
     Inspector.serve({ auth: localOperator(tenant), basePath: `${INSPECTOR_PATH}/api` }),
     pageRoutes(INSPECTOR_PATH),
   )
+
+/**
+ * `durable dev`: runs until interrupted, the entry's app and the inspector on
+ * one server. The banner prints once the server listens, so `--port 0`
+ * reports the port the server was given.
+ */
+export const devCommand = Command.make("dev", flags, (options) =>
+  Effect.gen(function* () {
+    if (Option.isSome(options.databaseUrl) && Option.isSome(options.dataDir))
+      return yield* UsageError.make({
+        message: "--data-dir is for PGlite; drop it or --database-url",
+      })
+
+    const module = yield* loadEntry(options.entry)
+    const app = yield* appOf({ module, entry: options.entry })
+
+    const database = Option.match(options.databaseUrl, {
+      onNone: () =>
+        Database.pglite(
+          Option.match(options.dataDir, { onNone: () => ({}), onSome: (dataDir) => ({ dataDir }) }),
+        ),
+      onSome: (url) => Database.postgres({ url }),
+    })
+
+    const storage = Option.isSome(options.databaseUrl)
+      ? "Postgres"
+      : `PGlite (${Option.getOrElse(options.dataDir, () => "in memory")})`
+
+    const banner = Layer.effectDiscard(
+      HttpServer.addressFormattedWith((origin) =>
+        Console.log(
+          [
+            `durable dev: ${options.entry} on ${storage}`,
+            `  app        ${origin}`,
+            `  inspector  ${origin}${INSPECTOR_PATH} (tenant ${options.tenant})`,
+          ].join("\n"),
+        ),
+      ),
+    )
+
+    return Layer.mergeAll(
+      HttpRouter.serve(devRoutes({ app, tenant: options.tenant })),
+      banner,
+    ).pipe(
+      Layer.provide(BunHttpServer.layer({ port: options.port, hostname: options.hostname })),
+      Layer.provide(database),
+      Layer.provide(BunCrypto.layer),
+    )
+  }).pipe(
+    Effect.flatMap(Layer.launch),
+    Effect.catchTag("UsageError", (error) => fail({ reason: error._tag, message: error.message })),
+  ),
+).pipe(
+  Command.withDescription(
+    "Run the entry's app locally with a read-only inspector at /_durable/inspector",
+  ),
+)

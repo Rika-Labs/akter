@@ -1,37 +1,44 @@
-import { Effect } from "effect"
-import { UsageError } from "../workflows/check.ts"
-import { operatorRequest, parseActor, parseOperatorFlags } from "../operator/request.ts"
+import { Command, Argument } from "effect/unstable/cli"
+import {
+  actorArgument,
+  encodeJson,
+  operatorCommand,
+  operatorFlags,
+  operatorRequest,
+  tenant,
+} from "../operator/request.ts"
 
-/** Usage text for `durable receipts`. */
-export const USAGE =
-  "Usage: durable receipts show <Type>/<id> <commandId> --url <runner> --tenant <tenant> [--token-env <name>] [--json]"
+const flags = {
+  actor: actorArgument,
+  commandId: Argument.String("commandId").pipe(
+    Argument.withDescription("The command id whose stored outcome to show"),
+  ),
+  tenant,
+  ...operatorFlags,
+}
 
-/** Parses the arguments after `receipts show`. */
-export const parseShow = (args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const flags = yield* parseOperatorFlags({ args, valued: [], switches: [] })
-    const actor = yield* parseActor(flags.positional[0])
-    const commandId = flags.positional[1]
-
-    if (commandId === undefined || flags.positional.length > 2)
-      return yield* UsageError.make({ message: "Name one command id after the actor" })
-
-    if (flags.tenant === undefined)
-      return yield* UsageError.make({ message: "--tenant is required" })
-
-    return { ...flags, ...actor, tenant: flags.tenant, commandId }
-  })
+/** Parsed arguments of `receipts show`. */
+export type ShowOptions = Command.Command.Config.Infer<typeof flags>
 
 /** Reads one stored outcome; the runner never runs the command to answer. */
 export const showReceipt = ({
   options,
   token,
 }: {
-  readonly options: Effect.Success<ReturnType<typeof parseShow>>
+  readonly options: ShowOptions
   readonly token: string | undefined
 }) =>
   operatorRequest({
     url: options.urls[0]!,
-    path: `/operator/receipts/${encodeURIComponent(options.actorType)}/${encodeURIComponent(options.actorId)}/${encodeURIComponent(options.commandId)}?${new URLSearchParams({ tenant: options.tenant })}`,
+    path: `/operator/receipts/${encodeURIComponent(options.actor.actorType)}/${encodeURIComponent(options.actor.actorId)}/${encodeURIComponent(options.commandId)}?${new URLSearchParams({ tenant: options.tenant })}`,
     token,
   })
+
+/** `durable receipts show <Type>/<id> <commandId>`: one stored outcome, as JSON. */
+export const showCommand = Command.make("show", flags, (options) =>
+  operatorCommand({ options, request: showReceipt, format: encodeJson }),
+).pipe(
+  Command.withDescription(
+    "Print one receipt's stored outcome as JSON; the runner never runs the command to answer",
+  ),
+)
