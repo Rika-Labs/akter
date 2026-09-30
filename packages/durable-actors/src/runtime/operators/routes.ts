@@ -18,7 +18,7 @@ export interface OperatorsOptions<R> {
 }
 
 /** The most rows one list returns. */
-export const MAX_ROWS = 1000
+const MAX_ROWS = 1000
 
 const Tenant = Schema.NonEmptyString
 
@@ -37,7 +37,7 @@ const ReceiptParams = Schema.Struct({
 
 const EffectParams = Schema.Struct({ effectId: Schema.NonEmptyString })
 
-const InspectQuery = Schema.Struct({ tenant: Tenant, limit: Schema.optional(Limit) })
+const PageQuery = Schema.Struct({ tenant: Tenant, limit: Schema.optional(Limit) })
 
 const TenantQuery = Schema.Struct({ tenant: Tenant })
 
@@ -49,7 +49,7 @@ const DefectsQuery = Schema.Struct({
 })
 
 /** Rows that failed this many deliveries in a row count as lagging. */
-export const LAGGING_ATTEMPTS = 8
+const LAGGING_ATTEMPTS = 8
 
 const LaggingQuery = Schema.Struct({
   tenant: Tenant,
@@ -58,8 +58,6 @@ const LaggingQuery = Schema.Struct({
   ),
   limit: Schema.optional(Limit),
 })
-
-const AuditQuery = Schema.Struct({ tenant: Tenant, limit: Schema.optional(Limit) })
 
 const Reason = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))
 
@@ -92,13 +90,34 @@ const NotFound = Schema.TaggedStruct("NotFound", {})
 const noStore = (response: HttpServerResponse.HttpServerResponse) =>
   HttpServerResponse.setHeaders(response, { "cache-control": "no-store" })
 
-const repairResponse = (error: RepairError) =>
-  Match.value(error).pipe(
-    Match.tagsExhaustive({
-      OperatorNotFound: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
-      ProviderOutcomeUnknown: (refused) => HttpServerResponse.jsonUnsafe(refused, { status: 409 }),
-      EffectNotServed: (refused) => HttpServerResponse.jsonUnsafe(refused, { status: 503 }),
-    }),
+const notFound = () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 })
+
+/** Answers a found value as JSON and an absent one as a 404. */
+const foundOrNotFound = (found: Option.Option<unknown>) =>
+  Option.match(found, { onNone: notFound, onSome: (value) => HttpServerResponse.jsonUnsafe(value) })
+
+/** Answers a repair's result as JSON and each refusal with its own status. */
+const repairResponse = <A>(repair: Effect.Effect<A, RepairError>) =>
+  repair.pipe(
+    Effect.map((result) => HttpServerResponse.jsonUnsafe(result)),
+    Effect.catch((error) =>
+      Effect.succeed(
+        Match.value(error).pipe(
+          Match.tagsExhaustive({
+            OperatorNotFound: notFound,
+            ProviderOutcomeUnknown: (refused) =>
+              HttpServerResponse.jsonUnsafe(refused, { status: 409 }),
+            EffectNotServed: (refused) => HttpServerResponse.jsonUnsafe(refused, { status: 503 }),
+          }),
+        ),
+      ),
+    ),
+  )
+
+/** Decodes a JSON request body; a body that is not JSON is refused as `decode`. */
+const decodeBody = <A, RD>(schema: Schema.ConstraintDecoder<A, RD>) =>
+  HttpServerRequest.schemaBodyJson(schema).pipe(
+    Effect.catchTag("HttpServerError", () => Effect.fail(invalidInput("decode"))),
   )
 
 const traceId = Effect.currentSpan.pipe(
@@ -183,11 +202,21 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
           return entry
         })
 
+      /** Authorizes a read and records it in the audit log before it is answered. */
+      const authorizeRead = (
+        grant: OperatorGrant,
+        action: OperatorAction,
+        resource: Resource,
+        target?: string,
+      ) =>
+        authorize(grant, action, resource, target).pipe(
+          Effect.flatMap((entry) => runtime.record(entry, "read")),
+        )
+
       const route = (
         method: "GET" | "POST",
         path: string,
         handle: (
-          request: HttpServerRequest.HttpServerRequest,
           grant: OperatorGrant,
         ) => Effect.Effect<
           HttpServerResponse.HttpServerResponse,
@@ -202,7 +231,7 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
           `${basePath}${path}` as HttpRouter.PathInput,
           (request: HttpServerRequest.HttpServerRequest) =>
             authenticate(request).pipe(
-              Effect.flatMap((grant) => handle(request, grant)),
+              Effect.flatMap(handle),
               Effect.catchTag("SchemaError", (error) => Effect.fail(undecodable(error))),
               Effect.catch(actorErrorResponse),
               Effect.catchCause(defectResponse),
@@ -210,14 +239,10 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
             ),
         )
 
-      const query = <A, I extends Readonly<Record<string, string | undefined>>>(
-        schema: Schema.Codec<A, I>,
-      ) => HttpRouter.schemaParams(schema)
-
-      yield* route("GET", "/actors/:type/:id", (_request, grant) =>
+      yield* route("GET", "/actors/:type/:id", (grant) =>
         Effect.gen(function* () {
           const { type, id } = yield* HttpRouter.schemaPathParams(ActorParams)
-          const { tenant, limit } = yield* query(InspectQuery)
+          const { tenant, limit } = yield* HttpRouter.schemaParams(PageQuery)
           const resource = { tenant, actorType: type, actorId: id }
           const entry = yield* authorize(grant, "inspect", resource)
 
@@ -225,35 +250,22 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
 
           yield* runtime.record(entry, { outcomes })
 
-          const page = yield* runtime.inspect({
-            ...target(resource),
-            limit: limit ?? 20,
-            outcomes,
-          })
-
-          return Option.match(page, {
-            onNone: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
-            onSome: (value) => HttpServerResponse.jsonUnsafe(value),
-          })
+          return foundOrNotFound(
+            yield* runtime.inspect({ ...resource, limit: limit ?? 20, outcomes }),
+          )
         }),
       )
 
-      yield* route("GET", "/actors/:type/:id/export", (_request, grant) =>
+      yield* route("GET", "/actors/:type/:id/export", (grant) =>
         Effect.gen(function* () {
           const { type, id } = yield* HttpRouter.schemaPathParams(ActorParams)
-          const { tenant } = yield* query(TenantQuery)
+          const { tenant } = yield* HttpRouter.schemaParams(TenantQuery)
           const resource = { tenant, actorType: type, actorId: id }
-          const entry = yield* authorize(grant, "export", resource)
 
-          yield* runtime.record(entry, "read")
+          yield* authorizeRead(grant, "export", resource)
 
-          return yield* runtime.exportSeed(target(resource)).pipe(
-            Effect.map(
-              Option.match({
-                onNone: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
-                onSome: (seed) => HttpServerResponse.jsonUnsafe(seed),
-              }),
-            ),
+          return yield* runtime.exportSeed(resource).pipe(
+            Effect.map(foundOrNotFound),
             Effect.catchTag("ExportRefused", (refused) =>
               Effect.succeed(HttpServerResponse.jsonUnsafe(refused, { status: 409 })),
             ),
@@ -261,30 +273,23 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
         }),
       )
 
-      yield* route("GET", "/receipts/:type/:id/:commandId", (_request, grant) =>
+      yield* route("GET", "/receipts/:type/:id/:commandId", (grant) =>
         Effect.gen(function* () {
           const { type, id, commandId } = yield* HttpRouter.schemaPathParams(ReceiptParams)
-          const { tenant } = yield* query(TenantQuery)
+          const { tenant } = yield* HttpRouter.schemaParams(TenantQuery)
           const resource = { tenant, actorType: type, actorId: id, commandId }
-          const entry = yield* authorize(grant, "receipts.read", resource, commandId)
 
-          yield* runtime.record(entry, "read")
+          yield* authorizeRead(grant, "receipts.read", resource, commandId)
 
-          const receipt = yield* runtime.receipt({ ...target(resource), commandId })
-
-          return Option.match(receipt, {
-            onNone: () => HttpServerResponse.jsonUnsafe(NotFound.make({}), { status: 404 }),
-            onSome: (value) => HttpServerResponse.jsonUnsafe(value),
-          })
+          return foundOrNotFound(yield* runtime.receipt(resource))
         }),
       )
 
-      yield* route("GET", "/defects", (_request, grant) =>
+      yield* route("GET", "/defects", (grant) =>
         Effect.gen(function* () {
-          const { tenant, actor, sinceMs, limit } = yield* query(DefectsQuery)
-          const entry = yield* authorize(grant, "defects.read", { tenant, actorType: actor })
+          const { tenant, actor, sinceMs, limit } = yield* HttpRouter.schemaParams(DefectsQuery)
 
-          yield* runtime.record(entry, "read")
+          yield* authorizeRead(grant, "defects.read", { tenant, actorType: actor })
 
           const listed = yield* defects.list({ actorType: actor, sinceMs })
           const own = tenant === "*" ? listed : listed.filter((defect) => defect.tenant === tenant)
@@ -301,31 +306,19 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
           audit: AuditEntry,
         ) => Effect.Effect<Schema.Json, RepairError>,
       ) =>
-        route("POST", `/dead-letters/:effectId/${path}`, (_request, grant) =>
+        route("POST", `/dead-letters/:effectId/${path}`, (grant) =>
           Effect.gen(function* () {
             const { effectId } = yield* HttpRouter.schemaPathParams(EffectParams)
-
-            const body = yield* HttpServerRequest.schemaBodyJson(RetryBody).pipe(
-              Effect.catchTag("HttpServerError", () => Effect.fail(invalidInput("decode"))),
-            )
-
-            const resource = {
-              tenant: body.tenant,
-              actorType: body.actorType,
-              actorId: body.actorId,
-            }
+            const body = yield* decodeBody(RetryBody)
 
             const entry = yield* authorize(
               grant,
               path === "retry" ? "dead-letters.retry" : "dead-letters.discard",
-              resource,
+              target(body),
               effectId,
             )
 
-            return yield* run(body, effectId, { ...entry, reason: body.reason }).pipe(
-              Effect.map((result) => HttpServerResponse.jsonUnsafe(result)),
-              Effect.catch((error) => Effect.succeed(repairResponse(error))),
-            )
+            return yield* repairResponse(run(body, effectId, { ...entry, reason: body.reason }))
           }),
         )
 
@@ -344,45 +337,36 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
           .pipe(Effect.as({ discarded: effectId })),
       )
 
-      yield* route("POST", "/subscriptions/skip", (_request, grant) =>
+      yield* route("POST", "/subscriptions/skip", (grant) =>
         Effect.gen(function* () {
-          const body = yield* HttpServerRequest.schemaBodyJson(SkipBody).pipe(
-            Effect.catchTag("HttpServerError", () => Effect.fail(invalidInput("decode"))),
-          )
+          const body = yield* decodeBody(SkipBody)
+          const source = { tenant: body.tenant, actorType: body.sourceType, actorId: body.sourceId }
 
           const entry = yield* authorize(
             grant,
             "subscriptions.skip",
-            { tenant: body.tenant, actorType: body.sourceType, actorId: body.sourceId },
+            source,
             `${body.subscriberType}.${body.subscription}/${body.subscriberId}`,
           )
 
-          return yield* runtime
-            .skip({
-              target: {
-                tenant: body.tenant,
-                actorType: body.sourceType,
-                actorId: body.sourceId,
-              },
+          return yield* repairResponse(
+            runtime.skip({
+              target: source,
               subscriberType: body.subscriberType,
               subscription: body.subscription,
               subscriberId: body.subscriberId,
               through: body.through,
               audit: { ...entry, reason: body.reason },
-            })
-            .pipe(
-              Effect.map((result) => HttpServerResponse.jsonUnsafe(result)),
-              Effect.catch((error) => Effect.succeed(repairResponse(error))),
-            )
+            }),
+          )
         }),
       )
 
-      yield* route("GET", "/subscriptions/lagging", (_request, grant) =>
+      yield* route("GET", "/subscriptions/lagging", (grant) =>
         Effect.gen(function* () {
-          const { tenant, minAttempts, limit } = yield* query(LaggingQuery)
-          const entry = yield* authorize(grant, "inspect", { tenant })
+          const { tenant, minAttempts, limit } = yield* HttpRouter.schemaParams(LaggingQuery)
 
-          yield* runtime.record(entry, "read")
+          yield* authorizeRead(grant, "inspect", { tenant })
 
           return HttpServerResponse.jsonUnsafe(
             yield* runtime.lagging({
@@ -394,12 +378,11 @@ const serve = <R = never>(options: OperatorsOptions<R>) =>
         }),
       )
 
-      yield* route("GET", "/audit", (_request, grant) =>
+      yield* route("GET", "/audit", (grant) =>
         Effect.gen(function* () {
-          const { tenant, limit } = yield* query(AuditQuery)
-          const entry = yield* authorize(grant, "audit.read", { tenant })
+          const { tenant, limit } = yield* HttpRouter.schemaParams(PageQuery)
 
-          yield* runtime.record(entry, "read")
+          yield* authorizeRead(grant, "audit.read", { tenant })
 
           return HttpServerResponse.jsonUnsafe(
             yield* runtime.audit({ tenant, limit: limit ?? 100 }),

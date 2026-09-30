@@ -3,7 +3,6 @@ import { SqlClient, SqlError } from "effect/unstable/sql"
 import type { RegisteredEffect } from "../../handles/actors.ts"
 import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
-import { decodeText, readOnly } from "../inspector/queries.ts"
 import * as Queries from "../inspector/queries.ts"
 import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { type Placement, routingKey } from "../storage/codec.ts"
@@ -168,9 +167,11 @@ export const operatorRuntime = (deps: {
   readonly role: string | undefined
 }) => {
   const placement = (actorType: string) =>
-    Effect.gen(function* () {
-      return Option.fromUndefinedOr(yield* recordedPlacement(actorType))
-    }).pipe(Effect.orDie, Effect.provideContext(deps.services))
+    recordedPlacement(actorType).pipe(
+      Effect.map(Option.fromUndefinedOr),
+      Effect.orDie,
+      Effect.provideContext(deps.services),
+    )
 
   const keyOf = (target: ActorTarget) =>
     Effect.flatMap(placement(target.actorType), (found) =>
@@ -197,10 +198,29 @@ export const operatorRuntime = (deps: {
       Effect.provideContext(deps.services),
     )
 
-  const transacted =
-    (tenant: string) =>
-    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.flatMap(SqlClient.SqlClient, (sql) => withTenant(tenant)(sql.withTransaction(effect)))
+  /**
+   * Runs one repair of `target` in its own tenant transaction, and writes the
+   * repair's audit row, with the outcome it reports, in that same transaction.
+   */
+  const auditedRepair = <A, E, R>(
+    target: ActorTarget,
+    audit: AuditEntry,
+    repair: (
+      key: bigint,
+    ) => Effect.Effect<{ readonly result: A; readonly outcome: Schema.Json }, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const key = yield* keyOf(target)
+      const sql = yield* SqlClient.SqlClient
+
+      const { result } = yield* withTenant(target.tenant)(
+        sql.withTransaction(
+          Effect.tap(repair(key), ({ outcome }) => writeAudit({ entry: audit, key, outcome })),
+        ),
+      )
+
+      return result
+    })
 
   const lockLetter = (key: bigint, target: ActorTarget, effectId: string) =>
     Effect.gen(function* () {
@@ -223,14 +243,7 @@ export const operatorRuntime = (deps: {
   return OperatorRuntime.of({
     placement,
     inspect: ({ limit, outcomes, ...target }) =>
-      Queries.readOnly(target.tenant)(
-        Queries.actor({
-          tenant: target.tenant,
-          actorType: target.actorType,
-          actorId: target.actorId,
-          limit,
-        }),
-      ).pipe(
+      Queries.readOnly(target.tenant)(Queries.actor({ ...target, limit })).pipe(
         Effect.map(
           Option.map((page) =>
             outcomes
@@ -249,7 +262,7 @@ export const operatorRuntime = (deps: {
         const key = yield* keyOf(target)
         const sql = yield* SqlClient.SqlClient
 
-        const [row] = yield* readOnly(target.tenant)(sql<{
+        const [row] = yield* Queries.readOnly(target.tenant)(sql<{
           command: string
           outcome_tag: string
           outcome: string
@@ -264,7 +277,7 @@ export const operatorRuntime = (deps: {
           commandId,
           command: found.command,
           outcomeTag: found.outcome_tag,
-          outcome: decodeText(found.outcome),
+          outcome: Queries.decodeText(found.outcome),
           expiresAtMs: found.expires_at_ms,
         }))
       }).pipe(
@@ -275,15 +288,13 @@ export const operatorRuntime = (deps: {
       exportActor(target).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), provided),
     retry: ({ target, effectId, providerChecked, audit }) =>
       Effect.gen(function* () {
-        const key = yield* keyOf(target)
-
         const ref = ActorRef.make({
           tenant: target.tenant,
           actor: target.actorType,
           id: target.actorId,
         })
 
-        const retried = yield* transacted(target.tenant)(
+        const retried = yield* auditedRepair(target, audit, (key) =>
           Effect.gen(function* () {
             const letter = yield* lockLetter(key, target, effectId)
 
@@ -319,9 +330,8 @@ export const operatorRuntime = (deps: {
 
             const retriedId = staged.effectIds[0]!
 
-            yield* writeAudit({
-              entry: audit,
-              key,
+            return {
+              result: { effectId: retriedId },
               outcome: {
                 retried: effectId,
                 effectId: retriedId,
@@ -330,9 +340,7 @@ export const operatorRuntime = (deps: {
                 ambiguous: letter.ambiguous,
                 providerChecked,
               },
-            })
-
-            return { effectId: retriedId }
+            }
           }),
         )
 
@@ -341,34 +349,23 @@ export const operatorRuntime = (deps: {
         return retried
       }).pipe(provided),
     discard: ({ target, effectId, audit }) =>
-      Effect.gen(function* () {
-        const key = yield* keyOf(target)
-
-        yield* transacted(target.tenant)(
-          Effect.gen(function* () {
-            const letter = yield* lockLetter(key, target, effectId)
-
-            yield* writeAudit({
-              entry: audit,
-              key,
-              outcome: {
-                discarded: effectId,
-                effect: letter.effect,
-                attempts: letter.attempts,
-                ambiguous: letter.ambiguous,
-                cause: letter.cause,
-              },
-            })
-          }),
-        )
-      }).pipe(provided),
+      auditedRepair(target, audit, (key) =>
+        Effect.map(lockLetter(key, target, effectId), (letter) => ({
+          result: undefined,
+          outcome: {
+            discarded: effectId,
+            effect: letter.effect,
+            attempts: letter.attempts,
+            ambiguous: letter.ambiguous,
+            cause: letter.cause,
+          },
+        })),
+      ).pipe(provided),
     skip: ({ target, subscriberType, subscription, subscriberId, through, audit }) =>
       Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        const key = yield* keyOf(target)
-
-        yield* transacted(target.tenant)(
+        yield* auditedRepair(target, audit, (key) =>
           Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
             const now = yield* databaseTime
 
             const [skipped] = yield* sql<{ delivered: string; lastError: string }>`
@@ -393,16 +390,15 @@ export const operatorRuntime = (deps: {
 
             if (skipped === undefined) return yield* OperatorNotFound.make({})
 
-            yield* writeAudit({
-              entry: audit,
-              key,
+            return {
+              result: undefined,
               outcome: {
                 subscriber: `${subscriberType}.${subscription}/${subscriberId}`,
                 after: skipped.delivered,
                 through,
                 lastError: skipped.lastError,
               },
-            })
+            }
           }),
         )
 
@@ -411,7 +407,7 @@ export const operatorRuntime = (deps: {
         return { through }
       }).pipe(provided),
     lagging: ({ tenant, minAttempts, limit }) =>
-      readOnly(tenant)(
+      Queries.readOnly(tenant)(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
 
@@ -435,7 +431,7 @@ export const operatorRuntime = (deps: {
             LIMIT ${limit}`
         }),
       ).pipe(provided, Effect.orDie),
-    audit: (page) => readOnly(page.tenant)(listAudit(page)).pipe(provided, Effect.orDie),
+    audit: (page) => Queries.readOnly(page.tenant)(listAudit(page)).pipe(provided, Effect.orDie),
     record: (entry, outcome) =>
       Effect.gen(function* () {
         const found =
