@@ -5,6 +5,7 @@ import {
   type DefinitionPayloads,
   type PayloadDeclaration,
 } from "../../members/payload.ts"
+import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { textArray } from "../turn/outbox.ts"
 
@@ -234,32 +235,26 @@ const definitionsOf = (actors: ReadonlyArray<object>) =>
 
 /** `durable payloads check`: the startup check for `actors`, read-only. */
 export const checkPayloads = (actors: ReadonlyArray<object>) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
+  Effect.suspend(() => {
     const definitions = definitionsOf(actors)
-    const declarations = definitions.flatMap((d) => d.declarations)
 
-    return yield* sql.withTransaction(
-      sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
-        Effect.andThen(
-          findPayloadProblems(
-            declarations,
-            definitions.flatMap((d) => {
-              const actorType = d.declarations[0]?.actorType
+    return inReadOnlySnapshot(
+      findPayloadProblems(
+        definitions.flatMap((d) => d.declarations),
+        definitions.flatMap((d) => {
+          const actorType = d.declarations[0]?.actorType
 
-              return actorType === undefined
-                ? []
-                : [
-                    {
-                      actorType,
-                      events: d.declarations
-                        .filter((declared) => declared.kind === "event")
-                        .map((declared) => declared.tag),
-                    },
-                  ]
-            }),
-          ),
-        ),
+          return actorType === undefined
+            ? []
+            : [
+                {
+                  actorType,
+                  events: d.declarations
+                    .filter((declared) => declared.kind === "event")
+                    .map((declared) => declared.tag),
+                },
+              ]
+        }),
       ),
     )
   })

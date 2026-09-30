@@ -37,7 +37,9 @@ import type { AnyConnection } from "../members/connection.ts"
 import { OpenRejected } from "../runtime/connections/holder.ts"
 import { ClientMessage } from "../runtime/connections/protocol.ts"
 import { WatchTap } from "../runtime/connections/watch.ts"
-import { type Actors, InternalActors, type Outcome, type Request } from "../handles/actors.ts"
+import { type Actors } from "../handles/actors.ts"
+import { InternalActors } from "../runtime/actors.ts"
+import { type Outcome, type Request } from "../runtime/request.ts"
 import { SeedJson } from "../runtime/operators/seed.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
 import { compress, decompress, routingKey } from "../runtime/storage/codec.ts"
@@ -96,6 +98,7 @@ export interface TestOptions {
   readonly executors?: Options["executors"]
   readonly observability?: Options["observability"]
   readonly rowLevelSecurity?: Options["rowLevelSecurity"]
+  readonly adoption?: Options["adoption"]
   readonly payloadWriterWindow?: Options["payloadWriterWindow"]
   /** Shared content settings; omitted, a fixed test grant key with the default grace and skew. */
   readonly content?: Options["content"] | undefined
@@ -745,6 +748,7 @@ export class ActorTest extends Context.Service<
           executors: options.executors,
           observability: options.observability,
           rowLevelSecurity: options.rowLevelSecurity,
+          adoption: options.adoption,
           payloadWriterWindow: options.payloadWriterWindow,
           content: options.content ?? { keys: [TEST_CONTENT_KEY] },
         })

@@ -44,7 +44,8 @@ describe("Optimistic", () => {
 
     const shown = store.state
 
-    if (shown !== undefined) Object.assign(shown, { count: 20 })
+    expect(shown).toEqual({ count: 1 })
+    Object.assign(shown!, { count: 20 })
 
     store.confirm(entry, undefined)
 
@@ -69,8 +70,8 @@ describe("Optimistic", () => {
 
     const [pending] = store.pending
 
-    if (pending !== undefined && Predicate.isObject(pending.input))
-      Object.assign(pending.input, { by: 9 })
+    expect(pending?.input).toEqual({ by: 1 })
+    Object.assign(pending!.input as object, { by: 9 })
 
     store.confirm(entry, undefined)
 

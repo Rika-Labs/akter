@@ -10,6 +10,7 @@ export interface Exemption {
     | "index-not-entry"
     | "wildcard-exports"
     | "structure-rules"
+    | "ledger-cases"
   readonly reason: string
 }
 

@@ -2,6 +2,7 @@ import { Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { decodeBytes, decodeText } from "../inspector/queries.ts"
+import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { TenantScope, tenantSettings } from "../database/tenancy.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { SEED_FORMAT, type Seed } from "./seed.ts"
@@ -41,10 +42,9 @@ const EFFECT_KEY_PREFIX = "$effect:"
 const decodeVersion = Schema.decodeUnknownOption(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))
 
 /**
- * Runs `effect` in a read-only, repeatable-read transaction bound to `tenant`:
- * as the runtime's tenant role when row-level security is on, so the policies
- * confine every table read to the tenant, and by the `durable.tenant` setting
- * otherwise. Every read in it sees one snapshot and Postgres refuses any write.
+ * Runs `effect` in a read-only snapshot bound to `tenant`: as the runtime's
+ * tenant role when row-level security is on, so the policies confine every
+ * table read to the tenant, and by the `durable.tenant` setting otherwise.
  */
 const tenantSnapshot =
   (tenant: string) =>
@@ -53,17 +53,12 @@ const tenantSnapshot =
       const sql = yield* SqlClient.SqlClient
       const { role } = yield* TenantScope
 
-      return yield* sql.withTransaction(
-        sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.pipe(
-          Effect.andThen(
-            role === undefined
-              ? sql`SELECT set_config('durable.tenant', ${tenant}, true)`
-              : sql`SELECT ${tenantSettings({ sql, role, tenant })}`,
-          ),
-          Effect.andThen(effect),
-        ),
-      )
-    })
+      yield* role === undefined
+        ? sql`SELECT set_config('durable.tenant', ${tenant}, true)`
+        : sql`SELECT ${tenantSettings({ sql, role, tenant })}`
+
+      return yield* effect
+    }).pipe(inReadOnlySnapshot)
 
 /**
  * Reads one actor's seed in a tenant-bound read-only snapshot: current
