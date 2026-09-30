@@ -204,6 +204,7 @@ describe("PGlite migrations", () => {
             { migration_id: 23 },
             { migration_id: 24 },
             { migration_id: 25 },
+            { migration_id: 26 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },
@@ -234,7 +235,7 @@ const insert = (rows: ReadonlyArray<Row>) =>
       rows.map((row) => ({
         routing_key: 1,
         intent_id: row.id,
-        kind: "effect",
+        kind: "job",
         bucket: 0,
         due_at_ms: row.due,
         scheduled_at_ms: row.scheduled,
@@ -292,10 +293,10 @@ describe("capped effect order", () => {
             routingKey: 1n,
             sender,
             capped: [
-              { id: "a", effect: "Capped", dueAt: 1000 },
-              { id: "later", effect: "Capped", dueAt: 5000 },
-              { id: "b", effect: "Capped", dueAt: 1000 },
-              { id: "c", effect: "Capped", dueAt: 1000 },
+              { id: "a", job: "Capped", dueAt: 1000 },
+              { id: "later", job: "Capped", dueAt: 5000 },
+              { id: "b", job: "Capped", dueAt: 1000 },
+              { id: "c", job: "Capped", dueAt: 1000 },
             ],
           })
 
@@ -311,7 +312,7 @@ describe("capped effect order", () => {
             sql,
             routingKey: 1n,
             sender,
-            capped: [{ id: "d", effect: "Capped", dueAt: 1000 }],
+            capped: [{ id: "d", job: "Capped", dueAt: 1000 }],
           })
           expect(yield* ready(["d"])).toEqual({ d: 1004 })
         }),

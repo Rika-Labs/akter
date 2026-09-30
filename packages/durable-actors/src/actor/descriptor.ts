@@ -574,7 +574,7 @@ export const compile = ({
     })),
     ...[...jobs.values()].map(({ job }) => ({
       actorType: name,
-      kind: "effect" as const,
+      kind: "job" as const,
       tag: job.tag,
       chain: payloadChain(job),
       writes,

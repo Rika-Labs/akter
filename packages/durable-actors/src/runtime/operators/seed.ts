@@ -1,6 +1,6 @@
 import { type Context, type Crypto, Effect, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { RegisteredEffect } from "../members.ts"
+import type { RegisteredJob } from "../members.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, type Caller } from "../../identity/caller.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
@@ -85,7 +85,7 @@ export const seedRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
-  readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
+  readonly effectOf: (actorType: string, effect: string) => RegisteredJob | undefined
   /** Whether the actor type declares `policy.createdBy`. */
   readonly createdBy: (actorType: string) => boolean
   readonly wake: Effect.Effect<void>
@@ -171,8 +171,8 @@ export const seedRuntime = (deps: {
                   due: Due.cases.After.make({ millis: intent.dueInMs }),
                   key: intent.key,
                 })),
-                effects: seed.effects.map((effect) => ({
-                  effect: effect.effect,
+                jobs: seed.effects.map((effect) => ({
+                  job: effect.effect,
                   payload: JSON.stringify(effect.payload),
                   version: effect.payloadVersion,
                   caller,

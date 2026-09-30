@@ -12,7 +12,7 @@ export const DEFAULT_WRITER_WINDOW_MS = 120_000
 /** A stored version the deployment could not read, or a removal that would strand one. */
 export interface PayloadProblem {
   readonly actorType: string
-  readonly kind: "event" | "effect"
+  readonly kind: "event" | "job"
   readonly tag: string
   /** What would be stranded, e.g. `version 2 recorded above this chain's current version 1`. */
   readonly problem: string
@@ -27,7 +27,7 @@ const keyOf = (declared: Pick<PayloadDeclaration, "actorType" | "kind" | "tag">)
 
 interface RecordedVersion {
   readonly actor_type: string
-  readonly kind: "event" | "effect"
+  readonly kind: "event" | "job"
   readonly tag: string
   readonly version: number
   readonly cleared: boolean
@@ -40,7 +40,7 @@ interface RecordedVersion {
  * `v`: an event version counts as stored until `durable payloads clear` marks
  * it cleared. Every stored event has a recorded version, because a runtime
  * records what it writes before it takes a shard and the migration refused
- * databases that held rows before it. Effect versions are read from the
+ * databases that held rows before it. Job versions are read from the
  * outbox and dead letters directly. `writers` names the actor types whose
  * turns this deployment runs: an event tag one of them no longer declares is
  * refused while a subscription still has undelivered events of it.
@@ -109,16 +109,16 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
       const [stored] = yield* sql<{ version: number | null; rows: number }>`
         SELECT min(v)::int AS version, count(*)::int AS rows FROM (
           SELECT payload_version AS v FROM actor_outbox
-          WHERE kind = 'effect' AND actor_type = ${declared.actorType} AND command = ${declared.tag}
+          WHERE kind = 'job' AND actor_type = ${declared.actorType} AND command = ${declared.tag}
             AND payload_version < ${first}
           UNION ALL
           SELECT payload_version FROM actor_dead_letters
-          WHERE actor_type = ${declared.actorType} AND effect = ${declared.tag}
+          WHERE actor_type = ${declared.actorType} AND job = ${declared.tag}
             AND payload_version < ${first}) stored`
 
       if (stored !== undefined && stored.version !== null)
         problem(
-          `version ${stored.version} stored in ${stored.rows} pending effect or dead letter row${stored.rows === 1 ? "" : "s"} below this chain's first version ${first}`,
+          `version ${stored.version} stored in ${stored.rows} pending job or dead letter row${stored.rows === 1 ? "" : "s"} below this chain's first version ${first}`,
         )
     }
   }

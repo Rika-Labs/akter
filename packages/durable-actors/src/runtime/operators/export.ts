@@ -1,6 +1,7 @@
 import { Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { VERSION_KEY } from "../../state/migration.ts"
+import { JOB_KEY_PREFIX } from "../../handles/intents.ts"
 import { decodeBytes, decodeText } from "../inspector/queries.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { TenantScope, tenantSettings } from "../database/tenancy.ts"
@@ -36,8 +37,6 @@ interface EffectRow {
   readonly timerKey: string | null
   readonly dueAtMs: number
 }
-
-const EFFECT_KEY_PREFIX = "$effect:"
 
 const decodeVersion = Schema.decodeUnknownOption(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))
 
@@ -108,7 +107,7 @@ export const exportActor = (page: {
         SELECT command AS effect, payload, payload_version AS "payloadVersion",
           timer_key AS "timerKey", due_at_ms::float8 AS "dueAtMs"
         FROM actor_outbox
-        WHERE ${owned} AND kind = 'effect' AND cancelled_at_ms IS NULL AND NOT final_failure
+        WHERE ${owned} AND kind = 'job' AND cancelled_at_ms IS NULL AND NOT final_failure
         ORDER BY due_at_ms, intent_id COLLATE "C" LIMIT ${MAX_EXPORT_ROWS + 1}`
 
       if (intents.length > MAX_EXPORT_ROWS)
@@ -185,7 +184,7 @@ export const exportActor = (page: {
             effect: row.effect,
             payload,
             payloadVersion: row.payloadVersion,
-            key: row.timerKey?.replace(EFFECT_KEY_PREFIX, "") ?? undefined,
+            key: row.timerKey?.replace(JOB_KEY_PREFIX, "") ?? undefined,
             dueInMs: dueIn(row.dueAtMs),
           })),
         ),

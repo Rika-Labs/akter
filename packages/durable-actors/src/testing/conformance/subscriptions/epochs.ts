@@ -124,6 +124,57 @@ export const subscriptionEpochConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: 'fences a delivery settling after unsubscribe and resubscribe with from: "start", keeping the tag summary exact',
+    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const follower = yield* SubFollower.get("late-follower")
+          yield* follower.Follow({ source: "late-order" })
+          yield* drain
+
+          const pause = yield* pauseOnce(fixture, "beforeSettle", subscriber("late-follower"))
+          yield* (yield* SubOrder.get("late-order")).Place({ customerId: "l", amount: 1 })
+          const draining = yield* drain.pipe(Effect.forkChild)
+          yield* pause.reached
+          expect(handlerRuns(fixture, "SubFollower/late-follower")).toBe(1)
+          yield* follower.Unfollow("late-order")
+          yield* follower.Follow({ source: "late-order", from: "start" })
+
+          for (;;) {
+            const rows = yield* sourceRows("late-order")
+
+            if (rows.some((row) => row.epoch === "3")) break
+            yield* Effect.sleep("20 millis")
+          }
+
+          yield* pause.release
+          yield* Fiber.join(draining)
+          yield* drain
+
+          expect(handlerRuns(fixture, "SubFollower/late-follower")).toBe(2)
+          expect(yield* followerLog("late-follower")).toEqual([
+            "late-order#1:OrderPlaced",
+            "late-order#1:OrderPlaced",
+          ])
+          expect(yield* cursorRows("SubFollower", "late-follower")).toMatchObject([
+            { epoch: "3", active: true, applied: "1" },
+          ])
+          expect(yield* sourceRows("late-order")).toMatchObject([
+            {
+              subscriber_id: "late-follower",
+              epoch: "3",
+              active: true,
+              delivered: "1",
+              due: false,
+            },
+          ])
+          expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
+  },
+  {
     name: "makes no change when a control row reruns at the same epoch after a crash",
     run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
       run(

@@ -393,7 +393,7 @@ const eventVersions = query(
 
 const effectVersions = query(
   (sql) => sql<{ version: number }>`SELECT payload_version AS version FROM actor_outbox
-    WHERE actor_type = 'Ledger' AND kind = 'effect' ORDER BY scheduled_at_ms, intent_id`,
+    WHERE actor_type = 'Ledger' AND kind = 'job' ORDER BY scheduled_at_ms, intent_id`,
 ).pipe(Effect.map((rows) => rows.map(({ version }) => version)))
 
 const recordedVersions = query(
@@ -491,6 +491,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               [23, "operator_audit"],
               [24, "adoption"],
               [25, "fleet"],
+              [26, "jobs"],
             ])
           }).pipe(Effect.provideContext(client))
         }),
@@ -508,8 +509,8 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* eventVersions).toEqual([1])
             expect(yield* effectVersions).toEqual([1])
             expect(yield* recordedVersions).toEqual([
-              { kind: "effect", version: 1, superseded: false, cleared: false },
               { kind: "event", version: 1, superseded: false, cleared: false },
+              { kind: "job", version: 1, superseded: false, cleared: false },
             ])
 
             const views = yield* query(
@@ -517,7 +518,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                 version: number
               }>`SELECT payload_version AS version FROM durable.events
                 WHERE actor_type = 'Ledger' UNION ALL
-                SELECT payload_version FROM durable.effects WHERE actor_type = 'Ledger'`,
+                SELECT payload_version FROM durable.jobs WHERE actor_type = 'Ledger'`,
             )
 
             expect(views).toEqual([{ version: 1 }, { version: 1 }])
@@ -703,7 +704,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
 
             yield* query(
               (sql) => sql`UPDATE actor_outbox SET payload_version = 9
-                WHERE actor_type = 'Ledger' AND kind = 'effect'`,
+                WHERE actor_type = 'Ledger' AND kind = 'job'`,
             )
             yield* eventually(
               query(
@@ -743,7 +744,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(shortened.map(formatPayloadProblem)).toEqual([
             "Ledger/Placed (event)  version 0 may still be stored below this chain's first version 1; run durable payloads clear once its events are gone",
-            "Ledger/Charge (effect)  version 0 stored in 1 pending effect or dead letter row below this chain's first version 1",
+            "Ledger/Charge (job)  version 0 stored in 1 pending job or dead letter row below this chain's first version 1",
           ])
 
           yield* deploy(database, Next.layer, Effect.void)
@@ -785,10 +786,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             Next.layer,
             Effect.gen(function* () {
               expect(yield* recordedVersions).toEqual([
-                { kind: "effect", version: 0, superseded: true, cleared: false },
-                { kind: "effect", version: 1, superseded: false, cleared: false },
                 { kind: "event", version: 0, superseded: true, cleared: false },
                 { kind: "event", version: 1, superseded: false, cleared: false },
+                { kind: "job", version: 0, superseded: true, cleared: false },
+                { kind: "job", version: 1, superseded: false, cleared: false },
               ])
               expect(yield* clearPayloads([Next.Ledger])).toEqual([])
             }),
@@ -873,10 +874,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             const on1 = cluster.on(1)
 
             expect(yield* on1(recordedVersions)).toEqual([
-              { kind: "effect", version: 0, superseded: true, cleared: false },
-              { kind: "effect", version: 1, superseded: false, cleared: false },
               { kind: "event", version: 0, superseded: true, cleared: false },
               { kind: "event", version: 1, superseded: false, cleared: false },
+              { kind: "job", version: 0, superseded: true, cleared: false },
+              { kind: "job", version: 1, superseded: false, cleared: false },
             ])
             yield* on1(pastHorizon)
 
@@ -933,8 +934,8 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
           Effect.gen(function* () {
             yield* FirstPhase.place("o1", 100, HOUR)
             expect(yield* recordedVersions).toEqual([
-              { kind: "effect", version: 0, superseded: false, cleared: false },
               { kind: "event", version: 0, superseded: false, cleared: false },
+              { kind: "job", version: 0, superseded: false, cleared: false },
             ])
 
             expect(

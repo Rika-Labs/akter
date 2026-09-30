@@ -1,6 +1,6 @@
 import { Context, type Crypto, Effect, Option, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { RegisteredEffect } from "../members.ts"
+import type { RegisteredJob } from "../members.ts"
 import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import * as Queries from "../inspector/queries.ts"
@@ -140,7 +140,7 @@ export interface LaggingSubscription {
 type ReferenceOf<T> = T extends Context.Reference<infer S> ? S : never
 
 interface DeadLetterRow {
-  readonly effect: string
+  readonly job: string
   readonly payload: string
   readonly attempts: number
   readonly cause: string
@@ -162,7 +162,7 @@ export const operatorRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
-  readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
+  readonly effectOf: (actorType: string, effect: string) => RegisteredJob | undefined
   readonly wake: Effect.Effect<void>
   /** The tenant and adoption writer roles the operator's turns take, as the runtime's own turns do. */
   readonly tenantScope: ReferenceOf<typeof TenantScope>
@@ -228,15 +228,15 @@ export const operatorRuntime = (deps: {
       const sql = yield* SqlClient.SqlClient
 
       const [letter] = yield* sql<DeadLetterRow>`
-        SELECT effect, payload, payload_version AS "payloadVersion", attempts::int AS attempts, cause, ambiguous
+        SELECT job, payload, payload_version AS "payloadVersion", attempts::int AS attempts, cause, ambiguous
         FROM actor_dead_letters
-        WHERE routing_key = ${key} AND effect_id = ${effectId} AND tenant_id = ${target.tenant}
+        WHERE routing_key = ${key} AND job_id = ${effectId} AND tenant_id = ${target.tenant}
           AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
         FOR UPDATE`
 
       if (letter === undefined) return yield* OperatorNotFound.make({})
 
-      yield* sql`DELETE FROM actor_dead_letters WHERE routing_key = ${key} AND effect_id = ${effectId}`
+      yield* sql`DELETE FROM actor_dead_letters WHERE routing_key = ${key} AND job_id = ${effectId}`
 
       return letter
     })
@@ -302,19 +302,18 @@ export const operatorRuntime = (deps: {
             if (letter.ambiguous && !providerChecked)
               return yield* ProviderOutcomeUnknown.make({ effectId })
 
-            const registered = deps.effectOf(target.actorType, letter.effect)
+            const registered = deps.effectOf(target.actorType, letter.job)
 
-            if (registered === undefined)
-              return yield* EffectNotServed.make({ effect: letter.effect })
+            if (registered === undefined) return yield* EffectNotServed.make({ effect: letter.job })
 
             const staged = yield* outboxStatements(
               key,
               ref,
               {
                 ...emptyOutbox,
-                effects: [
+                jobs: [
                   {
-                    effect: letter.effect,
+                    job: letter.job,
                     payload: letter.payload,
                     version: letter.payloadVersion,
                     caller: System.make({ source: "actor", ref }),
@@ -329,14 +328,14 @@ export const operatorRuntime = (deps: {
 
             for (const statement of staged.statements) yield* statement
 
-            const retriedId = staged.effectIds[0]!
+            const retriedId = staged.jobIds[0]!
 
             return {
               result: { effectId: retriedId },
               outcome: {
                 retried: effectId,
                 effectId: retriedId,
-                effect: letter.effect,
+                effect: letter.job,
                 attempts: letter.attempts,
                 ambiguous: letter.ambiguous,
                 providerChecked,
@@ -355,7 +354,7 @@ export const operatorRuntime = (deps: {
           result: undefined,
           outcome: {
             discarded: effectId,
-            effect: letter.effect,
+            effect: letter.job,
             attempts: letter.attempts,
             ambiguous: letter.ambiguous,
             cause: letter.cause,

@@ -271,7 +271,7 @@ const chargeRow = (runner: number) =>
 
       return yield* sql<{ attempts: number; ambiguous: boolean; leased: boolean }>`
         SELECT attempts, ambiguous, due_at_ms > ${sql.literal(NOW_MS)} AS leased
-        FROM actor_outbox WHERE kind = 'effect' AND command = 'Charge'`
+        FROM actor_outbox WHERE kind = 'job' AND command = 'Charge'`
     }).pipe(Effect.orDie),
   )
 

@@ -38,7 +38,7 @@ import {
   RunnerAtCapacity,
 } from "../errors/actor.ts"
 import { Actors } from "../handles/actors.ts"
-import { type EffectRegistration, type QueryRegistration, type Registration } from "./members.ts"
+import { type JobRegistration, type QueryRegistration, type Registration } from "./members.ts"
 import type { Executed, Request } from "./request.ts"
 import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
@@ -48,12 +48,12 @@ import { migrate } from "./database/migrations.ts"
 import { ReadReplica, replicaLayer } from "./database/replica.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
-import { withoutDatabase } from "./effects/isolation.ts"
+import { withoutDatabase } from "./jobs/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, connectionEntity, encodeEntityId } from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
-import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
+import { type ProgressMessage, ProgressSink, ProgressTap } from "./jobs/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
@@ -424,7 +424,7 @@ export const layer = (options: Options = {}) => {
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
-      const effectRegistrations = new Map<string, EffectRegistration>()
+      const effectRegistrations = new Map<string, JobRegistration>()
       const runtimeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
       const frameworkClock = yield* FrameworkClock
       const writerDeclarations: Array<PayloadDeclaration> = []
@@ -943,9 +943,9 @@ export const layer = (options: Options = {}) => {
         relayDeliver,
         () =>
           [...effectRegistrations.values()].flatMap((registration) =>
-            [...registration.effects].map(([effect, registered]) => ({
+            [...registration.jobs].map(([job, registered]) => ({
               actor: registration.name,
-              effect,
+              job,
               registered: {
                 ...registered,
                 execute: (
@@ -1033,7 +1033,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.jobs.get(effect),
         wake: relay.wake,
         tenantScope: yield* TenantScope,
       })
@@ -1042,7 +1042,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.jobs.get(effect),
         createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
         tenantScope: yield* TenantScope,

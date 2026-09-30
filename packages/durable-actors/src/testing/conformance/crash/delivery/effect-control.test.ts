@@ -14,7 +14,7 @@ describe("cancelled effect process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  for (const [point, calls, row] of [["afterExecute", 1, ["effect", 1]]] as const) {
+  for (const [point, calls, row] of [["afterExecute", 1, ["job", 1]]] as const) {
     it(
       `recovers a SIGKILL ${point} on a cancelled effect and reports it once`,
       () =>

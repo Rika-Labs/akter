@@ -8,10 +8,10 @@ const ref = ActorRef.make({ tenant: "t", actor: "Encoder", id: "e" })
 
 const frame = (n: number) => new Uint8Array([n])
 
-const attempt = (effectId: string, everyMs: number | undefined) => ({
+const attempt = (jobId: string, everyMs: number | undefined) => ({
   ref,
-  effectId,
-  effect: "Transcode",
+  jobId,
+  job: "Transcode",
   attempt: 1,
   everyMs,
   leaseUntil: () => 60_000,
@@ -259,7 +259,7 @@ it("spends no token on a wakeup whose frame was already sent", () =>
     }),
   ))
 
-it("closes a slot and its effect within the bound while a send ignores interruption", () =>
+it("closes a slot and its job within the bound while a send ignores interruption", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>()

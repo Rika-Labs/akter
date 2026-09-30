@@ -167,7 +167,7 @@ const VIEWS = [
   "events",
   "outbox",
   "timers",
-  "effects",
+  "jobs",
   "dead_letters",
   "workflows",
   "workflow_steps",

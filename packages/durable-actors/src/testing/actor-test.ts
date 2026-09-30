@@ -42,11 +42,7 @@ import { compress, decompress, routingKey } from "../runtime/storage/codec.ts"
 import { recordedPlacement } from "../runtime/storage/placements.ts"
 import { VERSION_KEY } from "../state/migration.ts"
 import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/turn/hooks.ts"
-import {
-  type ProgressClosed,
-  type ProgressMessage,
-  ProgressTap,
-} from "../runtime/effects/progress.ts"
+import { type ProgressClosed, type ProgressMessage, ProgressTap } from "../runtime/jobs/progress.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
 import { ActorCluster, type ClusterOptions, clusterLayer } from "./cluster.ts"
@@ -536,7 +532,7 @@ export class ActorTest extends Context.Service<
                   intents: number
                   effects: number
                 }>`SELECT count(*) FILTER (WHERE kind = 'intent')::integer AS intents,
-              count(*) FILTER (WHERE kind = 'effect')::integer AS effects FROM actor_outbox
+              count(*) FILTER (WHERE kind = 'job')::integer AS effects FROM actor_outbox
             WHERE routing_key = ${routing} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
                 const tables = yield* sql<{

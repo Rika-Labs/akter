@@ -81,7 +81,7 @@ export const provesMint = Effect.fnUntraced(function* (
     !Schema.is(System)(caller) ||
     caller.source === "cron" ||
     caller.source === "workflow" ||
-    caller.source === "effect"
+    caller.source === "job"
   )
     return false
 
