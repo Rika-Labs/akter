@@ -30,7 +30,11 @@ const FEED_KEY = "$feed"
  * registered here that name an emitted class get their missing source-side
  * rows first, starting at this turn's first event. Those rows are widened,
  * never narrowed, so an older runner cannot shrink one back, and their tag
- * summary moves in the same statement by the tags the upsert added.
+ * summary moves in the same statement by the tags the upsert added. The
+ * statement locks the routed rows it reads and builds each upserted row from
+ * the locked version, so the lock precedes the write whatever the plan: a
+ * settle that widened a row, or a cleanup that deleted one, after this
+ * statement's snapshot is read as committed, never counted twice or lost.
  */
 export const eventsStatement = Effect.fnUntraced(function* (
   request: Request,
@@ -73,18 +77,21 @@ export const eventsStatement = Effect.fnUntraced(function* (
                   sql`(${sub.subscriberType}::text, ${sub.tag}::text, ${textArray({ sql, values: sub.events })})`,
               ),
             )}),
-          routed_old AS (
+          routed_old AS MATERIALIZED (
             SELECT s.subscriber_type, s.subscription, s.events FROM actor_subscriptions s
             JOIN routed_want w USING (subscriber_type, subscription)
-            WHERE ${source("s")} AND s.subscriber_id = ''),
+            WHERE ${source("s")} AND s.subscriber_id = ''
+            FOR UPDATE OF s),
           routed_new AS (
             INSERT INTO actor_subscriptions (routing_key, tenant_id, source_type, source_id,
               subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
             SELECT ${routingKey}, ${tenant}, ${actor}, ${id}, w.subscriber_type, w.subscription, '',
-              w.events, 0, true, reserved.base, ${bucketOf(routingKey)}
-            FROM routed_want w, reserved
+              CASE WHEN o.events IS NULL THEN w.events
+                ELSE ARRAY(SELECT DISTINCT e FROM unnest(o.events || w.events) AS u(e) ORDER BY e) END,
+              0, true, reserved.base, ${bucketOf(routingKey)}
+            FROM routed_want w LEFT JOIN routed_old o USING (subscriber_type, subscription), reserved
             ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
-            DO UPDATE SET events = ARRAY(SELECT DISTINCT e FROM unnest(actor_subscriptions.events || EXCLUDED.events) AS u(e) ORDER BY e)
+            DO UPDATE SET events = EXCLUDED.events
             WHERE NOT actor_subscriptions.events @> EXCLUDED.events
             RETURNING subscriber_type, subscription, events),
           routed_changed AS (

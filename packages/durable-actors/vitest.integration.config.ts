@@ -20,6 +20,7 @@ export default defineConfig({
       `${testing}/conformance/neki/backend.test.ts`,
       "packages/durable-actors/src/runtime/database/migrations.test.ts",
       "packages/durable-actors/src/runtime/storage/generation.test.ts",
+      "packages/durable-actors/src/runtime/events/append.test.ts",
       "packages/durable-actors/src/runtime/database/neki/session.test.ts",
     ],
     exclude: ["**/node_modules/**", `${testing}/conformance/crash/drills/**`],
