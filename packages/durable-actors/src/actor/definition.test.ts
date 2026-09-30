@@ -1,5 +1,6 @@
 import { Context, type Duration, Effect, Layer, Schema, Stream } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
+import { pgTable, text } from "drizzle-orm/pg-core"
 import {
   Actor,
   ActorError,
@@ -13,7 +14,7 @@ import {
 import type { ConnectOptions } from "../client/index.ts"
 import type { InternalActors } from "../runtime/actors.ts"
 import type { BlobRead, BlobWrite, ContentRead, ContentWrite } from "../state/blob.ts"
-import { resolveCron } from "../runtime/cron/schedule.ts"
+import { resolveCron } from "../policies/schedules.ts"
 import { resolvePolicy } from "../policies/command.ts"
 import { routingKey } from "../runtime/storage/codec.ts"
 
@@ -295,6 +296,27 @@ describe("actor declarations", () => {
       // @ts-expect-error createdBy must name a command of this actor
       Actor.make("Foreign", { api: { Increment }, policy: { createdBy: Create } }),
     ).toThrow("belong")
+  })
+
+  it("publishes nothing from a rejected definition, so a later valid one may own its table", () => {
+    const audit = Actor.table(pgTable("audit_declaration", { id: text("id").primaryKey() }))
+    class Changed extends Actor.Event<Changed>()("Changed", {}) {}
+
+    class Reserved extends Schema.TaggedError<Reserved>()("ActorError", {}) {}
+
+    const Ping = Actor.command("Ping")
+    const Refused = Actor.command("Refused", { errors: [Reserved] })
+
+    expect(() =>
+      Actor.make("RejectedEarly", { tables: [audit], events: [Changed, Changed], api: { Ping } }),
+    ).toThrow("Duplicate event: Changed")
+    expect(() => Actor.make("RejectedLate", { tables: [audit], api: { Refused } })).toThrow(
+      "reserved",
+    )
+    expect(() => Actor.make("Accepted", { tables: [audit], api: { Ping } })).not.toThrow()
+    expect(() => Actor.make("Intruder", { tables: [audit], api: { Ping } })).toThrow(
+      "already owned by actor Accepted",
+    )
   })
 
   it("places by tenant by default and by actor on request", () => {

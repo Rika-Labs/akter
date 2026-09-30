@@ -266,6 +266,3 @@ export interface DefinitionPayloads {
   readonly keepEventsMs: number
   readonly commandTimeoutMs: number
 }
-
-/** The payload declarations recorded for each actor definition, read by the startup version check. */
-export const definitionPayloads = new WeakMap<object, DefinitionPayloads>()

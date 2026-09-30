@@ -77,13 +77,6 @@ export interface ServedDefinition {
   readonly streams: ReadonlyArray<ServedMember>
 }
 
-interface ServedOwner {
-  readonly name: string
-}
-
-/** Each `Actor.make` definition's served view, keyed by the definition. */
-export const servedDefinitions = new WeakMap<ServedOwner, ServedDefinition>()
-
 /** Statuses the served protocol assigns to framework outcomes; a declared failure can't claim one. */
 const RESERVED_STATUSES: ReadonlySet<number> = new Set([
   400, 401, 403, 404, 409, 410, 413, 415, 429,

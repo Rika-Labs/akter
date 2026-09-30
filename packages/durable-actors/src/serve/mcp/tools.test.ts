@@ -1,14 +1,14 @@
 import { Effect, Exit, Schema } from "effect"
 import { expect, it } from "vitest"
 import { Actor } from "../../index.ts"
-import { servedDefinitions } from "../../actor/served.ts"
+import { descriptorOf } from "../../actor/descriptor.ts"
 import { mcpTools } from "./tools.ts"
 
 const Post = Actor.command("Post", { input: Schema.Struct({ text: Schema.String }) })
 
 const Room = Actor.make("Room", { key: Schema.String, api: { Post } })
 
-const definition = servedDefinitions.get(Room)!
+const definition = descriptorOf(Room)!.served
 
 const json = (schema: Schema.JsonObject) => ({ content: { "application/json": { schema } } })
 
