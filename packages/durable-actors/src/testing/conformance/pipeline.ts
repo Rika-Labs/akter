@@ -19,7 +19,7 @@ import type { Scope } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { Actor, ActorError, ActorUnavailable, Actors, Intent, User } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
-import { TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
+import { RetryTurn, TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
 import type { Request } from "../../handles/actors.ts"
 import { NekiTurnSessions } from "../../runtime/database/neki/session.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
@@ -74,6 +74,12 @@ const Plain = Actor.make("Plain", {
 })
 
 const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
+
+/** The command whose next `afterCommit` a case's hook crashes, and the signal that it did. */
+interface InjectedCrash {
+  commandId: string | undefined
+  readonly reached: Deferred.Deferred<void>
+}
 
 /** A runner's turn hooks: an effect at each fault point. */
 interface TestHooks {
@@ -642,6 +648,79 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           })
         }),
       ),
+  },
+  {
+    name: "pipeline: commands queued behind or arriving after a turn that crashes after commit are answered promptly and commit once",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const crash: InjectedCrash = { commandId: undefined, reached: Deferred.makeUnsafe<void>() }
+
+      return withProbe(
+        environment,
+        {
+          hooks: {
+            at: (point, request) => {
+              if (point !== "afterCommit" || request.commandId !== crash.commandId)
+                return Effect.void
+
+              crash.commandId = undefined
+
+              return Deferred.succeed(crash.reached, undefined).pipe(
+                Effect.andThen(
+                  Effect.die(RetryTurn.make({ message: "Injected afterCommit crash" })),
+                ),
+              )
+            },
+          },
+        },
+        (probe) =>
+          Effect.gen(function* () {
+            const test = yield* ActorTest
+            const actors = yield* Actors
+            const meter = yield* Plain.get("queued-behind-crash")
+            expect(yield* meter.Add(1)).toBe(1)
+
+            const [crashing, queued, arriving] = yield* Effect.forEach(
+              [1, 2, 3],
+              () => actors.mintCommandId,
+            )
+
+            crash.commandId = crashing
+            const handled = probe.handled
+
+            const answered = <A>(call: Effect.Effect<A, ActorError>) =>
+              call.pipe(
+                Effect.retry({
+                  while: (error) => error.isRetryable,
+                  schedule: Schedule.spaced("100 millis"),
+                  times: 50,
+                }),
+                Effect.timeoutOption("5 seconds"),
+                Effect.orDie,
+              )
+
+            const first = yield* holding(meter.Add(2).pipe(Actor.commandId(crashing!), answered))
+            const [behind] = yield* enqueue([meter.Add(3).pipe(Actor.commandId(queued!), answered)])
+
+            yield* first.release
+            yield* Deferred.await(crash.reached)
+
+            const after = yield* Effect.forkChild(
+              meter.Add(4).pipe(Actor.commandId(arriving!), answered),
+            )
+
+            expect(yield* Fiber.join(first.fiber)).toEqual(Option.some(3))
+            expect(Option.isSome(yield* Fiber.join(behind!))).toBe(true)
+            expect(Option.isSome(yield* Fiber.join(after))).toBe(true)
+            expect(probe.handled - handled).toBe(3)
+            expect(yield* test.inspect(meter.ref)).toMatchObject({
+              state: { count: 10 },
+              receipts: 4,
+            })
+          }),
+      )
+    },
   },
   {
     name: "pipeline: a delayed intent keeps two round trips and is due its delay after commit",
