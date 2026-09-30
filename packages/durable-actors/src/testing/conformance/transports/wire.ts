@@ -14,7 +14,7 @@ import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/unst
 import { Actor } from "../../../index.ts"
 import { ActorError, TransportError } from "../../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../../errors/events.ts"
-import { InternalActors } from "../../../handles/actors.ts"
+import { InternalActors } from "../../../runtime/actors.ts"
 import type { RuntimeControl } from "../../../runtime/drain.ts"
 import { ClientWireMessage, SUBPROTOCOL, ServerWireMessage } from "../../../serve/frames.ts"
 import type { ServeOptions } from "../../../serve/layer.ts"

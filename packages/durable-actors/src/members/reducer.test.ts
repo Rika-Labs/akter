@@ -2,7 +2,7 @@ import { Effect, type Layer, Result, Schema } from "effect"
 import { Arbitrary } from "effect/unstable/arbitrary"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, type ActorError } from "../index.ts"
-import type { InternalActors } from "../handles/actors.ts"
+import type { InternalActors } from "../runtime/actors.ts"
 
 class Overflow extends Schema.TaggedError<Overflow>()("Overflow", { max: Schema.Int }) {}
 

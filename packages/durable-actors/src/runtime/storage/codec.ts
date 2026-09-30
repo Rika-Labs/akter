@@ -36,28 +36,30 @@ export const routingKey = ({
   readonly ref: ActorRef
   readonly placement: Placement
 }): bigint => {
-  if (placement !== "tenant" && placement !== "actor") {
+  const above = parentPlacement(placement)
+
+  if (above !== undefined) {
     const parent = parseChildId(ref.id)?.parent
 
     if (parent === undefined)
-      throw new Error(`Actor ${ref.actor} id ${ref.id} carries no ${placement.parent} parent id`)
+      throw new Error(`Actor ${ref.actor} id ${ref.id} carries no ${above.parent} parent id`)
 
     return routingKey({
-      ref: { tenant: ref.tenant, actor: placement.parent, id: parent },
-      placement: placement.placement,
+      ref: { tenant: ref.tenant, actor: above.parent, id: parent },
+      placement: above.placement,
     })
   }
 
-  if (placement === "tenant") return tenantRoutingKey(ref.tenant)
-
-  const value = JSON.stringify([PLACEMENT_ENCODING, "actor", ref.tenant, ref.actor, ref.id])
-
-  return BigInt.asIntN(64, Bun.hash.xxHash3(value))
+  return placement === "tenant"
+    ? tenantRoutingKey(ref.tenant)
+    : placementHash(["actor", ref.tenant, ref.actor, ref.id])
 }
 
 /** The shard key of a tenant: its tenant-placed actors and its shared content live there. */
-export const tenantRoutingKey = (tenant: string): bigint =>
-  BigInt.asIntN(64, Bun.hash.xxHash3(JSON.stringify([PLACEMENT_ENCODING, "tenant", tenant])))
+export const tenantRoutingKey = (tenant: string): bigint => placementHash(["tenant", tenant])
+
+const placementHash = (parts: ReadonlyArray<string>) =>
+  BigInt.asIntN(64, Bun.hash.xxHash3(JSON.stringify([PLACEMENT_ENCODING, ...parts])))
 
 /**
  * Stored state values are opaque zstd-compressed JSON: SQL never reads state,

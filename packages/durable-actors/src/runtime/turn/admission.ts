@@ -1,7 +1,7 @@
 import { Context, Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorError, CommandExpired, InvalidCommandId } from "../../errors/actor.ts"
-import type { Request } from "../../handles/actors.ts"
+import type { Request } from "../request.ts"
 import { CommandId, commandTimes } from "../../identity/command.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { hashCanonical, type StoredReceipt } from "./receipt.ts"
