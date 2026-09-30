@@ -38,7 +38,8 @@ import type {
 } from "../contexts/connection.ts"
 import type { AnyConnection } from "../members/connection.ts"
 import type { AnyStream } from "../members/stream.ts"
-import { ActorError, SessionEnded } from "../errors/actor.ts"
+import type { ReadSet } from "../runtime/connections/reads.ts"
+import { ActorError, InvalidInput, SessionEnded } from "../errors/actor.ts"
 import { CallPhase, CurrentCallPhase, type WorkflowContext } from "../contexts/workflow.ts"
 import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
 import {
@@ -110,6 +111,7 @@ import type {
   AnyMember,
   CommandRecord,
   DeclaredError,
+  MemberKind,
   MemberRecord,
   ValueSchema,
 } from "../members/command.ts"
@@ -206,7 +208,7 @@ type StateOf<Fields extends StateFields> = Schema.Struct<Fields>["Type"]
 const SingletonKeySchema = Schema.TaggedStruct("Singleton", {})
 
 /** Marker for a singleton actor's `key`: one instance per tenant, resolved with `X.get()`. */
-export const singleton = SingletonKeySchema.make({})
+const singleton = SingletonKeySchema.make({})
 
 /** The type of `Actor.singleton`, the `key` of a singleton actor. */
 type SingletonKey = typeof singleton
@@ -258,7 +260,7 @@ interface ParentDefinition extends Placed<"actor" | "parent", string> {
  */
 type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
 
-type PlacementKind<Pl> = Pl extends "tenant" ? "tenant" : Pl extends "actor" ? "actor" : "parent"
+type PlacementKind<Pl> = Pl extends "tenant" | "actor" ? Pl : "parent"
 
 /** What a subscriber needs of each definition it may subscribe to. */
 const sources = new WeakMap<
@@ -322,21 +324,18 @@ type CommandsOf<Members extends MemberRecord> = Extract<
   { readonly kind: "command" }
 >
 
-type CommandKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "command" ? K : never
+/** The keys of the members of `kind`. */
+type KeysOf<Members extends MemberRecord, Kind extends MemberKind> = {
+  [K in keyof Members]: Members[K]["kind"] extends Kind ? K : never
 }[keyof Members]
 
-type QueryKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "query" ? K : never
-}[keyof Members]
+type CommandKeys<Members extends MemberRecord> = KeysOf<Members, "command">
 
-type ConnectionKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "connection" ? K : never
-}[keyof Members]
+type QueryKeys<Members extends MemberRecord> = KeysOf<Members, "query">
 
-type StreamKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "stream" ? K : never
-}[keyof Members]
+type ConnectionKeys<Members extends MemberRecord> = KeysOf<Members, "connection">
+
+type StreamKeys<Members extends MemberRecord> = KeysOf<Members, "stream">
 
 type ConnectionsOf<Members extends MemberRecord> = Extract<
   Values<Members>,
@@ -356,19 +355,40 @@ export type ConnectionHandlers<C extends AnyConnection, R> = {
   readonly resync?: (input: { readonly after: string | undefined }) => Effect.Effect<void, never, R>
 }
 
-type WorkflowKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "workflow" ? K : never
-}[keyof Members]
+type WorkflowKeys<Members extends MemberRecord> = KeysOf<Members, "workflow">
 
-type ReducerKeys<Members extends MemberRecord> = {
-  [K in keyof Members]: Members[K]["kind"] extends "reducer" ? K : never
-}[keyof Members]
+type ReducerKeys<Members extends MemberRecord> = KeysOf<Members, "reducer">
 
 /** A query reads committed rows: it cannot conflict, expire, or hit a mailbox. */
 type QueryReason = "ActorUnavailable" | "Unauthorized" | "Timeout"
 
 /** A subscription ends with its activation, its subscriber's authorization, or a full window. */
 type StreamReason = "ActorUnavailable" | "Unauthorized" | "RunnerAtCapacity" | "SessionEnded"
+
+/**
+ * A watch ends like a subscription, and also with `NotCreated` for an actor no
+ * command has created and `Timeout` for a rerun past `commandTimeout`. A
+ * rerun that reads something no commit signal covers is a defect of the
+ * handler here; a served watch reports it as `not_watchable`.
+ */
+type WatchReason = StreamReason | "NotCreated" | "Timeout"
+
+/**
+ * The `watch` method of a query declared `watch: true`: its current result
+ * first, then the newest result after each commit that wrote something its
+ * last run read. It is a state, not a history: intermediate results are
+ * skipped and an unchanged result is not repeated.
+ */
+type WatchMethod<M extends AnyMember> = M extends { readonly watch: true }
+  ? {
+      readonly watch: (
+        ...args: M["input"]["Type"] extends void ? [] : [input: M["input"]["Type"]]
+      ) => Stream.Stream<
+        M["output"]["Type"],
+        M["errors"][number]["Type"] | ActorError.Of<WatchReason>
+      >
+    }
+  : unknown
 
 type Reasons<
   M extends AnyMember,
@@ -418,7 +438,7 @@ export type Handle<
   Creating extends string = never,
   BoundedMailbox extends boolean = false,
 > = {
-  readonly [K in Exclude<keyof Members, ConnectionKeys<Members> | StreamKeys<Members>>]: (
+  readonly [K in Exclude<keyof Members, ConnectionKeys<Members> | StreamKeys<Members>>]: ((
     ...args: Members[K]["input"]["Type"] extends void ? [] : [input: Members[K]["input"]["Type"]]
   ) => Members[K] extends AnyWorkflow
     ? Effect.Effect<
@@ -429,7 +449,8 @@ export type Handle<
         Members[K]["output"]["Type"],
         | Members[K]["errors"][number]["Type"]
         | ActorError.Of<Reasons<Members[K], Creating, BoundedMailbox>>
-      >
+      >) &
+    WatchMethod<Members[K]>
 } & {
   /** Subscribes to a live feed on the actor's activation; it ends with that activation. */
   readonly [K in StreamKeys<Members>]: (
@@ -488,8 +509,20 @@ export type WorkflowHandlers<Members extends MemberRecord, R> = HandlerMap<
   R
 >
 
-/** One handler per query in `api`. */
-type QueryHandlers<Members extends MemberRecord, R> = HandlerMap<Members, QueryKeys<Members>, R>
+/**
+ * One handler per query in `api`. A query declared `watch: true` may require
+ * only `W`, the actor's `X.Read`, so a handler the runtime cannot record does
+ * not compile.
+ */
+type QueryHandlers<Members extends MemberRecord, R, W> = {
+  readonly [K in QueryKeys<Members>]: (
+    input: Members[K]["input"]["Type"],
+  ) => Effect.Effect<
+    Members[K]["output"]["Type"],
+    Members[K]["errors"][number]["Type"],
+    Members[K] extends { readonly watch: true } ? W : R
+  >
+}
 
 /**
  * One executor per declared effect, returning the effect's `success` type,
@@ -689,6 +722,9 @@ interface Definition<
 
 const encodeTarget = Schema.encodeEffect(ExecutionTarget)
 
+/** Whether `member` is a query declared `watch: true`. */
+const isWatchable = (member: AnyMember) => "watch" in member && member.watch === true
+
 const encodeStartPayload = Schema.encodeEffect(StartPayload)
 
 /** Workflow starts staged so far in each turn's staging, numbering keyless starts. */
@@ -775,6 +811,7 @@ const make = <
   const all = [...Object.values(api), ...Object.values(internal)]
   const members = all.filter((member): member is AnyCommand => member.kind === "command")
   const queries = all.filter((member) => member.kind === "query")
+  const watches = new Set(queries.flatMap((member) => (isWatchable(member) ? [member.tag] : [])))
 
   const connectionMembers = all.filter(
     (member): member is AnyConnection => member.kind === "connection",
@@ -1379,6 +1416,23 @@ const make = <
         .map((member) => {
           const { encodeInput, decodeOutput, decodeError } = codecs.get(member.tag)!
 
+          const decoded = <A>(
+            elements: Stream.Stream<A, ActorError | { readonly failure: string }>,
+            encoded: (element: A) => string,
+          ) =>
+            elements.pipe(
+              Stream.mapEffect((element) =>
+                Effect.map(decodeOutput(encoded(element)).pipe(Effect.orDie), (out) => out.value),
+              ),
+              Stream.catch((error) =>
+                Schema.is(ActorError)(error)
+                  ? Stream.fail(error)
+                  : Stream.fromEffect(
+                      Effect.flatMap(decodeError(error.failure).pipe(Effect.orDie), Effect.fail),
+                    ),
+              ),
+            )
+
           if (member.kind === "stream")
             return [
               member.tag,
@@ -1388,25 +1442,12 @@ const make = <
                     yield* outsideTurn
                     const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                    return internalActors
-                      .subscribe(
+                    return decoded(
+                      internalActors.subscribe(
                         Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
-                      )
-                      .pipe(
-                        Stream.mapEffect((value) =>
-                          Effect.map(decodeOutput(value).pipe(Effect.orDie), (out) => out.value),
-                        ),
-                        Stream.catch((error) =>
-                          Schema.is(ActorError)(error)
-                            ? Stream.fail(error)
-                            : Stream.fromEffect(
-                                Effect.flatMap(
-                                  decodeError(error.failure).pipe(Effect.orDie),
-                                  Effect.fail,
-                                ),
-                              ),
-                        ),
-                      )
+                      ),
+                      (value) => value,
+                    )
                   }),
                 ),
             ]
@@ -1459,49 +1500,69 @@ const make = <
               },
             ]
 
-          return [
-            member.tag,
-            (input: typeof member.input.Type) => {
-              const identify = callIdOnce(member.tag)
+          const call = (input: typeof member.input.Type) => {
+            const identify = callIdOnce(member.tag)
 
-              return Effect.gen(function* () {
+            return Effect.gen(function* () {
+              yield* outsideTurn
+
+              if (member.kind !== "query") yield* callable
+
+              const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
+
+              const outcome =
+                member.kind === "query"
+                  ? yield* internalActors.query(
+                      Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
+                      internalActors.observedVersion(),
+                    )
+                  : yield* send(
+                      Request.make({
+                        ref,
+                        caller,
+                        command: member.tag,
+                        commandId: yield* identify,
+                        payload,
+                      }),
+                    )
+
+              if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
+
+              if (Outcome.guards.Failure(outcome)) {
+                return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
+              }
+
+              if (Outcome.guards.Acknowledged(outcome))
+                return yield* Effect.die(new Error(`Unexpected ${outcome.reason} acknowledgement`))
+
+              return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
+            })
+          }
+
+          if (!isWatchable(member)) return [member.tag, call]
+
+          const watch = (input: typeof member.input.Type) =>
+            Stream.unwrap(
+              Effect.gen(function* () {
                 yield* outsideTurn
-
-                if (member.kind !== "query") yield* callable
-
                 const payload = yield* encodeInput({ value: input }).pipe(Effect.orDie)
 
-                const outcome =
-                  member.kind === "query"
-                    ? yield* internalActors.query(
-                        Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
-                        internalActors.observedVersion(),
-                      )
-                    : yield* send(
-                        Request.make({
-                          ref,
-                          caller,
-                          command: member.tag,
-                          commandId: yield* identify,
-                          payload,
-                        }),
-                      )
+                const results = yield* internalActors.watch(
+                  Request.make({ ref, caller, command: member.tag, commandId: "", payload }),
+                  { minVersion: internalActors.observedVersion(), expiresAt: undefined },
+                )
 
-                if (Outcome.guards.Defect(outcome)) return yield* Effect.die(outcome.cause)
+                return decoded(results, ({ value }) => value).pipe(
+                  Stream.catchIf(
+                    (error) =>
+                      Schema.is(ActorError)(error) && Schema.is(InvalidInput)(error.reason),
+                    Stream.die,
+                  ),
+                )
+              }),
+            )
 
-                if (Outcome.guards.Failure(outcome)) {
-                  return yield* yield* decodeError(outcome.value).pipe(Effect.orDie)
-                }
-
-                if (Outcome.guards.Acknowledged(outcome))
-                  return yield* Effect.die(
-                    new Error(`Unexpected ${outcome.reason} acknowledgement`),
-                  )
-
-                return (yield* decodeOutput(outcome.value).pipe(Effect.orDie)).value
-              })
-            },
-          ]
+          return [member.tag, Object.assign(call, { watch })]
         }),
     )
 
@@ -2044,8 +2105,17 @@ const make = <
                 }
               })
 
+            const wroteTables = new Set<string>()
+            const wroteBlobs = new Set<string>()
+
             const access = yield* actors.tables(
-              { ref: request.ref, placement, tables, guard: escaped("Table") },
+              {
+                ref: request.ref,
+                placement,
+                tables,
+                guard: escaped("Table"),
+                wrote: (table) => wroteTables.add(table),
+              },
               true,
             )
 
@@ -2055,6 +2125,7 @@ const make = <
                 placement,
                 blobs,
                 guard: escaped("Blob"),
+                wrote: (name) => wroteBlobs.add(name),
                 maxBytes: policy.blobMaxBytes,
                 maxEntries: policy.blobMaxEntries,
                 timeoutMs: policy.executionMs,
@@ -2255,6 +2326,7 @@ const make = <
                 events: emitted,
                 outbox: outbox.close(),
                 broadcasts,
+                writes: { tables: [...wroteTables], blobs: [...wroteBlobs] },
               }
             }).pipe(
               Effect.catch((error) => declaredFailure(memberCodec, error)),
@@ -2443,6 +2515,7 @@ const make = <
           name,
           singleton: isSingleton,
           mintable,
+          watches,
           tenant: yield* Tenant,
           placement,
           policy,
@@ -2494,9 +2567,16 @@ const make = <
           })
         }
 
-        if (connectionMembers.length > 0 || streamMembers.length > 0 || feeds.size > 0)
+        if (
+          connectionMembers.length > 0 ||
+          streamMembers.length > 0 ||
+          feeds.size > 0 ||
+          watches.size > 0
+        )
           return yield* Effect.die(
-            new Error("Singleton actors cannot declare connections, streams, or feeds yet"),
+            new Error(
+              "Singleton actors cannot declare connections, streams, feeds, or watches yet",
+            ),
           )
 
         const services = yield* Effect.context<
@@ -2542,7 +2622,64 @@ const make = <
       | InternalActors
     >
 
-  const registerQueries = <R>(handlers: QueryHandlers<Api, R>, services: Context.Context<R>) =>
+  const recordingRead = (
+    context: QueryContext<State, Event, Owned, Blobs, Effects[number]>,
+    reads: ReadSet,
+  ): QueryContext<State, Event, Owned, Blobs, Effects[number]> => ({
+    get id() {
+      reads.caller = true
+
+      return context.id
+    },
+    get ref() {
+      reads.caller = true
+
+      return context.ref
+    },
+    get caller() {
+      reads.caller = true
+
+      return context.caller
+    },
+    get principal() {
+      reads.caller = true
+
+      return context.principal
+    },
+    get state() {
+      reads.state = true
+
+      return context.state
+    },
+    cursor: context.cursor,
+    events: (event, options) => {
+      reads.events.add(event.identifier)
+
+      return context.events(event, options)
+    },
+    rows: (table) => {
+      reads.tables.add(ownership(table)?.name ?? "")
+
+      return context.rows(table)
+    },
+    get group() {
+      reads.group = true
+
+      return context.group
+    },
+    blob: (declared) => {
+      reads.blobs.add(declared.name)
+
+      return context.blob(declared)
+    },
+    follow: context.follow,
+    progress: context.progress,
+  })
+
+  const registerQueries = <R>(
+    handlers: QueryHandlers<Api, R, Read>,
+    services: Context.Context<R>,
+  ) =>
     Effect.gen(function* () {
       const actors = yield* InternalActors
       const registered = new Map<string, RegisteredQuery>()
@@ -2563,8 +2700,11 @@ const make = <
 
         const { decodeInput, encodeOutput, isError, encodeError } = codecs.get(member.tag)!
 
+        const watch = isWatchable(member)
+
         registered.set(member.tag, {
-          run: Effect.fnUntraced(function* (request, rows, cursor, readEvents) {
+          watch,
+          run: Effect.fnUntraced(function* (request, rows, cursor, readEvents, reads) {
             const { state } = yield* decodeStored(rows)
             let open = true
             const query = Symbol()
@@ -2645,8 +2785,11 @@ const make = <
                   open = false
                 }),
               ),
-              Effect.provideService(Read, context),
-              Effect.provideContext(services),
+              Effect.provideService(
+                Read,
+                reads === undefined ? context : recordingRead(context, reads),
+              ),
+              Effect.provideContext((watch ? Context.empty() : services) as Context.Context<R>),
               Effect.provideService(InsideTurn, query),
             )
           }),
@@ -2664,8 +2807,8 @@ const make = <
       })
     })
 
-  const toQueryLayer = <R, RB>(
-    build: Effect.Effect<QueryHandlers<Api, R>, never, RB>,
+  const toQueryLayer = <R = never, RB = never>(
+    build: Effect.Effect<QueryHandlers<Api, R, Read>, never, RB>,
   ): Layer.Layer<never, never, Exclude<R, Read> | Exclude<RB, Scope.Scope> | InternalActors> =>
     Layer.effectDiscard(
       Effect.gen(function* () {

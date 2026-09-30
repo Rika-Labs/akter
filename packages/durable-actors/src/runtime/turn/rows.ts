@@ -483,10 +483,16 @@ export const bindTables = Effect.fnUntraced(function* (
       }
     }
 
+    const wrote = Effect.sync(() => scope.wrote?.(check().name))
+
     const filtered = <A, E>(
       mutation: (filter: Filter<AnyOwnedTable>) => Effect.Effect<A, E>,
     ): Filtered<AnyOwnedTable> => ({
-      where: (filter) => run(() => mutation(filter)).pipe(Effect.asVoid),
+      where: (filter) =>
+        run(() => mutation(filter)).pipe(
+          Effect.tap(() => wrote),
+          Effect.asVoid,
+        ),
     })
 
     const read = {
@@ -514,7 +520,10 @@ export const bindTables = Effect.fnUntraced(function* (
           const { list } = prepare(values)
 
           return list.length === 0 ? Effect.void : db.insert(table).values(list)
-        }).pipe(Effect.asVoid),
+        }).pipe(
+          Effect.tap(() => wrote),
+          Effect.asVoid,
+        ),
       upsert: (values) =>
         run(() => {
           const { info, list } = prepare(values)
@@ -570,7 +579,10 @@ export const bindTables = Effect.fnUntraced(function* (
                   ),
             ),
           )
-        }).pipe(Effect.asVoid),
+        }).pipe(
+          Effect.tap(() => wrote),
+          Effect.asVoid,
+        ),
       update: (values) =>
         filtered((filter) => {
           const copy = copyValues(check(), values as OperandRecord)
