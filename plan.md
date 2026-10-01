@@ -1,6 +1,6 @@
 # Durable Actors: a substantial simplification plan
 
-Prepared September 30, 2026. **Implementation is integrated and verified locally; remote delivery remains pending.** The audit below describes the starting implementation. The execution decisions in this section supersede earlier name-preservation recommendations, not durable correctness guarantees.
+Prepared September 30, 2026. **Implementation is integrated; the local verification receipt below precedes remote delivery.** The integration PR linked to [#467](https://github.com/Rika-Labs/durable-actors/issues/467) records publication, current-SHA CI evidence and merge status. The audit below describes the starting implementation. The execution decisions in this section supersede earlier name-preservation recommendations, not durable correctness guarantees.
 
 ## Accepted execution plan
 
@@ -46,20 +46,20 @@ An owner requests cross-scope edits rather than applying a broad repository-wide
 5. Close every candidate with an implemented simplification or a concrete inspected/probed reason that its proposed replacement increases complexity or loses a guarantee. A spike is not an unconditional deletion; generic deferral is not completion.
 6. Run combined verification on the exact integrated tree, reconcile current documentation/evidence, open the integration PR, obtain current-SHA CI evidence, merge it into `main`, and confirm the remote contains the delivered result.
 
-### Execution ledger
+### Local integration receipt
 
-| Workstream                | Current local state | Integration evidence                                                                                                                                                                                |
-| ------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Foundation and policy     | Published           | Tracked plan, accepted ADR and AGENTS policy; the unchanged foundation passed 85 root-check tasks and the 513-file tarball check                                                                    |
-| Actor API/compiler        | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-a816-7506-ba83-fe1b51ff7d28): A1–A10, direct constructors, inferred layers, descriptor, negative types and current docs                              |
-| Testing/evidence          | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-b1d8-7783-9618-62790e1b640f): T1–T5/T8, case parity, backend metadata, teardown fix and batch-law falsification                                      |
-| Protocol/clients          | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-bbc8-7251-a7a1-759982633bb6): C1–C10/T6/T7, CRLF/end-ID regression, protocol corpus, progress seam and Python consumer                               |
-| Tooling/scaffolds         | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-c720-7773-85ce-16136794ff06): G1–G5/G7–G10/T7, removed duplicate engines, packaged templates, CLI jobs and root browser gate                         |
-| Turn/activation           | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-d108-7329-9119-f069a7a48159): R1–R5/R8, shared transaction drive, local activation state, ordered publication and fencing                            |
-| Job/subscription delivery | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-d9a6-7097-8720-b1acdcc6374f): R6–R7/R12, jobs storage, guarded settlement and publish/cleanup summary race regressions                               |
-| Workflow                  | Integrated          | [Owner](https://ampcode.com/threads/T-01a0f3f6-e397-768e-8406-2bc1f19d6556): R9–R10, latch quiescence, shared verdicts and two additional conformance cases                                         |
-| Connections and CLI       | Integrated          | Coordinator: R11/G6, stream admission/lifetime owner, fenced open takeover, shared Inspection schemas and one ordered broadcast/progress owner                                                      |
-| Integration and delivery  | Locally verified    | All bundles and remaining consumers integrated; root, Postgres, Docker, E2E, package/scaffold and statement gates passed. The integrated branch is committed locally, not pushed or merged remotely |
+| Workstream                | State at local receipt | Integration evidence                                                                                                                                                                 |
+| ------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Foundation and policy     | Published              | Tracked plan, accepted ADR and AGENTS policy; the unchanged foundation passed 85 root-check tasks and the 513-file tarball check                                                     |
+| Actor API/compiler        | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-a816-7506-ba83-fe1b51ff7d28): A1–A10, direct constructors, inferred layers, descriptor, negative types and current docs               |
+| Testing/evidence          | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-b1d8-7783-9618-62790e1b640f): T1–T5/T8, case parity, backend metadata, teardown fix and batch-law falsification                       |
+| Protocol/clients          | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-bbc8-7251-a7a1-759982633bb6): C1–C10/T6/T7, CRLF/end-ID regression, protocol corpus, progress seam and Python consumer                |
+| Tooling/scaffolds         | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-c720-7773-85ce-16136794ff06): G1–G5/G7–G10/T7, removed duplicate engines, packaged templates, CLI jobs and root browser gate          |
+| Turn/activation           | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-d108-7329-9119-f069a7a48159): R1–R5/R8, shared transaction drive, local activation state, ordered publication and fencing             |
+| Job/subscription delivery | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-d9a6-7097-8720-b1acdcc6374f): R6–R7/R12, jobs storage, guarded settlement and publish/cleanup summary race regressions                |
+| Workflow                  | Integrated             | [Owner](https://ampcode.com/threads/T-01a0f3f6-e397-768e-8406-2bc1f19d6556): R9–R10, latch quiescence, shared verdicts and two additional conformance cases                          |
+| Connections and CLI       | Integrated             | Coordinator: R11/G6, stream admission/lifetime owner, fenced open takeover, shared Inspection schemas and one ordered broadcast/progress owner                                       |
+| Integration and delivery  | Locally verified       | All bundles and remaining consumers integrated; root, Postgres, Docker, E2E, package/scaffold and statement gates passed. Remote delivery is recorded by the integration PR for #467 |
 
 Early interface agreements preserve one ordered connection sequencer, move browser-safe wire facts into `src/protocol`, and expose serving as `Actors.serve` plus `Auth` on the existing runtime entry. Inspection schemas share that browser-safe protocol owner and are exported through the existing client entry; the dev inspector must not import runtime or serve modules. The job migration preserves durable identity values, and peer edits to shared seams are isolated from substantive changes for integration.
 
@@ -211,7 +211,7 @@ Backend skips are capability decisions, not executed support. The integrated ind
 
 The real `durable dev` command now starts. Its rendered inspector was checked at 2× scale: Jobs navigation/tile, selected Jobs route and `No job in flight.`, with no old Effects text or clipping. The populated CLI state was also inspected with three Charge rows and one dead letter. Review artifacts: [populated Jobs inspector](.amp/in/artifacts/cli-inspector-jobs.png) and [integrated empty state](.amp/in/artifacts/cli-inspector-jobs-empty.png).
 
-Remaining delivery: the integrated branch is local, not pushed; no integration PR, current-SHA remote CI or merge into remote `main` has been performed. No pre-push gate was bypassed. Remote publication/merge and any resulting deployment must not be inferred from passing local checks.
+Delivery requires the normal pre-push gate, an integration PR, trusted current-SHA CI evidence and confirmation that remote `main` contains the integrated commits. Passing local checks alone proves none of those remote steps. The integration PR is the authoritative delivery receipt; releases, deployments, production writes and infrastructure changes remain outside this delivery.
 
 ## Recommendation
 
