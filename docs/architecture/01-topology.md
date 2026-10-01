@@ -9,7 +9,7 @@ The runtime is Effect Cluster sharding backed by one Postgres database per deplo
 
 There are three run modes:
 
-- **Embedded:** an application provides `Actors.layer` and calls actor handles as Effects. The control-plane actors in `packages/deployments` run this way inside `apps/api`.
+- **Embedded:** an application provides `Actors.layer` and calls actor handles as Effects.
 - **Served:** the same runtime is exposed with `Actors.serve`, providing HTTP, WebSocket, SSE, and `/openapi.json`.
 - **Hosted:** our runners provide the served runtime behind `apps/edge`; Neki is the hosted database detail.
 

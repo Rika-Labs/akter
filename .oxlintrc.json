@@ -53,12 +53,6 @@
   },
   "overrides": [
     {
-      "files": ["infra/alchemy.run.ts"],
-      "rules": {
-        "effecttsgo/any-unknown-in-error-context": "off"
-      }
-    },
-    {
       "files": [
         "packages/durable-actors/src/testing/conformance/*/harness.ts",
         "packages/durable-actors/src/testing/conformance/transports/wire.ts"

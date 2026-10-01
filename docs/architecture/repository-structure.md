@@ -9,7 +9,6 @@
 
 ```text
 apps/                       deployables and the CLI bin; never imported by another package
-  api/                      @durable-actors/api        control-plane HTTP; embeds the control-plane actors
   console/                  @durable-actors/console    FoldKit SSR
   docs/                     @durable-actors/docs       static docs site built from docs/ with llms.txt and Markdown copies (ADR 0043)
   e2e/                      @durable-actors/e2e        Playwright browser tests against read-only console fixtures
@@ -20,15 +19,9 @@ packages/
   react/                    @durable-actors/react      React hooks over @durable-actors/core/client
   create/                   @durable-actors/create     `bun create @durable-actors`: templates/base plus counter and chat overlays
   deployments/              @durable-actors/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
-  accounts/                 @durable-actors/accounts   better-auth, organizations, API keys
-  billing/                  @durable-actors/billing    Polar
-  email/                    @durable-actors/email      Resend
-  contracts/                @durable-actors/contracts  control-plane HttpApi shared by api, console, cli
   python-client/            @durable-actors/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests
-  observability/            @durable-actors/observability
   postgres/                 @durable-actors/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
   ui/                       @durable-actors/ui         console components; its own package because Babel compiles StyleX before the console imports it
-infra/                      @durable-actors/infra      Alchemy: alchemy.run.ts, src/railway/, docker/<app>/Dockerfile
 tooling/
   oxlint/                   @durable-actors/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @durable-actors/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
@@ -57,7 +50,7 @@ Two checks implement this specification, each owning different rules. Per-file o
 
 ## Ways to run, mapped to the tree
 
-- **Embedded:** an application provides `Actors.layer` from `@durable-actors/core/runtime` and calls actors as Effects. `apps/api` runs this way.
+- **Embedded:** an application provides `Actors.layer` from `@durable-actors/core/runtime` and calls actors as Effects.
 - **Served:** `Actors.serve` in its own process; the `docker/` images and a customer's BYO runner are this shape. There is no `apps/runner`: a managed runner is the customer's served container started by a `Deployment` actor job.
 - **Hosted:** the same layer on our runners behind `apps/edge`, with Neki as the database.
 
