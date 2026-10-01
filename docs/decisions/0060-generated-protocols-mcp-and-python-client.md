@@ -1,6 +1,6 @@
 # ADR 0060: Generated protocols: an MCP endpoint and a Python client derived from the served OpenAPI document
 
-**Status:** proposed (2026-09-30). It gates M6.6 ([#337](https://github.com/Rika-Labs/durable-actors/issues/337)) and is the fifth item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. It builds on [ADR 0027](0027-served-protocol.md) without changing its wire. When accepted it amends [rule 41](../../.amp/rules/quality/41-no-ai-only-surface.md), the [server API](../api/01-server-api.md), [generating clients](../api/05-generated-clients.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
+**Status:** proposed (2026-09-30). It gates M6.6 ([#337](https://github.com/Rika-Labs/durable-actors/issues/337)) and is the fifth item of [ADR 0014](0014-adoption-observation-and-client-reach.md)'s order. It builds on [ADR 0027](0027-served-protocol.md) without changing its wire. When accepted it amends rule 41, the [server API](../api/01-server-api.md), [generating clients](../api/05-generated-clients.md), and the [post-foundation sketch](../api/post-foundation-sketches.md).
 
 **Responsibility:** decide how an MCP endpoint and a Python client are derived from a served application, so that they agree with HTTP and OpenAPI on schemas, member names, errors, and command identity.
 
@@ -14,7 +14,7 @@
 
 [ADR 0027](0027-served-protocol.md) fixes one route per public member, a client-minted command id in `Idempotency-Key`, typed error bodies, and an OpenAPI 3.1 document derived from the same `HttpApi` as the routes. [ADR 0014](0014-adoption-observation-and-client-reach.md) decided that public members may derive MCP and non-Effect clients from the same schemas, that internal commands stay absent from every derivation, and that an MCP tool call must preserve command identity across retries. [M6.6](../milestones/M6.md) names two deliverables, an MCP endpoint and a Python client, and one check, **Generated protocols**. What is left open:
 
-- **Where MCP comes from.** A second description of each member would drift from OpenAPI. The rule [no AI-only surface](../../.amp/rules/quality/41-no-ai-only-surface.md) also forbids `Actor.mcp`, tool or prompt options, and MCP glue as written, while the [vision](../vision/06-developer-experience.md) says MCP is a transport, not an AI runtime.
+- **Where MCP comes from.** A second description of each member would drift from OpenAPI. The rule no AI-only surface also forbids `Actor.mcp`, tool or prompt options, and MCP glue as written, while the [vision](../vision/06-developer-experience.md) says MCP is a transport, not an AI runtime.
 - **Which MCP revision.** The current revision, 2026-07-28, dropped the `initialize` handshake, protocol sessions, and the standalone GET stream. Every request names its protocol version in `_meta` and in the `MCP-Protocol-Version` header, and `server/discover` replaces negotiation. That matches a stateless served protocol.
 - **Command identity.** An MCP client has a JSON-RPC request id and possibly a transport event id, neither of which is stable across a retry that a client makes after losing a reply.
 - **The Python client.** Which package it lives in, what is generated and what is fixed, and how it is tested.
@@ -25,7 +25,7 @@
 
 `Actor.serve({ …, mcp: { path, name?, version? } })` adds one endpoint at `{basePath}{path}`, off unless given, beside `openapi`. It is a route of the served protocol, like `/protocol`, not an API of its own: there is no `Actor.mcp`, no tool, prompt, or agent option, and no annotation a definition can add. Its tools are computed at startup from the same OpenAPI document that `openapi.path` serves, so a member has one description. `mcp.path` may not take a protocol route, an `/actors` path, or `openapi.path`.
 
-[Rule 41](../../.amp/rules/quality/41-no-ai-only-surface.md) is amended to allow this one option and no other MCP surface: a framework feature that exists only for LLM consumers is still a violation, and MCP here is the same members over a second wire.
+Rule 41 is amended to allow this one option and no other MCP surface: a framework feature that exists only for LLM consumers is still a violation, and MCP here is the same members over a second wire.
 
 ### 2. Only the 2026-07-28 revision, stateless, over Streamable HTTP
 
