@@ -19,19 +19,19 @@
       },
     },
     "apps/cli": {
-      "name": "@durable-actors/cli",
+      "name": "@akter/cli",
       "version": "0.1.0-alpha.0",
       "bin": {
         "durable": "./src/main.ts",
       },
       "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@durable-actors/deployments": "workspace:*",
+        "@akter/deployments": "workspace:*",
         "@effect/platform-bun": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
-        "@durable-actors/postgres": "workspace:*",
+        "@akter/postgres": "workspace:*",
         "@types/pg": "8.23.1",
         "drizzle-orm": "catalog:",
         "pg": "8.23.0",
@@ -39,9 +39,9 @@
       },
     },
     "apps/console": {
-      "name": "@durable-actors/console",
+      "name": "@akter/console",
       "dependencies": {
-        "@durable-actors/ui": "workspace:*",
+        "@akter/ui": "workspace:*",
         "@effect/platform-browser": "catalog:",
         "effect": "catalog:",
         "foldkit": "catalog:",
@@ -54,64 +54,30 @@
       },
     },
     "apps/e2e": {
-      "name": "@durable-actors/e2e",
+      "name": "@akter/e2e",
       "devDependencies": {
-        "@durable-actors/console": "workspace:*",
+        "@akter/console": "workspace:*",
         "@playwright/test": "1.63.0",
       },
     },
     "apps/edge": {
-      "name": "@durable-actors/edge",
+      "name": "@akter/edge",
       "dependencies": {
-        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
-        "@durable-actors/deployments": "workspace:*",
-        "@durable-actors/postgres": "workspace:*",
+        "@akter/deployments": "workspace:*",
+        "@akter/postgres": "workspace:*",
         "@types/pg": "8.23.1",
         "pg": "8.23.0",
         "vitest": "catalog:",
       },
     },
-    "packages/create": {
-      "name": "@durable-actors/create",
-      "version": "0.1.0-alpha.0",
-      "bin": {
-        "create-durable-actors": "./src/main.ts",
-      },
-      "dependencies": {
-        "@effect/platform-bun": "catalog:",
-        "@effect/platform-node-shared": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@types/bun": "1.4.2",
-        "typescript": "catalog:",
-        "vitest": "catalog:",
-      },
-    },
-    "packages/deployments": {
-      "name": "@durable-actors/deployments",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@durable-actors/postgres": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "@effect/sql-pg": "catalog:",
-        "@types/pg": "8.23.1",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
-      },
-    },
-    "packages/durable-actors": {
-      "name": "@durable-actors/core",
+    "packages/akter": {
+      "name": "@rikalabs/akter",
       "version": "0.1.0-alpha.0",
       "dependencies": {
         "@electric-sql/pglite": "0.5.8",
@@ -136,8 +102,24 @@
         "effect": "catalog:",
       },
     },
+    "packages/deployments": {
+      "name": "@akter/deployments",
+      "dependencies": {
+        "@rikalabs/akter": "workspace:*",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@akter/postgres": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
+        "vitest": "catalog:",
+      },
+    },
     "packages/postgres": {
-      "name": "@durable-actors/postgres",
+      "name": "@akter/postgres",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
@@ -150,20 +132,20 @@
       },
     },
     "packages/python-client": {
-      "name": "@durable-actors/python-client",
+      "name": "@akter/python-client",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
       "devDependencies": {
-        "@durable-actors/core": "workspace:*",
+        "@rikalabs/akter": "workspace:*",
         "vitest": "catalog:",
       },
     },
     "packages/react": {
-      "name": "@durable-actors/react",
+      "name": "@akter/react",
       "dependencies": {
-        "@durable-actors/core": "workspace:*",
+        "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -179,7 +161,7 @@
       },
     },
     "packages/ui": {
-      "name": "@durable-actors/ui",
+      "name": "@akter/ui",
       "dependencies": {
         "@effect/platform-browser": "catalog:",
         "@stylexjs/stylex": "catalog:",
@@ -197,11 +179,11 @@
       },
     },
     "tooling/benchmarks": {
-      "name": "@durable-actors/benchmarks",
+      "name": "@akter/benchmarks",
       "dependencies": {
-        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@electric-sql/pglite": "0.5.8",
+        "@rikalabs/akter": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
       },
@@ -210,7 +192,7 @@
       },
     },
     "tooling/oxlint": {
-      "name": "@durable-actors/oxlint",
+      "name": "@akter/oxlint",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "@oxlint/plugins": "1.82.0",
@@ -222,7 +204,7 @@
       },
     },
     "tooling/structure": {
-      "name": "@durable-actors/structure",
+      "name": "@akter/structure",
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
@@ -254,6 +236,30 @@
     "vitest": "5.0.1",
   },
   "packages": {
+    "@akter/benchmarks": ["@akter/benchmarks@workspace:tooling/benchmarks"],
+
+    "@akter/cli": ["@akter/cli@workspace:apps/cli"],
+
+    "@akter/console": ["@akter/console@workspace:apps/console"],
+
+    "@akter/deployments": ["@akter/deployments@workspace:packages/deployments"],
+
+    "@akter/e2e": ["@akter/e2e@workspace:apps/e2e"],
+
+    "@akter/edge": ["@akter/edge@workspace:apps/edge"],
+
+    "@akter/oxlint": ["@akter/oxlint@workspace:tooling/oxlint"],
+
+    "@akter/postgres": ["@akter/postgres@workspace:packages/postgres"],
+
+    "@akter/python-client": ["@akter/python-client@workspace:packages/python-client"],
+
+    "@akter/react": ["@akter/react@workspace:packages/react"],
+
+    "@akter/structure": ["@akter/structure@workspace:tooling/structure"],
+
+    "@akter/ui": ["@akter/ui@workspace:packages/ui"],
+
     "@babel/code-frame": ["@babel/code-frame@8.0.6", "", { "dependencies": { "@babel/helper-validator-identifier": "^8.0.6", "js-tokens": "^10.0.0" } }, "sha512-uMHhvmDmwFiLuiozaoRYTZHqMFuu3fem/X9JY78lohAuLoh8LSGGC8JqUzo2cVuBsBxkjMZNk56CE7ock8Xxkw=="],
 
     "@babel/compat-data": ["@babel/compat-data@8.0.5", "", {}, "sha512-YLsYoQMvL8l8WrGpN3Zj7O1wK5LEBN+cQtux7BcuHyxIXve724XG+zuJ1n3U1cUweRtTzQOA4IHbuQw3N34SZw=="],
@@ -307,34 +313,6 @@
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.12.1", "", {}, "sha512-yHwomvolVafvUXhy5TdiJVkuNCxXn+bKOs2aWiWEQh/5YaV97Oa/abJz3dmx7lxgIUsUlS1Jl4mEfvJPo3YsVw=="],
 
     "@dual-bundle/import-meta-resolve": ["@dual-bundle/import-meta-resolve@4.2.1", "", {}, "sha512-id+7YRUgoUX6CgV0DtuhirQWodeeA7Lf4i2x71JS/vtA5pRb/hIGWlw+G6MeXvsM+MXrz0VAydTGElX1rAfgPg=="],
-
-    "@durable-actors/benchmarks": ["@durable-actors/benchmarks@workspace:tooling/benchmarks"],
-
-    "@durable-actors/cli": ["@durable-actors/cli@workspace:apps/cli"],
-
-    "@durable-actors/console": ["@durable-actors/console@workspace:apps/console"],
-
-    "@durable-actors/core": ["@durable-actors/core@workspace:packages/durable-actors"],
-
-    "@durable-actors/create": ["@durable-actors/create@workspace:packages/create"],
-
-    "@durable-actors/deployments": ["@durable-actors/deployments@workspace:packages/deployments"],
-
-    "@durable-actors/e2e": ["@durable-actors/e2e@workspace:apps/e2e"],
-
-    "@durable-actors/edge": ["@durable-actors/edge@workspace:apps/edge"],
-
-    "@durable-actors/oxlint": ["@durable-actors/oxlint@workspace:tooling/oxlint"],
-
-    "@durable-actors/postgres": ["@durable-actors/postgres@workspace:packages/postgres"],
-
-    "@durable-actors/python-client": ["@durable-actors/python-client@workspace:packages/python-client"],
-
-    "@durable-actors/react": ["@durable-actors/react@workspace:packages/react"],
-
-    "@durable-actors/structure": ["@durable-actors/structure@workspace:tooling/structure"],
-
-    "@durable-actors/ui": ["@durable-actors/ui@workspace:packages/ui"],
 
     "@effect/platform-browser": ["@effect/platform-browser@4.0.0", "", { "peerDependencies": { "effect": "^4.0.0" } }, "sha512-OHo7EPpF3RVPiI+mjoU9yd05LdCdKPjzDXqs5wRgF9CsdVvwN76B0zgt54DxPUcvMYri1tVJOtLCVnK0tRkNQQ=="],
 
@@ -561,6 +539,8 @@
     "@oxlint/plugins": ["@oxlint/plugins@1.82.0", "", {}, "sha512-IDF4UXBNOaCeLoEpVxf5Bg85KOWdeuBEkbo1rGzS2vXcbD+GT1asBSeeTC+5BgW6NFTHVByd6N5giHsFPGtwAA=="],
 
     "@playwright/test": ["@playwright/test@1.63.0", "", { "dependencies": { "playwright": "1.63.0" }, "bin": { "playwright": "cli.js" } }, "sha512-oxMK4vllB9RK5NQ2l1pq1IfOf2AvnEuj/vYGDj0H2nMtmtZpKtCwt/l00GEO6xjGfpBNAvjovvYdCm50dRQkpQ=="],
+
+    "@rikalabs/akter": ["@rikalabs/akter@workspace:packages/akter"],
 
     "@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.9", "", { "os": "android", "cpu": "arm" }, "sha512-tNISae1QEf/vkb3xkRcjV5SEdzPE97We5IVaa2Z8jSszQPZ8U60B/YCYpw4QI7VidYsBtKavczXf+DyDs9WGxw=="],
 

@@ -11,9 +11,9 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "genericSegment" }
 
-tester.run("durable-actors/no-generic-directory-segment", noGenericDirectorySegmentRule, {
+tester.run("akter/no-generic-directory-segment", noGenericDirectorySegmentRule, {
   valid: [
-    { code: "export {};", filename: "packages/durable-actors/src/runtime/turn/execute.ts" },
+    { code: "export {};", filename: "packages/akter/src/runtime/turn/execute.ts" },
     { code: "export {};", filename: "packages/deployments/src/deployment/contract.ts" },
     { code: "export {};", filename: "apps/api/src/app.ts" },
     { code: "export {};", filename: "packages/deployments/src/deployment/workflows/ship.ts" },
@@ -24,7 +24,7 @@ tester.run("durable-actors/no-generic-directory-segment", noGenericDirectorySegm
   invalid: [
     { code: "export {};", filename: "packages/accounts/src/utils/hash.ts", errors: [error] },
     { code: "export {};", filename: "apps/api/src/shared/logger.ts", errors: [error] },
-    { code: "export {};", filename: "packages/durable-actors/src/types/id.ts", errors: [error] },
+    { code: "export {};", filename: "packages/akter/src/types/id.ts", errors: [error] },
     { code: "export {};", filename: "infra/src/common/config.ts", errors: [error] },
     {
       code: "export {};",

@@ -1,4 +1,4 @@
-# Durable Actors vision
+# Akter vision
 
 **Responsibility:** index the vision documents and their reading order.  
 **Authority:** product intent.  

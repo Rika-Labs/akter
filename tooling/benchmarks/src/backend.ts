@@ -1,6 +1,6 @@
 import { connect } from "node:net"
-import { Database } from "@durable-actors/core/runtime"
-import { TurnPoolSettings } from "@durable-actors/core/testing"
+import { Database } from "@rikalabs/akter/runtime"
+import { TurnPoolSettings } from "@rikalabs/akter/testing"
 import { Context, Effect, Fiber, FileSystem, Layer, Redacted, Schedule, type Scope } from "effect"
 import { SqlClient } from "effect/sql"
 import { flightCounter } from "./flights.ts"
@@ -63,7 +63,7 @@ export interface Backend {
   }) => Effect.Effect<CaseDatabase, never, Scope.Scope>
 }
 
-const CONTAINER = "durable-actors-bench-postgres"
+const CONTAINER = "akter-bench-postgres"
 
 const IMAGE = "postgres:18.6-bookworm"
 
@@ -305,7 +305,7 @@ export const pgliteFile = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const probe = Context.get(yield* Layer.build(Database.pglite()), SqlClient.SqlClient)
   const version = (yield* probe<{ version: string }>`SELECT version()`)[0]!.version
-  const sample = yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-bench-" })
+  const sample = yield* fs.makeTempDirectoryScoped({ prefix: "akter-bench-" })
 
   return {
     name: "pglite-file",
@@ -315,7 +315,7 @@ export const pgliteFile = Effect.gen(function* () {
       storage: `file-backed dataDir in the system temporary directory (${filesystemOf(sample)})`,
     },
     database: () =>
-      fs.makeTempDirectoryScoped({ prefix: "durable-actors-bench-" }).pipe(
+      fs.makeTempDirectoryScoped({ prefix: "akter-bench-" }).pipe(
         Effect.map(
           (dataDir) =>
             ({

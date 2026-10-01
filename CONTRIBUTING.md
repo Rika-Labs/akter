@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping with Durable Actors. It is alpha software, so please open an issue before starting a large change.
+Thanks for helping with Akter. It is alpha software, so please open an issue before starting a large change.
 
 ## Prerequisites
 

@@ -12,7 +12,7 @@
 
 ## Context
 
-The contract-10 review of `actor_blobs` (#61) left two medium findings open in [#78](https://github.com/Rika-Labs/durable-actors/issues/78): nothing limited one actor's blob entry count or total bytes, so one tenant could fill disk in a database other tenants share; and query reads ran on the pool outside a transaction with no `statement_timeout`.
+The contract-10 review of `actor_blobs` (#61) left two medium findings open in [#78](https://github.com/Rika-Labs/akter/issues/78): nothing limited one actor's blob entry count or total bytes, so one tenant could fill disk in a database other tenants share; and query reads ran on the pool outside a transaction with no `statement_timeout`.
 
 M1.9 (#104) closed part of it. `policy.maxBlobBytes` (default 64 MiB) caps the bytes of one actor's entries inside the `set` and `append` statements, and [ADR 0038](0038-retention-cleanup-and-receipt-horizon.md) bounds every query by its actor type's `commandTimeout`, cancelling the running read on the server. The entry count stayed uncapped.
 

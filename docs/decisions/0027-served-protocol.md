@@ -13,7 +13,7 @@
 - **Queries and read-your-writes.** [ADR 0011](0011-direct-commands-outbox-and-performance.md) says a handle sends the highest commit version it has seen with each query. M4.9 builds that. The token has no wire name or format, so the M3.4 client can't carry it yet.
 - **OpenAPI.** [Generated contracts](../api/generated-contracts.md) says served actors expose OpenAPI and that internal members never appear. How it is generated, and what it describes, is open.
 - **Streaming.** [ADR 0023](0023-connections-parking-and-streams.md) (accepted 2026-09-26) builds connections, parking, and streams behind a transport interface, and leaves the wire to this ADR: the envelope that keeps `Resync`, `ResyncReplayed`, and `ResyncDone` apart from member frames, how a served transport caps the revocation bound at a credential's expiry, and "a reauthenticate frame". Dallen's two changes to ADR 0023 shape this ADR: broadcasts may wake parked actors (through the trigger that makes them broadcast), and an ungraceful owner death resyncs sockets in place instead of closing them.
-- **Order of work.** On 2026-09-26 Dallen moved M3.1, M3.2 (`Actor.serve` over HTTP, [#92](https://github.com/Rika-Labs/durable-actors/issues/92)) and M3.4 (the Promise client, [#93](https://github.com/Rika-Labs/durable-actors/issues/93)) ahead of the rest of M2. M3.2 and M3.4 must be buildable from this ADR while M2.10 (connections) is still unbuilt, so the HTTP half stands alone and the streaming half only has to fit ADR 0023.
+- **Order of work.** On 2026-09-26 Dallen moved M3.1, M3.2 (`Actor.serve` over HTTP, [#92](https://github.com/Rika-Labs/akter/issues/92)) and M3.4 (the Promise client, [#93](https://github.com/Rika-Labs/akter/issues/93)) ahead of the rest of M2. M3.2 and M3.4 must be buildable from this ADR while M2.10 (connections) is still unbuilt, so the HTTP half stands alone and the streaming half only has to fit ADR 0023.
 
 This ADR decides the wire for all three transports. M3.2 builds the HTTP half, M3.4 the client for it, and M3.3 the WebSocket and SSE half on top of M2.10.
 
@@ -76,7 +76,7 @@ Routes, under `basePath`:
 - **Content type.** Requests and responses are `application/json`, encoded with the member's runtime schemas through the same JSON codec used for persistence (`Schema.toCodecJson`), so `Uint8Array`, dates, and tagged classes encode the way receipts store them. Any other request content type is `415 InvalidInput { code: "unsupported_media_type" }`.
 - **Limits.** A request body is at most `limits.requestBytes` (default 1 MiB) and the credential header at most `limits.credentialBytes` (default 8 KiB); either past its limit is `413 InvalidInput { code: "too_large" }`, rejected before decoding.
 - **Protocol version.** Every response carries `durable-protocol: 1`. A request may send it; a request naming a major version the server doesn't serve is `400 InvalidInput { code: "unsupported_protocol" }`. Paths carry no version, so a later protocol version is a header change, not a new URL space.
-- **Tracing.** The server accepts W3C `traceparent` and `tracestate`, continues the trace into the turn span `durable-actors.<Actor>/<Command>`, and never records bodies or credentials on spans.
+- **Tracing.** The server accepts W3C `traceparent` and `tracestate`, continues the trace into the turn span `akter.<Actor>/<Command>`, and never records bodies or credentials on spans.
 - **Waiting.** A command request waits for its reply up to the actor's `deliveryTimeout` (default 30 s), then answers `504 Timeout`. A client that disconnects does not cancel the command: accepted work continues, as it does for an Effect caller that stops waiting.
 - **Any runner serves any route.** A command is dispatched through Cluster to the actor's owner, a query reads committed rows on the serving runner, and a socket is held by the runner that accepted it (ADR 0023's holder). Load balancers need no actor affinity.
 
@@ -211,7 +211,7 @@ A failure body is one of three things, told apart by `_tag`:
 **Event feeds** follow an actor's durable events: `GET /actors/Room/r1/events?event=MessagePosted&after=42`.
 
 - **Framing.** Each event is one SSE message: `id` is its cursor, `event` is its tag, and `data` is `{ event, commandId, timestamp }` with the event schema-encoded. A comment line every 15 seconds keeps idle proxies from closing the stream.
-- **Resume.** `after` is exclusive, like every event cursor ([contract 07](../contracts/07-realtime.md)). On reconnect, `Last-Event-ID` overrides `after`, so a browser's own reconnect resumes where it stopped. `UnknownCursor` and `RetentionGap` detected at the start answer `404` and `410` with the error body before any stream starts, which also stops `EventSource` from reconnecting in a loop: a non-`200` response fails a native `EventSource` for good (`readyState` becomes `CLOSED`), though it can't read the body, so a browser that must tell a gap from other failures uses the fetch-based feed of `durable-actors/client`. Pruning is only ever detected when the holder reads `actor_events`, at the start and on every reread (step 3 below). A reread that finds a gap ends the feed with an `end` message carrying `RetentionGap`, and the next reconnect gets the `410`.
+- **Resume.** `after` is exclusive, like every event cursor ([contract 07](../contracts/07-realtime.md)). On reconnect, `Last-Event-ID` overrides `after`, so a browser's own reconnect resumes where it stopped. `UnknownCursor` and `RetentionGap` detected at the start answer `404` and `410` with the error body before any stream starts, which also stops `EventSource` from reconnecting in a loop: a non-`200` response fails a native `EventSource` for good (`readyState` becomes `CLOSED`), though it can't read the body, so a browser that must tell a gap from other failures uses the fetch-based feed of `akter/client`. Pruning is only ever detected when the holder reads `actor_events`, at the start and on every reread (step 3 below). A reread that finds a gap ends the feed with an `end` message carrying `RetentionGap`, and the next reconnect gets the `410`.
 - **Declared feeds only.** Only events the actor type lists in its `feeds` definition section are served (Q11). Any other `event` is `404 InvalidInput { code: "unknown_event" }`, exactly like an event that doesn't exist.
 - **Filters.** At least one `event` and at most 16 are required; there is no wildcard, so `authorize` sees every event tag a caller reads. More than 16 is `400 InvalidInput { code: "too_many_filters" }`.
 - **Authorization.** The hook is called with `kind: "feed"` and `command` set to each event tag before anything is read, then reauthorized every `reauthorizeEvery` with `kind: "reauthorize"` and `of: "feed"` (ADR 0023; this ADR adds `of`, which says what a reauthorization is for: `"open"`, `"stream"`, or `"feed"`, so a feed's event tag can't be mistaken for a connection member with the same tag). SSE can't carry a `reauthenticate` frame back, so a feed ends with `Unauthorized { code: "expired" }` at its credential's `expiresAt`, and the client reconnects with a fresh credential and its last cursor. Nothing is lost.
@@ -229,7 +229,7 @@ Browsers' `EventSource` can only send cookies, so it works with cookie-reading p
 
 ### 8. WebSocket connections
 
-A connection member is served at `GET /actors/{Actor}/{id}/{Connection}` as a WebSocket upgrade with subprotocol `durable-actors.v1`; an upgrade without it is refused, which versions the frame format. Every message is one JSON text frame with a `t` discriminator. Member frames only ever travel inside `frame`, so control frames live in their own envelope variant, as ADR 0023 requires, and an application class tagged `Resync` can't be mistaken for one.
+A connection member is served at `GET /actors/{Actor}/{id}/{Connection}` as a WebSocket upgrade with subprotocol `akter.v1`; an upgrade without it is refused, which versions the frame format. Every message is one JSON text frame with a `t` discriminator. Member frames only ever travel inside `frame`, so control frames live in their own envelope variant, as ADR 0023 requires, and an application class tagged `Resync` can't be mistaken for one.
 
 | Direction        | `t`               | Fields                                           | Meaning                                                                                                                                                                   |
 | ---------------- | ----------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -400,10 +400,7 @@ Actor.auth.jwt({
 **Q6. Where does a WebSocket carry its credential?** **Decision:** in the first `hello` frame, or on the upgrade for non-browser clients and cookie providers (section 8). A query-string token works with every browser API but lands in access logs and `Referer`; `Sec-WebSocket-Protocol` smuggling is a hack that some proxies rewrite.
 
 ```ts
-const socket = new WebSocket(
-  "wss://chat.example.com/api/actors/Room/r1/Presence",
-  "durable-actors.v1",
-)
+const socket = new WebSocket("wss://chat.example.com/api/actors/Room/r1/Presence", "akter.v1")
 socket.onopen = () =>
   socket.send(
     JSON.stringify({ t: "hello", authorization: `Bearer ${token}`, params: { user: me } }),

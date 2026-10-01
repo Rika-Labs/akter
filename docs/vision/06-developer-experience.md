@@ -7,7 +7,7 @@
 
 ## Vision
 
-Durable Actors should feel like Effect application development, not infrastructure assembly. One contract derives handles, contexts, runtime registration, Promise clients, HTTP routes, WebSocket and SSE surfaces, OpenAPI, and the test harness.
+Akter should feel like Effect application development, not infrastructure assembly. One contract derives handles, contexts, runtime registration, Promise clients, HTTP routes, WebSocket and SSE surfaces, OpenAPI, and the test harness.
 
 ## The API ladder
 
@@ -15,7 +15,7 @@ An actor is one definition and one layer of handlers:
 
 ```ts
 import { Effect, Schema } from "effect"
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 
 export const Reset = Actor.command("Reset")
 
@@ -35,12 +35,12 @@ export const CounterLive = Counter.toLayer(
 )
 ```
 
-There is one package, `@durable-actors/core`, with four entries:
+There is one package, `@rikalabs/akter`, with four entries:
 
-- `@durable-actors/core` for browser-safe declarations: `Actor.make`, members, `Intent`, identity, and `ActorError` (and `Fleet`, once [ADR 0056](../decisions/0056-fleet-views.md) is built);
-- `@durable-actors/core/runtime` for `Actors.layer`, `Actors.serve`, `Auth`, topology, database, and migrations;
-- `@durable-actors/core/client` for the browser-safe Promise client;
-- `@durable-actors/core/testing` for `ActorTest`.
+- `@rikalabs/akter` for browser-safe declarations: `Actor.make`, members, `Intent`, identity, and `ActorError` (and `Fleet`, once [ADR 0056](../decisions/0056-fleet-views.md) is built);
+- `@rikalabs/akter/runtime` for `Actors.layer`, `Actors.serve`, `Auth`, topology, database, and migrations;
+- `@rikalabs/akter/client` for the browser-safe Promise client;
+- `@rikalabs/akter/testing` for `ActorTest`.
 
 ## Defaults that guide correct code
 
@@ -54,7 +54,7 @@ There is one package, `@durable-actors/core`, with four entries:
 
 ## First five minutes
 
-`bun create @durable-actors` scaffolds a counter or chat app that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `DATABASE_URL` moves the same code to Postgres. The [quickstart](../quickstart.md) is the path, and a CI smoke keeps it runnable. PGlite there is for development, and for one-process production within the limits of [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md).
+`bun add @rikalabs/akter` and three short files give a counter that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `Database.postgres` moves the same code to Postgres. The [quickstart](../quickstart.md) is the path. PGlite there is for development, and for one-process production within the limits of [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md).
 
 ## Testing
 

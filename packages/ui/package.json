@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/ui",
+  "name": "@akter/ui",
   "private": true,
   "type": "module",
   "exports": {

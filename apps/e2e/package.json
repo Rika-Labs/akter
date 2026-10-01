@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/e2e",
+  "name": "@akter/e2e",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@durable-actors/console": "workspace:*",
+    "@akter/console": "workspace:*",
     "@playwright/test": "1.63.0"
   }
 }

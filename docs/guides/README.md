@@ -5,7 +5,7 @@
 **Owner role:** documentation.  
 **Change policy:** change when a guide is added or removed.
 
-Durable Actors is the framework for durable, stateful backends that power realtime apps, background work, and agents.
+Akter is the framework for durable, stateful backends that power realtime apps, background work, and agents.
 
 You declare an actor with `Actor.make`, and each command it receives runs as one turn inside one database transaction: the actor's state, its owned Drizzle rows, its events, the command's receipt, and the work it hands off all commit together or not at all.
 
@@ -20,7 +20,7 @@ The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) ru
   - [Testing](testing.md): `ActorTest`, crash points, time, and which database to test on.
   - [Deploy](deploy.md): running on Postgres in production, and what is supported today.
 - [API reference](../api/README.md): the server API, the context services, the TypeScript SDK, Drizzle, generated clients, naming, and versioning.
-- [Comparison](comparison.md): Durable Actors next to Cloudflare Durable Objects, Rivet, Restate, and Temporal, citing their documentation.
+- [Comparison](comparison.md): Akter next to Cloudflare Durable Objects, Rivet, Restate, and Temporal, citing their documentation.
 
 ## In the repository
 

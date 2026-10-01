@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Deferred, Effect, Layer, Schema } from "effect"
 
 /** One source commit a benchmark waits to see applied, named by its key. */

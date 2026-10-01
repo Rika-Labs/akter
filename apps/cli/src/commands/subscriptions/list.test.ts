@@ -1,5 +1,5 @@
-import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
-import { ActorTest } from "@durable-actors/core/testing"
+import { OperatorAuth, Operators } from "@rikalabs/akter/runtime"
+import { ActorTest } from "@rikalabs/akter/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { Context, Effect, Layer, Redacted } from "effect"
 import { HttpRouter } from "effect/http"

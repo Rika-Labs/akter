@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
+import { ActorCluster, ActorTest } from "@rikalabs/akter/testing"
 import { Deferred, Duration, Effect, Layer } from "effect"
 import { load, now, summarize } from "../measure.ts"
 import {

@@ -1,8 +1,8 @@
-Durable Actors
+Akter
 Copyright 2026 Rika Labs
 
 This product includes software developed at Rika Labs.
 
 Files under tooling/oxlint/anti-slop and research/ carry their own licences,
 named beside them. They are development tooling and research material and are
-not part of the published @durable-actors/core package.
+not part of the published @rikalabs/akter package.

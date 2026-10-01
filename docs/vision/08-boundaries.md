@@ -7,7 +7,7 @@
 
 ## Vision
 
-Durable Actors should remove routine coordination work while naming every boundary it cannot make disappear.
+Akter should remove routine coordination work while naming every boundary it cannot make disappear.
 
 ## We promise
 

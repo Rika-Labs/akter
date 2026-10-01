@@ -1,4 +1,4 @@
-import type { ActorError } from "@durable-actors/core"
+import type { ActorError } from "@rikalabs/akter"
 import { Effect } from "effect"
 import { load } from "../measure.ts"
 import { type Negative, ReducerProbe } from "../probe/reducers.ts"

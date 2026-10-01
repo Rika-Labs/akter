@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ActorTest, type TestConnection } from "@durable-actors/core/testing"
+import { ActorTest, type TestConnection } from "@rikalabs/akter/testing"
 import { Effect, Layer, Queue, Stream } from "effect"
 import type { Instruments } from "../backend.ts"
 import { load } from "../measure.ts"

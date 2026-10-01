@@ -1,4 +1,4 @@
-import { checkWorkflows } from "@durable-actors/core/runtime"
+import { checkWorkflows } from "@rikalabs/akter/runtime"
 import { BunCrypto } from "@effect/platform-bun"
 import { Context, Crypto, Effect, Layer, Schedule } from "effect"
 import { SqlClient } from "effect/sql"

@@ -30,7 +30,7 @@ const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = path.resolve(import.meta.dirname, "../..")
-  const framework = path.join(root, "packages/durable-actors")
+  const framework = path.join(root, "packages/akter")
 
   const out = args[outIndex + 1]
 
@@ -39,7 +39,7 @@ const program = Effect.gen(function* () {
 
   const stage =
     out === undefined || outIndex === -1
-      ? yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-pack-" })
+      ? yield* fs.makeTempDirectoryScoped({ prefix: "akter-pack-" })
       : path.resolve(out)
 
   if (path.relative(stage, root) === "" || !path.relative(stage, root).startsWith(".."))

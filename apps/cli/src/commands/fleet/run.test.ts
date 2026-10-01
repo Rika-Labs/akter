@@ -12,10 +12,7 @@ afterAll(() => runtime.dispose())
 const postgres = runtime.runSync(Config.String("CLI_BACKEND")) === "postgres"
 
 const entry = fileURLToPath(
-  new URL(
-    "../../../../../packages/durable-actors/src/testing/conformance/fleet.ts",
-    import.meta.url,
-  ),
+  new URL("../../../../../packages/akter/src/testing/conformance/fleet.ts", import.meta.url),
 )
 
 describe("durable fleet arguments", () => {

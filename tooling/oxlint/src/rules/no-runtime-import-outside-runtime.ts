@@ -8,9 +8,9 @@ const RUNTIME_MODULES = new Set([
   "@effect/sql-pglite",
 ])
 
-const FRAMEWORK = /(?:^|\/)packages\/durable-actors\//
+const FRAMEWORK = /(?:^|\/)packages\/akter\//
 
-const ALLOWED_FOLDER = /(?:^|\/)packages\/durable-actors\/src\/(?:runtime|testing)\//
+const ALLOWED_FOLDER = /(?:^|\/)packages\/akter\/src\/(?:runtime|testing)\//
 
 interface WithSource {
   readonly source?: { readonly value?: unknown } | null
@@ -25,11 +25,11 @@ export const noRuntimeImportOutsideRuntimeRule = defineRule({
     type: "suggestion",
     docs: {
       description:
-        "Disallow imports of effect/sql, effect/cluster and @effect/sql-pg inside packages/durable-actors outside src/runtime/ and src/testing/.",
+        "Disallow imports of effect/sql, effect/cluster and @effect/sql-pg inside packages/akter outside src/runtime/ and src/testing/.",
     },
     messages: {
       runtimeImport:
-        "'{{source}}' may only be imported under packages/durable-actors/src/{runtime,testing}/ — the root and client entries must stay browser-safe.",
+        "'{{source}}' may only be imported under packages/akter/src/{runtime,testing}/ — the root and client entries must stay browser-safe.",
     },
   },
   create(context) {

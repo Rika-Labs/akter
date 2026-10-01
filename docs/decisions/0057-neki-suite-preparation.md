@@ -12,7 +12,7 @@
 
 ## Context
 
-M5.1 ([M5](../milestones/M5.md), [#296](https://github.com/Rika-Labs/durable-actors/issues/296)) prepares the Neki suite; running it is [#66](https://github.com/Rika-Labs/durable-actors/issues/66). Three facts shape it:
+M5.1 ([M5](../milestones/M5.md), [#296](https://github.com/Rika-Labs/akter/issues/296)) prepares the Neki suite; running it is [#66](https://github.com/Rika-Labs/akter/issues/66). Three facts shape it:
 
 - Neki's documentation says the transaction mode is chosen before a transaction starts (`SET __neki.tx_mode = 'single'; BEGIN;`), and that `__neki.fanout` is a session setting that rejects a statement whose routing shape is wider than the setting. `EXPLAIN (NEKI_PLAN)` prints the router's plan; the documentation says the fanout setting applies to it only with `ANALYZE`, which runs the statement. ADR 0020 put the mode in the admission group's `set_config`, after `BEGIN`.
 - About half of the conformance groups open empty databases through `environment.freshDatabase` or copy one with `environment.snapshot`, which the Postgres backend does with `CREATE DATABASE ... TEMPLATE`. Nothing shows that a Neki router allows that, so the Neki backend does not try.
@@ -31,7 +31,7 @@ M5.1 ([M5](../milestones/M5.md), [#296](https://github.com/Rika-Labs/durable-act
 ## Findings
 
 - **Due-work scans probe every bucket.** The relay's intent and effect claims run `generate_series(first, last)` over all 256 buckets without a `routing_key` predicate. [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) says the relay claims one bucket range per shard on Neki, but only the parameterised bucket range exists, not the per-shard claims or the shard map. The local check pins that the range is a parameter, so per-shard claims need no new statement. On Neki, expect the scan case to report `Route [Scatter]` until they exist.
-- **A minted actor's creating-intent proof reads its parent's outbox row.** The read now names the parent's routing key: the actor's own for a parent-placed actor, and for any other the key its parent type's recorded placement gives, read from `actor_placements` first ([#302](https://github.com/Rika-Labs/durable-actors/issues/302)). That makes the statement keyed. It does not make the turn single-shard: when the parent is on another shard, the minted actor's turn still reads a row there, which `__neki.tx_mode = 'single'` refuses. On Neki, mint only parent-placed actors until the proof stops reading the parent's row (for example, by carrying the relay's delivery in the request); that design is not made here.
+- **A minted actor's creating-intent proof reads its parent's outbox row.** The read now names the parent's routing key: the actor's own for a parent-placed actor, and for any other the key its parent type's recorded placement gives, read from `actor_placements` first ([#302](https://github.com/Rika-Labs/akter/issues/302)). That makes the statement keyed. It does not make the turn single-shard: when the parent is on another shard, the minted actor's turn still reads a row there, which `__neki.tx_mode = 'single'` refuses. On Neki, mint only parent-placed actors until the proof stops reading the parent's row (for example, by carrying the relay's delivery in the request); that design is not made here.
 
 ## Alternatives rejected
 

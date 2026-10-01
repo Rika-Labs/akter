@@ -17,7 +17,7 @@ ADR 0029 left the publish workflow and the first publish to CR.1b (#99). The fir
 ## Decision
 
 - **Workflow releases use trusted publishing.** `release.yml` runs on a pushed `v*` tag or by manual dispatch with a `tag` input, on a GitHub-hosted runner, in the `npm` environment, with `id-token: write` and `contents: read`. It checks the tag against the manifest version and that the tagged commit is on `main`, stages and checks the tarball, runs the clean-consumer smoke test, and runs `npm publish --provenance --access public` with the dist-tag taken from the prerelease identifier. No npm token or publish secret is configured anywhere.
-- **The first version of a new package is published by hand.** A maintainer stages the tarball with `bun .github/src/pack.ts`, runs `npm publish --access public` from the staged directory after `npm login` with 2FA, and then configures the package's trusted publisher (`Rika-Labs` / `durable-actors` / `release.yml` / `npm`). Token publishing may then be disallowed on the package. [Releasing](../operations/05-releasing.md) is the procedure.
+- **The first version of a new package is published by hand.** A maintainer stages the tarball with `bun .github/src/pack.ts`, runs `npm publish --access public` from the staged directory after `npm login` with 2FA, and then configures the package's trusted publisher (`Rika-Labs` / `akter` / `release.yml` / `npm`). Token publishing may then be disallowed on the package. [Releasing](../operations/05-releasing.md) is the procedure.
 - **Provenance needs a public repository.** Workflow releases carry npm provenance, which requires the repository to be public; the bootstrap version does not carry it.
 
 ## Alternatives
@@ -28,7 +28,7 @@ ADR 0029 left the publish workflow and the first publish to CR.1b (#99). The fir
 ## Consequences
 
 - The repository must be public before the first workflow release.
-- Every new published package (the scaffolder in CR.2, `@durable-actors/react` in CR.6) needs its own manual bootstrap and trusted-publisher entry.
+- Every new published package (the scaffolder in CR.2, `@akter/react` in CR.6) needs its own manual bootstrap and trusted-publisher entry.
 
 ## Evidence
 

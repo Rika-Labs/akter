@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Effect, Layer, Schema } from "effect"
 
 /** Writes the actor's state, which every `Total` watch reads. */

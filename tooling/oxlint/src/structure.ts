@@ -9,7 +9,7 @@ import { noRoleSuffixFilenameRule } from "./rules/no-role-suffix-filename.ts"
 import { noRuntimeImportOutsideRuntimeRule } from "./rules/no-runtime-import-outside-runtime.ts"
 
 const repoStructurePlugin = eslintCompatPlugin({
-  meta: { name: "durable-actors" },
+  meta: { name: "akter" },
   rules: {
     "filename-kebab-case": filenameKebabCaseRule,
     "no-parent-echo-in-filename": noParentEchoInFilenameRule,

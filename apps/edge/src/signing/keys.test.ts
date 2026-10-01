@@ -1,5 +1,5 @@
-import { migrate } from "@durable-actors/postgres/migrate"
-import { edgeKey } from "@durable-actors/core/testing"
+import { migrate } from "@akter/postgres/migrate"
+import { edgeKey } from "@rikalabs/akter/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {

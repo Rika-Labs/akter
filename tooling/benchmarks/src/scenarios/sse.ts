@@ -1,4 +1,4 @@
-import { Actors, Auth } from "@durable-actors/core/runtime"
+import { Actors, Auth } from "@rikalabs/akter/runtime"
 import { Effect, Layer, Stream } from "effect"
 import { HttpRouter } from "effect/http"
 import { load } from "../measure.ts"

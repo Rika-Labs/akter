@@ -1,6 +1,6 @@
 # Security policy
 
-Durable Actors is alpha software. Interfaces and guarantees can still change, and it has not had an external security review.
+Akter is alpha software. Interfaces and guarantees can still change, and it has not had an external security review.
 
 ## Supported versions
 
@@ -8,7 +8,7 @@ Only the latest `0.x` alpha release of the framework packages receives security 
 
 ## Reporting a vulnerability
 
-Report privately through GitHub Security Advisories for `Rika-Labs/durable-actors`: open the repository's **Security** tab and choose **Report a vulnerability**. Please do not open a public issue or pull request for a suspected vulnerability.
+Report privately through GitHub Security Advisories for `Rika-Labs/akter`: open the repository's **Security** tab and choose **Report a vulnerability**. Please do not open a public issue or pull request for a suspected vulnerability.
 
 Include:
 
@@ -21,7 +21,7 @@ We acknowledge reports within 3 business days. We will keep you updated while we
 
 ## Scope
 
-In scope: the framework packages in this repository, such as `@durable-actors/core`, and the code that ships with them.
+In scope: the framework packages in this repository, such as `@rikalabs/akter`, and the code that ships with them.
 
 Out of scope: the hosted cloud service and its infrastructure, and vulnerabilities in third-party dependencies that have no effect on these packages (report those upstream).
 

@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/oxlint",
+  "name": "@akter/oxlint",
   "private": true,
   "type": "module",
   "scripts": {

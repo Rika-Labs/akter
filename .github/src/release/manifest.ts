@@ -34,19 +34,12 @@ const FORBIDDEN_FILE = /(^|\/)src\/|\.test\.|(^|\/)crash\/|\.tsbuildinfo$|(?<!\.
 const resolveSpecifiers = (
   specifiers: Readonly<Record<string, string>>,
   catalog: Readonly<Record<string, string>>,
-  workspace: Readonly<Record<string, string>> = {},
 ) => {
   const resolved: Record<string, string> = {}
 
   for (const [name, specifier] of Object.entries(specifiers)) {
-    if (specifier.startsWith("workspace:")) {
-      const version = workspace[name]
-
-      if (version === undefined)
-        throw new Error(`${name} is a workspace dependency this manifest may not have`)
-      resolved[name] = version
-      continue
-    }
+    if (specifier.startsWith("workspace:"))
+      throw new Error(`${name} is a workspace dependency this manifest may not have`)
 
     const version = specifier === "catalog:" ? catalog[name] : specifier
 
@@ -55,59 +48,6 @@ const resolveSpecifiers = (
   }
 
   return resolved
-}
-
-const TemplateSpecifier = Schema.String.check(
-  Schema.isPattern(/^(catalog:|workspace:\*)$/, {
-    message: "a template names catalog: or workspace:*, never a copied version",
-  }),
-)
-
-/** The scaffold's manifest source: its fields, with each dependency named by `catalog:` or `workspace:*`. */
-export const TemplateManifest = Schema.StructWithRest(
-  Schema.Struct({
-    dependencies: Schema.Record(Schema.String, TemplateSpecifier),
-    devDependencies: Schema.Record(Schema.String, TemplateSpecifier),
-  }),
-  [Schema.Record(Schema.String, Schema.Json)],
-)
-
-export type TemplateManifest = typeof TemplateManifest.Type
-
-/**
- * The manifest a scaffolded app receives, pinned to exactly what the
- * workspace builds and releases with: `catalog:` takes the root catalog's
- * version, or the root dev dependency's for tools such as `@types/bun` that the
- * catalog does not list, and `workspace:*` takes the framework's own version.
- * Throws when the app would miss a framework peer dependency, which a package
- * manager would otherwise resolve to whatever is newest.
- */
-export function pinTemplateManifest({
-  template,
-  catalog,
-  rootDevDependencies,
-  framework,
-}: {
-  template: TemplateManifest
-  catalog: Readonly<Record<string, string>>
-  rootDevDependencies: Readonly<Record<string, string>>
-  framework: FrameworkManifest
-}) {
-  const pins = { ...rootDevDependencies, ...catalog }
-  const workspace = { [framework.name]: framework.version }
-
-  const missing = Object.keys(framework.peerDependencies ?? {}).filter(
-    (name) => !(name in template.dependencies),
-  )
-
-  if (missing.length > 0)
-    throw new Error(`the template does not install framework peers: ${missing.join(", ")}`)
-
-  return {
-    ...template,
-    dependencies: resolveSpecifiers(template.dependencies, pins, workspace),
-    devDependencies: resolveSpecifiers(template.devDependencies, pins, workspace),
-  }
 }
 
 /**

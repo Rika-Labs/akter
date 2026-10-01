@@ -22,13 +22,13 @@ const paths = (findings: ReadonlyArray<Finding>) => findings.map((finding) => fi
 const rules = (findings: ReadonlyArray<Finding>) => findings.map((finding) => finding.rule)
 
 describe("package names", () => {
-  it("requires @durable-actors/<basename> and names the framework @durable-actors/core", () => {
+  it("requires @akter/<basename> and names the framework @rikalabs/akter", () => {
     const findings = analyze({
       files: [
-        cleanManifest("packages/deployments", "@durable-actors/deployments"),
-        cleanManifest("packages/durable-actors", "@durable-actors/core"),
+        cleanManifest("packages/deployments", "@akter/deployments"),
+        cleanManifest("packages/akter", "@rikalabs/akter"),
         file("packages/deployments/src/index.ts"),
-        file("packages/durable-actors/src/index.ts"),
+        file("packages/akter/src/index.ts"),
       ],
       exemptions: [],
     })
@@ -39,19 +39,19 @@ describe("package names", () => {
   it("flags an unscoped or directory-named framework and a stale @project name", () => {
     const findings = analyze({
       files: [
-        cleanManifest("packages/durable-actors", "@durable-actors/durable-actors"),
-        cleanManifest("packages/durable-actors", "durable-actors"),
+        cleanManifest("packages/akter", "@akter/akter"),
+        cleanManifest("packages/akter", "akter"),
         cleanManifest("packages/accounts", "@project/auth"),
-        file("packages/durable-actors/src/index.ts"),
+        file("packages/akter/src/index.ts"),
         file("packages/accounts/src/index.ts"),
       ],
       exemptions: [],
     })
 
     expect(findings.map((finding) => finding.message)).toEqual([
-      "package name '@durable-actors/durable-actors' must be '@durable-actors/core'",
-      "package name 'durable-actors' must be '@durable-actors/core'",
-      "package name '@project/auth' must be '@durable-actors/accounts'",
+      "package name '@akter/akter' must be '@rikalabs/akter'",
+      "package name 'akter' must be '@rikalabs/akter'",
+      "package name '@project/auth' must be '@akter/accounts'",
     ])
   })
 })
@@ -61,25 +61,25 @@ describe("dependency direction", () => {
     const findings = analyze({
       files: [
         manifest("packages/accounts", {
-          name: "@durable-actors/accounts",
+          name: "@akter/accounts",
           exports: { ".": "./src/index.ts" },
-          dependencies: { "@durable-actors/api": "workspace:*" },
+          dependencies: { "@akter/api": "workspace:*" },
         }),
-        manifest("packages/durable-actors", {
-          name: "@durable-actors/core",
+        manifest("packages/akter", {
+          name: "@rikalabs/akter",
           exports: { ".": "./src/index.ts" },
-          dependencies: { "@durable-actors/postgres": "workspace:*" },
+          dependencies: { "@akter/postgres": "workspace:*" },
         }),
         manifest("apps/api", {
-          name: "@durable-actors/api",
+          name: "@akter/api",
           exports: { ".": "./src/index.ts" },
           dependencies: {
-            "@durable-actors/core": "workspace:*",
-            "@durable-actors/postgres": "workspace:*",
+            "@rikalabs/akter": "workspace:*",
+            "@akter/postgres": "workspace:*",
           },
         }),
         file("packages/accounts/src/index.ts"),
-        file("packages/durable-actors/src/index.ts"),
+        file("packages/akter/src/index.ts"),
         file("apps/api/src/index.ts"),
       ],
       exemptions: [],
@@ -87,7 +87,7 @@ describe("dependency direction", () => {
 
     expect(paths(findings)).toEqual([
       "packages/accounts/package.json",
-      "packages/durable-actors/package.json",
+      "packages/akter/package.json",
     ])
     expect(findings.every((finding) => finding.rule === "structure-rules")).toBe(true)
   })
@@ -97,24 +97,24 @@ describe("index.ts discipline", () => {
   it("allows index.ts only where exports name it", () => {
     const findings = analyze({
       files: [
-        manifest("packages/durable-actors", {
-          name: "@durable-actors/core",
+        manifest("packages/akter", {
+          name: "@rikalabs/akter",
           exports: {
             ".": "./src/index.ts",
             "./runtime": "./src/runtime/index.ts",
             "./client": "./src/client/index.js",
           },
         }),
-        file("packages/durable-actors/src/index.ts"),
-        file("packages/durable-actors/src/runtime/index.ts"),
-        file("packages/durable-actors/src/client/index.ts"),
-        file("packages/durable-actors/src/runtime/turn/index.ts"),
-        file("packages/durable-actors/src/runtime/turn/execute.ts"),
+        file("packages/akter/src/index.ts"),
+        file("packages/akter/src/runtime/index.ts"),
+        file("packages/akter/src/client/index.ts"),
+        file("packages/akter/src/runtime/turn/index.ts"),
+        file("packages/akter/src/runtime/turn/execute.ts"),
       ],
       exemptions: [],
     })
 
-    expect(paths(findings)).toEqual(["packages/durable-actors/src/runtime/turn/index.ts"])
+    expect(paths(findings)).toEqual(["packages/akter/src/runtime/turn/index.ts"])
     expect(findings[0]?.rule).toBe("index-not-entry")
   })
 
@@ -122,7 +122,7 @@ describe("index.ts discipline", () => {
     const findings = analyze({
       files: [
         manifest("packages/foo", {
-          name: "@durable-actors/foo",
+          name: "@akter/foo",
           exports: { ".": "./src/index.ts", "./*": "./src/*" },
         }),
         file("packages/foo/src/index.ts", "export * from './users'\n"),
@@ -139,7 +139,7 @@ describe("tests beside sources", () => {
   it("requires the same basename and source directory even for integration tests", () => {
     const findings = analyze({
       files: [
-        cleanManifest("packages/foo", "@durable-actors/foo"),
+        cleanManifest("packages/foo", "@akter/foo"),
         file("packages/foo/src/index.ts"),
         file("packages/foo/src/users.ts"),
         file("packages/foo/src/users.test.ts"),
@@ -175,7 +175,7 @@ describe("exemptions", () => {
   it("suppresses matching findings", () => {
     const findings = analyze({
       files: [
-        cleanManifest("packages/ui", "@durable-actors/ui"),
+        cleanManifest("packages/ui", "@akter/ui"),
         file("packages/ui/src/index.ts"),
         file("tooling/vendored/index.ts"),
         file("research/v4/framework/Actor.ts"),
@@ -189,7 +189,7 @@ describe("exemptions", () => {
 
   it("reports an exemption whose path no longer exists or no longer violates", () => {
     const findings = analyze({
-      files: [cleanManifest("packages/ui", "@durable-actors/ui"), file("packages/ui/src/index.ts")],
+      files: [cleanManifest("packages/ui", "@akter/ui"), file("packages/ui/src/index.ts")],
       exemptions,
     })
 

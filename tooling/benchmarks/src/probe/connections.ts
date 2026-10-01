@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Effect, Layer, Schema, Stream } from "effect"
 
 /** Echoes each client frame back to its sender. */

@@ -16,7 +16,7 @@
       "specifier": "./tooling/oxlint/anti-slop/plugin.ts"
     },
     {
-      "name": "durable-actors",
+      "name": "akter",
       "specifier": "./tooling/oxlint/src/structure.ts"
     }
   ],
@@ -43,19 +43,19 @@
     "anti-slop/no-manual-tagged-construction": "error",
     "anti-slop/no-service-constructor-imports": "error",
     "anti-slop/prefer-effect-match": "error",
-    "durable-actors/filename-kebab-case": "error",
-    "durable-actors/no-parent-echo-in-filename": "error",
-    "durable-actors/no-role-suffix-filename": "error",
-    "durable-actors/no-generic-directory-segment": "error",
-    "durable-actors/no-runtime-import-outside-runtime": "error",
-    "durable-actors/no-decision-references": "error",
-    "durable-actors/no-inline-comments": "error"
+    "akter/filename-kebab-case": "error",
+    "akter/no-parent-echo-in-filename": "error",
+    "akter/no-role-suffix-filename": "error",
+    "akter/no-generic-directory-segment": "error",
+    "akter/no-runtime-import-outside-runtime": "error",
+    "akter/no-decision-references": "error",
+    "akter/no-inline-comments": "error"
   },
   "overrides": [
     {
       "files": [
-        "packages/durable-actors/src/testing/conformance/*/harness.ts",
-        "packages/durable-actors/src/testing/conformance/transports/wire.ts"
+        "packages/akter/src/testing/conformance/*/harness.ts",
+        "packages/akter/src/testing/conformance/transports/wire.ts"
       ],
       "rules": {
         "effecttsgo/missing-pipeable-signature": "off"

@@ -1,5 +1,5 @@
-import { ASSERTION_TYPE, KEY_REFRESH_TYPE } from "@durable-actors/core"
-import type { AssertionClaims } from "@durable-actors/core/runtime"
+import { ASSERTION_TYPE, KEY_REFRESH_TYPE } from "@rikalabs/akter"
+import type { AssertionClaims } from "@rikalabs/akter/runtime"
 import { Clock, Duration, Effect, Ref, Schedule, Schema } from "effect"
 import { Base64Url } from "effect/encoding"
 import { SqlClient } from "effect/sql"

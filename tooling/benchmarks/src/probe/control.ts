@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Deferred, Effect, Schema } from "effect"
 
 /** Holds an executor for the provider's latency; no cap. */

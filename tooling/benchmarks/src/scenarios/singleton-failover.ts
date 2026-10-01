@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor } from "@durable-actors/core"
-import { ActorCluster, ActorTest } from "@durable-actors/core/testing"
+import { Actor } from "@rikalabs/akter"
+import { ActorCluster, ActorTest } from "@rikalabs/akter/testing"
 import { Effect, Layer, Schedule, Schema } from "effect"
 import { now, summarize } from "../measure.ts"
 import type { CaseResult, Scenario, ScenarioContext } from "../scenario.ts"

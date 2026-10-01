@@ -51,13 +51,13 @@ jobs:
           git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || { echo "Tag $RELEASE_TAG does not exist"; exit 1; }
           commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           test "$(git rev-parse HEAD)" = "$commit" || { echo "Checkout is not $RELEASE_TAG"; exit 1; }
-          version="$(jq -r .version packages/durable-actors/package.json)"
+          version="$(jq -r .version packages/akter/package.json)"
           test "$RELEASE_TAG" = "v$version" || { echo "Tag $RELEASE_TAG does not match version $version"; exit 1; }
           git merge-base --is-ancestor "$commit" origin/main || { echo "$commit is not on main"; exit 1; }
           core="${version%%+*}"
           if [[ "$core" == *-* ]]; then tag="${core#*-}"; tag="${tag%%.*}"; else tag=latest; fi
           [[ "$tag" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Prerelease id of $version is not a dist-tag name"; exit 1; }
-          name="$(jq -r .name packages/durable-actors/package.json)"
+          name="$(jq -r .name packages/akter/package.json)"
           if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
             echo "$name@$version is already on npm (a hand-published bootstrap or a rerun); publishing is skipped"
             echo "published=true" >> "$GITHUB_OUTPUT"

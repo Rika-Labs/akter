@@ -1,4 +1,4 @@
-import { Seed, SeedJson } from "@durable-actors/core/runtime"
+import { Seed, SeedJson } from "@rikalabs/akter/runtime"
 import { Effect, FileSystem, Schema } from "effect"
 import { Command, Flag } from "effect/cli"
 import {

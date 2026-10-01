@@ -1,4 +1,4 @@
-"""The runtime a generated Durable Actors client calls into.
+"""The runtime a generated Akter client calls into.
 
 OpenAPI describes the routes and their schemas; it cannot say how a client
 keeps command identity. This module holds that policy, and nothing else is

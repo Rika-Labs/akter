@@ -7,7 +7,7 @@
 
 ## Vision
 
-Durable Actors combines actor authority with ordinary relational data. Postgres remains the system operators can inspect, back up, migrate, join, and report on; the framework supplies a trustworthy mutation boundary.
+Akter combines actor authority with ordinary relational data. Postgres remains the system operators can inspect, back up, migrate, join, and report on; the framework supplies a trustworthy mutation boundary.
 
 Actors have complementary storage forms in the same deployment database:
 

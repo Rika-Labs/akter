@@ -7,7 +7,7 @@
 
 ## Strong fit
 
-Durable Actors fits when the domain has many addressable things whose mutations should serialize and whose behavior combines relational data with one or more of:
+Akter fits when the domain has many addressable things whose mutations should serialize and whose behavior combines relational data with one or more of:
 
 - durable commands and retry-safe receipts;
 - realtime connections and cursor-based events;

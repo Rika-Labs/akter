@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ActorTest } from "@durable-actors/core/testing"
-import { migrate } from "@durable-actors/postgres/migrate"
+import { ActorTest } from "@rikalabs/akter/testing"
+import { migrate } from "@akter/postgres/migrate"
 import {
   Config,
   Context,
@@ -47,7 +47,7 @@ const database = Effect.gen(function* () {
 })
 
 class DatabaseUrl extends Context.Service<DatabaseUrl, Redacted.Redacted<string>>()(
-  "@durable-actors/deployments/tenant-home/layer.test/DatabaseUrl",
+  "@akter/deployments/tenant-home/layer.test/DatabaseUrl",
 ) {}
 
 const live = Layer.unwrap(

@@ -14,7 +14,7 @@
 
 Rivet claims billions of actors per cluster. Its source code shows those are mostly idle SQLite databases stored as pages in a shared, ordered key-value store (UniversalDB). Horizontal scale on its enterprise tier comes from FoundationDB's range partitioning. Rivet documents its PostgreSQL backend as production-ready only up to roughly 1,000 concurrent actors ([storage](https://rivet.dev/actors/self-host/control-plane/storage/)).
 
-Durable Actors keeps one relational store per deployment region so that SQL can see across actors. That store scales like Rivet's only if every hot path touches one shard and does work proportional to the actors that are active, not the actors that exist. Two parts of the accepted design need clarification for that to hold:
+Akter keeps one relational store per deployment region so that SQL can see across actors. That store scales like Rivet's only if every hot path touches one shard and does work proportional to the actors that are active, not the actors that exist. Two parts of the accepted design need clarification for that to hold:
 
 - On Neki, actor data currently shares **tenant-local placement**. A deployment with one large tenant therefore cannot grow past one shard (roughly 10,000 turns/second and 15 TB, by the estimates in [performance](../verification/03-performance.md)).
 - No query is yet assigned a consistency or cost tier. A join that runs locally at 100,000 actors becomes a scatter across every shard at a trillion.

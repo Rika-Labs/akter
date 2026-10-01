@@ -10,7 +10,7 @@ Actor-owned tables use Drizzle semantics and gain `routing_key`, `tenant_id`, an
 ## Declaring an owned table
 
 ```ts title="room.ts"
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Schema } from "effect"
 
@@ -43,7 +43,7 @@ export const Room = Actor.make("Room", { key: RoomId, tables: [messages], api: {
 A table that already exists, and that a web app or batch job also writes, is adopted instead of declared ([ADR 0054](../decisions/0054-existing-schema-adoption.md)):
 
 ```ts
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { pgTable, text } from "drizzle-orm/pg-core"
 
 const existingInvoices = pgTable("invoices", {
@@ -140,7 +140,7 @@ Raw SQL, Drizzle's relational query API (`db.query`), `returning`, `onConflict` 
 `group` is a read-only Drizzle select scoped to the actor's placement group: every actor of the tenant under `placement: "tenant"`, or the actor itself under `placement: "actor"` ([ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md)). It is available on `X.Turn` (reading through the turn transaction) and `X.Read`, and one select is one snapshot.
 
 ```ts
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { eq, inArray } from "drizzle-orm"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Effect, Schema } from "effect"
@@ -172,8 +172,8 @@ The builder gets only `select` and `selectDistinct`, and its select is only read
 A read across every actor of a tenant, beyond one placement group, is a declared fleet view ([ADR 0056](../decisions/0056-fleet-views.md)). It is a group-by over one owned table of a tenant-placed actor type, kept up to date outside every turn from the database's change feed:
 
 ```ts title="fleet.ts"
-import { Actor, Fleet } from "@durable-actors/core"
-import { Actors } from "@durable-actors/core/runtime"
+import { Actor, Fleet } from "@rikalabs/akter"
+import { Actors } from "@rikalabs/akter/runtime"
 import { Effect } from "effect"
 import { bigint, boolean, pgTable, text } from "drizzle-orm/pg-core"
 
@@ -202,7 +202,7 @@ Actors.layer({ authorize, fleet: [OrdersByStatus] })
 - `OrdersByStatus.table` is the derived Drizzle table, `fleet_<snake_case name>` in the source's schema: `tenant_id`, the group columns, the aggregates, and `as_of` (the change-feed position of the batch that last wrote the row), keyed by `(tenant_id, …group columns)` and carrying the `durable_tenant` policy. Put it in the drizzle-kit schema. The maintainer is its only writer; plain SQL may read it, outside `authorize`.
 - The source needs an index leading with `(routing_key, tenant_id, …group columns)`, so recomputing a group is one indexed read. `Actor.table` prefixes its own indexes with `actor_id` as well, so create this one with a hand-written migration; startup refuses without it and prints the `CREATE INDEX`.
 - A view is eventually consistent: it reflects committed changes only, each group at or after its last applied change. `actor_fleet_views` shows each view's `status` (`building`, `ready`, or `stale`), `applied_lsn` (comparable with a command's `durable-version`: once `applied_lsn` is at least the token, the view has seen that command), and `last_error`.
-- `Fleet.subscribe(View, filter?, { limit? })` follows a view in process for the ambient tenant and caller: a `Stream` of pages `{ asOf, stale, rows }`, the tenant's groups in group-key order (at most `limit`, default 100, up to 1,000), first at once and again whenever the view's rows or staleness change; `asOf` alone moving on sends nothing. `filter` compares group keys with each column's text form. `Actors.serve({ fleet: [View] })` serves it at `GET /fleet/{View}?{groupKey}=value&limit=` as server-sent events, and `fleetClient([View], { baseUrl, headers })` from `@durable-actors/core/client` reads it as `client.View.subscribe(filter?, options?)`, an `AsyncIterable`. A subscription is authorized with `kind: "fleet"` and `command` the view, its `ref` naming the caller's tenant and the view's source actor type with the view as its id, so the source's `access` policy and the `authorize` hook both apply, and again every `reauthorizeEvery` of the source's actor type with `kind: "reauthorize"`, `of: "fleet"`. Its tenant is always the caller's: no parameter names one. One runner holds at most 1,000 subscriptions of a view (`RunnerAtCapacity`). With row-level security on, the page runs as the tenant role, which must be able to read the derived table.
+- `Fleet.subscribe(View, filter?, { limit? })` follows a view in process for the ambient tenant and caller: a `Stream` of pages `{ asOf, stale, rows }`, the tenant's groups in group-key order (at most `limit`, default 100, up to 1,000), first at once and again whenever the view's rows or staleness change; `asOf` alone moving on sends nothing. `filter` compares group keys with each column's text form. `Actors.serve({ fleet: [View] })` serves it at `GET /fleet/{View}?{groupKey}=value&limit=` as server-sent events, and `fleetClient([View], { baseUrl, headers })` from `@rikalabs/akter/client` reads it as `client.View.subscribe(filter?, options?)`, an `AsyncIterable`. A subscription is authorized with `kind: "fleet"` and `command` the view, its `ref` naming the caller's tenant and the view's source actor type with the view as its id, so the source's `access` policy and the `authorize` hook both apply, and again every `reauthorizeEvery` of the source's actor type with `kind: "reauthorize"`, `of: "fleet"`. Its tenant is always the caller's: no parameter names one. One runner holds at most 1,000 subscriptions of a view (`RunnerAtCapacity`). With row-level security on, the page runs as the tenant role, which must be able to read the derived table.
 - Views need Postgres with `wal_level=logical`, a login with `REPLICATION`, and `durable fleet setup`; see [deployment](../operations/01-deployment.md#fleet-views). PGlite refuses `fleet` at layer build.
 
 ## Transactions and backends

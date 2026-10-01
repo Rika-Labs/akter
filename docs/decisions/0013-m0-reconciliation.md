@@ -18,15 +18,15 @@ M0 shipped (PR #7) before [ADR 0010](0010-one-way-effect-native-api.md), [ADR 00
 
 The M0 framework, tests, and counter example now use the target design for every feature M0 implements:
 
-| Area              | Before (ADR 0007/0008)                                                           | Now                                                                                                                                      |
-| ----------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Definition        | `Actor.make(name, { commands, internal: [], id, singleton, lifecycle })`         | `Actor.make(name, { key, state, api, internal, policy })`; `api`/`internal` keys must equal tags in types and at runtime                 |
-| Identity          | `X.id`, `Actors.mint(X)`, `X.create()`                                           | `X.create()` only; `key: Actor.singleton` replaces `singleton: true`                                                                     |
-| Policies          | `Commands`, `Delivery`, `State`, `Hibernate`, `Mailbox`, `Lifecycle` combinators | `policy` object with the same defaults and bounds                                                                                        |
-| Handlers          | `toLayer(handlers, { hooks })` with `(ctx, input)`                               | `toLayer(Effect)` with `(input)`; context through a per-actor `X.Turn` service                                                           |
-| Caller and tenant | `get(id, { as, tenant })`                                                        | `Actor.as(caller)` and `Actor.tenant(tenant)` around the Effect; `get` takes no options                                                  |
-| Defects           | `onDefect` hook with `WakeContext`                                               | no user code; `Deterministic actor defect` log with actor, id, tenant, command, and command id inside `durable-actors.<Actor>/<Command>` |
-| Delivery          | persisted `cluster_messages`; recovery redelivers stored envelopes               | volatile Cluster messages and `MessageStorage.layerNoop`; the receipt is the only durable record; the handle retries the same id         |
+| Area              | Before (ADR 0007/0008)                                                           | Now                                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Definition        | `Actor.make(name, { commands, internal: [], id, singleton, lifecycle })`         | `Actor.make(name, { key, state, api, internal, policy })`; `api`/`internal` keys must equal tags in types and at runtime         |
+| Identity          | `X.id`, `Actors.mint(X)`, `X.create()`                                           | `X.create()` only; `key: Actor.singleton` replaces `singleton: true`                                                             |
+| Policies          | `Commands`, `Delivery`, `State`, `Hibernate`, `Mailbox`, `Lifecycle` combinators | `policy` object with the same defaults and bounds                                                                                |
+| Handlers          | `toLayer(handlers, { hooks })` with `(ctx, input)`                               | `toLayer(Effect)` with `(input)`; context through a per-actor `X.Turn` service                                                   |
+| Caller and tenant | `get(id, { as, tenant })`                                                        | `Actor.as(caller)` and `Actor.tenant(tenant)` around the Effect; `get` takes no options                                          |
+| Defects           | `onDefect` hook with `WakeContext`                                               | no user code; `Deterministic actor defect` log with actor, id, tenant, command, and command id inside `akter.<Actor>/<Command>`  |
+| Delivery          | persisted `cluster_messages`; recovery redelivers stored envelopes               | volatile Cluster messages and `MessageStorage.layerNoop`; the receipt is the only durable record; the handle retries the same id |
 
 Direct delivery keeps every accepted-work guarantee through the receipt: a committed command replays, and an uncommitted command leaves nothing behind for its caller to retry. The handle retries `ActorUnavailable` with capped exponential backoff (10 ms doubling to 500 ms) until `policy.deliveryTimeout`.
 

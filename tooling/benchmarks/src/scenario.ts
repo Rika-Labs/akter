@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actors } from "@durable-actors/core/runtime"
-import { ActorCluster, ActorTest, CleanupHooks, TurnHooks } from "@durable-actors/core/testing"
+import { Actors } from "@rikalabs/akter/runtime"
+import { ActorCluster, ActorTest, CleanupHooks, TurnHooks } from "@rikalabs/akter/testing"
 import { Context, Effect, Layer, Redacted } from "effect"
 import { SqlClient } from "effect/sql"
 import type { Activity, Backend, Instruments, StatementCount } from "./backend.ts"
@@ -89,7 +89,7 @@ const probes = (subscriptions: boolean | undefined) =>
  */
 const BENCH_CONTENT_KEY = {
   id: "bench",
-  secret: Redacted.make("durable-actors benchmark content grant key only"),
+  secret: Redacted.make("akter benchmark content grant key only"),
 }
 
 const runtimeLayer = (

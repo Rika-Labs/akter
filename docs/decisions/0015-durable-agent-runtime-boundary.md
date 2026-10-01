@@ -12,7 +12,7 @@
 
 ## Context
 
-Rivet agentOS combines an agent session with a durable actor and an isolated VM. Rebuilding its Rust kernel, virtual filesystem, process model, and guest networking would duplicate a mature and difficult subsystem. Durable Actors already has stronger primitives for transactional business state, caller attribution, receipts, effects, workflows, and relational observation.
+Rivet agentOS combines an agent session with a durable actor and an isolated VM. Rebuilding its Rust kernel, virtual filesystem, process model, and guest networking would duplicate a mature and difficult subsystem. Akter already has stronger primitives for transactional business state, caller attribution, receipts, effects, workflows, and relational observation.
 
 ## Decision
 
@@ -27,7 +27,7 @@ The future agent runtime is an adapter package, not a new framework primitive. I
 
 The database is authoritative. A sandbox is disposable activation-local compute and may be recreated after hibernation or failure. No model response or tool call is retried blindly when the provider cannot prove idempotency; unknown outcomes remain visible for reconciliation.
 
-The package may expose a declarative helper such as `Agent.definition(...)`, but it must compile to `Actor.make` and must not add a second actor lifecycle or mutation path. The core `durable-actors` package remains AI-neutral.
+The package may expose a declarative helper such as `Agent.definition(...)`, but it must compile to `Actor.make` and must not add a second actor lifecycle or mutation path. The core `akter` package remains AI-neutral.
 
 ## Consequences
 

@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Effect, Schema } from "effect"
 
 export const Pinged = Actor.event("Pinged", { n: Schema.Int })

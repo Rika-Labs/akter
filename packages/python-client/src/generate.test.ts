@@ -1,6 +1,6 @@
-import { Actor, Unauthorized, User } from "@durable-actors/core"
-import { Actors, Auth } from "@durable-actors/core/runtime"
-import { ActorTest } from "@durable-actors/core/testing"
+import { Actor, Unauthorized, User } from "@rikalabs/akter"
+import { Actors, Auth } from "@rikalabs/akter/runtime"
+import { ActorTest } from "@rikalabs/akter/testing"
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import {
   Effect,

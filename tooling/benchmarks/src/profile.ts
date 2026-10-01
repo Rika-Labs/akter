@@ -65,9 +65,9 @@ const area = (url: string) => {
     return name!
   }
 
-  const workspace = /\/packages\/durable-actors\/src\/(.*)$/.exec(url)
+  const workspace = /\/packages\/akter\/src\/(.*)$/.exec(url)
 
-  if (workspace !== null) return `durable-actors/${workspace[1]!.split("/")[0]}`
+  if (workspace !== null) return `akter/${workspace[1]!.split("/")[0]}`
 
   return url.startsWith("node:") || url.startsWith("internal:") ? "runtime builtins" : "other"
 }
@@ -76,7 +76,7 @@ const location = (frame: CallFrame) => {
   if (frame.url === "" || frame.url === "[native code]") return "[native code]"
   const short = frame.url.replace(/^.*node_modules\/(?:\.bun\/[^/]+\/node_modules\/)?/, "")
 
-  return `${short.replace(/^.*\/packages\/durable-actors\//, "durable-actors/")}:${frame.lineNumber + 1}`
+  return `${short.replace(/^.*\/packages\/akter\//, "akter/")}:${frame.lineNumber + 1}`
 }
 
 const pct = (part: number, whole: number) => `${Math.round((part / whole) * 1000) / 10}%`
@@ -127,7 +127,7 @@ const summarize = (
     for (let cursor: number | undefined = id; cursor !== undefined; cursor = parent.get(cursor)) {
       const ancestor = byId.get(cursor)!.callFrame
 
-      if (!ancestor.url.includes("/packages/durable-actors/src/")) continue
+      if (!ancestor.url.includes("/packages/akter/src/")) continue
       const name = `\`${ancestor.functionName || "(anonymous)"}\` | ${location(ancestor)}`
 
       if (seen.has(name)) continue

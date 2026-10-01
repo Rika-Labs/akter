@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/deployments",
+  "name": "@akter/deployments",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,12 +11,12 @@
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src"
   },
   "dependencies": {
-    "@durable-actors/core": "workspace:*",
+    "@rikalabs/akter": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@durable-actors/postgres": "workspace:*",
+    "@akter/postgres": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/sql-pg": "catalog:",
     "@types/pg": "8.23.1",

@@ -12,11 +12,11 @@
 
 ## Context
 
-[M3.6](../milestones/M3.md) asks for a billing example with cron and a workflow beside the counter, chat, and coding-agent examples. [ADR 0001](0001-repository-structure.md) lists only `counter`, `chat`, and `coding-agent` under `examples/`, and [repository structure](../architecture/repository-structure.md) requires an ADR for a new workspace package. Workspace packages are named `@durable-actors/<directory>`, and `@durable-actors/billing` already belongs to `packages/billing`, the control plane's Polar integration.
+[M3.6](../milestones/M3.md) asks for a billing example with cron and a workflow beside the counter, chat, and coding-agent examples. [ADR 0001](0001-repository-structure.md) lists only `counter`, `chat`, and `coding-agent` under `examples/`, and [repository structure](../architecture/repository-structure.md) requires an ADR for a new workspace package. Workspace packages are named `@akter/<directory>`, and `@akter/billing` already belongs to `packages/billing`, the control plane's Polar integration.
 
 ## Decision
 
-- **Place.** The example is the workspace package `examples/subscriptions`, named `@durable-actors/subscriptions`. It follows the other examples: one actor folder (`src/account/{contract,layer,authorize,gateway}.ts` with its test beside it), a runnable `src/main.ts`, and `test` / `test:integration` scripts that run the same cases on PGlite and on a fresh Postgres database.
+- **Place.** The example is the workspace package `examples/subscriptions`, named `@akter/subscriptions`. It follows the other examples: one actor folder (`src/account/{contract,layer,authorize,gateway}.ts` with its test beside it), a runnable `src/main.ts`, and `test` / `test:integration` scripts that run the same cases on PGlite and on a fresh Postgres database.
 - **Scope.** An `Account` actor owns its invoices as rows. Its first invoice is issued once a card reaches the provider, and `Renew`, which `policy.cron` sends at midnight UTC on the 1st of each month, issues each later one. A `Collect` workflow charges an invoice, waits up to three days for a newer card after a decline, retries twice, and reports back through `Settle`. `authorize` refuses `Collect` and `Settle` to every external caller; the account starts collections through intents, and step calls to its commands skip `authorize`.
 - **Provider.** The payment provider is an in-memory stand-in behind a `PaymentGateway` service. The example claims no provider behaviour: it shows where the idempotency keys go (the effect id for attaching a card, the execution id and step name for a charge) and counts calls per key in its tests.
 

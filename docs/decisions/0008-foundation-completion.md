@@ -41,7 +41,7 @@ Retryable causes — `RetryTurn` and retryable `SqlError` — die so Cluster res
 
 ### Conformance harness
 
-`durable-actors/testing` exports `conformance` (named cases) and `describeConformance` (a registrar-driven suite). The harness is framework-neutral: registrars inject `describe`/`it`/`expect` and a required `skip`, so inapplicable cases are reported by name rather than dropped. The same names run on PGlite and Postgres; real SIGKILL and independent-connection cases run on Postgres only.
+`akter/testing` exports `conformance` (named cases) and `describeConformance` (a registrar-driven suite). The harness is framework-neutral: registrars inject `describe`/`it`/`expect` and a required `skip`, so inapplicable cases are reported by name rather than dropped. The same names run on PGlite and Postgres; real SIGKILL and independent-connection cases run on Postgres only.
 
 ## Alternatives
 

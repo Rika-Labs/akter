@@ -10,7 +10,7 @@ The [repository structure](../architecture/repository-structure.md) requires an 
 
 ## Decision
 
-- The harness is the workspace package `@durable-actors/benchmarks` in `tooling/benchmarks/`. It is tooling, not product code: it imports the framework only through its public `durable-actors` and `durable-actors/runtime` entries, and it is linted, typechecked, and unit-tested like any other workspace.
+- The harness is the workspace package `@akter/benchmarks` in `tooling/benchmarks/`. It is tooling, not product code: it imports the framework only through its public `akter` and `@rikalabs/akter/runtime` entries, and it is linted, typechecked, and unit-tested like any other workspace.
 - `bun run bench` runs every scenario against a disposable Postgres 18 container that the harness starts itself, then against in-process PGlite. `BENCH_DATABASE_URL` points it at an existing server instead. Each group of measured cases gets a fresh database and a fresh actor runtime.
 - Results are data, kept in the new top-level `benchmarks/` directory: `benchmarks/results/<date>-<shortsha>[-<label>]-<backend>.json`, one file per run and backend, never edited after it is committed. Each file records the git SHA and any merge parents, the backend version and settings, the runtime versions, the machine, the parameters, and raw percentiles. `benchmarks/README.md` explains how to run, read, and compare results; `bun run bench:compare` diffs two files and flags regressions.
 - Each scenario is one file in `tooling/benchmarks/src/scenarios/` (scale and memory scenarios in `scenarios/scale/`, so the folder stays under the module limit), registered in `main.ts`. A slice that adds a durable mechanism adds its scenario and commits a result from its branch.
