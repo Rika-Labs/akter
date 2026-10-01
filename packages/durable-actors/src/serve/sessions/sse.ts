@@ -1,5 +1,5 @@
 import { Effect, Schema, Stream } from "effect"
-import { Sse } from "effect/unstable/encoding"
+import { Sse } from "effect/encoding"
 import { ActorError } from "../../errors/actor.ts"
 import { actorErrorBody } from "../../protocol/wire.ts"
 

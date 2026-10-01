@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect"
-import { Command, Flag } from "effect/unstable/cli"
+import { Command, Flag } from "effect/cli"
 import { operatorCommand, operatorFlags, operatorRequest, tenant } from "../operator/request.ts"
 
 const count = (name: string, maximum: number, description: string) =>

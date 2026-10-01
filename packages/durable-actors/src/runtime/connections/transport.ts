@@ -1,5 +1,5 @@
 import { Crypto, Effect, Option, Schedule, Schema } from "effect"
-import { ClusterError, EntityId, Sharding, ShardingConfig } from "effect/unstable/cluster"
+import { ClusterError, EntityId, Sharding, ShardingConfig } from "effect/cluster"
 import {
   type Deliver,
   type Delivered,

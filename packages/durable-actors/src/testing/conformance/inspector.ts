@@ -1,12 +1,6 @@
 import { Context, Crypto, Data, Effect, Exit, Layer, Option, Schedule, Schema } from "effect"
-import {
-  FetchHttpClient,
-  Headers,
-  HttpClient,
-  HttpClientRequest,
-  HttpRouter,
-} from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient, Headers, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { Actor, Intent, Unauthorized, User } from "../../index.ts"
 import { Inspector } from "../../runtime/index.ts"
 import * as Queries from "../../runtime/inspector/queries.ts"

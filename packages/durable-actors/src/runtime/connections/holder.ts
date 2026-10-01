@@ -14,7 +14,7 @@ import {
   Scope,
   Stream,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorError, ActorUnavailable, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import type { Placement } from "../storage/codec.ts"

@@ -1,6 +1,6 @@
 import { Effect, Layer, Predicate, Schema, Stream } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { User } from "../../../index.ts"
 import { RetentionGap, UnknownCursor } from "../../../errors/events.ts"
 import { InternalActors } from "../../../runtime/actors.ts"

@@ -1,6 +1,6 @@
 import { getTableColumns } from "drizzle-orm"
 import { Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { descriptorOf } from "../../actor/descriptor.ts"
 import { ownership, type AdoptionAccess, type MappedKind } from "../../tables/owned.ts"
 import type { Placement } from "../storage/codec.ts"

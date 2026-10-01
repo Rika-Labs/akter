@@ -1,5 +1,5 @@
 import { Context, Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorError, CommandExpired, InvalidCommandId } from "../../errors/actor.ts"
 import type { Request } from "../request.ts"
 import { CommandId, commandTimes } from "../../identity/command.ts"

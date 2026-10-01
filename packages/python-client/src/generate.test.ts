@@ -13,8 +13,8 @@ import {
   Schema,
   Stream,
 } from "effect"
-import { FetchHttpClient, Headers, HttpClient, HttpRouter } from "effect/unstable/http"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { FetchHttpClient, Headers, HttpClient, HttpRouter } from "effect/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { afterAll, beforeAll, expect, it } from "vitest"
 import { generate } from "./generate.ts"
 

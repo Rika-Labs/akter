@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { JOB_KEY_PREFIX } from "../../handles/intents.ts"
 import { decodeBytes, decodeText } from "../inspector/queries.ts"

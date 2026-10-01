@@ -6,7 +6,7 @@ import { RuntimeControl } from "../../../runtime/drain.ts"
 import type { ConformanceCase } from "../../conformance.ts"
 import { EngineProbe, Probe, Ship, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { advance, eventually, killOwner, on, reset, suspendedRow, withCluster } from "./harness.ts"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /** Redelivery, execution-id validation, eviction, owner death, and drain recovery of workflows. */
 export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [

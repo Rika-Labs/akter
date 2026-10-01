@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { Arbitrary } from "effect/unstable/arbitrary"
+import { Arbitrary } from "effect"
 import { describe, expect, it } from "vitest"
 import { checkProperty } from "../testing/property.ts"
 import { childId, parseChildId } from "./child.ts"

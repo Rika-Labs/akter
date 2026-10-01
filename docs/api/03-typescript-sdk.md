@@ -125,7 +125,7 @@ A call rejects with:
 
 `InvalidCommandId` from the client carries `neverAdmitted: true` only when the client minted the id itself, every attempt with it was answered with that refusal, and no other call with the id is still waiting, so no turn can have run under it. Only then is resending under a new id a retry rather than a second operation.
 
-Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or branch with `Effect.catchReasons`. On Effect `4.0.0-rc.116`, omitting `orElse` retains the full `ActorError` in `E`; branching is not automatically exhaustive error-channel elimination. See the [error contract](../contracts/error-model.md). OpenAPI is the intended input for external client and tool generators.
+Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or branch with `Effect.catchReasons`. On Effect `4.0.0`, omitting `orElse` retains the full `ActorError` in `E`; branching is not automatically exhaustive error-channel elimination. See the [error contract](../contracts/error-model.md). OpenAPI is the intended input for external client and tool generators.
 
 ## React (CR.6)
 

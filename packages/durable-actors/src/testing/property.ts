@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
 import { Config, Effect, Predicate, Random, Result, Schema } from "effect"
-import { Arbitrary } from "effect/unstable/arbitrary"
+import { Arbitrary } from "effect"
 import type { AnyReducer } from "../members/reducer.ts"
 
 /** The seed every property runs under unless `PROPERTY_SEED` overrides it. */

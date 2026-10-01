@@ -1,4 +1,4 @@
-import type { Statement } from "effect/unstable/sql"
+import type { Statement } from "effect/sql"
 
 export interface RecordedStatement {
   /** The compiled text, whitespace collapsed. */

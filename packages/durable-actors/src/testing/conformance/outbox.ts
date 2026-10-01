@@ -1,5 +1,5 @@
 import { Cause, Data, DateTime, Duration, Effect, Exit, Fiber, Layer, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Caller, Intent, System } from "../../index.ts"
 import type { InTurn } from "../../handles/intents.ts"
 import { CommandId } from "../../identity/command.ts"

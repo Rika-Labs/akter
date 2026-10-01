@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Fiber, Queue, Schedule, Stream } from "effect"
-import type { SqlClient } from "effect/unstable/sql"
+import type { SqlClient } from "effect/sql"
 import { ActorError, RunnerAtCapacity, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import type { Registration, StreamInput } from "../members.ts"

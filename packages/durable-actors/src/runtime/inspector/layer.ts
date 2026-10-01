@@ -1,6 +1,6 @@
 import { Effect, type Option, Schema } from "effect"
-import { HttpRouter, type HttpServerRequest } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { HttpRouter, type HttpServerRequest } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, User } from "../../identity/caller.ts"
 import {

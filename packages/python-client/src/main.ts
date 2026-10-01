@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { Console, Effect, FileSystem, Layer, ManagedRuntime, Path, Schema } from "effect"
-import { FetchHttpClient, HttpClient } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient } from "effect/http"
 import { generate } from "./generate.ts"
 
 const USAGE =

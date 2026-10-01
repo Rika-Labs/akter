@@ -1,5 +1,5 @@
 import { Cause, Crypto, Effect, Option, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ContentTooLarge } from "../../errors/content.ts"
 import type { ContentRef } from "../../identity/content.ts"
 import { tenantRoutingKey } from "../storage/codec.ts"

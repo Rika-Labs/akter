@@ -1,5 +1,5 @@
 import { Cause, Clock, Data, Deferred, Effect, Option, Result, Schema } from "effect"
-import { SqlClient, type Statement } from "effect/unstable/sql"
+import { SqlClient, type Statement } from "effect/sql"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import type { JobFailure, JobRoute, RegisteredJob } from "../members.ts"
 import { Request } from "../request.ts"

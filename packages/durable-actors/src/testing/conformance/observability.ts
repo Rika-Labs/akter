@@ -12,8 +12,8 @@ import {
   type Scope,
   Tracer,
 } from "effect"
-import { PrometheusMetrics } from "effect/unstable/observability"
-import { SqlClient } from "effect/unstable/sql"
+import { PrometheusMetrics } from "effect/observability"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors } from "../../index.ts"
 import { DefectLog } from "../../runtime/telemetry/defects.ts"
 import { Metrics } from "../../runtime/telemetry/metrics.ts"

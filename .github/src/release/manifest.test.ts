@@ -110,7 +110,7 @@ it("names bare imports that are neither builtins nor declared dependencies or pe
   expect(
     undeclaredImports({
       sources: [
-        'import { Effect } from "effect";\nimport { SqlClient } from "effect/unstable/sql";',
+        'import { Effect } from "effect";\nimport { SqlClient } from "effect/sql";',
         'export { PGlite } from "@electric-sql/pglite";\nimport "./local.js";',
         'const { heapStats } = await import("bun:jsc");\nimport net from "node:net";',
         'import { Pool } from "pg";\nimport { BunServices } from "@effect/platform-bun/BunServices";',

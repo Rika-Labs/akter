@@ -1,5 +1,5 @@
 import { DateTime, Deferred, Effect, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { load } from "../measure.ts"
 import { Sender } from "../probe/contract.ts"
 import { creations, MintedChild, Minter } from "../probe/mint.ts"

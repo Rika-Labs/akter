@@ -10,3 +10,4 @@ The first published build of the framework, on the `alpha` npm dist-tag. It is a
 - One actor-shard outbox for intents, timers (`Intent.after`, `Intent.at`, `Intent.key`, `Intent.cancel`), and external effects (`Actor.effect`, `X.toEffectLayer`) with retries and dead-letter routes.
 - `Actors.layer` on Postgres or PGlite with `maxResidentActors`; `ActorTest` and the shared conformance suite in `/testing`.
 - Licensed under Apache-2.0.
+- Built on Effect `4.0.0` stable; its SQL, Cluster, HTTP and workflow modules are imported from `effect/<area>` rather than `effect/unstable/<area>`. Effect 4.0.0 emits a JSON Schema `pattern` only for a `Schema.isPattern` regular expression with the `u` flag, so declare served patterns as `/.../u` for them to appear in the OpenAPI document.

@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Fiber, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorUnavailable, SessionEnded, Unauthorized } from "../../../errors/actor.ts"
 import { MAX_SESSION_BYTES } from "../../../runtime/connections/owner.ts"
 import { decompress } from "../../../runtime/storage/codec.ts"

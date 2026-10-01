@@ -1,6 +1,6 @@
 import { Clock, Deferred, Duration, Effect, Exit, Option, Schedule } from "effect"
-import { type HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { type HttpClient, HttpClientRequest } from "effect/http"
+import { SqlClient } from "effect/sql"
 import type { EdgeOptions } from "../config.ts"
 
 /** How often a cold start rereads the registered runners and probes them. */

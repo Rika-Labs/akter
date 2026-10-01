@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient, type Statement } from "effect/unstable/sql"
+import { SqlClient, type Statement } from "effect/sql"
 
 /** A subscription row's key, then what it follows: the columns every row change reads and returns. */
 const ROW = [

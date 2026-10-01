@@ -1,6 +1,6 @@
 import { connect, createServer, type Socket } from "node:net"
 import { Config, type Duration, Effect, Schedule, Schema } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Pool } from "pg"
 
 const isBound = Schema.is(Schema.Struct({ port: Schema.Int }))

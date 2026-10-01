@@ -1,7 +1,7 @@
 import { Actor } from "@durable-actors/core"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Deferred, Effect, Layer, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /** An owned table: the framework adds and scopes routing_key, tenant_id, and actor_id. */
 export const entries = Actor.table(

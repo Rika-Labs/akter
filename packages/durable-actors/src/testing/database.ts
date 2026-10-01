@@ -10,7 +10,7 @@ import {
   Schedule,
   type Scope,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /** A test database older than this belongs to no live run: runs are cut off well before it. */
 const STALE_AFTER_MS = 60 * 60 * 1000

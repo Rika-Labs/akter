@@ -9,7 +9,6 @@ coverage/
 .amp/portals/
 .amp/in/
 .amp/email/
-.alchemy/
 .local/
 *.tsbuildinfo
 test-results/

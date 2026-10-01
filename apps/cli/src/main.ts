@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Context, Effect, Layer, Stdio } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 
 import { run } from "./cli.ts"
 

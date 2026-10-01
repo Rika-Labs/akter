@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Option } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /** Reads hosted deployments from the control-plane database. */
 export class Deployments extends Context.Service<

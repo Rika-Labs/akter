@@ -1,5 +1,5 @@
 import { Crypto, Effect, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { type Placement, routingKey } from "../storage/codec.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { Capability, type OperatorAction } from "./grants.ts"

@@ -168,7 +168,7 @@ The [comparison](docs/guides/comparison.md) covers each in detail and says when 
 ## Install
 
 ```sh
-bun add @durable-actors/core@alpha effect@4.0.0-rc.116 @effect/sql-pg@4.0.0-rc.116 @effect/sql-pglite@4.0.0-rc.116 drizzle-orm@1.0.0-rc.5-5935859
+bun add @durable-actors/core@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
 The runtime needs [Bun](https://bun.sh) 1.4.2 or later. Effect, its SQL drivers, and Drizzle are peer dependencies pinned to the versions the framework is tested with, so your app and the framework share one copy of each.

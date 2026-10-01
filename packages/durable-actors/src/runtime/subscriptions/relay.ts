@@ -1,5 +1,5 @@
 import { DateTime, Effect, Match, Result, Schema } from "effect"
-import { SqlClient, SqlError, type Statement } from "effect/unstable/sql"
+import { SqlClient, SqlError, type Statement } from "effect/sql"
 import { SubscriptionFailure } from "../../errors/subscription.ts"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"

@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { adoptionTargets, qualifiedName, type AdoptionTarget } from "./target.ts"
 
 /** What `durable adopt plan` reports for one table; it changes nothing. */

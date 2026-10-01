@@ -10,7 +10,7 @@ const FORBIDDEN =
  * protocol constants stay allowed, so this judges packages, not folders.
  */
 const SERVER_PACKAGE =
-  /^(bun$|bun:|node:|pg$|@electric-sql\/|@effect\/(sql|platform)-|effect\/unstable\/(sql|cluster|http|httpapi|rpc|process|socket)(\/|$)|drizzle-orm\/(effect-postgres|node-postgres|pglite|postgres-js|bun-sql)(\/|$))/
+  /^(bun$|bun:|node:|pg$|@electric-sql\/|@effect\/(sql|platform)-|effect\/(sql|cluster|http|http-api|rpc|process|socket)(\/|$)|drizzle-orm\/(effect-postgres|node-postgres|pglite|postgres-js|bun-sql)(\/|$))/
 
 const declaration = `import { Actor } from "../../src/index.ts"
 import { Schema } from "effect"

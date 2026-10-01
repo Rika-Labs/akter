@@ -1,5 +1,5 @@
 import { DateTime, Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { type AnyWorkflow, isWorkflow, type VersionRange } from "../../members/workflow.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { type Declared, manifestOf, toJson } from "./manifest.ts"

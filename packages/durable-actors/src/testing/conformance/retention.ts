@@ -1,5 +1,5 @@
 import { Cause, Clock, Effect, Exit, Fiber, Layer, Option, Schema, type Scope } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Intent, RetentionGap, UnknownCursor } from "../../index.ts"
 import { ActorError, CommandExpired, Timeout } from "../../errors/actor.ts"
 import { databaseTime } from "../../runtime/turn/admission.ts"

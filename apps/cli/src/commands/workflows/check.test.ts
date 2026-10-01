@@ -2,7 +2,7 @@ import { Actor } from "@durable-actors/core"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { Cause, Context, Effect, Exit, FileSystem, Layer, Schedule, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { describe, expect, it } from "vitest"
 
 import { UsageError } from "../../failure.ts"

@@ -1,5 +1,5 @@
 import { Data, type DateTime, Effect, Option, Predicate, Schema } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Headers } from "effect/http"
 import type { ActorUnavailable } from "../errors/actor.ts"
 import { Unauthorized } from "../errors/actor.ts"
 import { Anonymous, User } from "../identity/caller.ts"
@@ -160,7 +160,7 @@ export const make = <R = never>(provider: Authenticate<R> | MakeOptions<R>): Aut
 export const readsCookies = (provider: AuthProvider<unknown>) =>
   provider.credentials.some(Credential.$is("Cookie"))
 
-const Tenant = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/))
+const Tenant = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/u))
 
 const isTenant = Schema.is(Tenant)
 

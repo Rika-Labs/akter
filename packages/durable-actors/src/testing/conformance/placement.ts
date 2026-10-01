@@ -1,7 +1,7 @@
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, Effect, Exit, Layer, Option, Result, Schema } from "effect"
-import { Headers, HttpRouter } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { Headers, HttpRouter } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors, Intent, Unauthorized, User } from "../../index.ts"
 import type { InternalActors } from "../../runtime/actors.ts"
 import type { ContentStore } from "../../handles/content.ts"
@@ -52,9 +52,9 @@ const Family = Schema.Struct({
   shipments: Schema.Array(Schema.String),
 })
 
-const OrderKey = Schema.String.check(Schema.isPattern(/^o-/))
+const OrderKey = Schema.String.check(Schema.isPattern(/^o-/u))
 
-const ShipmentKey = Schema.String.check(Schema.isPattern(/^s-/))
+const ShipmentKey = Schema.String.check(Schema.isPattern(/^s-/u))
 
 const Place = Actor.command("Place")
 

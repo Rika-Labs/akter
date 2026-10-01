@@ -2,8 +2,8 @@ import { Database, checkWorkflows, formatIncompatibility } from "@durable-actors
 import type { Incompatibility } from "@durable-actors/core/runtime"
 import { BunCrypto } from "@effect/platform-bun"
 import { Console, Effect, Layer, Schema } from "effect"
-import { Command, Flag } from "effect/unstable/cli"
-import type { SqlError } from "effect/unstable/sql"
+import { Command, Flag } from "effect/cli"
+import type { SqlError } from "effect/sql"
 import { pathToFileURL } from "node:url"
 import { CommandFailed, UsageError, fail } from "../../failure.ts"
 

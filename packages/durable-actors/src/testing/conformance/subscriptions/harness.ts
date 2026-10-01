@@ -1,5 +1,5 @@
 import { DateTime, Deferred, Effect, Schema } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import { InternalActors } from "../../../runtime/actors.ts"
 import { Request, type SubscriptionEnvelope } from "../../../runtime/request.ts"
 import { System } from "../../../identity/caller.ts"

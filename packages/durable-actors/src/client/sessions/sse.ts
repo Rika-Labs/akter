@@ -10,7 +10,7 @@ import {
   type Scope,
   Stream,
 } from "effect"
-import { Sse } from "effect/unstable/encoding"
+import { Sse } from "effect/encoding"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { aborted, type Failure, networkFailure, undecodableFailure } from "../transport.ts"
 

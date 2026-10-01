@@ -1,7 +1,7 @@
 import type { PgConnection, PgPool } from "@effect/sql-pg"
 import { Context, Effect } from "effect"
 import type { Scope } from "effect"
-import type { SqlError } from "effect/unstable/sql"
+import type { SqlError } from "effect/sql"
 
 /**
  * Whether the database is a Neki router. Turn sessions then run

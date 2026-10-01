@@ -1,6 +1,6 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { Actor } from "../../../index.ts"
 import { Actors, Database } from "../../../runtime/index.ts"
 import { TurnHooks } from "../../../runtime/turn/hooks.ts"

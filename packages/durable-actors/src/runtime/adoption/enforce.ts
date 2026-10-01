@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { installObserveTriggers } from "./observe.ts"
 import { quotedTable } from "./plan.ts"
 import { AdoptionRefused, adoptionTargets, qualifiedName, type AdoptionTarget } from "./target.ts"

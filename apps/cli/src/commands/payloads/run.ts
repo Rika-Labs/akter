@@ -1,7 +1,7 @@
 import { checkPayloads, clearPayloads, formatPayloadProblem } from "@durable-actors/core/runtime"
 import type { ClearResult, PayloadProblem } from "@durable-actors/core/runtime"
 import { Effect } from "effect"
-import { Command } from "effect/unstable/cli"
+import { Command } from "effect/cli"
 import { entryCommand, entryFlags } from "../workflows/check.ts"
 
 /** What `payloads check` prints: exit 1 when a deployment of `actors` would be refused. */

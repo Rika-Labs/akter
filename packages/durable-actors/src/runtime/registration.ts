@@ -1,6 +1,6 @@
 import { Context, Crypto, Effect } from "effect"
-import { Sharding } from "effect/unstable/cluster"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { Sharding } from "effect/cluster"
+import { SqlClient, SqlError } from "effect/sql"
 import type { ActorError } from "../errors/actor.ts"
 import type { JobRegistration, QueryRegistration, Registration } from "./members.ts"
 import type { InternalActors } from "./actors.ts"

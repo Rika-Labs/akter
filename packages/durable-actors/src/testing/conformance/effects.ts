@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Cause, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Caller, System } from "../../index.ts"
 import type { ExecutorContext } from "../../contexts/job.ts"
 import { CommandId } from "../../identity/command.ts"

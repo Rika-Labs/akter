@@ -1,11 +1,5 @@
 import { Schema, SchemaAST } from "effect"
-import {
-  HttpApi,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  HttpApiSchema,
-  OpenApi,
-} from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import {
   declaredStatus,
   type ServedConnection,

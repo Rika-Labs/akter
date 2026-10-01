@@ -1,4 +1,5 @@
-import { Effect, Encoding, Redacted, Result } from "effect"
+import { Effect, Redacted, Result } from "effect"
+import { Base64Url } from "effect/encoding"
 import type { InvalidContentRef } from "../../errors/content.ts"
 
 /** How long a grant lasts from when it is issued. */
@@ -105,8 +106,7 @@ export const grantKeys = Effect.fnUntraced(function* (
         globalThis.crypto.subtle.sign("HMAC", imported.get(signer)!, message(deployment, granted)),
       ).pipe(
         Effect.map(
-          (mac) =>
-            `g1.${signer}.${granted.expiresAt}.${Encoding.encodeBase64Url(new Uint8Array(mac))}`,
+          (mac) => `g1.${signer}.${granted.expiresAt}.${Base64Url.encode(new Uint8Array(mac))}`,
         ),
       ),
     verify: (grant, bound) =>
@@ -117,7 +117,7 @@ export const grantKeys = Effect.fnUntraced(function* (
 
         const expiresAt = Number(parts[2])
         const key = imported.get(parts[1]!)
-        const mac = Encoding.decodeBase64Url(parts[3]!)
+        const mac = Base64Url.decode(parts[3]!)
 
         if (!Number.isSafeInteger(expiresAt) || Result.isFailure(mac))
           return Result.fail("malformed" as const)

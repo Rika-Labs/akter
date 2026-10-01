@@ -22,9 +22,9 @@ import {
   EntityId as ClusterEntityId,
   Sharding,
   ShardId,
-} from "effect/unstable/cluster"
-import { Rpc } from "effect/unstable/rpc"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+} from "effect/cluster"
+import { Rpc } from "effect/rpc"
+import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
 import { Executed, Outcome, Request } from "../request.ts"
 import { type RegisteredCommand, type Registration } from "../members.ts"

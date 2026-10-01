@@ -143,7 +143,7 @@ export function publishManifest({
   }
 }
 
-/** The package a bare import specifier names: `effect/unstable/sql` names `effect`. */
+/** The package a bare import specifier names: `effect/sql` names `effect`. */
 const packageOf = (specifier: string) =>
   specifier
     .split("/")

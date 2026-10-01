@@ -1,7 +1,7 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Config, Console, Effect, Layer, Redacted, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../../../index.ts"
 import { Actors, Database } from "../../../../runtime/index.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"

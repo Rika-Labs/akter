@@ -7,18 +7,18 @@ import {
   Context,
   Crypto,
   Effect,
-  Encoding,
   Layer,
   type PlatformError,
   Schema,
 } from "effect"
+import { Base64Url } from "effect/encoding"
 import {
   FetchHttpClient,
   HttpClient,
   HttpClientError,
   HttpClientRequest,
   HttpRouter,
-} from "effect/unstable/http"
+} from "effect/http"
 import { connect, type Http2Failure, listen } from "../http2.ts"
 import { load } from "../measure.ts"
 import { Probe } from "../probe/contract.ts"
@@ -80,7 +80,7 @@ const ISSUER = "https://issuer.bench"
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
 const segment = (value: Schema.Json) =>
-  encodeJson(value).pipe(Effect.orDie, Effect.map(Encoding.encodeBase64Url))
+  encodeJson(value).pipe(Effect.orDie, Effect.map(Base64Url.encode))
 
 /** `Auth.jwt` with a static ES256 key, and a token it accepts for the whole run. */
 const jwtAuth = Effect.gen(function* () {
@@ -118,7 +118,7 @@ const jwtAuth = Effect.gen(function* () {
       },
       tenant: () => "bench",
     }),
-    authorization: `Bearer ${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`,
+    authorization: `Bearer ${signed}.${Base64Url.encode(new Uint8Array(signature))}`,
   } satisfies Credentials
 })
 
@@ -163,7 +163,7 @@ const assertionAuth = Effect.gen(function* () {
         )
 
         return {
-          "durable-assertion": `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`,
+          "durable-assertion": `${signed}.${Base64Url.encode(new Uint8Array(signature))}`,
         }
       }),
   } satisfies Credentials

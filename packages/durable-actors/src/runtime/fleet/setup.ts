@@ -1,5 +1,5 @@
 import { Clock, Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import type { AnyFleetView } from "../../tables/fleet.ts"
 import { resolveViews } from "./checks.ts"
 import { FLEET_PUBLICATION, FLEET_SLOT } from "./maintainer.ts"

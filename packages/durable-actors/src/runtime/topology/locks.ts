@@ -1,6 +1,6 @@
 import { Context, Duration, Effect, PrimaryKey } from "effect"
-import { type RunnerAddress, type RunnerStorage, type ShardId } from "effect/unstable/cluster"
-import type { SqlClient } from "effect/unstable/sql"
+import { type RunnerAddress, type RunnerStorage, type ShardId } from "effect/cluster"
+import type { SqlClient } from "effect/sql"
 
 /**
  * Whether this runner still holds a shard's lock, read from the database. A

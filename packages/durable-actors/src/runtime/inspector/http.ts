@@ -1,5 +1,5 @@
 import { type Cause, Effect, Option, Schema } from "effect"
-import { Headers, type HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { Headers, type HttpServerRequest, HttpServerResponse } from "effect/http"
 import type { ActorError } from "../../errors/actor.ts"
 import { isSameOrigin } from "../../serve/layer.ts"
 import { Defect } from "../../protocol/wire.ts"

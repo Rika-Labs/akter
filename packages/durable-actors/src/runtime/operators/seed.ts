@@ -1,5 +1,5 @@
 import { type Context, type Crypto, Effect, Schema } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/sql"
 import type { RegisteredJob } from "../members.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, type Caller } from "../../identity/caller.ts"

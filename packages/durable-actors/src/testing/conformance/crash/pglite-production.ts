@@ -10,7 +10,7 @@ import {
   Schema,
   type Scope,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../../index.ts"
 import { ActorError } from "../../../errors/actor.ts"
 import { Actors, Database } from "../../../runtime/index.ts"

@@ -1,5 +1,5 @@
 import { Config, Effect, Redacted } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { freePort, open, query, until } from "./failover.ts"
 
 /**

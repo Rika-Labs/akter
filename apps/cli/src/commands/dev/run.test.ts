@@ -3,7 +3,7 @@ import { Actors, Auth } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { Context, Effect, Fiber, FileSystem, Layer, Schedule, Schema } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { describe, expect, it } from "vitest"
 
 import { UsageError } from "../../failure.ts"

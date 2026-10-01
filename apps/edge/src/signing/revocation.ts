@@ -1,7 +1,7 @@
 import { KEY_REFRESH_PATH, ASSERTION_HEADER } from "@durable-actors/core"
 import { Effect, Ref, Schedule } from "effect"
-import { type HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { type HttpClient, HttpClientRequest } from "effect/http"
+import { SqlClient } from "effect/sql"
 import type { EdgeOptions } from "../config.ts"
 import type { KeyRing } from "./keys.ts"
 

@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Context, Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ContentStore } from "../../handles/content.ts"
 
 /**

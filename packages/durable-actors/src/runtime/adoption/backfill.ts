@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorRef } from "../../identity/caller.ts"
 import { routingKey } from "../storage/codec.ts"
 import { quotedTable } from "./plan.ts"

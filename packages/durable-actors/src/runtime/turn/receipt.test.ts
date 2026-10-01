@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Crypto, Effect, ManagedRuntime, Predicate, Schema } from "effect"
-import { Arbitrary } from "effect/unstable/arbitrary"
+import { Arbitrary } from "effect"
 import { describe, expect, it } from "vitest"
 import { User } from "../../identity/caller.ts"
 import { Outcome } from "../request.ts"

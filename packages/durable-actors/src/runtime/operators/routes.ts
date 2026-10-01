@@ -1,5 +1,5 @@
 import { Effect, Match, Option, Schema } from "effect"
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"
 import { invalidInput, undecodable } from "../../serve/wire.ts"
 import {
@@ -80,7 +80,7 @@ const SkipBody = Schema.Struct({
   subscriberType: Schema.NonEmptyString,
   subscription: Schema.NonEmptyString,
   subscriberId: Schema.NonEmptyString,
-  through: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,17}$/)),
+  through: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,17}$/u)),
   reason: Reason,
 })
 

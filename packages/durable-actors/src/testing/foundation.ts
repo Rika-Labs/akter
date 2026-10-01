@@ -10,7 +10,7 @@ import {
   References,
   Schema,
 } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/sql"
 import { Actor, Caller, NotCreated, Principal, System, Timeout, User } from "../index.ts"
 import { Actors } from "../handles/actors.ts"
 import { Outcome, Request } from "../runtime/request.ts"

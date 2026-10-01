@@ -1,11 +1,5 @@
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpRouter,
-  HttpServer,
-} from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
+import { SqlClient } from "effect/sql"
 import {
   Cause,
   Context,

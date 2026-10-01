@@ -1,6 +1,6 @@
 import { Inspection } from "@durable-actors/core/client"
 import { Effect, Schema, Struct } from "effect"
-import { Command, Flag } from "effect/unstable/cli"
+import { Command, Flag } from "effect/cli"
 import {
   actorArgument,
   operatorCommand,

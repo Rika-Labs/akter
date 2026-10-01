@@ -1,5 +1,5 @@
 import { Deferred, Effect, Fiber, Predicate, Schedule, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { SessionEnded } from "../../../errors/actor.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { ActorCluster } from "../../cluster.ts"

@@ -12,7 +12,7 @@ import {
   type Scope,
   Stream,
 } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { DataDirLocked, DataDirVersion } from "../../../errors/database.ts"
 import { LOCK_FILE, POSTGRES_MAJOR } from "../../../runtime/database/pglite.ts"

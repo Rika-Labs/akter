@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
 import { Effect, Match, Predicate, Schema } from "effect"
-import { Arbitrary } from "effect/unstable/arbitrary"
+import { Arbitrary } from "effect"
 import { Actor, Actors, CommandExpired, InvalidCommandId } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"

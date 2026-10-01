@@ -1,5 +1,5 @@
 import { Effect, type Layer, Result, Schema } from "effect"
-import { Arbitrary } from "effect/unstable/arbitrary"
+import { Arbitrary } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, type ActorError } from "../index.ts"
 import type { InternalActors } from "../runtime/actors.ts"

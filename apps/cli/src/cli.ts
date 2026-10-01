@@ -1,5 +1,5 @@
 import { Effect, Runtime, Schema } from "effect"
-import { CliError, Command } from "effect/unstable/cli"
+import { CliError, Command } from "effect/cli"
 
 import { version } from "../package.json" with { type: "json" }
 import {

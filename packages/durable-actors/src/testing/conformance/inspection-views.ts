@@ -1,5 +1,5 @@
 import { Crypto, Data, Effect, Exit, Layer, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Intent } from "../../index.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"

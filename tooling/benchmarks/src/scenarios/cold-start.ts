@@ -12,8 +12,8 @@ import {
   Schema,
   Scope,
 } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { load, now, summarize, throughput } from "../measure.ts"
 import { Probe, Sender } from "../probe/contract.ts"
 import { deliveries } from "../probe/layer.ts"

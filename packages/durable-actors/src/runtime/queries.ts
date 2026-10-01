@@ -1,6 +1,6 @@
 import { type Context, type Crypto, Effect, Semaphore } from "effect"
-import { Sharding } from "effect/unstable/cluster"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { Sharding } from "effect/cluster"
+import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable, InvalidInput, NotCreated, Timeout } from "../errors/actor.ts"
 import { type InternalActors } from "./actors.ts"
 import { Outcome, type Request } from "./request.ts"

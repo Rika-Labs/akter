@@ -1,5 +1,5 @@
 import { Deferred, Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Sender } from "../probe/contract.ts"
 import { deliveries } from "../probe/layer.ts"
 import { type CaseResult, databaseNow, measure, type Scenario } from "../scenario.ts"

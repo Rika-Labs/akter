@@ -1,5 +1,5 @@
 import { Effect, Layer, Option, Schema, type Scope } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors } from "../../index.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"
 import { ActorTest } from "../actor-test.ts"

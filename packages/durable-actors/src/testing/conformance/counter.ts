@@ -1,5 +1,5 @@
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
-import { SqlClient, Statement } from "effect/unstable/sql"
+import { SqlClient, Statement } from "effect/sql"
 import { Actor, Actors, CurrentCaller, User } from "../../index.ts"
 import {
   type ActorError,

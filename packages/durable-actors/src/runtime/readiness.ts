@@ -1,7 +1,7 @@
 import { Context, Crypto, Effect, Option } from "effect"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Sharding } from "effect/unstable/cluster"
-import { SqlClient } from "effect/unstable/sql"
+import { Sharding } from "effect/cluster"
+import { SqlClient } from "effect/sql"
 import type { Readiness } from "./drain.ts"
 
 /** How long readiness waits for the database before it reports storage unavailable. */

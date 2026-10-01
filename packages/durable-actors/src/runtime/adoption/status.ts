@@ -1,5 +1,5 @@
 import { DateTime, Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /** One adopted table as `durable adopt status` reports it. */
 export interface AdoptionStatus {

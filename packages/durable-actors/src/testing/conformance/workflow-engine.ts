@@ -9,8 +9,8 @@ import {
   Schema,
   type Scope,
 } from "effect"
-import { Activity, Workflow } from "effect/unstable/workflow"
-import type { WorkflowEngine } from "effect/unstable/workflow"
+import { Activity, Workflow } from "effect/workflow"
+import type { WorkflowEngine } from "effect/workflow"
 import type { ConformanceExpect, ConformanceRegistrar } from "../conformance.ts"
 
 /**

@@ -10,12 +10,7 @@ import {
   SchemaAST,
   Stream,
 } from "effect"
-import {
-  Headers,
-  HttpRouter,
-  type HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http"
+import { Headers, HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http"
 import { type ServedConnection, type ServedDefinition, type ServedMember } from "../actor/served.ts"
 import { descriptorOf } from "../actor/descriptor.ts"
 import {

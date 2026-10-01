@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Option, Predicate, Schema, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorError, SessionEnded, Unauthorized } from "../../../errors/actor.ts"
 import { MAX_OUTBOUND_BYTES, MAX_OUTBOUND_FRAMES } from "../../../runtime/connections/holder.ts"
 import { ClientMessage } from "../../../runtime/connections/protocol.ts"

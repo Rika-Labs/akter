@@ -1,6 +1,6 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { Clock, Console, Effect, Layer, ManagedRuntime, Option, Redacted, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { decompress } from "../../../../runtime/storage/codec.ts"
 import { ActorTest } from "../../../actor-test.ts"

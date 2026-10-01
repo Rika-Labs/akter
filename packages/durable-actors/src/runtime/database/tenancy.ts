@@ -1,5 +1,5 @@
 import { Context, Effect, Option } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /**
  * The role tenant-scoped transactions run as when row-level security is on.

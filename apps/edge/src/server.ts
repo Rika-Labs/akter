@@ -1,7 +1,8 @@
 import { InvalidInput, SUBPROTOCOL } from "@durable-actors/core"
 import type { Server } from "bun"
-import { Crypto, Effect, Encoding, Layer, Predicate, Queue, Result } from "effect"
-import { HttpClient } from "effect/unstable/http"
+import { Crypto, Effect, Layer, Predicate, Queue, Result } from "effect"
+import { Base64Url } from "effect/encoding"
+import { HttpClient } from "effect/http"
 import type { EdgeOptions } from "./config.ts"
 import { authenticator } from "./principals/authenticate.ts"
 import { directory } from "./routing/directory.ts"
@@ -75,7 +76,7 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
         upgrade = proved.success
       }
 
-      const session = Encoding.encodeBase64Url(yield* random.randomBytes(16).pipe(Effect.orDie))
+      const session = Base64Url.encode(yield* random.randomBytes(16).pipe(Effect.orDie))
 
       const data: SocketData = {
         deployment,

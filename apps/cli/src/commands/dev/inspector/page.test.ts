@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { describe, expect, it } from "vitest"
 
 import { page, pageRoutes } from "./page.ts"

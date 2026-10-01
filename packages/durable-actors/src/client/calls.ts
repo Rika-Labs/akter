@@ -2,7 +2,6 @@ import {
   Clock,
   Duration,
   Effect,
-  Encoding,
   Exit,
   Match,
   Option,
@@ -12,6 +11,7 @@ import {
   Schema,
   SchemaAST,
 } from "effect"
+import { Base64Url } from "effect/encoding"
 import type { ServedDefinition, ServedMember } from "../actor/served.ts"
 import { ActorError, InvalidCommandId, InvalidInput, Timeout } from "../errors/actor.ts"
 import type { ValueSchema } from "../members/command.ts"
@@ -42,7 +42,7 @@ const decodeJwtClaims = (header: string | undefined) => {
 
   if (parts?.length !== 3) return Option.none()
 
-  return Result.match(Encoding.decodeBase64UrlString(parts[1]!), {
+  return Result.match(Base64Url.decodeString(parts[1]!), {
     onFailure: () => Option.none(),
     onSuccess: decodeJwtPayload,
   })

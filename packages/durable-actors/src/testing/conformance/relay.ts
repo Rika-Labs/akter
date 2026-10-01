@@ -12,7 +12,7 @@ import {
   Schema,
   Tracer,
 } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import { Actor, Intent } from "../../index.ts"
 import type { Request } from "../../runtime/request.ts"
 import type { JobBinding } from "../../members/job.ts"

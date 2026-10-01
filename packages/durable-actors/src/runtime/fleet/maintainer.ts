@@ -1,7 +1,7 @@
 import { sql as fragment, type SQL } from "drizzle-orm"
 import { PgDialect } from "drizzle-orm/pg-core"
 import { Cause, Clock, Context, Effect, Schedule } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import type { AggregateKind, AnyFleetView } from "../../tables/fleet.ts"
 import type { AnyOwnedTable, Filter } from "../../tables/owned.ts"
 import { tenantRoutingKey } from "../storage/codec.ts"

@@ -1,5 +1,5 @@
 import { Effect, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { summarize } from "../measure.ts"
 import { WorkflowProbe } from "../probe/workflows.ts"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"

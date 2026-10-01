@@ -1,5 +1,5 @@
 import { Crypto, Effect, Option, Predicate } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, InvalidExecutionId, System, Unauthorized, User } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { routingKey } from "../../../runtime/storage/codec.ts"

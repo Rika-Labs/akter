@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"

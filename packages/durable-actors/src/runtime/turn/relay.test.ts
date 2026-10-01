@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Effect, Fiber, Layer, ManagedRuntime, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
 import { Outcome, type Request } from "../request.ts"
