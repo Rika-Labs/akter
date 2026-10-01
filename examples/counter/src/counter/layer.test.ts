@@ -1,7 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { ActorTest, testDatabase } from "@durable-actors/core/testing"
 import { Effect, Layer, ManagedRuntime, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { afterAll, expect, it } from "vitest"
 import { Counter, Snapshot } from "./contract.ts"
 import { CounterLive } from "./layer.ts"

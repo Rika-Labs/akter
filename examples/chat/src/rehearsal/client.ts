@@ -1,5 +1,5 @@
 import { Clock, Effect, Option, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest } from "effect/http"
 import type { Deployment } from "./deployment.ts"
 
 /** A reply from one runner's listener; no status means the connection failed. */

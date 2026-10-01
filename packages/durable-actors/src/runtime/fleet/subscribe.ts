@@ -1,5 +1,5 @@
 import { Clock, Effect, Schema, Stream, SubscriptionRef } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import {
   ActorError,
   ActorUnavailable,

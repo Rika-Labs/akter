@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema"
 
-const Identifier = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,39}$/))
+const Identifier = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,39}$/u))
 
 export const Deployment = Schema.Struct({
   project: Identifier,

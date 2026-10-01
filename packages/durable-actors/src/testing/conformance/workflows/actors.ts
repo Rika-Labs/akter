@@ -1,6 +1,6 @@
 import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Deferred, Effect, Layer, Option, Schema } from "effect"
-import { WorkflowEngine } from "effect/unstable/workflow"
+import { WorkflowEngine } from "effect/workflow"
 import { Actor, type Caller, Intent } from "../../../index.ts"
 import {
   type EngineFixture,

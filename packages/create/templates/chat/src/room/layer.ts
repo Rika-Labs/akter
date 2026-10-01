@@ -1,5 +1,5 @@
 import { DateTime, Effect, Layer, Option } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { MessagePosted, messages, messagesDdl, Room, RoomClosed } from "./contract.ts"
 
 /**

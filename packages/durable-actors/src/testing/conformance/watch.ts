@@ -15,13 +15,8 @@ import {
   Scope,
   Stream,
 } from "effect"
-import {
-  FetchHttpClient,
-  Headers as HttpHeaders,
-  HttpClient,
-  HttpClientRequest,
-} from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient, Headers as HttpHeaders, HttpClient, HttpClientRequest } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { Actor, Tenant, User } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import {

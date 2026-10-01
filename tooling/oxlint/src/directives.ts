@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { Console, Effect, FileSystem, ManagedRuntime, Schema, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { parseSync } from "oxc-parser"
 
 interface Source {

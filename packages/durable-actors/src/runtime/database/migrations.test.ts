@@ -11,7 +11,7 @@ import {
   Redacted,
   Schedule,
 } from "effect"
-import { Migrator, SqlClient } from "effect/unstable/sql"
+import { Migrator, SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { Database } from "../layer.ts"

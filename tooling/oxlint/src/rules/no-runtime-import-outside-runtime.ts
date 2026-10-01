@@ -2,8 +2,8 @@ import { defineRule } from "@oxlint/plugins"
 import { Schema } from "effect"
 
 const RUNTIME_MODULES = new Set([
-  "effect/unstable/sql",
-  "effect/unstable/cluster",
+  "effect/sql",
+  "effect/cluster",
   "@effect/sql-pg",
   "@effect/sql-pglite",
 ])
@@ -25,7 +25,7 @@ export const noRuntimeImportOutsideRuntimeRule = defineRule({
     type: "suggestion",
     docs: {
       description:
-        "Disallow imports of effect/unstable/sql, effect/unstable/cluster and @effect/sql-pg inside packages/durable-actors outside src/runtime/ and src/testing/.",
+        "Disallow imports of effect/sql, effect/cluster and @effect/sql-pg inside packages/durable-actors outside src/runtime/ and src/testing/.",
     },
     messages: {
       runtimeImport:

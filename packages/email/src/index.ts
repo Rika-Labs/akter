@@ -1,5 +1,5 @@
 import { Context, Crypto, Effect, FileSystem, Layer, Path, Schema } from "effect"
-import { FetchHttpClient, HttpClient } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient } from "effect/http"
 import { createEmail } from "@distilled.cloud/resend"
 import { Credentials, fromApiKey } from "@distilled.cloud/resend/Credentials"
 

@@ -1,5 +1,6 @@
-import { Clock, Effect, Encoding, Exit, Option, Schema } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Clock, Effect, Exit, Option, Schema } from "effect"
+import { Base64Url } from "effect/encoding"
+import { Headers } from "effect/http"
 import { describe, expect, it } from "vitest"
 import { Unauthorized } from "../errors/actor.ts"
 import { Jwk, jwt } from "./jwt.ts"
@@ -24,7 +25,7 @@ const keyPair = Effect.promise(() =>
 )
 
 const segment = (value: JwtHeader | TokenClaims) =>
-  encodeJson({ ...value }).pipe(Effect.orDie, Effect.map(Encoding.encodeBase64Url))
+  encodeJson({ ...value }).pipe(Effect.orDie, Effect.map(Base64Url.encode))
 
 const sign = Effect.fnUntraced(function* (key: CryptoKey, header: JwtHeader, claims: TokenClaims) {
   const signed = `${yield* segment(header)}.${yield* segment(claims)}`
@@ -33,7 +34,7 @@ const sign = Effect.fnUntraced(function* (key: CryptoKey, header: JwtHeader, cla
     crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(signed)),
   )
 
-  return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
+  return `${signed}.${Base64Url.encode(new Uint8Array(signature))}`
 })
 
 const setup = Effect.gen(function* () {

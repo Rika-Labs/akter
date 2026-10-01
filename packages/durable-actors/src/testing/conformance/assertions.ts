@@ -4,7 +4,6 @@ import {
   Crypto,
   Deferred,
   Effect,
-  Encoding,
   Fiber,
   Layer,
   Option,
@@ -13,7 +12,8 @@ import {
   type Scope,
   Stream,
 } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
+import { Base64Url } from "effect/encoding"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
 import { Unauthorized, User } from "../../index.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { InternalActors } from "../../runtime/actors.ts"
@@ -77,7 +77,7 @@ const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
 
 const segment = (value: Schema.Json) =>
-  encodeJson(value).pipe(Effect.orDie, Effect.map(Encoding.encodeBase64Url))
+  encodeJson(value).pipe(Effect.orDie, Effect.map(Base64Url.encode))
 
 interface JwsHeader {
   readonly alg: string
@@ -98,7 +98,7 @@ export const signAssertion = Effect.fnUntraced(function* (
     crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, utf8.encode(signed)),
   )
 
-  return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
+  return `${signed}.${Base64Url.encode(new Uint8Array(signature))}`
 })
 
 /** A key-set refresh push for `audience`, issued now for 10 seconds, signed with `key`. */

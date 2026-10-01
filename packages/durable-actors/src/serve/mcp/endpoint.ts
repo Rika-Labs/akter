@@ -1,5 +1,6 @@
-import { Effect, Encoding, Option, Result, Schema } from "effect"
-import { Headers, HttpServerResponse } from "effect/unstable/http"
+import { Effect, Option, Result, Schema } from "effect"
+import { Base64 } from "effect/encoding"
+import { Headers, HttpServerResponse } from "effect/http"
 import { ActorError, InvalidInput } from "../../errors/actor.ts"
 import { actorErrorBody } from "../../protocol/wire.ts"
 import { invalidInput, undecodable } from "../wire.ts"
@@ -126,7 +127,7 @@ const headerValue = (value: string) => {
 
   if (encoded === undefined) return Option.some(value)
 
-  return Result.match(Encoding.decodeBase64String(encoded), {
+  return Result.match(Base64.decodeString(encoded), {
     onFailure: () => Option.none(),
     onSuccess: Option.some,
   })

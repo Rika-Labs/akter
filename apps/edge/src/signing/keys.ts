@@ -1,7 +1,8 @@
 import { ASSERTION_TYPE, KEY_REFRESH_TYPE } from "@durable-actors/core"
 import type { AssertionClaims } from "@durable-actors/core/runtime"
-import { Clock, Duration, Effect, Encoding, Ref, Schedule, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { Clock, Duration, Effect, Ref, Schedule, Schema } from "effect"
+import { Base64Url } from "effect/encoding"
+import { SqlClient } from "effect/sql"
 import type { EdgeOptions, SigningKey } from "../config.ts"
 
 interface Published {
@@ -30,7 +31,7 @@ export interface KeyRing {
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
 const segment = (value: Schema.Json) =>
-  encodeJson(value).pipe(Effect.orDie, Effect.map(Encoding.encodeBase64Url))
+  encodeJson(value).pipe(Effect.orDie, Effect.map(Base64Url.encode))
 
 const utf8 = new TextEncoder()
 
@@ -133,7 +134,7 @@ export const keyRing = Effect.fnUntraced(function* (options: EdgeOptions) {
       crypto.subtle.sign({ name: "Ed25519" }, key.privateKey, utf8.encode(signed)),
     )
 
-    return `${signed}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`
+    return `${signed}.${Base64Url.encode(new Uint8Array(signature))}`
   })
 
   return {

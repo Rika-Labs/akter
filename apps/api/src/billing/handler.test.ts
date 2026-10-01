@@ -1,7 +1,7 @@
 import { describe, expect } from "vitest"
 import { it } from "@effect/vitest"
 import { Context, Effect } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { webhookRoute } from "./handler.ts"
 import type { Config } from "../config.ts"
 

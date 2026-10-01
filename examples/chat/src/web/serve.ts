@@ -10,7 +10,7 @@
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Option } from "effect"
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 import { actors } from "../app.ts"
 import { Cursor } from "../cursor/contract.ts"
 import { CursorLive } from "../cursor/layer.ts"

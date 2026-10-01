@@ -10,7 +10,7 @@ import {
   Schedule,
   Schema,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../index.ts"
 import type { VersionRange } from "../../members/workflow.ts"
 import {

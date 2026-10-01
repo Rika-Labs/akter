@@ -17,7 +17,7 @@ import {
   Schema,
   type Scope,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Fleet, User } from "../../index.ts"
 import { principal } from "../../identity/caller.ts"
 import { ActorError, Unauthorized } from "../../errors/actor.ts"

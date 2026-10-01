@@ -4,7 +4,7 @@ import { integer, pgTable, text } from "drizzle-orm/pg-core"
 import * as PgliteDrizzle from "drizzle-orm/effect-pglite"
 import * as PostgresDrizzle from "drizzle-orm/effect-postgres"
 import { Effect, Layer, Option } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /**
  * The application's own tables. They existed before any actor did, the app

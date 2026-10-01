@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite"
 import { customType, integer, pgTable, text, uuid } from "drizzle-orm/pg-core"
 import { Cause, Clock, Crypto, Effect, Exit, Layer, Redacted, Schema, type Scope } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/sql"
 import { Actor, type Actors } from "../../index.ts"
 import type { InternalActors } from "../../runtime/actors.ts"
 import { backfillAdoption } from "../../runtime/adoption/backfill.ts"

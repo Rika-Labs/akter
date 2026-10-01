@@ -13,7 +13,7 @@ import {
   Schedule,
   Schema,
 } from "effect"
-import { SqlError } from "effect/unstable/sql"
+import { SqlError } from "effect/sql"
 import { Actor, Actors } from "../index.ts"
 import { ActorError } from "../errors/actor.ts"
 import { ActorTest } from "./actor-test.ts"

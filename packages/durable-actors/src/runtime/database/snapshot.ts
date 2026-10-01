@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /**
  * Runs `effect` in a read-only, repeatable-read transaction, so every read in

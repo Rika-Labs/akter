@@ -13,7 +13,7 @@ import {
   HttpClientRequest,
   type HttpClientResponse,
   HttpMethod,
-} from "effect/unstable/http"
+} from "effect/http"
 import type { EdgeOptions } from "../config.ts"
 import type { Authenticator, Principal } from "../principals/authenticate.ts"
 import { claimsFor } from "../signing/claims.ts"

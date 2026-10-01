@@ -1,6 +1,6 @@
 import type { Unify } from "effect"
 import type { NodeInspectSymbol } from "effect/Inspectable"
-import type { WorkflowEngine } from "effect/unstable/workflow"
+import type { WorkflowEngine } from "effect/workflow"
 import { Context, Effect, type Schema, type Scope, type Stream } from "effect"
 import type { CommandContext, InStream, Mintable, QueryContext } from "../contexts/command.ts"
 import type { EnqueueContext, ExecutorContext } from "../contexts/job.ts"

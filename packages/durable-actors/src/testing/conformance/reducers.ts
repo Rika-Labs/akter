@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Layer, Result, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors, CommandConflict } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { decompress } from "../../runtime/storage/codec.ts"

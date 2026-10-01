@@ -1,6 +1,6 @@
 import { Intent } from "@durable-actors/core"
 import { DateTime, Effect, Layer, Option } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import {
   AppealDecided,
   Attachments,

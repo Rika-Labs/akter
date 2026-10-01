@@ -1,5 +1,5 @@
 import { DateTime, Duration, Effect, type Scope } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { encodeExecutionId } from "../../../identity/execution.ts"

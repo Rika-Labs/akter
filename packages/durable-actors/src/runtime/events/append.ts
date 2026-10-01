@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import type { EmittedEvent } from "../members.ts"
 import type { Request } from "../request.ts"
 import { System } from "../../identity/caller.ts"

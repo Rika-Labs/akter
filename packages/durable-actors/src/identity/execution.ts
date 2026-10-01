@@ -1,4 +1,5 @@
-import { Effect, Encoding, Result, Schema } from "effect"
+import { Effect, Result, Schema } from "effect"
+import { Base64Url } from "effect/encoding"
 import { InvalidExecutionId, InvalidExecutionKey } from "../errors/workflow.ts"
 
 /** Longest workflow key, in UTF-8 bytes. */
@@ -52,7 +53,7 @@ export const encodeExecutionId = (execution: Execution) =>
     yield* checkExecutionKey(execution.key)
     const { tenant, actor, id, workflow, key } = execution
 
-    const executionId = `w1.${Encoding.encodeBase64Url(encodeParts([tenant, actor, id, workflow, key]))}`
+    const executionId = `w1.${Base64Url.encode(encodeParts([tenant, actor, id, workflow, key]))}`
 
     if (utf8.encode(executionId).byteLength > MAX_EXECUTION_ID_BYTES)
       return yield* InvalidExecutionKey.make({ bytes: utf8.encode(key).byteLength })
@@ -75,7 +76,7 @@ export const decodeExecutionId = (executionId: string) =>
     )
       return yield* invalid
 
-    const json = Encoding.decodeBase64UrlString(executionId.slice(3))
+    const json = Base64Url.decodeString(executionId.slice(3))
 
     if (Result.isFailure(json)) return yield* invalid
 
@@ -87,7 +88,7 @@ export const decodeExecutionId = (executionId: string) =>
 
     if (utf8.encode(key).byteLength > MAX_KEY_BYTES) return yield* invalid
 
-    const canonical = `w1.${Encoding.encodeBase64Url(encodeParts(parts.success))}`
+    const canonical = `w1.${Base64Url.encode(encodeParts(parts.success))}`
 
     if (canonical !== executionId) return yield* invalid
 

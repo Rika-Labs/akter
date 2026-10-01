@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
-import { Reactivity } from "effect/unstable/reactivity"
-import type { SqlClient } from "effect/unstable/sql"
+import { Reactivity } from "effect/reactivity"
+import type { SqlClient } from "effect/sql"
 
 /**
  * The primary's WAL insert position as a decimal string. Read on a turn's

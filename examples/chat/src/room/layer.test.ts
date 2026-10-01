@@ -9,7 +9,7 @@ import {
 } from "@durable-actors/core"
 import { ActorTest, testDatabase } from "@durable-actors/core/testing"
 import { Effect, Layer, ManagedRuntime, Option, Schema, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { afterAll, expect, it } from "vitest"
 import { Presence, Room, RoomClosed, RoomId } from "./contract.ts"
 import { RoomLive } from "./layer.ts"

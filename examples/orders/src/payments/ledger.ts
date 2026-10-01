@@ -1,5 +1,5 @@
 import { Effect, Layer, Option, Schema } from "effect"
-import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { type ChargeReceipt, ChargeRequest, PaymentDeclined, Payments } from "./client.ts"
 
 /** The largest charge the fake provider accepts, in cents; larger ones are declined. */

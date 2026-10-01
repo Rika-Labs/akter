@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
 
 /** The caller has no valid session (HTTP 401). */
 export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
@@ -86,7 +86,10 @@ export const Dashboard = Schema.Struct({
  */
 export const OrganizationInput = Schema.Struct({
   name: Name,
-  slug: Schema.String.check(Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), Schema.isMaxLength(80)),
+  slug: Schema.String.check(
+    Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
+    Schema.isMaxLength(80),
+  ),
 })
 
 const errors = [Unauthorized, Forbidden, Unavailable, Conflict] as const

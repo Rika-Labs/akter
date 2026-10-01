@@ -1,6 +1,6 @@
 import { Intent, type Step, type Wait } from "@durable-actors/core"
 import { DateTime, Effect, Layer, Option, Schema, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import {
   AgentId,
   CodingAgent,

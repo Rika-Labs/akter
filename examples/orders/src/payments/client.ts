@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 
 /** The provider refused the charge and applied nothing, so retrying the same key is safe. */
 export class PaymentDeclined extends Schema.TaggedError<PaymentDeclined>()("PaymentDeclined", {

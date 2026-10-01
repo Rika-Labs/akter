@@ -1,5 +1,5 @@
 import { Cause, Clock, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
   type Broadcast,

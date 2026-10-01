@@ -1,6 +1,6 @@
 import { Schema } from "effect"
-import { ClusterSchema, Entity, type EntityId } from "effect/unstable/cluster"
-import { Rpc } from "effect/unstable/rpc"
+import { ClusterSchema, Entity, type EntityId } from "effect/cluster"
+import { Rpc } from "effect/rpc"
 import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import { ActorRef, Caller } from "../../identity/caller.ts"
 

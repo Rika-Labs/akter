@@ -14,7 +14,7 @@ import {
   Scope,
   Stream,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors, Intent, System } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import { Outcome, Request } from "../../runtime/request.ts"

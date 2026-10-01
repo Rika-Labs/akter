@@ -1,7 +1,7 @@
 import { Content, type ContentRef } from "@durable-actors/core"
 import { sweepContent } from "@durable-actors/core/testing"
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Shelf } from "../probe/archive.ts"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 

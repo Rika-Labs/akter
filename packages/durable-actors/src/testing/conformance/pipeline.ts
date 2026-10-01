@@ -16,7 +16,7 @@ import {
   Tracer,
 } from "effect"
 import type { Scope } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, ActorError, ActorUnavailable, Actors, Intent } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"

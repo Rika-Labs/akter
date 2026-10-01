@@ -12,7 +12,7 @@ import {
   Schema,
   Semaphore,
 } from "effect"
-import { SqlClient, Statement } from "effect/unstable/sql"
+import { SqlClient, Statement } from "effect/sql"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request } from "../request.ts"
 import { type RegisteredJob } from "../members.ts"

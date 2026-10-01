@@ -1,8 +1,8 @@
 import { Unauthorized, User } from "@durable-actors/core"
 import { Auth, type Authenticated, type AuthProvider } from "@durable-actors/core/runtime"
 import { Clock, Duration, Effect, Option, Schema } from "effect"
-import { Headers, type HttpClient } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { Headers, type HttpClient } from "effect/http"
+import { SqlClient } from "effect/sql"
 import type { EdgeOptions } from "../config.ts"
 
 /** A caller the edge authenticated, and when its credential stops being good. */
@@ -77,7 +77,7 @@ const claimAt = (claims: Readonly<Record<string, Schema.Json>>, path: string) =>
  * The limits every served tenant and subject keep; the runner refuses the rest
  * anyway.
  */
-const isTenant = Schema.is(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/)))
+const isTenant = Schema.is(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/u)))
 
 /** The token of `Bearer <token>`, as a header or a WebSocket frame carries it. */
 export const bearer = (value: string) => /^Bearer[ ]+([^ ]+)[ ]*$/i.exec(value)?.[1]

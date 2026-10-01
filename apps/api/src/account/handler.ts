@@ -1,12 +1,6 @@
 import { Effect } from "effect"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
-import {
-  Cookies,
-  HttpEffect,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http"
+import { HttpApiBuilder } from "effect/http-api"
+import { Cookies, HttpEffect, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { Api, Forbidden } from "@durable-actors/contracts"
 import { Auth } from "@durable-actors/accounts"
 import type { Config } from "../config.ts"

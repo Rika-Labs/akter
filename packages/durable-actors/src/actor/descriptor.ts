@@ -62,7 +62,7 @@ const MAX_PLACEMENT_DEPTH = 4
 
 const isUUIDv7 = Schema.is(Schema.String.check(Schema.isUUID(7)))
 
-const NAME = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/))
+const NAME = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/u))
 
 /** The declaration `Actor.make` compiles, before its type parameters are erased. */
 export interface Declaration {
@@ -267,7 +267,7 @@ const idSchemaOf = (
         },
         { expected: `c1.<byte length>.<${parent.name} id>.<${name} local id>` },
       ),
-    ).pipe(Schema.brand(name))
+    )
 
   if (Schema.isSchema(key)) return key
 
@@ -276,9 +276,9 @@ const idSchemaOf = (
       Schema.makeFilter((id: string) => isUUIDv7(id) || isMintedId(id), {
         expected: "a UUID v7 or a minted UUID v8",
       }),
-    ).pipe(Schema.brand(name))
+    )
 
-  return Schema.String.check(Schema.isUUID(7)).pipe(Schema.brand(name))
+  return Schema.String.check(Schema.isUUID(7))
 }
 
 const compileJobs = (declared: Declaration, commands: ReadonlyArray<AnyCommand>) => {

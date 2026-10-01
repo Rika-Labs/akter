@@ -1,7 +1,7 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import { Effect, Layer } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import { loadOptions } from "./config.ts"
 import { EdgeLive } from "./server.ts"
 

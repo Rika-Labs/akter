@@ -1,5 +1,5 @@
 import { Crypto, Effect, Schema } from "effect"
-import { SqlClient, type Statement } from "effect/unstable/sql"
+import { SqlClient, type Statement } from "effect/sql"
 import { type ActorRef, System } from "../../identity/caller.ts"
 import type { CronEntry, CronSchedule } from "../../policies/schedules.ts"
 import { CRON_PREFIX } from "./key.ts"

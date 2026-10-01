@@ -29,7 +29,7 @@ import {
 } from "drizzle-orm/pg-core"
 import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core"
 import { Cause, Effect, Option, Predicate } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/sql"
 import { checkAdoptedTable, checkOwnedTable, inTenant, TenantScope } from "../database/tenancy.ts"
 import { checkEnforcedTable, checkWriterRole } from "../adoption/startup.ts"
 import { ownerIndexExists, ownerIndexSql } from "../adoption/plan.ts"

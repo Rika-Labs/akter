@@ -10,7 +10,7 @@ import {
   Schema,
   Stream,
 } from "effect"
-import { Socket } from "effect/unstable/socket"
+import { Socket } from "effect/socket"
 import type { ServedConnection } from "../../actor/served.ts"
 import { ActorError, SessionEnded, Unauthorized } from "../../errors/actor.ts"
 import { type ActorRef, callerKey } from "../../identity/caller.ts"

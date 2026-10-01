@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Config, Crypto, Effect, Fiber, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Pool, type PoolClient } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { System } from "../../identity/caller.ts"

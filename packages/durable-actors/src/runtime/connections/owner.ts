@@ -12,8 +12,8 @@ import {
   Stream,
 } from "effect"
 import { inTenant } from "../database/tenancy.ts"
-import { Entity, type Sharding } from "effect/unstable/cluster"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { Entity, type Sharding } from "effect/cluster"
+import { SqlClient, SqlError } from "effect/sql"
 import {
   ActorError,
   ActorUnavailable,

@@ -12,7 +12,7 @@ import {
   ManagedRuntime,
   Redacted,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { DeploymentsLive } from "../deployment/repository.ts"

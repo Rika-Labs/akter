@@ -1,5 +1,5 @@
 import { Clock, Effect } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/sql"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 
 const TENANTS = 100

@@ -12,7 +12,7 @@ import {
 } from "@durable-actors/deployments"
 import { BunCrypto } from "@effect/platform-bun"
 import { Console, Effect, Layer, type Redacted } from "effect"
-import { Argument, Command, Flag } from "effect/unstable/cli"
+import { Argument, Command, Flag } from "effect/cli"
 import { UsageError, fail } from "../../failure.ts"
 
 const flags = {

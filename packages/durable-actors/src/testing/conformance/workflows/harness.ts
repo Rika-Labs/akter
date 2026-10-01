@@ -1,5 +1,5 @@
 import { Duration, Effect, Layer, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { User } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import { ActorCluster } from "../../cluster.ts"

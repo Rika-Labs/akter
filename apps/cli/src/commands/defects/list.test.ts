@@ -3,7 +3,7 @@ import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { Clock, Effect, Layer, Redacted, Schema } from "effect"
-import { FetchHttpClient, HttpRouter } from "effect/unstable/http"
+import { FetchHttpClient, HttpRouter } from "effect/http"
 import { describe, expect, it } from "vitest"
 
 import { recordingFetch, runCli, runCliWith } from "../../testing.ts"

@@ -10,7 +10,7 @@ import {
   Schema,
   type Scope,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, type Actors, type Caller, Intent, User } from "../../index.ts"
 import { Seed } from "../../runtime/operators/seed.ts"
 import type { Capability } from "../../runtime/operators/grants.ts"

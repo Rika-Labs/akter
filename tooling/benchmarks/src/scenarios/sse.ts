@@ -1,6 +1,6 @@
 import { Actors, Auth } from "@durable-actors/core/runtime"
 import { Effect, Layer, Stream } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { load } from "../measure.ts"
 import { FeedProbe, Pinged } from "../probe/feeds.ts"
 import { type ActorServices, type CaseResult, measure, type Scenario } from "../scenario.ts"

@@ -1,7 +1,7 @@
 import { eq, inArray, Param, SQL, sql as drizzleSql, StringChunk } from "drizzle-orm"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../index.ts"
 import type { AnyOwnedTable, ScopedRows } from "../../tables/owned.ts"
 import { ActorTest } from "../actor-test.ts"

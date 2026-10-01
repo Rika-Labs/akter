@@ -12,7 +12,7 @@
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { OrdersLive } from "./layer.ts"
 import { fakeLedger } from "./payments/ledger.ts"
 import { routes } from "./server.ts"

@@ -14,7 +14,7 @@ const error = { messageId: "runtimeImport" }
 tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOutsideRuntimeRule, {
   valid: [
     {
-      code: 'import { SqlClient } from "effect/unstable/sql";',
+      code: 'import { SqlClient } from "effect/sql";',
       filename: "packages/durable-actors/src/runtime/database/client.ts",
     },
     {
@@ -26,7 +26,7 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
       filename: "packages/durable-actors/src/testing/pglite/layer.ts",
     },
     {
-      code: 'export * from "effect/unstable/cluster";',
+      code: 'export * from "effect/cluster";',
       filename: "packages/durable-actors/src/runtime/index.ts",
     },
     {
@@ -34,11 +34,11 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
       filename: "packages/postgres/src/index.ts",
     },
     {
-      code: 'import { SqlClient } from "effect/unstable/sql";',
+      code: 'import { SqlClient } from "effect/sql";',
       filename: "apps/api/src/app.ts",
     },
     {
-      code: 'import { HttpApiBuilder } from "effect/unstable/httpapi";',
+      code: 'import { HttpApiBuilder } from "effect/http-api";',
       filename: "packages/durable-actors/src/serve/router.ts",
     },
     {
@@ -46,13 +46,13 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
       filename: "packages/durable-actors/src/index.ts",
     },
     {
-      code: 'import { SqlClient } from "effect/unstable/sql";',
+      code: 'import { SqlClient } from "effect/sql";',
       filename: "research/v4/framework/Actor.ts",
     },
   ],
   invalid: [
     {
-      code: 'import { SqlClient } from "effect/unstable/sql";',
+      code: 'import { SqlClient } from "effect/sql";',
       filename: "packages/durable-actors/src/index.ts",
       errors: [error],
     },
@@ -67,12 +67,12 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
       errors: [error],
     },
     {
-      code: 'import { Sharding } from "effect/unstable/cluster";',
+      code: 'import { Sharding } from "effect/cluster";',
       filename: "packages/durable-actors/src/actor/actor.ts",
       errors: [error],
     },
     {
-      code: 'export { SqlClient } from "effect/unstable/sql";',
+      code: 'export { SqlClient } from "effect/sql";',
       filename: "packages/durable-actors/src/tables/database.ts",
       errors: [error],
     },

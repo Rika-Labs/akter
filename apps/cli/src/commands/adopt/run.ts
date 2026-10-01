@@ -15,7 +15,7 @@ import {
 } from "@durable-actors/core/runtime"
 import { BunCrypto } from "@effect/platform-bun"
 import { Clock, Console, Effect, Layer, Option, type Redacted } from "effect"
-import { Argument, Command, Flag } from "effect/unstable/cli"
+import { Argument, Command, Flag } from "effect/cli"
 import { Database } from "@durable-actors/core/runtime"
 import { CommandFailed, fail } from "../../failure.ts"
 import { actorsOf, entryFlags, loadEntry } from "../workflows/check.ts"

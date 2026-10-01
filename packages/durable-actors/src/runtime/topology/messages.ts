@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { MessageStorage } from "effect/unstable/cluster"
+import { MessageStorage } from "effect/cluster"
 
 const persisted = (operation: string) =>
   Effect.die(new Error(`${operation}: commands are direct, so no Cluster message is persisted`))
@@ -29,6 +29,7 @@ export const directMessages: Layer.Layer<MessageStorage.MessageStorage> = Layer.
     unprocessedMessages: () => Effect.succeed([]),
     unprocessedMessagesById: () => Effect.succeed([]),
     resetAddress: () => Effect.void,
+    resetRequests: () => Effect.void,
     resetAddresses: () => Effect.void,
     clearAddress: () => Effect.void,
     resetShards: () => Effect.void,

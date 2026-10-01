@@ -1,5 +1,5 @@
 import { Effect, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import type { EdgeOptions } from "../config.ts"
 
 /** A tenant's home region and whether it is active or moving. */

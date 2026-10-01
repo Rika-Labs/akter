@@ -1,5 +1,5 @@
 import { Effect, Option, Schema, SchemaIssue } from "effect"
-import { HttpServerResponse } from "effect/unstable/http"
+import { HttpServerResponse } from "effect/http"
 import { ActorError, InvalidInput, Unauthorized } from "../errors/actor.ts"
 import { actorErrorBody, retryAfterSeconds, statusOf } from "../protocol/wire.ts"
 

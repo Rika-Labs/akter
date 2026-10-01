@@ -1,6 +1,6 @@
 import { Effect } from "effect"
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
-import { PrometheusMetrics } from "effect/unstable/observability"
+import { HttpRouter, HttpServerResponse } from "effect/http"
+import { PrometheusMetrics } from "effect/observability"
 
 /** Configuration for `Telemetry.serve`. */
 export interface TelemetryOptions {

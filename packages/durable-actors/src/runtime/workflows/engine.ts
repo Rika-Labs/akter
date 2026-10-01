@@ -11,8 +11,8 @@ import {
   Schema,
   Scope,
 } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
-import { Activity, Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
+import { SqlClient, SqlError } from "effect/sql"
+import { Activity, Workflow as EffectWorkflow, WorkflowEngine } from "effect/workflow"
 import {
   CallPhase,
   CurrentCallPhase,

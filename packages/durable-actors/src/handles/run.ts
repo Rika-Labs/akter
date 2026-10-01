@@ -1,5 +1,5 @@
 import { Effect, Exit, Option, Schedule } from "effect"
-import { Workflow as EffectWorkflow } from "effect/unstable/workflow"
+import { Workflow as EffectWorkflow } from "effect/workflow"
 import { type RecordedExit, StoredResult } from "../contexts/workflow.ts"
 import type { ActorError } from "../errors/actor.ts"
 import type { AnyWorkflow } from "../members/workflow.ts"
@@ -70,14 +70,8 @@ export const workflowRun = <W extends AnyWorkflow>(options: {
           found instanceof EffectWorkflow.Complete,
       ),
     ),
-    Effect.repeat({
-      until: (
-        found,
-      ): found is Option.Some<EffectWorkflow.Complete<W["success"]["Type"], W["error"]["Type"]>> =>
-        Option.isSome(found),
-      schedule: RESULT_POLL,
-    }),
-    Effect.flatMap((complete) => complete.value.exit),
+    Effect.repeat({ until: Option.isSome, schedule: RESULT_POLL }),
+    Effect.flatMap((found) => Option.getOrThrow(found).exit),
   )
 
   return { executionId: options.executionId, poll, result, interrupt: options.interrupt }

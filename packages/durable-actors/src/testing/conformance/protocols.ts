@@ -1,5 +1,6 @@
-import { Cause, Effect, Encoding, Exit, Layer, Schema } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { Cause, Effect, Exit, Layer, Schema } from "effect"
+import { Base64 } from "effect/encoding"
+import { HttpRouter } from "effect/http"
 import { Unauthorized } from "../../index.ts"
 import { InvalidInput } from "../../errors/actor.ts"
 import { CommandConflict, CommandExpired } from "../../errors/actor.ts"
@@ -645,7 +646,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
             body: call("HttpRoom.Count"),
             headers: {
               ...headers,
-              "mcp-name": `=?base64?${Encoding.encodeBase64("HttpRoom.Count")}?=`,
+              "mcp-name": `=?base64?${Base64.encode("HttpRoom.Count")}?=`,
             },
           })
 

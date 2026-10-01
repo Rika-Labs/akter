@@ -842,7 +842,7 @@ Not covered: the 1,000-row hot-actor starvation case runs in the `effect-concurr
 
 ### Property tests (T3)
 
-Properties draw generated inputs from `effect/unstable/arbitrary` through [`testing/property.ts`](../../packages/durable-actors/src/testing/property.ts). Each property runs a fixed number of cases from the seed `56`, so a pull-request run is deterministic; a failure reports its seed, the shrunk counterexample, and the Effect replay tuple. `PROPERTY_SEED=<seed>` reproduces a run, `PROPERTY_SEED=random` draws a new seed, and `PROPERTY_RUNS` overrides the case count. The [nightly properties workflow](../../.github/workflows/properties.yml) runs both suites with `PROPERTY_SEED=random`. A property fails unless every requested case ran.
+Properties draw generated inputs from `effect`'s `Arbitrary` through [`testing/property.ts`](../../packages/durable-actors/src/testing/property.ts). Each property runs a fixed number of cases from the seed `56`, so a pull-request run is deterministic; a failure reports its seed, the shrunk counterexample, and the Effect replay tuple. `PROPERTY_SEED=<seed>` reproduces a run, `PROPERTY_SEED=random` draws a new seed, and `PROPERTY_RUNS` overrides the case count. The [nightly properties workflow](../../.github/workflows/properties.yml) runs both suites with `PROPERTY_SEED=random`. A property fails unless every requested case ran.
 
 Pure properties, 1,000 cases each:
 

@@ -16,7 +16,7 @@ import {
   Schema,
   type Scope,
 } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import { Actor, RetentionGap, UnknownCursor } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import type { PayloadMigrations } from "../../members/payload.ts"

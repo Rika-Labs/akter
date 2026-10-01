@@ -11,7 +11,7 @@ import {
   Schedule,
   Schema,
 } from "effect"
-import { SqlClient, type SqlError } from "effect/unstable/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import { Actor, Intent } from "../../index.ts"
 import type { Cancelled } from "../../members/job.ts"
 import type { EnqueueOptions } from "../../contexts/job.ts"
@@ -119,7 +119,7 @@ const CappedCancelled = Actor.command("CappedCancelled", { payload: Actor.Cancel
 const SerialFailed = Actor.command("SerialFailed", { payload: Actor.DeadLetter(Serial) })
 
 const PickyDone = Actor.command("PickyDone", {
-  payload: Schema.String.check(Schema.isPattern(/^accepted$/)),
+  payload: Schema.String.check(Schema.isPattern(/^accepted$/u)),
 })
 
 const PickyCancelled = Actor.command("PickyCancelled", { payload: Actor.Cancelled(Picky) })

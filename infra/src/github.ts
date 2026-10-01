@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as ManagedRuntime from "effect/ManagedRuntime"
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
+import * as FetchHttpClient from "effect/http/FetchHttpClient"
 import { CredentialsFromEnv } from "@distilled.cloud/github/Credentials"
 import * as Pulls from "@distilled.cloud/github/pulls"
 import * as Actions from "@distilled.cloud/github/actions"

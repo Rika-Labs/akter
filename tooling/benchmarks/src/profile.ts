@@ -55,11 +55,11 @@ const area = (url: string) => {
     const [, name, rest] = modules
 
     if (name === "effect") {
-      const unstable = /^dist\/unstable\/([^/]+)\//.exec(rest!)
+      if (/^dist\/(Schema|internal\/schema)/.test(rest!)) return "effect/schema"
 
-      if (unstable !== null) return `effect/unstable/${unstable[1]}`
+      const module = /^dist\/([a-z-]+)\//.exec(rest!)
 
-      return /^dist\/(Schema|internal\/schema)/.test(rest!) ? "effect/schema" : "effect/core"
+      return module !== null && module[1] !== "internal" ? `effect/${module[1]}` : "effect/core"
     }
 
     return name!

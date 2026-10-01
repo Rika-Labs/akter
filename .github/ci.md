@@ -128,7 +128,7 @@ Dependabot is turned off for this repository; dependency updates, catalog or not
 
 ### Compatibility pins (2026-09-20 audit)
 
-- Effect and its adapters stay on `4.0.0-rc.116`; the npm `latest` tag on Effect's older major is not an upgrade. Vitest 5 matches the adapter's peer range.
+- Effect and its adapters are on the stable `4.0.0`; Effect's `unstable/*` modules graduated to `effect/<area>` (for example `effect/sql`, `effect/http-api`). Alchemy `2.0.0-beta.79`, the Distilled `1.0.0-rc.12` clients and FoldKit `0.163.0` still import `effect/unstable/*`, so `apps/api`, `packages/accounts`, `packages/billing`, `packages/email`, `infra` and the console's HTTP helpers fail until those packages publish 4.0.0-compatible releases. Vitest 5 matches the adapter's peer range.
 - Drizzle ORM and Kit use the matching `rc5` snapshot `1.0.0-rc.5-5935859`; this is an intentional prerelease channel, not a stable-version claim.
 - Oxlint/plugins stay at `1.82.0` with `oxlint-tsgolint` `7.0.2001`. `@effect/tsgo` `0.45.0` rejects the newer Oxlint patch target; update this cohort together when supported.
 - Oxlint's `RuleTester` requires Node >=22 and rejects Bun. Its package test script uses `npm exec --package=node@26.7.0` and prints the selected version, so local and CI runs do not depend on the runner's default Node. This requires npm and registry access on a cold npm cache; it installs only into npm's cache, not the repository or global toolchain. Use `npm exec`, not `npx`, which Bun rewrites to `bun x` in package scripts. The vendored anti-slop rule files run through Node's test runner, not Vitest. Directive tests and application tests still run on Bun. No tests or evidence checks are skipped.

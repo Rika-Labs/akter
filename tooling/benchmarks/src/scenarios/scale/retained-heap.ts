@@ -1,6 +1,6 @@
 import { heapStats } from "bun:jsc"
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { load } from "../../measure.ts"
 import { ResidentProbe, SleepyProbe } from "../../probe/contract.ts"
 import { type CaseResult, DEFAULT_POOL, measure, type Scenario } from "../../scenario.ts"

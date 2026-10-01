@@ -6,17 +6,17 @@ import { Schema } from "effect"
  * A deployment id: lowercase letters, digits and hyphens, starting with a
  * letter or digit, up to 63 characters.
  */
-export const DeploymentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/))
+export const DeploymentId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u))
 
 /** A region name, in the same form as a deployment id. */
-export const Region = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/))
+export const Region = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u))
 
 /** A hosted tenant, with the limits the served protocol puts on every tenant. */
-export const TenantName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/))
+export const TenantName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/u))
 
 /** `<deployment>/<tenant>`: neither part can contain a slash, so the key splits one way. */
 export const TenantHomeKey = Schema.String.check(
-  Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}\/[A-Za-z0-9._:-]{1,128}$/),
+  Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}\/[A-Za-z0-9._:-]{1,128}$/u),
 )
 
 /** The `TenantHome` key `<deployment>/<tenant>` for a home. */

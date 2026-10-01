@@ -1,6 +1,6 @@
 import { Context, Crypto, Effect, Layer, Schema, type Scope } from "effect"
-import { HttpRouter } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { HttpRouter } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { type Actors, Unauthorized } from "../../index.ts"
 import type { InternalActors } from "../../runtime/actors.ts"
 import { OperatorAuth } from "../../runtime/operators/auth.ts"

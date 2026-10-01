@@ -1,5 +1,5 @@
 import { Cause, Config, DateTime, Duration, Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors } from "../index.ts"
 import type { TurnPoint } from "../runtime/turn/hooks.ts"
 import type { ActorTest } from "./actor-test.ts"

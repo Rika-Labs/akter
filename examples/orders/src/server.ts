@@ -1,7 +1,7 @@
 import { Actor, type ActorError, Unauthorized, User } from "@durable-actors/core"
 import { Actors, Auth } from "@durable-actors/core/runtime"
 import { Effect, Layer, Match, Option, Schema } from "effect"
-import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { TENANT } from "./access.ts"
 import { quote } from "./catalog/repository.ts"
 import { Order, OrderId } from "./order/contract.ts"

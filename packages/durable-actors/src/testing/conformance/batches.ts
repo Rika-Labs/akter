@@ -1,6 +1,6 @@
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, Effect, Exit, Fiber, Layer, Result, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { BATCH_CAP, MERGE_CAP } from "../../runtime/entity/mailbox.ts"

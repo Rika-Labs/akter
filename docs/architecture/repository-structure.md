@@ -44,7 +44,7 @@ Dependency direction: `apps → packages → nothing app-ward`. `packages/durabl
 
 ## The framework package
 
-`@durable-actors/core` ships one distribution with four subpath entries: `.` (`src/index.ts`), `./client`, `./runtime` and `./testing`. The root and `client/` are browser-safe declarations, tags, handles and the Promise client; `runtime/` and `testing/` are the only folders that may import `effect/unstable/sql`, `@effect/sql-pg` or `effect/unstable/cluster`, which `no-runtime-import-outside-runtime` enforces. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
+`@durable-actors/core` ships one distribution with four subpath entries: `.` (`src/index.ts`), `./client`, `./runtime` and `./testing`. The root and `client/` are browser-safe declarations, tags, handles and the Promise client; `runtime/` and `testing/` are the only folders that may import `effect/sql`, `@effect/sql-pg` or `effect/cluster`, which `no-runtime-import-outside-runtime` enforces. `X.toLayer` and `X.get` reach the runtime only through the `Actors` tag. Folders under `src/` are named for the responsibility they own; the source tree, not this page, lists them.
 
 ## Naming contract
 

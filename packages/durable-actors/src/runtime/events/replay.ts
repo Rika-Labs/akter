@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { RetentionGap, UnknownCursor } from "../../errors/events.ts"
 import type { StoredEvent } from "../members.ts"
 import type { ActorRef } from "../../identity/caller.ts"

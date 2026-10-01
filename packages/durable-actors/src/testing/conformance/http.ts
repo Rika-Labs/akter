@@ -22,8 +22,8 @@ import {
   type HttpMethod,
   HttpMethod as HttpMethodModule,
   HttpRouter,
-} from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+} from "effect/http"
+import { SqlClient } from "effect/sql"
 import { Actor, ActorUnavailable, Unauthorized, User } from "../../index.ts"
 import {
   ActorError,

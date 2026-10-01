@@ -1,5 +1,5 @@
 import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor, Actors } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"

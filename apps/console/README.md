@@ -81,7 +81,9 @@ with labeled test data. All mutations deliberately fail. `?empty=1` renders
 no-organization state. It is outside the production import graph. Screenshots
 are visual coverage, not evidence of real authentication or provider billing.
 
-Pins: FoldKit `0.162.0`, Effect and platform-browser `4.0.0-rc.116`, StyleX
+Pins: FoldKit `0.163.0`, Effect and platform-browser `4.0.0`, StyleX
 `0.19.1`, TypeScript `7.0.2`, Vitest `4.1.11`. The published FoldKit package
-declares rc115 peers, unlike repository main; rc116 rendering and typechecks are
-verified, but the published peer-version mismatch must remain visible.
+declares exact rc116 peers and its `foldkit/http` module still imports
+`effect/unstable/http`, which Effect 4.0.0 removed. The console imports only
+`foldkit/html` and `foldkit/experimental/server`, which typecheck, test and build
+on 4.0.0, but the published peer-version mismatch must remain visible.

@@ -1,5 +1,5 @@
 import { Cause, Effect, Option, Predicate, Result, Schema, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { inTenant, TenantScope } from "../database/tenancy.ts"
 import { InvalidContentRef } from "../../errors/content.ts"
 import { ContentRef } from "../../identity/content.ts"

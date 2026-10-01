@@ -2,7 +2,7 @@ import { connect } from "node:net"
 import { Database } from "@durable-actors/core/runtime"
 import { TurnPoolSettings } from "@durable-actors/core/testing"
 import { Context, Effect, Fiber, FileSystem, Layer, Redacted, Schedule, type Scope } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { flightCounter } from "./flights.ts"
 
 /** Database engines a benchmark can run against; only `postgres` has server-side instruments. */

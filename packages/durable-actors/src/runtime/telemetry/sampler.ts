@@ -1,5 +1,5 @@
 import { Context, Effect, type Metric } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { Metrics, record } from "./metrics.ts"
 

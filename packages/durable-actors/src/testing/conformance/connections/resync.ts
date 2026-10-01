@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Option, Predicate, Schedule, Schema, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorError, ActorUnavailable, SessionEnded } from "../../../errors/actor.ts"
 import { type ActorRef, System } from "../../../identity/caller.ts"
 import { connectionHolder, type HeldActorType } from "../../../runtime/connections/holder.ts"

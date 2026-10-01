@@ -8,7 +8,7 @@ import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Unauthorized, User } from "@durable-actors/core"
 import { Actors, Auth, Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer, Option } from "effect"
-import { Headers, HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { Headers, HttpRouter, HttpServerResponse } from "effect/http"
 import { Counter } from "../counter/contract.ts"
 import { CounterLive } from "../counter/layer.ts"
 

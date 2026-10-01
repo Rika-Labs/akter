@@ -5,7 +5,7 @@
 **Owner role:** API/SDK.  
 **Change policy:** a changed command, flag, or exit status updates this page, the runbooks, and the guides that use it.
 
-`durable` is the `apps/cli` bin. It parses its arguments with Effect's `effect/unstable/cli` module: one root `durable` command whose subcommands are the groups below, each flag typed and described, so `durable --help` and `durable <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
+`durable` is the `apps/cli` bin. It parses its arguments with Effect's `effect/cli` module: one root `durable` command whose subcommands are the groups below, each flag typed and described, so `durable --help` and `durable <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
 
 ## Exit statuses
 

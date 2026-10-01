@@ -1,5 +1,5 @@
 import { Context, Crypto, Effect, Match, Schema } from "effect"
-import { SqlClient, type SqlError, type Statement } from "effect/unstable/sql"
+import { SqlClient, type SqlError, type Statement } from "effect/sql"
 import type { RegisteredSubscription } from "../members.ts"
 import { Due, jobKey, type StagedOutbox, type StagedSubscription } from "../../handles/intents.ts"
 import { type ActorRef, Caller, System } from "../../identity/caller.ts"

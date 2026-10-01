@@ -11,7 +11,7 @@ import {
   Runtime,
   Schema,
 } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 
 import { run } from "./cli.ts"
 import { CommandFailed } from "./failure.ts"

@@ -1,5 +1,5 @@
 import { Context, Effect, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { expect, it } from "vitest"
 import { Actor, Content, ContentStore } from "../../index.ts"
 import { withoutDatabase } from "./isolation.ts"

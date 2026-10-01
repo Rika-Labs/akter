@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import type * as Inspection from "../../protocol/inspection.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { decompress } from "../storage/codec.ts"

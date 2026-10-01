@@ -15,7 +15,7 @@ import {
   Schedule,
   Scope,
 } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import type { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import {

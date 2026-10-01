@@ -1,4 +1,4 @@
-import { Command, Argument } from "effect/unstable/cli"
+import { Command, Argument } from "effect/cli"
 import {
   actorArgument,
   encodeJson,

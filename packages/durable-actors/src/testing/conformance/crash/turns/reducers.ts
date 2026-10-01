@@ -1,6 +1,6 @@
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Config, Console, Effect, Layer, Redacted, Result, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../../../index.ts"
 import { Actors, Database } from "../../../../runtime/index.ts"
 import { decompress } from "../../../../runtime/storage/codec.ts"

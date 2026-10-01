@@ -1,5 +1,5 @@
 import { DateTime, Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { mappingProblems, quotedTable } from "./plan.ts"
 import { AdoptionRefused, adoptionTargets, qualifiedName, type AdoptionTarget } from "./target.ts"
 

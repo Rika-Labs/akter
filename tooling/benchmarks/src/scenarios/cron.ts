@@ -1,5 +1,5 @@
 import { Effect, Schedule } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { summarize } from "../measure.ts"
 import { CronProbe } from "../probe/contract.ts"
 import { cronFires } from "../probe/layer.ts"

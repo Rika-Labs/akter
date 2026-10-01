@@ -1,7 +1,7 @@
 import { PgPool, type PgConnection } from "@effect/sql-pg"
 import { Context, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import type { Scope } from "effect"
-import type { SqlConnection, SqlError } from "effect/unstable/sql"
+import type { SqlConnection, SqlError } from "effect/sql"
 import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
 
 /**

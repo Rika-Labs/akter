@@ -9,8 +9,8 @@ import {
   Sharding,
   ShardingConfig,
   ShardId,
-} from "effect/unstable/cluster"
-import { Rpc } from "effect/unstable/rpc"
+} from "effect/cluster"
+import { Rpc } from "effect/rpc"
 import { describe, expect, it } from "vitest"
 import { keepAcquiredShards } from "./locks.ts"
 

@@ -26,8 +26,8 @@ import {
   Sharding,
   ShardingConfig,
   SqlRunnerStorage,
-} from "effect/unstable/cluster"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+} from "effect/cluster"
+import { SqlClient, SqlError } from "effect/sql"
 import {
   ActorError,
   ActorUnavailable,

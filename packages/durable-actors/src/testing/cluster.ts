@@ -14,11 +14,11 @@ import {
   Schedule,
   Scope,
 } from "effect"
-import { RunnerAddress, RunnerServer, Runners, RunnerStorage } from "effect/unstable/cluster"
-import { NetAddress } from "effect/unstable/net"
-import { RpcClient, RpcSerialization, RpcServer } from "effect/unstable/rpc"
-import { Socket, SocketServer } from "effect/unstable/socket"
-import { SqlClient } from "effect/unstable/sql"
+import { RunnerAddress, RunnerServer, Runners, RunnerStorage } from "effect/cluster"
+import { NetAddress } from "effect/net"
+import { RpcClient, RpcSerialization, RpcServer } from "effect/rpc"
+import { Socket, SocketServer } from "effect/socket"
+import { SqlClient } from "effect/sql"
 import { InternalActors } from "../runtime/actors.ts"
 import type { ActorRef } from "../identity/caller.ts"
 import { Database, RunnerWiring } from "../runtime/layer.ts"

@@ -11,7 +11,7 @@
 import { BunCrypto, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { Database } from "@durable-actors/core/runtime"
 import { Config, Effect, Layer } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { HttpRouter } from "effect/http"
 import { app } from "./app.ts"
 
 const database = Layer.unwrap(

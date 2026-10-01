@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Stream } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { Socket } from "effect/unstable/socket"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
+import { Socket } from "effect/socket"
 import { User } from "../../../index.ts"
 import { InternalActors } from "../../../runtime/actors.ts"
 import { descriptorOf } from "../../../actor/descriptor.ts"

@@ -10,7 +10,7 @@ import {
   Schema,
   type Scope,
 } from "effect"
-import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/http"
 import { ActorError, TransportError } from "../../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../../errors/events.ts"
 import { InternalActors } from "../../../runtime/actors.ts"

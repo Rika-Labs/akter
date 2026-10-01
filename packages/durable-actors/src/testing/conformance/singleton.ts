@@ -1,5 +1,5 @@
 import { Cause, DateTime, Effect, Exit, Layer, Option, Schedule, Schema } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { Actor } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import type { ActorRef } from "../../identity/caller.ts"

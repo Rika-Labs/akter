@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { Migrator, SqlClient } from "effect/unstable/sql"
+import { Migrator, SqlClient } from "effect/sql"
 
 /** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {

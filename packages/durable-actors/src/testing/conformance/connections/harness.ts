@@ -1,6 +1,6 @@
 import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { Cause, Effect, Exit, Layer, Option, Predicate, Schedule, Stream } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { ActorError } from "../../../errors/actor.ts"
 import { type ActorRef, System } from "../../../identity/caller.ts"
 import {

@@ -1,6 +1,6 @@
 import { Config, Console, Effect, Option, type PlatformError, Redacted, Schema } from "effect"
-import { Argument, Flag } from "effect/unstable/cli"
-import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { Argument, Flag } from "effect/cli"
+import { HttpClient, HttpClientRequest } from "effect/http"
 import { fail } from "../../failure.ts"
 
 /** The environment variable an operator command reads its bearer token from, unless `--token-env` names another. */

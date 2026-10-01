@@ -24,8 +24,8 @@ import {
   Schema,
   Scope,
 } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { EdgeOptions } from "./config.ts"

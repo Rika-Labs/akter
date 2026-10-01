@@ -1,6 +1,6 @@
 import { AssertionKeySet } from "@durable-actors/core/runtime"
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 
 /**
  * The edge's published verification keys, as runners fetch them: every key

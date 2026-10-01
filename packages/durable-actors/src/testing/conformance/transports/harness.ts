@@ -1,6 +1,6 @@
 import { type Cause, Context, Effect, Layer, Queue, Schema, Stream } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { SqlClient } from "effect/unstable/sql"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
+import { SqlClient } from "effect/sql"
 import type { ActorRef } from "../../../identity/caller.ts"
 import type { ServeOptions } from "../../../serve/layer.ts"
 import { ActorTest } from "../../actor-test.ts"

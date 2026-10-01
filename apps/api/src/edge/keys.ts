@@ -1,6 +1,6 @@
 import { publishedKeys } from "@durable-actors/deployments"
 import { Effect } from "effect"
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { HttpRouter, HttpServerResponse } from "effect/http"
 
 /**
  * The hosted edge's published verification keys, which every hosted runner

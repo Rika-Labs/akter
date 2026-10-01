@@ -1,7 +1,7 @@
 import { expect } from "vitest"
 import { it } from "@effect/vitest"
 import { Effect, Layer } from "effect"
-import { HttpApiTest } from "effect/unstable/httpapi"
+import { HttpApiTest } from "effect/http-api"
 import { BunHttpServer } from "@effect/platform-bun"
 import { Api } from "@durable-actors/contracts"
 import { HealthLive } from "./health.ts"

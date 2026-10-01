@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { Config, Effect, ManagedRuntime, Redacted, Schedule, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { ServedCounter } from "./client.ts"

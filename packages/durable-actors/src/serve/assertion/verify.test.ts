@@ -1,5 +1,6 @@
-import { Clock, DateTime, Effect, Encoding, Exit, Schema } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Clock, DateTime, Effect, Exit, Schema } from "effect"
+import { Base64Url } from "effect/encoding"
+import { Headers } from "effect/http"
 import { describe, expect, it } from "vitest"
 import { Unauthorized } from "../../errors/actor.ts"
 import { Anonymous, System, User } from "../../identity/caller.ts"
@@ -123,7 +124,7 @@ describe("Actor.auth.assertion", () => {
           crit: ["x"],
         }).pipe(Effect.orDie)
 
-        const withCrit = [Encoding.encodeBase64Url(critical), ...valid.split(".").slice(1)]
+        const withCrit = [Base64Url.encode(critical), ...valid.split(".").slice(1)]
         const system = { ...claims, caller: System.make({ source: "actor" }) }
 
         const exits = [

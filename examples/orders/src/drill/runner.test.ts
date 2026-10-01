@@ -18,14 +18,8 @@ import {
   Schema,
   Stream,
 } from "effect"
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpRouter,
-  HttpServer,
-} from "effect/unstable/http"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Pool } from "pg"
 import { disposableDatabase } from "@durable-actors/core/testing"
 import { afterAll, describe, expect, it } from "vitest"

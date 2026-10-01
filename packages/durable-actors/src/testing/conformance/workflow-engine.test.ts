@@ -7,9 +7,9 @@ import {
   RunnerStorage,
   Sharding,
   ShardingConfig,
-} from "effect/unstable/cluster"
-import { Activity, DurableClock, DurableDeferred, Workflow } from "effect/unstable/workflow"
-import { WorkflowEngine, WorkflowInstance } from "effect/unstable/workflow/WorkflowEngine"
+} from "effect/cluster"
+import { Activity, DurableClock, DurableDeferred, Workflow } from "effect/workflow"
+import { WorkflowEngine, WorkflowInstance } from "effect/workflow/WorkflowEngine"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import {
   describeWorkflowEngine,

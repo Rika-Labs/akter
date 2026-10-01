@@ -1,6 +1,6 @@
 import { Layer } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
-import { OtlpTracer, OtlpLogger, OtlpSerialization } from "effect/unstable/observability"
+import { FetchHttpClient } from "effect/http"
+import { OtlpTracer, OtlpLogger, OtlpSerialization } from "effect/observability"
 
 /**
  * Exports traces and logs to Axiom over OTLP when a token and dataset are

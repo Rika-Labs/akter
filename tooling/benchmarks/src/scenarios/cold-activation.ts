@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { load } from "../measure.ts"
 import { Probe, SleepyProbe } from "../probe/contract.ts"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"

@@ -29,7 +29,7 @@ The generated app stores its data in file-backed [PGlite](https://pglite.dev), s
 The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect, Drizzle and the Effect SQL drivers are peer dependencies pinned to the exact release candidates the framework is tested against, so install those versions beside it:
 
 ```sh
-bun add @durable-actors/core@alpha effect@4.0.0-rc.116 @effect/sql-pg@4.0.0-rc.116 @effect/sql-pglite@4.0.0-rc.116 drizzle-orm@1.0.0-rc.5-5935859
+bun add @durable-actors/core@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
 ```ts
@@ -174,7 +174,7 @@ The [research archive](research/README.md) preserves the exploration and type-le
 
 ## Dev
 
-Use [Bun](https://bun.sh) **1.4.2**. Effect and its adapters are pinned to **4.0.0-rc.116**; install the lockfile rather than independently upgrading the runtime packages.
+Use [Bun](https://bun.sh) **1.4.2**. Effect and its adapters are pinned to **4.0.0**; install the lockfile rather than independently upgrading the runtime packages.
 
 ```sh
 bun install --frozen-lockfile

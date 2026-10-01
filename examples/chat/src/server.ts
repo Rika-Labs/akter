@@ -1,7 +1,7 @@
 import { Unauthorized, User } from "@durable-actors/core"
 import { Actors, Auth } from "@durable-actors/core/runtime"
 import { Effect, Option } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Headers } from "effect/http"
 import { Room } from "./room/contract.ts"
 
 /**

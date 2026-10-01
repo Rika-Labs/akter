@@ -1,6 +1,6 @@
 # Remote infrastructure
 
-`@durable-actors/infra` pins Alchemy **2.0.0-beta.79** and Effect **4.0.0-rc.116**. The installed Alchemy peer requirement is `>=4.0.0-rc.115 || >=4.0.0`; rc116 typechecks. All provider API calls use Alchemy or published Distilled packages. No infrastructure was provisioned by this implementation.
+`@durable-actors/infra` pins Alchemy **2.0.0-beta.79** and Effect **4.0.0**. Alchemy declares `>=4.0.0-rc.115 || >=4.0.0` but still imports `effect/unstable/*`, which Effect 4.0.0 removed, so infra does not run on 4.0.0 until Alchemy publishes a compatible release. All provider API calls use Alchemy or published Distilled packages. No infrastructure was provisioned by this implementation.
 
 ## Commands (repository root)
 

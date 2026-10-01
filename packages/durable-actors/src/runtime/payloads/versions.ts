@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import { descriptorOf } from "../../actor/descriptor.ts"
 import { type DefinitionPayloads, type PayloadDeclaration } from "../../members/payload.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"

@@ -1,15 +1,6 @@
-import {
-  Clock,
-  DateTime,
-  Duration,
-  Effect,
-  Encoding,
-  Option,
-  Result,
-  Schema,
-  Semaphore,
-} from "effect"
-import { HttpClient } from "effect/unstable/http"
+import { Clock, DateTime, Duration, Effect, Option, Result, Schema, Semaphore } from "effect"
+import { Base64Url } from "effect/encoding"
+import { HttpClient } from "effect/http"
 import { ActorUnavailable } from "../errors/actor.ts"
 import { User } from "../identity/caller.ts"
 import { type AuthProvider, bearerToken, Credential, unauthorized } from "./auth.ts"
@@ -253,9 +244,9 @@ export const jwt = <Keys extends URL | Jwks>(
 
     if (parts.length !== 3) return yield* invalid
     const [encodedHeader, encodedClaims, encodedSignature] = parts as [string, string, string]
-    const headerText = Encoding.decodeBase64UrlString(encodedHeader)
-    const claimsText = Encoding.decodeBase64UrlString(encodedClaims)
-    const signature = Encoding.decodeBase64Url(encodedSignature)
+    const headerText = Base64Url.decodeString(encodedHeader)
+    const claimsText = Base64Url.decodeString(encodedClaims)
+    const signature = Base64Url.decode(encodedSignature)
 
     if (Result.isFailure(headerText) || Result.isFailure(claimsText) || Result.isFailure(signature))
       return yield* invalid

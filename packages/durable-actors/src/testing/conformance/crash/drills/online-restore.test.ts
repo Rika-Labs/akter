@@ -1,6 +1,6 @@
 import { BunCrypto, BunHttpServer, BunServices } from "@effect/platform-bun"
 import { Effect, Exit, Fiber, Layer, ManagedRuntime, Redacted, Scope } from "effect"
-import { ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcessSpawner } from "effect/process"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { Actors } from "../../../../index.ts"
 import { ActorTest } from "../../../actor-test.ts"

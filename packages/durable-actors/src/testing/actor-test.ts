@@ -16,7 +16,7 @@ import {
   Predicate,
   Stream,
 } from "effect"
-import { SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/sql"
 import {
   type ActorRef,
   type Caller,
