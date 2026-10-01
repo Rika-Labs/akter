@@ -49,4 +49,4 @@ A caller's `policy.deliveryTimeout` stops waiting and is distinct from a command
 - **Delivery timeout.** After command identity acquisition, `policy.deliveryTimeout` bounds admission, receipt reads, retries, and the caller's reply wait. A turn already running continues; once committed, its receipt remains resolvable by an authorized original caller within the retry horizon. Timing out before commit does not imply acceptance.
 - **Internal commands.** A non-`System` caller reaching an `internal` command is a deterministic defect, not an `ActorError`.
 
-Verification: gates **Crash points**, **Intent rollback**, **Turn boundary at runtime**, and **State migration chain** in [conformance](../verification/01-conformance.md).
+Verification: gates **Crash points**, **Intent rollback**, **Turn boundary at runtime**, and **State migration chain** in conformance.

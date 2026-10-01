@@ -339,7 +339,7 @@ In this change:
 - [Contract 09](../contracts/09-recovery.md): cron has no runner responsibility, and outbox recovery waits for the claim lease.
 - [Dispatch](../architecture/04-dispatch.md) and [storage layout](../architecture/03-storage-layout.md): claims, `scheduled_at_ms`, local wakes, and cron rows.
 - [Server API](../api/01-server-api.md): the policy and runtime settings above, and the reserved key (target API).
-- [Conformance](../verification/01-conformance.md): the **Relay claims** and **Cron** checks. [Failure matrix](../verification/02-failure-matrix.md): amended relay rows and new rows.
+- Conformance: the **Relay claims** and **Cron** checks. [Failure matrix](../verification/02-failure-matrix.md): amended relay rows and new rows.
 
 ## Required evidence
 

@@ -100,7 +100,7 @@ It also resolves the per-actor mailbox alternative left open in ADR 0006, and it
 
 The implemented M0 runtime persists commands in `cluster_messages`. Its conformance cases for redelivery from persisted envelopes, and for process-kill recovery of accepted but uncommitted commands, must be rewritten to cover caller retry and outbox recovery. Until that migration, the M0 evidence describes the current code, not this design.
 
-New conformance and simulation checks are listed in [conformance](../verification/01-conformance.md#implementation-decision-checks).
+New conformance and simulation checks are listed in conformance.
 
 ## Revisit when
 

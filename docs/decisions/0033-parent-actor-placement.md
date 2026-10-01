@@ -106,7 +106,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 
 **Verification.**
 
-- [Conformance](../verification/01-conformance.md): the **Placement and single-shard paths** check gains the parent kind; add the cases below in `conformance/placement.ts`.
+- Conformance: the **Placement and single-shard paths** check gains the parent kind; add the cases below in `conformance/placement.ts`.
 - [Support matrix](../operations/support-matrix.md): "`routing_key` placement" covers parent placement on PGlite and Postgres; Neki stays gated until M5.
 
 ## Migration

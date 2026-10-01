@@ -1,6 +1,6 @@
 # ADR 0061: Doc checks: typechecked examples and repository links
 
-**Status:** accepted (2026-09-30).
+**Status:** superseded (2026-10-01). `tooling/doc-checks` was removed; the repository no longer lints Markdown links, doc snippets, or evidence ledgers.
 
 **Responsibility:** decide how the repository proves that its documentation's code examples compile and its links resolve.
 

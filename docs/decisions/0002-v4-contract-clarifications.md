@@ -40,7 +40,7 @@ The root, `/runtime`, `/client`, and `/testing` remain the only public entries. 
 
 ## Consequences and evidence
 
-The documentation describes required design, not shipped behavior. The [17 recorded verification gates](../verification/01-conformance.md#design-verification-gates) remain traceable; the earlier Neki cross-shard alternative is explicitly superseded, and applicable runtime/provider checks remain unverified.
+The documentation describes required design, not shipped behavior. The 17 recorded verification gates remain traceable; the earlier Neki cross-shard alternative is explicitly superseded, and applicable runtime/provider checks remain unverified.
 
 Repository structure enforcement now exists in the pulled commit, but framework and example entrypoints remain scaffolds. This documentation-only reconciliation adds no runtime, tooling, or provider implementation and makes no new test-pass claim.
 

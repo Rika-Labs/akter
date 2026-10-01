@@ -73,7 +73,7 @@ Hosted deployments will offload the state and blobs of actors idle beyond a rete
 
 ## Consequences and evidence
 
-The [storage layout](../architecture/03-storage-layout.md), [dispatch](../architecture/04-dispatch.md), [storage ownership](../contracts/06-storage-ownership.md), [support matrix](../operations/support-matrix.md), [conformance](../verification/01-conformance.md#implementation-decision-checks), and [performance](../verification/03-performance.md) documents are updated to match. The Neki `cluster_*` tables remain in a single shard group; that group is the expected first global bottleneck and must be measured before a hosted scale claim.
+The [storage layout](../architecture/03-storage-layout.md), [dispatch](../architecture/04-dispatch.md), [storage ownership](../contracts/06-storage-ownership.md), [support matrix](../operations/support-matrix.md), conformance, and [performance](../verification/03-performance.md) documents are updated to match. The Neki `cluster_*` tables remain in a single shard group; that group is the expected first global bottleneck and must be measured before a hosted scale claim.
 
 No part of this ADR is implemented. The planning envelope in [performance](../verification/03-performance.md) consists of hypotheses, not product claims.
 

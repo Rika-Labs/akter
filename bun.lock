@@ -92,9 +92,7 @@
     "apps/e2e": {
       "name": "@durable-actors/e2e",
       "devDependencies": {
-        "@durable-actors/chat": "workspace:*",
         "@durable-actors/console": "workspace:*",
-        "@durable-actors/counter": "workspace:*",
         "@playwright/test": "1.63.0",
       },
     },
@@ -109,87 +107,6 @@
       "devDependencies": {
         "@durable-actors/deployments": "workspace:*",
         "@durable-actors/postgres": "workspace:*",
-        "@types/pg": "8.23.1",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
-      },
-    },
-    "examples/chat": {
-      "name": "@durable-actors/chat",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@durable-actors/react": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-        "react": "catalog:",
-        "react-dom": "catalog:",
-      },
-      "devDependencies": {
-        "@types/pg": "8.23.1",
-        "@types/react": "catalog:",
-        "@types/react-dom": "catalog:",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
-      },
-    },
-    "examples/coding-agent": {
-      "name": "@durable-actors/coding-agent",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@types/pg": "8.23.1",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
-      },
-    },
-    "examples/counter": {
-      "name": "@durable-actors/counter",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@durable-actors/react": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "effect": "catalog:",
-        "react": "catalog:",
-        "react-dom": "catalog:",
-      },
-      "devDependencies": {
-        "@types/pg": "8.23.1",
-        "@types/react": "catalog:",
-        "@types/react-dom": "catalog:",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
-      },
-    },
-    "examples/orders": {
-      "name": "@durable-actors/orders",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "@effect/sql-pg": "catalog:",
-        "@effect/sql-pglite": "catalog:",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@types/pg": "8.23.1",
-        "pg": "8.23.0",
-        "vitest": "catalog:",
-      },
-    },
-    "examples/subscriptions": {
-      "name": "@durable-actors/subscriptions",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
         "@types/pg": "8.23.1",
         "pg": "8.23.0",
         "vitest": "catalog:",
@@ -375,28 +292,12 @@
       "name": "@durable-actors/benchmarks",
       "dependencies": {
         "@durable-actors/core": "workspace:*",
-        "@durable-actors/orders": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@electric-sql/pglite": "0.5.8",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
       },
       "devDependencies": {
-        "vitest": "catalog:",
-      },
-    },
-    "tooling/doc-checks": {
-      "name": "@durable-actors/doc-checks",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/vitest": "catalog:",
-        "@types/bun": "1.4.2",
-        "typescript": "catalog:",
         "vitest": "catalog:",
       },
     },
@@ -415,7 +316,6 @@
     "tooling/structure": {
       "name": "@durable-actors/structure",
       "dependencies": {
-        "@durable-actors/core": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
@@ -630,11 +530,7 @@
 
     "@durable-actors/billing": ["@durable-actors/billing@workspace:packages/billing"],
 
-    "@durable-actors/chat": ["@durable-actors/chat@workspace:examples/chat"],
-
     "@durable-actors/cli": ["@durable-actors/cli@workspace:apps/cli"],
-
-    "@durable-actors/coding-agent": ["@durable-actors/coding-agent@workspace:examples/coding-agent"],
 
     "@durable-actors/console": ["@durable-actors/console@workspace:apps/console"],
 
@@ -642,13 +538,9 @@
 
     "@durable-actors/core": ["@durable-actors/core@workspace:packages/durable-actors"],
 
-    "@durable-actors/counter": ["@durable-actors/counter@workspace:examples/counter"],
-
     "@durable-actors/create": ["@durable-actors/create@workspace:packages/create"],
 
     "@durable-actors/deployments": ["@durable-actors/deployments@workspace:packages/deployments"],
-
-    "@durable-actors/doc-checks": ["@durable-actors/doc-checks@workspace:tooling/doc-checks"],
 
     "@durable-actors/docs": ["@durable-actors/docs@workspace:apps/docs"],
 
@@ -662,8 +554,6 @@
 
     "@durable-actors/observability": ["@durable-actors/observability@workspace:packages/observability"],
 
-    "@durable-actors/orders": ["@durable-actors/orders@workspace:examples/orders"],
-
     "@durable-actors/oxlint": ["@durable-actors/oxlint@workspace:tooling/oxlint"],
 
     "@durable-actors/postgres": ["@durable-actors/postgres@workspace:packages/postgres"],
@@ -673,8 +563,6 @@
     "@durable-actors/react": ["@durable-actors/react@workspace:packages/react"],
 
     "@durable-actors/structure": ["@durable-actors/structure@workspace:tooling/structure"],
-
-    "@durable-actors/subscriptions": ["@durable-actors/subscriptions@workspace:examples/subscriptions"],
 
     "@durable-actors/ui": ["@durable-actors/ui@workspace:packages/ui"],
 

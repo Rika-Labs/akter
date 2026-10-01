@@ -4,7 +4,7 @@
 
 **Responsibility:** define how a deployment turns on Postgres row-level security (RLS), which statements it binds to one tenant, which it exempts, and how the `durable` inspection views apply it.
 
-**Authority:** decision record. It amends contracts [06](../contracts/06-storage-ownership.md) and [10](../contracts/10-security.md), [inspection views](../operations/inspection-views.md), the [support matrix](../operations/support-matrix.md), the [runbooks](../operations/runbooks.md), the [conformance ledger](../verification/01-conformance.md), and [invariants](../verification/invariants.md) S2.
+**Authority:** decision record. It amends contracts [06](../contracts/06-storage-ownership.md) and [10](../contracts/10-security.md), [inspection views](../operations/inspection-views.md), the [support matrix](../operations/support-matrix.md), the [runbooks](../operations/runbooks.md), the conformance ledger, and [invariants](../verification/invariants.md) S2.
 
 **Owner role:** security and runtime architecture.
 

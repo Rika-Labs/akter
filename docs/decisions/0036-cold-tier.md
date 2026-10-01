@@ -112,7 +112,7 @@ This ADR is docs only. At acceptance only the support-matrix row, the ledger's d
 
 **Verification.**
 
-- [Conformance](../verification/01-conformance.md): a **Cold tier** gate row.
+- Conformance: a **Cold tier** gate row.
 - [Failure matrix](../verification/02-failure-matrix.md): rows for a crash between upload and flip, a wake racing an offload, a crash between fetch and write-back, an object-store outage on a cold wake, a digest mismatch, and a restore that references old objects.
 - [Performance](../verification/03-performance.md): a cold-wake latency case.
 - [Support matrix](../operations/support-matrix.md): "Cold tier: designed (ADR 0036); not built".

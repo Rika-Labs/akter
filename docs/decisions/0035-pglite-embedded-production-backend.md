@@ -15,7 +15,7 @@
 Today PGlite is for tests and development only:
 
 - The [support matrix](../operations/support-matrix.md) says a PGlite cell is never production support, and production PGlite is gated on M4.14. [Vision 06](../vision/06-developer-experience.md) says PGlite in the quickstart is for development only. [ADR 0041](0041-quickstart-scaffolder.md) generates apps on file-backed PGlite for one process per data directory, and says it is not evidence for locking, independent connections, multi-runner behaviour, or process-kill recovery.
-- The [conformance ledger](../verification/01-conformance.md) runs the shared cases on in-memory PGlite and routes contention cases to Postgres, because PGlite has one connection.
+- The conformance ledger runs the shared cases on in-memory PGlite and routes contention cases to Postgres, because PGlite has one connection.
 
 What the code does:
 
@@ -102,7 +102,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 
 **Verification.**
 
-- [Conformance](../verification/01-conformance.md): a **PGlite embedded production** gate row, and `conformance/crash/pglite-production.ts` with the cases below. The existing "PGlite in tests" rows are unchanged.
+- Conformance: a **PGlite embedded production** gate row, and `conformance/crash/pglite-production.ts` with the cases below. The existing "PGlite in tests" rows are unchanged.
 - [Performance](../verification/03-performance.md): turn and wake latency on file-backed PGlite, and the largest measured `dataDir`.
 
 ## Migration

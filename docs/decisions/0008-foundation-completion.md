@@ -53,4 +53,4 @@ Retryable causes — `RetryTurn` and retryable `SqlError` — die so Cluster res
 
 ## Consequences, evidence, and revisit conditions
 
-Singleton registration exists, but multi-runner residency, migration, `run` loops, and cron remain unverified and unclaimed. `createdBy` on pre-existing data requires an application migration. Executed foundation results are recorded in [conformance](../verification/01-conformance.md#foundation-evidence); the PR binds CI evidence to its exact revision. Revisit before multi-runner singleton semantics, cleanup/restore, transport authentication, or protocol v2.
+Singleton registration exists, but multi-runner residency, migration, `run` loops, and cron remain unverified and unclaimed. `createdBy` on pre-existing data requires an application migration. Executed foundation results are recorded in conformance; the PR binds CI evidence to its exact revision. Revisit before multi-runner singleton semantics, cleanup/restore, transport authentication, or protocol v2.

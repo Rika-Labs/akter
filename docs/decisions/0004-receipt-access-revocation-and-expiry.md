@@ -56,7 +56,7 @@ Clients preserve the original identity and any required expiry metadata across r
 
 The receipt, security, retention, dispatch, protocol, SDK, and verification documents must express the same boundaries. The existing `ActorError` reason set and credential-only `Unauthorized.code` values do not yet specify receipt-access denial and command-expiry mappings. Those wire mappings, narrowed error channels, and migration rules require explicit API/version compatibility design before implementation; this ADR does not invent an implemented error API.
 
-Required checks cover rotated credentials, different callers with equal ids, scoped operator access, revocation before and after admission, internal recovery, parked/live sessions, expiry boundaries, cleanup races, restart/restore, and client retry behavior. They are listed in [conformance](../verification/01-conformance.md#implementation-decision-checks). None has been executed by this documentation change.
+Required checks cover rotated credentials, different callers with equal ids, scoped operator access, revocation before and after admission, internal recovery, parked/live sessions, expiry boundaries, cleanup races, restart/restore, and client retry behavior. They are listed in conformance. None has been executed by this documentation change.
 
 ## Revisit when
 

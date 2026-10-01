@@ -20,7 +20,6 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - The framework is `packages/durable-actors`, published as `@durable-actors/core`; it imports no other workspace package.
 - Other reusable code belongs in `packages/*` as `@durable-actors/<directory>`.
 - Deployable processes and the CLI belong in `apps/*`.
-- Runnable examples belong in `examples/*`; they are the end-to-end corpus.
 - Infrastructure belongs in `infra/`.
 - Tooling belongs in `tooling/*`.
 - Effect is the runtime foundation; do not create a separate Effect package.
@@ -34,8 +33,8 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - Never treat process memory, TypeScript types, or a lease alone as authority.
 - Add a failure test for every durable transition.
 - Update the contract, ADR, API docs, and verification when behavior changes.
-- No inline `//` or `/* */` comments in code. A reason the code cannot show goes in the JSDoc of the enclosing declaration; only functional directives (lint, TypeScript, coverage, bundler) and license headers are exempt. `durable-actors/no-inline-comments` and `.amp/rules/quality/38-no-inline-comments.md` enforce this.
-- JSDoc states the reason in place and never cites an ADR, decision, research pick, or ledger entry; decision records link to code, not the reverse. `durable-actors/no-decision-references` and `.amp/rules/quality/47-no-decision-references-in-code.md` enforce this.
+- No inline `//` or `/* */` comments in code. A reason the code cannot show goes in the JSDoc of the enclosing declaration; only functional directives (lint, TypeScript, coverage, bundler) and license headers are exempt. `durable-actors/no-inline-comments` enforces this.
+- JSDoc states the reason in place and never cites an ADR, decision, research pick, or ledger entry; decision records link to code, not the reverse. `durable-actors/no-decision-references` enforces this.
 
 ## Verification
 

@@ -4,7 +4,7 @@
 
 **Responsibility:** define a stable, documented, read-only SQL surface for inspecting committed runtime state, which rows and columns it exposes, how it is tenant scoped, and which privileges read it.
 
-**Authority:** decision record. It amends contracts [06](../contracts/06-storage-ownership.md) and [10](../contracts/10-security.md); the [data model](../architecture/data-model.md) and [storage layout](../architecture/03-storage-layout.md); [observability](../operations/03-observability.md); the [support matrix](../operations/support-matrix.md); and the [conformance ledger](../verification/01-conformance.md). The operator reference is [inspection views](../operations/inspection-views.md).
+**Authority:** decision record. It amends contracts [06](../contracts/06-storage-ownership.md) and [10](../contracts/10-security.md); the [data model](../architecture/data-model.md) and [storage layout](../architecture/03-storage-layout.md); [observability](../operations/03-observability.md); the [support matrix](../operations/support-matrix.md); and the conformance ledger. The operator reference is [inspection views](../operations/inspection-views.md).
 
 **Owner role:** runtime architecture and operations.
 

@@ -47,7 +47,7 @@ ADR 0028 §2 lists `scheduled_at_ms` as an example of a column "a later migratio
 
 ## Evidence
 
-- `turn.mint`: the cases in [`conformance/mint.ts`](../../packages/durable-actors/src/testing/conformance/mint.ts) listed in the [conformance ledger](../verification/01-conformance.md#turnmint-m215): `refuses a minted child's creating command without its parent's mint proof`, `refuses a proven creating call while its parent's turn has not committed`, `rejects a mint capability that escaped its turn, a keyed creating intent, and an actor that cannot be minted`, and `reaches a minted id on an unkeyed actor that no longer declares policy.createdBy`.
+- `turn.mint`: the cases in [`conformance/mint.ts`](../../packages/durable-actors/src/testing/conformance/mint.ts) listed in the conformance ledger: `refuses a minted child's creating command without its parent's mint proof`, `refuses a proven creating call while its parent's turn has not committed`, `rejects a mint capability that escaped its turn, a keyed creating intent, and an actor that cannot be minted`, and `reaches a minted id on an unkeyed actor that no longer declares policy.createdBy`.
 - Progress: [`runtime/jobs/progress.test.ts`](../../packages/durable-actors/src/runtime/jobs/progress.test.ts) `caps a runner's progress messages per second across attempts and still sends each last frame` (four closing attempts on an empty two-per-second bucket each send their last frame, and the next send waits out the debt), and `closes a slot and its effect within the bound while a send ignores interruption`.
 
 ## Revisit when

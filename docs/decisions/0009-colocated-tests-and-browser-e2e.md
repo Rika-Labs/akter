@@ -19,8 +19,8 @@ a real database; the required environment is independent of its location.
   Playwright workspace. It starts the console's read-only fixture to check
   rendering, navigation, and form boundaries, not live auth or billing.
 - Keep tests runnable separately (`test`, `test:integration`, `test:e2e`) so
-  Postgres and browser prerequisites remain explicit. `.amp/rules` warns on
-  visible placement violations, while the tree checker blocks them in CI.
+  Postgres and browser prerequisites remain explicit. The tree checker blocks
+  visible placement violations in CI.
 
 ## Alternatives
 

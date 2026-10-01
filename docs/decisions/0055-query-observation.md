@@ -135,7 +135,7 @@ That is [ADR 0006](0006-scale-rules-placement-and-query-tiers.md)'s rule for wak
 - `an idle watch does not keep the actor resident and does not count against the stream cap`, and `a further watch past the per-actor cap answers RunnerAtCapacity`;
 - `a slow consumer receives the newest result and the watch stays open`.
 
-The type test in `actor/definition.test.ts` shows a `watch: true` handler that requires another service does not compile. The OpenAPI case in `conformance/http.ts` expects `durable.<Actor>.<Query>.watch` with `x-durable-transport: "sse"`. The [Query observation check](../verification/01-conformance.md) names these. T15 adds a `watch` fan-out scenario: rerun latency and statements per commit at 1, 100, and 1,000 watchers on one actor and across many actors, warm and reported apart from cold, to [performance](../verification/03-performance.md).
+The type test in `actor/definition.test.ts` shows a `watch: true` handler that requires another service does not compile. The OpenAPI case in `conformance/http.ts` expects `durable.<Actor>.<Query>.watch` with `x-durable-transport: "sse"`. The Query observation check names these. T15 adds a `watch` fan-out scenario: rerun latency and statements per commit at 1, 100, and 1,000 watchers on one actor and across many actors, warm and reported apart from cold, to [performance](../verification/03-performance.md).
 
 ## Revisit when
 

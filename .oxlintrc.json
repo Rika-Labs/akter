@@ -75,29 +75,6 @@
       }
     },
     {
-      "files": [
-        "examples/chat/src/web/app.ts",
-        "examples/chat/src/web/cursors.ts",
-        "examples/chat/src/web/cursors-react.tsx",
-        "examples/chat/src/web/offline.ts",
-        "examples/counter/src/web/app.ts",
-        "examples/counter/src/web/react.tsx"
-      ],
-      "rules": {
-        "effecttsgo/async-function": "off",
-        "effecttsgo/global-fetch": "off",
-        "effecttsgo/global-timers": "off",
-        "effecttsgo/instance-of-schema": "off"
-      }
-    },
-    {
-      "files": ["examples/chat/src/client.ts"],
-      "rules": {
-        "effecttsgo/global-console": "off",
-        "effecttsgo/instance-of-schema": "off"
-      }
-    },
-    {
       "files": ["apps/e2e/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

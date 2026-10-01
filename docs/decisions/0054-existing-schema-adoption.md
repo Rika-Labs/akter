@@ -173,7 +173,7 @@ The writer role is one runtime option, `adoption: { role }`, beside `rowLevelSec
 - `startup refuses an enforced table whose trigger is disabled, whose privileges were granted back, or whose mapping changed`;
 - `0024_adoption` applies on PGlite and Postgres.
 
-`apps/cli` tests drive `durable adopt plan|observe|backfill|enforce|status|release` against a real database. The [Adoption check](../verification/01-conformance.md) names these, and invariant A4 gains the adopted-table row. A proposed `adoption` benchmark scenario (M6.md lists none) measures a turn's writes and a legacy writer's statement with observe and with guard on and off, and the results go to [performance](../verification/03-performance.md).
+`apps/cli` tests drive `durable adopt plan|observe|backfill|enforce|status|release` against a real database. The Adoption check names these, and invariant A4 gains the adopted-table row. A proposed `adoption` benchmark scenario (M6.md lists none) measures a turn's writes and a legacy writer's statement with observe and with guard on and off, and the results go to [performance](../verification/03-performance.md).
 
 ## Revisit when
 

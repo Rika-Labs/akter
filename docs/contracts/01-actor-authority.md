@@ -13,4 +13,4 @@ Command mutation MUST occur only through the `X.Turn` service. Query and activat
 
 A request/reply handle called inside a turn, including a handle captured before the turn, MUST die with `Request/reply inside a turn`; the transaction MUST roll back. Cross-actor work from a turn MUST use durable intents from `X.intents(id)`.
 
-Authority tests are specified by [conformance](../verification/01-conformance.md), [failure cases](../verification/02-failure-matrix.md), and invariants A1–A3 in [invariants](../verification/invariants.md).
+Authority tests are specified by conformance, [failure cases](../verification/02-failure-matrix.md), and invariants A1–A3 in [invariants](../verification/invariants.md).

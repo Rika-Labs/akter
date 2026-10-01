@@ -5,7 +5,6 @@
     "packages": [
       "apps/*",
       "packages/*",
-      "examples/*",
       "tooling/*",
       "infra"
     ],

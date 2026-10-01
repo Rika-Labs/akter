@@ -63,7 +63,7 @@ Operator actions require separate action- and resource-scoped capabilities and a
 
 ## Consequences and evidence
 
-The contracts, API guidance, deployment and security requirements, failure matrix, and conformance cases must agree on these choices. The existing 17-row v4 gate ledger remains historical; the additional checks in [conformance](../verification/01-conformance.md#implementation-decision-checks) also gate the corresponding features.
+The contracts, API guidance, deployment and security requirements, failure matrix, and conformance cases must agree on these choices. The existing 17-row v4 gate ledger remains historical; the additional checks in conformance also gate the corresponding features.
 
 Required evidence includes failure-receipt commit/crash cases with no surviving business consequences; concurrent cross-tenant and cross-actor adapter isolation without manual ownership predicates; rejected ownership overrides and escaped turn capabilities; clean and deadline-expired drains with safe takeover; and forged, expired, misbound, or unauthorized hosted assertions and operator actions. None has been executed by this documentation change.
 

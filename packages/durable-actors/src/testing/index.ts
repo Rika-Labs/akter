@@ -37,7 +37,7 @@ export type {
 
 export type { ClusterOptions, RunnerServices } from "./cluster.ts"
 
-export { conformance, describeConformance, evidenceIndex } from "./conformance.ts"
+export { conformance, describeConformance } from "./conformance.ts"
 
 export type {
   ConformanceBackend,
@@ -50,7 +50,6 @@ export type {
   ConformanceAccess,
   ConformanceGroup,
   ConformanceSuite,
-  EvidenceEntry,
   ConformanceMatchers,
   ConformanceRegistrar,
   ConformanceRuntime,

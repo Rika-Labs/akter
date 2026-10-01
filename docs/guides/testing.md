@@ -95,4 +95,4 @@ PGlite runs every turn through the same SQL as Postgres and is right for handler
 ## Further reading
 
 - The `/testing` exports and every option: [server API](../api/01-server-api.md#implemented-foundation-subset).
-- What the framework itself proves, per backend: [conformance](../verification/01-conformance.md) and the [support matrix](../operations/support-matrix.md).
+- What the framework itself proves, per backend: the [support matrix](../operations/support-matrix.md).
