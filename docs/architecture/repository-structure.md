@@ -11,7 +11,6 @@
 apps/                       deployables and the CLI bin; never imported by another package
   api/                      @durable-actors/api        control-plane HTTP; embeds the control-plane actors
   console/                  @durable-actors/console    FoldKit SSR
-  docs/                     @durable-actors/docs       static docs site built from docs/ with llms.txt and Markdown copies (ADR 0043)
   e2e/                      @durable-actors/e2e        Playwright browser tests against read-only console fixtures
   edge/                     @durable-actors/edge       hosted ingress: deployment hosts → runners, credentials → signed assertions, proxied sockets, limits
   cli/                      @durable-actors/cli        the `durable` bin: local dev, deploy checks, adoption, operator inspection and repair

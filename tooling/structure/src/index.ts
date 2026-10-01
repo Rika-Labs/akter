@@ -23,7 +23,7 @@ const TEST_FILE = /\.test\.[cm]?[jt]sx?$/
 
 const E2E_FILE = /\.e2e\.[cm]?[jt]sx?$/
 
-const APP_PACKAGE = /^@durable-actors\/(api|console|docs|edge|cli)$/
+const APP_PACKAGE = /^@durable-actors\/(api|console|edge|cli)$/
 
 const WORKSPACE_PACKAGE = /^@durable-actors\//
 
