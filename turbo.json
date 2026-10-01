@@ -45,17 +45,6 @@
       "outputs": [],
       "env": ["CI"]
     },
-    "@durable-actors/docs#build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"],
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.test.ts", "$TURBO_ROOT$/docs/**"]
-    },
-    "@durable-actors/docs#test": {
-      "dependsOn": ["^build", "transit"],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/docs/**", "$TURBO_ROOT$/vitest.config.ts"],
-      "outputs": [],
-      "env": ["CI"]
-    },
     "test:integration": {
       "dependsOn": ["^build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],

@@ -1,9 +1,9 @@
 # Overview
 
-**Responsibility:** the home page of the docs site: what the site covers and where the rest of the documentation lives.  
+**Responsibility:** the entry page for the guides: what they cover and where the rest of the documentation lives.  
 **Authority:** operational.  
 **Owner role:** documentation.  
-**Change policy:** change with `apps/docs/src/pages.ts` when a page is added to or removed from the site.
+**Change policy:** change when a guide is added or removed.
 
 Durable Actors is the framework for durable, stateful backends that power realtime apps, background work, and agents.
 
@@ -11,7 +11,7 @@ You declare an actor with `Actor.make`, and each command it receives runs as one
 
 The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) runs it from a checkout. What has shipped is listed in each API page's implemented subset; everything else on those pages is accepted design.
 
-## On this site
+## Guides
 
 - [Quickstart](../quickstart.md): create an app, run it, and test it.
 - [Concepts](concepts.md): actors, turns, receipts, and the work that continues after a turn.
@@ -21,8 +21,6 @@ The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) ru
   - [Deploy](deploy.md): running on Postgres in production, and what is supported today.
 - [API reference](../api/README.md): the server API, the context services, the TypeScript SDK, Drizzle, generated clients, naming, and versioning.
 - [Comparison](comparison.md): Durable Actors next to Cloudflare Durable Objects, Rivet, Restate, and Temporal, citing their documentation.
-
-Every page has a Markdown copy: replace `.html` with `.md` in its address, or follow **View as Markdown** at the bottom of the page. [`llms.txt`](https://llmstxt.org) at the site root lists every Markdown copy.
 
 ## In the repository
 
