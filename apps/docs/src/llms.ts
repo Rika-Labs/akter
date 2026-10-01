@@ -11,7 +11,7 @@ export const renderLlmsText = (site: ReadonlyArray<SitePage>) => {
   const lines = [
     "# Durable Actors",
     "",
-    "> An Effect-native actor framework on Postgres. Each command runs as one turn: the actor's state, its owned Drizzle rows, events, receipts and outgoing work commit in one database transaction.",
+    "> The framework for durable, stateful backends that power realtime apps, background work, and agents. Each command runs as one database transaction that commits the actor's state, rows, events, and follow-up work together.",
     "",
     "Each link below is the Markdown copy of a page on this site. Runtime contracts and architecture decisions are not published here; they stay in the repository and are listed under Optional.",
   ]

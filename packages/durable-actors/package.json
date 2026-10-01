@@ -1,17 +1,22 @@
 {
   "name": "@durable-actors/core",
   "version": "0.1.0-alpha.0",
-  "description": "Effect-native actors with durable identity, transactional turns, and ordinary relational data in Postgres.",
+  "description": "The framework for durable, stateful backends that power realtime apps, background work, and agents.",
   "keywords": [
     "actor-model",
     "actors",
+    "agents",
+    "background-jobs",
     "bun",
     "durable",
     "effect",
     "effect-ts",
     "pglite",
     "postgres",
-    "transactions"
+    "realtime",
+    "stateful",
+    "transactions",
+    "workflows"
   ],
   "homepage": "https://github.com/Rika-Labs/durable-actors#readme",
   "bugs": "https://github.com/Rika-Labs/durable-actors/issues",
