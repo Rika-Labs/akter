@@ -57,6 +57,7 @@ jobs:
             apps/*/.cache/typecheck.tsbuildinfo
             packages/*/.cache/typecheck.tsbuildinfo
             tooling/*/.cache/typecheck.tsbuildinfo
+            infra/.cache/typecheck.tsbuildinfo
           key: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-${{ github.sha }}
           restore-keys: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-
       - name: Set up Turborepo Remote Cache
