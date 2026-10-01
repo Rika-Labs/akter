@@ -1,4 +1,4 @@
-import { DateTime, Deferred, Effect } from "effect"
+import { DateTime, Deferred, Effect, Fiber } from "effect"
 import { SqlClient } from "effect/sql"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
@@ -153,6 +153,70 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase<WorkflowsFix
           Effect.ensuring(
             Effect.sync(() => {
               fixture.gates.delete("sibling-gated")
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "workflows: a workflow command that kicks a running execution commits and answers while the owner call its activity makes waits behind it",
+    requiresIndependentConnections: true,
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture)
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const id = "kick-behind"
+          const gate = yield* Deferred.make<void>()
+          fixture.gates.set(id, gate)
+          const shipper = yield* Shipper.get(id)
+          const run = yield* shipper.Watch({ mode: "sibling", orderId: id })
+
+          yield* eventually(
+            Effect.sync(() => fixture.runs.get(`emit:${id}`) === 1),
+            "the sibling activity to start",
+          )
+
+          const committing = yield* test.pauseNext("beforeCommit")
+
+          const reattach = yield* shipper
+            .Watch({ mode: "sibling", orderId: id })
+            .pipe(Effect.forkChild({ startImmediately: true }))
+
+          yield* committing.reached
+          const arriving = yield* test.pauseNext("queued")
+          yield* Deferred.succeed(gate, undefined)
+          yield* arriving.reached
+          yield* arriving.release
+          yield* Effect.sleep("500 millis")
+          yield* committing.release
+
+          const reattached = yield* Fiber.join(reattach).pipe(
+            Effect.timeoutOrElse({
+              duration: "10 seconds",
+              orElse: () =>
+                Effect.die(new Error("The kicking turn never answered behind the owner call")),
+            }),
+          )
+
+          expect(reattached.executionId).toBe(run.executionId)
+          expect(yield* run.result).toBe("paid-8|emitted")
+          expect(fixture.runs.get(`emit:${id}`)).toBe(1)
+          expect(yield* test.receiptsFor(shipper.ref, "Pay")).toBe(1)
+
+          const [leftover] = yield* sql<{ steps: number; timers: number }>`SELECT
+            (SELECT count(*)::int FROM actor_workflow_step
+              WHERE execution_id = ${run.executionId}) AS steps,
+            (SELECT count(*)::int FROM actor_outbox
+              WHERE timer_key = ${`wf:${run.executionId}`}) AS timers`
+
+          expect(leftover).toEqual({ steps: 0, timers: 0 })
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.gates.delete("kick-behind")
             }),
           ),
         ),

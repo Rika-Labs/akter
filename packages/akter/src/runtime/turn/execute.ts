@@ -313,13 +313,17 @@ interface Ended<W extends Delivery, P> {
  * Consecutive batches of one activation. `next` takes the batch already
  * waiting, if any, without waiting for one; `prepare` runs before each
  * batch's handlers, and `committed` once the batch commits or rolls back,
- * before the next batch's handlers run.
+ * before the next batch's handlers run. `publishesUnderLock` names a batch
+ * whose `committed` may wait for the generation row lock in a transaction of
+ * its own; the next batch's admission would hold that lock until `committed`
+ * returns, so it is sent only after.
  */
 interface Run<W extends Delivery, RN, RP, RC> {
   readonly first: ReadonlyArray<W>
   readonly next: Effect.Effect<ReadonlyArray<W> | undefined, never, RN>
   readonly prepare: Effect.Effect<void, never, RP>
   readonly committed: (batch: ReadonlyArray<W>, done: Done) => Effect.Effect<void, never, RC>
+  readonly publishesUnderLock: (batch: ReadonlyArray<W>) => boolean
   /** Wraps one batch's handlers, commit, and answers in that batch's own span and logs. */
   readonly observe: (
     batch: ReadonlyArray<W>,
@@ -424,7 +428,10 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * session. That admission is built as if N commits, which its fence proves. A
  * batch that leaves the cache cold is committed alone, so the next one
  * prepares, which may acquire the generation itself, before its admission
- * locks the generation row. N's callers are answered once its `COMMIT` reply
+ * locks the generation row. So is a batch whose publication may wait for that
+ * lock in another transaction: an admission already behind its `COMMIT` would
+ * hold the lock until the publication it waits on ends, and neither would
+ * ever finish. N's callers are answered once its `COMMIT` reply
  * arrives, and the next batch's handlers run only once its own fence and
  * receipt replies arrive. If N's commit fails, the next batch's transaction
  * is rolled back unseen with it. The commit version is read on the same
@@ -1160,7 +1167,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               const chained =
                 following !== undefined &&
                 after.generation !== undefined &&
-                after.state !== undefined
+                after.state !== undefined &&
+                !run.publishesUnderLock(batch)
 
               let tag: string | undefined
               let version = ""
