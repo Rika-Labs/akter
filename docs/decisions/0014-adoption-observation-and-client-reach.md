@@ -12,7 +12,7 @@
 
 ## Context
 
-The foundation differentiates Durable Actors through transactional actor turns over ordinary Postgres. That advantage is immaterial if adopting it requires moving an existing application into a new storage model. Rivet and Durable Objects also have stronger developer-facing inspection and client reach than the current planned surface.
+The foundation differentiates Akter through transactional actor turns over ordinary Postgres. That advantage is immaterial if adopting it requires moving an existing application into a new storage model. Rivet and Durable Objects also have stronger developer-facing inspection and client reach than the current planned surface.
 
 The earlier sketches identified seven opportunities: existing-schema adoption, live query observation, offline command replay, workflow compatibility, inspection/export, generated protocols and language clients, and runners that can scale to zero. They are related because each extends an existing contract—ownership, receipts, events, workflow steps, or served schemas—rather than adding a second runtime.
 

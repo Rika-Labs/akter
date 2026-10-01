@@ -1,5 +1,5 @@
-import { Actor, type PayloadMigrations } from "@durable-actors/core"
-import { ActorTest } from "@durable-actors/core/testing"
+import { Actor, type PayloadMigrations } from "@rikalabs/akter"
+import { ActorTest } from "@rikalabs/akter/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import { describe, expect, it } from "vitest"

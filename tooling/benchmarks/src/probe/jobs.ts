@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Deferred, Effect, Layer, Schema } from "effect"
 
 /** Returns its key unchanged, so the round trip measures only framework work. */

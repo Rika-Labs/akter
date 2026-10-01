@@ -1,4 +1,4 @@
-import { Actor, ContentRef } from "@durable-actors/core"
+import { Actor, ContentRef } from "@rikalabs/akter"
 import { Effect, Layer, Option, Schema } from "effect"
 
 /** Blob field of `Archive` holding the named documents that `Put`, `Add` and `Compact` write. */

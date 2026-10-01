@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Deferred, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"

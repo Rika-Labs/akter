@@ -1,5 +1,5 @@
-import { Database, checkWorkflows, formatIncompatibility } from "@durable-actors/core/runtime"
-import type { Incompatibility } from "@durable-actors/core/runtime"
+import { Database, checkWorkflows, formatIncompatibility } from "@rikalabs/akter/runtime"
+import type { Incompatibility } from "@rikalabs/akter/runtime"
 import { BunCrypto } from "@effect/platform-bun"
 import { Console, Effect, Layer, Schema } from "effect"
 import { Command, Flag } from "effect/cli"

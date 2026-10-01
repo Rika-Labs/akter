@@ -12,7 +12,7 @@
 
 ## Context
 
-ADRs 0025, 0028, and 0030 were accepted on 2026-09-28 after most of their code had shipped (M2.15, CR.4, and the executor side of M2.18). The acceptance review ([#141](https://github.com/Rika-Labs/durable-actors/pull/141)) compared each text with the code and listed where they differ. Dallen decided each difference: the code is right and the record changes, except for the final progress frame under the runner-wide cap, where the code changes to match the ADR.
+ADRs 0025, 0028, and 0030 were accepted on 2026-09-28 after most of their code had shipped (M2.15, CR.4, and the executor side of M2.18). The acceptance review ([#141](https://github.com/Rika-Labs/akter/pull/141)) compared each text with the code and listed where they differ. Dallen decided each difference: the code is right and the record changes, except for the final progress frame under the runner-wide cap, where the code changes to match the ADR.
 
 ## Decision
 
@@ -47,8 +47,8 @@ ADR 0028 §2 lists `scheduled_at_ms` as an example of a column "a later migratio
 
 ## Evidence
 
-- `turn.mint`: the cases in [`conformance/mint.ts`](../../packages/durable-actors/src/testing/conformance/mint.ts) listed in the conformance ledger: `refuses a minted child's creating command without its parent's mint proof`, `refuses a proven creating call while its parent's turn has not committed`, `rejects a mint capability that escaped its turn, a keyed creating intent, and an actor that cannot be minted`, and `reaches a minted id on an unkeyed actor that no longer declares policy.createdBy`.
-- Progress: [`runtime/jobs/progress.test.ts`](../../packages/durable-actors/src/runtime/jobs/progress.test.ts) `caps a runner's progress messages per second across attempts and still sends each last frame` (four closing attempts on an empty two-per-second bucket each send their last frame, and the next send waits out the debt), and `closes a slot and its effect within the bound while a send ignores interruption`.
+- `turn.mint`: the cases in [`conformance/mint.ts`](../../packages/akter/src/testing/conformance/mint.ts) listed in the conformance ledger: `refuses a minted child's creating command without its parent's mint proof`, `refuses a proven creating call while its parent's turn has not committed`, `rejects a mint capability that escaped its turn, a keyed creating intent, and an actor that cannot be minted`, and `reaches a minted id on an unkeyed actor that no longer declares policy.createdBy`.
+- Progress: [`runtime/jobs/progress.test.ts`](../../packages/akter/src/runtime/jobs/progress.test.ts) `caps a runner's progress messages per second across attempts and still sends each last frame` (four closing attempts on an empty two-per-second bucket each send their last frame, and the next send waits out the debt), and `closes a slot and its effect within the bound while a send ignores interruption`.
 
 ## Revisit when
 

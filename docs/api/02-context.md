@@ -8,7 +8,7 @@
 Handlers take only their payload. Each phase provides one typed context object as an Effect service on the actor definition, so a capability used in the wrong phase is a missing-service type error. The runtime remains the final authority even when TypeScript prevents invalid use. See [ADR 0010](../decisions/0010-one-way-effect-native-api.md).
 
 ```ts
-import { Actor, type ActorRef, type Caller } from "@durable-actors/core"
+import { Actor, type ActorRef, type Caller } from "@rikalabs/akter"
 import { pgTable, text, timestamp } from "drizzle-orm/pg-core"
 import { Context, DateTime, Effect, Schema } from "effect"
 
@@ -99,7 +99,7 @@ Only command handlers may call `X.intents(id)`; it requires the runtime's `Actor
 `turn.blob(B)` and `read.blob(B)` accept only the actor type's declared `blobs` and address entries of the current tenant, actor type, and actor by name alone. `turn.blob` returns `BlobWrite` (`get`, `set`, `append`, `compact`, `delete`), bound to the turn transaction, so a turn reads its own writes and a declared failure discards them. `read.blob` returns `BlobRead`, which has only `get`; the object carries no write methods, whatever a cast claims. `get` returns `Option.none()` for an entry that was never written and `Option.some` of an empty array for one set to no bytes. For an `Actor.content` blob (M4.13, [ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)), `turn.blob(C)` returns `ContentWrite`: `attach(name, ref)`, `detach(name)`, and `list`, an Effect of the references by name. `read.blob(C)` returns `ContentRead`: `get(name)`, `stream(name)`, and `list`. Turns never see content bytes. `attach` checks the grant's MAC without a read and requires it to stay valid for the skew margin past the actor shard's clock, failing `InvalidContentRef` otherwise; a reference with an existing name replaces it, and references count against `policy.maxBlobEntries` with the actor's own entries. `get` returns `Option.none()` for a missing name, and so does a read whose content a sweep removed after the name resolved; it never returns partial bytes. `stream` reads every chunk from one `REPEATABLE READ` snapshot held for at most `executionTimeout` and fails with `NoSuchElementError` before any chunk for a missing name.
 
 ```ts
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Effect, Option, Schema } from "effect"
 
 const Attachments = Actor.blob("attachments")
@@ -142,7 +142,7 @@ Unhandled declared failures roll back business changes and staged notifications 
 
 ## Minted child ids
 
-`turn.mint(Child)` derives its id as [ADR 0025](../decisions/0025-turn-mint.md) specifies: SHA-256 over the length-prefixed UTF-8 fields `durable-actors/mint/v1`, tenant, parent type, parent id (empty for a singleton), command id, decimal ordinal, and child type; the first 16 bytes get the version-8 and RFC 9562 variant bits and are written as lowercase hyphenated hex. These vectors are checked in [`identity/mint.test.ts`](../../packages/durable-actors/src/identity/mint.test.ts). Every row uses command id `v1.1767225600000.1767312000000.0190a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b`:
+`turn.mint(Child)` derives its id as [ADR 0025](../decisions/0025-turn-mint.md) specifies: SHA-256 over the length-prefixed UTF-8 fields `durable-actors/mint/v1`, tenant, parent type, parent id (empty for a singleton), command id, decimal ordinal, and child type; the first 16 bytes get the version-8 and RFC 9562 variant bits and are written as lowercase hyphenated hex. These vectors are checked in [`identity/mint.test.ts`](../../packages/akter/src/identity/mint.test.ts). Every row uses command id `v1.1767225600000.1767312000000.0190a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b`:
 
 | Tenant  | Parent type | Parent id | Ordinal | Child type | Id                                     |
 | ------- | ----------- | --------- | ------- | ---------- | -------------------------------------- |

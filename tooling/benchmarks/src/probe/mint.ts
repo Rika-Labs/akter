@@ -1,4 +1,4 @@
-import { Actor, Intent } from "@durable-actors/core"
+import { Actor, Intent } from "@rikalabs/akter"
 import { DateTime, Deferred, Effect, Layer, Schema } from "effect"
 
 /** Creating command of `MintedChild`; completes the pending creation for the label. */

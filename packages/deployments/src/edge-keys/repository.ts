@@ -1,4 +1,4 @@
-import { AssertionKeySet } from "@durable-actors/core/runtime"
+import { AssertionKeySet } from "@rikalabs/akter/runtime"
 import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
 

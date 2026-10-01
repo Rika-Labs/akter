@@ -12,7 +12,7 @@
 
 ## Context
 
-Rivet Dynamic Apps deploys generated HTTP applications inside isolated agentOS VMs. Durable Actors can instead generate a contract plus handlers and derive ownership-scoped storage, OpenAPI, MCP, live queries, receipts, and tests. This could make durable data and validation the product boundary, but generated code is still untrusted until an actual isolation mechanism proves otherwise.
+Rivet Dynamic Apps deploys generated HTTP applications inside isolated agentOS VMs. Akter can instead generate a contract plus handlers and derive ownership-scoped storage, OpenAPI, MCP, live queries, receipts, and tests. This could make durable data and validation the product boundary, but generated code is still untrusted until an actual isolation mechanism proves otherwise.
 
 ## Decision
 

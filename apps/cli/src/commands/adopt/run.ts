@@ -12,11 +12,11 @@ import {
   planAdoption,
   releaseAdoption,
   type AdoptionRefused,
-} from "@durable-actors/core/runtime"
+} from "@rikalabs/akter/runtime"
 import { BunCrypto } from "@effect/platform-bun"
 import { Clock, Console, Effect, Layer, Option, type Redacted } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
-import { Database } from "@durable-actors/core/runtime"
+import { Database } from "@rikalabs/akter/runtime"
 import { CommandFailed, fail } from "../../failure.ts"
 import { actorsOf, entryFlags, loadEntry } from "../workflows/check.ts"
 

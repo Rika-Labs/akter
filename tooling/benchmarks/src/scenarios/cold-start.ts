@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actors, Auth, RuntimeControl } from "@durable-actors/core/runtime"
+import { Actors, Auth, RuntimeControl } from "@rikalabs/akter/runtime"
 import {
   Clock,
   Context,

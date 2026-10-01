@@ -1,4 +1,4 @@
-import { DefectRecords, type DefectRecord } from "@durable-actors/core/runtime"
+import { DefectRecords, type DefectRecord } from "@rikalabs/akter/runtime"
 import { Clock, Console, DateTime, Duration, Effect, Option, Schema } from "effect"
 import { Command, Flag } from "effect/cli"
 import { fail } from "../../failure.ts"

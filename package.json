@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/monorepo",
+  "name": "@akter/monorepo",
   "private": true,
   "workspaces": {
     "packages": [
@@ -37,7 +37,7 @@
     "typecheck": "GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
     "test": "turbo run test --concurrency=100%",
     "test:integration": "turbo run test:integration --concurrency=100%",
-    "test:e2e": "turbo run test:e2e --filter=@durable-actors/e2e",
+    "test:e2e": "turbo run test:e2e --filter=@akter/e2e",
     "bench": "bun tooling/benchmarks/src/main.ts",
     "bench:compare": "bun tooling/benchmarks/src/compare.ts",
     "lint:directives": "bun tooling/oxlint/src/directives.ts",

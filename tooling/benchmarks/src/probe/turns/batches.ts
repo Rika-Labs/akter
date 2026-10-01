@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Deferred, Effect, Result, Schema } from "effect"
 
 /** Holds its turn open until the scenario releases the gate named by its input. */

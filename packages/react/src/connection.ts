@@ -5,7 +5,7 @@ import type {
   Failure,
   ProgressMessage,
   ProgressUpdate,
-} from "@durable-actors/core/client"
+} from "@rikalabs/akter/client"
 import { Predicate } from "effect"
 import { useCallback, useEffect, useRef, useState } from "react"
 

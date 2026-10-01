@@ -46,8 +46,8 @@ const consumerTsconfig = {
 }
 
 const consumerMain = `import { BunCrypto } from "@effect/platform-bun"
-import { Actor, User } from "@durable-actors/core"
-import { Actors, Database } from "@durable-actors/core/runtime"
+import { Actor, User } from "@rikalabs/akter"
+import { Actors, Database } from "@rikalabs/akter/runtime"
 import { Effect, Layer, Schema } from "effect"
 
 const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
@@ -94,7 +94,7 @@ const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const root = path.resolve(import.meta.dirname, "../../..")
-  const work = yield* fs.makeTempDirectoryScoped({ prefix: "durable-actors-smoke-" })
+  const work = yield* fs.makeTempDirectoryScoped({ prefix: "akter-smoke-" })
 
   const given = args[packageIndex + 1]
 
@@ -141,7 +141,7 @@ const program = Effect.gen(function* () {
   yield* fs.makeDirectory(consumer, { recursive: true })
 
   const consumerManifest = {
-    name: "durable-actors-smoke",
+    name: "akter-smoke",
     private: true,
     type: "module",
     dependencies: {

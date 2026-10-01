@@ -36,6 +36,6 @@ Cluster uses the same error for both causes: a resident entity whose mailbox is 
 
 ## Evidence and revisit conditions
 
-- The conformance cases in `packages/durable-actors/src/testing/conformance/capacity.ts` run on PGlite and Postgres. Over-capacity load on an unbounded actor produces no `MailboxFull`. Callers either succeed after retry or receive `RunnerAtCapacity` after `deliveryTimeout`, and rejected actors have no receipt.
+- The conformance cases in `packages/akter/src/testing/conformance/capacity.ts` run on PGlite and Postgres. Over-capacity load on an unbounded actor produces no `MailboxFull`. Callers either succeed after retry or receive `RunnerAtCapacity` after `deliveryTimeout`, and rejected actors have no receipt.
 - `benchmarks/results/2026-09-25-281a4b3-runner-capacity-postgres.json` and its repeat record the 100,000-actor case with `maxResidentActors: 100000` and no failures, and the 10/25/50 pool sweep.
 - Revisit the `maxResidentActors` default when the per-activation memory growth is explained. Revisit the pool default when turns take two round trips (#40) or when multi-runner deployment is supported.

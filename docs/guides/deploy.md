@@ -7,13 +7,13 @@
 
 ## What is supported today
 
-Durable Actors is alpha. Before you deploy, know the limits the [support matrix](../operations/support-matrix.md) records:
+Akter is alpha. Before you deploy, know the limits the [support matrix](../operations/support-matrix.md) records:
 
 - **Postgres only.** PGlite is for development and tests, one process per data directory. Production PGlite is not supported.
 - **One runtime process per database.** Multi-runner operation has in-process evidence for some features but is not claimed for production.
 - **Embedded or served.** `Actors.serve` serves commands, reducers, and queries over HTTP, connections over WebSocket, and feeds, streams, and watches over SSE. These transports are verified behind Bun's HTTP server on loopback; no proxy, load balancer, or hosting provider has been verified.
 - **No managed hosting.** Hosted runners are planned.
-- **Not on npm yet.** Install `@durable-actors/core` from a locally packed tarball, as in the [quickstart](../quickstart.md), until the first alpha release.
+- **Not on npm yet.** Install `@rikalabs/akter` from a locally packed tarball, as in the [quickstart](../quickstart.md), until the first alpha release.
 
 ## The process
 
@@ -44,7 +44,7 @@ HttpRouter.serve(routes).pipe(
 )
 ```
 
-`routes` is `Actors.serve({ actors: [Room], auth, openapi: { path: "/openapi.json" } })` from `@durable-actors/core/runtime`. An embedded app, like the quickstart's `counter`, skips `Actors.serve` and calls its actors as Effects inside the same process.
+`routes` is `Actors.serve({ actors: [Room], auth, openapi: { path: "/openapi.json" } })` from `@rikalabs/akter/runtime`. An embedded app, like the quickstart's `counter`, skips `Actors.serve` and calls its actors as Effects inside the same process.
 
 ## The database
 
@@ -64,7 +64,7 @@ See [deployment](../operations/01-deployment.md#postgres-connections-across-runn
 ## Serving over HTTP
 
 - **TLS.** Serve `Actors.serve` behind TLS. Credentials and `Idempotency-Key` travel in headers, and the framework cannot tell whether a proxy terminates TLS, so it does not refuse plain HTTP.
-- **Authentication.** `Actors.serve` requires an auth provider. Use `Auth.jwt({ issuer, audience, jwks, tenant })` from `@durable-actors/core/runtime` for tokens from an identity provider, `Auth.make` for your own, and `Auth.none` only for deliberately public actors. Authorization is still your `authorize` callback.
+- **Authentication.** `Actors.serve` requires an auth provider. Use `Auth.jwt({ issuer, audience, jwks, tenant })` from `@rikalabs/akter/runtime` for tokens from an identity provider, `Auth.make` for your own, and `Auth.none` only for deliberately public actors. Authorization is still your `authorize` callback.
 - **Browsers.** List allowed browser origins in `origins`. Behind a proxy, list the public origin: forwarding headers are not trusted.
 - **Clients.** The OpenAPI document at `openapi.path` generates clients in any language; see [generating clients](../api/05-generated-clients.md). Every client must keep one `Idempotency-Key` across its retries of a command.
 - **Retry window.** `Actors.serve` refuses a runtime whose retry window is below 60 seconds. The default is one day.

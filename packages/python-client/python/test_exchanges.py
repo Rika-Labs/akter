@@ -14,7 +14,7 @@ import runtime
 from test_runtime import Clock, Stub
 
 CORPUS = os.path.join(
-    os.path.dirname(__file__), "..", "..", "durable-actors", "src", "protocol", "exchanges.json"
+    os.path.dirname(__file__), "..", "..", "akter", "src", "protocol", "exchanges.json"
 )
 
 

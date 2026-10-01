@@ -18,7 +18,7 @@ The third slice reconciles both with ADRs 0010–0012 ([ADR 0013](../decisions/0
 ## Included
 
 - Bun/Turbo monorepo from `rika-labs/monorepo-project-template`;
-- the `durable-actors` package skeleton with `.`, `/runtime`, `/client`, and `/testing` entries;
+- the `akter` package skeleton with `.`, `/runtime`, `/client`, and `/testing` entries;
 - `Actor.make`, identity modes, actor handles, policies, `ActorError`, and runtime schemas;
 - `Actors.layer` on Postgres with migrations and one database per deployment;
 - command turns with generation fences, receipts, handler execution, durable consequences, and one framework-owned transaction;

@@ -1,5 +1,5 @@
-import { checkPayloads, clearPayloads, formatPayloadProblem } from "@durable-actors/core/runtime"
-import type { ClearResult, PayloadProblem } from "@durable-actors/core/runtime"
+import { checkPayloads, clearPayloads, formatPayloadProblem } from "@rikalabs/akter/runtime"
+import type { ClearResult, PayloadProblem } from "@rikalabs/akter/runtime"
 import { Effect } from "effect"
 import { Command } from "effect/cli"
 import { entryCommand, entryFlags } from "../workflows/check.ts"

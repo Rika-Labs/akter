@@ -1,4 +1,4 @@
-import { Inspection } from "@durable-actors/core/client"
+import { Inspection } from "@rikalabs/akter/client"
 import { Clock, DateTime, Effect, Fiber, ManagedRuntime, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http"
 import {

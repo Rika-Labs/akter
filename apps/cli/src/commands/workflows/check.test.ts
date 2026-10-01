@@ -1,5 +1,5 @@
-import { Actor } from "@durable-actors/core"
-import { ActorTest } from "@durable-actors/core/testing"
+import { Actor } from "@rikalabs/akter"
+import { ActorTest } from "@rikalabs/akter/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { Cause, Context, Effect, Exit, FileSystem, Layer, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"

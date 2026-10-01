@@ -11,7 +11,7 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "roleSuffix" }
 
-tester.run("durable-actors/no-role-suffix-filename", noRoleSuffixFilenameRule, {
+tester.run("akter/no-role-suffix-filename", noRoleSuffixFilenameRule, {
   valid: [
     { code: "export {};", filename: "packages/deployments/src/deployment/layer.ts" },
     { code: "export {};", filename: "packages/deployments/src/deployment/repository.ts" },

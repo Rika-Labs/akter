@@ -1,4 +1,4 @@
-import type { Inspection } from "@durable-actors/core/client"
+import type { Inspection } from "@rikalabs/akter/client"
 import { DateTime, Match } from "effect"
 
 type Child = Node | string | number | null | undefined | false

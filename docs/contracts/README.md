@@ -5,12 +5,12 @@
 **Owner role:** runtime architecture.  
 **Change policy:** contract changes require an ADR, updated conformance tests, and an API/versioning review.
 
-These documents define the settled v4 guarantees. The public distribution is `@durable-actors/core` with four subpaths:
+These documents define the settled v4 guarantees. The public distribution is `@rikalabs/akter` with four subpaths:
 
-- `@durable-actors/core` — `Actor.make`, contracts, policies, errors, identity, `Actors`, serving, and auth;
-- `@durable-actors/core/runtime` — `Actors.layer`, topology, database, and migrations;
-- `@durable-actors/core/client` — browser-safe Promise client;
-- `@durable-actors/core/testing` — `ActorTest` and conformance support.
+- `@rikalabs/akter` — `Actor.make`, contracts, policies, errors, identity, `Actors`, serving, and auth;
+- `@rikalabs/akter/runtime` — `Actors.layer`, topology, database, and migrations;
+- `@rikalabs/akter/client` — browser-safe Promise client;
+- `@rikalabs/akter/testing` — `ActorTest` and conformance support.
 
 The runtime supports embedded, served, and hosted modes. Repository placement is defined by [repository structure](../architecture/repository-structure.md).
 

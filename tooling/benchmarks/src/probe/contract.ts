@@ -1,4 +1,4 @@
-import { Actor, RetentionGap, UnknownCursor } from "@durable-actors/core"
+import { Actor, RetentionGap, UnknownCursor } from "@rikalabs/akter"
 import { Effect, Layer, Schema } from "effect"
 
 /** Adds the amount to the count and replies with the new total. */

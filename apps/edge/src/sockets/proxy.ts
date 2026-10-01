@@ -5,8 +5,8 @@ import {
   requestDigest,
   SUBPROTOCOL,
   Unauthorized,
-} from "@durable-actors/core"
-import { actorErrorBody, closeCodeOf } from "@durable-actors/core/runtime"
+} from "@rikalabs/akter"
+import { actorErrorBody, closeCodeOf } from "@rikalabs/akter/runtime"
 import type { ServerWebSocket } from "bun"
 import { Data, Deferred, Effect, Option, Predicate, Queue, Result, Schema } from "effect"
 import type { Principal } from "../principals/authenticate.ts"

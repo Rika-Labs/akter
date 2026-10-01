@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/benchmarks",
+  "name": "@akter/benchmarks",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,9 +10,9 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/benchmarks/src"
   },
   "dependencies": {
-    "@durable-actors/core": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@electric-sql/pglite": "0.5.8",
+    "@rikalabs/akter": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },

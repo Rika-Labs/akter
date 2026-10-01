@@ -5,7 +5,7 @@
 **Owner role:** verification/reliability.  
 **Change policy:** new guarantees require a test or an explicit unsupported result.
 
-The v4 evidence surface is `ActorTest` from `@durable-actors/core/testing`, with `describeConformance` running the same guarantees against PGlite, real Postgres, and Neki. Fast tests MAY use PGlite; database locks, pooling, runner movement, and Neki behavior require their real targets.
+The v4 evidence surface is `ActorTest` from `@rikalabs/akter/testing`, with `describeConformance` running the same guarantees against PGlite, real Postgres, and Neki. Fast tests MAY use PGlite; database locks, pooling, runner movement, and Neki behavior require their real targets.
 
 - [Failure matrix](02-failure-matrix.md)
 - [Performance and capacity](03-performance.md)

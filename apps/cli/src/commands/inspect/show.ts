@@ -1,4 +1,4 @@
-import { Inspection } from "@durable-actors/core/client"
+import { Inspection } from "@rikalabs/akter/client"
 import { Effect, Schema, Struct } from "effect"
 import { Command, Flag } from "effect/cli"
 import {

@@ -1,5 +1,5 @@
-import type { AnyFleetView } from "@durable-actors/core"
-import { Database, rebuildFleetView, setupFleet } from "@durable-actors/core/runtime"
+import type { AnyFleetView } from "@rikalabs/akter"
+import { Database, rebuildFleetView, setupFleet } from "@rikalabs/akter/runtime"
 import { BunCrypto } from "@effect/platform-bun"
 import { Console, Effect, Layer, Predicate, type Redacted } from "effect"
 import { Argument, Command, Flag } from "effect/cli"

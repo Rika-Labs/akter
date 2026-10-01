@@ -9,7 +9,7 @@
 
 Important application concepts—rooms, documents, accounts, devices, orders, and agents—have identity, mutable state, live clients, and work that must survive failure. Teams usually assemble those concepts from HTTP handlers, SQL, locks, retries, schedulers, background processes, and WebSockets. Correctness then lives in the gaps between systems.
 
-Durable Actors makes the application concept the coordination boundary. One actor owns an identity, serializes its commands, commits relational facts, and continues work after a process disappears.
+Akter makes the application concept the coordination boundary. One actor owns an identity, serializes its commands, commits relational facts, and continues work after a process disappears.
 
 ## The customer promise
 
@@ -28,7 +28,7 @@ An actor can:
 
 ## Product intent
 
-Durable Actors is an Effect-native actor framework. It is not a workflow-only product: workflows are members of the actor that owns their identity and data. It is not a separate background-work product: scheduling and jobs are consequences of actor turns. It has no AI-specific product surface; an agent is simply an actor, and contract-derived OpenAPI is available to external tool generators.
+Akter is an Effect-native actor framework. It is not a workflow-only product: workflows are members of the actor that owns their identity and data. It is not a separate background-work product: scheduling and jobs are consequences of actor turns. It has no AI-specific product surface; an agent is simply an actor, and contract-derived OpenAPI is available to external tool generators.
 
 ## We are not building
 

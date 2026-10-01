@@ -5,7 +5,7 @@
 **Owner role:** SDK.
 **Change policy:** a change requires compatibility review against docs/api/versioning.md.
 
-`@durable-actors/core/client` is the browser-safe Promise client. It is derived from the same actor definitions, runtime schemas, errors, and OpenAPI surface as the Effect API; it is not a second runtime. It also exports `Inspection`, the schemas of the runtime's inspection responses, so a browser tool decodes what the inspector serves without restating its shape.
+`@rikalabs/akter/client` is the browser-safe Promise client. It is derived from the same actor definitions, runtime schemas, errors, and OpenAPI surface as the Effect API; it is not a second runtime. It also exports `Inspection`, the schemas of the runtime's inspection responses, so a browser tool decodes what the inspector serves without restating its shape.
 
 `X.client({ baseUrl, headers, timeoutInMs, fetch, commandIds, offline })` creates a client. Its `get` and `create` accessors follow the actor's `key`. Commands and queries return Promises, event feeds and server streams are `AsyncIterable`, and connections combine an async frame stream with typed `send` and `close` operations. A connection's frames arrive as `{ frame, cursor?, event? }` envelopes; after an ungraceful owner death the client receives `Resync { after }`, resynchronizes, and acknowledges with `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md); M3.5). A member that opts into executor progress ([ADR 0030](../decisions/0030-executor-progress-frames.md)) also yields `Progress { job, jobId, attempt, seq, frame }` messages, whose `frame` is decoded by that job's `progress` schema. Over WebSocket they arrive as the server message `t: "progress"` with `job`, `jobId`, `attempt`, `seq`, and `frame` and no `cursor` or `event`, never inside a `frame` message; this amends ADR 0027, and clients ignore a `t` they don't know. Progress is best-effort and display-only: it may be coalesced or dropped, a loss followed by a later frame of the same attempt shows as a `seq` gap, and it is never replayed after `Resync` or a reconnect. SSE event feeds carry no progress.
 
@@ -32,7 +32,7 @@ Commands, queries, and optimistic reducers over HTTP are implemented, and so are
   - `Frame { frame, cursor, event }`. Frames whose `event` the client already delivered are dropped after a resync.
   - `Resync { after, reason, deadline }`.
   - `ResyncReplayed`.
-  - `Progress { job, jobId, attempt, seq, frame }`, for a member with `progress: { jobs }`. `frame` is decoded by the job's `progress` schema and typed by it: the message type is a union over the jobs the member lists, so narrowing on `job` types `frame`, as in `if (message.job === "Render") message.frame.percent`. `ProgressUpdate`, `ProgressMessage`, and `ProgressOfConnection<Member>` from `@durable-actors/core/client` name these types; a member that lists no jobs has no `Progress` message, and code written against no particular member sees `job: string` and `frame: unknown`. Only connections carry progress to a client, so the types come per job, not per command. A progress message whose job the member doesn't list, or whose frame doesn't decode, is dropped, because progress is lossy anyway.
+  - `Progress { job, jobId, attempt, seq, frame }`, for a member with `progress: { jobs }`. `frame` is decoded by the job's `progress` schema and typed by it: the message type is a union over the jobs the member lists, so narrowing on `job` types `frame`, as in `if (message.job === "Render") message.frame.percent`. `ProgressUpdate`, `ProgressMessage`, and `ProgressOfConnection<Member>` from `@rikalabs/akter/client` name these types; a member that lists no jobs has no `Progress` message, and code written against no particular member sees `job: string` and `frame: unknown`. Only connections carry progress to a client, so the types come per job, not per command. A progress message whose job the member doesn't list, or whose frame doesn't decode, is dropped, because progress is lossy anyway.
 
   A message whose `t` the client doesn't know is ignored; one that isn't valid JSON, or a known `t` with the wrong shape, ends the connection with `TransportError` `decode`. `frames` yields only the decoded member frames, without resync notices or progress. Iteration ends on a normal close and throws the session's `ActorError` otherwise. A socket that drops without `end` is `SessionEnded` `HolderLost` with `resync: true`, and the caller reconnects: a connection is not reopened automatically, because a new one has a fresh session. After `Resync`, the client calls `onResync({ after })` and acknowledges with `resyncDone` once it settles, and again after `resyncReplayed`, because the holder ignores an acknowledgment that comes before the member's own replay. On `reauthenticate`, the client calls `headers` again and sends its `authorization`.
 
@@ -48,7 +48,7 @@ Commands, queries, and optimistic reducers over HTTP are implemented, and so are
 `state` is a reserved member tag, like `ref`.
 
 ```ts
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Result, Schema } from "effect"
 
 class TooMany extends Schema.TaggedError<TooMany>()("TooMany", {}) {}
@@ -75,7 +75,7 @@ await reply // committed state from the reply; or throws TooMany and rolls back
 ```
 
 ```ts title="room/contract.ts"
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Schema } from "effect"
 export const RoomId = Schema.NonEmptyString.pipe(Schema.brand("RoomId"))
 export const Post = Actor.command("Post", {
@@ -90,7 +90,7 @@ export const Room = Actor.make("Room", { key: RoomId, api: { Post, History } })
 ```
 
 ```ts
-import { ActorError } from "@durable-actors/core/client"
+import { ActorError } from "@rikalabs/akter/client"
 import { Room, RoomId } from "./room/contract.ts" // definitions and schemas only
 
 declare const token: () => string
@@ -129,7 +129,7 @@ Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or bra
 
 ## React (CR.6)
 
-`@durable-actors/react` wraps the Promise client in hooks. Every hook talks to the server only from effects and event handlers, so rendering on a server does no I/O: state hooks return `undefined` and feeds and connections start empty.
+`@akter/react` wraps the Promise client in hooks. Every hook talks to the server only from effects and event handlers, so rendering on a server does no I/O: state hooks return `undefined` and feeds and connections start empty.
 
 - `useActor(client, id)` returns `client.get(id)`, stable while `client` and `id` are.
 - `useCommand(client, (input, options) => handle.Member(input, options))` holds one user intent. `run(input)` mints a command id with `client.commandId()` before sending and passes it in `options`. `retry()` sends the same input under the same id, so a retry after a lost response or a timeout replays the receipt instead of running the command twice. `state` is `idle`, `pending`, `success` with `data`, or `error` with the failure and `expired`. `expired` is true for `CommandExpired`: `retry` cannot help, and a new `run` is a new operation. `reset()` forgets the intent.
@@ -144,10 +144,10 @@ The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
 
 ## Offline queue (M6.5)
 
-`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `durable-actors:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Each command is saved under the client's `identity`, a stable key for the signed-in user (never a credential); without one, the key is the `iss` and `sub` of an `authorization: Bearer` JWT, and an offline client with neither refuses to queue. Only the current principal's commands are sent: another's show as `held` until that user signs back in or the application discards them, so a shared device never sends one user's commands as another.
+`X.client({ baseUrl, offline: Offline.indexedDb("chat") })` saves every command before its first attempt and delivers it under the id it was saved with, across outages, reloads, and lost replies ([ADR 0058](../decisions/0058-offline-command-queue.md)). `Offline.indexedDb(name)` keeps one record per command in the IndexedDB database `akter:<name>`; `Offline.memory()` keeps them in memory. Any object with `entries()`, `save(command)`, and `remove(commandId)` is an `OfflineStore`. Each command is saved under the client's `identity`, a stable key for the signed-in user (never a credential); without one, the key is the `iss` and `sub` of an `authorization: Bearer` JWT, and an offline client with neither refuses to queue. Only the current principal's commands are sent: another's show as `held` until that user signs back in or the application discards them, so a shared device never sends one user's commands as another.
 
 ```ts
-import { Offline, type PendingCommand } from "@durable-actors/core/client"
+import { Offline, type PendingCommand } from "@rikalabs/akter/client"
 import { Room, RoomId } from "./room/contract.ts"
 
 declare const user: string

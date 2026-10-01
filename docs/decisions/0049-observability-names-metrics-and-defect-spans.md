@@ -1,6 +1,6 @@
 # ADR 0049: Observability: stable span and metric names, Prometheus, and defect spans
 
-**Status:** accepted (2026-09-30, Dallen). Built with M4.3 ([#225](https://github.com/Rika-Labs/durable-actors/issues/225)). It amends [observability](../operations/03-observability.md) and adds the metrics [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md), and [ADR 0026](0026-cross-actor-event-subscriptions.md) left to M4.3.
+**Status:** accepted (2026-09-30, Dallen). Built with M4.3 ([#225](https://github.com/Rika-Labs/akter/issues/225)). It amends [observability](../operations/03-observability.md) and adds the metrics [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md), [ADR 0022](0022-workflow-engine-storage-and-version-markers.md), and [ADR 0026](0026-cross-actor-event-subscriptions.md) left to M4.3.
 
 **Responsibility:** name the spans and metrics the runtime reports, say where each value comes from, and say where `durable defects list` reads defect spans.
 
@@ -12,7 +12,7 @@
 
 ## Context
 
-[Observability](../operations/03-observability.md) named one span, `durable-actors.<Actor>/<Command>`, and listed what operators should monitor without saying how any of it is reported. Invariant O1 requires stable names. Three accepted ADRs left metrics to M4.3: ADR 0021 a gauge of intents claimed at least 8 times and the lag of effects no runner executes, ADR 0022 `durable-actors.workflow.pinned_events`, and ADR 0026 `durable-actors.subscription.lag`, `.undeliverable_gaps`, `.pinned_events`, and an alert on subscription rows claimed at least 8 times. [M4](../milestones/M4.md) asks for OTLP spans for admission, turn, commit, relay, and effect execution; Prometheus metrics for mailbox age, relay lag, receipt, event and outbox growth, pool waits, and activation counts; and `durable defects list`, reading defect spans from the telemetry exporter.
+[Observability](../operations/03-observability.md) named one span, `akter.<Actor>/<Command>`, and listed what operators should monitor without saying how any of it is reported. Invariant O1 requires stable names. Three accepted ADRs left metrics to M4.3: ADR 0021 a gauge of intents claimed at least 8 times and the lag of effects no runner executes, ADR 0022 `akter.workflow.pinned_events`, and ADR 0026 `akter.subscription.lag`, `.undeliverable_gaps`, `.pinned_events`, and an alert on subscription rows claimed at least 8 times. [M4](../milestones/M4.md) asks for OTLP spans for admission, turn, commit, relay, and effect execution; Prometheus metrics for mailbox age, relay lag, receipt, event and outbox growth, pool waits, and activation counts; and `durable defects list`, reading defect spans from the telemetry exporter.
 
 The runtime already emits spans through Effect's tracer, so any Effect exporter (`OtlpTracer`) receives them. Metrics use Effect's `Metric` registry, which `PrometheusMetrics` formats.
 
@@ -20,56 +20,56 @@ The runtime already emits spans through Effect's tracer, so any Effect exporter 
 
 ### 1. Span names are public and bounded
 
-| Span                                     | Where                                          | Kind     |
-| ---------------------------------------- | ---------------------------------------------- | -------- |
-| `durable-actors.admission`               | the runner that admits a command, to its reply | internal |
-| `durable-actors.<Actor>/<Command>`       | the owner's turn, admission group to reply     | server   |
-| `durable-actors.commit`                  | the turn's commit group, to the `COMMIT` reply | internal |
-| `durable-actors.relay.intent`            | one delivery of an intent, timer, or cron tick | producer |
-| `durable-actors.relay.subscription`      | one pass over a claimed subscription row       | producer |
-| `durable-actors.effect/<Actor>/<Effect>` | one executor attempt                           | client   |
+| Span                            | Where                                          | Kind     |
+| ------------------------------- | ---------------------------------------------- | -------- |
+| `akter.admission`               | the runner that admits a command, to its reply | internal |
+| `akter.<Actor>/<Command>`       | the owner's turn, admission group to reply     | server   |
+| `akter.commit`                  | the turn's commit group, to the `COMMIT` reply | internal |
+| `akter.relay.intent`            | one delivery of an intent, timer, or cron tick | producer |
+| `akter.relay.subscription`      | one pass over a claimed subscription row       | producer |
+| `akter.effect/<Actor>/<Effect>` | one executor attempt                           | client   |
 
 - **Names never carry an id.** Actor types, commands, and effects are the deployment's declarations, so the name set is bounded; tenants, actor ids, command ids, and effect ids are attributes.
 - **Attributes:** `actor.type`, `actor.tenant`, `actor.id`, `command.name`, `command.id`, `caller.kind` (`User`, `Anonymous`, or `System`), and `turn.trigger` (`command` for an external caller, else the System source: `actor`, `timer`, `cron`, `workflow`, `effect`, `subscription`) on admission and turn spans. The turn adds `actor.generation`, `turn.outcome` (`success`, `failure`, `defect`, `replay`, `acknowledged`), and `turn.replayed`; an admission that answers from a stored receipt adds `admission.replayed`. Relay spans carry `relay.attempt`; effect spans `effect.name`, `effect.id`, `effect.attempt`. No span carries a principal's subject, a credential, a payload, or state.
-- **One trace per direct command.** The admission span is an ancestor of the owner's turn span, and the commit span is inside the turn. Across runners the parent travels in Cluster's envelope; the conformance case asserts the single-runner path only. A relay delivery's turn is a child of its `durable-actors.relay.*` span. A durable hop (an outbox row, a subscription row, a workflow resume) starts a new trace on the relay: nothing in the row carries trace context, and M4 adds no column for it. The command id or effect id correlates the two sides.
+- **One trace per direct command.** The admission span is an ancestor of the owner's turn span, and the commit span is inside the turn. Across runners the parent travels in Cluster's envelope; the conformance case asserts the single-runner path only. A relay delivery's turn is a child of its `akter.relay.*` span. A durable hop (an outbox row, a subscription row, a workflow resume) starts a new trace on the relay: nothing in the row carries trace context, and M4 adds no column for it. The command id or effect id correlates the two sides.
 - **A deterministic defect fails its turn span.** The span's exit is a failure with the defect as its cause, so an OTLP backend shows it as an error with the exception; the caller still receives `Defect`. A declared failure is a successful span with `turn.outcome = failure`.
 
 ### 2. Metrics are per runner, with bounded attributes
 
-Names use dots; Prometheus exposition replaces `.` and `-` with `_`, so `durable-actors.turns` is scraped as `durable_actors_turns`. No metric carries a tenant, actor id, or command id ([data classification](../security/data-classification.md)).
+Names use dots; Prometheus exposition replaces `.` and `-` with `_`, so `akter.turns` is scraped as `akter_turns`. No metric carries a tenant, actor id, or command id ([data classification](../security/data-classification.md)).
 
 Counted by the runner that did the work:
 
-| Metric                                                      | Type      | Attributes                                                     |
-| ----------------------------------------------------------- | --------- | -------------------------------------------------------------- |
-| `durable-actors.turns`                                      | counter   | `actor_type`, `outcome` (the turn's, or `rejected`, `retried`) |
-| `durable-actors.turn.duration_ms`                           | histogram | `actor_type`                                                   |
-| `durable-actors.mailbox.age_ms`                             | histogram | `actor_type`: admission's send to the turn's start             |
-| `durable-actors.pool.wait_ms`                               | histogram | none: a turn's wait for a turn-pool session (Postgres)         |
-| `durable-actors.activations`                                | gauge     | `actor_type`: resident activations                             |
-| `durable-actors.activations.started`                        | counter   | `actor_type`                                                   |
-| `durable-actors.receipts.written` / `.replayed` / `.pruned` | counter   | `actor_type`                                                   |
-| `durable-actors.events.appended` / `.pruned`                | counter   | `actor_type`                                                   |
-| `durable-actors.outbox.staged`                              | counter   | `kind` (`intent`, `effect`)                                    |
-| `durable-actors.relay.delivered` / `.retried`               | counter   | `kind` (`intent`, `effect`, `subscription`)                    |
-| `durable-actors.effect.dead_letters`                        | counter   | `actor_type`, `effect`                                         |
-| `durable-actors.subscription.undeliverable_gaps`            | counter   | `subscriber_type`, `subscription`                              |
+| Metric                                             | Type      | Attributes                                                     |
+| -------------------------------------------------- | --------- | -------------------------------------------------------------- |
+| `akter.turns`                                      | counter   | `actor_type`, `outcome` (the turn's, or `rejected`, `retried`) |
+| `akter.turn.duration_ms`                           | histogram | `actor_type`                                                   |
+| `akter.mailbox.age_ms`                             | histogram | `actor_type`: admission's send to the turn's start             |
+| `akter.pool.wait_ms`                               | histogram | none: a turn's wait for a turn-pool session (Postgres)         |
+| `akter.activations`                                | gauge     | `actor_type`: resident activations                             |
+| `akter.activations.started`                        | counter   | `actor_type`                                                   |
+| `akter.receipts.written` / `.replayed` / `.pruned` | counter   | `actor_type`                                                   |
+| `akter.events.appended` / `.pruned`                | counter   | `actor_type`                                                   |
+| `akter.outbox.staged`                              | counter   | `kind` (`intent`, `effect`)                                    |
+| `akter.relay.delivered` / `.retried`               | counter   | `kind` (`intent`, `effect`, `subscription`)                    |
+| `akter.effect.dead_letters`                        | counter   | `actor_type`, `effect`                                         |
+| `akter.subscription.undeliverable_gaps`            | counter   | `subscriber_type`, `subscription`                              |
 
 Sampled from the database by one runner of the deployment (a Cluster singleton), every `observability.sampleEvery` (default 15 seconds):
 
-| Metric                                      | Attributes                                     | Value                                                                                           |
-| ------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `durable-actors.outbox.rows`                | `kind` (`intent`, `effect`, `feed`, `control`) | rows waiting                                                                                    |
-| `durable-actors.relay.lag_ms`               | `kind` (the four above, and `subscription`)    | how long the oldest due, unclaimed row has been due; 0 when none is                             |
-| `durable-actors.relay.stuck_rows`           | `kind` (`intent`, `subscription`)              | rows claimed at least 8 times and still pending                                                 |
-| `durable-actors.subscription.lag_events`    | `subscriber_type`, `subscription`              | the most source events any due row is behind its source's head                                  |
-| `durable-actors.subscription.lag_ms`        | `subscriber_type`, `subscription`              | the age of the oldest undelivered matching event of any due row                                 |
-| `durable-actors.subscription.pinned_events` | `actor_type` (the source)                      | events past `keepEvents`, inside the subscriber hold, above the lowest active row's `delivered` |
-| `durable-actors.workflow.pinned_events`     | `actor_type`                                   | events past `keepEvents` above an open execution's cursor or pending wait                       |
+| Metric                             | Attributes                                     | Value                                                                                           |
+| ---------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `akter.outbox.rows`                | `kind` (`intent`, `effect`, `feed`, `control`) | rows waiting                                                                                    |
+| `akter.relay.lag_ms`               | `kind` (the four above, and `subscription`)    | how long the oldest due, unclaimed row has been due; 0 when none is                             |
+| `akter.relay.stuck_rows`           | `kind` (`intent`, `subscription`)              | rows claimed at least 8 times and still pending                                                 |
+| `akter.subscription.lag_events`    | `subscriber_type`, `subscription`              | the most source events any due row is behind its source's head                                  |
+| `akter.subscription.lag_ms`        | `subscriber_type`, `subscription`              | the age of the oldest undelivered matching event of any due row                                 |
+| `akter.subscription.pinned_events` | `actor_type` (the source)                      | events past `keepEvents`, inside the subscriber hold, above the lowest active row's `delivered` |
+| `akter.workflow.pinned_events`     | `actor_type`                                   | events past `keepEvents` above an open execution's cursor or pending wait                       |
 
 - **Counters and gauges are per runner.** Sum counters across runners. The sampled gauges exist on the one runner that holds the singleton; after it moves they appear on the new holder, so aggregate them with `max` over runners.
 - **The samples read backlog, not stored actors.** The outbox is pending work; subscription lag reads only rows with a due time, through `actor_subscriptions_due`; pinned counts read only events past `keepEvents`, which stay only while something pins them. A series that stops appearing (a recovered subscription, an emptied kind) is reported as 0 once.
-- **ADR 0026's single `durable-actors.subscription.lag` becomes two gauges,** `lag_events` and `lag_ms`, because Prometheus gives one metric one unit. Its "alert on rows with `attempts ≥ 8`" and ADR 0021's intent gauge are `durable-actors.relay.stuck_rows`; ADR 0021's "effect relay lag" for rows no runner executes is `durable-actors.relay.lag_ms{kind="effect"}`.
+- **ADR 0026's single `akter.subscription.lag` becomes two gauges,** `lag_events` and `lag_ms`, because Prometheus gives one metric one unit. Its "alert on rows with `attempts ≥ 8`" and ADR 0021's intent gauge are `akter.relay.stuck_rows`; ADR 0021's "effect relay lag" for rows no runner executes is `akter.relay.lag_ms{kind="effect"}`.
 - **Pinned counts are sampled for the actor types the sampling runner registers,** because the hold depends on each type's `keepEvents`. A deployment whose runners register disjoint types sees pinned counts only for the singleton holder's types.
 - **Mailbox age crosses runner clocks.** The admitting runner stamps the request with its clock, and the owner subtracts it from its own; skew between runners shifts the observation, and negative values are recorded as 0.
 
@@ -91,7 +91,7 @@ Sampled from the database by one runner of the deployment (a Cluster singleton),
 ## Consequences
 
 - The runtime reports every metric above through the Effect `Metric` registry in the runtime's context, so an application that installs `OtlpMetrics` exports the same series over OTLP.
-- `Actors.layer` takes `observability: { defects, sampleEvery }`; `@durable-actors/core/runtime` exports `Telemetry`, `DefectLog`, `DefectRecord`, `DefectRecords`, `TelemetrySampler`, `Metrics`, and `SpanNames`.
+- `Actors.layer` takes `observability: { defects, sampleEvery }`; `@rikalabs/akter/runtime` exports `Telemetry`, `DefectLog`, `DefectRecord`, `DefectRecords`, `TelemetrySampler`, `Metrics`, and `SpanNames`.
 - The internal `Request` gains `queuedAtMs`, which is not part of a command's identity or its receipt hash.
 - A turn's defect now fails its span; exporters that alert on span errors see deterministic defects.
 
@@ -99,7 +99,7 @@ Sampled from the database by one runner of the deployment (a Cluster singleton),
 
 `conformance/observability.ts`, on PGlite and Postgres:
 
-- `names the turn span durable-actors.<Actor>/<Command> and correlates it with the command id (O1)`: the span's name, kind, attributes, generation, and outcome; the admission span as its ancestor in the same trace; one commit span inside it; no principal in any attribute.
+- `names the turn span akter.<Actor>/<Command> and correlates it with the command id (O1)`: the span's name, kind, attributes, generation, and outcome; the admission span as its ancestor in the same trace; one commit span inside it; no principal in any attribute.
 - `answers a retried command id from its receipt in the admission span, without a second turn`.
 - `fails a defect's turn span with its cause, keeps it in the defect log, and counts it`.
 - `names the relay's intent delivery, the receiver's turn, and the effect attempt`.

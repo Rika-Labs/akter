@@ -160,7 +160,7 @@ yield * Intent.cancel("idle")
 
 ## Consequences and evidence
 
-The implemented M0 code in `packages/durable-actors` and `examples/*` still uses the earlier spelling described in [ADR 0007](0007-foundation-command-protocol.md) and [ADR 0008](0008-foundation-completion.md). Migrating it is M1 work, and no conformance evidence changes until then. The [API documents](../api/README.md) now describe this target shape.
+The implemented M0 code in `packages/akter` and `examples/*` still uses the earlier spelling described in [ADR 0007](0007-foundation-command-protocol.md) and [ADR 0008](0008-foundation-completion.md). Migrating it is M1 work, and no conformance evidence changes until then. The [API documents](../api/README.md) now describe this target shape.
 
 This ADR supersedes these v4 decisions:
 

@@ -1,4 +1,4 @@
-import type { Failure, WatchOptions } from "@durable-actors/core/client"
+import type { Failure, WatchOptions } from "@rikalabs/akter/client"
 import { useEffect, useRef, useState } from "react"
 import { followCreated } from "./created.ts"
 

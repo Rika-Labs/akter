@@ -41,7 +41,7 @@ Stop retrying once the id's `expiresAt` is less than a second away on the client
 
 Queries take no `Idempotency-Key` and can be retried freely.
 
-The Promise client and the Python runtime run one corpus of scripted exchanges, [`protocol/exchanges.json`](../../packages/durable-actors/src/protocol/exchanges.json), and must agree on every attempt count, command id, outcome and wait bound in it. One intended difference remains: the Promise client retries until its call timeout (60 seconds by default) or the id's expiry bound, while the Python runtime also stops after `max_attempts` (8 by default), because it has no call deadline; and the Python runtime refreshes an expired credential only when `token` is a function it can call again.
+The Promise client and the Python runtime run one corpus of scripted exchanges, [`protocol/exchanges.json`](../../packages/akter/src/protocol/exchanges.json), and must agree on every attempt count, command id, outcome and wait bound in it. One intended difference remains: the Promise client retries until its call timeout (60 seconds by default) or the id's expiry bound, while the Python runtime also stops after `max_attempts` (8 by default), because it has no call deadline; and the Python runtime refreshes an expired credential only when `token` is a function it can call again.
 
 ## Authentication
 

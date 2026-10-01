@@ -11,7 +11,7 @@ import {
   PulseSleeper,
   PulseSource,
 } from "../probe/subscriptions.ts"
-import { cleanup } from "@durable-actors/core/testing"
+import { cleanup } from "@rikalabs/akter/testing"
 import { type CaseResult, measure, type Scenario } from "../scenario.ts"
 
 /**

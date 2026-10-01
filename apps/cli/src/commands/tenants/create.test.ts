@@ -1,5 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { migrate } from "@durable-actors/postgres/migrate"
+import { migrate } from "@akter/postgres/migrate"
 import { Config, Crypto, Effect, ManagedRuntime } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"

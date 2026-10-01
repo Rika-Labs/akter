@@ -1,15 +1,7 @@
 import { Effect, Match, Schema } from "effect"
 import * as Server from "foldkit/experimental/server"
 import type { Html } from "foldkit/html"
-import {
-  brand,
-  button,
-  classes,
-  field,
-  styles as s,
-  themeClass,
-  type Builder,
-} from "@durable-actors/ui"
+import { brand, button, classes, field, styles as s, themeClass, type Builder } from "@akter/ui"
 import type { Dashboard, Organizations } from "./http.js"
 
 /** Paths the console renders. */

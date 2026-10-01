@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { bigint, pgTable, primaryKey, text } from "drizzle-orm/pg-core"
 import { Schema } from "effect"
 

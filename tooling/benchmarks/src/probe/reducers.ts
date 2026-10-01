@@ -1,4 +1,4 @@
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { Effect, Result, Schema } from "effect"
 
 /** Declared failure of `Add` for a negative amount. */

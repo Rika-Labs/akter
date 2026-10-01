@@ -112,7 +112,7 @@ Dallen took the recommended answer to every question on 2026-09-28. Migration `0
 
 ## Evidence
 
-- Conformance ([`conformance/inspection-views.ts`](../../packages/durable-actors/src/testing/conformance/inspection-views.ts)), shared by PGlite and Postgres: committed turns appear in every view, declared failures leave only their receipt, defects leave nothing, effects move to `dead_letters`, fired timers leave the outbox; rows keep their tenant; every write through every view fails and leaves the rows untouched; a role granted only the schema reads the views and is denied every runtime table.
+- Conformance ([`conformance/inspection-views.ts`](../../packages/akter/src/testing/conformance/inspection-views.ts)), shared by PGlite and Postgres: committed turns appear in every view, declared failures leave only their receipt, defects leave nothing, effects move to `dead_letters`, fired timers leave the outbox; rows keep their tenant; every write through every view fails and leaves the rows untouched; a role granted only the schema reads the views and is denied every runtime table.
 - Workflow views, in `conformance/workflows.ts`: a suspended execution shows in `durable.workflows` with its settled activity and pending clock step in `durable.workflow_steps`; once it finishes, its row reports `finished` with a result and it has no steps.
 - Migration, in `pglite.test.ts`: `0012` then `0013` apply to a database that stopped at `0011`, and a database that applied `0013` without a registered lower id refuses to migrate, naming that id.
 - Benchmark `inspection-views` (see the [reference](../operations/inspection-views.md#cost) and `benchmarks/results/`).

@@ -1,6 +1,6 @@
 <div align="center">
 
-# Durable Actors
+# Akter
 
 **The framework for durable, stateful backends that power realtime apps, background work, and agents.**
 
@@ -23,7 +23,7 @@ Each of these is an actor: an addressable part of your app, such as one order, o
 An order that records its lines, emits an event, and charges the customer. The contract is the only file clients import:
 
 ```ts title="src/order/contract.ts"
-import { Actor } from "@durable-actors/core"
+import { Actor } from "@rikalabs/akter"
 import { integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Schema } from "effect"
 
@@ -125,14 +125,11 @@ export const checkout = Effect.gen(function* () {
 ## Quickstart
 
 ```sh
-bun create @durable-actors my-app   # or: --template chat
-cd my-app && bun install
-bun start   # visits: 1
-bun start   # visits: 2, read back from ./.data
-bun test    # retry, crash, and restart tests
+mkdir my-app && cd my-app && bun init -y
+bun add @rikalabs/akter@alpha effect@4.0.0 @effect/platform-bun@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
-The generated app runs on [PGlite](https://pglite.dev), an embedded Postgres, so there's no Docker or database server to set up. Set `DATABASE_URL=postgres://...` to run the same code on Postgres. The [quickstart](docs/quickstart.md) walks through the generated files.
+The [quickstart](docs/quickstart.md) adds a counter actor in three short files, runs it twice to show its state surviving a restart, and tests a retry and a crash. It runs on [PGlite](https://pglite.dev), an embedded Postgres, so there's no Docker or database server to set up; `Database.postgres` runs the same code on Postgres.
 
 ## What you get
 
@@ -159,26 +156,26 @@ Each command checks that this process still owns the actor, looks for a stored r
 
 ## How it compares
 
-- **Cloudflare Durable Objects** have the same one-request-at-a-time model on Cloudflare's platform, with storage attached to each object. Durable Actors keeps data in your Postgres and runs in your own process.
+- **Cloudflare Durable Objects** have the same one-request-at-a-time model on Cloudflare's platform, with storage attached to each object. Akter keeps data in your Postgres and runs in your own process.
 - **Rivet Actors** keep state in memory and save it on an interval. Here a command's reply waits for its transaction to commit, and a retry returns the recorded result.
-- **Temporal and Restate** record a function's steps so it can resume after a crash. A Durable Actors command is a short transaction instead, and anything slow becomes a job or workflow owned by the actor.
+- **Temporal and Restate** record a function's steps so it can resume after a crash. An Akter command is a short transaction instead, and anything slow becomes a job or workflow owned by the actor.
 
 The [comparison](docs/guides/comparison.md) covers each in detail and says when to choose it instead.
 
 ## Install
 
 ```sh
-bun add @durable-actors/core@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
+bun add @rikalabs/akter@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
 The runtime needs [Bun](https://bun.sh) 1.4.2 or later. Effect, its SQL drivers, and Drizzle are peer dependencies pinned to the versions the framework is tested with, so your app and the framework share one copy of each.
 
-| Import                         | What it holds                                                                                  |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `@durable-actors/core`         | Browser-safe declarations: `Actor.make`, commands, queries, events, jobs, errors, and handles. |
-| `@durable-actors/core/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, and the database layers.                               |
-| `@durable-actors/core/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
-| `@durable-actors/core/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
+| Import                    | What it holds                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `@rikalabs/akter`         | Browser-safe declarations: `Actor.make`, commands, queries, events, jobs, errors, and handles. |
+| `@rikalabs/akter/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, and the database layers.                               |
+| `@rikalabs/akter/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
+| `@rikalabs/akter/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
 
 ## Documentation
 
@@ -186,7 +183,7 @@ The runtime needs [Bun](https://bun.sh) 1.4.2 or later. Effect, its SQL drivers,
 - [Concepts](docs/guides/concepts.md): actors, commands, receipts, and the work that continues after a commit.
 - [Guides](docs/guides/README.md): Effect inside the transaction, testing, and deploying.
 - [API reference](docs/api/README.md): declarations, contexts, the client, Drizzle, and generated clients.
-- [Fit and non-fit](docs/product/fit-and-non-fit.md): when Durable Actors is the right tool, and when it isn't.
+- [Fit and non-fit](docs/product/fit-and-non-fit.md): when Akter is the right tool, and when it isn't.
 - [Runtime contracts](docs/contracts/README.md): exactly what each guarantee covers and where it stops.
 
 ## License

@@ -1,4 +1,4 @@
-import type { ClientState, Failure, QueryOptions } from "@durable-actors/core/client"
+import type { ClientState, Failure, QueryOptions } from "@rikalabs/akter/client"
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 
 /** Anything that hands out actor handles: an `X.client(...)`. */

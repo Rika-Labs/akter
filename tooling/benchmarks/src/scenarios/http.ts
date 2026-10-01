@@ -1,6 +1,6 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { ASSERTION_TYPE, type BoundRequest, requestDigest, User } from "@durable-actors/core"
-import { Actors, Auth } from "@durable-actors/core/runtime"
+import { ASSERTION_TYPE, type BoundRequest, requestDigest, User } from "@rikalabs/akter"
+import { Actors, Auth } from "@rikalabs/akter/runtime"
 import {
   type Cause,
   Clock,
@@ -54,7 +54,7 @@ interface Endpoint {
 }
 
 interface Served extends Endpoint {
-  /** The same calls through `@durable-actors/core/client`, which mints ids, decodes replies, and tracks tokens. */
+  /** The same calls through `@rikalabs/akter/client`, which mints ids, decodes replies, and tracks tokens. */
   readonly client: Caller
   /** The Promise client over a connection that loses every hundredth command response after the server sent it. */
   readonly lossy: Caller
@@ -354,7 +354,7 @@ const serveHttp2 = Effect.fnUntraced(function* (auth: Credentials = none) {
 export const http: Scenario = {
   name: "http",
   description:
-    "Actors.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @durable-actors/core/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, an Ed25519 edge assertion signed per request, the largest allowed principal, and a 64 KiB payload over both protocols.",
+    "Actors.serve over loopback HTTP/1.1 keep-alive and cleartext HTTP/2: sequential commands and queries on one actor and 64 concurrent command callers over 1k actors, through raw fetch, the @rikalabs/akter/client Promise SDK (also with 1% response loss), and raw requests on one multiplexed HTTP/2 connection, then sequential commands with an ES256 JWT, an Ed25519 edge assertion signed per request, the largest allowed principal, and a 64 KiB payload over both protocols.",
   run: (context) =>
     Effect.gen(function* () {
       const results: Array<CaseResult> = []

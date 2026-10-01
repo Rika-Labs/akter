@@ -1,4 +1,4 @@
-import { KEY_REFRESH_PATH, ASSERTION_HEADER } from "@durable-actors/core"
+import { KEY_REFRESH_PATH, ASSERTION_HEADER } from "@rikalabs/akter"
 import { Effect, Ref, Schedule } from "effect"
 import { type HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"

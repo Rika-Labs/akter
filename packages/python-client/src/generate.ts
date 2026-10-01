@@ -66,8 +66,7 @@ export interface GenerateOptions {
   readonly runtime: string
 }
 
-const HEADER =
-  "Generated from a served OpenAPI document by @durable-actors/python-client. Do not edit."
+const HEADER = "Generated from a served OpenAPI document by @akter/python-client. Do not edit."
 
 const IMPORTS = "from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union"
 

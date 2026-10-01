@@ -5,7 +5,7 @@
 **Owner role:** API / SDK.  
 **Change policy:** change with the [context capabilities](../api/02-context.md) and [command turns](../contracts/02-command-turns.md) when a phase, capability, or rollback rule changes.
 
-A Durable Actors command handler is an Effect, and that Effect runs inside the database transaction that commits the turn. The same values that describe the handler's work (its typed errors, its required services, its composition) decide what commits, and there is no separate save step.
+An Akter command handler is an Effect, and that Effect runs inside the database transaction that commits the turn. The same values that describe the handler's work (its typed errors, its required services, its composition) decide what commits, and there is no separate save step.
 
 This guide follows one command through that path, using the chat room from the quickstart's `chat` template.
 

@@ -1,5 +1,5 @@
-import { Actor, User } from "@durable-actors/core"
-import { ActorTest } from "@durable-actors/core/testing"
+import { Actor, User } from "@rikalabs/akter"
+import { ActorTest } from "@rikalabs/akter/testing"
 import { BunCrypto, BunFileSystem } from "@effect/platform-bun"
 import { integer, pgTable, text } from "drizzle-orm/pg-core"
 import {

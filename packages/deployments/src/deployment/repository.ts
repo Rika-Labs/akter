@@ -8,7 +8,7 @@ export class Deployments extends Context.Service<
     /** The deployment's primary region, which never changes once it is created. */
     readonly primaryRegion: (deployment: string) => Effect.Effect<Option.Option<string>>
   }
->()("@durable-actors/deployments/deployment/repository/Deployments") {}
+>()("@akter/deployments/deployment/repository/Deployments") {}
 
 /** `Deployments` over the control-plane database; a database failure is a defect. */
 export const DeploymentsLive = Layer.effect(

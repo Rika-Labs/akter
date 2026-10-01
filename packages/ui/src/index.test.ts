@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun"
 import { Effect, FileSystem, ManagedRuntime } from "effect"
 import { describe, expect, it } from "vitest"
-import { classes, styles, themeClass } from "@durable-actors/ui"
+import { classes, styles, themeClass } from "@akter/ui"
 
 const runtime = ManagedRuntime.make(BunServices.layer)
 

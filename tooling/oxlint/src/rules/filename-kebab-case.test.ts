@@ -11,10 +11,10 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "notKebab" }
 
-tester.run("durable-actors/filename-kebab-case", filenameKebabCaseRule, {
+tester.run("akter/filename-kebab-case", filenameKebabCaseRule, {
   valid: [
     { code: "export {};", filename: "packages/deployments/src/contract.ts" },
-    { code: "export {};", filename: "packages/durable-actors/src/runtime/turn/execute.ts" },
+    { code: "export {};", filename: "packages/akter/src/runtime/turn/execute.ts" },
     { code: "export {};", filename: "apps/api/src/app.ts" },
     { code: "export {};", filename: "packages/deployments/src/deployment.test.ts" },
     { code: "export {};", filename: "infra/src/railway.ts" },

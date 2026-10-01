@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/postgres",
+  "name": "@akter/postgres",
   "private": true,
   "type": "module",
   "exports": {

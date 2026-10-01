@@ -1,5 +1,5 @@
 import { Clock, DateTime, Deferred, Effect, Layer } from "effect"
-import { Intent } from "@durable-actors/core"
+import { Intent } from "@rikalabs/akter"
 import {
   CronProbe,
   EventProbe,

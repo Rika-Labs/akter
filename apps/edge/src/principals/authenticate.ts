@@ -1,5 +1,5 @@
-import { Unauthorized, User } from "@durable-actors/core"
-import { Auth, type Authenticated, type AuthProvider } from "@durable-actors/core/runtime"
+import { Unauthorized, User } from "@rikalabs/akter"
+import { Auth, type Authenticated, type AuthProvider } from "@rikalabs/akter/runtime"
 import { Clock, Duration, Effect, Option, Schema } from "effect"
 import { Headers, type HttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"

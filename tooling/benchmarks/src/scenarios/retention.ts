@@ -1,4 +1,4 @@
-import { cleanup } from "@durable-actors/core/testing"
+import { cleanup } from "@rikalabs/akter/testing"
 import { Effect, Fiber } from "effect"
 import { SqlClient } from "effect/sql"
 import { load, now } from "../measure.ts"

@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/edge",
+  "name": "@akter/edge",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,14 +10,14 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src/config.test.ts"
   },
   "dependencies": {
-    "@durable-actors/core": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/sql-pg": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@durable-actors/deployments": "workspace:*",
-    "@durable-actors/postgres": "workspace:*",
+    "@akter/deployments": "workspace:*",
+    "@akter/postgres": "workspace:*",
     "@types/pg": "8.23.1",
     "pg": "8.23.0",
     "vitest": "catalog:"

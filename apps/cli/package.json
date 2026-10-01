@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/cli",
+  "name": "@akter/cli",
   "version": "0.1.0-alpha.0",
   "private": true,
   "bin": {
@@ -13,13 +13,13 @@
     "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/tenants apps/cli/src/commands/adopt apps/cli/src/commands/fleet"
   },
   "dependencies": {
-    "@durable-actors/core": "workspace:*",
-    "@durable-actors/deployments": "workspace:*",
+    "@akter/deployments": "workspace:*",
     "@effect/platform-bun": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@durable-actors/postgres": "workspace:*",
+    "@akter/postgres": "workspace:*",
     "@types/pg": "8.23.1",
     "drizzle-orm": "catalog:",
     "pg": "8.23.0",

@@ -3,7 +3,7 @@ import {
   type FeedOptions,
   type Failure,
   RetentionGap,
-} from "@durable-actors/core/client"
+} from "@rikalabs/akter/client"
 import { Schema } from "effect"
 import { useEffect, useState } from "react"
 import { followCreated } from "./created.ts"

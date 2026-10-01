@@ -11,23 +11,23 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "runtimeImport" }
 
-tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOutsideRuntimeRule, {
+tester.run("akter/no-runtime-import-outside-runtime", noRuntimeImportOutsideRuntimeRule, {
   valid: [
     {
       code: 'import { SqlClient } from "effect/sql";',
-      filename: "packages/durable-actors/src/runtime/database/client.ts",
+      filename: "packages/akter/src/runtime/database/client.ts",
     },
     {
       code: 'import { PgClient } from "@effect/sql-pg";',
-      filename: "packages/durable-actors/src/testing/pglite/layer.ts",
+      filename: "packages/akter/src/testing/pglite/layer.ts",
     },
     {
       code: 'import { PgliteClient } from "@effect/sql-pglite";',
-      filename: "packages/durable-actors/src/testing/pglite/layer.ts",
+      filename: "packages/akter/src/testing/pglite/layer.ts",
     },
     {
       code: 'export * from "effect/cluster";',
-      filename: "packages/durable-actors/src/runtime/index.ts",
+      filename: "packages/akter/src/runtime/index.ts",
     },
     {
       code: 'import { PgClient } from "@effect/sql-pg";',
@@ -39,11 +39,11 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
     },
     {
       code: 'import { HttpApiBuilder } from "effect/http-api";',
-      filename: "packages/durable-actors/src/serve/router.ts",
+      filename: "packages/akter/src/serve/router.ts",
     },
     {
       code: 'import { Layer } from "effect";',
-      filename: "packages/durable-actors/src/index.ts",
+      filename: "packages/akter/src/index.ts",
     },
     {
       code: 'import { SqlClient } from "effect/sql";',
@@ -53,32 +53,32 @@ tester.run("durable-actors/no-runtime-import-outside-runtime", noRuntimeImportOu
   invalid: [
     {
       code: 'import { SqlClient } from "effect/sql";',
-      filename: "packages/durable-actors/src/index.ts",
+      filename: "packages/akter/src/index.ts",
       errors: [error],
     },
     {
       code: 'import { PgClient } from "@effect/sql-pg";',
-      filename: "packages/durable-actors/src/client/transport.ts",
+      filename: "packages/akter/src/client/transport.ts",
       errors: [error],
     },
     {
       code: 'import { PgliteClient } from "@effect/sql-pglite";',
-      filename: "packages/durable-actors/src/client/transport.ts",
+      filename: "packages/akter/src/client/transport.ts",
       errors: [error],
     },
     {
       code: 'import { Sharding } from "effect/cluster";',
-      filename: "packages/durable-actors/src/actor/actor.ts",
+      filename: "packages/akter/src/actor/actor.ts",
       errors: [error],
     },
     {
       code: 'export { SqlClient } from "effect/sql";',
-      filename: "packages/durable-actors/src/tables/database.ts",
+      filename: "packages/akter/src/tables/database.ts",
       errors: [error],
     },
     {
       code: 'const mod = await import("@effect/sql-pg");',
-      filename: "packages/durable-actors/src/serve/openapi.ts",
+      filename: "packages/akter/src/serve/openapi.ts",
       errors: [error],
     },
   ],
