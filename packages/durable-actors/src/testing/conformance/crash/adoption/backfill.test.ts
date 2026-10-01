@@ -1,15 +1,5 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
-import {
-  Config,
-  Crypto,
-  Effect,
-  Layer,
-  ManagedRuntime,
-  Redacted,
-  Schedule,
-  Schema,
-  Stream,
-} from "effect"
+import { Config, Effect, Layer, ManagedRuntime, Redacted, Schedule, Schema, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
@@ -21,6 +11,7 @@ import { migrate } from "../../../../runtime/database/migrations.ts"
 import { Database } from "../../../../runtime/index.ts"
 import { ActorTest } from "../../../actor-test.ts"
 import { Shipment, Spread, Tenanted, actors, legacyDdl } from "./backfill.ts"
+import { disposableDatabase } from "../../../database.ts"
 
 const TENANT = "crash-tenant"
 
@@ -47,19 +38,11 @@ describe("adoption backfill across process death with Postgres", () => {
     () =>
       runtime.runPromise(
         Effect.gen(function* () {
-          const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-          const name = `backfill_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-          const admin = yield* Effect.acquireRelease(
-            Effect.sync(() => new Pool({ connectionString: database.href })),
-            (pool) => Effect.promise(() => pool.end()),
+          const database = new URL(
+            Redacted.value(
+              yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+            ),
           )
-
-          yield* Effect.acquireRelease(
-            Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-            () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-          )
-          database.pathname = `/${name}`
 
           const pool = yield* Effect.acquireRelease(
             Effect.sync(() => new Pool({ connectionString: database.href })),

@@ -70,11 +70,11 @@ export const AccountCommands = Account.toLayer(
       Subscribe: Effect.fnUntraced(function* ({ plan, card }) {
         const turn = yield* Account.Turn
         yield* turn.state.set({ plan, status: "active" })
-        yield* turn.perform(AttachCard.make({ token: card }))
+        yield* turn.enqueue(AttachCard.make({ token: card }))
       }),
 
       UpdateCard: Effect.fnUntraced(function* (token: string) {
-        yield* (yield* Account.Turn).perform(AttachCard.make({ token }))
+        yield* (yield* Account.Turn).enqueue(AttachCard.make({ token }))
       }),
 
       Cancel: Effect.fnUntraced(function* () {
@@ -117,7 +117,7 @@ export const AccountCommands = Account.toLayer(
         const wf = yield* Account.Workflow
 
         const charge = (
-          step: Step<string, typeof ChargeRequest, typeof ChargeOutcome, readonly []>,
+          step: Step<string, typeof ChargeRequest, typeof ChargeOutcome, typeof Schema.Never>,
         ) =>
           step.run(request, ({ amountCents }) =>
             Effect.gen(function* () {
@@ -168,36 +168,34 @@ export const AccountCommands = Account.toLayer(
 )
 
 /** Query handlers for `Account`. */
-export const AccountReads = Account.toQueryLayer(
-  Effect.succeed({
-    Summary: Effect.fnUntraced(function* () {
-      const { plan, status, period, cardVersion } = (yield* Account.Read).state
+export const AccountReads = Account.toQueryLayer({
+  Summary: Effect.fnUntraced(function* () {
+    const { plan, status, period, cardVersion } = (yield* Account.Read).state
 
-      return { plan, status, period, cardVersion }
-    }),
-    Invoices: Effect.fnUntraced(function* () {
-      const rows = yield* (yield* Account.Read).rows(invoices).all({ orderBy: { period: "asc" } })
-
-      return rows.map(({ id, period, amountCents, status, attempts }) => ({
-        id,
-        period,
-        amountCents,
-        status,
-        attempts,
-      }))
-    }),
+    return { plan, status, period, cardVersion }
   }),
-)
+  Invoices: Effect.fnUntraced(function* () {
+    const rows = yield* (yield* Account.Read).rows(invoices).all({ orderBy: { period: "asc" } })
+
+    return rows.map(({ id, period, amountCents, status, attempts }) => ({
+      id,
+      period,
+      amountCents,
+      status,
+      attempts,
+    }))
+  }),
+})
 
 /** May run in another process: it gets no database, only the provider. */
-export const AccountEffects = Account.toEffectLayer(
+export const AccountJobs = Account.toJobLayer(
   Effect.gen(function* () {
     const gateway = yield* PaymentGateway
 
     return {
       AttachCard: Effect.fnUntraced(function* ({ token }) {
         const exec = yield* Account.Executor
-        yield* gateway.attach({ customer: exec.ref.id, token, idempotencyKey: exec.effectId })
+        yield* gateway.attach({ customer: exec.ref.id, token, idempotencyKey: exec.jobId })
       }),
     }
   }),
@@ -208,6 +206,6 @@ export const AccountLive = Layer.unwrap(
   Effect.gen(function* () {
     yield* (yield* SqlClient.SqlClient).unsafe(invoicesDdl)
 
-    return Layer.mergeAll(AccountCommands, AccountReads, AccountEffects)
+    return Layer.mergeAll(AccountCommands, AccountReads, AccountJobs)
   }).pipe(Effect.orDie),
 )

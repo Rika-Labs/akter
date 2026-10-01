@@ -17,8 +17,9 @@ import { type ActorRef, callerKey } from "../../identity/caller.ts"
 import { type Holder, MAX_INBOUND_BYTES } from "../../runtime/connections/holder.ts"
 import { ClientMessage } from "../../runtime/connections/protocol.ts"
 import type { Authenticated } from "../auth.ts"
-import { ClientWireMessage, ServerWireMessage } from "../frames.ts"
-import { actorErrorBody, closeCodeOf, invalidInput, undecodable } from "../wire.ts"
+import { ClientWireMessage, ServerWireMessage } from "../../protocol/frames.ts"
+import { actorErrorBody, closeCodeOf } from "../../protocol/wire.ts"
+import { invalidInput, undecodable } from "../wire.ts"
 
 /** How long a socket may wait after its upgrade for `hello`. */
 const HELLO_TIMEOUT_MS = 10_000
@@ -291,8 +292,8 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
         Effect.orDie,
         Effect.map((frame): ServerWireMessage => ({
           t: "progress",
-          effect: message.effect,
-          effectId: message.effectId,
+          job: message.job,
+          jobId: message.jobId,
           attempt: message.attempt,
           seq: message.seq,
           frame,

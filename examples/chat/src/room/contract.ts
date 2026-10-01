@@ -28,37 +28,37 @@ export const messagesDdl = `CREATE TABLE IF NOT EXISTS chat_messages (
 export const Attachments = Actor.blob("attachments")
 
 /** A message posted to the room, as its feed and history deliver it. */
-export class MessagePosted extends Actor.Event<MessagePosted>()("MessagePosted", {
+export const MessagePosted = Actor.event("MessagePosted", {
   id: Schema.String,
   author: Schema.String,
   body: Schema.String,
-}) {}
+})
 
 /** The room was archived after sitting idle, and refuses further posts. */
-export class RoomArchived extends Actor.Event<RoomArchived>()("RoomArchived", {}) {}
+export const RoomArchived = Actor.event("RoomArchived", {})
 
 /** Runs after the posting turn commits; the executor has no database access. */
-export class ModerateMessage extends Actor.effect<ModerateMessage>()("ModerateMessage", {
-  input: { id: Schema.String, body: Schema.String },
+export const ModerateMessage = Actor.job("ModerateMessage", {
+  payload: { id: Schema.String, body: Schema.String },
   success: Schema.Struct({ id: Schema.String, flagged: Schema.Boolean }),
-}) {}
+})
 
 /** A moderator's ruling on an appealed message; the waiting appeal reads it from the room's events. */
-export class AppealDecided extends Actor.Event<AppealDecided>()("AppealDecided", {
+export const AppealDecided = Actor.event("AppealDecided", {
   messageId: Schema.String,
   restore: Schema.Boolean,
-}) {}
+})
 
 /** One appeal per message: it notifies moderators once and waits durably for their decision. */
 export const Appeal = Actor.workflow("Appeal", {
-  input: { messageId: Schema.String },
-  output: Schema.Boolean,
+  payload: { messageId: Schema.String },
+  success: Schema.Boolean,
   key: ({ messageId }) => messageId,
   versions: { "notify-moderators": { current: 1, min: 0 } },
 })
 
 /** Workflow step that notifies moderators of an appeal, once. */
-export const Notify = Appeal.step("notify", { input: Schema.String })
+export const Notify = Appeal.step("notify", { payload: Schema.String })
 
 /**
  * Waits, up to the workflow's timeout, for the `AppealDecided` event of the
@@ -68,16 +68,16 @@ export const AwaitDecision = Appeal.wait("decision", AppealDecided)
 
 /** A moderator's ruling on an appeal; emits `AppealDecided`. */
 export const DecideAppeal = Actor.command("DecideAppeal", {
-  input: Schema.Struct({ messageId: Schema.String, restore: Schema.Boolean }),
+  payload: { messageId: Schema.String, restore: Schema.Boolean },
 })
 
 /** Creating command of `Thread`; records its room and message. */
 export const Open = Actor.command("Open", {
-  input: Schema.Struct({ room: Schema.String, messageId: Schema.String }),
+  payload: { room: Schema.String, messageId: Schema.String },
 })
 
 /** Adds a reply to the thread and returns the reply count. */
-export const Reply = Actor.command("Reply", { input: Schema.String, output: Schema.Int })
+export const Reply = Actor.command("Reply", { payload: Schema.String, success: Schema.Int })
 
 /** A reply thread: a minted child with no key, created only by its room's `Open` intent. */
 export const Thread = Actor.make("Thread", {
@@ -88,13 +88,13 @@ export const Thread = Actor.make("Thread", {
   }),
   access: signedIn,
   api: { Open, Reply },
-  policy: { createdBy: Open },
+  createdBy: Open,
 })
 
 /** Mints a reply thread for a message and returns its id. */
 export const StartThread = Actor.command("StartThread", {
-  input: Schema.Struct({ messageId: Schema.String }),
-  output: Schema.String,
+  payload: { messageId: Schema.String },
+  success: Schema.String,
 })
 
 /** Declared failure of `Post` and `React` once the room is archived. */
@@ -117,8 +117,8 @@ export const RoomState = Actor.state({
  */
 export const React = Actor.reducer("React", {
   state: RoomState,
-  input: Schema.Int,
-  errors: [RoomClosed],
+  payload: Schema.Int,
+  error: RoomClosed,
   reduce: (state, n) =>
     state.closed
       ? Result.fail(RoomClosed.make({}))
@@ -137,62 +137,62 @@ export const Presence = Actor.connection("Presence", {
  * with `RoomClosed`.
  */
 export const Post = Actor.command("Post", {
-  input: Schema.Struct({ body: Schema.String, file: Schema.optional(Schema.Uint8Array) }),
-  output: Schema.String,
-  errors: [RoomClosed],
+  payload: { body: Schema.String, file: Schema.optional(Schema.Uint8Array) },
+  success: Schema.String,
+  error: RoomClosed,
 })
 
 /** Closes the room and cancels its idle timer. */
 export const Archive = Actor.command("Archive")
 
 /** Deletes the author's message and withdraws its moderation call if it has not settled. */
-export const Retract = Actor.command("Retract", { input: Schema.String })
+export const Retract = Actor.command("Retract", { payload: Schema.String })
 
 /** The latest messages, newest first, up to `limit` (1 to 100). */
 export const Recent = Actor.query("Recent", {
-  input: Schema.Struct({ limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) }),
-  output: Schema.Array(
+  payload: { limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })) },
+  success: Schema.Array(
     Schema.Struct({ id: Schema.String, author: Schema.String, body: Schema.String }),
   ),
 })
 
 /** One page of posted messages after an exclusive cursor, with each message's cursor. */
 export const History = Actor.query("History", {
-  input: Schema.Struct({
+  payload: {
     after: Schema.optional(Schema.String),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 }))),
-  }),
-  output: Schema.Array(Schema.Struct({ cursor: Schema.String, message: MessagePosted })),
-  errors: [UnknownCursor, RetentionGap],
+  },
+  success: Schema.Array(Schema.Struct({ cursor: Schema.String, message: MessagePosted })),
+  error: Schema.Union([UnknownCursor, RetentionGap]),
 })
 
 /** The attachment stored under the message id, if any. */
 export const Attachment = Actor.query("Attachment", {
-  input: Schema.String,
-  output: Schema.Option(Schema.Uint8Array),
+  payload: Schema.String,
+  success: Schema.Option(Schema.Uint8Array),
 })
 
 /**
- * Internal commands: only System callers (the relay and effect routes) reach
+ * Internal commands: only System callers (the relay and job routes) reach
  * them.
  */
 export const IdleCheck = Actor.command("IdleCheck", {
-  input: Schema.Struct({ token: Schema.String }),
+  payload: { token: Schema.String },
 })
 
 /** The moderation result for a message; a flagged message is deleted. */
 export const Moderated = Actor.command("Moderated", {
-  input: Schema.Struct({ id: Schema.String, flagged: Schema.Boolean }),
+  payload: { id: Schema.String, flagged: Schema.Boolean },
 })
 
 /** A moderation call that exhausted its retries. */
 export const ModerationFailed = Actor.command("ModerationFailed", {
-  input: Actor.DeadLetter(ModerateMessage),
+  payload: Actor.DeadLetter(ModerateMessage),
 })
 
 /** A moderation call that was cancelled. */
 export const ModerationCancelled = Actor.command("ModerationCancelled", {
-  input: Actor.Cancelled(ModerateMessage),
+  payload: Actor.Cancelled(ModerateMessage),
 })
 
 /**
@@ -206,7 +206,16 @@ export const Room = Actor.make("Room", {
   blobs: [Attachments],
   events: [MessagePosted, RoomArchived, AppealDecided],
   feeds: [MessagePosted],
-  effects: [ModerateMessage],
+  jobs: {
+    ModerateMessage: {
+      job: ModerateMessage,
+      retry: { times: 5 },
+      concurrency: { perActor: 2 },
+      onSuccess: Moderated,
+      onDeadLetter: ModerationFailed,
+      onCancelled: ModerationCancelled,
+    },
+  },
   access: signedIn,
   api: {
     Post,
@@ -225,15 +234,6 @@ export const Room = Actor.make("Room", {
   policy: {
     keepReceipts: "7 days",
     keepEvents: "30 days",
-    effects: {
-      ModerateMessage: {
-        retry: { times: 5 },
-        concurrency: { perActor: 2 },
-        onSuccess: Moderated,
-        onDeadLetter: ModerationFailed,
-        onCancelled: ModerationCancelled,
-      },
-    },
   },
 })
 
@@ -246,5 +246,6 @@ export const Digest = Actor.make("Digest", {
   state: Actor.state({ sent: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   api: {},
   internal: { Send },
-  policy: { cron: { "0 8 * * *": Send }, cronSkipIfOlderThan: "1 hour" },
+  schedules: { "0 8 * * *": Send },
+  policy: { maxScheduleLag: "1 hour" },
 })

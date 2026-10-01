@@ -1,8 +1,8 @@
 import { DateTime, Effect, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { type AnyWorkflow, isWorkflow } from "../../members/workflow.ts"
+import { type AnyWorkflow, isWorkflow, type VersionRange } from "../../members/workflow.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
-import { manifestOf, toJson } from "./manifest.ts"
+import { type Declared, manifestOf, toJson } from "./manifest.ts"
 
 /** One reason a deployment cannot run the open executions it would inherit. */
 export interface Incompatibility {
@@ -34,7 +34,7 @@ export const declaredOf = (actor: {
 })
 
 const StoredManifest = Schema.Struct({
-  input: Schema.String,
+  payload: Schema.String,
   steps: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -51,64 +51,112 @@ const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(StoredMa
 /** Decodes the steps of a stored manifest. */
 export const decodeStoredManifest = (manifest: string) => decodeManifest(manifest)
 
-interface Current {
-  readonly member: AnyWorkflow
-  readonly hash: string
-  readonly input: string
-  readonly steps: ReadonlyMap<string, { readonly kind: string; readonly result: string }>
+/** Why `declared` cannot continue the executions a start manifest covers, and which of its steps it would decode under another result schema. */
+export interface StartVerdict {
+  readonly problems: ReadonlyArray<string>
+  readonly changed: ReadonlyArray<string>
 }
 
-const currentOf = Effect.fnUntraced(function* (declared: ReadonlyArray<DeclaredActor>) {
-  const current = new Map<string, Map<string, Current>>()
+const sameManifest: StartVerdict = { problems: [], changed: [] }
 
-  for (const actor of declared) {
-    const workflows = new Map<string, Current>()
-
-    for (const member of actor.workflows) {
-      const { manifest, hash } = yield* manifestOf(actor.name, member)
-      workflows.set(member.tag, {
-        member,
-        hash,
-        input: manifest.input,
-        steps: new Map(manifest.steps.map((step) => [step.name, step])),
-      })
-    }
-
-    current.set(actor.name, workflows)
-  }
-
-  return current
-})
-
-/** The steps of `stored` this deployment no longer registers, or registers as another kind. */
-export const missingSteps = ({
-  stored,
-  steps,
+/**
+ * The verdict on executions that started under `hash`, whose stored manifest is
+ * `start` (undefined when its row is missing). A start manifest has to list
+ * only steps `declared` registers as the same kind and share its payload schema.
+ * `newer` means it was accepted after `declared`: a runner then also refuses it
+ * when a shared step's result schema differs, because the newer deployment may
+ * record such results at any time.
+ */
+export const startVerdict = ({
+  declared,
+  hash,
+  start,
+  newer,
 }: {
-  readonly stored: StoredManifest
-  readonly steps: ReadonlyMap<string, { readonly kind: string }>
-}) =>
-  stored.steps.flatMap((step) => {
-    const kind = steps.get(step.name)?.kind
+  readonly declared: Declared
+  readonly hash: string
+  readonly start: StoredManifest | undefined
+  readonly newer: boolean
+}): StartVerdict => {
+  if (hash === declared.hash) return sameManifest
 
-    if (kind === undefined) return [`step "${step.name}" removed`]
+  if (start === undefined) return { problems: ["start manifest missing"], changed: [] }
 
-    return kind === step.kind ? [] : [`step "${step.name}" changed from ${step.kind} to ${kind}`]
-  })
-
-/** The steps of `stored` whose recorded results `steps` would decode under a different schema. */
-export const changedSteps = ({
-  stored,
-  steps,
-}: {
-  readonly stored: Pick<StoredManifest, "steps">
-  readonly steps: ReadonlyMap<string, { readonly result: string }>
-}) =>
-  stored.steps.flatMap((entry) => {
-    const step = steps.get(entry.name)
+  const changed = start.steps.flatMap((entry) => {
+    const step = declared.steps.get(entry.name)
 
     return step !== undefined && entry.result !== step.result ? [entry.name] : []
   })
+
+  const problems = start.steps.flatMap((entry) => {
+    const kind = declared.steps.get(entry.name)?.kind
+
+    if (kind === undefined) return [`step "${entry.name}" removed`]
+
+    return kind === entry.kind ? [] : [`step "${entry.name}" changed from ${entry.kind} to ${kind}`]
+  })
+
+  if (start.payload !== declared.manifest.payload) problems.push("payload schema changed")
+
+  if (newer)
+    for (const name of changed)
+      problems.push(`step "${name}" result schema changed by a newer deployment`)
+
+  return { problems, changed }
+}
+
+/**
+ * Why an execution's value for marker `name` is unsupported: `recorded` is
+ * undefined when the execution predates the marker, and reads as 0.
+ */
+export const markerProblem = ({
+  versions,
+  name,
+  recorded,
+}: {
+  readonly versions: Readonly<Record<string, VersionRange>>
+  readonly name: string
+  readonly recorded: number | undefined
+}) => {
+  const range = versions[name]
+
+  if (range === undefined) return recorded === undefined ? [] : [`marker "${name}" removed`]
+
+  if (recorded === undefined)
+    return range.min > 0
+      ? [`marker "${name}" min ${range.min} > 0 for executions that predate it`]
+      : []
+
+  return recorded < range.min || recorded > range.current
+    ? [`marker "${name}" ${recorded} outside ${range.min}..${range.current}`]
+    : []
+}
+
+/**
+ * Why `declared` cannot replay a recorded step: it no longer registers the
+ * step as that kind, or the step settled under a result schema in `changed`.
+ */
+export const recordedStepProblem = ({
+  declared,
+  step,
+  kind,
+  settled,
+  changed,
+}: {
+  readonly declared: Declared
+  readonly step: string
+  readonly kind: string
+  readonly settled: boolean
+  readonly changed: ReadonlyArray<string>
+}) => {
+  const registered = declared.steps.get(step)?.kind
+
+  if (registered === undefined) return [`step "${step}" removed`]
+
+  if (registered !== kind) return [`step "${step}" changed from ${kind} to ${registered}`]
+
+  return settled && changed.includes(step) ? [`step "${step}" result schema changed`] : []
+}
 
 /**
  * Compares `declared` with every open execution of its actor types (of every
@@ -128,7 +176,17 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
   options: { readonly everyActorType: boolean },
 ) {
   const sql = yield* SqlClient.SqlClient
-  const current = yield* currentOf(declared)
+  const current = new Map<string, Map<string, { member: AnyWorkflow; declared: Declared }>>()
+
+  for (const actor of declared) {
+    const workflows = new Map<string, { member: AnyWorkflow; declared: Declared }>()
+
+    for (const member of actor.workflows)
+      workflows.set(member.tag, { member, declared: yield* manifestOf(actor.name, member) })
+
+    current.set(actor.name, workflows)
+  }
+
   const types = toJson([...current.keys()])
 
   const scope = options.everyActorType
@@ -155,6 +213,32 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     })
   }
 
+  const verdicts = new Map<string, StartVerdict>()
+
+  const verdictOf = Effect.fnUntraced(function* (
+    actorType: string,
+    workflow: { readonly member: AnyWorkflow; readonly declared: Declared },
+    hash: string,
+    manifest: string | null,
+  ) {
+    const key = toJson([actorType, workflow.member.tag, hash])
+    const known = verdicts.get(key)
+
+    if (known !== undefined) return known
+
+    const verdict = startVerdict({
+      declared: workflow.declared,
+      hash,
+      start:
+        manifest === null ? undefined : yield* decodeStoredManifest(manifest).pipe(Effect.orDie),
+      newer: false,
+    })
+
+    verdicts.set(key, verdict)
+
+    return verdict
+  })
+
   const groups = yield* sql<{
     actor_type: string
     workflow: string
@@ -169,8 +253,6 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
       AND m.manifest_hash = x.manifest_hash
     WHERE x.status <> 'finished' AND ${scope}
     GROUP BY x.actor_type, x.workflow, x.manifest_hash, m.manifest::text`
-
-  const manifests = new Map<string, StoredManifest | undefined>()
 
   for (const group of groups) {
     const oldest = Number(group.oldest)
@@ -188,25 +270,15 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
       continue
     }
 
-    const stored =
-      group.manifest === null
-        ? undefined
-        : yield* decodeStoredManifest(group.manifest).pipe(Effect.orDie)
+    const verdict = yield* verdictOf(
+      group.actor_type,
+      workflow,
+      group.manifest_hash,
+      group.manifest,
+    )
 
-    manifests.set(toJson([group.actor_type, group.workflow, group.manifest_hash]), stored)
-
-    if (group.manifest_hash === workflow.hash) continue
-
-    if (stored === undefined) {
-      add(group.actor_type, group.workflow, "start manifest missing", group.open, oldest)
-      continue
-    }
-
-    for (const problem of missingSteps({ stored, steps: workflow.steps }))
+    for (const problem of verdict.problems)
       add(group.actor_type, group.workflow, problem, group.open, oldest)
-
-    if (stored.input !== workflow.input)
-      add(group.actor_type, group.workflow, "input schema changed", group.open, oldest)
   }
 
   const recorded = yield* sql<{
@@ -236,70 +308,33 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     if (workflow === undefined) continue
     const oldest = Number(row.oldest)
 
-    if (row.kind === "version") {
-      const range = workflow.member.versions[row.step]
+    const problems =
+      row.kind === "version"
+        ? markerProblem({
+            versions: workflow.member.versions,
+            name: row.step,
+            recorded: row.version!,
+          })
+        : workflow.declared.steps.get(row.step)?.kind !== row.kind && row.manifest !== null
+          ? []
+          : recordedStepProblem({
+              declared: workflow.declared,
+              step: row.step,
+              kind: row.kind,
+              settled: true,
+              changed: (yield* verdictOf(row.actor_type, workflow, row.manifest_hash, row.manifest))
+                .changed,
+            })
 
-      if (range === undefined)
-        add(row.actor_type, row.workflow, `marker "${row.step}" removed`, row.open, oldest)
-      else if (row.version! < range.min || row.version! > range.current)
-        add(
-          row.actor_type,
-          row.workflow,
-          `marker "${row.step}" ${row.version} outside ${range.min}..${range.current}`,
-          row.open,
-          oldest,
-        )
-
-      continue
-    }
-
-    const step = workflow.steps.get(row.step)
-    const key = toJson([row.actor_type, row.workflow, row.manifest_hash])
-
-    if (!manifests.has(key))
-      manifests.set(
-        key,
-        row.manifest === null
-          ? undefined
-          : yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
-      )
-
-    const stored = manifests.get(key)
-
-    if (step === undefined || step.kind !== row.kind) {
-      if (stored === undefined)
-        add(
-          row.actor_type,
-          row.workflow,
-          step === undefined
-            ? `step "${row.step}" removed`
-            : `step "${row.step}" changed from ${row.kind} to ${step.kind}`,
-          row.open,
-          oldest,
-        )
-
-      continue
-    }
-
-    if (stored === undefined || row.manifest_hash === workflow.hash) continue
-    const entry = stored.steps.find((candidate) => candidate.name === row.step)
-
-    if (entry === undefined) continue
-
-    if (changedSteps({ stored: { steps: [entry] }, steps: workflow.steps }).length > 0)
-      add(
-        row.actor_type,
-        row.workflow,
-        `step "${row.step}" result schema changed`,
-        row.open,
-        oldest,
-      )
+    for (const problem of problems) add(row.actor_type, row.workflow, problem, row.open, oldest)
   }
 
   for (const [actorType, workflows] of current)
-    for (const [tag, workflow] of workflows)
-      for (const [name, range] of Object.entries(workflow.member.versions)) {
-        if (range.min <= 0) continue
+    for (const [tag, { member }] of workflows)
+      for (const name of Object.keys(member.versions)) {
+        const problems = markerProblem({ versions: member.versions, name, recorded: undefined })
+
+        if (problems.length === 0) continue
 
         const [predating] = yield* sql<{ open: number; oldest: string | null }>`
           SELECT count(*)::integer AS open, min(x.started_at_ms)::text AS oldest
@@ -309,13 +344,8 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
               AND s.execution_id = x.execution_id AND s.kind = 'version' AND s.step = ${name})`
 
         if (predating !== undefined && predating.open > 0)
-          add(
-            actorType,
-            tag,
-            `marker "${name}" min ${range.min} > 0 for executions that predate it`,
-            predating.open,
-            Number(predating.oldest),
-          )
+          for (const problem of problems)
+            add(actorType, tag, problem, predating.open, Number(predating.oldest))
       }
 
   return [...found.values()].sort(

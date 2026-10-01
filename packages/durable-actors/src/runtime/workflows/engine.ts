@@ -1,4 +1,16 @@
-import { Cause, Context, Crypto, Data, Effect, Exit, Fiber, Option, Schema, Scope } from "effect"
+import {
+  Cause,
+  Context,
+  Crypto,
+  Data,
+  Effect,
+  Exit,
+  Fiber,
+  Latch,
+  Option,
+  Schema,
+  Scope,
+} from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import { Activity, Workflow as EffectWorkflow, WorkflowEngine } from "effect/unstable/workflow"
 import {
@@ -33,9 +45,15 @@ import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
-import type { ActivationCache } from "../turn/execute.ts"
-import { changedSteps, decodeStoredManifest, missingSteps } from "./compatibility.ts"
-import { manifestOf, toJson } from "./manifest.ts"
+import { type ActivationCache, actorRow, fence } from "../storage/generation.ts"
+import {
+  decodeStoredManifest,
+  markerProblem,
+  recordedStepProblem,
+  type StartVerdict,
+  startVerdict,
+} from "./compatibility.ts"
+import { type Declared, manifestOf, toJson } from "./manifest.ts"
 
 /** A running activity re-arms its execution's timer this far ahead, so a lost runner's work resumes. */
 export const RECOVERY_MS = 30_000
@@ -69,9 +87,6 @@ const isSignal = (signal: typeof StaleRun | typeof Suspend) => (cause: Cause.Cau
 const suspended = isSignal(Suspend)
 
 const stale = isSignal(StaleRun)
-
-const owner = (sql: SqlClient.SqlClient, routingKey: bigint, ref: ActorRef) =>
-  sql`routing_key = ${routingKey} AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
 const success = (value: string): BusinessResult => ({
   outcome: Outcome.cases.Success.make({ value }),
@@ -107,9 +122,9 @@ const armTimer = Effect.fnUntraced(function* (
       },
     ],
     replaced: [key],
-    effects: [],
+    jobs: [],
     subscriptions: [],
-    cancelledEffects: [],
+    cancelledJobs: [],
   })
 })
 
@@ -119,7 +134,7 @@ const deleteTimer = (
   ref: ActorRef,
   executionId: string,
 ) =>
-  sql`DELETE FROM actor_outbox WHERE ${owner(sql, routingKey, ref)} AND timer_key = ${timerKey(executionId)}`
+  sql`DELETE FROM actor_outbox WHERE ${actorRow({ sql, actor: { key: routingKey, ref } })} AND timer_key = ${timerKey(executionId)}`
 
 /**
  * Inserts an execution with its version markers inside the starting owner
@@ -138,7 +153,7 @@ const insertExecution = Effect.fnUntraced(function* (options: {
   readonly workflow: RegisteredWorkflow
   readonly executionId: string
   readonly key: string
-  readonly input: string
+  readonly payload: string
   readonly caller: Caller
   readonly after: string | null
 }) {
@@ -151,11 +166,11 @@ const insertExecution = Effect.fnUntraced(function* (options: {
     WITH x AS (INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
       workflow, workflow_key, manifest_hash, payload, caller, event_cursor, status, started_at_ms)
     SELECT ${routingKey}, ${executionId}, ${bucketOf(routingKey)}, ${ref.tenant}, ${ref.actor}, ${ref.id},
-      ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.input)},
+      ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.payload)},
       ${yield* encodeCaller(options.caller).pipe(Effect.orDie)},
       COALESCE(${options.after}::bigint, g.event_sequence),
       'running', ${now}
-    FROM actor_generations g WHERE ${owner(sql, routingKey, ref)}
+    FROM actor_generations g WHERE ${actorRow({ sql, actor: { key: routingKey, ref } })}
     ON CONFLICT DO NOTHING RETURNING 1),
     m AS (INSERT INTO actor_workflow_manifests (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
       SELECT ${ref.actor}, ${workflow.member.tag}, ${manifest.hash}, ${toJson(manifest.manifest)}::jsonb, 0
@@ -208,7 +223,7 @@ export const workflowCommands = ({
   const start = (
     request: Request,
     workflow: RegisteredWorkflow,
-    input: string,
+    payload: string,
     key: string,
     after: string | null,
   ) =>
@@ -227,7 +242,7 @@ export const workflowCommands = ({
         workflow,
         executionId,
         key,
-        input,
+        payload,
         caller: request.caller,
         after,
       })
@@ -254,13 +269,13 @@ export const workflowCommands = ({
     handler: false,
     run: (request) =>
       Effect.gen(function* () {
-        const payload = yield* decodeStart(request.payload).pipe(Effect.orDie)
-        const workflow = registration.workflows.get(payload.workflow)
+        const staged = yield* decodeStart(request.payload).pipe(Effect.orDie)
+        const workflow = registration.workflows.get(staged.workflow)
 
         if (workflow === undefined)
-          return yield* Effect.die(new Error(`Unregistered workflow ${payload.workflow}`))
+          return yield* Effect.die(new Error(`Unregistered workflow ${staged.workflow}`))
 
-        return yield* start(request, workflow, payload.input, payload.key, payload.after)
+        return yield* start(request, workflow, staged.input, staged.key, staged.after)
       }),
   })
 
@@ -396,17 +411,30 @@ const derivedUuid = (bytes: Uint8Array) => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
 
-/** An execution this activation is running now. */
-interface LiveRun {
-  rerun: boolean
-  activities: number
+/**
+ * One replay of a live run. It ends when its body records a result, parks, or
+ * leaves the execution for another runner, or when the engine interrupts it.
+ */
+interface Pass {
+  /** The body's fiber, a child of the run's loop; absent only until it is forked. */
   body: Fiber.Fiber<unknown, unknown> | undefined
-  /** Clocks and waits the live run is parked on while another branch still runs. */
+  /** Clocks and waits this pass parked on while another branch still works. */
   readonly parked: Set<string>
-  /** Activity, clock, and wait steps of the run still working, not parked. */
-  active: number
-  /** The engine stopped this run itself to replay it, as for an interrupt. */
-  preempted: boolean
+  /** Activity, clock, and wait steps of the pass still working, not parked. */
+  working: number
+  /** Open exactly while no step works, so a parking step waits for the signal instead of polling. */
+  readonly idle: Latch.Latch
+}
+
+/**
+ * An execution this activation is running now: its current pass, if one runs,
+ * and what the run does once that pass ends. `end` stops the run; `wake`
+ * replays it unless the pass left the execution for another runner; `preempt`
+ * replays it because the engine stopped the pass itself.
+ */
+interface LiveRun {
+  pass: Pass | undefined
+  next: "end" | "wake" | "preempt"
 }
 
 /**
@@ -416,7 +444,7 @@ interface LiveRun {
  *
  * Compatibility: a runner leaves an execution for a compatible one when it lacks
  * the workflow, its markers exclude the execution's, it lacks a recorded step or a
- * step of the start manifest, or it would decode a recorded result or the input
+ * step of the start manifest, or it would decode a recorded result or the payload
  * differently. Once this runner's result schemas apply to the steps still to
  * settle, its manifest becomes the execution's start manifest; a `newer` manifest
  * is one accepted after this runner's own, as when a newer deployment starts
@@ -426,9 +454,10 @@ interface LiveRun {
  * there, so the compensation finalizers of completed steps run before the
  * interrupt is recorded. A replay of a parked execution counts as running until it parks or
  * finishes, so inspection never reports a working run as suspended. A wake that
- * arrived during a run replays it once more unless the run lost its generation,
- * and a run the engine stopped to replay always replays. A parking step waits
- * until every other step of the run has parked or finished: a parked branch would
+ * arrived during a pass replays the run once more unless the pass left the
+ * execution for another runner or lost its generation, and a pass the engine
+ * stopped to replay always replays. A parking step waits, on the pass's idle
+ * signal, until every other step of the pass has parked or finished: a parked branch would
  * otherwise interrupt concurrent branches mid-step, losing a sibling's clock, wait
  * or activity work and possibly replaying forever. A race branch parked on a clock
  * or wait that can now settle stops the run so its replay settles it, and a
@@ -471,7 +500,8 @@ export const activationEngine = (options: {
       Crypto.Crypto,
     )(yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>())
 
-    const ownerRow = owner(sql, routingKey, ref)
+    const actor = { key: routingKey, ref }
+    const ownerRow = actorRow({ sql, actor })
 
     const instanceWorkflows = new Map<string, EffectWorkflow.Any>()
 
@@ -491,10 +521,7 @@ export const activationEngine = (options: {
     const fenced = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       sql.withTransaction(
         Effect.gen(function* () {
-          const [row] = yield* sql<{ generation: string }>`
-            SELECT generation::text AS generation FROM actor_generations WHERE ${ownerRow} FOR UPDATE`
-
-          if (row === undefined || row.generation !== cache.generation)
+          if (!(yield* fence({ actor, cache, lock: "UPDATE" })))
             return yield* Effect.die(new StaleRun())
 
           return yield* effect
@@ -503,56 +530,44 @@ export const activationEngine = (options: {
 
     const now = databaseTime
 
-    const startManifests = new Map<
-      string,
-      { readonly covered: boolean; readonly changed: ReadonlyArray<string> }
-    >()
+    const startVerdicts = new Map<string, StartVerdict>()
 
-    const coversStartManifest = (
-      workflow: RegisteredWorkflow,
-      hash: string,
-      settled: ReadonlySet<string>,
-    ) =>
+    /**
+     * The verdict on the manifest an execution started under, cached per hash
+     * for this activation. Unlike the startup check, it knows whether that
+     * manifest was accepted after this runner's own.
+     */
+    const startOf = (declared: Declared, workflow: RegisteredWorkflow, hash: string) =>
       Effect.gen(function* () {
-        const own = yield* manifestOf(ref.actor, workflow.member)
+        const known = hash === declared.hash ? undefined : startVerdicts.get(hash)
 
-        if (hash === own.hash) return true
-        let known = startManifests.get(hash)
+        if (hash === declared.hash || known !== undefined)
+          return known ?? startVerdict({ declared, hash, start: undefined, newer: false })
 
-        if (known === undefined) {
-          const [row] = yield* sql<{ manifest: string; newer: boolean }>`
-            SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
-              FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
-                AND o.manifest_hash = ${own.hash}), -1) AS newer
-            FROM actor_workflow_manifests m
-            WHERE m.actor_type = ${ref.actor} AND m.workflow = ${workflow.member.tag}
-              AND m.manifest_hash = ${hash}`
+        const [row] = yield* sql<{ manifest: string; newer: boolean }>`
+          SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
+            FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
+              AND o.manifest_hash = ${declared.hash}), -1) AS newer
+          FROM actor_workflow_manifests m
+          WHERE m.actor_type = ${ref.actor} AND m.workflow = ${workflow.member.tag}
+            AND m.manifest_hash = ${hash}`
 
-          if (row === undefined) known = { covered: false, changed: [] }
-          else {
-            const stored = yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie)
+        const verdict = startVerdict({
+          declared,
+          hash,
+          start:
+            row === undefined
+              ? undefined
+              : yield* decodeStoredManifest(row.manifest).pipe(Effect.orDie),
+          newer: row?.newer === true,
+        })
 
-            const changed = changedSteps({
-              stored,
-              steps: new Map(own.manifest.steps.map((step) => [step.name, step])),
-            })
+        startVerdicts.set(hash, verdict)
 
-            known = {
-              covered:
-                missingSteps({ stored, steps: workflow.steps }).length === 0 &&
-                stored.input === own.manifest.input &&
-                (!row.newer || changed.length === 0),
-              changed,
-            }
-          }
-
-          startManifests.set(hash, known)
-        }
-
-        return known.covered && known.changed.every((name) => !settled.has(name))
+        return verdict
       })
 
-    /** An execution's recorded steps by slot, its version markers, and the steps that settled. */
+    /** An execution's recorded steps by slot and its version markers. */
     const readSteps = (executionId: string) =>
       Effect.gen(function* () {
         const rows = yield* sql<StepRow>`
@@ -564,72 +579,69 @@ export const activationEngine = (options: {
 
         const steps = new Map<string, StepRow>()
         const markers = new Map<string, number>()
-        const settledSteps = new Set<string>()
 
         for (const row of rows)
           if (row.kind === "version") markers.set(row.step, row.version!)
-          else {
-            steps.set(slot(row.step, row.attempt), row)
+          else steps.set(slot(row.step, row.attempt), row)
 
-            if (row.exit !== null) settledSteps.add(row.step)
-          }
-
-        return { steps, markers, settledSteps }
+        return { steps, markers }
       })
 
     /**
-     * Whether this runner can replay an execution: its start manifest is
-     * covered, its markers are within range and all known, and every recorded
-     * step is registered with the same kind.
+     * Why this runner cannot replay an execution, empty when it can, and the
+     * steps whose result schemas differ from its start manifest's. Every
+     * recorded step, settled or pending, has to be registered as the same kind.
      */
-    const replayable = (
+    const compatibility = (
       workflow: RegisteredWorkflow,
       execution: ExecutionRow,
       recorded: Effect.Success<ReturnType<typeof readSteps>>,
     ) =>
-      Effect.map(
-        coversStartManifest(workflow, execution.manifest_hash, recorded.settledSteps),
-        (covered) =>
-          covered &&
-          Object.entries(workflow.member.versions).every(([name, range]) => {
-            const value = recorded.markers.get(name) ?? 0
+      Effect.gen(function* () {
+        const declared = yield* manifestOf(ref.actor, workflow.member)
+        const start = yield* startOf(declared, workflow, execution.manifest_hash)
+        const { versions } = workflow.member
 
-            return value >= range.min && value <= range.current
-          }) &&
-          [...recorded.markers.keys()].every(
-            (name) => workflow.member.versions[name] !== undefined,
-          ) &&
-          [...recorded.steps.values()].every(
-            (row) => workflow.steps.get(row.step)?.kind === row.kind,
+        const problems = [
+          ...start.problems,
+          ...[...new Set([...Object.keys(versions), ...recorded.markers.keys()])].flatMap((name) =>
+            markerProblem({ versions, name, recorded: recorded.markers.get(name) }),
           ),
-      )
+          ...[...recorded.steps.values()].flatMap((row) =>
+            recordedStepProblem({
+              declared,
+              step: row.step,
+              kind: row.kind,
+              settled: row.exit !== null,
+              changed: start.changed,
+            }),
+          ),
+        ]
+
+        return { problems, changed: start.changed, declared }
+      })
 
     /**
      * Moves an execution started under an older manifest whose steps changed
      * onto this runner's manifest, recording that manifest if it is new.
      */
     const adoptManifest = (
+      declared: Declared,
       workflow: RegisteredWorkflow,
       execution: ExecutionRow,
       executionId: string,
+      changed: ReadonlyArray<string>,
     ) =>
-      Effect.gen(function* () {
-        const own = yield* manifestOf(ref.actor, workflow.member)
-
-        if (
-          execution.manifest_hash !== own.hash &&
-          (startManifests.get(execution.manifest_hash)?.changed.length ?? 0) > 0
-        ) {
-          yield* fenced(sql`
+      execution.manifest_hash === declared.hash || changed.length === 0
+        ? Effect.void
+        : fenced(sql`
             WITH m AS (INSERT INTO actor_workflow_manifests
                 (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
-              VALUES (${ref.actor}, ${workflow.member.tag}, ${own.hash}, ${toJson(own.manifest)}::jsonb, 0)
+              VALUES (${ref.actor}, ${workflow.member.tag}, ${declared.hash}, ${toJson(declared.manifest)}::jsonb, 0)
               ON CONFLICT DO NOTHING)
-            UPDATE actor_workflow_executions SET manifest_hash = ${own.hash}
+            UPDATE actor_workflow_executions SET manifest_hash = ${declared.hash}
             WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
-              AND manifest_hash = ${execution.manifest_hash}`)
-        }
-      })
+              AND manifest_hash = ${execution.manifest_hash}`).pipe(Effect.asVoid)
 
     /** Records an execution's result, then drops its steps and its timer. */
     const finish = (executionId: string, result: StoredResult) =>
@@ -658,7 +670,7 @@ export const activationEngine = (options: {
       executionId,
       workflow,
       steps,
-      entry,
+      pass,
       interrupting,
       eventCursor,
       onBehalfOf,
@@ -666,7 +678,7 @@ export const activationEngine = (options: {
       readonly executionId: string
       readonly workflow: RegisteredWorkflow
       readonly steps: Map<string, StepRow>
-      readonly entry: LiveRun
+      readonly pass: Pass
       readonly interrupting: boolean
       readonly eventCursor: { value: bigint }
       readonly onBehalfOf: ReturnType<typeof principal>
@@ -734,26 +746,39 @@ export const activationEngine = (options: {
           ...row,
         })
 
+      const shift = (delta: 1 | -1) =>
+        Effect.sync(() => {
+          pass.working += delta
+
+          if (pass.working === 0) pass.idle.openUnsafe()
+          else pass.idle.closeUnsafe()
+        })
+
       const working = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         Effect.acquireUseRelease(
-          Effect.sync(() => (entry.active += 1)),
+          shift(1),
           () => effect,
-          () => Effect.sync(() => (entry.active -= 1)),
+          () => shift(-1),
         )
 
-      const quiet = Effect.gen(function* () {
+      /**
+       * Waits until no other step of the pass works. A step that just ended gets
+       * one scheduling turn to start its branch's next step before the pass
+       * counts as quiet.
+       */
+      const quiet: Effect.Effect<void> = Effect.gen(function* () {
         for (;;) {
-          while (entry.active > 0) yield* Effect.sleep("1 millis")
+          yield* pass.idle.await
           yield* Effect.yieldNow
 
-          if (entry.active === 0) return
+          if (pass.working === 0) return
         }
       })
 
       const suspend = Effect.acquireUseRelease(
-        Effect.sync(() => (entry.active -= 1)),
+        shift(-1),
         () => quiet,
-        () => Effect.sync(() => (entry.active += 1)),
+        () => shift(1),
       ).pipe(Effect.andThen(Effect.die(new Suspend())))
 
       const guarded = <A, R>(effect: Effect.Effect<A, SqlError.SqlError, R>) =>
@@ -810,11 +835,8 @@ export const activationEngine = (options: {
               Effect.provideContext(services),
             )
 
-            entry.activities += 1
-
             const exit = yield* run.pipe(
               Effect.provideService(CurrentCallPhase, CallPhase.Activity({ nextCommandId })),
-              Effect.ensuring(Effect.sync(() => (entry.activities -= 1))),
             )
 
             const at = yield* now
@@ -846,7 +868,7 @@ export const activationEngine = (options: {
             } else dueAt = Number(row.due_at_ms)
 
             if (at < dueAt) {
-              entry.parked.add(step.name)
+              pass.parked.add(step.name)
 
               return yield* suspend
             }
@@ -965,7 +987,7 @@ export const activationEngine = (options: {
               remember(step, { scanned: String(scanned) })
             }
 
-            entry.parked.add(step.name)
+            pass.parked.add(step.name)
 
             return yield* suspend
           }).pipe(working, guarded),
@@ -1046,7 +1068,7 @@ export const activationEngine = (options: {
      * Runs one pass of an execution: replays it against this runner's workflow,
      * then records its result, parks it, or leaves it for a compatible runner.
      */
-    const runOnce = (executionId: string) =>
+    const runOnce = (executionId: string, pass: Pass) =>
       Effect.gen(function* () {
         const [execution] = yield* sql<ExecutionRow>`
           SELECT workflow, workflow_key, payload, caller, event_cursor::text AS event_cursor, status, interrupt,
@@ -1064,10 +1086,18 @@ export const activationEngine = (options: {
 
         const recorded = yield* readSteps(executionId)
 
-        if (workflow === undefined || !(yield* replayable(workflow, execution, recorded))) {
+        const verdict =
+          workflow === undefined ? undefined : yield* compatibility(workflow, execution, recorded)
+
+        if (workflow === undefined || verdict === undefined || verdict.problems.length > 0) {
           yield* Effect.logWarning(
             "Workflow execution incompatible with this runner; suspended",
-          ).pipe(Effect.annotateLogs({ executionId }))
+          ).pipe(
+            Effect.annotateLogs({
+              executionId,
+              problems: verdict?.problems ?? ["workflow not registered"],
+            }),
+          )
           yield* fenced(
             armTimer(routingKey, ref, executionId, (yield* now) + RECOVERY_MS, onBehalfOf),
           )
@@ -1075,7 +1105,7 @@ export const activationEngine = (options: {
           return "abandoned" as const
         }
 
-        yield* adoptManifest(workflow, execution, executionId)
+        yield* adoptManifest(verdict.declared, workflow, execution, executionId, verdict.changed)
 
         if (execution.status === "suspended")
           yield* fenced(sql`UPDATE actor_workflow_executions SET status = 'running'
@@ -1086,7 +1116,7 @@ export const activationEngine = (options: {
           executionId,
           workflow,
           steps: recorded.steps,
-          entry: live.get(executionId)!,
+          pass,
           interrupting,
           eventCursor: { value: BigInt(execution.event_cursor) },
           onBehalfOf,
@@ -1145,26 +1175,46 @@ export const activationEngine = (options: {
         Effect.annotateLogs({ actor: ref.actor, tenant: ref.tenant, id: ref.id, executionId }),
       )
 
-    const loop = (executionId: string) =>
+    /**
+     * Replays the run pass by pass until a pass ends with nothing asking for
+     * another. The decision to stop and the run's removal happen in one step, so
+     * a kick either reaches this run or starts a new one.
+     */
+    const loop = (executionId: string, run: LiveRun) =>
       Effect.gen(function* () {
-        const entry = live.get(executionId)!
-
         for (;;) {
-          entry.rerun = false
-          entry.parked.clear()
-          entry.preempted = false
-          const body = yield* Effect.forkChild(runOnce(executionId))
-          entry.body = body
-          const outcome = yield* Fiber.join(body).pipe(Effect.exit)
-          entry.body = undefined
+          const pass: Pass = {
+            body: undefined,
+            parked: new Set(),
+            working: 0,
+            idle: Latch.makeUnsafe(true),
+          }
 
-          if (
-            !entry.rerun ||
-            (!entry.preempted && Exit.isSuccess(outcome) && outcome.value === "abandoned")
-          )
-            break
+          run.pass = pass
+          const body = yield* Effect.forkChild(runOnce(executionId, pass))
+          pass.body = body
+          const outcome = yield* Fiber.join(body).pipe(Effect.exit)
+
+          const again = yield* Effect.sync(() => {
+            const left = Exit.isSuccess(outcome) && outcome.value === "abandoned"
+            const replay = run.next === "preempt" || (run.next === "wake" && !left)
+            run.pass = undefined
+            run.next = "end"
+
+            if (!replay) live.delete(executionId)
+
+            return replay
+          })
+
+          if (!again) return
         }
-      }).pipe(Effect.ensuring(Effect.sync(() => live.delete(executionId))))
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (live.get(executionId) === run) live.delete(executionId)
+          }),
+        ),
+      )
 
     const settleable = (executionId: string, parked: ReadonlySet<string>) =>
       parked.size === 0
@@ -1191,57 +1241,54 @@ export const activationEngine = (options: {
     /**
      * Runs or replays an execution after a committed workflow command. A live
      * run replays once more after it suspends; an interrupt stops it first.
+     * A pass with working steps gets its recovery timer back, since the relay
+     * consumed it; that write holds the generation row like `finish`, so it
+     * never re-arms an execution a replay already finished.
      */
     const kick = (executionId: string, interrupt: boolean) =>
       Effect.gen(function* () {
         const current = live.get(executionId)
 
-        if (current !== undefined) {
-          current.rerun = true
-
-          if (interrupt && current.body !== undefined) {
-            current.preempted = true
-            yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
-          } else if (
-            current.body !== undefined &&
-            (yield* settleable(executionId, current.parked))
-          ) {
-            current.preempted = true
-            yield* Fiber.interrupt(current.body).pipe(Effect.forkIn(scope))
-          }
-
-          if (current.activities > 0)
-            yield* fenced(
-              Effect.gen(function* () {
-                const [row] = yield* sql<{
-                  caller: string
-                }>`SELECT caller FROM actor_workflow_executions
-                  WHERE routing_key = ${routingKey} AND execution_id = ${executionId}`
-
-                if (row === undefined) return
-                const caller = yield* decodeCaller(row.caller).pipe(Effect.orDie)
-                yield* armTimer(
-                  routingKey,
-                  ref,
-                  executionId,
-                  (yield* now) + RECOVERY_MS,
-                  principal(caller),
-                )
-              }),
-            ).pipe(Effect.ignoreCause)
+        if (current === undefined) {
+          const run: LiveRun = { pass: undefined, next: "end" }
+          live.set(executionId, run)
+          yield* loop(executionId, run).pipe(Effect.forkIn(scope))
 
           return
         }
 
-        live.set(executionId, {
-          rerun: false,
-          activities: 0,
-          body: undefined,
-          parked: new Set(),
-          active: 0,
-          preempted: false,
-        })
-        yield* loop(executionId).pipe(Effect.forkIn(scope))
+        const pass = current.pass
+
+        if (current.next === "end") current.next = "wake"
+
+        if (pass?.body === undefined) return
+
+        if (interrupt || (yield* settleable(executionId, pass.parked))) {
+          if (current.pass !== pass) return
+          current.next = "preempt"
+          yield* Fiber.interrupt(pass.body).pipe(Effect.forkIn(scope))
+        }
+
+        if (pass.working > 0)
+          yield* fenced(
+            Effect.gen(function* () {
+              const [row] = yield* sql<{
+                caller: string
+              }>`SELECT caller FROM actor_workflow_executions
+                WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
+                  AND status <> 'finished'`
+
+              if (row === undefined) return
+              const caller = yield* decodeCaller(row.caller).pipe(Effect.orDie)
+              yield* armTimer(
+                routingKey,
+                ref,
+                executionId,
+                (yield* now) + RECOVERY_MS,
+                principal(caller),
+              )
+            }),
+          ).pipe(Effect.ignoreCause)
       }).pipe(Effect.provideContext(services))
 
     return { kick, live: () => live.size }

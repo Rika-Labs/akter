@@ -70,13 +70,13 @@ export const Home = Schema.Struct({
 
 /** Records the tenant's home region; creating it again with the same region returns it unchanged. */
 export const Create = Actor.command("Create", {
-  input: Schema.Struct({ region: Region }),
-  output: Home,
-  errors: [UnknownDeployment, NotPrimaryRegion, TenantAlreadyHomed],
+  payload: { region: Region },
+  success: Home,
+  error: Schema.Union([UnknownDeployment, NotPrimaryRegion, TenantAlreadyHomed]),
 })
 
 /** The tenant's home, or undefined when none is recorded. */
-export const Lookup = Actor.query("Lookup", { output: Schema.UndefinedOr(Home) })
+export const Lookup = Actor.query("Lookup", { success: Schema.UndefinedOr(Home) })
 
 /** Where one hosted tenant lives, keyed by `<deployment>/<tenant>`. */
 export const TenantHome = Actor.make("TenantHome", {

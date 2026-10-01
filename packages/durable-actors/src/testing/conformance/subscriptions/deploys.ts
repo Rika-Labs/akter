@@ -3,7 +3,7 @@ import { SqlClient } from "effect/unstable/sql"
 import { Tenant } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { SubFollower, SubOrder, subOrderLayer } from "./actors.ts"
+import { SubFollower, SubOrder, subOrderLayer, type SubscriptionsFixture } from "./actors.ts"
 import {
   drain,
   followerLog,
@@ -16,10 +16,10 @@ import {
 import { CLAIM_LEASE } from "../outbox.ts"
 
 /** Deploy-time registration checks and tag-summary upkeep of event subscriptions. */
-export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
+export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase<SubscriptionsFixture>> = [
   {
     name: "delivers a class added to a dynamic subscription by a deploy, and never narrows a row",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       Effect.gen(function* () {
         const tenant = yield* Effect.promise(() =>
           run(
@@ -79,7 +79,7 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "never claims a row widened with a class this runner does not declare, and leaves it due",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -125,6 +125,7 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fails registration of a source served without a subscriber type that routes from it",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
       environment.run(
@@ -165,7 +166,7 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "keeps the tag summary equal to the rows after every insert, widen, and delete",
-    run: ({ expect, environment, fixture: { subscriptions: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       run(
         environment,
         fixture,
@@ -213,5 +214,71 @@ export const subscriptionDeployConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* tagMismatches).toEqual([])
         }),
       ),
+  },
+  {
+    name: "keeps the tag summary exact when many subscriptions of one source change at once, and deletes counts that reach zero",
+    run: ({ expect, environment, fixture }) =>
+      run(
+        environment,
+        fixture,
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ids = Array.from({ length: 16 }, (_, index) => `crowd-${index}`)
+
+          const counts = query(
+            (sql) => sql<{ event: string; rows: number }>`SELECT event, rows
+              FROM actor_subscription_tags
+              WHERE tenant_id = ${test.tenant} AND source_id = 'crowd-order' ORDER BY event`,
+          )
+
+          yield* Effect.forEach(
+            ids,
+            (id) =>
+              SubFollower.get(id).pipe(
+                Effect.flatMap((follower) => follower.Follow({ source: "crowd-order" })),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* drain
+          expect(yield* counts).toEqual([
+            { event: "OrderCancelled", rows: 16 },
+            { event: "OrderPlaced", rows: 16 },
+          ])
+
+          yield* Effect.forEach(
+            ids,
+            (id, index) =>
+              SubFollower.get(id).pipe(
+                Effect.flatMap((follower) =>
+                  index % 2 === 0
+                    ? follower.Unfollow("crowd-order")
+                    : follower
+                        .Unfollow("crowd-order")
+                        .pipe(Effect.andThen(follower.Follow({ source: "crowd-order" }))),
+                ),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* drain
+          expect(yield* counts).toEqual([
+            { event: "OrderCancelled", rows: 8 },
+            { event: "OrderPlaced", rows: 8 },
+          ])
+          expect(yield* tagMismatches).toEqual([])
+
+          yield* Effect.forEach(
+            ids,
+            (id) =>
+              SubFollower.get(id).pipe(
+                Effect.flatMap((follower) => follower.Unfollow("crowd-order")),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* drain
+          expect(yield* counts).toEqual([])
+          expect(yield* tagMismatches).toEqual([])
+        }),
+      ),
+    timeoutMs: 60_000,
   },
 ]

@@ -1,13 +1,14 @@
 import { Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { VERSION_KEY } from "../../state/migration.ts"
+import { JOB_KEY_PREFIX } from "../../handles/intents.ts"
 import { decodeBytes, decodeText } from "../inspector/queries.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { TenantScope, tenantSettings } from "../database/tenancy.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { SEED_FORMAT, type Seed } from "./seed.ts"
 
-/** The most pending intents, and the most pending effects, one export carries. */
+/** The most pending intents, and the most pending jobs, one export carries. */
 export const MAX_EXPORT_ROWS = 10_000
 
 /**
@@ -29,15 +30,13 @@ interface IntentRow {
   readonly dueAtMs: number
 }
 
-interface EffectRow {
-  readonly effect: string
+interface JobRow {
+  readonly job: string
   readonly payload: string
   readonly payloadVersion: number
   readonly timerKey: string | null
   readonly dueAtMs: number
 }
-
-const EFFECT_KEY_PREFIX = "$effect:"
 
 const decodeVersion = Schema.decodeUnknownOption(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))
 
@@ -62,13 +61,13 @@ const tenantSnapshot =
 
 /**
  * Reads one actor's seed in a tenant-bound read-only snapshot: current
- * state, the pending intents and timers, and the effects not yet settled.
+ * state, the pending intents and timers, and the jobs not yet settled.
  * Callers, credentials, receipts, event history, workflow executions, dead
  * letters, owned-table rows, and blob entries are not carried; the seed counts
  * them in `omitted`. Subscription cursors and connections are neither carried
- * nor counted. An effect whose attempt has been cancelled or has finally failed
+ * nor counted. A job whose attempt has been cancelled or has finally failed
  * is not pending and is left out. It reads the runtime tables, not the
- * inspection views, because the views do not show a cancelled effect. `None`
+ * inspection views, because the views do not show a cancelled job. `None`
  * when the tenant has no such actor.
  */
 export const exportActor = (page: {
@@ -104,18 +103,18 @@ export const exportActor = (page: {
         WHERE ${owned} AND kind = 'intent'
         ORDER BY due_at_ms, intent_id COLLATE "C" LIMIT ${MAX_EXPORT_ROWS + 1}`
 
-      const effects = yield* sql<EffectRow>`
-        SELECT command AS effect, payload, payload_version AS "payloadVersion",
+      const jobs = yield* sql<JobRow>`
+        SELECT command AS job, payload, payload_version AS "payloadVersion",
           timer_key AS "timerKey", due_at_ms::float8 AS "dueAtMs"
         FROM actor_outbox
-        WHERE ${owned} AND kind = 'effect' AND cancelled_at_ms IS NULL AND NOT final_failure
+        WHERE ${owned} AND kind = 'job' AND cancelled_at_ms IS NULL AND NOT final_failure
         ORDER BY due_at_ms, intent_id COLLATE "C" LIMIT ${MAX_EXPORT_ROWS + 1}`
 
       if (intents.length > MAX_EXPORT_ROWS)
         return yield* ExportRefused.make({ reason: "too_large", detail: "pending intents" })
 
-      if (effects.length > MAX_EXPORT_ROWS)
-        return yield* ExportRefused.make({ reason: "too_large", detail: "pending effects" })
+      if (jobs.length > MAX_EXPORT_ROWS)
+        return yield* ExportRefused.make({ reason: "too_large", detail: "pending jobs" })
 
       const [counted] = yield* sql<Omit<Seed["omitted"], "tableRows">>`
         SELECT
@@ -180,12 +179,12 @@ export const exportActor = (page: {
             dueInMs: dueIn(row.dueAtMs),
           })),
         ),
-        effects: yield* Effect.forEach(effects, (row) =>
-          Effect.map(payloadOf(row.payload, `effect ${row.effect}`), (payload) => ({
-            effect: row.effect,
+        jobs: yield* Effect.forEach(jobs, (row) =>
+          Effect.map(payloadOf(row.payload, `job ${row.job}`), (payload) => ({
+            job: row.job,
             payload,
             payloadVersion: row.payloadVersion,
-            key: row.timerKey?.replace(EFFECT_KEY_PREFIX, "") ?? undefined,
+            key: row.timerKey?.replace(JOB_KEY_PREFIX, "") ?? undefined,
             dueInMs: dueIn(row.dueAtMs),
           })),
         ),

@@ -1,4 +1,4 @@
-import { Data, Effect, Exit, Option, Result, Schema } from "effect"
+import { Data, Effect, Exit, Option, Predicate, Result, Schema } from "effect"
 import type { OptimisticReducer, StateValue } from "../actor/served.ts"
 
 /** A reducer input applied ahead of its receipt. */
@@ -83,8 +83,8 @@ export class Optimistic {
   private entries: ReadonlyArray<Entry> = []
   private view: StateValue | undefined = undefined
   private readonly listeners = new Set<(state: StateValue | undefined) => void>()
-  /** Settles when the last reducer call queued here has; reducer calls send one at a time. */
-  queue: Promise<void> = Promise.resolve()
+  /** Settles when the last reducer call sent here has; reducer calls send one at a time. */
+  private queue: Promise<void> = Promise.resolve()
 
   /** `reducer` is any of the actor's reducers; its state schema copies what goes in and out. */
   constructor(private readonly reducer: OptimisticReducer | undefined) {}
@@ -119,17 +119,48 @@ export class Optimistic {
     this.publish()
   }
 
-  /** Applies `entry` to the view ahead of its receipt. */
-  add(entry: Entry): void {
+  /**
+   * Applies `entry` to the view ahead of its receipt and settles it with
+   * `outcome`: a reply confirms it, a failure drops it. The call that decides
+   * `outcome` is the caller's; this only reflects it.
+   */
+  follow(entry: Entry, outcome: Promise<unknown>): void {
+    void outcome.then(
+      (reply) => {
+        this.confirm(
+          entry,
+          entry.reducer.commutative || !Predicate.isObject(reply) ? undefined : reply,
+        )
+      },
+      () => {
+        this.drop(entry)
+      },
+    )
+
     this.entries = [...this.entries, entry]
     this.publish()
+  }
+
+  /**
+   * Sends `entry` once every reducer call sent here before it has settled,
+   * so each reply is the committed state before every later pending input,
+   * and follows it. `send` receives what its first attempt waits for.
+   */
+  sendInOrder<A>(entry: Entry, send: (after: Promise<void>) => Promise<A>): Promise<A> {
+    const previous = this.queue
+    const settled = send(previous)
+
+    this.queue = Promise.allSettled([previous, settled]).then(() => undefined)
+    this.follow(entry, settled)
+
+    return settled
   }
 
   /**
    * Its receipt succeeded. A reducer's reply is the committed state; a
    * commutative reducer replies nothing, so it is applied to committed state here.
    */
-  confirm(entry: Entry, reply: StateValue | undefined): void {
+  private confirm(entry: Entry, reply: StateValue | undefined): void {
     this.entries = this.entries.filter((pending) => pending !== entry)
     this.committed =
       reply !== undefined
@@ -139,7 +170,7 @@ export class Optimistic {
   }
 
   /** Its call failed, so the input comes out of the view. */
-  drop(entry: Entry): void {
+  private drop(entry: Entry): void {
     this.entries = this.entries.filter((pending) => pending !== entry)
     this.publish()
   }

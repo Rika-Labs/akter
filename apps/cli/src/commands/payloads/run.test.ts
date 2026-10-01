@@ -13,32 +13,30 @@ const V1 = { text: Schema.String }
 
 /** The board before its event's field was renamed, which writes version 0. */
 const Old = (() => {
-  class Posted extends Actor.Event<Posted>()("Posted", V0) {}
+  const Posted = Actor.event("Posted", V0)
 
-  const Post = Actor.command("Post", { input: Schema.String })
+  const Post = Actor.command("Post", { payload: Schema.String })
 
   const Board = Actor.make("Board", { key: Schema.String, events: [Posted], api: { Post } })
 
-  const layer = Board.toLayer(
-    Effect.succeed({
-      Post: Effect.fnUntraced(function* (body: string) {
-        yield* (yield* Board.Turn).emit(Posted.make({ body }))
-      }),
+  const layer = Board.toLayer({
+    Post: Effect.fnUntraced(function* (body: string) {
+      yield* (yield* Board.Turn).emit(Posted.make({ body }))
     }),
-  )
+  })
 
   return { Board, layer }
 })()
 
 const renamed = (migrations: PayloadMigrations) => {
-  class Posted extends Actor.Event<Posted>()("Posted", V1, {
+  const Posted = Actor.event("Posted", V1, {
     migrations,
-  }) {}
+  })
 
   return Actor.make("Board", {
     key: Schema.String,
     events: [Posted],
-    api: { Post: Actor.command("Post", { input: Schema.String }) },
+    api: { Post: Actor.command("Post", { payload: Schema.String }) },
   })
 }
 

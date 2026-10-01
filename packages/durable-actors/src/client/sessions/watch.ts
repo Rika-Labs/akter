@@ -1,7 +1,6 @@
-import { Duration, Effect, Option, Queue, Random, Schema, Stream } from "effect"
-import { ActorError, Unauthorized } from "../../errors/actor.ts"
-import { aborted, decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
-import { readEvents } from "./feed.ts"
+import { Effect, type Option, Schema, Stream } from "effect"
+import { decodeFailure, type Failure, undecodableFailure } from "../transport.ts"
+import { IDLE_MS, readEvents, reconnecting, session } from "./sse.ts"
 
 /** Options of one watch. */
 export interface WatchOptions {
@@ -9,23 +8,9 @@ export interface WatchOptions {
   readonly signal?: AbortSignal
 }
 
-/** No bytes for this long, keepalive comments included, means the stream is dead. */
-const IDLE_MS = 45_000
-
-const MAX_BACKOFF_MS = 5_000
-
 const VERSION = /^(0|[1-9]\d*)$/
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
-
-const isExpired = (failure: Failure) =>
-  Schema.is(ActorError)(failure) &&
-  Schema.is(Unauthorized)(failure.reason) &&
-  failure.reason.code === "expired"
-
-/** Whether a watch that ended with `failure` may reopen. */
-const reopens = (failure: Failure, authRetried: boolean) =>
-  Schema.is(ActorError)(failure) && (failure.isRetryable || (!authRetried && isExpired(failure)))
 
 /** The greater of the version held and a result's `id`, when that is a version. */
 const later = (current: string | undefined, seen: string | undefined) =>
@@ -71,61 +56,35 @@ export const watchStream = <A>({
   token,
   options,
 }: WatchSource<A>): Stream.Stream<A, Failure> =>
-  Stream.callback<A, Failure>((out) =>
-    Effect.gen(function* () {
+  session({
+    signal: options.signal,
+    run: (emit) => {
       const failureOf = (text: string, status: number, headers = new Headers()) =>
         decodeFailure(declared)({ status, headers, text, sentAt: 0 })
 
       let last = token()
-      let failures = 0
-      let authRetried = false
 
-      const once = Effect.gen(function* () {
-        const { next } = yield* readEvents({
-          response: yield* open(last, yield* Effect.abortSignal),
-          refused: failureOf,
-          idleMs: IDLE_MS,
-        })
+      return reconnecting((delivered) =>
+        Effect.gen(function* () {
+          const response = yield* open(last, yield* Effect.abortSignal)
 
-        while (true) {
-          const messages = yield* next
+          yield* readEvents({ response, refused: failureOf, idleMs: IDLE_MS }).pipe(
+            Stream.runForEach((message) =>
+              Effect.gen(function* () {
+                if (message.event === "end") return yield* failureOf(message.data, 0)
 
-          if (messages === undefined) return
+                const json = yield* decodeJson(message.data).pipe(
+                  Effect.mapError(undecodableFailure),
+                )
 
-          for (const message of messages) {
-            if (message.event === "end") return yield* failureOf(message.data, 0)
-
-            const json = yield* decodeJson(message.data).pipe(Effect.mapError(undecodableFailure))
-            const value = yield* decode(json)
-            last = later(last, message.id)
-            failures = 0
-            authRetried = false
-            yield* Queue.offer(out, value)
-          }
-        }
-      }).pipe(Effect.scoped)
-
-      while (true) {
-        const ended = yield* once.pipe(Effect.flip, Effect.option)
-        let hinted: number | undefined = undefined
-
-        if (Option.isSome(ended)) {
-          if (!reopens(ended.value, authRetried)) return yield* ended.value
-
-          if (isExpired(ended.value)) authRetried = true
-
-          if (Schema.is(ActorError)(ended.value))
-            hinted = Option.getOrUndefined(ended.value.retryAfter)
-        }
-
-        const backoff = Math.min(MAX_BACKOFF_MS, 100 * 2 ** failures)
-        failures += 1
-        const jitter = yield* Random.nextBetween(0.5, 1.5)
-
-        yield* Effect.sleep(Duration.millis(hinted ?? Math.round(backoff * jitter)))
-      }
-    }).pipe(
-      Effect.catch((failure) => Queue.fail(out, failure)),
-      Effect.andThen(Queue.end(out)),
-    ),
-  ).pipe(Stream.interruptWhen(aborted(options.signal)))
+                const value = yield* decode(json)
+                last = later(last, message.id)
+                yield* delivered
+                yield* emit(value)
+              }),
+            ),
+          )
+        }),
+      )
+    },
+  })

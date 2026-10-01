@@ -58,7 +58,7 @@ expect(yield * second).toBe(10)
 expect(yield * test.inspect(counter.ref)).toMatchObject({ state: { count: 10 }, receipts: 2 })
 ```
 
-The turn points are `beforeDelivery`, `beforeHandler`, `beforeCommit`, and `afterCommit`. The relay's points are `afterClaim`, `beforeOutboxDelete`, `beforeExecute`, `afterExecute`, and `beforeRenew`, for intents and effects. `test.pauseNext(point)` holds a turn at a point instead, so a test can act while it waits. `test.invalidate(ref)` bumps the actor's generation, as another runner taking ownership would, so the next turn from the old activation fails its fence and reloads.
+The turn points are `beforeDelivery`, `beforeHandler`, `beforeCommit`, and `afterCommit`. The relay's points are `afterClaim`, `beforeOutboxDelete`, `beforeExecute`, `afterExecute`, and `beforeRenew`, for intents and jobs. `test.pauseNext(point)` holds a turn at a point instead, so a test can act while it waits. `test.invalidate(ref)` bumps the actor's generation, as another runner taking ownership would, so the next turn from the old activation fails its fence and reloads.
 
 Add a crash test for every durable transition you write: a command that must not apply twice, a failure that must roll back, a timer that must fire once.
 
@@ -66,15 +66,15 @@ Add a crash test for every durable transition you write: a command that must not
 
 A declared failure rolls back the turn's writes and commits only the failure in the receipt. Test both halves: the caller sees the typed error, and `inspect` shows the state, rows, and events unchanged. The `chat` template's `src/room/layer.test.ts` does this for `RoomClosed`.
 
-## Time, intents, and effects
+## Time, intents, and jobs
 
-Intents, timers, and effects run after the turn commits. In a test they wait for the test clock:
+Intents, timers, and jobs run after the turn commits. In a test they wait for the test clock:
 
-- `test.advance(duration)` moves the outbox clock forward, then waits until every due intent and effect has been delivered, including the intents those deliveries stage, and nothing is still running.
+- `test.advance(duration)` moves the outbox clock forward, then waits until every due intent and job has been delivered, including the intents those deliveries stage, and nothing is still running.
 - `test.now` is that clock, for building `Intent.at` times.
 - `test.actor(X, id?).system` calls any command, including `internal` ones, as a `System` caller.
 
-Provide the actor's `X.toEffectLayer` in the test to run its executors; an executor that fails is retried with backoff, and the retries that fall due within the advanced time run too. `test.inspect(ref)` lists the outbox rows still pending.
+Provide the actor's `X.toJobLayer` in the test to run its executors; an executor that fails is retried with backoff, and the retries that fall due within the advanced time run too. `test.inspect(ref)` lists the outbox rows still pending.
 
 ## Restarts
 

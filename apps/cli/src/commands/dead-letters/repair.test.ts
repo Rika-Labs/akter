@@ -11,15 +11,14 @@ import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
-class Notify extends Actor.effect<Notify>()("CliNotify", { input: { to: Schema.String } }) {}
+const Notify = Actor.job("CliNotify", { payload: { to: Schema.String } })
 
-const Ping = Actor.command("Ping", { input: Schema.String })
+const Ping = Actor.command("Ping", { payload: Schema.String })
 
 const Pager = Actor.make("CliPager", {
   key: Schema.String,
-  effects: [Notify],
   api: { Ping },
-  policy: { effects: { CliNotify: { retry: { times: 0 } } } },
+  jobs: { CliNotify: { job: Notify, retry: { times: 0 } } },
 })
 
 class PagerDown extends Schema.TaggedError<PagerDown>()("PagerDown", {}) {}
@@ -27,23 +26,19 @@ class PagerDown extends Schema.TaggedError<PagerDown>()("PagerDown", {}) {}
 const provider = { up: false, calls: 0 }
 
 const live = Layer.mergeAll(
-  Pager.toLayer(
-    Effect.succeed({
-      Ping: Effect.fnUntraced(function* (to: string) {
-        yield* (yield* Pager.Turn).perform(Notify.make({ to }))
-      }),
+  Pager.toLayer({
+    Ping: Effect.fnUntraced(function* (to: string) {
+      yield* (yield* Pager.Turn).enqueue(Notify.make({ to }))
     }),
-  ),
-  Pager.toEffectLayer(
-    Effect.succeed({
-      CliNotify: () =>
-        Effect.suspend(() => {
-          provider.calls += 1
+  }),
+  Pager.toJobLayer({
+    CliNotify: () =>
+      Effect.suspend(() => {
+        provider.calls += 1
 
-          return provider.up ? Effect.void : Effect.fail(PagerDown.make({}))
-        }),
-    }),
-  ),
+        return provider.up ? Effect.void : Effect.fail(PagerDown.make({}))
+      }),
+  }),
 ).pipe(Layer.provideMerge(ActorTest.layer()), Layer.provideMerge(BunCrypto.layer))
 
 const operators = OperatorAuth.tokens([
@@ -62,7 +57,7 @@ const operators = OperatorAuth.tokens([
 describe("durable dead-letters", () => {
   it("parses retry and discard, and refuses a missing reason or actor", () =>
     Effect.gen(function* () {
-      const runner = recordingFetch({ effectId: "e1" })
+      const runner = recordingFetch({ jobId: "e1" })
 
       const retried = yield* runCliWith({
         fetch: runner.fetch,
@@ -83,7 +78,7 @@ describe("durable dead-letters", () => {
       ])
 
       expect(retried).toEqual({
-        stdout: '{"effectId":"e1"}\n',
+        stdout: '{"jobId":"e1"}\n',
         stderr: "",
         exitCode: 0,
         reason: "",
@@ -158,7 +153,7 @@ describe("durable dead-letters", () => {
         yield* (yield* ActorTest).advance(0)
       }).pipe(Effect.provideContext(context))
 
-      const [letter] = yield* sql<{ effect_id: string }>`SELECT effect_id FROM actor_dead_letters`
+      const [letter] = yield* sql<{ job_id: string }>`SELECT job_id FROM actor_dead_letters`
 
       const web = HttpRouter.toWebHandler(
         Operators.serve({ auth: operators }).pipe(Layer.provide(Layer.succeedContext(context))),
@@ -174,7 +169,7 @@ describe("durable dead-letters", () => {
         runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
           "dead-letters",
           action,
-          letter!.effect_id,
+          letter!.job_id,
           "--actor",
           "CliPager/p1",
           "--url",
@@ -191,7 +186,7 @@ describe("durable dead-letters", () => {
       const retried = yield* repair("retry", "repair-token")
 
       expect(retried.exitCode).toBe(0)
-      expect(yield* decodeJson(retried.stdout)).toMatchObject({ effectId: expect.any(String) })
+      expect(yield* decodeJson(retried.stdout)).toMatchObject({ jobId: expect.any(String) })
       yield* Context.get(context, ActorTest).advance(0)
       expect(provider.calls).toBe(2)
 

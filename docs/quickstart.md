@@ -62,7 +62,7 @@ The chat template also checks that a declared failure (`RoomClosed`) rolls back 
 | `src/main.ts`               | Builds the runtime with `Actors.layer()` and sends one command as the process caller.    |
 | `src/counter/layer.test.ts` | Retry, crash, and restart tests.                                                         |
 
-Chat keeps the same shape under `src/room/`, with an owned Drizzle table, events, a reducer, queries, and a declared error. [`examples/chat`](../examples/chat) goes further, with blobs, effects, and retention.
+Chat keeps the same shape under `src/room/`, with an owned Drizzle table, events, a reducer, queries, and a declared error. [`examples/chat`](../examples/chat) goes further, with blobs, jobs, and retention.
 
 ## 5. Switch to Postgres
 

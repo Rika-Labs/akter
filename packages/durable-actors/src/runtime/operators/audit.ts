@@ -11,7 +11,7 @@ export interface AuditEntry {
   readonly tenant: string
   readonly actorType?: string | undefined
   readonly actorId?: string | undefined
-  /** The effect id or command id the action named. */
+  /** The job id or command id the action named. */
   readonly target?: string | undefined
   /** The capability that allowed it; none when it was refused. */
   readonly capability: Option.Option<Capability>

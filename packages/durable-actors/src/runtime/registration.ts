@@ -2,13 +2,14 @@ import { Context, Crypto, Effect } from "effect"
 import { Sharding } from "effect/unstable/cluster"
 import { SqlClient, SqlError } from "effect/unstable/sql"
 import type { ActorError } from "../errors/actor.ts"
-import type { EffectRegistration, QueryRegistration, Registration } from "./members.ts"
+import type { JobRegistration, QueryRegistration, Registration } from "./members.ts"
 import type { InternalActors } from "./actors.ts"
 import { type AnyBlob, isContent } from "../members/blob.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import type { HeldActorType } from "./connections/holder.ts"
-import type { Authorize, Owner } from "./connections/owner.ts"
+import type { Owner } from "./connections/owner.ts"
+import type { Authorize } from "./connections/streams.ts"
 import type { Transport } from "./connections/transport.ts"
 import type { tenantContent } from "./content/store.ts"
 import type { TurnGate } from "./drain.ts"
@@ -31,7 +32,7 @@ import { RECOVERY_MS } from "./workflows/engine.ts"
 const ROUTED_SUBSCRIBER_WAIT_MS = 5000
 
 /**
- * Registers actor, query, and effect layers with the runtime. Each
+ * Registers actor, query, and job layers with the runtime. Each
  * registration is refused unless its placement, tables, content, workflows,
  * payload versions, and routed subscriptions agree with the database and the
  * runtime's configuration; an accepted one is recorded for the relay, the
@@ -41,7 +42,7 @@ const ROUTED_SUBSCRIBER_WAIT_MS = 5000
 export const actorRegistration = ({
   registrations,
   queryRegistrations,
-  effectRegistrations,
+  jobRegistrations,
   residency,
   diagnostics,
   owners,
@@ -68,7 +69,7 @@ export const actorRegistration = ({
 }: {
   readonly registrations: Map<string, Registration>
   readonly queryRegistrations: Map<string, QueryRegistration>
-  readonly effectRegistrations: Map<string, EffectRegistration>
+  readonly jobRegistrations: Map<string, JobRegistration>
   readonly residency: Map<string, (entityId: string) => boolean>
   /** Each actor type's view of its activations, for a delivery that timed out. */
   readonly diagnostics: Map<
@@ -98,7 +99,7 @@ export const actorRegistration = ({
   readonly writable: Effect.Effect<void, ActorError>
   readonly defectLog: DefectLog["Service"]
   readonly outbox: (typeof OutboxRuntime)["Service"]
-}): Pick<InternalActors["Service"], "register" | "registerQueries" | "registerEffects"> => {
+}): Pick<InternalActors["Service"], "register" | "registerQueries" | "registerJobs"> => {
   /**
    * Refuses a layer that can't read every payload version the database
    * may hold, as a placement or workflow mismatch is refused. `writes`
@@ -332,14 +333,14 @@ export const actorRegistration = ({
         }),
       )
     }),
-    registerEffects: Effect.fnUntraced(function* (registration: EffectRegistration) {
-      if (effectRegistrations.has(registration.name))
-        return yield* Effect.die(new Error(`Duplicate effect layer: ${registration.name}`))
+    registerJobs: Effect.fnUntraced(function* (registration: JobRegistration) {
+      if (jobRegistrations.has(registration.name))
+        return yield* Effect.die(new Error(`Duplicate job layer: ${registration.name}`))
       yield* checkPayloadVersions(registration.name, registration.payloads)
-      effectRegistrations.set(registration.name, registration)
+      jobRegistrations.set(registration.name, registration)
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          effectRegistrations.delete(registration.name)
+          jobRegistrations.delete(registration.name)
         }),
       )
     }),

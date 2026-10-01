@@ -149,7 +149,7 @@ export const transportFeedConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "authorizes a feed per event tag before reading, and revokes a live feed within reauthorizeEvery",
     timeoutMs: 40_000,
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const { host, token } = yield* setup(environment)
@@ -157,7 +157,7 @@ export const transportFeedConformance: ReadonlyArray<ConformanceCase> = [
           yield* room.Tell("before")
 
           yield* Effect.gen(function* () {
-            fixture.denied.add("Said")
+            access.denied.add("Said")
 
             const refused = yield* feed(host, "sse-revoke", "event=Said", {
               authorization: token(),
@@ -168,11 +168,11 @@ export const transportFeedConformance: ReadonlyArray<ConformanceCase> = [
               tag: "Unauthorized",
               code: "access_denied",
             })
-            fixture.denied.delete("Said")
+            access.denied.delete("Said")
 
             const live = yield* feed(host, "sse-revoke", "event=Said", { authorization: token() })
             expect(yield* textOf((yield* take(live.messages, 1))[0]!)).toBe("before")
-            fixture.denied.add("Said")
+            access.denied.add("Said")
 
             const [ended] = yield* take(live.messages, 1, 10_000)
             expect(ended!.event).toBe("end")
@@ -180,7 +180,7 @@ export const transportFeedConformance: ReadonlyArray<ConformanceCase> = [
               tag: "Unauthorized",
               code: "access_denied",
             })
-          }).pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Said"))))
+          }).pipe(Effect.ensuring(Effect.sync(() => access.denied.delete("Said"))))
         }),
       ),
   },
@@ -258,6 +258,7 @@ export const transportFeedConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "resyncs a feed at its holder after an owner kill with no client-visible gap",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>

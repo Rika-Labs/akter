@@ -1,6 +1,6 @@
 import { type Context, type Crypto, Effect, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { RegisteredEffect } from "../members.ts"
+import type { RegisteredJob } from "../members.ts"
 import { Due, emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, type Caller } from "../../identity/caller.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
@@ -39,9 +39,9 @@ export const Seed = Schema.Struct({
       dueInMs: Count,
     }),
   ),
-  effects: Schema.Array(
+  jobs: Schema.Array(
     Schema.Struct({
-      effect: Schema.NonEmptyString,
+      job: Schema.NonEmptyString,
       payload: Schema.Json,
       payloadVersion: Count,
       key: Schema.optional(Schema.NonEmptyString),
@@ -69,15 +69,15 @@ type ReferenceOf<T> = T extends Context.Reference<infer S> ? S : never
 
 /**
  * Builds the operation that starts an actor from a seed, over the runtime's
- * SQL, crypto, clock, and outbox, and its effect registrations.
+ * SQL, crypto, clock, and outbox, and its job registrations.
  *
  * The actor's row, state, and obligations are written in one transaction, so
  * a refused seed leaves nothing behind. It never overwrites: an actor that
  * already has a generation row refuses the seed. Obligations are staged
  * through the turn's own outbox statements under the caller the test runs as,
- * never a caller from the file, so a seed cannot carry authority. An effect
+ * never a caller from the file, so a seed cannot carry authority. A job
  * this runner has no executor for is refused, because it could never run.
- * A seed marking created an actor type that declares no `policy.createdBy` is
+ * A seed marking created an actor type that declares no `createdBy` is
  * refused: that marker stays false for such a type, or declaring the policy
  * later would treat the seeded actor as already created.
  */
@@ -85,8 +85,8 @@ export const seedRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
-  readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
-  /** Whether the actor type declares `policy.createdBy`. */
+  readonly jobOf: (actorType: string, job: string) => RegisteredJob | undefined
+  /** Whether the actor type declares `createdBy`. */
   readonly createdBy: (actorType: string) => boolean
   readonly wake: Effect.Effect<void>
   /** The tenant and adoption writer roles the operator's turns take, as the runtime's own turns do. */
@@ -110,14 +110,14 @@ export const seedRuntime = (deps: {
       if (seed.created && !deps.createdBy(ref.actor))
         return yield* Effect.die(
           new Error(
-            `The seed marks ${ref.actor} created, but ${ref.actor} declares no policy.createdBy: refusing to seed it`,
+            `The seed marks ${ref.actor} created, but ${ref.actor} declares no createdBy: refusing to seed it`,
           ),
         )
 
-      for (const { effect } of seed.effects)
-        if (deps.effectOf(ref.actor, effect) === undefined)
+      for (const { job } of seed.jobs)
+        if (deps.jobOf(ref.actor, job) === undefined)
           return yield* Effect.die(
-            new Error(`The seed has effect ${effect}, which ${ref.actor} does not register`),
+            new Error(`The seed has job ${job}, which ${ref.actor} does not register`),
           )
 
       const sql = yield* SqlClient.SqlClient
@@ -171,14 +171,14 @@ export const seedRuntime = (deps: {
                   due: Due.cases.After.make({ millis: intent.dueInMs }),
                   key: intent.key,
                 })),
-                effects: seed.effects.map((effect) => ({
-                  effect: effect.effect,
-                  payload: JSON.stringify(effect.payload),
-                  version: effect.payloadVersion,
+                jobs: seed.jobs.map((job) => ({
+                  job: job.job,
+                  payload: JSON.stringify(job.payload),
+                  version: job.payloadVersion,
                   caller,
-                  due: Due.cases.After.make({ millis: effect.dueInMs }),
-                  key: effect.key,
-                  capped: deps.effectOf(ref.actor, effect.effect)?.perActor !== undefined,
+                  due: Due.cases.After.make({ millis: job.dueInMs }),
+                  key: job.key,
+                  capped: deps.jobOf(ref.actor, job.job)?.perActor !== undefined,
                 })),
               },
               databaseTime,

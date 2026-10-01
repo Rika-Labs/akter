@@ -100,32 +100,32 @@ const deployment = (variant: Variant) => {
     writeVersion: variant.chain === "v1-write0" ? 0 : undefined,
   }
 
-  class Placed extends Actor.Event<Placed>()("Placed", current, options) {}
+  const Placed = Actor.event("Placed", current, options)
 
-  class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+  const Noted = Actor.event("Noted", { text: Schema.String })
 
-  class Charge extends Actor.effect<Charge>()("Charge", { input: current, ...options }) {}
+  const Charge = Actor.job("Charge", { payload: current, ...options })
 
   const Place = Actor.command("Place", {
-    input: Schema.Struct({
+    payload: Schema.Struct({
       orderId: Schema.String,
       amount: Schema.Finite,
       after: Schema.optional(Schema.Finite),
     }),
   })
 
-  const Note = Actor.command("Note", { input: Schema.String })
+  const Note = Actor.command("Note", { payload: Schema.String })
 
   const History = Actor.query("History", {
-    output: Schema.Array(Schema.Json),
-    errors: [UnknownCursor, RetentionGap],
+    success: Schema.Array(Schema.Json),
+    error: Schema.Union([UnknownCursor, RetentionGap]),
   })
 
-  const Lost = Actor.command("Lost", { input: Actor.DeadLetter(Charge) })
+  const Lost = Actor.command("Lost", { payload: Actor.DeadLetter(Charge) })
 
   const Watch = Actor.workflow("Watch", {
-    input: { id: Schema.String },
-    output: Schema.String,
+    payload: { id: Schema.String },
+    success: Schema.String,
     key: ({ id }) => id,
   })
 
@@ -134,24 +134,24 @@ const deployment = (variant: Variant) => {
   const Ledger = Actor.make("Ledger", {
     key: Schema.String,
     events: [Placed, Noted],
-    effects: [Charge],
+    jobs: {
+      Charge: {
+        job: Charge,
+        retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
+        onDeadLetter: Lost,
+      },
+    },
     api: { Place, Note, History, Watch },
     internal: { Lost },
     policy: {
       deliveryTimeout: "3 seconds",
-      effects: {
-        Charge: {
-          retry: { times: 1, backoff: { base: "1 second", max: "1 second" } },
-          onDeadLetter: Lost,
-        },
-      },
     },
   })
 
-  const encodePlaced = (event: Placed) =>
+  const encodePlaced = (event: typeof Placed.Type) =>
     Schema.encodeUnknownEffect(Schema.toCodecJson(Placed))(event).pipe(Effect.orDie)
 
-  const encodeCharge = (charge: Charge) =>
+  const encodeCharge = (charge: typeof Charge.Type) =>
     Schema.encodeUnknownEffect(Schema.toCodecJson(Charge))(charge).pipe(Effect.orDie)
 
   const valueOf = (orderId: string, amount: number) =>
@@ -164,7 +164,7 @@ const deployment = (variant: Variant) => {
 
         yield* turn.emit(Placed.make(valueOf(orderId, amount) as never))
 
-        yield* turn.perform(
+        yield* turn.enqueue(
           Charge.make(valueOf(orderId, amount) as never),
           after === undefined ? undefined : { after: `${after} millis` },
         )
@@ -174,7 +174,7 @@ const deployment = (variant: Variant) => {
       }),
       Watch: () => AwaitPlaced().pipe(Effect.as("placed")),
       Lost: (letter) =>
-        encodeCharge(letter.effect).pipe(
+        encodeCharge(letter.job).pipe(
           Effect.map((effect) => {
             seen.deadLetters.push({ effect, ambiguous: letter.ambiguous })
           }),
@@ -192,9 +192,9 @@ const deployment = (variant: Variant) => {
     }),
   )
 
-  const executors = Ledger.toEffectLayer(
+  const executors = Ledger.toJobLayer(
     Effect.succeed({
-      Charge: (charge: Charge) =>
+      Charge: (charge: typeof Charge.Type) =>
         encodeCharge(charge).pipe(
           Effect.flatMap((encoded) => {
             seen.executed.push(encoded)
@@ -212,11 +212,11 @@ const deployment = (variant: Variant) => {
   const auditLayer = () => {
     const Delivery = Actor.Delivery({ source: Ledger, events: [Placed] })
 
-    const Record = Actor.command("Record", { input: Delivery })
+    const Record = Actor.command("Record", { payload: Delivery })
 
     const Placements = Actor.subscription("Placements", {
-      source: Ledger,
-      events: [Placed],
+      delivery: Delivery,
+
       handler: Record,
       route: (event) => event.orderId,
     })
@@ -293,9 +293,9 @@ const FirstPhase = deployment({ chain: "v1-write0" })
 
 /** `Ledger` after its `Placed` class, and the workflow waiting on it, were removed. */
 const Unplaced = (() => {
-  class Noted extends Actor.Event<Noted>()("Noted", { text: Schema.String }) {}
+  const Noted = Actor.event("Noted", { text: Schema.String })
 
-  const Note = Actor.command("Note", { input: Schema.String })
+  const Note = Actor.command("Note", { payload: Schema.String })
 
   const Ledger = Actor.make("Ledger", { key: Schema.String, events: [Noted], api: { Note } })
 
@@ -393,7 +393,7 @@ const eventVersions = query(
 
 const effectVersions = query(
   (sql) => sql<{ version: number }>`SELECT payload_version AS version FROM actor_outbox
-    WHERE actor_type = 'Ledger' AND kind = 'effect' ORDER BY scheduled_at_ms, intent_id`,
+    WHERE actor_type = 'Ledger' AND kind = 'job' ORDER BY scheduled_at_ms, intent_id`,
 ).pipe(Effect.map((rows) => rows.map(({ version }) => version)))
 
 const recordedVersions = query(
@@ -491,6 +491,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               [23, "operator_audit"],
               [24, "adoption"],
               [25, "fleet"],
+              [26, "jobs"],
             ])
           }).pipe(Effect.provideContext(client))
         }),
@@ -508,8 +509,8 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* eventVersions).toEqual([1])
             expect(yield* effectVersions).toEqual([1])
             expect(yield* recordedVersions).toEqual([
-              { kind: "effect", version: 1, superseded: false, cleared: false },
               { kind: "event", version: 1, superseded: false, cleared: false },
+              { kind: "job", version: 1, superseded: false, cleared: false },
             ])
 
             const views = yield* query(
@@ -517,7 +518,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
                 version: number
               }>`SELECT payload_version AS version FROM durable.events
                 WHERE actor_type = 'Ledger' UNION ALL
-                SELECT payload_version FROM durable.effects WHERE actor_type = 'Ledger'`,
+                SELECT payload_version FROM durable.jobs WHERE actor_type = 'Ledger'`,
             )
 
             expect(views).toEqual([{ version: 1 }, { version: 1 }])
@@ -703,7 +704,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
 
             yield* query(
               (sql) => sql`UPDATE actor_outbox SET payload_version = 9
-                WHERE actor_type = 'Ledger' AND kind = 'effect'`,
+                WHERE actor_type = 'Ledger' AND kind = 'job'`,
             )
             yield* eventually(
               query(
@@ -743,7 +744,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(shortened.map(formatPayloadProblem)).toEqual([
             "Ledger/Placed (event)  version 0 may still be stored below this chain's first version 1; run durable payloads clear once its events are gone",
-            "Ledger/Charge (effect)  version 0 stored in 1 pending effect or dead letter row below this chain's first version 1",
+            "Ledger/Charge (job)  version 0 stored in 1 pending job or dead letter row below this chain's first version 1",
           ])
 
           yield* deploy(database, Next.layer, Effect.void)
@@ -785,10 +786,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             Next.layer,
             Effect.gen(function* () {
               expect(yield* recordedVersions).toEqual([
-                { kind: "effect", version: 0, superseded: true, cleared: false },
-                { kind: "effect", version: 1, superseded: false, cleared: false },
                 { kind: "event", version: 0, superseded: true, cleared: false },
                 { kind: "event", version: 1, superseded: false, cleared: false },
+                { kind: "job", version: 0, superseded: true, cleared: false },
+                { kind: "job", version: 1, superseded: false, cleared: false },
               ])
               expect(yield* clearPayloads([Next.Ledger])).toEqual([])
             }),
@@ -873,10 +874,10 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             const on1 = cluster.on(1)
 
             expect(yield* on1(recordedVersions)).toEqual([
-              { kind: "effect", version: 0, superseded: true, cleared: false },
-              { kind: "effect", version: 1, superseded: false, cleared: false },
               { kind: "event", version: 0, superseded: true, cleared: false },
               { kind: "event", version: 1, superseded: false, cleared: false },
+              { kind: "job", version: 0, superseded: true, cleared: false },
+              { kind: "job", version: 1, superseded: false, cleared: false },
             ])
             yield* on1(pastHorizon)
 
@@ -933,8 +934,8 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
           Effect.gen(function* () {
             yield* FirstPhase.place("o1", 100, HOUR)
             expect(yield* recordedVersions).toEqual([
-              { kind: "effect", version: 0, superseded: false, cleared: false },
               { kind: "event", version: 0, superseded: false, cleared: false },
+              { kind: "job", version: 0, superseded: false, cleared: false },
             ])
 
             expect(

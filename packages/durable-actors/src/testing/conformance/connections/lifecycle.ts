@@ -2,11 +2,11 @@ import { Cause, Effect, Exit, Option, Schedule } from "effect"
 import { CurrentCaller, System, Tenant } from "../../../identity/caller.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Banned, Hello, Live, Room, Said, Say } from "./actors.ts"
+import { Banned, Hello, Live, Room, Said, Say, type ConnectionsFixture } from "./actors.ts"
 import { connect, cursorOf, frameOf, isFrame, next, rows } from "./harness.ts"
 
 /** Opening, ordered frames, stored sessions, parking, and broadcasts of connections. */
-export const connectionLifecycleConformance: ReadonlyArray<ConformanceCase> = [
+export const connectionLifecycleConformance: ReadonlyArray<ConformanceCase<ConnectionsFixture>> = [
   {
     name: "a connection opened after every earlier one to a resident actor closed still receives broadcasts",
     run: ({ expect, environment }) =>

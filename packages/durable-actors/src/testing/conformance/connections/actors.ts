@@ -2,8 +2,9 @@ import type { NodeInspectSymbol, Unify } from "../../../actor/definition.ts"
 import { DateTime, Deferred, Duration, Effect, Option, Predicate, Schema } from "effect"
 import { Actor, Intent } from "../../../index.ts"
 import { CurrentCaller, Tenant } from "../../../identity/caller.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
-export class Said extends Actor.Event<Said>()("Said", { text: Schema.String }) {}
+export const Said = Actor.event("Said", { text: Schema.String })
 
 export class Hello extends Schema.TaggedClass<Hello>()("Hello", {
   name: Schema.String,
@@ -45,25 +46,25 @@ export const storedSession = (stored: string) =>
   )
 
 export const Live = Actor.connection("Live", {
-  params: Schema.Struct({ name: Schema.String }),
+  payload: Schema.Struct({ name: Schema.String }),
   server: Schema.Union([Said, Hello, Receipted]),
   client: Say,
   session: LiveSession,
-  errors: [Banned],
+  error: Banned,
 })
 
 /** A connection member `LiveRoom` does not declare. */
 export const Undeclared = Actor.connection("Undeclared", {
-  params: Schema.Struct({}),
+  payload: Schema.Struct({}),
   server: Said,
   client: Say,
 })
 
-const Post = Actor.command("Post", { input: Schema.String, errors: [Refused] })
+const Post = Actor.command("Post", { payload: Schema.String, error: Refused })
 
 /** Stages `Post(text)` to the room `to`, or to itself, as an intent delayed by `afterMs` when given. */
 const Forward = Actor.command("Forward", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     to: Schema.optional(Schema.String),
     text: Schema.String,
     afterMs: Schema.optional(Schema.Int),
@@ -71,23 +72,22 @@ const Forward = Actor.command("Forward", {
 })
 
 /** Performs `Echo`, whose success routes back to the room as `Echoed`. */
-const Shout = Actor.command("Shout", { input: Schema.String })
+const Shout = Actor.command("Shout", { payload: Schema.String })
 
-const Echoed = Actor.command("Echoed", { input: Schema.String })
+const Echoed = Actor.command("Echoed", { payload: Schema.String })
 
-class Echo extends Actor.effect<Echo>()("LiveEcho", {
-  input: { text: Schema.String },
+const Echo = Actor.job("LiveEcho", {
+  payload: { text: Schema.String },
   success: Schema.String,
-}) {}
+})
 
 export const Room = Actor.make("LiveRoom", {
   key: Schema.String,
   state: Actor.state({ posts: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
   events: [Said],
-  effects: [Echo],
+  jobs: { LiveEcho: { job: Echo, onSuccess: Echoed } },
   api: { Live, Post, Forward, Shout },
   internal: { Echoed },
-  policy: { effects: { LiveEcho: { onSuccess: Echoed } } },
 })
 
 /** Frames a `flood` sends in one handler, past the 1,024-frame outbound limit. */
@@ -154,7 +154,7 @@ export const connectionsLayer = (fixture: ConnectionsFixture) =>
       }),
       Shout: Effect.fnUntraced(function* (text: string) {
         const turn = yield* Room.Turn
-        yield* turn.perform(Echo.make({ text }))
+        yield* turn.enqueue(Echo.make({ text }))
       }),
       Echoed: said,
       Live: {
@@ -239,3 +239,9 @@ export const connectionsLayer = (fixture: ConnectionsFixture) =>
   )
 
 export type { NodeInspectSymbol, Unify }
+
+/** The connection room. */
+export const connectionsSuite: ConformanceSuite<ConnectionsFixture> = {
+  fixture: connectionsFixture,
+  layer: connectionsLayer,
+}

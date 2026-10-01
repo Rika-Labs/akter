@@ -1,14 +1,15 @@
 import { BunServices } from "@effect/platform-bun"
-import { Config, Crypto, Effect, ManagedRuntime, Stream } from "effect"
+import { Config, Effect, ManagedRuntime, Redacted, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
+import { disposableDatabase } from "../../../database.ts"
 
 const counts = `SELECT
   (SELECT count(*)::int FROM actor_receipts WHERE command IN ('Order', 'Measure')) AS ordered,
   (SELECT count(*)::int FROM actor_receipts WHERE command LIKE '%Failed') AS routed,
   (SELECT coalesce(sum(calls), 0)::int FROM provider_calls) AS calls,
-  (SELECT json_agg(json_build_array(attempts, ambiguous, CASE effect
+  (SELECT json_agg(json_build_array(attempts, ambiguous, CASE job
       WHEN 'Charge' THEN cause LIKE '%ProviderDown%'
       ELSE cause LIKE '%onSuccess route cannot accept%' END))
     FROM actor_dead_letters) AS letters,
@@ -25,7 +26,7 @@ describe("effect dead-letter process death with Postgres", () => {
       "beforeDeadLetterCommit",
       null,
       0,
-      ["effect", "Charge", 1],
+      ["job", "Charge", 1],
       [1, false, true],
     ],
     [
@@ -61,7 +62,7 @@ describe("effect dead-letter process death with Postgres", () => {
       "beforeDeadLetterCommit",
       null,
       0,
-      ["effect", "Gauge", 1],
+      ["job", "Gauge", 1],
       [1, true, true],
     ],
   ] as const) {
@@ -70,19 +71,11 @@ describe("effect dead-letter process death with Postgres", () => {
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
-            const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `deadletters_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-            const admin = yield* Effect.acquireRelease(
-              Effect.sync(() => new Pool({ connectionString: database.href })),
-              (pool) => Effect.promise(() => pool.end()),
+            const database = new URL(
+              Redacted.value(
+                yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+              ),
             )
-
-            yield* Effect.acquireRelease(
-              Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-              () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-            )
-            database.pathname = `/${name}`
 
             const pool = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: database.href })),

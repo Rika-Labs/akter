@@ -2,7 +2,8 @@ import { type Cause, Effect, Option, Schema } from "effect"
 import { Headers, type HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import type { ActorError } from "../../errors/actor.ts"
 import { isSameOrigin } from "../../serve/layer.ts"
-import { actorErrorResponse, Defect, invalidInput } from "../../serve/wire.ts"
+import { Defect } from "../../protocol/wire.ts"
+import { actorErrorResponse, invalidInput } from "../../serve/wire.ts"
 
 /** The body of a 404: the tenant has nothing of that name. */
 const NotFound = Schema.TaggedStruct("NotFound", {})

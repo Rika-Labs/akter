@@ -1,15 +1,5 @@
-import { randomUUID } from "node:crypto"
 import { expect, test } from "@playwright/test"
-
-/**
- * The counter example served by examples/counter/src/web/serve.ts, on a fresh in-memory database.
- */
-const COUNTER = "http://127.0.0.1:3004"
-
-/**
- * Each test uses its own counter, so tests share the server without sharing state.
- */
-const counterOf = (name: string) => `${name}-${randomUUID()}`
+import { COUNTER, uniqueId } from "./room.ts"
 
 /**
  * The same page written twice: over the Promise client, and with @durable-actors/react.
@@ -19,7 +9,7 @@ for (const [flavor, prefix] of [
   ["React", "react/counters"],
 ] as const) {
   test(`${flavor}: shows increments, and a second tab sees them live`, async ({ browser }) => {
-    const id = counterOf("live")
+    const id = uniqueId("live")
     const url = (user: string) => `${COUNTER}/${prefix}/${id}?user=${user}`
     const alice = await (await browser.newContext()).newPage()
     const bob = await (await browser.newContext()).newPage()

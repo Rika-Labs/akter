@@ -3,6 +3,7 @@ import { Effect, Layer, Match, Option, Predicate, Schema } from "effect"
 import { Actor, type Caller } from "../../../index.ts"
 import { Request } from "../../../runtime/request.ts"
 import type { TurnPoint } from "../../../runtime/turn/hooks.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
 /** What a subscription handler does with one delivery, decided per entry. */
 export type Behaviour = "apply" | "defect" | "refuse"
@@ -38,47 +39,53 @@ export const reset = (fixture: SubscriptionsFixture) =>
 
 export class Refused extends Schema.TaggedError<Refused>()("SubscriptionRefused", {}) {}
 
-export class OrderPlaced extends Actor.Event<OrderPlaced>()("OrderPlaced", {
+export const OrderPlaced = Actor.event("OrderPlaced", {
   customerId: Schema.String,
   amount: Schema.Finite,
-}) {}
+})
 
-class OrderCancelled extends Actor.Event<OrderCancelled>()("OrderCancelled", {
+const OrderCancelled = Actor.event("OrderCancelled", {
   customerId: Schema.String,
-}) {}
+})
 
-class OrderNoted extends Actor.Event<OrderNoted>()("OrderNoted", { note: Schema.String }) {}
+const OrderNoted = Actor.event("OrderNoted", { note: Schema.String })
 
 const Place = Actor.command("Place", {
-  input: Schema.Struct({ customerId: Schema.String, amount: Schema.Finite }),
+  payload: Schema.Struct({ customerId: Schema.String, amount: Schema.Finite }),
 })
 
 const PlaceMany = Actor.command("PlaceMany", {
-  input: Schema.Struct({ customerId: Schema.String, count: Schema.Int }),
+  payload: Schema.Struct({ customerId: Schema.String, count: Schema.Int }),
 })
 
-const CancelOrder = Actor.command("CancelOrder", { input: Schema.String })
+const CancelOrder = Actor.command("CancelOrder", { payload: Schema.String })
 
-const Note = Actor.command("Note", { input: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String })
 
 const PlaceThenRefuse = Actor.command("PlaceThenRefuse", {
-  input: Schema.String,
-  errors: [Refused],
+  payload: Schema.String,
+  error: Refused,
 })
 
-const PlaceThenDie = Actor.command("PlaceThenDie", { input: Schema.String })
+const PlaceThenDie = Actor.command("PlaceThenDie", { payload: Schema.String })
 
 export const SubOrder = Actor.make("SubOrder", {
   key: Schema.String,
   events: [OrderPlaced, OrderCancelled, OrderNoted],
   api: { Place, PlaceMany, CancelOrder, Note, PlaceThenRefuse, PlaceThenDie },
   policy: {
-    subscribers: ["SubSummary", "SubFollower", "SubDashboard", "SubAuditor", "SubShipment"],
+    allowedSubscriberTypes: [
+      "SubSummary",
+      "SubFollower",
+      "SubDashboard",
+      "SubAuditor",
+      "SubShipment",
+    ],
   },
 })
 
 const Record = Actor.command("Record", {
-  input: Schema.Struct({ customerId: Schema.String, count: Schema.Int }),
+  payload: Schema.Struct({ customerId: Schema.String, count: Schema.Int }),
 })
 
 /** A source whose events are pruned after an hour, and held for subscribers one hour more. */
@@ -89,7 +96,7 @@ export const SubJournal = Actor.make("SubJournal", {
   policy: {
     keepEvents: "1 hour",
     holdEventsForSubscribers: "1 hour",
-    subscribers: ["SubSummary", "SubFollower", "SubDashboard"],
+    allowedSubscriberTypes: ["SubSummary", "SubFollower", "SubDashboard"],
   },
 })
 
@@ -104,14 +111,20 @@ export const OrderDelivery = Actor.Delivery({
 
 export type OrderDelivery = typeof OrderDelivery.Type
 
-const RecordOrder = Actor.command("RecordOrder", { input: OrderDelivery, errors: [Refused] })
+/** Placements only, from the order source. */
+export const PlacedDelivery = Actor.Delivery({ source: SubOrder, events: [OrderPlaced] })
+
+/** Placements from the journal source. */
+export const JournalDelivery = Actor.Delivery({ source: SubJournal, events: [OrderPlaced] })
+
+const RecordOrder = Actor.command("RecordOrder", { payload: OrderDelivery, error: Refused })
 
 /** A customer id whose `CustomerOrders` route throws instead of returning an id. */
 export const THROWING_ROUTE = "route-throws"
 
 const CustomerOrders = Actor.subscription("CustomerOrders", {
-  source: SubOrder,
-  events: [OrderPlaced, OrderCancelled],
+  delivery: OrderDelivery,
+
   handler: RecordOrder,
   route: (event) => {
     if (event.customerId === THROWING_ROUTE) throw new Error("route threw")
@@ -121,8 +134,8 @@ const CustomerOrders = Actor.subscription("CustomerOrders", {
 })
 
 const CustomerJournals = Actor.subscription("CustomerJournals", {
-  source: SubJournal,
-  events: [OrderPlaced],
+  delivery: JournalDelivery,
+
   handler: RecordOrder,
   route: (event) => event.customerId,
 })
@@ -135,7 +148,10 @@ export const Live = Actor.connection("SummaryLive", {
   client: Schema.String,
 })
 
-/** A routed projection: every order event reaches the customer it names. */
+/** A routed projection: every order event reaches the customer it names.
+ *
+ * @internal
+ */
 export const SubSummary = Actor.make("SubSummary", {
   key: Schema.String,
   state: Log,
@@ -144,11 +160,11 @@ export const SubSummary = Actor.make("SubSummary", {
   subscriptions: [CustomerOrders, CustomerJournals],
 })
 
-const AuditOrder = Actor.command("AuditOrder", { input: OrderDelivery })
+const AuditOrder = Actor.command("AuditOrder", { payload: OrderDelivery })
 
 const AuditedOrders = Actor.subscription("AuditedOrders", {
-  source: SubOrder,
-  events: [OrderPlaced, OrderCancelled],
+  delivery: OrderDelivery,
+
   handler: AuditOrder,
   route: (event) => event.customerId,
 })
@@ -162,38 +178,41 @@ const SubAuditor = Actor.make("SubAuditor", {
   subscriptions: [AuditedOrders],
 })
 
-const OnOrder = Actor.command("OnOrder", { input: OrderDelivery, errors: [Refused] })
+const OnOrder = Actor.command("OnOrder", { payload: OrderDelivery, error: Refused })
 
 const FollowedOrders = Actor.subscription("FollowedOrders", {
-  source: SubOrder,
-  events: [OrderPlaced, OrderCancelled],
+  delivery: OrderDelivery,
+
   handler: OnOrder,
 })
 
 const Follow = Actor.command("Follow", {
-  input: Schema.Struct({ source: Schema.String, from: Schema.optional(Schema.String) }),
+  payload: Schema.Struct({ source: Schema.String, from: Schema.optional(Schema.String) }),
 })
 
 const FollowThenRefuse = Actor.command("FollowThenRefuse", {
-  input: Schema.String,
-  errors: [Refused],
+  payload: Schema.String,
+  error: Refused,
 })
 
-const Unfollow = Actor.command("Unfollow", { input: Schema.String })
+const Unfollow = Actor.command("Unfollow", { payload: Schema.String })
 
-const IntentKeys = Actor.command("IntentKeys", { output: Schema.Array(Schema.String) })
+const IntentKeys = Actor.command("IntentKeys", { success: Schema.Array(Schema.String) })
 
 const FollowedJournals = Actor.subscription("FollowedJournals", {
-  source: SubJournal,
-  events: [OrderPlaced],
+  delivery: JournalDelivery,
+
   handler: OnOrder,
 })
 
 const FollowJournal = Actor.command("FollowJournal", {
-  input: Schema.Struct({ source: Schema.String, from: Schema.optional(Schema.String) }),
+  payload: Schema.Struct({ source: Schema.String, from: Schema.optional(Schema.String) }),
 })
 
-/** A dynamic subscriber: it follows only the orders its turns subscribe to. */
+/** A dynamic subscriber: it follows only the orders its turns subscribe to.
+ *
+ * @internal
+ */
 export const SubFollower = Actor.make("SubFollower", {
   key: Schema.String,
   state: Log,
@@ -203,19 +222,19 @@ export const SubFollower = Actor.make("SubFollower", {
 })
 
 const CountOrder = Actor.command("CountOrder", {
-  input: Actor.Delivery({ source: SubOrder, events: [OrderPlaced] }),
+  payload: PlacedDelivery,
 })
 
 const AllOrders = Actor.subscription("AllOrders", {
-  source: SubOrder,
-  events: [OrderPlaced],
+  delivery: PlacedDelivery,
+
   handler: CountOrder,
   route: Actor.singleton,
 })
 
 const AllJournals = Actor.subscription("AllJournals", {
-  source: SubJournal,
-  events: [OrderPlaced],
+  delivery: JournalDelivery,
+
   handler: CountOrder,
   route: Actor.singleton,
 })
@@ -229,36 +248,38 @@ const SubDashboard = Actor.make("SubDashboard", {
   subscriptions: [AllOrders, AllJournals],
 })
 
-class PaymentSeen extends Actor.Event<PaymentSeen>()("PaymentSeen", {
+const PaymentSeen = Actor.event("PaymentSeen", {
   orderId: Schema.String,
-}) {}
+})
 
 export const ShipOrder = Actor.workflow("ShipOrder", {
-  input: { orderId: Schema.String },
-  output: Schema.String,
+  payload: { orderId: Schema.String },
+  success: Schema.String,
   key: ({ orderId }) => orderId,
 })
 
 const AwaitPayment = ShipOrder.wait("payment-seen", PaymentSeen)
 
 const PlaceOrder = Actor.command("PlaceOrder", {
-  input: Schema.String,
-  output: Schema.String,
+  payload: Schema.String,
+  success: Schema.String,
 })
 
 const OnPayment = Actor.command("OnPayment", {
-  input: Actor.Delivery({ source: SubOrder, events: [OrderPlaced] }),
+  payload: PlacedDelivery,
 })
 
 const PaymentUpdates = Actor.subscription("PaymentUpdates", {
-  source: SubOrder,
-  events: [OrderPlaced],
+  delivery: PlacedDelivery,
+
   handler: OnPayment,
 })
 
 /**
  * A workflow waits only for its owner's events, so the owner follows the
  * order and re-emits what the workflow waits for.
+ *
+ * @internal
  */
 export const SubShipment = Actor.make("SubShipment", {
   key: Schema.String,
@@ -273,34 +294,41 @@ export const SubGateOrder = Actor.make("SubGateOrder", {
   key: Schema.String,
   events: [OrderPlaced],
   api: { Place },
-  policy: { subscribers: ["SubGated"] },
+  policy: { allowedSubscriberTypes: ["SubGated"] },
 })
 
-const OnGated = Actor.command("OnGated", {
-  input: Actor.Delivery({ source: SubGateOrder, events: [OrderPlaced] }),
-})
+/** Placements from the gated source. */
+export const GatedDelivery = Actor.Delivery({ source: SubGateOrder, events: [OrderPlaced] })
+
+const OnGated = Actor.command("OnGated", { payload: GatedDelivery })
 
 const GatedOrders = Actor.subscription("GatedOrders", {
-  source: SubGateOrder,
-  events: [OrderPlaced],
+  delivery: GatedDelivery,
+
   handler: OnGated,
   route: (event) => event.customerId,
 })
 
 const OpenGated = Actor.command("OpenGated")
 
-/** A routed subscriber that exists only once `OpenGated` creates it, so earlier deliveries skip as `NotCreated`. */
+/**
+ * A routed subscriber that exists only once `OpenGated` creates it, so
+ * earlier deliveries skip as `NotCreated`.
+ *
+ * @internal
+ */
 export const SubGated = Actor.make("SubGated", {
   key: Schema.String,
   state: Log,
   api: { OpenGated },
   internal: { OnGated },
   subscriptions: [GatedOrders],
-  policy: { createdBy: OpenGated },
+
+  createdBy: OpenGated,
 })
 
 /** One delivery as a handler logs it: `source#cursor:event`, `source~gap:after-resume`, or `source!rejected:cursor`. */
-const entryOf = (delivery: OrderDelivery | typeof CountOrder.input.Type) =>
+const entryOf = (delivery: OrderDelivery | typeof CountOrder.payload.Type) =>
   Match.value(delivery).pipe(
     Match.tagsExhaustive({
       Event: (event) => `${event.source.id}#${event.cursor}:${event.event._tag}`,
@@ -317,7 +345,7 @@ const record = <A extends { readonly id: string; readonly caller: Caller }>(
       readonly set: (patch: { readonly log: ReadonlyArray<string> }) => Effect.Effect<void>
     }
   },
-  delivery: OrderDelivery | typeof CountOrder.input.Type,
+  delivery: OrderDelivery | typeof CountOrder.payload.Type,
 ) =>
   Effect.gen(function* () {
     const entry = entryOf(delivery)
@@ -490,3 +518,10 @@ export const subscriptionsLayer = (fixture: SubscriptionsFixture) =>
   )
 
 export type { NodeInspectSymbol, Unify }
+
+/** Subscription actors; cases replace the fixture hook to fault one turn. */
+export const subscriptionsSuite: ConformanceSuite<SubscriptionsFixture> = {
+  fixture: subscriptionsFixture,
+  layer: subscriptionsLayer,
+  turn: (fixture) => (point, request) => Effect.suspend(() => fixture.hook(point, request)),
+}

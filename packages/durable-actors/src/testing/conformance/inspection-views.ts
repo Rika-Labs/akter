@@ -3,26 +3,26 @@ import { SqlClient } from "effect/unstable/sql"
 import { Actor, Intent } from "../../index.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
-class Noted extends Actor.Event<Noted>()("Noted", { body: Schema.String }) {}
+const Noted = Actor.event("Noted", { body: Schema.String })
 
 class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {}) {}
 
 class Undeliverable extends Schema.TaggedError<Undeliverable>()("Undeliverable", {}) {}
 
-class Deliver extends Actor.effect<Deliver>()("Deliver", {
-  input: { body: Schema.String },
-}) {}
-
-const Write = Actor.command("Record", { input: Schema.String })
-
-const RecordThenReject = Actor.command("RecordThenReject", {
-  input: Schema.String,
-  errors: [Rejected],
+const Deliver = Actor.job("Deliver", {
+  payload: { body: Schema.String },
 })
 
-const RecordThenDie = Actor.command("RecordThenDie", { input: Schema.String })
+const Write = Actor.command("Record", { payload: Schema.String })
+
+const RecordThenReject = Actor.command("RecordThenReject", {
+  payload: Schema.String,
+  error: Rejected,
+})
+
+const RecordThenDie = Actor.command("RecordThenDie", { payload: Schema.String })
 
 const Remind = Actor.command("Remind")
 
@@ -32,10 +32,9 @@ const Specimen = Actor.make("Specimen", {
     notes: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   events: [Noted],
-  effects: [Deliver],
+  jobs: { Deliver: { job: Deliver, retry: { times: 0 } } },
   api: { Record: Write, RecordThenReject, RecordThenDie },
   internal: { Remind },
-  policy: { effects: { Deliver: { retry: { times: 0 } } } },
 })
 
 const record = Effect.fnUntraced(function* (body: string) {
@@ -44,7 +43,7 @@ const record = Effect.fnUntraced(function* (body: string) {
   yield* turn.emit(Noted.make({ body }))
   const self = yield* Specimen.intents(turn.id)
   yield* self.Remind().pipe(Intent.after("1 hour"), Intent.key("remind"))
-  yield* turn.perform(Deliver.make({ body }))
+  yield* turn.enqueue(Deliver.make({ body }))
 })
 
 /** Handlers for the actors whose rows the inspection views expose. */
@@ -65,7 +64,7 @@ export const inspectionViewsLayer = Layer.mergeAll(
       Remind: () => Effect.void,
     }),
   ),
-  Specimen.toEffectLayer(
+  Specimen.toJobLayer(
     Effect.succeed({
       Deliver: Effect.fnUntraced(function* () {
         return yield* Undeliverable.make({})
@@ -81,7 +80,7 @@ const VIEWS = [
   "events",
   "outbox",
   "timers",
-  "effects",
+  "jobs",
   "dead_letters",
   "workflows",
   "workflow_steps",
@@ -129,9 +128,9 @@ const counts = Effect.fnUntraced(function* (tenant: string, id: string) {
     [tenant, id],
   )
 
-  const { effects = 0, dead_letters = 0, ...rest } = row ?? {}
+  const { jobs = 0, dead_letters = 0, ...rest } = row ?? {}
 
-  return { ...rest, effects: effects + dead_letters }
+  return { ...rest, jobs: jobs + dead_letters }
 })
 
 const rejection = (exit: Exit.Exit<unknown, unknown>) =>
@@ -164,7 +163,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             events: 1,
             outbox: 1,
             timers: 1,
-            effects: 1,
+            jobs: 1,
           })
           expect(
             yield* rowsOf(
@@ -222,7 +221,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             events: 1,
             outbox: 1,
             timers: 1,
-            effects: 1,
+            jobs: 1,
           })
           expect(yield* rowsOf("receipts", tenant, "flow", "command, outcome_tag")).toEqual([
             { command: "Record", outcome_tag: "Success" },
@@ -230,10 +229,10 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           ])
 
           yield* test.advance(0)
-          expect(yield* rowsOf("effects", tenant, "flow", "effect")).toEqual([])
-          expect(
-            yield* rowsOf("dead_letters", tenant, "flow", "effect, attempts, ambiguous"),
-          ).toEqual([{ effect: "Deliver", attempts: 1, ambiguous: false }])
+          expect(yield* rowsOf("jobs", tenant, "flow", "job")).toEqual([])
+          expect(yield* rowsOf("dead_letters", tenant, "flow", "job, attempts, ambiguous")).toEqual(
+            [{ job: "Deliver", attempts: 1, ambiguous: false }],
+          )
 
           yield* test.advance("1 hour")
           expect(yield* counts(tenant, "flow")).toMatchObject({
@@ -262,13 +261,13 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             actors: 1,
             receipts: 1,
             events: 1,
-            effects: 1,
+            jobs: 1,
           })
           expect(other).toMatchObject({
             actors: 1,
             receipts: 2,
             events: 2,
-            effects: 2,
+            jobs: 2,
           })
 
           const sql = yield* SqlClient.SqlClient
@@ -297,7 +296,11 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           expect(
             yield* sql<{ view_name: string; version: number }>`
               SELECT view_name, version FROM durable.views ORDER BY view_name COLLATE "C"`,
-          ).toEqual([...VIEWS].sort().map((view_name) => ({ view_name, version: 1 })))
+          ).toEqual(
+            [...VIEWS]
+              .sort()
+              .map((view_name) => ({ view_name, version: view_name === "dead_letters" ? 2 : 1 })),
+          )
 
           for (const view of VIEWS) {
             const column = view === "views" ? "view_name" : "tenant_id"
@@ -372,7 +375,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             actors: 1,
             receipts: 1,
             events: 1,
-            effects: 1,
+            jobs: 1,
           })
 
           for (const reason of Object.values(probe.denied))
@@ -388,3 +391,8 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Inspection-view actors. */
+export const inspectionViewsSuite: ConformanceSuite = {
+  layer: () => inspectionViewsLayer,
+}

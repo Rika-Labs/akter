@@ -65,7 +65,7 @@ export const RoomCommands = Room.toLayer(
         })
 
         yield* turn.emit(MessagePosted.make({ id, author, body }))
-        yield* turn.perform(ModerateMessage.make({ id, body }), { key: `moderate:${id}` })
+        yield* turn.enqueue(ModerateMessage.make({ id, body }), { key: `moderate:${id}` })
 
         yield* (yield* Room.intents(turn.id))
           .IdleCheck({ token: turn.commandId })
@@ -98,7 +98,7 @@ export const RoomCommands = Room.toLayer(
         if (Option.isSome(attached) && attached.value.attachment === id)
           yield* turn.blob(Attachments).set(id, new Uint8Array())
 
-        yield* turn.cancelEffect(`moderate:${id}`)
+        yield* turn.cancelJob(`moderate:${id}`)
       }),
 
       IdleCheck: Effect.fnUntraced(function* ({ token }) {
@@ -122,12 +122,12 @@ export const RoomCommands = Room.toLayer(
 
       ModerationFailed: Effect.fnUntraced(function* (dead) {
         yield* Room.Turn
-        yield* Effect.logWarning("moderation dead-lettered", dead.effectId)
+        yield* Effect.logWarning("moderation dead-lettered", dead.jobId)
       }),
 
       ModerationCancelled: Effect.fnUntraced(function* (cancelled) {
         yield* Room.Turn
-        yield* Effect.logInfo("moderation cancelled", cancelled.effectId).pipe(
+        yield* Effect.logInfo("moderation cancelled", cancelled.jobId).pipe(
           Effect.annotateLogs({ outcome: cancelled.outcome._tag, ambiguous: cancelled.ambiguous }),
         )
       }),
@@ -186,66 +186,62 @@ export const RoomCommands = Room.toLayer(
 )
 
 /** Handlers for `Thread`. */
-export const ThreadCommands = Thread.toLayer(
-  Effect.succeed({
-    Open: Effect.fnUntraced(function* ({ room, messageId }) {
-      yield* (yield* Thread.Turn).state.set({ room, messageId, replies: 0 })
-    }),
-    Reply: Effect.fnUntraced(function* () {
-      const turn = yield* Thread.Turn
-      yield* turn.state.set({ replies: turn.state.replies + 1 })
-
-      return turn.state.replies
-    }),
+export const ThreadCommands = Thread.toLayer({
+  Open: Effect.fnUntraced(function* ({ room, messageId }) {
+    yield* (yield* Thread.Turn).state.set({ room, messageId, replies: 0 })
   }),
-)
+  Reply: Effect.fnUntraced(function* () {
+    const turn = yield* Thread.Turn
+    yield* turn.state.set({ replies: turn.state.replies + 1 })
+
+    return turn.state.replies
+  }),
+})
 
 /**
  * A moderated post keeps its event and cursor but not its body.
  */
-export const RoomReads = Room.toQueryLayer(
-  Effect.succeed({
-    Recent: Effect.fnUntraced(function* ({ limit }) {
-      const rows = yield* (yield* Room.Read)
-        .rows(messages)
-        .all({ orderBy: { sentAt: "desc", id: "desc" }, limit })
+export const RoomReads = Room.toQueryLayer({
+  Recent: Effect.fnUntraced(function* ({ limit }) {
+    const rows = yield* (yield* Room.Read)
+      .rows(messages)
+      .all({ orderBy: { sentAt: "desc", id: "desc" }, limit })
 
-      return rows.map(({ id, author, body }) => ({ id, author, body }))
-    }),
-    History: Effect.fnUntraced(function* ({ after, limit }) {
-      const read = yield* Room.Read
-      const entries = yield* read.events(MessagePosted, { after, limit })
-
-      const ids = entries.map(({ event }) => event.id)
-      const rows = yield* read.rows(messages).all({ where: { id: { in: ids } } })
-      const kept = new Set(rows.map(({ id }) => id))
-
-      return entries.map(({ cursor, event }) => ({
-        cursor,
-        message: kept.has(event.id)
-          ? event
-          : MessagePosted.make({ id: event.id, author: event.author, body: "" }),
-      }))
-    }),
-    Attachment: Effect.fnUntraced(function* (id: string) {
-      const message = yield* (yield* Room.Read).rows(messages).one({ where: { id } })
-
-      if (Option.isNone(message) || message.value.attachment !== id) return Option.none()
-
-      return yield* (yield* Room.Read).blob(Attachments).get(id)
-    }),
+    return rows.map(({ id, author, body }) => ({ id, author, body }))
   }),
-)
+  History: Effect.fnUntraced(function* ({ after, limit }) {
+    const read = yield* Room.Read
+    const entries = yield* read.events(MessagePosted, { after, limit })
+
+    const ids = entries.map(({ event }) => event.id)
+    const rows = yield* read.rows(messages).all({ where: { id: { in: ids } } })
+    const kept = new Set(rows.map(({ id }) => id))
+
+    return entries.map(({ cursor, event }) => ({
+      cursor,
+      message: kept.has(event.id)
+        ? event
+        : MessagePosted.make({ id: event.id, author: event.author, body: "" }),
+    }))
+  }),
+  Attachment: Effect.fnUntraced(function* (id: string) {
+    const message = yield* (yield* Room.Read).rows(messages).one({ where: { id } })
+
+    if (Option.isNone(message) || message.value.attachment !== id) return Option.none()
+
+    return yield* (yield* Room.Read).blob(Attachments).get(id)
+  }),
+})
 
 /** May run in another process: it gets no database, only the provider. */
-export const RoomEffects = Room.toEffectLayer(
+export const RoomJobs = Room.toJobLayer(
   Effect.gen(function* () {
     const moderation = yield* ModerationApi
 
     return {
       ModerateMessage: Effect.fnUntraced(function* ({ id, body }) {
         const exec = yield* Room.Executor
-        const flagged = yield* moderation.check(body, { idempotencyKey: exec.effectId })
+        const flagged = yield* moderation.check(body, { idempotencyKey: exec.jobId })
 
         return { id, flagged }
       }),
@@ -254,18 +250,16 @@ export const RoomEffects = Room.toEffectLayer(
 )
 
 /** Handlers for `Digest`. */
-export const DigestCommands = Digest.toLayer(
-  Effect.succeed({
-    Send: Effect.fnUntraced(function* () {
-      const turn = yield* Digest.Turn
-      yield* turn.state.set({ sent: turn.state.sent + 1 })
-    }),
+export const DigestCommands = Digest.toLayer({
+  Send: Effect.fnUntraced(function* () {
+    const turn = yield* Digest.Turn
+    yield* turn.state.set({ sent: turn.state.sent + 1 })
   }),
-)
+})
 
 /**
  * Creates the table as a drizzle-kit migration would, then registers the
- * room's commands and reads; its executors are `RoomEffects`.
+ * room's commands and reads; its executors are `RoomJobs`.
  */
 export const RoomHandlers = Layer.unwrap(
   Effect.gen(function* () {
@@ -276,4 +270,4 @@ export const RoomHandlers = Layer.unwrap(
 )
 
 /** Every handler and executor of the room. */
-export const RoomLive = Layer.merge(RoomHandlers, RoomEffects)
+export const RoomLive = Layer.merge(RoomHandlers, RoomJobs)

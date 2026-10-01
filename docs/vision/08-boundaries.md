@@ -16,7 +16,7 @@ Durable Actors should remove routine coordination work while naming every bounda
 - receipts that replay successful and declared-failure outcomes;
 - actor-controlled mutation of keyed state and relational rows;
 - durable events with cursors;
-- workflows, cron, timers, and retryable effects with dead letters;
+- workflows, schedules, timers, and retryable jobs with dead letters;
 - typed connections with hibernation and best-effort broadcast;
 - caller and tenant attribution decided by the transport, with per-actor access policies, and tenant-aware placement;
 - embedded, served, and hosted operation with one model;
@@ -36,11 +36,11 @@ Durable Actors should remove routine coordination work while naming every bounda
 
 ## Product boundaries
 
-This is a full actor framework, not a workflow-only system or a standalone background-work system. It does not add a separate activities abstraction outside workflow activities and actor effects. It does not provide a broker-like topic subsystem in v4; cross-actor fan-out uses explicit durable actor intents and projection actors.
+This is a full actor framework, not a workflow-only system or a standalone background-work system. It does not add a separate activities abstraction outside workflow activities and actor jobs. It does not provide a broker-like topic subsystem in v4; cross-actor fan-out uses explicit durable actor intents and projection actors.
 
 There is no AI-specific framework layer. Contracts, receipts, cursor-based events, dead letters, workflow `waitFor`, and connections make agents straightforward to build; OpenAPI is the integration surface for external tool generation.
 
-Durable agent orchestration is Outlast, a separate product that depends on the published package, compiles to actors, and keeps model and sandbox execution behind effects ([ADR 0017](../decisions/0017-m1-record-corrections.md)). This repository ships no agent runtime, and the core framework provides no first-party POSIX VM or hostile-code isolation.
+Durable agent orchestration is Outlast, a separate product that depends on the published package, compiles to actors, and keeps model and sandbox execution behind jobs ([ADR 0017](../decisions/0017-m1-record-corrections.md)). This repository ships no agent runtime, and the core framework provides no first-party POSIX VM or hostile-code isolation.
 
 Generated durable applications are a gated future product direction, not a current guarantee. Generated code must be validated, versioned, and isolated from the host; TypeScript capabilities and row-level security alone are not a sandbox.
 

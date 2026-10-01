@@ -61,7 +61,7 @@ const audit = Effect.fnUntraced(function* (pool: Pool) {
 })
 
 /**
- * Whether no effect is unsettled and no intent is due. Each post leaves its
+ * Whether no job is unsettled and no intent is due. Each post leaves its
  * room's 24 hour idle check pending, so the outbox itself is never empty. A
  * row claimed by a runner that lost its connection in the failover or drain
  * is due again only once its claim lease ends, up to a minute later, so the
@@ -71,7 +71,7 @@ const nothingDue = (pool: Pool) =>
   query<{ count: number }>(
     pool,
     `SELECT count(*)::int AS count FROM actor_outbox
-      WHERE kind = 'effect' OR scheduled_at_ms <= (extract(epoch FROM now()) * 1000)::bigint`,
+      WHERE kind = 'job' OR scheduled_at_ms <= (extract(epoch FROM now()) * 1000)::bigint`,
   ).pipe(Effect.map((rows) => rows[0]!.count === 0))
 
 /** Provider calls to the moderation stand-in for `message`, by its unique body. */
@@ -85,7 +85,7 @@ const keysFor = (message: Sent) =>
  * The rehearsal starts its own Postgres primary and synchronous standby in
  * Docker and runs three runners, so it skips where the chat tests run on PGlite.
  */
-const pglite = runtime.runSync(Config.String("CHAT_BACKEND")) === "pglite"
+const pglite = runtime.runSync(Config.String("TEST_BACKEND")) === "pglite"
 
 it.skipIf(pglite)(
   "operates the served chat room through a drain, a Postgres failover, and a restore with no command lost or repeated",
@@ -204,7 +204,7 @@ it.skipIf(pglite)(
           Scope.provide(promotedScope),
         )
 
-        yield* until(nothingDue(promoted), "no effect or intent to be due", "180 seconds")
+        yield* until(nothingDue(promoted), "no job or intent to be due", "180 seconds")
 
         const beforeBackup = yield* audit(promoted)
         const phaseOne = [...load.order]
@@ -241,7 +241,7 @@ it.skipIf(pglite)(
 
         const lastScope = yield* Scope.make()
         const lastState = yield* open(pair.standbyPort, "rehearsal").pipe(Scope.provide(lastScope))
-        yield* until(nothingDue(lastState), "no effect or intent to be due", "180 seconds")
+        yield* until(nothingDue(lastState), "no job or intent to be due", "180 seconds")
         const beforeRestore = yield* audit(lastState)
         const phaseTwo = [...second.order]
         yield* Scope.close(lastScope, Exit.void)
@@ -279,7 +279,7 @@ it.skipIf(pglite)(
           retried.set(message.id, reply.status)
         }
 
-        yield* until(nothingDue(restored), "no restored effect or intent to be due", "180 seconds")
+        yield* until(nothingDue(restored), "no restored job or intent to be due", "180 seconds")
         const afterRetry = yield* audit(restored)
 
         expect([...retried.values()].every((status) => status === 200)).toBe(true)
@@ -326,7 +326,7 @@ it.skipIf(pglite)(
         yield* Console.error(
           `REHEARSAL phaseOne=${phaseOne.length} phaseTwo=${phaseTwo.length} ` +
             `drain=${report.outcome} drainMs=${drainMs} interruptedTurns=${report.interruptedTurns} ` +
-            `interruptedEffects=${report.interruptedEffects} inFlightAtDrain=${inFlightAtDrain} ackedThroughDrain=${ackedThroughDrain} ` +
+            `interruptedJobs=${report.interruptedJobs} inFlightAtDrain=${inFlightAtDrain} ackedThroughDrain=${ackedThroughDrain} ` +
             `commitUnknown=${commitUnknown.length} promoteMs=${promotedAt - killedAt} recoveryMs=${recoveryMs} worstCommandMs=${worstMs} ` +
             `atBackup=${atBackup.receipts} rerunAfterRestore=${reRun.length} providerRepeatsPhaseOne=${providerRepeats} ` +
             `lost=0 repeated=${afterRetry.repeated}`,

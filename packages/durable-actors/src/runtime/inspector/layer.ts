@@ -63,8 +63,8 @@ const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
  * - `GET /overview`: the view catalog and the tenant's row counts.
  * - `GET /actors?type&afterType&afterId&limit`: actors, one keyset page at a time.
  * - `GET /actor?type&id&limit`: one actor's state, receipts with the events
- *   each committed, events, outbox, effects, dead letters, and workflows with steps.
- * - `GET /outbox`, `/effects`, `/dead-letters`, `/workflows?status=open|all`: tenant-wide lists.
+ *   each committed, events, outbox, jobs, dead letters, and workflows with steps.
+ * - `GET /outbox`, `/jobs`, `/dead-letters`, `/workflows?status=open|all`: tenant-wide lists.
  */
 const serve = <R = never>(options: InspectorOptions<R>) =>
   HttpRouter.use(
@@ -158,8 +158,8 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
         Effect.asSome(Queries.outbox({ tenant, limit })),
       )
 
-      yield* route("/effects", PageParams, (tenant, { limit }) =>
-        Effect.asSome(Queries.effects({ tenant, limit })),
+      yield* route("/jobs", PageParams, (tenant, { limit }) =>
+        Effect.asSome(Queries.jobs({ tenant, limit })),
       )
 
       yield* route("/dead-letters", PageParams, (tenant, { limit }) =>

@@ -2,10 +2,10 @@ import { Actor } from "@durable-actors/core"
 import { Deferred, Effect, Result, Schema } from "effect"
 
 /** Holds its turn open until the scenario releases the gate named by its input. */
-export const Hold = Actor.command("Hold", { input: Schema.String, output: Schema.Int })
+export const Hold = Actor.command("Hold", { payload: Schema.String, success: Schema.Int })
 
 /** Adds the amount to the count and replies with the new total. */
-export const Add = Actor.command("Add", { input: Schema.Int, output: Schema.Int })
+export const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
 
 const state = Actor.state({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -14,9 +14,9 @@ const state = Actor.state({
 /** A commutative reducer: calls already waiting merge into one turn. */
 export const Tick = Actor.reducer("Tick", {
   state,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: (current, amount) => Result.succeed({ count: current.count + amount }),
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 /** One actor whose next turn the scenario can hold, so commands queue behind it. */
@@ -96,27 +96,25 @@ export const queued = ({
   })
 
 /** Handlers for `BatchProbe`. */
-export const BatchProbeLive = BatchProbe.toLayer(
-  Effect.succeed({
-    Hold: Effect.fnUntraced(function* (name: string) {
-      const held = gates.get(name)
+export const BatchProbeLive = BatchProbe.toLayer({
+  Hold: Effect.fnUntraced(function* (name: string) {
+    const held = gates.get(name)
 
-      if (held !== undefined) {
-        gates.delete(name)
-        yield* Deferred.succeed(held.started, undefined)
-        yield* Deferred.await(held.release)
-      }
+    if (held !== undefined) {
+      gates.delete(name)
+      yield* Deferred.succeed(held.started, undefined)
+      yield* Deferred.await(held.release)
+    }
 
-      const turn = yield* BatchProbe.Turn
-      yield* turn.state.set({ count: turn.state.count + 1 })
+    const turn = yield* BatchProbe.Turn
+    yield* turn.state.set({ count: turn.state.count + 1 })
 
-      return turn.state.count
-    }),
-    Add: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* BatchProbe.Turn
-      yield* turn.state.set({ count: turn.state.count + amount })
-
-      return turn.state.count
-    }),
+    return turn.state.count
   }),
-)
+  Add: Effect.fnUntraced(function* (amount: number) {
+    const turn = yield* BatchProbe.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
+
+    return turn.state.count
+  }),
+})

@@ -30,18 +30,18 @@ const engine = Effect.gen(function* () {
 })
 
 /** Encodes a step's exit with its own schemas, and decodes a recorded one back. */
-export const exitCodec = <S extends ValueSchema, E extends ReadonlyArray<DeclaredError>>({
+export const exitCodec = <S extends ValueSchema, E extends DeclaredError>({
   success,
-  errors,
+  error: errorSchema,
 }: {
   readonly success: S
-  readonly errors: E
+  readonly error: E
 }) => {
   const value = Schema.toCodecJson(success)
-  const error = Schema.toCodecJson(Schema.Union(errors))
-  const isError = Schema.is(Schema.Union(errors))
+  const error = Schema.toCodecJson(errorSchema)
+  const isError = Schema.is(errorSchema)
 
-  type Recorded = Exit.Exit<S["Type"], E[number]["Type"]>
+  type Recorded = Exit.Exit<S["Type"], E["Type"]>
 
   const encode = (exit: Exit.Exit<S["Type"], unknown>): Effect.Effect<RecordedExit> => {
     if (Exit.isSuccess(exit))
@@ -80,23 +80,21 @@ export const exitCodec = <S extends ValueSchema, E extends ReadonlyArray<Declare
   return { encode, decode }
 }
 
-const noErrors: readonly [] = []
-
 const make = <
   const Tag extends string,
-  const InputFields extends Fields = {},
-  Output extends ValueSchema = Schema.Void,
-  const Errors extends ReadonlyArray<DeclaredError> = readonly [],
+  const PayloadFields extends Fields = {},
+  Success extends ValueSchema = Schema.Void,
+  Error extends DeclaredError = Schema.Never,
 >(
   tag: Tag,
   options: {
-    readonly input?: InputFields
-    readonly output?: Output
-    readonly errors?: Errors
-    readonly key?: (input: Schema.Struct<InputFields>["Type"]) => string
+    readonly payload?: PayloadFields
+    readonly success?: Success
+    readonly error?: Error
+    readonly key?: (payload: Schema.Struct<PayloadFields>["Type"]) => string
     readonly versions?: Readonly<Record<string, VersionRange>>
   } = {},
-): Workflow<Tag, Schema.Struct<InputFields>, Output, Errors> => {
+): Workflow<Tag, Schema.Struct<PayloadFields>, Success, Error> => {
   if (!WORKFLOW_TAG.test(tag)) throw new Error(`Invalid workflow name: ${tag}`)
   const versions = options.versions ?? {}
 
@@ -131,20 +129,20 @@ const make = <
 
   const step = <
     const Name extends string,
-    I extends ValueSchema = Schema.Void,
+    P extends ValueSchema = Schema.Void,
     S extends ValueSchema = Schema.Void,
-    const E extends ReadonlyArray<DeclaredError> = readonly [],
+    E extends DeclaredError = Schema.Never,
   >(
     name: Name,
-    stepOptions?: { readonly input?: I; readonly success?: S; readonly errors?: E },
-  ): Step<Name, I, S, E> => {
-    const input = (stepOptions?.input ?? Schema.Void) as I
+    stepOptions?: { readonly payload?: P; readonly success?: S; readonly error?: E },
+  ): Step<Name, P, S, E> => {
+    const payload = (stepOptions?.payload ?? Schema.Void) as P
     const success = (stepOptions?.success ?? Schema.Void) as S
-    const errors = stepOptions?.errors ?? (noErrors as never)
+    const error = (stepOptions?.error ?? Schema.Never) as E
 
-    register({ name, kind: "activity", schemas: [input, success, ...errors] })
-    const codec = exitCodec({ success, errors })
-    const decodeInput = Schema.decodeUnknownEffect(input)
+    register({ name, kind: "activity", payload, result: [success, error] })
+    const codec = exitCodec({ success, error })
+    const decodePayload = Schema.decodeUnknownEffect(payload)
     const self = identity(name, "activity")
 
     return {
@@ -154,7 +152,7 @@ const make = <
         Effect.gen(function* () {
           const steps = yield* engine
 
-          const run = Effect.suspend(() => decodeInput(value).pipe(Effect.orDie)).pipe(
+          const run = Effect.suspend(() => decodePayload(value).pipe(Effect.orDie)).pipe(
             Effect.flatMap((decoded) => execute(decoded)),
             Effect.exit,
             Effect.flatMap(codec.encode),
@@ -166,7 +164,7 @@ const make = <
   }
 
   const sleep = <const Name extends string>(name: Name): Sleep<Name> => {
-    register({ name, kind: "clock", schemas: [] })
+    register({ name, kind: "clock", result: [] })
     const self = identity(name, "clock")
 
     const call = (duration: Duration.Input) =>
@@ -186,7 +184,7 @@ const make = <
     name: Name,
     event: Ev,
   ): Wait<Name, Ev> => {
-    register({ name, kind: "wait", schemas: [event], event: event.identifier })
+    register({ name, kind: "wait", result: [event], event: event.identifier })
     const self = identity(name, "wait")
     const codec = payloadCodec({ schema: event, tag: event.identifier })
 
@@ -235,15 +233,15 @@ const make = <
   const race = <
     const Name extends string,
     S extends ValueSchema,
-    const E extends ReadonlyArray<DeclaredError> = readonly [],
+    E extends DeclaredError = Schema.Never,
   >(
     name: Name,
-    raceOptions: { readonly success: S; readonly errors?: E },
+    raceOptions: { readonly success: S; readonly error?: E },
   ): Race<Name, S, E> => {
-    const errors = raceOptions.errors ?? (noErrors as never)
+    const error = (raceOptions.error ?? Schema.Never) as E
 
-    register({ name, kind: "deferred", schemas: [raceOptions.success, ...errors] })
-    const codec = exitCodec({ success: raceOptions.success, errors })
+    register({ name, kind: "deferred", result: [raceOptions.success, error] })
+    const codec = exitCodec({ success: raceOptions.success, error })
     const self = identity(name, "deferred")
 
     return {
@@ -273,9 +271,9 @@ const make = <
   return {
     kind: "workflow",
     tag,
-    input: Schema.Struct(options.input ?? ({} as InputFields)),
-    output: (options.output ?? Schema.Void) as Output,
-    errors: options.errors ?? (noErrors as never),
+    payload: Schema.Struct(options.payload ?? ({} as PayloadFields)),
+    success: (options.success ?? Schema.Void) as Success,
+    error: (options.error ?? Schema.Never) as Error,
     key: options.key,
     versions,
     registry,
@@ -288,11 +286,11 @@ const make = <
 
 /**
  * `WorkflowMember.make` is `Actor.workflow`: declares a workflow by tag.
- * `key` derives the execution key from the input (the start's command id when
+ * `key` derives the execution key from the payload (the start's command id when
  * omitted), and `versions` marks code changes that old executions must not see.
  * Throws on an invalid tag or version range.
  *
  * @example
- * const Checkout = Actor.workflow("Checkout", { input: { orderId: Schema.String } })
+ * const Checkout = Actor.workflow("Checkout", { payload: { orderId: Schema.String } })
  */
 export const WorkflowMember = { make }

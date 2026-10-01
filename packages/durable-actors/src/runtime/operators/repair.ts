@@ -1,6 +1,6 @@
 import { Context, type Crypto, Effect, Option, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { RegisteredEffect } from "../members.ts"
+import type { RegisteredJob } from "../members.ts"
 import { emptyOutbox } from "../../handles/intents.ts"
 import { ActorRef, System } from "../../identity/caller.ts"
 import * as Queries from "../inspector/queries.ts"
@@ -32,16 +32,16 @@ export class OperatorNotFound extends Schema.TaggedError<OperatorNotFound>()(
  */
 export class ProviderOutcomeUnknown extends Schema.TaggedError<ProviderOutcomeUnknown>()(
   "ProviderOutcomeUnknown",
-  { effectId: Schema.String },
+  { jobId: Schema.String },
 ) {}
 
-/** This runner has no executor for the effect, so it can't know how to queue a retry. */
-export class EffectNotServed extends Schema.TaggedError<EffectNotServed>()("EffectNotServed", {
-  effect: Schema.String,
+/** This runner has no executor for the job, so it can't know how to queue a retry. */
+export class JobNotServed extends Schema.TaggedError<JobNotServed>()("JobNotServed", {
+  job: Schema.String,
 }) {}
 
 /** Why a repair or operator read was refused. */
-export type RepairError = OperatorNotFound | ProviderOutcomeUnknown | EffectNotServed
+export type RepairError = OperatorNotFound | ProviderOutcomeUnknown | JobNotServed
 
 /** What an actor-scoped operator request names. */
 export interface ActorTarget {
@@ -81,13 +81,13 @@ export class OperatorRuntime extends Context.Service<
     readonly exportSeed: (target: ActorTarget) => Effect.Effect<Option.Option<Seed>, ExportRefused>
     readonly retry: (request: {
       readonly target: ActorTarget
-      readonly effectId: string
+      readonly jobId: string
       readonly providerChecked: boolean
       readonly audit: AuditEntry
-    }) => Effect.Effect<{ readonly effectId: string }, RepairError>
+    }) => Effect.Effect<{ readonly jobId: string }, RepairError>
     readonly discard: (request: {
       readonly target: ActorTarget
-      readonly effectId: string
+      readonly jobId: string
       readonly audit: AuditEntry
     }) => Effect.Effect<void, RepairError>
     /**
@@ -140,7 +140,7 @@ export interface LaggingSubscription {
 type ReferenceOf<T> = T extends Context.Reference<infer S> ? S : never
 
 interface DeadLetterRow {
-  readonly effect: string
+  readonly job: string
   readonly payload: string
   readonly attempts: number
   readonly cause: string
@@ -150,7 +150,7 @@ interface DeadLetterRow {
 
 /**
  * Builds the service over the runtime's SQL, crypto, clock, and outbox, and
- * its effect registrations, which say whether a retried effect is capped.
+ * its job registrations, which say whether a retried job is capped.
  *
  * Repairs lock the dead letter they act on, so two repairs of it serialize and the
  * second finds nothing. Without `receipts.read` an operator sees that a command
@@ -162,7 +162,7 @@ export const operatorRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
   readonly outbox: ReferenceOf<typeof OutboxRuntime>
-  readonly effectOf: (actorType: string, effect: string) => RegisteredEffect | undefined
+  readonly jobOf: (actorType: string, job: string) => RegisteredJob | undefined
   readonly wake: Effect.Effect<void>
   /** The tenant and adoption writer roles the operator's turns take, as the runtime's own turns do. */
   readonly tenantScope: ReferenceOf<typeof TenantScope>
@@ -223,20 +223,20 @@ export const operatorRuntime = (deps: {
       return result
     })
 
-  const lockLetter = (key: bigint, target: ActorTarget, effectId: string) =>
+  const lockLetter = (key: bigint, target: ActorTarget, jobId: string) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
 
       const [letter] = yield* sql<DeadLetterRow>`
-        SELECT effect, payload, payload_version AS "payloadVersion", attempts::int AS attempts, cause, ambiguous
+        SELECT job, payload, payload_version AS "payloadVersion", attempts::int AS attempts, cause, ambiguous
         FROM actor_dead_letters
-        WHERE routing_key = ${key} AND effect_id = ${effectId} AND tenant_id = ${target.tenant}
+        WHERE routing_key = ${key} AND job_id = ${jobId} AND tenant_id = ${target.tenant}
           AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
         FOR UPDATE`
 
       if (letter === undefined) return yield* OperatorNotFound.make({})
 
-      yield* sql`DELETE FROM actor_dead_letters WHERE routing_key = ${key} AND effect_id = ${effectId}`
+      yield* sql`DELETE FROM actor_dead_letters WHERE routing_key = ${key} AND job_id = ${jobId}`
 
       return letter
     })
@@ -287,7 +287,7 @@ export const operatorRuntime = (deps: {
       ),
     exportSeed: (target) =>
       exportActor(target).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), provided),
-    retry: ({ target, effectId, providerChecked, audit }) =>
+    retry: ({ target, jobId, providerChecked, audit }) =>
       Effect.gen(function* () {
         const ref = ActorRef.make({
           tenant: target.tenant,
@@ -297,24 +297,23 @@ export const operatorRuntime = (deps: {
 
         const retried = yield* auditedRepair(target, audit, (key) =>
           Effect.gen(function* () {
-            const letter = yield* lockLetter(key, target, effectId)
+            const letter = yield* lockLetter(key, target, jobId)
 
             if (letter.ambiguous && !providerChecked)
-              return yield* ProviderOutcomeUnknown.make({ effectId })
+              return yield* ProviderOutcomeUnknown.make({ jobId })
 
-            const registered = deps.effectOf(target.actorType, letter.effect)
+            const registered = deps.jobOf(target.actorType, letter.job)
 
-            if (registered === undefined)
-              return yield* EffectNotServed.make({ effect: letter.effect })
+            if (registered === undefined) return yield* JobNotServed.make({ job: letter.job })
 
             const staged = yield* outboxStatements(
               key,
               ref,
               {
                 ...emptyOutbox,
-                effects: [
+                jobs: [
                   {
-                    effect: letter.effect,
+                    job: letter.job,
                     payload: letter.payload,
                     version: letter.payloadVersion,
                     caller: System.make({ source: "actor", ref }),
@@ -329,14 +328,14 @@ export const operatorRuntime = (deps: {
 
             for (const statement of staged.statements) yield* statement
 
-            const retriedId = staged.effectIds[0]!
+            const retriedId = staged.jobIds[0]!
 
             return {
-              result: { effectId: retriedId },
+              result: { jobId: retriedId },
               outcome: {
-                retried: effectId,
-                effectId: retriedId,
-                effect: letter.effect,
+                retried: jobId,
+                jobId: retriedId,
+                job: letter.job,
                 attempts: letter.attempts,
                 ambiguous: letter.ambiguous,
                 providerChecked,
@@ -349,13 +348,13 @@ export const operatorRuntime = (deps: {
 
         return retried
       }).pipe(provided),
-    discard: ({ target, effectId, audit }) =>
+    discard: ({ target, jobId, audit }) =>
       auditedRepair(target, audit, (key) =>
-        Effect.map(lockLetter(key, target, effectId), (letter) => ({
+        Effect.map(lockLetter(key, target, jobId), (letter) => ({
           result: undefined,
           outcome: {
-            discarded: effectId,
-            effect: letter.effect,
+            discarded: jobId,
+            job: letter.job,
             attempts: letter.attempts,
             ambiguous: letter.ambiguous,
             cause: letter.cause,

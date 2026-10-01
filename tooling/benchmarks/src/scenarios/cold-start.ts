@@ -1,6 +1,5 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Actor } from "@durable-actors/core"
-import { RuntimeControl } from "@durable-actors/core/runtime"
+import { Actors, Auth, RuntimeControl } from "@durable-actors/core/runtime"
 import {
   Clock,
   Context,
@@ -24,7 +23,7 @@ const ProtocolInfo = Schema.Struct({ retryWindowMs: Schema.Int, now: Schema.Int 
 
 const decodeProtocol = Schema.decodeUnknownEffect(Schema.fromJsonString(ProtocolInfo))
 
-/** A served runner on the case database: `Actors.layer` and `Actor.serve` on a Bun listener. */
+/** A served runner on the case database: `Actors.layer` and `Actors.serve` on a Bun listener. */
 const startRunner = Effect.fnUntraced(function* (database: Context.Context<SqlClient.SqlClient>) {
   const scope = yield* Scope.make()
 
@@ -33,7 +32,7 @@ const startRunner = Effect.fnUntraced(function* (database: Context.Context<SqlCl
   ).pipe(Scope.provide(scope))
 
   const web = HttpRouter.toWebHandler(
-    Actor.serve({ actors: [Probe], auth: Actor.auth.none }).pipe(
+    Actors.serve({ actors: [Probe], auth: Auth.none }).pipe(
       Layer.provide(Layer.succeedContext(services)),
     ),
     { disableLogger: true },

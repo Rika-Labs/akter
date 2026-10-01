@@ -23,7 +23,7 @@ Every command takes `--help` (`-h`), `--version` (`-v`), `--completions <bash|zs
 
 ```text
 DESCRIPTION
-  Develop, deploy, and operate durable actors
+  Run actors locally, check a deploy against stored data, adopt existing tables, and inspect and repair a running deployment
 
 USAGE
   durable <subcommand> [flags]
@@ -35,18 +35,19 @@ GLOBAL FLAGS
   --completions <bash|zsh|fish|sh>                                    Print shell completion script (choices: bash, zsh, fish, sh)
   --log-level <all|trace|debug|info|warn|warning|error|fatal|none>    Sets the minimum log level (choices: all, trace, debug, info, warn, warning, error, fatal, none)
 
-Develop and deploy:
+Develop and check:
   dev          Run the entry's app locally with a read-only inspector at /_durable/inspector
   workflows    Check workflow changes against open executions
-  payloads     Check and clear stored event and effect payload versions
+  payloads     Check and clear stored event and job payload versions
   adopt        Adopt existing tables: plan, observe legacy writers, backfill, enforce, and check status
+  fleet        Set up fleet views' change feed and rebuild a view from its source
 
 Operate a running deployment:
   defects          Read recent defects from runners
   inspect          Read one actor's state, newest receipts, and dead letters through the first runner named
-  export           Write one actor's state and pending intents and effects to a new seed file, through the first runner named
+  export           Write one actor's state and pending intents and jobs to a new seed file, through the first runner named
   receipts         Read stored command outcomes
-  dead-letters     Repair dead-lettered effects; the runner audits each repair
+  dead-letters     Repair dead-lettered jobs; the runner audits each repair
   subscriptions    List and skip stuck subscription rows
 
 Control plane:
@@ -92,7 +93,7 @@ FLAGS
 
 ### `durable payloads check`
 
-Check that every stored event and effect payload version still decodes, read-only; exit 1 when a deploy would be refused
+Check that every stored event and job payload version still decodes, read-only; exit 1 when a deploy would be refused
 
 ```text
 USAGE
@@ -222,6 +223,34 @@ FLAGS
   --to choice              The mode to return the table to; only observe (choices: observe)
 ```
 
+### `durable fleet setup`
+
+Give the entry's fleet view sources full replica identity, publish them, and create the logical slot; needs wal_level=logical
+
+```text
+USAGE
+  durable fleet setup [flags]
+
+FLAGS
+  --entry file             The entry module; it exports a `fleet` array of Fleet.view values
+  --database-url string    The application's Postgres URL
+```
+
+### `durable fleet rebuild`
+
+Rebuild a fleet view from its source, clearing its error; exit 1 when no runtime registered it
+
+```text
+USAGE
+  durable fleet rebuild [flags] <view>
+
+ARGUMENTS
+  view string    The fleet view to rebuild
+
+FLAGS
+  --database-url string    The application's Postgres URL
+```
+
 ### `durable defects list`
 
 List recent defects from each runner named; each keeps only its own recent defect spans
@@ -261,7 +290,7 @@ FLAGS
 
 ### `durable export`
 
-Write one actor's state and pending intents and effects to a new seed file, through the first runner named
+Write one actor's state and pending intents and jobs to a new seed file, through the first runner named
 
 ```text
 USAGE
@@ -299,17 +328,17 @@ FLAGS
 
 ### `durable dead-letters retry`
 
-Run a dead-lettered effect again
+Run a dead-lettered job again
 
 ```text
 USAGE
-  durable dead-letters retry [flags] <effectId>
+  durable dead-letters retry [flags] <jobId>
 
 ARGUMENTS
-  effectId string    The dead-lettered effect's id
+  jobId string    The dead-lettered job's id
 
 FLAGS
-  --actor string        The actor that performed the effect, as <Type>/<id>
+  --actor string        The actor that enqueued the job, as <Type>/<id>
   --tenant string       The tenant the request acts in
   --reason string       Why, recorded in the operator audit log (up to 500 characters)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
@@ -320,17 +349,17 @@ FLAGS
 
 ### `durable dead-letters discard`
 
-Settle a dead-lettered effect without running it
+Settle a dead-lettered job without running it
 
 ```text
 USAGE
-  durable dead-letters discard [flags] <effectId>
+  durable dead-letters discard [flags] <jobId>
 
 ARGUMENTS
-  effectId string    The dead-lettered effect's id
+  jobId string    The dead-lettered job's id
 
 FLAGS
-  --actor string        The actor that performed the effect, as <Type>/<id>
+  --actor string        The actor that enqueued the job, as <Type>/<id>
   --tenant string       The tenant the request acts in
   --reason string       Why, recorded in the operator audit log (up to 500 characters)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first

@@ -2,6 +2,7 @@ import { Effect, Option, Predicate, Schema, Stream } from "effect"
 import type { AnyFleetView, FleetFilter, FleetPage, FleetRow } from "../tables/fleet.ts"
 import { FLEET_PAGE_DEFAULT, FleetPageJson, fleetFilterText } from "./fleet-page.ts"
 import type { ClientOptions } from "./make.ts"
+import { joinUrl } from "./calls.ts"
 import { networkFailure, undecodableFailure } from "./transport.ts"
 import { type WatchOptions, watchStream } from "./sessions/watch.ts"
 
@@ -25,8 +26,6 @@ export type FleetClient<Views extends ReadonlyArray<AnyFleetView>> = {
 }
 
 const decodePage = Schema.decodeUnknownEffect(FleetPageJson)
-
-const joinUrl = (baseUrl: string, path: string) => `${baseUrl.replace(/\/+$/, "")}${path}`
 
 /**
  * The Promise client of `options.views`, served by `Actor.serve({ fleet })`. Each
@@ -61,7 +60,11 @@ export const fleetClient = <const Views extends ReadonlyArray<AnyFleetView>>(
     ) => {
       const query = new URLSearchParams(fleetFilterText(filter))
       query.set("limit", String(subscribe.limit ?? FLEET_PAGE_DEFAULT))
-      const url = joinUrl(options.baseUrl, `/fleet/${declared.name}?${query.toString()}`)
+
+      const url = joinUrl({
+        baseUrl: options.baseUrl,
+        path: `/fleet/${declared.name}?${query.toString()}`,
+      })
 
       return Stream.toAsyncIterable(
         watchStream({

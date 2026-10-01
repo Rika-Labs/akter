@@ -2,7 +2,7 @@ import { Effect, Predicate, Schedule, Schema, Stream } from "effect"
 import { afterEach, describe, expect, expectTypeOf, it } from "vitest"
 import { ActorError, RunnerAtCapacity, TransportError } from "../../errors/actor.ts"
 import { Actor } from "../../index.ts"
-import { SUBPROTOCOL, type ServerWireMessage } from "../../serve/frames.ts"
+import { SUBPROTOCOL, type ServerWireMessage } from "../../protocol/frames.ts"
 import { socketUrl } from "../make.ts"
 import type { ConnectionMessage, ProgressMessage, ProgressOfConnection } from "./connection.ts"
 
@@ -10,24 +10,24 @@ const Live = Actor.connection("Live", { client: Schema.String, server: Schema.St
 
 const Room = Actor.make("ConnectionClientRoom", { key: Schema.String, api: { Live } })
 
-class Render extends Actor.effect<Render>()("Render", {
-  input: { steps: Schema.Int },
+const Render = Actor.job("Render", {
+  payload: { steps: Schema.Int },
   progress: Schema.Struct({ percent: Schema.Finite }),
-}) {}
+})
 
-class Scan extends Actor.effect<Scan>()("Scan", {
+const Scan = Actor.job("Scan", {
   progress: Schema.Struct({ found: Schema.Int, path: Schema.String }),
-}) {}
+})
 
 const Watch = Actor.connection("Watch", {
   server: Schema.String,
   client: Schema.Finite,
-  progress: { effects: [Render, Scan] },
+  progress: { jobs: [Render, Scan] },
 })
 
 const Jobs = Actor.make("ConnectionProgressRoom", {
   key: Schema.String,
-  effects: [Render, Scan],
+  jobs: { Render: { job: Render }, Scan: { job: Scan } },
   api: { Live, Watch },
 })
 
@@ -183,7 +183,7 @@ describe("socketUrl", () => {
   })
 })
 
-class Posted extends Actor.Event<Posted>()("Posted", { text: Schema.String }) {}
+const Posted = Actor.event("Posted", { text: Schema.String })
 
 const Board = Actor.make("FeedClientBoard", {
   key: Schema.String,
@@ -265,35 +265,35 @@ describe("client event feeds", () => {
 
 describe("client connection progress", () => {
   /** The server's `end` closes the session with `ServerClosed`, after the messages before it. */
-  it("yields a progress frame decoded by its effect's schema, typed by effect", () =>
+  it("yields a progress frame decoded by its job's schema, typed by job", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const { url } = serve((send) => {
           send({
             t: "progress",
-            effect: "Render",
-            effectId: "e1",
+            job: "Render",
+            jobId: "e1",
             attempt: 1,
             seq: 2,
             frame: { percent: 40 },
           })
           send({
             t: "progress",
-            effect: "Scan",
-            effectId: "e2",
+            job: "Scan",
+            jobId: "e2",
             attempt: 1,
             seq: 1,
             frame: { found: 3, path: "/a" },
           })
           send({
             t: "progress",
-            effect: "Render",
-            effectId: "e1",
+            job: "Render",
+            jobId: "e1",
             attempt: 1,
             seq: 3,
             frame: { percent: "x" },
           })
-          send({ t: "progress", effect: "Unlisted", effectId: "e3", attempt: 1, seq: 1, frame: {} })
+          send({ t: "progress", job: "Unlisted", jobId: "e3", attempt: 1, seq: 1, frame: {} })
           send({ t: "end" })
         })
 
@@ -311,7 +311,7 @@ describe("client connection progress", () => {
         expect(
           received.map((message) =>
             Predicate.isTagged(message, "Progress")
-              ? [message.effect, message.effectId, message.seq, message.frame]
+              ? [message.job, message.jobId, message.seq, message.frame]
               : message._tag,
           ),
         ).toEqual([
@@ -321,7 +321,7 @@ describe("client connection progress", () => {
 
         const [first] = received
 
-        if (first?._tag === "Progress" && first.effect === "Render")
+        if (first?._tag === "Progress" && first.job === "Render")
           expectTypeOf(first.frame).toEqualTypeOf<{ readonly percent: number }>()
       }),
     ))
@@ -330,18 +330,18 @@ describe("client connection progress", () => {
 describe("progress types", () => {
   type Watched = typeof Watch
 
-  it("types each progress message's frame by its effect, and none for a member without progress", () => {
+  it("types each progress message's frame by its job, and none for a member without progress", () => {
     type Update = ProgressOfConnection<Watched>
 
     expectTypeOf<Update>().toEqualTypeOf<
-      | { readonly effect: "Render"; readonly frame: { readonly percent: number } }
+      | { readonly job: "Render"; readonly frame: { readonly percent: number } }
       | {
-          readonly effect: "Scan"
+          readonly job: "Scan"
           readonly frame: { readonly found: number; readonly path: string }
         }
     >()
 
-    expectTypeOf<Extract<Update, { readonly effect: "Scan" }>["frame"]>().toEqualTypeOf<{
+    expectTypeOf<Extract<Update, { readonly job: "Scan" }>["frame"]>().toEqualTypeOf<{
       readonly found: number
       readonly path: string
     }>()
@@ -349,16 +349,16 @@ describe("progress types", () => {
     expectTypeOf<ProgressOfConnection<typeof Live>>().toEqualTypeOf<never>()
   })
 
-  it("narrows a Progress message on `effect`, and carries the attempt's identity beside it", () => {
+  it("narrows a Progress message on `job`, and carries the attempt's identity beside it", () => {
     const narrow = (message: ConnectionMessage<string, ProgressOfConnection<Watched>>) => {
       if (!Predicate.isTagged(message, "Progress")) return
 
-      expectTypeOf(message.effectId).toEqualTypeOf<string>()
+      expectTypeOf(message.jobId).toEqualTypeOf<string>()
       expectTypeOf(message.attempt).toEqualTypeOf<number>()
       expectTypeOf(message.seq).toEqualTypeOf<number>()
-      expectTypeOf(message.effect).toEqualTypeOf<"Render" | "Scan">()
+      expectTypeOf(message.job).toEqualTypeOf<"Render" | "Scan">()
 
-      if (message.effect === "Render")
+      if (message.job === "Render")
         expectTypeOf(message.frame).toEqualTypeOf<{ readonly percent: number }>()
       else expectTypeOf(message.frame.path).toEqualTypeOf<string>()
     }
@@ -371,7 +371,7 @@ describe("progress types", () => {
 
     expectTypeOf<Extract<Messages, { readonly _tag: "Progress" }>>().toEqualTypeOf<never>()
     expectTypeOf<ProgressMessage["frame"]>().toEqualTypeOf<unknown>()
-    expectTypeOf<ProgressMessage["effect"]>().toEqualTypeOf<string>()
+    expectTypeOf<ProgressMessage["job"]>().toEqualTypeOf<string>()
   })
 
   it("types connect() on the client handle with the member's progress", () => {
@@ -381,7 +381,7 @@ describe("progress types", () => {
 
     type Message = Opened["messages"] extends AsyncIterable<infer M> ? M : never
 
-    expectTypeOf<Extract<Message, { readonly _tag: "Progress" }>["effect"]>().toEqualTypeOf<
+    expectTypeOf<Extract<Message, { readonly _tag: "Progress" }>["job"]>().toEqualTypeOf<
       "Render" | "Scan"
     >()
   })

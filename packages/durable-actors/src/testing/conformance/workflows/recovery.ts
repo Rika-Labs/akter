@@ -4,18 +4,18 @@ import { ActorTest } from "../../actor-test.ts"
 import { ActorCluster } from "../../cluster.ts"
 import { RuntimeControl } from "../../../runtime/drain.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { EngineProbe, Probe, Ship, Shipper } from "./actors.ts"
+import { EngineProbe, Probe, Ship, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { advance, eventually, killOwner, on, reset, suspendedRow, withCluster } from "./harness.ts"
 import { SqlClient } from "effect/unstable/sql"
 
 /** Redelivery, execution-id validation, eviction, owner death, and drain recovery of workflows. */
-export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: a resume whose reply is lost after commit still wakes the execution on redelivery",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("resume-replay")
           const run = yield* shipper.Ship({ orderId: "rr1", sku: "sleep-rr" })
@@ -23,7 +23,7 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.crashNext("afterCommit")
           yield* test.advance("11 seconds")
           expect(yield* run.result).toBe("r-sleep-rr:v2")
-          expect(fixture.workflows.runs.get("reserve:rr1")).toBe(1)
+          expect(fixture.runs.get("reserve:rr1")).toBe(1)
           expect(yield* test.receiptsFor(shipper.ref, "$workflow/resume")).toBe(1)
         }),
       ),
@@ -45,7 +45,7 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("evicted")
           const run = yield* shipper.Ship({ orderId: "o8", sku: "sleep-e" })
@@ -54,18 +54,19 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           yield* test.advance("11 seconds")
           const reattached = yield* Shipper.run(Ship, run.executionId)
           expect(yield* reattached.result).toBe("r-sleep-e:v2")
-          expect(fixture.workflows.runs.get("reserve:o8")).toBe(1)
+          expect(fixture.runs.get("reserve:o8")).toBe(1)
         }),
       ),
   },
   {
     name: "workflows: a killed owner's suspended execution resumes on a survivor via its relay timer",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.workflows,
+        fixture,
         Effect.gen(function* () {
           const id = yield* on(
             0,
@@ -101,21 +102,22 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(result).toBe("r-sleep-k:v2")
-          expect(fixture.workflows.runs.get("reserve:k1")).toBe(1)
+          expect(fixture.runs.get("reserve:k1")).toBe(1)
         }),
       ),
   },
   {
     name: "workflows: abandons a running execution on drain and resumes it on another runner",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.workflows,
+        fixture,
         Effect.gen(function* () {
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.blocked = gate
+          fixture.blocked = gate
 
           const id = yield* on(
             0,
@@ -130,7 +132,7 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           yield* eventually(
-            Effect.sync(() => fixture.workflows.runs.get("reserve:d1") === 1),
+            Effect.sync(() => fixture.runs.get("reserve:d1") === 1),
             "the activity to start",
           )
 
@@ -144,7 +146,7 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
               owner,
               RuntimeControl.use((control) => control.drain({ deadline: "5 seconds" })),
             ),
-          ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 })
+          ).toEqual({ outcome: "clean", interruptedTurns: 0, interruptedJobs: 0 })
           yield* cluster.shutdown(owner)
           yield* cluster.ready
           yield* advance(survivor, "31 seconds")
@@ -157,21 +159,22 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(result).toBe("r-block:v2")
-          expect(fixture.workflows.runs.get("reserve:d1")).toBe(2)
+          expect(fixture.runs.get("reserve:d1")).toBe(2)
           yield* Deferred.succeed(gate, undefined)
         }),
       ),
   },
   {
     name: "workflows: replays an interrupted execution's compensation on a survivor when its runner dies mid-compensation, and records the interrupt once",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.workflows,
+        fixture,
         Effect.gen(function* () {
-          const engine = fixture.workflows.engine
+          const engine = fixture.engine
           const key = "compensation-kill"
           const hold = yield* Deferred.make<void>()
           const compensating = yield* Deferred.make<void>()
@@ -251,15 +254,16 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "workflows: an activity whose runner is killed mid-run is rerun on a survivor with the same identity",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
-        fixture.workflows,
+        fixture,
         Effect.gen(function* () {
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.blocked = gate
+          fixture.blocked = gate
 
           const id = yield* on(
             0,
@@ -274,7 +278,7 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           yield* eventually(
-            Effect.sync(() => fixture.workflows.runs.get("reserve:k2") === 1),
+            Effect.sync(() => fixture.runs.get("reserve:k2") === 1),
             "the activity to start",
           )
           const survivor = yield* killOwner("killed-activity")
@@ -288,7 +292,7 @@ export const workflowRecoveryConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(result).toBe("r-block:v2")
-          expect(fixture.workflows.runs.get("reserve:k2")).toBe(2)
+          expect(fixture.runs.get("reserve:k2")).toBe(2)
           yield* Deferred.succeed(gate, undefined)
         }),
       ),

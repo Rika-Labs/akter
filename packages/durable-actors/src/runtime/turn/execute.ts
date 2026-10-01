@@ -25,6 +25,7 @@ import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
+import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -41,23 +42,6 @@ import { MERGE_CAP, merges } from "../entity/mailbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 const isSystem = Schema.is(System)
-
-/**
- * What one activation remembers between turns. `generation` is the
- * fenced authority epoch it acquired; `state` is the committed state it last
- * read or wrote. The generation fence proves no other writer committed since,
- * so a cached activation skips the state read. Only a commit replaces either.
- */
-export interface ActivationCache {
-  generation: string | undefined
-  state: ReadonlyMap<string, string> | undefined
-}
-
-/** A fresh activation has acquired no generation and read no state. */
-export const emptyActivationCache = (): ActivationCache => ({
-  generation: undefined,
-  state: undefined,
-})
 
 /** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
 export interface CommittedEvents {
@@ -274,10 +258,10 @@ export interface Written {
   readonly receipts: number
   readonly events: number
   readonly intents: number
-  readonly effects: number
+  readonly jobs: number
 }
 
-const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, effects: 0 }
+const nothingWritten: Written = { receipts: 0, events: 0, intents: 0, jobs: 0 }
 
 const nothingWrote: WriteSet = { state: false, events: [], tables: [], blobs: [] }
 
@@ -296,8 +280,8 @@ export interface Done {
   readonly head: string
   /** Each command's committed events, stamped, in delivery order. */
   readonly committed: ReadonlyArray<CommittedEvents>
-  /** Started effects the batch's commands cancelled. */
-  readonly cancelledEffects: ReadonlyArray<string>
+  /** Started jobs the batch's commands cancelled. */
+  readonly cancelledJobs: ReadonlyArray<string>
   readonly generation: string
   /** The positions in `settled` that answered from a stored receipt. */
   readonly replays: ReadonlySet<number>
@@ -307,6 +291,22 @@ export interface Done {
   readonly version: string
   /** What the batch changed that a watched query may have read; nothing when it rolled back. */
   readonly wrote: WriteSet
+  /** The commit made outbox or subscription work due now, so the relay should claim it at once. */
+  readonly wake: boolean
+  /** The commit cancelled a job attempt that is running, so running attempts should look now. */
+  readonly cancelled: boolean
+}
+
+/**
+ * How `transact` ended one batch's transaction: the batch's plan and commit
+ * version, the batch it took from the mailbox while committing, and that
+ * batch's admission when it was already sent behind this batch's `COMMIT`.
+ */
+interface Ended<W extends Delivery, P> {
+  readonly plan: Plan
+  readonly version: string
+  readonly following?: ReadonlyArray<W> | undefined
+  readonly chained?: P | undefined
 }
 
 /**
@@ -462,7 +462,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const role =
     scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
 
-  const actorRow = sql`routing_key = ${routingKey} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}`
+  const actorRow = rowOf({ sql, actor: { key: routingKey, ref } })
 
   const canonicalsOf = (batch: ReadonlyArray<Delivery>) =>
     Effect.forEach(batch, ({ request }) => hashedPayload(request))
@@ -546,8 +546,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
           ${cursorJoin}
-          WHERE g.routing_key = ${routingKey} AND g.tenant_id = ${tenant}
-            AND g.actor_type = ${actor} AND g.actor_id = ${id}
+          WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
           ORDER BY c.ordinal
           FOR UPDATE OF g`,
         (rows) => {
@@ -584,8 +583,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const first = admissions[0]
 
       if (first === undefined || (!cold && view.generation !== first.generation)) {
-        cache.generation = undefined
-        cache.state = undefined
+        forget(cache)
 
         return yield* Effect.die(RetryTurn.make({ message: "Stale actor generation" }))
       }
@@ -622,7 +620,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       const broadcasts: Array<Broadcast> = []
       let events = 0
       let intents = 0
-      let effects = 0
+      let jobs = 0
       const eventTags = new Set<string>()
       const tables = new Set<string>()
       const blobs = new Set<string>()
@@ -837,7 +835,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         for (const blob of result.writes?.blobs ?? []) blobs.add(blob)
         intents += result.outbox.intents.length
-        effects += result.outbox.effects.length
+        jobs += result.outbox.jobs.length
 
         if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 
@@ -963,7 +961,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         emitted,
         outbox: outboxes,
         replays,
-        written: { receipts: receipts.length, events, intents, effects },
+        written: { receipts: receipts.length, events, intents, jobs },
         wrote: {
           state: dirty.size > 0 || removed.size > 0,
           events: [...eventTags],
@@ -988,6 +986,19 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   const view = (): View => ({ generation: cache.generation, state: cache.state })
 
+  let current: ReadonlyArray<W> = run.first
+  let orphan: ReadonlyArray<W> | undefined
+  let answering = false
+
+  const locate = (batch: ReadonlyArray<W>, following: ReadonlyArray<W> | undefined) => {
+    current = batch
+    orphan = following
+  }
+
+  /**
+   * Remembers what a commit proved and hands the ended batch to the
+   * activation, which publishes it. Only a commit replaces the cache.
+   */
   const finish = Effect.fnUntraced(function* (
     batch: ReadonlyArray<W>,
     plan: Plan,
@@ -1000,15 +1011,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     answering = true
 
-    if (
-      plan.wake ||
-      plan.outbox.some((replies) => replies.wake) ||
-      plan.emitted.some((stamp) => stamp.fed)
-    )
-      yield* (yield* OutboxRuntime).wake
-
-    if (plan.outbox.some((replies) => replies.cancelled)) yield* (yield* OutboxRuntime).cancelled
-
     yield* run.committed(batch, {
       settled: plan.settled,
       broadcasts: plan.broadcasts,
@@ -1017,26 +1019,68 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         ...entry,
         emittedAtMs: plan.emitted[index]!.emittedAtMs,
       })),
-      cancelledEffects: plan.outbox.flatMap((replies) => replies.cancelledIds),
+      cancelledJobs: plan.outbox.flatMap((replies) => replies.cancelledIds),
       generation: plan.generation,
       replays: plan.replays,
       written: plan.writes === undefined ? nothingWritten : plan.written,
       version,
       wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
+      wake:
+        plan.wake ||
+        plan.outbox.some((replies) => replies.wake) ||
+        plan.emitted.some((stamp) => stamp.fed),
+      cancelled: plan.outbox.some((replies) => replies.cancelled),
     })
 
     answering = false
   })
 
-  let current: ReadonlyArray<W> = run.first
-  let orphan: ReadonlyArray<W> | undefined
-  let answering = false
+  /**
+   * The one batch lifecycle both backends share. Each batch is located, so a
+   * failure names it and any batch admitted behind it, and prepared before its
+   * handlers can run; one whose admission is not yet under way is opened;
+   * `transact` ends its transaction; and the ended batch is finished within its
+   * own span before the next is taken. The next batch is the one `transact`
+   * took while committing, whose admission may already ride behind this
+   * `COMMIT`, else whatever is waiting once this batch was answered.
+   */
+  const drive = <P, EO, RO, ET, RT>(
+    open: (batch: ReadonlyArray<W>) => Effect.Effect<P, EO, RO>,
+    transact: (batch: ReadonlyArray<W>, pending: P) => Effect.Effect<Ended<W, P>, ET, RT>,
+  ) =>
+    Effect.gen(function* () {
+      let batch: ReadonlyArray<W> | undefined = run.first
+      let pending: P | undefined
 
-  const locate = (batch: ReadonlyArray<W>, following: ReadonlyArray<W> | undefined) => {
-    current = batch
-    orphan = following
-  }
+      while (batch !== undefined) {
+        const admitting: ReadonlyArray<W> = batch
+        locate(admitting, undefined)
 
+        yield* run.prepare
+        pending ??= yield* open(admitting)
+
+        const admitted = pending
+
+        const ended: Ended<W, P> = yield* Effect.gen(function* () {
+          const step: Ended<W, P> = yield* transact(admitting, admitted)
+          yield* finish(admitting, step.plan, step.version)
+
+          return step
+        }).pipe(run.observe(admitting))
+
+        pending = ended.chained
+        batch = ended.following ?? (yield* run.next)
+      }
+    })
+
+  /**
+   * Postgres: one leased session for the whole run. A batch is opened by
+   * queuing `BEGIN` and its admission group; `transact` waits for those
+   * replies, runs the handlers, takes the batch already waiting and, when this
+   * one leaves the cache warm, queues that batch's `BEGIN` and admission right
+   * behind this `COMMIT` in the same flight. The commit tag and version are read
+   * in that flight too.
+   */
   const pipelined = (turns: TurnConnections["Service"]) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1087,119 +1131,94 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             0,
           ])
 
-        const batches = Effect.gen(function* () {
-          let batch = run.first
+        interface Admitting {
+          readonly admission: ReturnType<typeof admit>
+          readonly admitted: Effect.Success<ReturnType<typeof queueStatements>>
+        }
 
-          let pending:
-            | {
-                readonly admission: ReturnType<typeof admit>
-                readonly admitted: Effect.Success<ReturnType<typeof queueStatements>>
+        const queue = (batch: ReadonlyArray<W>, view: View, ahead: ReadonlyArray<Statement>) =>
+          Effect.gen(function* () {
+            const admission = admit(batch, yield* canonicalsOf(batch), view, session, [begin])
+            const flight = yield* queueStatements({ scope, group: [...ahead, ...admission.group] })
+
+            return { admission, flight }
+          })
+
+        const transact = (batch: ReadonlyArray<W>, { admission, admitted }: Admitting) =>
+          Effect.gen(function* () {
+            const stepped = yield* Effect.gen(function* () {
+              yield* awaitReplies(admitted)
+              const plan = yield* admission.resume()
+              const following = yield* run.next
+              const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
+
+              const after: View =
+                plan.writes === undefined
+                  ? view()
+                  : { generation: plan.generation, state: plan.state }
+
+              const chained =
+                following !== undefined &&
+                after.generation !== undefined &&
+                after.state !== undefined
+
+              let tag: string | undefined
+              let version = ""
+
+              const commit: ReadonlyArray<Statement> = [
+                ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
+                Effect.map(control(ending), (result) => {
+                  tag = result.command
+
+                  if (!chained) open = false
+                }),
+                Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
+                  version = (result.rows[0] as { version: string }).version
+                }),
+              ]
+
+              locate(batch, following)
+
+              const upcoming = chained
+                ? yield* queue(following, after, commit)
+                : { admission: undefined, flight: yield* queueStatements({ scope, group: commit }) }
+
+              const answered = awaitReplies(upcoming.flight.slice(0, commit.length))
+
+              yield* ending === "COMMIT"
+                ? answered.pipe(Effect.withSpan(SpanNames.commit))
+                : answered
+
+              return {
+                plan,
+                version,
+                ending,
+                tag,
+                following,
+                chained:
+                  upcoming.admission === undefined
+                    ? undefined
+                    : {
+                        admission: upcoming.admission,
+                        admitted: upcoming.flight.slice(commit.length),
+                      },
               }
-            | undefined
+            }).pipe(inTurn, bounded)
 
-          while (true) {
-            if (pending === undefined) {
-              yield* run.prepare
+            if (stepped.ending === "COMMIT" && stepped.tag !== "COMMIT")
+              return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
 
-              const fresh = admit(batch, yield* canonicalsOf(batch), view(), session, [begin])
+            return stepped
+          })
 
-              pending = {
-                admission: fresh,
-                admitted: yield* inTurn(queueStatements({ scope, group: fresh.group })),
-              }
-            }
-
-            const { admission, admitted } = pending
-
-            locate(batch, undefined)
-
-            const current = batch
-
-            const step = yield* Effect.gen(function* () {
-              const stepped = yield* Effect.gen(function* () {
-                yield* awaitReplies(admitted)
-                const plan = yield* admission.resume()
-                const following = yield* run.next
-                const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
-
-                const after: View =
-                  plan.writes === undefined
-                    ? view()
-                    : { generation: plan.generation, state: plan.state }
-
-                const chained =
-                  following !== undefined &&
-                  after.generation !== undefined &&
-                  after.state !== undefined
-
-                let tag: string | undefined
-                let version = ""
-
-                const commit: ReadonlyArray<Statement> = [
-                  ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
-                  Effect.map(control(ending), (result) => {
-                    tag = result.command
-
-                    if (!chained) open = false
-                  }),
-                  Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
-                    version = (result.rows[0] as { version: string }).version
-                  }),
-                ]
-
-                locate(batch, following)
-
-                if (!chained) {
-                  yield* ending === "COMMIT"
-                    ? sendPipelined(commit).pipe(Effect.withSpan(SpanNames.commit))
-                    : sendPipelined(commit)
-
-                  return { plan, ending, tag, version, following, next: undefined }
-                }
-
-                const upcoming = admit(following, yield* canonicalsOf(following), after, session, [
-                  begin,
-                ])
-
-                const flight = yield* queueStatements({
-                  scope,
-                  group: [...commit, ...upcoming.group],
-                })
-
-                const answered = awaitReplies(flight.slice(0, commit.length))
-
-                yield* ending === "COMMIT"
-                  ? answered.pipe(Effect.withSpan(SpanNames.commit))
-                  : answered
-
-                return {
-                  plan,
-                  ending,
-                  tag,
-                  version,
-                  following,
-                  next: { admission: upcoming, admitted: flight.slice(commit.length) },
-                }
-              }).pipe(inTurn, bounded)
-
-              if (stepped.ending === "COMMIT" && stepped.tag !== "COMMIT")
-                return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
-
-              yield* finish(current, stepped.plan, stepped.version)
-
-              return stepped
-            }).pipe(run.observe(current))
-
-            if (step.following === undefined) return
-
-            batch = step.following
-            pending = step.next
-
-            if (pending !== undefined) yield* run.prepare
-          }
-        })
-
-        return yield* batches.pipe(
+        return yield* drive(
+          (batch) =>
+            queue(batch, view(), []).pipe(
+              inTurn,
+              Effect.map(({ admission, flight }): Admitting => ({ admission, admitted: flight })),
+            ),
+          transact,
+        ).pipe(
           Effect.onExit((exit) => {
             if (Exit.isSuccess(exit) || !open) return Effect.void
 
@@ -1220,63 +1239,52 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       }),
     )
 
+  /**
+   * PGlite: one in-process session and nothing to pipeline, so each batch runs
+   * its groups one statement at a time inside `withTransaction`, which holds
+   * the session only for that transaction; a batch with nothing to commit rolls
+   * back. The commit version is read after the transaction ends.
+   */
+  const sequential = drive(
+    () => Effect.void,
+    (batch) =>
+      Effect.gen(function* () {
+        const control = (text: string) => Effect.asVoid(sql.unsafe(text))
+        const session = { send: sendSequentially, control, defer: control, withdraw: () => false }
+
+        const plan: Plan = yield* bounded(
+          sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const admission = admit(batch, yield* canonicalsOf(batch), view(), session, [])
+
+                yield* sendSequentially(admission.group)
+                const decided = yield* admission.resume()
+
+                if (decided.writes === undefined) return yield* Effect.fail(new RolledBack(decided))
+
+                yield* sendSequentially(decided.writes).pipe(Effect.withSpan(SpanNames.commit))
+
+                return decided
+              }),
+            )
+            .pipe(
+              Effect.catchIf(
+                (error) => error instanceof RolledBack,
+                (rolled) => Effect.succeed(rolled.plan),
+              ),
+            ),
+        )
+
+        const rows = yield* sql.unsafe<{ version: string }>(COMMIT_VERSION)
+
+        return { plan, version: rows[0]!.version }
+      }),
+  )
+
   const turns = yield* Effect.serviceOption(TurnConnections)
 
-  const each = Option.isSome(turns)
-    ? pipelined(turns.value)
-    : Effect.gen(function* () {
-        let batch: ReadonlyArray<W> | undefined = run.first
-
-        while (batch !== undefined) {
-          const admitting: ReadonlyArray<W> = batch
-          locate(admitting, undefined)
-          yield* run.prepare
-
-          const control = (text: string) => Effect.asVoid(sql.unsafe(text))
-          const session = { send: sendSequentially, control, defer: control, withdraw: () => false }
-
-          yield* Effect.gen(function* () {
-            const plan: Plan = yield* bounded(
-              sql
-                .withTransaction(
-                  Effect.gen(function* () {
-                    const admission = admit(
-                      admitting,
-                      yield* canonicalsOf(admitting),
-                      view(),
-                      session,
-                      [],
-                    )
-
-                    yield* sendSequentially(admission.group)
-                    const decided = yield* admission.resume()
-
-                    if (decided.writes === undefined)
-                      return yield* Effect.fail(new RolledBack(decided))
-
-                    yield* sendSequentially(decided.writes).pipe(Effect.withSpan(SpanNames.commit))
-
-                    return decided
-                  }),
-                )
-                .pipe(
-                  Effect.catchIf(
-                    (error) => error instanceof RolledBack,
-                    (rolled) => Effect.succeed(rolled.plan),
-                  ),
-                ),
-            )
-
-            const rows = yield* sql.unsafe<{ version: string }>(COMMIT_VERSION)
-
-            yield* finish(admitting, plan, rows[0]!.version)
-          }).pipe(run.observe(admitting))
-
-          batch = yield* run.next
-        }
-      })
-
-  const exit = yield* each.pipe(
+  const exit = yield* (Option.isSome(turns) ? pipelined(turns.value) : sequential).pipe(
     Effect.onError(() =>
       Effect.sync(() => {
         cache.state = undefined

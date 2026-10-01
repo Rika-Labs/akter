@@ -1,11 +1,12 @@
 import { BunServices } from "@effect/platform-bun"
-import { Cause, Config, Crypto, Effect, Exit, ManagedRuntime, Redacted, Stream } from "effect"
+import { Cause, Config, Effect, Exit, ManagedRuntime, Redacted, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { migrate } from "../../../../runtime/database/migrations.ts"
 import { Database } from "../../../../runtime/index.ts"
+import { disposableDatabase } from "../../../database.ts"
 
 describe("process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
@@ -14,19 +15,11 @@ describe("process death with Postgres", () => {
   it("rolls back partial foundation DDL and safely reruns the migration", () =>
     runtime.runPromise(
       Effect.gen(function* () {
-        const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-        const name = `migration_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-        const admin = yield* Effect.acquireRelease(
-          Effect.sync(() => new Pool({ connectionString: database.href })),
-          (pool) => Effect.promise(() => pool.end()),
+        const database = new URL(
+          Redacted.value(
+            yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+          ),
         )
-
-        yield* Effect.acquireRelease(
-          Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-          () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-        )
-        database.pathname = `/${name}`
 
         const sqlRuntime = yield* Effect.acquireRelease(
           Effect.sync(() =>
@@ -74,6 +67,7 @@ describe("process death with Postgres", () => {
                 { migration_id: 23 },
                 { migration_id: 24 },
                 { migration_id: 25 },
+                { migration_id: 26 },
               ])
               expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
                 { receipts: 0 },
@@ -91,19 +85,11 @@ describe("process death with Postgres", () => {
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
-            const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `crash_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-            const admin = yield* Effect.acquireRelease(
-              Effect.sync(() => new Pool({ connectionString: database.href })),
-              (pool) => Effect.promise(() => pool.end()),
+            const database = new URL(
+              Redacted.value(
+                yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+              ),
             )
-
-            yield* Effect.acquireRelease(
-              Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-              () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-            )
-            database.pathname = `/${name}`
 
             const pool = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: database.href })),

@@ -1,6 +1,31 @@
 import { layer } from "./layer.ts"
+import { serve } from "../serve/layer.ts"
+import { make, none } from "../serve/auth.ts"
+import { jwt } from "../serve/jwt.ts"
+import { assertion } from "../serve/assertion/verify.ts"
 
-export const Actors = { layer }
+/** Runtime construction: actor execution and authenticated protocol routes. */
+export const Actors = { layer, serve }
+
+/** Authentication providers for one served runtime. `none` is an explicit public opt-out. */
+export const Auth = { none, make, jwt, assertion }
+
+export type { ServeOptions } from "../serve/layer.ts"
+
+export type { AuthProvider, AuthRequest, Authenticated, Binding } from "../serve/auth.ts"
+
+export {
+  ASSERTION_SKEW_MS,
+  AssertionClaims,
+  AssertionKey,
+  AssertionKeySet,
+  KeyRefreshClaims,
+  MAX_ASSERTION_SECONDS,
+} from "../serve/assertion/verify.ts"
+
+export type { AssertionOptions } from "../serve/assertion/verify.ts"
+
+export { actorErrorBody, closeCodeOf, statusOf } from "../protocol/wire.ts"
 
 export { Database } from "./layer.ts"
 

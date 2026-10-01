@@ -1,8 +1,9 @@
 import { BunServices } from "@effect/platform-bun"
-import { Config, Crypto, Effect, ManagedRuntime, Stream } from "effect"
+import { Config, Effect, ManagedRuntime, Redacted, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
+import { disposableDatabase } from "../../../database.ts"
 
 const counts = `SELECT
   (SELECT count(*)::int FROM actor_receipts WHERE command = 'Post') AS posted,
@@ -14,25 +15,17 @@ describe("cancelled effect process death with Postgres", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
   afterAll(() => runtime.dispose())
 
-  for (const [point, calls, row] of [["afterExecute", 1, ["effect", 1]]] as const) {
+  for (const [point, calls, row] of [["afterExecute", 1, ["job", 1]]] as const) {
     it(
       `recovers a SIGKILL ${point} on a cancelled effect and reports it once`,
       () =>
         runtime.runPromise(
           Effect.gen(function* () {
-            const database = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `effect_control_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-            const admin = yield* Effect.acquireRelease(
-              Effect.sync(() => new Pool({ connectionString: database.href })),
-              (pool) => Effect.promise(() => pool.end()),
+            const database = new URL(
+              Redacted.value(
+                yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+              ),
             )
-
-            yield* Effect.acquireRelease(
-              Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-              () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-            )
-            database.pathname = `/${name}`
 
             const pool = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: database.href })),

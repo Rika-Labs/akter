@@ -1,4 +1,5 @@
-import { Actor, User } from "@durable-actors/core"
+import { User } from "@durable-actors/core"
+import { Actors, Auth } from "@durable-actors/core/runtime"
 import { ActorCluster, type RunnerServices } from "@durable-actors/core/testing"
 import { Context, Effect, Exit, Layer, type Redacted, Scope } from "effect"
 import { HttpRouter } from "effect/unstable/http"
@@ -12,7 +13,7 @@ export const TENANT = "chat-rehearsal"
 
 /**
  * Every provider call the moderation stand-in received, in order, with the
- * effect id it was keyed by. The rehearsal reads it to tell a retried call
+ * job id it was keyed by. The rehearsal reads it to tell a retried call
  * from a repeated one.
  */
 export const providerCalls: Array<{ readonly body: string; readonly key: string }> = []
@@ -35,11 +36,9 @@ const rooms = RoomLive.pipe(
  * The chat routes as `main.ts` serves them, with the auth stand-in resolving
  * every bearer token into the rehearsal's tenant.
  */
-const routes = Actor.serve({
+const routes = Actors.serve({
   actors: [Room],
-  auth: Actor.auth.make(() =>
-    Effect.succeed({ tenant: TENANT, caller: User.make({ subject: "ada" }) }),
-  ),
+  auth: Auth.make(() => Effect.succeed({ tenant: TENANT, caller: User.make({ subject: "ada" }) })),
 })
 
 /** One runner's HTTP listener on a loopback port, and how to stop it. */
@@ -50,7 +49,7 @@ interface Listener {
 
 /**
  * Three chat runners on one Postgres database, each with its own HTTP listener
- * serving `Actor.serve` over its own runtime, as three processes behind a load
+ * serving `Actors.serve` over its own runtime, as three processes behind a load
  * balancer would. `close` stops the listeners and then the runners.
  */
 export const deploy = Effect.fnUntraced(function* (database: Redacted.Redacted) {

@@ -14,9 +14,9 @@ import {
 } from "../actor/served.ts"
 import { type AuthProvider, Credential } from "./auth.ts"
 import { ASSERTION_HEADER } from "./assertion/binding.ts"
-import { SUBPROTOCOL } from "./frames.ts"
+import { SUBPROTOCOL } from "../protocol/frames.ts"
 import { ContentRef } from "../identity/content.ts"
-import { Defect, envelope, type WireTag } from "./wire.ts"
+import { Defect, envelope, type WireTag } from "../protocol/wire.ts"
 
 const COMMAND_ERRORS = {
   400: ["InvalidCommandId", "InvalidInput"],

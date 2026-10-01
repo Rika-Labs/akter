@@ -11,13 +11,12 @@ import {
   type Scope,
 } from "effect"
 import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
-import { Actor } from "../../../index.ts"
 import { ActorError, TransportError } from "../../../errors/actor.ts"
 import { RetentionGap, UnknownCursor } from "../../../errors/events.ts"
 import { InternalActors } from "../../../runtime/actors.ts"
 import type { RuntimeControl } from "../../../runtime/drain.ts"
-import { ClientWireMessage, SUBPROTOCOL, ServerWireMessage } from "../../../serve/frames.ts"
-import type { ServeOptions } from "../../../serve/layer.ts"
+import { ClientWireMessage, SUBPROTOCOL, ServerWireMessage } from "../../../protocol/frames.ts"
+import { serve, type ServeOptions } from "../../../serve/layer.ts"
 import type { ConformanceEnvironment } from "../../conformance.ts"
 import { Banned, Chat, FeedRoom, ForgedResync, Refused, Say, SocketRoom, tokens } from "./actors.ts"
 
@@ -31,7 +30,7 @@ export const serveSockets = Effect.fnUntraced(function* (
 ): Effect.fn.Return<string, never, InternalActors | RuntimeControl | Scope.Scope> {
   const context = yield* Effect.context<InternalActors | RuntimeControl>()
 
-  const app = Actor.serve({
+  const app = serve({
     actors: [SocketRoom, FeedRoom],
     auth: tokens,
     basePath: "/api",

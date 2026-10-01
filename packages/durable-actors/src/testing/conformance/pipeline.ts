@@ -30,16 +30,16 @@ import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
 
 const Add = Actor.command("Add", {
-  input: Schema.Finite,
-  output: Schema.Finite,
+  payload: Schema.Finite,
+  success: Schema.Finite,
 })
 
 const Mark = Actor.command("Mark", {
-  input: Schema.String,
-  output: Schema.Finite,
+  payload: Schema.String,
+  success: Schema.Finite,
 })
 
-const Tap = Actor.command("Tap", { output: Schema.Finite })
+const Tap = Actor.command("Tap", { success: Schema.Finite })
 
 const Meter = Actor.make("Meter", {
   key: Schema.String,
@@ -51,15 +51,15 @@ const Meter = Actor.make("Meter", {
 })
 
 const Defer = Actor.command("Defer", {
-  input: Schema.Finite,
-  output: Schema.Finite,
+  payload: Schema.Finite,
+  success: Schema.Finite,
 })
 
 const Remind = Actor.command("Remind", {})
 
-class Ping extends Actor.effect<Ping>()("Ping", { input: {}, success: Schema.String }) {}
+const Ping = Actor.job("Ping", { payload: {}, success: Schema.String })
 
-const PingLater = Actor.command("PingLater", { input: Schema.Finite })
+const PingLater = Actor.command("PingLater", { payload: Schema.Finite })
 
 const CancelPing = Actor.command("CancelPing", {})
 
@@ -68,7 +68,7 @@ const Plain = Actor.make("Plain", {
   state: Actor.state({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [Ping],
+  jobs: { Ping: { job: Ping } },
   api: { Add, Defer, PingLater, CancelPing },
   internal: { Remind },
 })
@@ -150,18 +150,18 @@ const actorsLive = (probe: Probe) =>
             PingLater: Effect.fnUntraced(function* (pauseMs: number) {
               probe.handled += 1
               yield* Effect.sleep(pauseMs)
-              yield* (yield* Plain.Turn).perform(Ping.make({}), {
+              yield* (yield* Plain.Turn).enqueue(Ping.make({}), {
                 key: "ping",
                 after: Duration.hours(1),
               })
             }),
             CancelPing: Effect.fnUntraced(function* () {
               probe.handled += 1
-              yield* (yield* Plain.Turn).cancelEffect("ping")
+              yield* (yield* Plain.Turn).cancelJob("ping")
             }),
           }),
         ),
-        Plain.toEffectLayer(Effect.succeed({ Ping: () => Effect.succeed("pong") })),
+        Plain.toJobLayer(Effect.succeed({ Ping: () => Effect.succeed("pong") })),
       )
     }).pipe(Effect.orDie),
   )
@@ -1099,7 +1099,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const pings = sql<{ due: string; ready: string; key: string | null }>`
             SELECT due_at_ms::text AS due, ready_at_ms::text AS ready, timer_key AS key
             FROM actor_outbox WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}
-              AND kind = 'effect' AND command = 'Ping'`
+              AND kind = 'job' AND command = 'Ping'`
 
           const before = Number((yield* clock)[0]!.now)
           expect((yield* flightsOf(probe, plain.PingLater(400))).flights).toBe(2)

@@ -1,4 +1,5 @@
 import { Actor, Unauthorized, User } from "@durable-actors/core"
+import { Actors, Auth } from "@durable-actors/core/runtime"
 import { ActorTest } from "@durable-actors/core/testing"
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import {
@@ -20,24 +21,24 @@ import { generate } from "./generate.ts"
 class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
 const Post = Actor.command("Post", {
-  input: Schema.Struct({ text: Schema.String, file: Schema.optionalKey(Schema.String) }),
-  output: Schema.Int,
-  errors: [Full],
+  payload: { text: Schema.String, file: Schema.optionalKey(Schema.String) },
+  success: Schema.Int,
+  error: Full,
 })
 
-const Whoami = Actor.command("Whoami", { output: Schema.String })
+const Whoami = Actor.command("Whoami", { success: Schema.String })
 
 const Clear = Actor.command("Clear")
 
 const Secret = Actor.command("Secret")
 
-const Count = Actor.query("Count", { output: Schema.Int })
+const Count = Actor.query("Count", { success: Schema.Int })
 
-const Peek = Actor.query("Peek", { output: Schema.UndefinedOr(Schema.Int) })
+const Peek = Actor.query("Peek", { success: Schema.UndefinedOr(Schema.Int) })
 
 const Recent = Actor.query("Recent", {
-  input: Schema.Struct({ limit: Schema.Int }),
-  output: Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.Literals(["a", "b"]) })),
+  payload: { limit: Schema.Int },
+  success: Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.Literals(["a", "b"]) })),
 })
 
 const count = Actor.state({
@@ -52,7 +53,7 @@ const Room = Actor.make("Room", {
   access: Actor.access.public,
 })
 
-const Join = Actor.command("Join", { output: Schema.Int })
+const Join = Actor.command("Join", { success: Schema.Int })
 
 const Lobby = Actor.make("Lobby", {
   key: Actor.singleton,
@@ -63,51 +64,45 @@ const Lobby = Actor.make("Lobby", {
 
 const runs = { count: 0 }
 
-const rooms = Room.toLayer(
-  Effect.succeed({
-    Post: Effect.fnUntraced(function* ({ text }: { readonly text: string }) {
-      const turn = yield* Room.Turn
-      runs.count += 1
-      yield* turn.state.set({ count: turn.state.count + 1 })
+const rooms = Room.toLayer({
+  Post: Effect.fnUntraced(function* ({ text }) {
+    const turn = yield* Room.Turn
+    runs.count += 1
+    yield* turn.state.set({ count: turn.state.count + 1 })
 
-      return text === "full" ? yield* Full.make({ capacity: 3 }) : turn.state.count
-    }),
-    Whoami: Effect.fnUntraced(function* () {
-      const turn = yield* Room.Turn
-
-      return `${turn.ref.tenant}/${Schema.is(User)(turn.caller) ? turn.caller.subject : "anonymous"}`
-    }),
-    Clear: () => Effect.void,
-    Secret: () => Effect.void,
+    return text === "full" ? yield* Full.make({ capacity: 3 }) : turn.state.count
   }),
-)
+  Whoami: Effect.fnUntraced(function* () {
+    const turn = yield* Room.Turn
 
-const reads = Room.toQueryLayer(
-  Effect.succeed({
-    Count: Effect.fnUntraced(function* () {
-      return (yield* Room.Read).state.count
-    }),
-    Peek: Effect.fnUntraced(function* () {
-      const { count } = (yield* Room.Read).state
-
-      return count === 0 ? undefined : count
-    }),
-    Recent: () => Effect.succeed([{ id: "m1", kind: "a" as const }]),
+    return `${turn.ref.tenant}/${Schema.is(User)(turn.caller) ? turn.caller.subject : "anonymous"}`
   }),
-)
+  Clear: () => Effect.void,
+  Secret: () => Effect.void,
+})
 
-const lobbies = Lobby.toLayer(
-  Effect.succeed({
-    Join: Effect.fnUntraced(function* () {
-      const turn = yield* Lobby.Turn
-      yield* turn.state.set({ count: turn.state.count + 1 })
-
-      return turn.state.count
-    }),
+const reads = Room.toQueryLayer({
+  Count: Effect.fnUntraced(function* () {
+    return (yield* Room.Read).state.count
   }),
-)
+  Peek: Effect.fnUntraced(function* () {
+    const { count } = (yield* Room.Read).state
 
-const auth = Actor.auth.make((request) =>
+    return count === 0 ? undefined : count
+  }),
+  Recent: () => Effect.succeed([{ id: "m1", kind: "a" as const }]),
+})
+
+const lobbies = Lobby.toLayer({
+  Join: Effect.fnUntraced(function* () {
+    const turn = yield* Lobby.Turn
+    yield* turn.state.set({ count: turn.state.count + 1 })
+
+    return turn.state.count
+  }),
+})
+
+const auth = Auth.make((request) =>
   Option.match(Headers.get(request.headers, "authorization"), {
     onNone: () => Effect.fail(Unauthorized.make({ code: "missing_credentials" })),
     onSome: (header) => {
@@ -121,7 +116,7 @@ const auth = Actor.auth.make((request) =>
 )
 
 const web = HttpRouter.toWebHandler(
-  Actor.serve({
+  Actors.serve({
     actors: [Room, Lobby],
     auth,
     basePath: "/api",

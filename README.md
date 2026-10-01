@@ -8,7 +8,7 @@ _An Effect-native actor framework with durable identity, transactional turns, an
 
 </div>
 
-**The framework is in alpha and not production-ready.** M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)). Actors have typed commands, reducers, and queries; keyed state, owned tables, and blobs; events, intents, timers, effects, workflows, cron, connections, streams, and cross-actor subscriptions. `Actor.serve` serves them over HTTP, WebSocket, SSE, OpenAPI, and MCP, and `@durable-actors/core/client` is the Promise client. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection, multi-runner, and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Provider support (Neki) remains gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
+**The framework is in alpha and not production-ready.** M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)). Actors have typed commands, reducers, and queries; keyed state, owned tables, and blobs; events, intents, timers, jobs, workflows, schedules, connections, streams, and cross-actor subscriptions. `Actors.serve` serves them over HTTP, WebSocket, SSE, OpenAPI, and MCP, and `@durable-actors/core/client` is the Promise client. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection, multi-runner, and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Provider support (Neki) remains gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
 
 ## Quickstart
 
@@ -42,16 +42,13 @@ Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The
 
 ## The API
 
-Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres:
+Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres. `src/counter/contract.ts` declares the actor's public shape:
 
-<!-- snippet file=src/counter/contract.ts -->
-
-```ts
-// src/counter/contract.ts: the actor's public shape
+```ts title="src/counter/contract.ts"
 import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
-export const Increment = Actor.command("Increment", { input: Schema.Int, output: Schema.Int })
+export const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
 
 export const Counter = Actor.make("Counter", {
   key: Schema.NonEmptyString,
@@ -60,39 +57,34 @@ export const Counter = Actor.make("Counter", {
 })
 ```
 
-<!-- snippet file=src/counter/layer.ts -->
+`src/counter/layer.ts` implements the handler, which runs inside the turn's transaction:
 
-```ts
-// src/counter/layer.ts: the handler runs inside the turn's transaction
+```ts title="src/counter/layer.ts"
 import { Effect } from "effect"
 import { Counter } from "./contract.ts"
 
-export const CounterLive = Counter.toLayer(
-  Effect.succeed({
-    Increment: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* Counter.Turn
-      yield* turn.state.set({ count: turn.state.count + amount })
+export const CounterLive = Counter.toLayer({
+  Increment: Effect.fn(function* (amount) {
+    const turn = yield* Counter.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
 
-      return turn.state.count
-    }),
+    return turn.state.count
   }),
-)
+})
 ```
 
-<!-- snippet file=src/main.ts
+`src/main.ts` wires the runtime and makes one call. `Database.pglite` keeps its files in `./.data`; use `Database.postgres` with a `DATABASE_URL` for anything beyond one process:
+
+```ts title="src/main.ts"
 import { BunCrypto } from "@effect/platform-bun"
 import { Actors, Database } from "@durable-actors/core/runtime"
 import { Console, Effect, Layer } from "effect"
 import { Counter } from "./counter/contract.ts"
 import { CounterLive } from "./counter/layer.ts"
-const DatabaseLive = Database.pglite({ dataDir: "./.data" })
--->
 
-```ts
-// src/main.ts: runtime wiring and one call
 const live = CounterLive.pipe(
   Layer.provideMerge(Actors.layer()),
-  Layer.provide(DatabaseLive), // Database.postgres with DATABASE_URL, else Database.pglite({ dataDir })
+  Layer.provide(Database.pglite({ dataDir: "./.data" })),
   Layer.provide(BunCrypto.layer),
 )
 
@@ -104,7 +96,7 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Code in your own process runs as the trusted `System` caller in the `"default"` tenant, so it names neither a caller nor a tenant. A served actor is closed to outside callers until it declares who may use it with `access` on `Actor.make`; `Actor.access.public` opens it to anyone, for demos. Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, effects, and retention. [`examples/orders`](examples/orders) places orders inside an app with its own Postgres tables, mints a shipment actor per package, charges through an idempotent effect, and proves with a SIGKILL crash drill that no acknowledged order is lost and no payment is taken twice. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
+Code in your own process runs as the trusted `System` caller in the `"default"` tenant, so it names neither a caller nor a tenant. A served actor is closed to outside callers until it declares who may use it with `access` on `Actor.make`; `Actor.access.public` opens it to anyone, for demos. Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, jobs, and retention. [`examples/orders`](examples/orders) places orders inside an app with its own Postgres tables, mints a shipment actor per package, charges through an idempotent job, and proves with a SIGKILL crash drill that no acknowledged order is lost and no payment is taken twice. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
 
 ## Why Effect for actors?
 
@@ -125,10 +117,10 @@ One constructor, `Actor.make`, with one definition object. Its sections define t
 - **Commands, reducers, and queries:** commands run serialized in short transactions and are delivered directly; reducers are pure transitions that also run optimistically on the client; queries read committed rows from the nearest caught-up replica without waking the actor.
 - **State, tables, and blobs:** compressed keyed state, actor-owned Drizzle tables, and database-backed binary chunks share the turn boundary. Activation-local values in a layer are explicitly ephemeral.
 - **Events and connections:** durable events replay after a cursor; streams and broadcasts are live. Typed connections can park while the activation sleeps, but transport loss still requires reconnecting.
-- **Intents and effects:** turns record work for other actors, timers, and external providers in one actor-shard outbox. Delivery follows commit; external effects remain at least once unless a provider proves stronger guarantees.
-- **Workflows and schedules:** workflows are members of their owning actor. `policy.cron` schedules commands; `key: Actor.singleton` expresses cluster-wide ownership without another actor constructor.
+- **Intents and jobs:** turns record work for other actors, timers, and external providers in one actor-shard outbox. Delivery follows commit; jobs remain at least once unless a provider proves stronger guarantees.
+- **Workflows and schedules:** workflows are members of their owning actor. `schedules` runs commands on cron expressions or intervals; `key: Actor.singleton` expresses cluster-wide ownership without another actor constructor.
 
-The framework has no AI-specific toolkit. `Actor.serve` derives OpenAPI and an MCP endpoint from the same definitions as transports, and coding agents are applications built from these same primitives.
+The framework has no AI-specific toolkit. `Actors.serve` derives OpenAPI and an MCP endpoint from the same definitions as transports, and coding agents are applications built from these same primitives.
 
 ## The model
 
@@ -140,7 +132,7 @@ command → generation fence → receipt lookup → handler → commit
                                           reply, delivery, observation
 ```
 
-The turn commits its state, owned rows, database blobs, events, intents, effects, and receipt together. A lease or an in-memory activation cannot authorize a write on its own; the database fence must validate it.
+The turn commits its state, owned rows, database blobs, events, intents, jobs, and receipt together. A lease or an in-memory activation cannot authorize a write on its own; the database fence must validate it.
 
 Handlers do not hold that transaction open while waiting for another actor, a socket, a timer, or an external API. They record an intent instead. See [command turns](docs/contracts/02-command-turns.md) and [context capabilities](docs/api/02-context.md).
 
@@ -160,14 +152,14 @@ Crash and runner-loss recovery have fault tests on Postgres ([conformance](docs/
 
 ## One package, four entries
 
-| Entry                          | Responsibility                                                                                  |
-| ------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `@durable-actors/core`         | Actor contracts, members, policies, identity, errors, handles, `Actor.serve`, and `Actor.auth`. |
-| `@durable-actors/core/runtime` | `Actors.layer`, database integration, topology, migrations, and runtime internals.              |
-| `@durable-actors/core/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections.  |
-| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                               |
+| Entry                          | Responsibility                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `@durable-actors/core`         | Browser-safe declarations: actor contracts, members, policies, identity, errors, and handles.  |
+| `@durable-actors/core/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, database integration, topology, and migrations.        |
+| `@durable-actors/core/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
+| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                              |
 
-The same design targets **embedded** use inside an Effect application, **served** use through `Actor.serve`, and **hosted** operation behind managed ingress. Embedded and served use are implemented, and hosted runners behind the edge are built (M4.8). Serving is optional; embedded callers do not need an HTTP hop.
+The same design targets **embedded** use inside an Effect application, **served** use through `Actors.serve`, and **hosted** operation behind managed ingress. Embedded and served use are implemented, and hosted runners behind the edge are built (M4.8). Serving is optional; embedded callers do not need an HTTP hop.
 
 ## Documentation
 

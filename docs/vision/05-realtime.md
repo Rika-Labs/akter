@@ -22,7 +22,7 @@ An actor may expose:
 
 A client establishes a snapshot and cursor, then follows events after that cursor. Durable events are the recovery path after disconnects, slow consumers, or process loss. If retention has removed required history, the system must say that resynchronization is required.
 
-`policy.connections: "park"` is the default: sockets remain parked while the actor activation sleeps. An inbound frame wakes the activation and restores connection state. Anything that makes the actor broadcast (a command, intent, timer, cron tick, effect route, or an event it subscribes to on another actor) also wakes it, and its broadcast reaches parked sockets wherever they are held. `"keepAwake"` is available when residency is intentional. Opening a connection wakes the actor before its first frame.
+`policy.connections: "park"` is the default: sockets remain parked while the actor activation sleeps. An inbound frame wakes the activation and restores connection state. Anything that makes the actor broadcast (a command, intent, timer, schedule tick, job route, or an event it subscribes to on another actor) also wakes it, and its broadcast reaches parked sockets wherever they are held. `"keepAwake"` is available when residency is intentional. Opening a connection wakes the actor before its first frame.
 
 If the process running the actor dies, sockets stay open: the client is told exactly where live continuity was last proven, catches up from its event cursor, and carries on without reconnecting. Parking does not preserve sockets across transport-process death. Clients reconnect after transport loss, and durable event feeds resume with the exclusive `after` cursor. `Actor.stream` has no durable replay guarantee.
 

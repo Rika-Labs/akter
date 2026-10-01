@@ -13,13 +13,13 @@ import { commandTimes } from "../../identity/command.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
 import { hashCanonical } from "../../runtime/turn/receipt.ts"
 import { ActorTest } from "../actor-test.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 
 const Pair = Schema.Struct({ b: Schema.Int, a: Schema.Int })
 
-const Sum = Actor.command("Sum", { input: Pair, output: Schema.Int })
+const Sum = Actor.command("Sum", { payload: Pair, success: Schema.Int })
 
-const Echo = Actor.command("Echo", { input: Schema.String, output: Schema.String })
+const Echo = Actor.command("Echo", { payload: Schema.String, success: Schema.String })
 
 const Adder = Actor.make("Adder", {
   key: Schema.String,
@@ -141,3 +141,8 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** The admission cases' actor. */
+export const admissionSuite: ConformanceSuite = {
+  layer: () => admissionLayer,
+}

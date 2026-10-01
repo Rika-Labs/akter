@@ -15,7 +15,7 @@ import {
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import { Actor, Intent } from "../../index.ts"
 import type { Request } from "../../runtime/request.ts"
-import type { EffectPolicy } from "../../members/effect.ts"
+import type { JobBinding } from "../../members/job.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { layer as runtimeLayer, type Options as RuntimeOptions } from "../../runtime/layer.ts"
 import { SpanNames } from "../../runtime/telemetry/spans.ts"
@@ -23,7 +23,7 @@ import { TurnHooks } from "../../runtime/turn/hooks.ts"
 import { claimIntents } from "../../runtime/turn/relay.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster, type RunnerServices } from "../cluster.ts"
-import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import type { ConformanceCase, ConformanceEnvironment, ConformanceSuite } from "../conformance.ts"
 import { mintedTitle, mintLayer, planLaterTask } from "./mint.ts"
 import { CLAIM_LEASE, ExplainOutput, planNodes } from "./outbox.ts"
 
@@ -74,7 +74,7 @@ const reset = (fixture: RelayFixture) =>
 
 class ProviderDown extends Schema.TaggedError<ProviderDown>()("ProviderDown", {}) {}
 
-const Take = Actor.command("Take", { input: Schema.String })
+const Take = Actor.command("Take", { payload: Schema.String })
 
 const RelayMailbox = Actor.make("RelayMailbox", {
   key: Schema.String,
@@ -83,7 +83,7 @@ const RelayMailbox = Actor.make("RelayMailbox", {
 })
 
 const Stage = Actor.command("Stage", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     ids: Schema.Array(Schema.String),
     afterMs: Schema.optional(Schema.Int),
     atMs: Schema.optional(Schema.Int),
@@ -92,35 +92,35 @@ const Stage = Actor.command("Stage", {
 
 const Relayer = Actor.make("Relayer", { key: Schema.String, api: { Stage } })
 
-class RelayCall extends Actor.effect<RelayCall>()("RelayCall", {
-  input: { key: Schema.String },
+const RelayCall = Actor.job("RelayCall", {
+  payload: { key: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class RelayCallOnce extends Actor.effect<RelayCallOnce>()("RelayCallOnce", {
-  input: { key: Schema.String },
+const RelayCallOnce = Actor.job("RelayCallOnce", {
+  payload: { key: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-class RelayTimed extends Actor.effect<RelayTimed>()("RelayTimed", {
-  input: { key: Schema.String },
+const RelayTimed = Actor.job("RelayTimed", {
+  payload: { key: Schema.String },
   success: Schema.String,
-}) {}
+})
 
 type EffectName = "RelayCall" | "RelayCallOnce" | "RelayTimed"
 
 const Perform = Actor.command("Perform", {
-  input: Schema.Struct({
+  payload: Schema.Struct({
     key: Schema.String,
     effect: Schema.Literals(["RelayCall", "RelayCallOnce", "RelayTimed"]),
   }),
 })
 
-const Called = Actor.command("Called", { input: Schema.String })
+const Called = Actor.command("Called", { payload: Schema.String })
 
-const CallFailed = Actor.command("CallFailed", { input: Actor.DeadLetter(RelayCall) })
+const CallFailed = Actor.command("CallFailed", { payload: Actor.DeadLetter(RelayCall) })
 
-const OnceFailed = Actor.command("OnceFailed", { input: Actor.DeadLetter(RelayCallOnce) })
+const OnceFailed = Actor.command("OnceFailed", { payload: Actor.DeadLetter(RelayCallOnce) })
 
 const Letter = Schema.Struct({
   effectId: Schema.String,
@@ -134,19 +134,22 @@ const RelayCaller = Actor.make("RelayCaller", {
     called: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     letters: Schema.Array(Letter).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
-  effects: [RelayCall, RelayCallOnce, RelayTimed],
-  api: { Perform },
-  internal: { Called, CallFailed, OnceFailed },
-  policy: {
-    effects: {
-      RelayCall: { retry: { times: 1 }, onSuccess: Called, onDeadLetter: CallFailed },
-      RelayCallOnce: { retry: { times: 0 }, onSuccess: Called, onDeadLetter: OnceFailed },
-      RelayTimed: {
-        timeout: "100 millis",
-        retry: { times: 3, backoff: { base: "10 millis", max: "40 millis" } },
-      },
+  jobs: {
+    RelayCall: { job: RelayCall, retry: { times: 1 }, onSuccess: Called, onDeadLetter: CallFailed },
+    RelayCallOnce: {
+      job: RelayCallOnce,
+      retry: { times: 0 },
+      onSuccess: Called,
+      onDeadLetter: OnceFailed,
+    },
+    RelayTimed: {
+      job: RelayTimed,
+      timeout: "100 millis",
+      retry: { times: 3, backoff: { base: "10 millis", max: "40 millis" } },
     },
   },
+  api: { Perform },
+  internal: { Called, CallFailed, OnceFailed },
 })
 
 const MAILBOXES = 32
@@ -166,11 +169,17 @@ const mailboxOf = (id: string) => {
   return `mailbox-${hash}`
 }
 
-const recordLetter = (letter: typeof Letter.Type) =>
+const recordLetter = (letter: {
+  readonly jobId: string
+  readonly attempts: number
+  readonly ambiguous: boolean
+}) =>
   Effect.gen(function* () {
     const turn = yield* RelayCaller.Turn
-    const { effectId, attempts, ambiguous } = letter
-    yield* turn.state.set({ letters: [...turn.state.letters, { effectId, attempts, ambiguous }] })
+    const { jobId, attempts, ambiguous } = letter
+    yield* turn.state.set({
+      letters: [...turn.state.letters, { effectId: jobId, attempts, ambiguous }],
+    })
   })
 
 /** The relay actors' command layers, which every runner builds. */
@@ -211,7 +220,7 @@ export const relayLayer = (fixture: RelayFixture) =>
             RelayTimed: () => RelayTimed.make({ key }),
           }
 
-          yield* turn.perform(performed[effect]())
+          yield* turn.enqueue(performed[effect]())
         }),
         Called: Effect.fnUntraced(function* (value: string) {
           const turn = yield* RelayCaller.Turn
@@ -231,7 +240,7 @@ const runnerEffects = (fixture: RelayFixture, runner: number) => {
 
       const attempt: Attempt = {
         key,
-        effectId: exec.effectId,
+        effectId: exec.jobId,
         attempt: exec.attempt,
         runner,
         startedAt: yield* Clock.currentTimeMillis,
@@ -251,7 +260,7 @@ const runnerEffects = (fixture: RelayFixture, runner: number) => {
       )
     })
 
-  return RelayCaller.toEffectLayer(
+  return RelayCaller.toJobLayer(
     Effect.succeed({
       RelayCall: ({ key }) => execute(key),
       RelayCallOnce: ({ key }) => execute(key),
@@ -532,12 +541,12 @@ const kill = (runner: number) =>
   ActorCluster.use((cluster) => cluster.kill(runner).pipe(Effect.andThen(cluster.ready)))
 
 /** Multi-runner cases: real Postgres only, each on a fresh database and cluster. */
-export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
+export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
   {
     name: "claims each due row on exactly one runner",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) => {
+    run: ({ expect, environment, fixture }) => {
       const spans: Array<Tracer.Span> = []
 
       return withCluster(
@@ -575,7 +584,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "counts a delivery retried after a failure as the row's next attempt, not a second holder",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) => {
+    run: ({ expect, environment, fixture }) => {
       const spans: Array<Tracer.Span> = []
 
       return withCluster(
@@ -629,7 +638,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "redelivers a row after its claim lease when the claiming runner is killed",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -659,7 +668,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "redelivers after a runner kill between receiver commit and row deletion with one receiver transition",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -687,7 +696,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "creates a minted child once when the runner claiming its creating intent is killed",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -715,7 +724,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "does not let rows that die unsettled delay newer due rows",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -776,7 +785,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "keeps a stale runner's settle from changing a row another runner claimed",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -815,7 +824,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "delivers intents while every executor slot runs a slow effect",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -870,7 +879,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "renews an executor lease so a long attempt is not taken over",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -896,7 +905,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "interrupts an attempt that loses its lease and routes at most one result",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -915,7 +924,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const draining = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
           yield* takeover.reached
           expect(yield* outboxRows(other)).toMatchObject([
-            { kind: "effect", attempts: 2, ambiguous: true },
+            { kind: "job", attempts: 2, ambiguous: true },
           ])
           yield* takeover.release
           yield* Fiber.join(draining)
@@ -942,7 +951,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "dead-letters as ambiguous when the last attempt's lease expires",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -969,7 +978,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "claims effects only on runners that have their executor",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1004,7 +1013,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "uses per-effect timeout and backoff from policy.effects",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1023,7 +1032,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
                   RETURN NEW;
                 END $$`
               yield* sql`CREATE TRIGGER relay_record_wait AFTER UPDATE ON actor_outbox FOR EACH ROW
-                WHEN (NEW.kind = 'effect' AND NEW.last_error NOT LIKE 'Attempt % ended without%')
+                WHEN (NEW.kind = 'job' AND NEW.last_error NOT LIKE 'Attempt % ended without%')
                 EXECUTE FUNCTION relay_record_wait()`
             }),
           )
@@ -1068,7 +1077,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "claims no more intents than free delivery slots",
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1121,7 +1130,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "routes a lease-expired attempt's success when it beats the takeover",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1160,10 +1169,63 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "keeps a newer attempt's row when an attempt that lost its lease fails late",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture,
+        2,
+        { relay: NO_POLL, executors: SHORT_LEASE },
+        Effect.gen(function* () {
+          const { owner, other } = yield* ownerAndOther(yield* refOf("stale"))
+          const first = yield* Deferred.make<void>()
+          const second = yield* Deferred.make<void>()
+          fixture.provider = (attempt) =>
+            attempt.attempt === 1
+              ? Deferred.await(first).pipe(Effect.andThen(Effect.fail(ProviderDown.make({}))))
+              : Deferred.await(second).pipe(Effect.as(attempt.key))
+
+          const renewal = yield* faults(owner, (test) => test.pauseNext("beforeRenew"))
+          yield* perform(owner, "stale")
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 1))
+          const takeover = yield* advance(other, "4 seconds").pipe(Effect.forkChild)
+          yield* eventually(Effect.sync(() => fixture.attempts.length === 2))
+
+          yield* Deferred.succeed(first, undefined)
+          yield* eventually(Effect.sync(() => fixture.attempts[0]?.endedAt !== undefined))
+          expect(fixture.attempts[0]!.interrupted).toBe(false)
+          yield* Effect.sleep("1 second")
+
+          const [held] = yield* outboxRows(other)
+          expect(held).toMatchObject({ kind: "job", attempts: 2, ambiguous: true })
+          expect(held!.last_error).toContain("Attempt 2")
+
+          yield* Deferred.succeed(second, undefined)
+          yield* Fiber.join(takeover)
+          yield* renewal.release
+          yield* eventually(
+            receipts(other, "Called").pipe(Effect.map((count) => count === 1)),
+            "10 seconds",
+            "attempt 2's route",
+          )
+
+          expect(fixture.attempts.map(({ attempt, runner }) => [attempt, runner])).toEqual([
+            [1, owner],
+            [2, other],
+          ])
+          expect((yield* callerState(other, "stale")).called).toEqual(["stale"])
+          expect(yield* deadLetters(other)).toEqual([])
+          expect(yield* receipts(other, "CallFailed")).toBe(0)
+        }),
+      ),
+  },
+  {
     name: "marks the dead letter ambiguous when a stale success arrives after it",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1207,7 +1269,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "interrupts an attempt at its local deadline when renewals cannot reach the database",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1232,7 +1294,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           const [held] = yield* outboxRows(other)
           expect(ran >= 2900 && ran < 4000).toBe(true)
           expect(fixture.attempts.length).toBe(1)
-          expect(held).toMatchObject({ kind: "effect", attempts: 1, ambiguous: true })
+          expect(held).toMatchObject({ kind: "job", attempts: 1, ambiguous: true })
           expect(first!.endedAt! <= Number(held!.due) + 100).toBe(true)
 
           fixture.hook = () => Effect.void
@@ -1246,7 +1308,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "does not start an attempt whose claim outlived its lease before execution",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1280,7 +1342,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "keeps a failure's backoff when a renewal races the settle",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1304,7 +1366,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
           yield* Effect.sleep("200 millis")
 
           const [row] = yield* outboxRows(0)
-          expect(row).toMatchObject({ kind: "effect", attempts: 1, ambiguous: false })
+          expect(row).toMatchObject({ kind: "job", attempts: 1, ambiguous: false })
           expect(Number(row!.due) - Number(row!.now) <= 1000).toBe(true)
         }),
       ),
@@ -1313,7 +1375,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
     name: "routes one result when the runner is killed after the provider succeeded",
     requiresIndependentConnections: true,
     timeoutMs: 90_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1342,9 +1404,9 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase> = [
 const releasesOnShutdown = (
   point: "afterClaim" | "beforeDelivery",
   name: string,
-): ConformanceCase => ({
+): ConformanceCase<RelayFixture> => ({
   name,
-  run: ({ expect, environment, fixture: { relay: fixture } }) =>
+  run: ({ expect, environment, fixture }) =>
     Effect.runPromise(
       Effect.gen(function* () {
         const claimedAt = yield* Effect.promise(() =>
@@ -1391,7 +1453,7 @@ const releasesOnShutdown = (
 })
 
 /** Single-runner cases on the conformance environment, shared by PGlite and Postgres. */
-export const relayConformance: ReadonlyArray<ConformanceCase> = [
+export const relayConformance: ReadonlyArray<ConformanceCase<RelayFixture>> = [
   releasesOnShutdown("afterClaim", "releases claimed but unstarted rows on graceful shutdown"),
   releasesOnShutdown(
     "beforeDelivery",
@@ -1399,7 +1461,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   ),
   {
     name: "keeps scheduled_at_ms across claims while due_at_ms moves",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1429,7 +1491,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "backs off a row whose settle dies by max(claim lease, backoff(attempts)) up to maxBackoff",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1505,9 +1567,10 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims later due intents while other transactions hold the earliest rows locked",
+    requiresFreshDatabase: true,
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       withCluster(
         environment,
         fixture,
@@ -1559,7 +1622,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "dead-letters an already exhausted row with its recorded outcome",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1616,7 +1679,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
               payload, caller, kind, ready_at_ms)
             SELECT ((i % 256) - 128)::bigint << 56 | i, 'ghost-' || i, (i % 256) - 128, 0, 0,
-              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'effect', 0
+              'ghost', 'Ghost', i::text, 'Ghost', i::text, 'Haunt', '{}', '{}', 'job', 0
             FROM generate_series(1, 10000) AS i`
           yield* sql`ANALYZE actor_outbox`
 
@@ -1673,7 +1736,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "claims a runner's own effects past due effect rows it cannot execute in the same bucket",
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1694,7 +1757,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
               scheduled_at_ms, tenant_id, actor_type, actor_id, target_type, target_id, command,
               payload, caller, kind, ready_at_ms)
             SELECT (${placed!.bucket}::bigint << 56) | i, 'orphan-' || i, ${placed!.bucket}, 0, 0,
-              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'effect', 0
+              'orphan', 'Orphan', i::text, 'Orphan', i::text, 'Haunt', '{}', '{}', 'job', 0
             FROM generate_series(1, 200) AS i`
 
           yield* Effect.gen(function* () {
@@ -1716,7 +1779,7 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "drains a due backlog far larger than the delivery slots in one advance",
     timeoutMs: 120_000,
-    run: ({ expect, environment, fixture: { relay: fixture } }) =>
+    run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
           yield* reset(fixture)
@@ -1768,28 +1831,25 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
             }),
           ).toBe(undefined)
 
-          class Probe extends Actor.effect<Probe>()("Probe", {}) {}
+          const Probe = Actor.job("Probe", {})
 
-          const make = (policy: EffectPolicy<typeof Probe, never>) =>
+          const make = (binding: Omit<JobBinding<typeof Probe, never>, "job">) =>
             rejects(() => {
               Actor.make("TimingProbe", {
                 key: Schema.String,
-                effects: [Probe],
+                jobs: { Probe: { job: Probe, ...binding } },
                 api: {},
-                policy: { effects: { Probe: policy } },
               })
             })
 
-          expect(make({ timeout: "0 millis" })).toContain("policy.effects.Probe.timeout")
-          expect(make({ timeout: Duration.millis(2 ** 31) })).toContain(
-            "policy.effects.Probe.timeout",
-          )
+          expect(make({ timeout: "0 millis" })).toContain("jobs.Probe.timeout")
+          expect(make({ timeout: Duration.millis(2 ** 31) })).toContain("jobs.Probe.timeout")
           expect(
             make({ retry: { times: 1, backoff: { base: "2 seconds", max: "1 second" } } }),
           ).toContain("must be at least its base")
           expect(
             make({ retry: { times: 1, backoff: { base: "0 millis", max: "1 second" } } }),
-          ).toContain("policy.effects.Probe.retry.backoff.base")
+          ).toContain("jobs.Probe.retry.backoff.base")
           expect(
             make({
               timeout: "5 seconds",
@@ -1800,3 +1860,9 @@ export const relayConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Relay actors and the executors of runner 0. */
+export const relaySuite: ConformanceSuite<RelayFixture> = {
+  fixture: relayFixture,
+  layer: (fixture) => Layer.merge(relayLayer(fixture), relayEffects(fixture)),
+}

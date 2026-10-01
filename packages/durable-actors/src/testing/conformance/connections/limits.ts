@@ -15,11 +15,12 @@ import {
   holdNext,
   sessionJson,
   storedSession,
+  type ConnectionsFixture,
 } from "./actors.ts"
 import { connect, eventually, frameOf, next, posts, rows, untilEnd } from "./harness.ts"
 
 /** Session and frame limits, broadcast ordering, and rejected opens of connections. */
-export const connectionLimitConformance: ReadonlyArray<ConformanceCase> = [
+export const connectionLimitConformance: ReadonlyArray<ConformanceCase<ConnectionsFixture>> = [
   {
     name: "rejects a session above 16 KiB as a defect, closes the connection, and stores nothing of it",
     run: ({ expect, environment }) =>
@@ -56,7 +57,7 @@ export const connectionLimitConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const room = yield* Room.get("connections-opening")
-          const hold = yield* holdNext(fixture.connections)
+          const hold = yield* holdNext(fixture)
 
           const opening = yield* test
             .connect(room.ref, Live, { name: "held" })
@@ -115,7 +116,7 @@ export const connectionLimitConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const { room, connection } = yield* connect("connections-inbound")
           yield* next(connection)
-          const hold = yield* holdNext(fixture.connections)
+          const hold = yield* holdNext(fixture)
           yield* connection.send(Say.make({ text: "hold" }))
           yield* hold.reached
 
@@ -134,19 +135,19 @@ export const connectionLimitConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "a revoked connection drops its unread outbound frames and its queued inbound frames",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, fixture, access }) =>
       environment.run(
         Effect.gen(function* () {
           const { test, room, connection } = yield* connect("connections-revoked-queue")
           yield* next(connection)
 
           yield* room.Post("unread")
-          const hold = yield* holdNext(fixture.connections)
+          const hold = yield* holdNext(fixture)
           yield* connection.send(Say.make({ text: "hold" }))
           yield* hold.reached
           yield* connection.send(Say.make({ text: "queued" }))
 
-          fixture.allowed = false
+          access.allowed = false
 
           const { seen, ended } = yield* test.advance("55 seconds").pipe(
             Effect.andThen(
@@ -156,7 +157,7 @@ export const connectionLimitConformance: ReadonlyArray<ConformanceCase> = [
               ),
             ),
             Effect.andThen(untilEnd(connection)),
-            Effect.ensuring(Effect.sync(() => (fixture.allowed = true))),
+            Effect.ensuring(Effect.sync(() => (access.allowed = true))),
           )
 
           expect(ended).toMatchObject(Unauthorized.make({ code: "access_denied" }))
@@ -170,16 +171,16 @@ export const connectionLimitConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "rejects an open for a member the actor does not declare before authorizing it",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const test = yield* ActorTest
           const room = yield* Room.get("connections-undeclared")
-          fixture.allowed = false
+          access.allowed = false
 
           const exit = yield* test
             .connect(room.ref, Undeclared, {})
-            .pipe(Effect.exit, Effect.ensuring(Effect.sync(() => (fixture.allowed = true))))
+            .pipe(Effect.exit, Effect.ensuring(Effect.sync(() => (access.allowed = true))))
 
           const failure = Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : Option.none()
           expect(Schema.is(ActorUnavailable)(Option.getOrUndefined(failure)?.reason)).toBe(true)

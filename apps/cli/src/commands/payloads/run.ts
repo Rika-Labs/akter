@@ -15,7 +15,7 @@ export const checkReport = ({
   output: json
     ? JSON.stringify({ compatible: problems.length === 0, problems }, null, 2)
     : problems.length === 0
-      ? "Every stored event and effect payload version decodes"
+      ? "Every stored event and job payload version decodes"
       : [
           ...problems.map(formatPayloadProblem),
           `${problems.length} problem${problems.length === 1 ? "" : "s"}; deploy refused (exit 1)`,
@@ -73,7 +73,7 @@ export const checkCommand = Command.make("check", entryFlags, (options) =>
   }),
 ).pipe(
   Command.withDescription(
-    "Check that every stored event and effect payload version still decodes, read-only; exit 1 when a deploy would be refused",
+    "Check that every stored event and job payload version still decodes, read-only; exit 1 when a deploy would be refused",
   ),
 )
 

@@ -5,10 +5,8 @@ import {
   Deferred,
   Effect,
   Exit,
-  Fiber,
   Option,
   Queue,
-  Schedule,
   Schema,
   Semaphore,
   Stream,
@@ -22,7 +20,6 @@ import {
   NotCreated,
   RunnerAtCapacity,
   SessionEnded,
-  Unauthorized,
 } from "../../errors/actor.ts"
 import {
   type Broadcast,
@@ -39,9 +36,12 @@ import { compress, decompress } from "../storage/codec.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import {
   type ActivationCache,
-  type CommittedEvents,
+  actorRow,
   emptyActivationCache,
-} from "../turn/execute.ts"
+  forget as forgetGeneration,
+  heldGeneration,
+} from "../storage/generation.ts"
+import type { CommittedEvents } from "../turn/execute.ts"
 import {
   Committed,
   type Deliver,
@@ -49,12 +49,11 @@ import {
   FeedFrame,
   HolderItem,
   isWatchMember,
-  StreamFailed,
-  StreamItem,
   watchedQuery,
   watchMember,
   type WriteSet,
 } from "./protocol.ts"
+import { type Authorize, type Subscription, streamSubscriptions } from "./streams.ts"
 import { HolderUnreachable, type Transport } from "./transport.ts"
 import { WatchTap } from "./watch.ts"
 
@@ -64,29 +63,17 @@ export const MAX_SESSION_BYTES = 16_384
 /** Open connections one actor may have per connection member. */
 const MAX_MEMBER_CONNECTIONS = 10_000
 
-/** Open stream subscriptions one actor may have. */
-const MAX_ACTOR_STREAMS = 256
-
-/** Stream elements the owner holds for one subscriber before the handler waits. */
-const STREAM_WINDOW = 256
-
-/** How long a stream's window may stay full before the subscription ends. */
-const STREAM_STALL_MS = 30_000
-
 /** Events one `read.follow` page reads at most. */
 const FOLLOW_PAGE = 1_000
-
-/** How often the owner checks its subscriptions' authorization and windows. */
-const STREAM_TICK = "100 millis"
 
 /** Progress frames one actor accepts per second, with a burst of as many. */
 const PROGRESS_PER_SECOND = 20
 
-/** How long an effect check's answer stands before a later frame reads the row again. */
-const EFFECT_CHECK_MS = 5_000
+/** How long a job check's answer stands before a later frame reads the row again. */
+const JOB_CHECK_MS = 5_000
 
-/** How long after a failed effect check the next one waits. */
-const EFFECT_CHECK_RETRY_MS = 1_000
+/** How long after a failed job check the next one waits. */
+const JOB_CHECK_RETRY_MS = 1_000
 
 /** Clock skew allowed between the executor's lease deadline and the owner's clock. */
 const PROGRESS_SKEW_MS = 1_000
@@ -94,9 +81,9 @@ const PROGRESS_SKEW_MS = 1_000
 /** Progress entries one `read.progress` subscription buffers; the oldest goes first. */
 const STREAM_PROGRESS_BUFFER = 16
 
-/** What this activation knows of one effect's progress. */
-interface EffectProgress {
-  /** False once the effect's route or settle committed, or its row is gone. */
+/** What this activation knows of one job's progress. */
+interface JobProgress {
+  /** False once the job's route or settle committed, or its row is gone. */
   open: boolean
   checkedAt: number
   /** The last frame, check, or close; the record goes `PROGRESS_RECORD_MS` after it. */
@@ -104,16 +91,16 @@ interface EffectProgress {
   attempt: number
   seq: number
   readonly principal: Option.Option<Principal>
-  /** The effect's encoded input, for stream subscribers. */
+  /** The job's encoded payload, for stream subscribers. */
   readonly payload: string
-  /** Channels this activation forwarded the effect's progress to. */
+  /** Channels this activation forwarded the job's progress to. */
   readonly holders: Set<string>
 }
 
 /** How long a progress record stays after its last frame, check, or close. */
 const PROGRESS_RECORD_MS = 60_000
 
-const closedEffect = (at: number): EffectProgress => ({
+const closedJob = (at: number): JobProgress => ({
   open: false,
   checkedAt: at,
   touchedAt: at,
@@ -130,8 +117,8 @@ const samePrincipal = (a: Option.Option<Principal>, b: Option.Option<Principal>)
 /** One progress message from an executor pool, as the owner receives it. */
 export interface ProgressDelivery {
   readonly ref: ActorRef
-  readonly effectId: string
-  readonly effect: string
+  readonly jobId: string
+  readonly job: string
   readonly attempt: number
   readonly seq: number
   readonly leaseUntil: number
@@ -168,28 +155,6 @@ interface Channel {
   seq: number
 }
 
-/** One open stream subscription, run by the owner for as long as its subscriber reads. */
-interface Subscription {
-  readonly member: string
-  readonly caller: Caller
-  /** When the subscriber's authorization last succeeded, on the framework clock. */
-  lastAuthorized: number
-  checking: boolean
-  /** Since when the handler has waited on a full window, if it is waiting. */
-  stalledSince: number | undefined
-  readonly end: (error: ActorError, discard: boolean) => Effect.Effect<void>
-}
-
-/** Decides whether a caller may open a stream or renew a session for a command; `false` refuses. */
-export type Authorize = (request: {
-  readonly caller: Caller
-  readonly ref: ActorRef
-  readonly command: string
-  readonly kind: "stream" | "reauthorize"
-  /** What a reauthorization renews, so a stream tag is never read as a feed's event tag. */
-  readonly of?: "stream"
-}) => Effect.Effect<boolean>
-
 /**
  * One actor's activation on this runner, shared by its command entity and its
  * connection entity so both run under one generation fence. `rows` mirrors the
@@ -207,15 +172,15 @@ export interface Activation {
   advanced: Deferred.Deferred<void>
   /** Open stream subscriptions, which end with this activation. */
   readonly streams: Set<Subscription>
-  /** Progress of effects this activation received frames for. */
-  readonly progress: Map<string, EffectProgress>
-  /** Effect ids whose check is reading the database now. */
+  /** Progress of jobs this activation received frames for. */
+  readonly progress: Map<string, JobProgress>
+  /** Job ids whose check is reading the database now. */
   readonly checking: Set<string>
-  /** When each effect's check last failed, so the next waits. */
+  /** When each job's check last failed, so the next waits. */
   readonly checkFailed: Map<string, number>
   readonly listeners: Set<{
     readonly tag: string
-    readonly effectId: string | undefined
+    readonly jobId: string | undefined
     readonly queue: Queue.Queue<StoredProgress>
   }>
   progressTokens: number
@@ -296,12 +261,12 @@ type Address = {
  * subscriber's live progress is a sliding buffer, so a slow reader loses the
  * oldest.
  *
- * Progress frames: a route or settle that committed while the effect check read
- * keeps the effect closed. A row that has not counted an attempt yet does not
- * prove a frame open. Every frame of an effect shares one activation record so its
+ * Progress frames: a route or settle that committed while the job check read
+ * keeps the job closed. A row that has not counted an attempt yet does not
+ * prove a frame open. Every frame of a job shares one activation record so its
  * order and holders stay whole, and a record decides after a permit wait, never a
  * copy taken before it. A record nothing touched for a while goes, and a late
- * frame runs the effect check again.
+ * frame runs the job check again.
  */
 export const activationOwner = ({
   registration,
@@ -328,7 +293,7 @@ export const activationOwner = ({
 
   const wanted = new Set([
     ...[...registration.connections.values()].flatMap((member) => [
-      ...(member.progress?.effects ?? []),
+      ...(member.progress?.jobs ?? []),
     ]),
     ...[...registration.streams.values()].flatMap((member) => [...member.progress]),
   ])
@@ -398,14 +363,6 @@ export const activationOwner = ({
         ),
     )
 
-  const where = (activation: Activation) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-
-      return sql`routing_key = ${activation.key} AND tenant_id = ${activation.ref.tenant}
-          AND actor_type = ${activation.ref.actor} AND actor_id = ${activation.ref.id}`
-    })
-
   const enter = (entityId: string, ref: ActorRef, key: bigint) =>
     Effect.acquireRelease(
       Effect.sync(() => {
@@ -472,7 +429,7 @@ export const activationOwner = ({
     Effect.gen(function* () {
       if (ids.length === 0) return
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
 
       yield* sql`DELETE FROM actor_connections WHERE ${actor} AND connection_id IN ${sql.in(ids)}`
 
@@ -543,8 +500,7 @@ export const activationOwner = ({
       .pipe(Effect.timeout("2 seconds"), Effect.ignore)
 
   const forget = (activation: Activation) => {
-    activation.cache.generation = undefined
-    activation.cache.state = undefined
+    forgetGeneration(activation.cache)
     activation.rows = undefined
     activation.channels.clear()
   }
@@ -559,7 +515,7 @@ export const activationOwner = ({
     Effect.gen(function* () {
       if (activation.cache.generation !== undefined && activation.cache.state !== undefined) return
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
       const { ref, key } = activation
 
       const acquired = yield* sql.withTransaction(
@@ -610,7 +566,7 @@ export const activationOwner = ({
     Effect.gen(function* () {
       if (activation.rows !== undefined) return
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
+      const actor = actorRow({ sql, actor: activation })
 
       const stored = yield* sql<{
         connection_id: string
@@ -922,7 +878,7 @@ export const activationOwner = ({
           }
 
         const sql = yield* SqlClient.SqlClient
-        const actor = yield* where(activation)
+        const actor = actorRow({ sql, actor: activation })
 
         if (registration.policy.createdBy !== undefined) {
           const [created] = yield* sql<{ created: boolean }>`
@@ -999,7 +955,7 @@ export const activationOwner = ({
             ${request.member}, ${request.holder}, ${request.holderEpoch}, ${caller},
             ${result.session === undefined ? null : compress(result.session)},
             floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint, ${baseline}::bigint
-          FROM actor_generations WHERE ${actor} AND generation = ${activation.cache.generation!}
+          FROM (${heldGeneration({ sql, actor: activation, generation: activation.cache.generation!, lock: "SHARE" })}) g
           RETURNING connection_id`
 
         if (inserted.length === 0) {
@@ -1129,13 +1085,7 @@ export const activationOwner = ({
             const written = yield* sql<{ connection_id: string }>`
               UPDATE actor_connections c SET session = ${result.session === undefined ? null : compress(result.session)},
                 frame_seq = ${request.seq}
-              FROM (
-                SELECT routing_key, tenant_id, actor_type, actor_id FROM actor_generations
-                WHERE routing_key = ${activation.key} AND tenant_id = ${activation.ref.tenant}
-                  AND actor_type = ${activation.ref.actor} AND actor_id = ${activation.ref.id}
-                  AND generation = ${activation.cache.generation!}
-                FOR SHARE
-              ) g
+              FROM (${heldGeneration({ sql, actor: activation, generation: activation.cache.generation!, lock: "SHARE" })}) g
               WHERE c.routing_key = g.routing_key AND c.tenant_id = g.tenant_id
                 AND c.actor_type = g.actor_type AND c.actor_id = g.actor_id
                 AND c.connection_id = ${request.connectionId} AND c.frame_seq < ${request.seq}
@@ -1267,212 +1217,32 @@ export const activationOwner = ({
         }),
       )
 
-  const unauthorized = (code: "access_denied" | "reauthorization_unavailable") =>
-    ActorError.make({ reason: Unauthorized.make({ code }) })
+  const streams = streamSubscriptions({
+    registration,
+    activations,
+    transport,
+    authorize,
+    now,
+    prepare: Effect.fnUntraced(function* (activation: Activation) {
+      yield* acquire(activation).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable))
+      const sql = yield* SqlClient.SqlClient
 
-  /**
-   * Runs one subscription's handler on this activation. The subscriber reads
-   * `Started` first, then elements through a window of `STREAM_WINDOW`; a
-   * handler that ends by itself ends with `Done`, and every other end is an
-   * error, so an ended activation is never a silent completion.
-   */
-  const subscribe = (
-    activation: Activation,
-    request: {
-      readonly member: string
-      readonly caller: Caller
-      readonly input: string
-      readonly authorizedUntil: number
-    },
-  ) =>
-    Stream.unwrap(
-      Effect.gen(function* () {
-        const stream = registration.streams.get(request.member)
-
-        if (stream === undefined)
-          return yield* Effect.die(new Error(`Unregistered stream ${request.member}`))
-
-        if ((yield* now) >= request.authorizedUntil)
-          return yield* unauthorized("reauthorization_unavailable")
-
-        const allowed = yield* authorize({
-          caller: request.caller,
-          ref: activation.ref,
-          command: request.member,
-          kind: "stream",
-        })
-
-        if (!allowed) return yield* unauthorized("access_denied")
-
-        const queue = yield* Queue.bounded<
-          StreamItem,
-          ActorError | typeof StreamFailed.Type | Cause.Done
-        >(STREAM_WINDOW)
-
-        let producer: Fiber.Fiber<void> | undefined
-        let closed = false
-
-        const subscription: Subscription = {
-          member: request.member,
-          caller: request.caller,
-          lastAuthorized: yield* now,
-          checking: false,
-          stalledSince: undefined,
-          end: (error, discard) =>
-            Effect.gen(function* () {
-              if (closed) return
-              closed = true
-              activation.streams.delete(subscription)
-
-              if (producer !== undefined) yield* Fiber.interrupt(producer)
-
-              if (discard) yield* Queue.clear(queue).pipe(Effect.ignore)
-              yield* Queue.fail(queue, error)
-            }),
-        }
-
-        const admitted = yield* Effect.sync(() => {
-          if (activation.streams.size >= MAX_ACTOR_STREAMS) return false
-          activation.streams.add(subscription)
-
-          return true
-        })
-
-        if (!admitted) return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
-
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            closed = true
-            activation.streams.delete(subscription)
-
-            if (producer !== undefined) yield* Fiber.interrupt(producer)
-          }),
-        )
-
-        yield* acquire(activation).pipe(Effect.catchIf(SqlError.isSqlError, sqlUnavailable))
-
-        const sql = yield* SqlClient.SqlClient
-
-        const offer = (item: StreamItem) =>
-          Effect.gen(function* () {
-            if (Queue.offerUnsafe(queue, item)) return
-            subscription.stalledSince = yield* now
-            yield* Queue.offer(queue, item)
-            subscription.stalledSince = undefined
-          })
-
-        producer = yield* stream
-          .run(request.input, {
-            ref: activation.ref,
-            caller: request.caller,
-            cursor: activation.head,
-            state: [...(activation.cache.state ?? new Map<string, string>())],
-            events: events(activation, sql),
-            follow: follow(activation, sql),
-            progress: (tag, effectId) => progressFeed(activation, tag, effectId),
-          })
-          .pipe(
-            Stream.runForEach((value) => offer(StreamItem.cases.Element.make({ value }))),
-            Effect.andThen(offer(StreamItem.cases.Done.make({}))),
-            Effect.andThen(Queue.end(queue)),
-            Effect.catch(({ failure }) => Queue.fail(queue, StreamFailed.make({ value: failure }))),
-            Effect.catchDefect((cause) =>
-              Effect.andThen(
-                Effect.logError("Stream handler defect", Cause.die(cause)),
-                Queue.fail(queue, ActorError.make({ reason: ended("Defect", false) })),
-              ),
-            ),
-            Effect.asVoid,
-            Effect.ensuring(
-              Effect.sync(() => {
-                closed = true
-                activation.streams.delete(subscription)
-              }),
-            ),
-            Effect.forkDetach,
-          )
-
-        return Stream.succeed(
-          StreamItem.cases.Started.make({ owner: transport.holder, ownerEpoch: transport.epoch }),
-        ).pipe(Stream.concat(Stream.fromQueue(queue)))
-      }),
-    )
-
-  /** Ends every subscription of an activation that is ending. */
-  const endStreams = (activation: Activation) =>
-    Effect.forEach(
-      [...activation.streams],
-      (subscription) =>
-        subscription.end(ActorError.make({ reason: ended("ActivationEnded", false) }), false),
-      { discard: true },
-    )
-
-  const reauthorizeStream = (activation: Activation, subscription: Subscription, at: number) =>
-    Effect.gen(function* () {
-      subscription.checking = true
-
-      const every = registration.policy.reauthorizeMs
-
-      const allowed = yield* authorize({
-        caller: subscription.caller,
+      return {
         ref: activation.ref,
-        command: subscription.member,
-        kind: "reauthorize",
-        of: "stream",
-      }).pipe(Effect.timeout(Math.min(10_000, every / 2)), Effect.exit)
-
-      subscription.checking = false
-      const bound = subscription.lastAuthorized + every
-
-      if (Exit.isSuccess(allowed) && allowed.value && (yield* now) >= bound)
-        yield* subscription.end(unauthorized("reauthorization_unavailable"), true)
-      else if (Exit.isSuccess(allowed) && allowed.value) subscription.lastAuthorized = at
-      else if (Exit.isSuccess(allowed)) yield* subscription.end(unauthorized("access_denied"), true)
-    })
-
-  /**
-   * Reauthorizes each subscriber within `reauthorizeEvery` and ends a
-   * subscription whose window stayed full for `STREAM_STALL_MS`, on the
-   * owner's clock. Revocation discards the elements not yet delivered.
-   */
-  const watchStreams = Effect.gen(function* () {
-    const at = yield* now
-    const every = registration.policy.reauthorizeMs
-
-    for (const activation of activations.values())
-      for (const subscription of activation.streams) {
-        if (at >= subscription.lastAuthorized + every) {
-          yield* subscription
-            .end(unauthorized("reauthorization_unavailable"), true)
-            .pipe(Effect.forkDetach)
-
-          continue
-        }
-
-        if (
-          subscription.stalledSince !== undefined &&
-          at - subscription.stalledSince >= STREAM_STALL_MS
-        ) {
-          yield* subscription
-            .end(ActorError.make({ reason: ended("SlowConsumer", true) }), true)
-            .pipe(Effect.forkDetach)
-
-          continue
-        }
-
-        if (
-          !subscription.checking &&
-          at >= subscription.lastAuthorized + every - Math.min(10_000, every / 2)
-        )
-          yield* reauthorizeStream(activation, subscription, at).pipe(Effect.forkDetach)
+        cursor: activation.head,
+        state: [...(activation.cache.state ?? new Map<string, string>())],
+        events: events(activation, sql),
+        follow: follow(activation, sql),
+        progress: (tag: string, jobId: string | undefined) => progressFeed(activation, tag, jobId),
       }
-  }).pipe(Effect.repeat(Schedule.spaced(STREAM_TICK)), Effect.asVoid)
+    }),
+  })
 
-  const progressFeed = (activation: Activation, tag: string, effectId: string | undefined) =>
+  const progressFeed = (activation: Activation, tag: string, jobId: string | undefined) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const queue = yield* Queue.sliding<StoredProgress>(STREAM_PROGRESS_BUFFER)
-        const listener = { tag, effectId, queue }
+        const listener = { tag, jobId, queue }
 
         yield* Effect.acquireRelease(
           Effect.sync(() => activation.listeners.add(listener)),
@@ -1498,24 +1268,24 @@ export const activationOwner = ({
   }
 
   /**
-   * Whether the effect is still open: one indexed read of its outbox row per
-   * effect id per `EFFECT_CHECK_MS`. A row that is gone or no longer an effect
+   * Whether the job is still open: one indexed read of its outbox row per
+   * job id per `JOB_CHECK_MS`. A row that is gone or no longer a job
    * closes it for this activation.
    */
-  const checkEffect = (activation: Activation, message: ProgressDelivery, at: number) =>
+  const checkJob = (activation: Activation, message: ProgressDelivery, at: number) =>
     Effect.gen(function* () {
-      const current = activation.progress.get(message.effectId)
+      const current = activation.progress.get(message.jobId)
 
-      if (current !== undefined && (!current.open || at - current.checkedAt < EFFECT_CHECK_MS))
+      if (current !== undefined && (!current.open || at - current.checkedAt < JOB_CHECK_MS))
         return current
 
-      const failed = activation.checkFailed.get(message.effectId)
+      const failed = activation.checkFailed.get(message.jobId)
 
-      if (failed !== undefined && at - failed < EFFECT_CHECK_RETRY_MS) return undefined
+      if (failed !== undefined && at - failed < JOB_CHECK_RETRY_MS) return undefined
 
       const sql = yield* SqlClient.SqlClient
-      const actor = yield* where(activation)
-      activation.checking.add(message.effectId)
+      const actor = actorRow({ sql, actor: activation })
+      activation.checking.add(message.jobId)
 
       const read = yield* sql<{
         kind: string
@@ -1525,34 +1295,34 @@ export const activationOwner = ({
         payload: string
       }>`SELECT kind, attempts, cancelled_at_ms IS NOT NULL AS cancelled, caller, payload
           FROM actor_outbox
-          WHERE ${actor} AND intent_id = ${message.effectId}`.pipe(
-        Effect.ensuring(Effect.sync(() => activation.checking.delete(message.effectId))),
+          WHERE ${actor} AND intent_id = ${message.jobId}`.pipe(
+        Effect.ensuring(Effect.sync(() => activation.checking.delete(message.jobId))),
         Effect.exit,
       )
 
       if (Exit.isFailure(read)) {
-        activation.checkFailed.set(message.effectId, at)
+        activation.checkFailed.set(message.jobId, at)
 
         return undefined
       }
 
-      activation.checkFailed.delete(message.effectId)
-      const closedMeanwhile = activation.progress.get(message.effectId)
+      activation.checkFailed.delete(message.jobId)
+      const closedMeanwhile = activation.progress.get(message.jobId)
 
       if (closedMeanwhile !== undefined && !closedMeanwhile.open) return closedMeanwhile
 
       const [row] = read.value
 
-      if (row === undefined || row.kind !== "effect" || row.cancelled) {
-        const closed = closedEffect(at)
-        activation.progress.set(message.effectId, closed)
+      if (row === undefined || row.kind !== "job" || row.cancelled) {
+        const closed = closedJob(at)
+        activation.progress.set(message.jobId, closed)
 
         return closed
       }
 
       if (row.attempts < message.attempt) return undefined
 
-      const stored = activation.progress.get(message.effectId)
+      const stored = activation.progress.get(message.jobId)
 
       if (stored !== undefined && stored.open) {
         stored.checkedAt = at
@@ -1561,7 +1331,7 @@ export const activationOwner = ({
         return stored
       }
 
-      const checked: EffectProgress = {
+      const checked: JobProgress = {
         open: true,
         checkedAt: at,
         touchedAt: at,
@@ -1572,14 +1342,13 @@ export const activationOwner = ({
         holders: new Set(),
       }
 
-      activation.progress.set(message.effectId, checked)
+      activation.progress.set(message.jobId, checked)
 
       return checked
     })
 
-  const after = (message: ProgressDelivery, effect: EffectProgress) =>
-    message.attempt > effect.attempt ||
-    (message.attempt === effect.attempt && message.seq > effect.seq)
+  const after = (message: ProgressDelivery, job: JobProgress) =>
+    message.attempt > job.attempt || (message.attempt === job.attempt && message.seq > job.seq)
 
   /**
    * Admits one executor progress frame and forwards it through this
@@ -1595,7 +1364,7 @@ export const activationOwner = ({
         message.ref.tenant !== ref.tenant ||
         message.ref.actor !== ref.actor ||
         message.ref.id !== ref.id ||
-        !wanted.has(message.effect)
+        !wanted.has(message.job)
       )
         return
 
@@ -1604,12 +1373,12 @@ export const activationOwner = ({
       if (at - activation.progressSweptAt >= PROGRESS_RECORD_MS) {
         activation.progressSweptAt = at
 
-        for (const [effectId, record] of activation.progress)
-          if (at - record.touchedAt >= PROGRESS_RECORD_MS) activation.progress.delete(effectId)
+        for (const [jobId, record] of activation.progress)
+          if (at - record.touchedAt >= PROGRESS_RECORD_MS) activation.progress.delete(jobId)
       }
 
       if (at > message.leaseUntil + PROGRESS_SKEW_MS) return
-      const known = activation.progress.get(message.effectId)
+      const known = activation.progress.get(message.jobId)
 
       if (known !== undefined && (!known.open || !after(message, known))) return
 
@@ -1617,18 +1386,18 @@ export const activationOwner = ({
 
       yield* acquire(activation)
       yield* load(activation)
-      const effect = yield* checkEffect(activation, message, at)
+      const job = yield* checkJob(activation, message, at)
 
-      if (effect === undefined) return
+      if (job === undefined) return
 
       yield* activation.flush.withPermit(
         Effect.gen(function* () {
-          if (activation.progress.get(message.effectId) !== effect) return
+          if (activation.progress.get(message.jobId) !== job) return
 
-          if (!effect.open || !after(message, effect)) return
-          effect.attempt = message.attempt
-          effect.seq = message.seq
-          effect.touchedAt = at
+          if (!job.open || !after(message, job)) return
+          job.attempt = message.attempt
+          job.seq = message.seq
+          job.touchedAt = at
 
           const perChannel = new Map<Channel, Map<string, Array<string>>>()
 
@@ -1637,9 +1406,9 @@ export const activationOwner = ({
 
             if (
               wants === undefined ||
-              !wants.effects.has(message.effect) ||
+              !wants.jobs.has(message.job) ||
               row.buffered !== undefined ||
-              (wants.to === "performer" && !samePrincipal(principal(row.caller), effect.principal))
+              (wants.to === "principal" && !samePrincipal(principal(row.caller), job.principal))
             )
               continue
 
@@ -1650,7 +1419,7 @@ export const activationOwner = ({
           }
 
           for (const [channel, members] of perChannel) {
-            effect.holders.add(`${channel.holder}|${channel.epoch}`)
+            job.holders.add(`${channel.holder}|${channel.epoch}`)
             yield* send(
               activation,
               channel,
@@ -1658,8 +1427,8 @@ export const activationOwner = ({
                 HolderItem.cases.Progress.make({
                   member,
                   to,
-                  effect: message.effect,
-                  effectId: message.effectId,
+                  job: message.job,
+                  jobId: message.jobId,
                   attempt: message.attempt,
                   seq: message.seq,
                   frame: message.frame,
@@ -1670,12 +1439,12 @@ export const activationOwner = ({
 
           for (const listener of activation.listeners)
             if (
-              listener.tag === message.effect &&
-              (listener.effectId === undefined || listener.effectId === message.effectId)
+              listener.tag === message.job &&
+              (listener.jobId === undefined || listener.jobId === message.jobId)
             )
               Queue.offerUnsafe(listener.queue, {
-                effectId: message.effectId,
-                effect: effect.payload,
+                jobId: message.jobId,
+                job: job.payload,
                 attempt: message.attempt,
                 seq: message.seq,
                 frame: message.frame,
@@ -1685,21 +1454,21 @@ export const activationOwner = ({
     }).pipe(Effect.catchCause((cause) => Effect.logDebug("Progress frame dropped", cause)))
 
   /**
-   * Closes an effect's progress on this activation, once its route turn (whose
-   * command id is the effect id) commits or its settle is reported: holders
+   * Closes a job's progress on this activation, once its route turn (whose
+   * command id is the job id) commits or its settle is reported: holders
    * that received its progress discard what they still buffer, before the
    * route's own broadcasts.
    */
-  const closeProgress = (activation: Activation, effectId: string) =>
+  const closeProgress = (activation: Activation, jobId: string) =>
     Effect.suspend(() => {
-      const effect = activation.progress.get(effectId)
+      const job = activation.progress.get(jobId)
 
-      if (effect === undefined && !activation.checking.has(effectId)) return Effect.void
+      if (job === undefined && !activation.checking.has(jobId)) return Effect.void
 
       return activation.flush.withPermit(
         Effect.gen(function* () {
-          const current = activation.progress.get(effectId)
-          activation.progress.set(effectId, closedEffect(yield* now))
+          const current = activation.progress.get(jobId)
+          activation.progress.set(jobId, closedJob(yield* now))
 
           if (current === undefined || !current.open) return
 
@@ -1709,7 +1478,7 @@ export const activationOwner = ({
             const channel = activation.channels.get(name)
 
             if (channel !== undefined)
-              yield* send(activation, channel, [HolderItem.cases.ProgressEnd.make({ effectId })])
+              yield* send(activation, channel, [HolderItem.cases.ProgressEnd.make({ jobId })])
           }
         }),
       )
@@ -1717,13 +1486,13 @@ export const activationOwner = ({
 
   const progressClosed = (
     activation: Activation,
-    message: { readonly ref: ActorRef; readonly effectId: string; readonly attempt: number },
+    message: { readonly ref: ActorRef; readonly jobId: string; readonly attempt: number },
   ) => {
-    const effect = activation.progress.get(message.effectId)
+    const job = activation.progress.get(message.jobId)
 
-    return effect !== undefined && message.attempt < effect.attempt
+    return job !== undefined && message.attempt < job.attempt
       ? Effect.void
-      : closeProgress(activation, message.effectId)
+      : closeProgress(activation, message.jobId)
   }
 
   const hibernate = (entityId: string) =>
@@ -1731,7 +1500,7 @@ export const activationOwner = ({
       const activation = activations.get(entityId)
 
       if (activation === undefined) return
-      yield* endStreams(activation)
+      yield* streams.end(activation)
       yield* seal(activation)
       forget(activation)
       activation.opened.clear()
@@ -1752,9 +1521,9 @@ export const activationOwner = ({
     feedBroadcasts,
     watchBroadcasts,
     hibernate,
-    subscribe,
-    endStreams,
-    watchStreams,
+    subscribe: streams.subscribe,
+    endStreams: streams.end,
+    watchStreams: streams.watch,
     enter,
     prepare,
     list,

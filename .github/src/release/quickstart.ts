@@ -84,6 +84,8 @@ const program = Effect.gen(function* () {
     ),
   )
 
+  yield* run(["bun", "run", "build"], path.join(root, "packages/create"))
+
   const create = path.resolve(
     tarballs,
     lastLine(

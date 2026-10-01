@@ -12,7 +12,7 @@ import {
   SleepyProbe,
   Ticked,
 } from "./contract.ts"
-import { EffectProbeLive } from "./effects.ts"
+import { JobProbeLive } from "./jobs.ts"
 import { ArchiveLive } from "./archive.ts"
 import { BatchProbeLive } from "./turns/batches.ts"
 import { FeedProbeLive } from "./feeds.ts"
@@ -22,80 +22,70 @@ import { EventProbeReads, ProbeReads, SleepyProbeReads } from "./queries.ts"
 import { ReducerProbeLive } from "./reducers.ts"
 import { WorkflowProbeLive } from "./workflows.ts"
 
-const ProbeCommands = Probe.toLayer(
-  Effect.succeed({
-    Add: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* Probe.Turn
-      yield* turn.state.set({ count: turn.state.count + amount })
+const ProbeCommands = Probe.toLayer({
+  Add: Effect.fnUntraced(function* (amount: number) {
+    const turn = yield* Probe.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
 
-      return turn.state.count
-    }),
-    Fill: Effect.fnUntraced(function* (blob: string) {
-      const turn = yield* Probe.Turn
-      yield* turn.state.set({ blob, count: turn.state.count + 1 })
-
-      return blob.length
-    }),
-    Weigh: Effect.fnUntraced(function* (payload: string) {
-      const turn = yield* Probe.Turn
-      yield* turn.state.set({ count: turn.state.count + 1 })
-
-      return payload.length
-    }),
+    return turn.state.count
   }),
-)
+  Fill: Effect.fnUntraced(function* (blob: string) {
+    const turn = yield* Probe.Turn
+    yield* turn.state.set({ blob, count: turn.state.count + 1 })
 
-const SleepyProbeCommands = SleepyProbe.toLayer(
-  Effect.succeed({
-    Add: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* SleepyProbe.Turn
-      yield* turn.state.set({ count: turn.state.count + amount })
-
-      return turn.state.count
-    }),
-    Fill: Effect.fnUntraced(function* (blob: string) {
-      const turn = yield* SleepyProbe.Turn
-      yield* turn.state.set({ blob, count: turn.state.count + 1 })
-
-      return blob.length
-    }),
+    return blob.length
   }),
-)
+  Weigh: Effect.fnUntraced(function* (payload: string) {
+    const turn = yield* Probe.Turn
+    yield* turn.state.set({ count: turn.state.count + 1 })
 
-const ResidentProbeCommands = ResidentProbe.toLayer(
-  Effect.succeed({
-    Add: Effect.fnUntraced(function* (amount: number) {
-      const turn = yield* ResidentProbe.Turn
-      yield* turn.state.set({ count: turn.state.count + amount })
-
-      return turn.state.count
-    }),
+    return payload.length
   }),
-)
+})
 
-const EventProbeCommands = EventProbe.toLayer(
-  Effect.succeed({
-    Emit: Effect.fnUntraced(function* (count: number) {
-      const turn = yield* EventProbe.Turn
+const SleepyProbeCommands = SleepyProbe.toLayer({
+  Add: Effect.fnUntraced(function* (amount: number) {
+    const turn = yield* SleepyProbe.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
 
-      for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
-
-      return count
-    }),
+    return turn.state.count
   }),
-)
+  Fill: Effect.fnUntraced(function* (blob: string) {
+    const turn = yield* SleepyProbe.Turn
+    yield* turn.state.set({ blob, count: turn.state.count + 1 })
 
-const RetentionProbeCommands = RetentionProbe.toLayer(
-  Effect.succeed({
-    Emit: Effect.fnUntraced(function* (count: number) {
-      const turn = yield* RetentionProbe.Turn
-
-      for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
-
-      return count
-    }),
+    return blob.length
   }),
-)
+})
+
+const ResidentProbeCommands = ResidentProbe.toLayer({
+  Add: Effect.fnUntraced(function* (amount: number) {
+    const turn = yield* ResidentProbe.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
+
+    return turn.state.count
+  }),
+})
+
+const EventProbeCommands = EventProbe.toLayer({
+  Emit: Effect.fnUntraced(function* (count: number) {
+    const turn = yield* EventProbe.Turn
+
+    for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
+
+    return count
+  }),
+})
+
+const RetentionProbeCommands = RetentionProbe.toLayer({
+  Emit: Effect.fnUntraced(function* (count: number) {
+    const turn = yield* RetentionProbe.Turn
+
+    for (let n = 0; n < count; n++) yield* turn.emit(Ticked.make({ n }))
+
+    return count
+  }),
+})
 
 /**
  * Pending deliveries by intent payload. A benchmark registers an id before
@@ -114,38 +104,34 @@ export const SINKS = 64
  */
 export const sinkOf = (id: string) => `sink-${Number(id.split("-").at(-1)) % SINKS}`
 
-const SinkCommands = Sink.toLayer(
-  Effect.succeed({
-    Deliver: (id: string) =>
-      Effect.suspend(() => {
-        const pending = deliveries.get(id)
+const SinkCommands = Sink.toLayer({
+  Deliver: (id: string) =>
+    Effect.suspend(() => {
+      const pending = deliveries.get(id)
 
-        return pending === undefined ? Effect.void : Deferred.succeed(pending, undefined)
-      }).pipe(Effect.asVoid),
-  }),
-)
+      return pending === undefined ? Effect.void : Deferred.succeed(pending, undefined)
+    }).pipe(Effect.asVoid),
+})
 
-const SenderCommands = Sender.toLayer(
-  Effect.succeed({
-    Send: Effect.fnUntraced(function* (id: string) {
-      yield* (yield* Sink.intents(sinkOf(id))).Deliver(id)
-    }),
-    SendAt: Effect.fnUntraced(function* ({ ids, atMs }) {
-      for (const id of ids)
-        yield* (yield* Sink.intents(sinkOf(id)))
-          .Deliver(id)
-          .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
-    }),
-    SendMany: Effect.fnUntraced(function* ({ offset, count, atMs }) {
-      for (let index = offset; index < offset + count; index++) {
-        const id = `subscriber-${index}`
-        yield* (yield* Sink.intents(sinkOf(id)))
-          .Deliver(id)
-          .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
-      }
-    }),
+const SenderCommands = Sender.toLayer({
+  Send: Effect.fnUntraced(function* (id: string) {
+    yield* (yield* Sink.intents(sinkOf(id))).Deliver(id)
   }),
-)
+  SendAt: Effect.fnUntraced(function* ({ ids, atMs }) {
+    for (const id of ids)
+      yield* (yield* Sink.intents(sinkOf(id)))
+        .Deliver(id)
+        .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
+  }),
+  SendMany: Effect.fnUntraced(function* ({ offset, count, atMs }) {
+    for (let index = offset; index < offset + count; index++) {
+      const id = `subscriber-${index}`
+      yield* (yield* Sink.intents(sinkOf(id)))
+        .Deliver(id)
+        .pipe(Intent.at(DateTime.makeUnsafe(atMs)))
+    }
+  }),
+})
 
 /** Each `CronProbe` tick handler run: its actor, command id, and wall-clock epoch milliseconds. */
 export const cronFires: Array<{
@@ -154,19 +140,17 @@ export const cronFires: Array<{
   readonly at: number
 }> = []
 
-const CronProbeCommands = CronProbe.toLayer(
-  Effect.succeed({
-    Open: Effect.fnUntraced(function* () {
-      const turn = yield* CronProbe.Turn
-      yield* turn.state.set({ count: turn.state.count + 1 })
-    }),
-    Tick: Effect.fnUntraced(function* () {
-      const turn = yield* CronProbe.Turn
-      const at = yield* Clock.currentTimeMillis
-      cronFires.push({ id: turn.id, commandId: turn.commandId, at })
-    }),
+const CronProbeCommands = CronProbe.toLayer({
+  Open: Effect.fnUntraced(function* () {
+    const turn = yield* CronProbe.Turn
+    yield* turn.state.set({ count: turn.state.count + 1 })
   }),
-)
+  Tick: Effect.fnUntraced(function* () {
+    const turn = yield* CronProbe.Turn
+    const at = yield* Clock.currentTimeMillis
+    cronFires.push({ id: turn.id, commandId: turn.commandId, at })
+  }),
+})
 
 /**
  * SleepyProbe registers first: Cluster's entity reaper fixes its first sweep
@@ -186,7 +170,7 @@ export const ProbeLive = Layer.mergeAll(
   SenderCommands,
   LedgerLive,
   FamilyLive,
-  EffectProbeLive,
+  JobProbeLive,
   ArchiveLive,
   ReducerProbeLive,
   BatchProbeLive,

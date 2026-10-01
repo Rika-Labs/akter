@@ -1,19 +1,11 @@
+import { Inspection } from "@durable-actors/core/client"
 import { Clock, DateTime, Effect, Fiber, ManagedRuntime, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http"
-import {
-  ActorDetail,
-  ActorsPage,
-  DeadLettersPage,
-  EffectsPage,
-  OutboxPage,
-  Overview,
-  WorkflowsPage,
-} from "./schema.ts"
 import {
   actorView,
   actorsView,
   deadLettersView,
-  effectsView,
+  jobsView,
   h,
   outboxView,
   overviewTiles,
@@ -78,13 +70,13 @@ const actorPage = (type: string | undefined) => {
 
   if (type !== undefined) query.set("type", type)
 
-  return get(`/actors?${query}`, ActorsPage)
+  return get(`/actors?${query}`, Inspection.ActorsPage)
 }
 
 /** The widest page the API serves; a list shorter than the tenant's count says it is truncated. */
 const LIST = "limit=500"
 
-const view = ({ path, params }: Route, now: number, counts: Overview["counts"]) =>
+const view = ({ path, params }: Route, now: number, counts: Inspection.Overview["counts"]) =>
   Effect.gen(function* () {
     if (path.startsWith("/actor/")) {
       const [, , type = "", id = ""] = path.split("/")
@@ -94,32 +86,36 @@ const view = ({ path, params }: Route, now: number, counts: Overview["counts"]) 
         id: decodeURIComponent(id),
       })
 
-      return actorView({ detail: yield* get(`/actor?${query}`, ActorDetail), now })
+      return actorView({ detail: yield* get(`/actor?${query}`, Inspection.ActorDetail), now })
     }
 
     if (path === "/outbox")
       return outboxView({
-        rows: (yield* get(`/outbox?${LIST}`, OutboxPage)).outbox,
+        rows: (yield* get(`/outbox?${LIST}`, Inspection.OutboxPage)).outbox,
         total: counts.outbox,
         now,
       })
 
-    if (path === "/effects")
-      return effectsView({
-        rows: (yield* get(`/effects?${LIST}`, EffectsPage)).effects,
-        total: counts.effects,
+    if (path === "/jobs")
+      return jobsView({
+        rows: (yield* get(`/jobs?${LIST}`, Inspection.JobsPage)).jobs,
+        total: counts.jobs,
         now,
       })
 
     if (path === "/dead-letters")
       return deadLettersView({
-        rows: (yield* get(`/dead-letters?${LIST}`, DeadLettersPage)).deadLetters,
+        rows: (yield* get(`/dead-letters?${LIST}`, Inspection.DeadLettersPage)).deadLetters,
         total: counts.deadLetters,
       })
 
     if (path === "/workflows") {
       const all = params.get("status") === "all"
-      const page = yield* get(`/workflows?status=${all ? "all" : "open"}&${LIST}`, WorkflowsPage)
+
+      const page = yield* get(
+        `/workflows?status=${all ? "all" : "open"}&${LIST}`,
+        Inspection.WorkflowsPage,
+      )
 
       return workflowsView({
         rows: page.workflows,
@@ -158,7 +154,7 @@ const render = Effect.gen(function* () {
   const now = yield* Clock.currentTimeMillis
   setActive(current.path)
 
-  const overview = yield* get("/overview", Overview)
+  const overview = yield* get("/overview", Inspection.Overview)
   tenant.textContent = overview.tenant
   tiles.replaceChildren(overviewTiles(overview))
 

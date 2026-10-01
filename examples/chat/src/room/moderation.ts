@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect"
 
 /**
- * The external moderation provider. `idempotencyKey` is the effect id, so a
+ * The external moderation provider. `idempotencyKey` is the job id, so a
  * provider that honours it charges a retried attempt once.
  */
 export class ModerationApi extends Context.Service<

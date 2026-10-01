@@ -2,17 +2,17 @@ import { Actor } from "@durable-actors/core"
 import { Deferred, Effect, Layer, Schema } from "effect"
 
 /** One source commit a benchmark waits to see applied, named by its key. */
-export class Pulsed extends Actor.Event<Pulsed>()("Pulsed", {
+export const Pulsed = Actor.event("Pulsed", {
   reader: Schema.String,
   key: Schema.String,
-}) {}
+})
 
 const Pulse = Actor.command("Pulse", {
-  input: Schema.Struct({ reader: Schema.String, key: Schema.String }),
+  payload: Schema.Struct({ reader: Schema.String, key: Schema.String }),
 })
 
 const PulseMany = Actor.command("PulseMany", {
-  input: Schema.Struct({ reader: Schema.String, prefix: Schema.String, count: Schema.Int }),
+  payload: Schema.Struct({ reader: Schema.String, prefix: Schema.String, count: Schema.Int }),
 })
 
 /** Publishes `Pulsed`; routed and dynamic subscribers follow it. */
@@ -23,9 +23,9 @@ export const PulseSource = Actor.make("PulseSource", {
 })
 
 /** A source no registered subscriber routes from, for the publisher-cost cases. */
-export class Beat extends Actor.Event<Beat>()("Beat", { n: Schema.Int }) {}
+export const Beat = Actor.event("Beat", { n: Schema.Int })
 
-const Emit = Actor.command("Emit", { input: Schema.Int })
+const Emit = Actor.command("Emit", { payload: Schema.Int })
 
 /** Publishes `Beat` events; nothing routes from it. */
 export const BeatSource = Actor.make("BeatSource", {
@@ -34,7 +34,7 @@ export const BeatSource = Actor.make("BeatSource", {
   api: { Emit },
 })
 
-const EmitMany = Actor.command("EmitMany", { input: Schema.Int })
+const EmitMany = Actor.command("EmitMany", { payload: Schema.Int })
 
 /** A source whose events expire after a second, and whose subscribers hold them a second more. */
 export const PruneSource = Actor.make("PruneSource", {
@@ -48,13 +48,14 @@ const Applied = Schema.Struct({
   count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
 })
 
-const Read = Actor.command("Read", {
-  input: Actor.Delivery({ source: PulseSource, events: [Pulsed] }),
-})
+const PulseDelivery = Actor.Delivery({ source: PulseSource, events: [Pulsed] })
+
+const BeatDelivery = Actor.Delivery({ source: BeatSource, events: [Beat] })
+
+const Read = Actor.command("Read", { payload: PulseDelivery })
 
 const Routed = Actor.subscription("Routed", {
-  source: PulseSource,
-  events: [Pulsed],
+  delivery: PulseDelivery,
   handler: Read,
   route: (event) => event.reader,
 })
@@ -70,15 +71,13 @@ export const PulseReader = Actor.make("PulseReader", {
   subscriptions: [Routed],
 })
 
-const OnBeat = Actor.command("OnBeat", {
-  input: Actor.Delivery({ source: BeatSource, events: [Beat] }),
-})
+const OnBeat = Actor.command("OnBeat", { payload: BeatDelivery })
 
-const Beats = Actor.subscription("Beats", { source: BeatSource, events: [Beat], handler: OnBeat })
+const Beats = Actor.subscription("Beats", { delivery: BeatDelivery, handler: OnBeat })
 
-const Follow = Actor.command("Follow", { input: Schema.String })
+const Follow = Actor.command("Follow", { payload: Schema.String })
 
-const Unfollow = Actor.command("Unfollow", { input: Schema.String })
+const Unfollow = Actor.command("Unfollow", { payload: Schema.String })
 
 /** A dynamic subscriber of `BeatSource`. */
 export const BeatFollower = Actor.make("BeatFollower", {
@@ -90,8 +89,7 @@ export const BeatFollower = Actor.make("BeatFollower", {
 })
 
 const Doze = Actor.subscription("Doze", {
-  source: PulseSource,
-  events: [Pulsed],
+  delivery: PulseDelivery,
   handler: Read,
   route: (event) => event.reader,
 })
@@ -106,15 +104,9 @@ export const PulseSleeper = Actor.make("PulseSleeper", {
   policy: { hibernateAfter: "100 millis" },
 })
 
-const OnPoison = Actor.command("OnPoison", {
-  input: Actor.Delivery({ source: BeatSource, events: [Beat] }),
-})
+const OnPoison = Actor.command("OnPoison", { payload: BeatDelivery })
 
-const Poisoned = Actor.subscription("Poisoned", {
-  source: BeatSource,
-  events: [Beat],
-  handler: OnPoison,
-})
+const Poisoned = Actor.subscription("Poisoned", { delivery: BeatDelivery, handler: OnPoison })
 
 /** A dynamic subscriber of `BeatSource` whose handler always dies, so its row backs off. */
 export const PoisonFollower = Actor.make("PoisonFollower", {
@@ -173,70 +165,56 @@ const count = <S extends { readonly count: number }>(turn: {
 
 /** Handlers for every subscription probe actor. */
 export const SubscriptionProbeLive = Layer.mergeAll(
-  PulseSource.toLayer(
-    Effect.succeed({
-      Pulse: Effect.fnUntraced(function* ({ reader, key }) {
-        yield* (yield* PulseSource.Turn).emit(Pulsed.make({ reader, key }))
-      }),
-      PulseMany: Effect.fnUntraced(function* ({ reader, prefix, count }) {
-        const turn = yield* PulseSource.Turn
+  PulseSource.toLayer({
+    Pulse: Effect.fnUntraced(function* ({ reader, key }) {
+      yield* (yield* PulseSource.Turn).emit(Pulsed.make({ reader, key }))
+    }),
+    PulseMany: Effect.fnUntraced(function* ({ reader, prefix, count }) {
+      const turn = yield* PulseSource.Turn
 
-        for (let index = 0; index < count; index++)
-          yield* turn.emit(Pulsed.make({ reader, key: `${prefix}-${index}` }))
-      }),
+      for (let index = 0; index < count; index++)
+        yield* turn.emit(Pulsed.make({ reader, key: `${prefix}-${index}` }))
     }),
-  ),
-  PruneSource.toLayer(
-    Effect.succeed({
-      EmitMany: Effect.fnUntraced(function* (count: number) {
-        const turn = yield* PruneSource.Turn
+  }),
+  PruneSource.toLayer({
+    EmitMany: Effect.fnUntraced(function* (count: number) {
+      const turn = yield* PruneSource.Turn
 
-        for (let n = 0; n < count; n++) yield* turn.emit(Beat.make({ n }))
-      }),
+      for (let n = 0; n < count; n++) yield* turn.emit(Beat.make({ n }))
     }),
-  ),
-  BeatSource.toLayer(
-    Effect.succeed({
-      Emit: Effect.fnUntraced(function* (n: number) {
-        yield* (yield* BeatSource.Turn).emit(Beat.make({ n }))
-      }),
+  }),
+  BeatSource.toLayer({
+    Emit: Effect.fnUntraced(function* (n: number) {
+      yield* (yield* BeatSource.Turn).emit(Beat.make({ n }))
     }),
-  ),
-  PulseReader.toLayer(
-    Effect.succeed({
-      Touch: () => Effect.void,
-      Read: Effect.fnUntraced(function* () {
-        yield* count(yield* PulseReader.Turn)
-      }),
+  }),
+  PulseReader.toLayer({
+    Touch: () => Effect.void,
+    Read: Effect.fnUntraced(function* () {
+      yield* count(yield* PulseReader.Turn)
     }),
-  ),
-  PulseSleeper.toLayer(
-    Effect.succeed({
-      Touch: () => Effect.void,
-      Read: Effect.fnUntraced(function* () {
-        yield* count(yield* PulseSleeper.Turn)
-      }),
+  }),
+  PulseSleeper.toLayer({
+    Touch: () => Effect.void,
+    Read: Effect.fnUntraced(function* () {
+      yield* count(yield* PulseSleeper.Turn)
     }),
-  ),
-  PoisonFollower.toLayer(
-    Effect.succeed({
-      Follow: Effect.fnUntraced(function* (source: string) {
-        yield* (yield* PoisonFollower.Turn).subscribe(Poisoned, source)
-      }),
-      OnPoison: () => Effect.die("poison delivery"),
+  }),
+  PoisonFollower.toLayer({
+    Follow: Effect.fnUntraced(function* (source: string) {
+      yield* (yield* PoisonFollower.Turn).subscribe(Poisoned, source)
     }),
-  ),
-  BeatFollower.toLayer(
-    Effect.succeed({
-      Follow: Effect.fnUntraced(function* (source: string) {
-        yield* (yield* BeatFollower.Turn).subscribe(Beats, source)
-      }),
-      Unfollow: Effect.fnUntraced(function* (source: string) {
-        yield* (yield* BeatFollower.Turn).unsubscribe(Beats, source)
-      }),
-      OnBeat: Effect.fnUntraced(function* () {
-        yield* count(yield* BeatFollower.Turn)
-      }),
+    OnPoison: () => Effect.die("poison delivery"),
+  }),
+  BeatFollower.toLayer({
+    Follow: Effect.fnUntraced(function* (source: string) {
+      yield* (yield* BeatFollower.Turn).subscribe(Beats, source)
     }),
-  ),
+    Unfollow: Effect.fnUntraced(function* (source: string) {
+      yield* (yield* BeatFollower.Turn).unsubscribe(Beats, source)
+    }),
+    OnBeat: Effect.fnUntraced(function* () {
+      yield* count(yield* BeatFollower.Turn)
+    }),
+  }),
 )

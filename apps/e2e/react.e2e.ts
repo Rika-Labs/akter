@@ -1,50 +1,12 @@
-import { randomUUID } from "node:crypto"
-import { type APIRequestContext, expect, type Page, test } from "@playwright/test"
+import { expect, test } from "@playwright/test"
 import { proxy } from "./proxy.ts"
-
-/**
- * The chat room with @durable-actors/react, served by
- * examples/chat/src/web/serve.ts.
- */
-const CHAT = "http://127.0.0.1:3003"
-
-const bearer = (user: string) => ({ authorization: `Bearer ${user}` })
-
-const roomOf = (name: string) => `${name}-${randomUUID()}`
-
-const post = async (request: APIRequestContext, room: string, user: string, body: string) => {
-  const minted = await request.post(`${CHAT}/api/command-ids`, { headers: bearer(user) })
-  const { commandId } = (await minted.json()) as { readonly commandId: string }
-
-  const response = await request.post(`${CHAT}/api/actors/Room/${room}/Post`, {
-    headers: { ...bearer(user), "idempotency-key": commandId },
-    data: { body },
-  })
-
-  expect(response.status()).toBe(200)
-}
-
-const history = async (request: APIRequestContext, room: string) => {
-  const response = await request.post(`${CHAT}/api/actors/Room/${room}/History`, {
-    headers: bearer("bob"),
-    data: {},
-  })
-
-  return (
-    (await response.json()) as ReadonlyArray<{ readonly message: { readonly body: string } }>
-  ).map((entry) => entry.message.body)
-}
-
-const say = async (page: Page, body: string) => {
-  await page.getByTestId("body").fill(body)
-  await page.getByRole("button", { name: "Post" }).click()
-}
+import { history, openRoom, post, say, uniqueId } from "./room.ts"
 
 test("useCommand retries a command after its responses were lost and the server keeps one receipt", async ({
   page,
   request,
 }) => {
-  const room = roomOf("react-retry")
+  const room = uniqueId("react-retry")
   const keys: Array<string | undefined> = []
   let lose = true
 
@@ -55,9 +17,8 @@ test("useCommand retries a command after its responses were lost and the server 
     return lose ? route.abort("connectionreset") : route.fulfill({ response })
   })
 
-  await page.goto(`${CHAT}/react/rooms/${room}?user=alice`)
-  await expect(page.getByTestId("user")).toHaveText("alice")
-  await say(page, "once")
+  await openRoom({ page, room, at: "react/rooms" })
+  await say({ page, body: "once" })
 
   await expect(page.getByTestId("post-status")).toContainText("not confirmed", { timeout: 10_000 })
   const commandId = await page.getByTestId("post-status").getAttribute("data-command-id")
@@ -69,7 +30,7 @@ test("useCommand retries a command after its responses were lost and the server 
 
   expect(keys.length).toBeGreaterThan(1)
   expect(new Set(keys)).toEqual(new Set([commandId]))
-  expect(await history(request, room)).toEqual(["once"])
+  expect(await history({ request, room: room })).toEqual(["once"])
   await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: once"])
 })
 
@@ -78,17 +39,17 @@ test("useEventFeed resumes after a dropped connection and after a reload with no
   context,
   request,
 }) => {
-  const room = roomOf("react-feed")
+  const room = uniqueId("react-feed")
   const network = await proxy()
 
   try {
-    await page.goto(`${network.url}/react/rooms/${room}?user=alice`)
-    await say(page, "one")
+    await openRoom({ page, room, at: "react/rooms", origin: network.url })
+    await say({ page, body: "one" })
     await expect(page.getByTestId("messages").locator("li")).toHaveText(["alice: one"])
 
     await context.setOffline(true)
     network.cut()
-    await post(request, room, "bob", "two")
+    await post({ request, room: room, user: "bob", body: "two" })
     await page.waitForTimeout(1_000)
     await expect(page.getByTestId("messages").locator("li")).toHaveCount(1)
     network.restore()
@@ -101,7 +62,7 @@ test("useEventFeed resumes after a dropped connection and after a reload with no
     await expect(page.getByTestId("cursor")).toHaveText("2")
     await expect(page.getByTestId("presence")).toHaveText("open")
     await expect(page.getByTestId("messages").locator("li")).toHaveCount(0)
-    await post(request, room, "bob", "three")
+    await post({ request, room: room, user: "bob", body: "three" })
     await expect(page.getByTestId("messages").locator("li")).toHaveText(["bob: three"])
     await expect(page.getByTestId("cursor")).toHaveText("3")
 
@@ -121,9 +82,9 @@ test("useActorState shows an optimistic reaction at once and settles on the comm
   page,
   request,
 }) => {
-  const room = roomOf("react-state")
-  await post(request, room, "bob", "hello")
-  await page.goto(`${CHAT}/react/rooms/${room}?user=alice`)
+  const room = uniqueId("react-state")
+  await post({ request, room: room, user: "bob", body: "hello" })
+  await openRoom({ page, room, at: "react/rooms" })
   await expect(page.getByTestId("presence")).toHaveText("open")
 
   await page.getByTestId("react").click()

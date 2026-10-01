@@ -1,8 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { Actor, ActorError, CommandConflict, Actors } from "@durable-actors/core"
-import { ActorTest } from "@durable-actors/core/testing"
-import { Config, Crypto, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
-import { Pool } from "pg"
+import { ActorTest, testDatabase } from "@durable-actors/core/testing"
+import { Effect, Layer, ManagedRuntime, Schema } from "effect"
 import { afterAll, expect, it } from "vitest"
 import { OrdersLive } from "../layer.ts"
 import { fakeLedger } from "../payments/ledger.ts"
@@ -11,35 +10,11 @@ import { Order, OrderAlreadyPlaced, OrderId } from "./contract.ts"
 
 const ledger = fakeLedger()
 
-/**
- * The same cases run on PGlite (`test`) and on a fresh Postgres database
- * (`test:integration`).
- */
-const database = Effect.gen(function* () {
-  if ((yield* Config.String("ORDERS_BACKEND")) === "pglite") return undefined
-
-  const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
-  const name = `orders_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-  const admin = yield* Effect.acquireRelease(
-    Effect.sync(() => new Pool({ connectionString: base.href })),
-    (pool) => Effect.promise(() => pool.end()),
-  )
-
-  yield* Effect.acquireRelease(
-    Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-    () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-  )
-  base.pathname = `/${name}`
-
-  return Redacted.make(base.href)
-})
-
 const live = Layer.unwrap(
   Effect.gen(function* () {
     return OrdersLive.pipe(
       Layer.provide(ledger.layer),
-      Layer.provideMerge(ActorTest.layer({ database: yield* database })),
+      Layer.provideMerge(ActorTest.layer({ database: yield* testDatabase })),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)
@@ -69,7 +44,7 @@ const piano = {
 
 const shipment = (id: string) => Shipment.get(id as Parameters<typeof Shipment.get>[0])
 
-/** Ledger keys first seen after `before`: the effect ids of charges this case performed. */
+/** Ledger keys first seen after `before`: the job ids of charges this case enqueued. */
 const newKeys = (before: ReadonlySet<string>) =>
   [...ledger.calls.keys()].filter((key) => !before.has(key))
 
@@ -87,7 +62,7 @@ const settled = Effect.fnUntraced(function* (id: string) {
 
     const pending = yield* test.inspect(order.ref)
 
-    if (summary.status !== "awaiting_payment" && pending.outbox === 0 && pending.effects === 0) {
+    if (summary.status !== "awaiting_payment" && pending.outbox === 0 && pending.jobs === 0) {
       const tracking = yield* Effect.forEach(summary.shipments, (child) =>
         shipment(child).pipe(Effect.flatMap((handle) => handle.Tracking())),
       )
@@ -135,7 +110,7 @@ it("places an order: owned lines, an event, a minted shipment per package, and o
         rows: { order_lines: 3 },
         events: 2,
         outbox: 0,
-        effects: 0,
+        jobs: 0,
       })
 
       for (const child of placed.shipments)

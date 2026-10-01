@@ -1,4 +1,5 @@
 import { Actor, type ActorError, Unauthorized, User } from "@durable-actors/core"
+import { Actors, Auth } from "@durable-actors/core/runtime"
 import { Effect, Layer, Match, Option, Schema } from "effect"
 import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { TENANT } from "./access.ts"
@@ -9,7 +10,7 @@ import { Shipment } from "./shipment/contract.ts"
 
 /**
  * A stand-in for a real identity provider: the bearer token is the customer
- * id. Use `Actor.auth.jwt` in production.
+ * id. Use `Auth.jwt` in production.
  */
 const authenticate = (headers: Headers.Headers) =>
   Option.match(Headers.get(headers, "authorization"), {
@@ -27,14 +28,14 @@ const authenticate = (headers: Headers.Headers) =>
  * Authenticates `Authorization: Bearer <customer>` as that customer; a stand-
  * in for a real identity provider.
  */
-export const demoAuth = Actor.auth.make((request) => authenticate(request.headers))
+export const demoAuth = Auth.make((request) => authenticate(request.headers))
 
 /**
  * Shipments are served as they are: `Tracking` is a plain read. The served
  * layer also answers `POST /command-ids`, where a client gets the id it sends
  * as `Idempotency-Key` and reuses on every retry.
  */
-const served = Actor.serve({
+const served = Actors.serve({
   actors: [Shipment],
   auth: demoAuth,
   openapi: { path: "/openapi.json", title: "Orders" },

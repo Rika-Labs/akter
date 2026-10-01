@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest"
 
 import { recordingFetch, runCli, runCliWith } from "../../testing.ts"
 
-const Note = Actor.command("Note", { input: Schema.String })
+const Note = Actor.command("Note", { payload: Schema.String })
 
 const Remind = Actor.command("Remind")
 
@@ -22,22 +22,20 @@ const Vault = Actor.make("CliVault", {
   internal: { Remind },
 })
 
-const live = Vault.toLayer(
-  Effect.succeed({
-    Note: Effect.fnUntraced(function* (text: string) {
-      const turn = yield* Vault.Turn
-      yield* turn.state.set({ notes: [...turn.state.notes, text] })
+const live = Vault.toLayer({
+  Note: Effect.fnUntraced(function* (text: string) {
+    const turn = yield* Vault.Turn
+    yield* turn.state.set({ notes: [...turn.state.notes, text] })
 
-      yield* (yield* Vault.intents(turn.id))
-        .Remind()
-        .pipe(Intent.after("1 hour"), Intent.key("remind"))
-    }),
-    Remind: Effect.fnUntraced(function* () {
-      const turn = yield* Vault.Turn
-      yield* turn.state.set({ reminded: true })
-    }),
+    yield* (yield* Vault.intents(turn.id))
+      .Remind()
+      .pipe(Intent.after("1 hour"), Intent.key("remind"))
   }),
-)
+  Remind: Effect.fnUntraced(function* () {
+    const turn = yield* Vault.Turn
+    yield* turn.state.set({ reminded: true })
+  }),
+})
 
 const runtime = (as: string) =>
   live.pipe(
@@ -165,7 +163,7 @@ describe("durable export", () => {
       expect(answer).toEqual({
         stdout: [
           `Exported CliVault/v1 to ${output}`,
-          "carries 1 state keys, 1 pending intents, 0 pending effects",
+          "carries 1 state keys, 1 pending intents, 0 pending jobs",
           "omits 2 receipts, 0 events, 0 workflows, 0 dead letters, 0 owned-table rows, 0 blob entries",
           "",
         ].join("\n"),

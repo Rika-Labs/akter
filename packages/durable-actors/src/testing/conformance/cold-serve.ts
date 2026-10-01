@@ -13,7 +13,7 @@ import {
 import { Actor, Intent } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import { RuntimeControl } from "../../runtime/drain.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import {
   bearerHeaders,
   clientFor,
@@ -22,7 +22,7 @@ import {
   edgeRunner,
   REGION,
 } from "./assertions.ts"
-import { reasonOf, receipts, runs, serveHttp, tenantOf } from "./http.ts"
+import { reasonOf, receipts, runs, serveHttp, tenantOf, httpSuite } from "./http.ts"
 
 /**
  * Scale-to-zero serving: a deployment's last runner drains and exits, and the
@@ -32,16 +32,16 @@ import { reasonOf, receipts, runs, serveHttp, tenantOf } from "./http.ts"
  * the edge asks its provider for one.
  */
 
-const Deposit = Actor.command("Deposit", { input: Schema.Int, output: Schema.Int })
+const Deposit = Actor.command("Deposit", { payload: Schema.Int, success: Schema.Int })
 
-const Hold = Actor.command("Hold", { output: Schema.Int })
+const Hold = Actor.command("Hold", { success: Schema.Int })
 
 const Plan = Actor.command("Plan")
 
 const Remind = Actor.command("Remind")
 
 const Balance = Actor.query("Balance", {
-  output: Schema.Struct({ balance: Schema.Int, holds: Schema.Int, reminded: Schema.Int }),
+  success: Schema.Struct({ balance: Schema.Int, holds: Schema.Int, reminded: Schema.Int }),
 })
 
 const zero = Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0)))
@@ -129,14 +129,14 @@ const mint = Effect.gen(function* () {
 /** The bound a cold start of the conformance runtime must answer within. */
 const COLD_START_BOUND_MS = 30_000
 
-export const coldServeConformance: ReadonlyArray<ConformanceCase> = [
+export const coldServeConformance: ReadonlyArray<ConformanceCase<ColdServeFixture>> = [
   {
     name: "recovers committed and due work after scaling to zero, and runs every retried command once",
     timeoutMs: 90_000,
     run: ({ expect, environment, fixture }) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const cold = fixture.coldServe
+          const cold = fixture
           yield* reset(cold)
           yield* environment.restart
 
@@ -257,7 +257,7 @@ export const coldServeConformance: ReadonlyArray<ConformanceCase> = [
           expect(cold.deposits.get(first.refused)).toBe(1)
           expect(coldMs > 0 && coldMs < COLD_START_BOUND_MS).toBe(true)
         }).pipe(
-          Effect.ensuring(reset(fixture.coldServe)),
+          Effect.ensuring(reset(fixture)),
           Effect.onError(() => environment.restart),
         ),
       ),
@@ -275,7 +275,7 @@ const provide = <R>(
     Effect.forkScoped,
   )
 
-export const coldServeEdgeConformance: ReadonlyArray<ConformanceCase> = [
+export const coldServeEdgeConformance: ReadonlyArray<ConformanceCase<ColdServeFixture>> = [
   {
     name: "cold-starts one runner for a burst of requests to a deployment with none, forwards once it answers ready, and again after it scales to zero",
     requiresEdge: true,
@@ -390,3 +390,10 @@ export const coldServeEdgeConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Cold-serve actors, served beside the HTTP actors. */
+export const coldServeSuite: ConformanceSuite<ColdServeFixture> = {
+  fixture: coldServeFixture,
+  layer: coldServeLayer,
+  uses: [httpSuite],
+}

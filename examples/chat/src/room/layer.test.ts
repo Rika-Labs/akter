@@ -7,20 +7,9 @@ import {
   RetentionGap,
   User,
 } from "@durable-actors/core"
-import { ActorTest } from "@durable-actors/core/testing"
-import {
-  Config,
-  Crypto,
-  Effect,
-  Layer,
-  ManagedRuntime,
-  Option,
-  Redacted,
-  Schema,
-  Stream,
-} from "effect"
+import { ActorTest, testDatabase } from "@durable-actors/core/testing"
+import { Effect, Layer, ManagedRuntime, Option, Schema, Stream } from "effect"
 import { SqlClient } from "effect/unstable/sql"
-import { Pool } from "pg"
 import { afterAll, expect, it } from "vitest"
 import { Presence, Room, RoomClosed, RoomId } from "./contract.ts"
 import { RoomLive } from "./layer.ts"
@@ -38,36 +27,12 @@ const CountingModeration = Layer.succeed(ModerationApi, {
     }),
 })
 
-/**
- * The same cases run on PGlite (`test`) and on a fresh Postgres database
- * (`test:integration`).
- */
-const database = Effect.gen(function* () {
-  if ((yield* Config.String("CHAT_BACKEND")) === "pglite") return undefined
-
-  const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
-  const name = `chat_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
-
-  const admin = yield* Effect.acquireRelease(
-    Effect.sync(() => new Pool({ connectionString: base.href })),
-    (pool) => Effect.promise(() => pool.end()),
-  )
-
-  yield* Effect.acquireRelease(
-    Effect.promise(() => admin.query(`CREATE DATABASE "${name}"`)),
-    () => Effect.promise(() => admin.query(`DROP DATABASE "${name}" WITH (FORCE)`)),
-  )
-  base.pathname = `/${name}`
-
-  return Redacted.make(base.href)
-})
-
 const live = Layer.unwrap(
   Effect.gen(function* () {
     return RoomLive.pipe(
       Layer.provide([CountingModeration, Moderators.layer]),
       Layer.provideMerge(
-        ActorTest.layer({ database: yield* database, as: User.make({ subject: "ada" }) }),
+        ActorTest.layer({ database: yield* testDatabase, as: User.make({ subject: "ada" }) }),
       ),
     )
   }),
@@ -86,7 +51,7 @@ const moderated = Effect.fnUntraced(function* (room: { readonly ref: ActorRef },
 
   while ((yield* test.receiptsFor(room.ref, "Moderated")) < posts) yield* Effect.sleep("20 millis")
 
-  while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+  while ((yield* test.inspect(room.ref)).jobs > 0) yield* Effect.sleep("20 millis")
 })
 
 const bytes = new TextEncoder().encode("attachment")
@@ -110,7 +75,7 @@ it("posts a message with its row, blob, event, moderation, and idle timer", () =
         blobs: { attachments: 1 },
         events: 1,
         outbox: 1,
-        effects: 0,
+        jobs: 0,
         state: { reactions: 2 },
       })
     }),
@@ -129,7 +94,7 @@ it("a declared failure commits nothing but its receipt", () =>
         blobs: { attachments: 0 },
         events: 1,
         outbox: 0,
-        effects: 0,
+        jobs: 0,
         receipts: 2,
       })
     }),
@@ -268,7 +233,7 @@ it("retracts a message and settles its moderation call once", () =>
       const id = yield* room.Post({ body: "oops" })
       yield* room.Retract(id)
 
-      while ((yield* test.inspect(room.ref)).effects > 0) yield* Effect.sleep("20 millis")
+      while ((yield* test.inspect(room.ref)).jobs > 0) yield* Effect.sleep("20 millis")
 
       const settled =
         (yield* test.receiptsFor(room.ref, "Moderated")) +

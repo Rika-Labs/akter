@@ -2,31 +2,31 @@ import { DateTime, Deferred, Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Keeper, Shipper, Watch } from "./actors.ts"
+import { Keeper, Shipper, Watch, type WorkflowsFixture } from "./actors.ts"
 import { eventually, reset, suspendedRow } from "./harness.ts"
 
 /** Owner-event waits, clocks, and retention pins of workflows. */
-export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowWaitConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: resolves an event committed between start and registration",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.gates.set("w2-between", gate)
+          fixture.gates.set("w2-between", gate)
           const shipper = yield* Shipper.get("w2-between")
           const run = yield* shipper.Watch({ mode: "gated", orderId: "w2-between" })
 
           yield* eventually(
-            Effect.sync(() => fixture.workflows.runs.get("hold:w2-between") === 1),
+            Effect.sync(() => fixture.runs.get("hold:w2-between") === 1),
             "the activity before the wait",
           )
 
           yield* shipper.Pay({ orderId: "w2-between", amount: 4 })
           yield* Deferred.succeed(gate, undefined)
           expect(yield* run.result).toBe("paid-4")
-        }).pipe(Effect.ensuring(Effect.sync(() => fixture.workflows.gates.delete("w2-between")))),
+        }).pipe(Effect.ensuring(Effect.sync(() => fixture.gates.delete("w2-between")))),
       ),
   },
   {
@@ -34,7 +34,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("w2-suspending")
           const pause = yield* test.pauseNext("beforeWorkflowSuspend")
@@ -52,10 +52,10 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const gate = yield* Deferred.make<void>()
-          fixture.workflows.gates.set("w2-live", gate)
+          fixture.gates.set("w2-live", gate)
           const shipper = yield* Shipper.get("w2-live")
           const run = yield* shipper.Watch({ mode: "race", orderId: "w2-live" })
 
@@ -64,7 +64,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
               const rows = yield* sql<{ step: string }>`SELECT step FROM actor_workflow_step
                 WHERE execution_id = ${run.executionId} AND step = 'first'`
 
-              return rows.length === 1 && fixture.workflows.runs.get("slow:w2-live") === 1
+              return rows.length === 1 && fixture.runs.get("slow:w2-live") === 1
             }).pipe(Effect.orDie),
             "the wait to park beside the running activity",
           )
@@ -82,10 +82,77 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              const gate = fixture.workflows.gates.get("w2-live")
+              const gate = fixture.gates.get("w2-live")
 
               if (gate !== undefined) yield* Deferred.succeed(gate, undefined)
-              fixture.workflows.gates.delete("w2-live")
+              fixture.gates.delete("w2-live")
+            }),
+          ),
+        ),
+      ),
+  },
+  {
+    name: "workflows: a parked wait resolves by the event its sibling activity emits as that sibling finishes",
+    timeoutMs: 120_000,
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          yield* reset(fixture)
+          const sql = yield* SqlClient.SqlClient
+          const gate = yield* Deferred.make<void>()
+          fixture.gates.set("sibling-gated", gate)
+          const ids = ["sibling-gated", "sibling-0", "sibling-1", "sibling-2", "sibling-3"]
+
+          const runs = yield* Effect.forEach(ids, (id) =>
+            Shipper.get(id).pipe(
+              Effect.flatMap((shipper) => shipper.Watch({ mode: "sibling", orderId: id })),
+            ),
+          )
+
+          yield* eventually(
+            Effect.gen(function* () {
+              const rows = yield* sql<{ step: string }>`SELECT step FROM actor_workflow_step
+                WHERE execution_id = ${runs[0]!.executionId} AND step = 'first' AND exit IS NULL`
+
+              return rows.length === 1 && fixture.runs.get("emit:sibling-gated") === 1
+            }).pipe(Effect.orDie),
+            "the wait to park beside the gated sibling",
+          )
+
+          yield* Deferred.succeed(gate, undefined)
+
+          const results = yield* Effect.forEach(runs, (run) => run.result, {
+            concurrency: "unbounded",
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: "60 seconds",
+              orElse: () => Effect.die(new Error("A run never resumed for its sibling's event")),
+            }),
+          )
+
+          expect(results).toEqual(ids.map(() => "paid-8|emitted"))
+
+          for (const [index, id] of ids.entries()) {
+            const [events] = yield* sql<{ count: number }>`SELECT count(*)::int AS count
+              FROM actor_events WHERE actor_type = 'Shipper' AND actor_id = ${id} AND event = 'Paid'`
+
+            const [leftover] = yield* sql<{ steps: number; timers: number }>`SELECT
+              (SELECT count(*)::int FROM actor_workflow_step
+                WHERE execution_id = ${runs[index]!.executionId}) AS steps,
+              (SELECT count(*)::int FROM actor_outbox
+                WHERE timer_key = ${`wf:${runs[index]!.executionId}`}) AS timers`
+
+            expect({ id, events: events!.count, ...leftover }).toEqual({
+              id,
+              events: 1,
+              steps: 0,
+              timers: 0,
+            })
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              fixture.gates.delete("sibling-gated")
             }),
           ),
         ),
@@ -96,7 +163,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("w2-two")
           const run = yield* shipper.Watch({ mode: "two", orderId: "w2-two" })
           yield* shipper.Pay({ orderId: "w2-two", amount: 1 })
@@ -110,7 +177,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("w2-concurrent")
 
           const runs = yield* Effect.forEach(["c1", "c2", "c3"], (orderId) =>
@@ -134,7 +201,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
 
@@ -178,14 +245,14 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("clocks")
           const run = yield* shipper.Watch({ mode: "clocks", orderId: "clocks" })
           yield* suspendedRow(run.executionId)
 
           const marks = () =>
-            ["mark-a", "mark-b"].map((label) => fixture.workflows.runs.get(`${label}:clocks`) ?? 0)
+            ["mark-a", "mark-b"].map((label) => fixture.runs.get(`${label}:clocks`) ?? 0)
 
           expect(marks()).toEqual([0, 0])
           yield* test.advance("6 seconds")
@@ -208,7 +275,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("long")
@@ -240,10 +307,10 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase> = [
           yield* suspendedRow(run.executionId)
           expect(yield* due()).toBe(recorded)
           yield* test.advance("2 seconds")
-          expect(fixture.workflows.runs.get("slept:long") ?? 0).toBe(0)
+          expect(fixture.runs.get("slept:long") ?? 0).toBe(0)
           yield* test.advance("3 seconds")
           expect(yield* run.result).toBe("slept")
-          expect(fixture.workflows.runs.get("slept:long")).toBe(1)
+          expect(fixture.runs.get("slept:long")).toBe(1)
         }),
       ),
   },

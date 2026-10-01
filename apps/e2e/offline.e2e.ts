@@ -1,25 +1,5 @@
-import { randomUUID } from "node:crypto"
-import { type APIRequestContext, expect, type Page, test } from "@playwright/test"
-
-/**
- * The chat room with a persisted offline queue, served by
- * examples/chat/src/web/serve.ts at /offline/rooms/<id>.
- */
-const CHAT = "http://127.0.0.1:3003"
-
-const roomOf = (name: string) => `${name}-${randomUUID()}`
-
-/** The bodies the server committed to `room`, in order, read as another client would. */
-const history = async (request: APIRequestContext, room: string) => {
-  const response = await request.post(`${CHAT}/api/actors/Room/${room}/History`, {
-    headers: { authorization: "Bearer bob" },
-    data: {},
-  })
-
-  return (
-    (await response.json()) as ReadonlyArray<{ readonly message: { readonly body: string } }>
-  ).map((entry) => entry.message.body)
-}
+import { expect, type Page, test } from "@playwright/test"
+import { history, openRoom, say, uniqueId } from "./room.ts"
 
 /** Records the command id of every post the page attempts, and of every one the server answered. */
 const watchPosts = (page: Page, room: string) => {
@@ -39,14 +19,10 @@ const watchPosts = (page: Page, room: string) => {
   return { sent, answered }
 }
 
+/** Opens `room` on the offline page once its saved queue has been read. */
 const open = async (page: Page, room: string) => {
-  await page.goto(`${CHAT}/offline/rooms/${room}?user=alice`)
+  await openRoom({ page, room, at: "offline/rooms" })
   await expect(page.getByTestId("queue-ready")).toHaveText("ready")
-}
-
-const say = async (page: Page, body: string) => {
-  await page.getByTestId("body").fill(body)
-  await page.getByRole("button", { name: "Post" }).click()
 }
 
 test("queues posts while offline and applies each exactly once, in order, when the network returns", async ({
@@ -54,7 +30,7 @@ test("queues posts while offline and applies each exactly once, in order, when t
   context,
   request,
 }) => {
-  const room = roomOf("offline")
+  const room = uniqueId("offline")
   const posts = watchPosts(page, room)
   let lostReply = false
 
@@ -70,14 +46,14 @@ test("queues posts while offline and applies each exactly once, in order, when t
   })
 
   await open(page, room)
-  await say(page, "zero")
-  await expect.poll(() => history(request, room)).toEqual(["zero"])
+  await say({ page, body: "zero" })
+  await expect.poll(() => history({ request, room: room })).toEqual(["zero"])
   await expect(page.getByTestId("queue").locator("li")).toHaveCount(0)
 
   await context.setOffline(true)
-  await say(page, "one")
-  await say(page, "two")
-  await say(page, "three")
+  await say({ page, body: "one" })
+  await say({ page, body: "two" })
+  await say({ page, body: "three" })
 
   const queued = page.getByTestId("queue").locator("li")
 
@@ -89,7 +65,7 @@ test("queues posts while offline and applies each exactly once, in order, when t
   ).toEqual(["queued", "queued", "queued"])
   await expect(queued.nth(0)).toContainText("one")
   await expect(queued.nth(2)).toContainText("three")
-  expect(await history(request, room)).toEqual(["zero"])
+  expect(await history({ request, room: room })).toEqual(["zero"])
 
   const ids = await queued.evaluateAll((items) =>
     items.map((item) => (item as HTMLElement).dataset["commandId"]),
@@ -102,7 +78,7 @@ test("queues posts while offline and applies each exactly once, in order, when t
   await context.setOffline(false)
 
   await expect(queued).toHaveCount(0, { timeout: 15_000 })
-  expect(await history(request, room)).toEqual(["zero", "one", "two", "three"])
+  expect(await history({ request, room: room })).toEqual(["zero", "one", "two", "three"])
 
   for (const id of ids) expect(posts.answered.filter((key) => key === id).length).toBe(1)
 
@@ -114,16 +90,16 @@ test("keeps queued posts across a reload and delivers them under the same ids wh
   page,
   request,
 }) => {
-  const room = roomOf("offline-reload")
+  const room = uniqueId("offline-reload")
   const posts = watchPosts(page, room)
 
   await open(page, room)
-  await say(page, "zero")
-  await expect.poll(() => history(request, room)).toEqual(["zero"])
+  await say({ page, body: "zero" })
+  await expect.poll(() => history({ request, room: room })).toEqual(["zero"])
 
   await page.route("**/api/**", (route) => route.abort("internetdisconnected"))
-  await say(page, "one")
-  await say(page, "two")
+  await say({ page, body: "one" })
+  await say({ page, body: "two" })
 
   const queued = page.getByTestId("queue").locator("li")
 
@@ -142,12 +118,12 @@ test("keeps queued posts across a reload and delivers them under the same ids wh
       items.map((item) => (item as HTMLElement).dataset["commandId"]),
     ),
   ).toEqual(ids)
-  expect(await history(request, room)).toEqual(["zero"])
+  expect(await history({ request, room: room })).toEqual(["zero"])
 
   await page.unroute("**/api/**")
 
   await expect(queued).toHaveCount(0, { timeout: 15_000 })
-  expect(await history(request, room)).toEqual(["zero", "one", "two"])
+  expect(await history({ request, room: room })).toEqual(["zero", "one", "two"])
 
   for (const id of ids) expect(posts.answered.filter((key) => key === id).length).toBe(1)
 })
@@ -157,17 +133,16 @@ test("useCommand keeps one command id while its post waits offline, and the serv
   context,
   request,
 }) => {
-  const room = roomOf("offline-react")
+  const room = uniqueId("offline-react")
   const posts = watchPosts(page, room)
 
-  await page.goto(`${CHAT}/react/rooms/${room}?user=alice&offline=1`)
-  await expect(page.getByTestId("user")).toHaveText("alice")
-  await say(page, "zero")
+  await openRoom({ page, room, at: "react/rooms", query: "&offline=1" })
+  await say({ page, body: "zero" })
   await expect(page.getByTestId("post-status")).toHaveText("success")
-  await expect.poll(() => history(request, room)).toEqual(["zero"])
+  await expect.poll(() => history({ request, room: room })).toEqual(["zero"])
 
   await context.setOffline(true)
-  await say(page, "one")
+  await say({ page, body: "one" })
 
   await expect(page.getByTestId("queued")).toHaveText("1")
   await expect(page.getByTestId("post-status")).toContainText("not confirmed", { timeout: 10_000 })
@@ -175,7 +150,7 @@ test("useCommand keeps one command id while its post waits offline, and the serv
   const commandId = await page.getByTestId("post-status").getAttribute("data-command-id")
 
   expect(commandId).toMatch(/^v1\./)
-  expect(await history(request, room)).toEqual(["zero"])
+  expect(await history({ request, room: room })).toEqual(["zero"])
 
   await context.setOffline(false)
   await expect(page.getByTestId("queued")).toHaveText("0", { timeout: 15_000 })
@@ -184,7 +159,7 @@ test("useCommand keeps one command id while its post waits offline, and the serv
   await page.getByRole("button", { name: "Retry" }).click()
   await expect(page.getByTestId("post-status")).toHaveText("success")
 
-  expect(await history(request, room)).toEqual(["zero", "one"])
+  expect(await history({ request, room: room })).toEqual(["zero", "one"])
   expect(posts.answered.filter((key) => key === commandId).length).toBeGreaterThanOrEqual(1)
   expect(await page.getByTestId("post-status").getAttribute("data-command-id")).toBe(commandId)
 })

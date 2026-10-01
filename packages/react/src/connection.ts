@@ -22,8 +22,19 @@ export interface ConnectionSource<
   ) => Promise<ClientConnection<Server, Client, Progress>>
 }
 
+/** A value that can identify a connection session by itself: compared with `Object.is`. */
+export type SessionKey = string | number | boolean | null | undefined
+
 /** Options for `useConnection`. */
 export interface UseConnectionOptions {
+  /**
+   * What identifies the session. A render with a different key closes the
+   * connection and opens a new one with that render's params; params that
+   * change under the same key are not sent. Primitive params are their own
+   * key; object params need one, since a new object each render would
+   * otherwise reopen the session every time.
+   */
+  readonly key?: SessionKey
   /** Resynchronizes after an owner loss; see the Promise client's `onResync`. */
   readonly onResync?: ConnectOptions["onResync"]
   /** Keeps at most this many recent messages in each of `frames` and `progress`. Default 100. */
@@ -37,8 +48,8 @@ export interface Connected<Server, Client, Progress extends ProgressUpdate = Pro
   readonly frames: ReadonlyArray<Server>
   /**
    * The most recent executor progress messages, oldest first: the Promise
-   * client's `Progress` messages, whose `frame` narrows by `effect`. Progress is
-   * display-only and lossy, and a `seq` gap within one `effectId` and `attempt` is a dropped one.
+   * client's `Progress` messages, whose `frame` narrows by `job`. Progress is
+   * display-only and lossy, and a `seq` gap within one `jobId` and `attempt` is a dropped one.
    */
   readonly progress: ReadonlyArray<ProgressMessage<Progress>>
   /** How the connection ended, if it did; a dropped socket is `SessionEnded` `HolderLost`. */
@@ -77,20 +88,22 @@ export const receive = <Server, Progress extends ProgressUpdate>(
 
 /**
  * Holds one connection open while the component is mounted with the same
- * `params` key: the latest frames, `send`, and how it ended. A new key, or
- * unmounting, closes it; a connection is not reopened by itself, because a new
- * one is a new session. `params` is compared by its JSON key, so a new object
- * with the same content keeps the connection. Nothing connects during
- * rendering, so it is safe under SSR. `error` is the Promise client's: a
- * declared error or an `ActorError`.
+ * `member` and session key: the latest frames, `send`, and how it ended. A new
+ * key or member, or unmounting, closes it; a connection is not reopened by
+ * itself, because a new one is a new session. The key is `options.key`, or
+ * the params themselves when they are a primitive; object params require a
+ * key. Nothing connects during rendering, so it is safe under SSR. `error` is
+ * the Promise client's: a declared error or an `ActorError`.
  */
 export const useConnection = <Params, Server, Client, Progress extends ProgressUpdate>(
   member: ConnectionSource<Params, Server, Client, Progress>,
   params: Params,
-  options: UseConnectionOptions = {},
+  ...[options = {}]: Params extends SessionKey
+    ? [options?: UseConnectionOptions]
+    : [options: UseConnectionOptions & { readonly key: NonNullable<SessionKey> }]
 ): Connected<Server, Client, Progress> => {
   const keep = options.keep ?? DEFAULT_KEEP
-  const key = JSON.stringify(params ?? null)
+  const key: unknown = options.key !== undefined ? options.key : params
   const [status, setStatus] = useState<Connected<Server, Client, Progress>["status"]>("connecting")
   const [received, setReceived] = useState<Received<Server, Progress>>(NOTHING)
   const [error, setError] = useState<Failure | undefined>(undefined)

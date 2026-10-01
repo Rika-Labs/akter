@@ -20,7 +20,7 @@ An actor can:
 - receive typed commands and expose typed reads;
 - own keyed state and relational business rows;
 - emit durable events with a cursor;
-- run workflows, cron, timers, and external effects;
+- run workflows, schedules, timers, and external calls;
 - hold typed connections and broadcast live hints;
 - hibernate and rebuild its activation;
 - attribute work to the caller its transport authenticated, and let each actor decide who may use it;
@@ -28,7 +28,7 @@ An actor can:
 
 ## Product intent
 
-Durable Actors is an Effect-native actor framework. It is not a workflow-only product: workflows are members of the actor that owns their identity and data. It is not a separate background-work product: scheduling and effects are consequences of actor turns. It has no AI-specific product surface; an agent is simply an actor, and contract-derived OpenAPI is available to external tool generators.
+Durable Actors is an Effect-native actor framework. It is not a workflow-only product: workflows are members of the actor that owns their identity and data. It is not a separate background-work product: scheduling and jobs are consequences of actor turns. It has no AI-specific product surface; an agent is simply an actor, and contract-derived OpenAPI is available to external tool generators.
 
 ## We are not building
 

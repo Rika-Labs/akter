@@ -38,7 +38,7 @@ import {
   RunnerAtCapacity,
 } from "../errors/actor.ts"
 import { Actors } from "../handles/actors.ts"
-import { type EffectRegistration, type QueryRegistration, type Registration } from "./members.ts"
+import { type JobRegistration, type QueryRegistration, type Registration } from "./members.ts"
 import type { Executed, Request } from "./request.ts"
 import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
@@ -48,12 +48,12 @@ import { migrate } from "./database/migrations.ts"
 import { ReadReplica, replicaLayer } from "./database/replica.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
-import { withoutDatabase } from "./effects/isolation.ts"
+import { withoutDatabase } from "./jobs/isolation.ts"
 import { pglite } from "./database/pglite.ts"
 import { commandEntity, connectionEntity, encodeEntityId } from "./entity/register.ts"
 import { type Holder, type HeldActorType, connectionHolder } from "./connections/holder.ts"
 import { holderShardGroups, holderTransport, type Transport } from "./connections/transport.ts"
-import { type ProgressMessage, ProgressSink, ProgressTap } from "./effects/progress.ts"
+import { type ProgressMessage, ProgressSink, ProgressTap } from "./jobs/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
 import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
@@ -182,15 +182,15 @@ export interface Options {
      */
     readonly skew?: Duration.Input
   }
-  /** The effect executor pool of this runner. */
+  /** The job executor pool of this runner. */
   readonly executors?: {
-    /** Effect attempts running at once. Default 64. */
+    /** Job attempts running at once. Default 64. */
     readonly concurrency?: number
     /** An attempt's claim, renewed every third of it; at least 3 seconds. Default 60 seconds. */
     readonly lease?: Duration.Input
     /**
      * How often a running attempt checks whether a turn on another runner
-     * cancelled its effect; at least 1 second, at most a third of the lease.
+     * cancelled its job; at least 1 second, at most a third of the lease.
      * Default a third of the lease. A cancellation committed on the attempt's
      * own runner reaches it at once.
      */
@@ -424,7 +424,7 @@ export const layer = (options: Options = {}) => {
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
-      const effectRegistrations = new Map<string, EffectRegistration>()
+      const jobRegistrations = new Map<string, JobRegistration>()
       const runtimeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
       const frameworkClock = yield* FrameworkClock
       const writerDeclarations: Array<PayloadDeclaration> = []
@@ -862,17 +862,16 @@ export const layer = (options: Options = {}) => {
         )
 
       const progressSink = ProgressSink.of({
-        wants: (actor, effect) => effectRegistrations.get(actor)?.progress.has(effect) === true,
+        wants: (actor, job) => jobRegistrations.get(actor)?.progress.has(job) === true,
         send: (message) =>
           Effect.flatMap(progressTap.send(message), (deliver) =>
             deliver
               ? fireAndForget(deliverProgress(message)).pipe(
                   Effect.flatMap((fiber) =>
                     Effect.sync(() => {
-                      inflight.set(message.effectId, fiber)
+                      inflight.set(message.jobId, fiber)
                       fiber.addObserver(() => {
-                        if (inflight.get(message.effectId) === fiber)
-                          inflight.delete(message.effectId)
+                        if (inflight.get(message.jobId) === fiber) inflight.delete(message.jobId)
                       })
                     }),
                   ),
@@ -884,7 +883,7 @@ export const layer = (options: Options = {}) => {
             deliver
               ? fireAndForget(
                   Effect.suspend(() => {
-                    const last = inflight.get(message.effectId)
+                    const last = inflight.get(message.jobId)
 
                     return last === undefined ? Effect.void : Fiber.await(last)
                   }).pipe(
@@ -942,10 +941,10 @@ export const layer = (options: Options = {}) => {
       const relay = yield* outboxRelay(
         relayDeliver,
         () =>
-          [...effectRegistrations.values()].flatMap((registration) =>
-            [...registration.effects].map(([effect, registered]) => ({
+          [...jobRegistrations.values()].flatMap((registration) =>
+            [...registration.jobs].map(([job, registered]) => ({
               actor: registration.name,
-              effect,
+              job,
               registered: {
                 ...registered,
                 execute: (
@@ -1033,7 +1032,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        jobOf: (actorType, job) => jobRegistrations.get(actorType)?.jobs.get(job),
         wake: relay.wake,
         tenantScope: yield* TenantScope,
       })
@@ -1042,7 +1041,7 @@ export const layer = (options: Options = {}) => {
         services,
         clock: frameworkClock,
         outbox,
-        effectOf: (actorType, effect) => effectRegistrations.get(actorType)?.effects.get(effect),
+        jobOf: (actorType, job) => jobRegistrations.get(actorType)?.jobs.get(job),
         createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
         tenantScope: yield* TenantScope,
@@ -1080,7 +1079,7 @@ export const layer = (options: Options = {}) => {
         ...actorRegistration({
           registrations,
           queryRegistrations,
-          effectRegistrations,
+          jobRegistrations,
           residency,
           diagnostics,
           owners,
@@ -1155,7 +1154,7 @@ export const layer = (options: Options = {}) => {
         services,
         registrations,
         queryRegistrations,
-        effectRegistrations,
+        jobRegistrations,
       })
 
       const control = runtimeControl({

@@ -21,7 +21,7 @@ const runnerKey = (runner: Runner) => `${runner.deployment}\n${runner.url}\n${ru
  * already in place at startup were pushed by the edge that saw them, and
  * runners' polling covers any it missed.
  *
- * `Actor.serve` ignores trailing slashes on its base path, so `/` is the root.
+ * `Actors.serve` ignores trailing slashes on its base path, so `/` is the root.
  * Every ready runner is owed a push after a new revocation; one that stopped
  * being ready is not.
  */

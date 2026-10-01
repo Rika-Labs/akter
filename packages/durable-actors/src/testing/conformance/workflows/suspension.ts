@@ -3,17 +3,17 @@ import { SqlClient } from "effect/unstable/sql"
 import { Unauthorized } from "../../../index.ts"
 import { ActorTest } from "../../actor-test.ts"
 import type { ConformanceCase } from "../../conformance.ts"
-import { Ship, Shipper } from "./actors.ts"
+import { Ship, Shipper, type WorkflowsFixture } from "./actors.ts"
 import { reset, suspendedRow } from "./harness.ts"
 
 /** Waits, races, interrupts, and keyless restarts of suspended workflows. */
-export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase> = [
+export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase<WorkflowsFixture>> = [
   {
     name: "workflows: a wait sees a matching owner event appended after it registered",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("waiting")
           const run = yield* shipper.Ship({ orderId: "o4", sku: "wait" })
           yield* suspendedRow(run.executionId)
@@ -28,7 +28,7 @@ export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("timeout")
           const run = yield* shipper.Ship({ orderId: "o5", sku: "wait" })
@@ -43,7 +43,7 @@ export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const sql = yield* SqlClient.SqlClient
           const shipper = yield* Shipper.get("interrupt")
           const run = yield* shipper.Ship({ orderId: "o6", sku: "wait" })
@@ -65,13 +65,13 @@ export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("race-event")
           const run = yield* shipper.Ship({ orderId: "r1", sku: "race" })
           yield* suspendedRow(run.executionId)
           yield* shipper.Pay({ orderId: "r1", amount: 5 })
           expect(yield* run.result).toBe("r-race:paid-5")
-          expect(fixture.workflows.runs.get("reserve:r1")).toBe(1)
+          expect(fixture.runs.get("reserve:r1")).toBe(1)
         }),
       ),
   },
@@ -80,7 +80,7 @@ export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const test = yield* ActorTest
           const shipper = yield* Shipper.get("race-clock")
           const run = yield* shipper.Ship({ orderId: "r2", sku: "race" })
@@ -110,22 +110,22 @@ export const workflowSuspensionConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "workflows: interrupt is authorized as the execution's workflow member",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, fixture, access }) =>
       environment.run(
         Effect.gen(function* () {
-          yield* reset(fixture.workflows)
+          yield* reset(fixture)
           const shipper = yield* Shipper.get("interrupt-authz")
           const run = yield* shipper.Ship({ orderId: "a1", sku: "wait" })
           yield* suspendedRow(run.executionId)
-          fixture.denied.add("Ship")
+          access.denied.add("Ship")
           expect(yield* run.interrupt.pipe(Effect.flip)).toMatchObject({
             reason: Unauthorized.make({ code: "access_denied" }),
           })
-          fixture.denied.delete("Ship")
+          access.denied.delete("Ship")
           yield* run.interrupt
           const exit = yield* run.result.pipe(Effect.exit)
           expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
-        }).pipe(Effect.ensuring(Effect.sync(() => fixture.denied.delete("Ship")))),
+        }).pipe(Effect.ensuring(Effect.sync(() => access.denied.delete("Ship")))),
       ),
   },
 ]

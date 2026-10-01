@@ -10,7 +10,8 @@ import {
   Timeout,
 } from "../errors/actor.ts"
 import { checkDeclaredErrors } from "../actor/served.ts"
-import { actorErrorBody, actorErrorResponse, statusOf } from "./wire.ts"
+import { actorErrorBody, statusOf } from "../protocol/wire.ts"
+import { actorErrorResponse } from "./wire.ts"
 
 const RetryBody = Schema.Struct({ retryAfter: Schema.Finite })
 
@@ -80,10 +81,10 @@ describe("served error envelopes", () => {
 
     class Teapot extends Schema.TaggedError<Teapot>()("Teapot", {}, { httpApiStatus: 418 }) {}
 
-    expect(() => checkDeclaredErrors({ tag: "M", errors: [Conflict] })).toThrow(/409/)
-    expect(() => checkDeclaredErrors({ tag: "M", errors: [Malformed] })).toThrow(/400/)
-    expect(() => checkDeclaredErrors({ tag: "M", errors: [Missing] })).toThrow(/404/)
-    expect(() => checkDeclaredErrors({ tag: "M", errors: [Defect] })).toThrow(/reserved/)
-    expect(() => checkDeclaredErrors({ tag: "M", errors: [Teapot] })).not.toThrow()
+    expect(() => checkDeclaredErrors({ tag: "M", error: Conflict })).toThrow(/409/)
+    expect(() => checkDeclaredErrors({ tag: "M", error: Malformed })).toThrow(/400/)
+    expect(() => checkDeclaredErrors({ tag: "M", error: Missing })).toThrow(/404/)
+    expect(() => checkDeclaredErrors({ tag: "M", error: Defect })).toThrow(/reserved/)
+    expect(() => checkDeclaredErrors({ tag: "M", error: Teapot })).not.toThrow()
   })
 })

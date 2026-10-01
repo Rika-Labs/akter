@@ -4,12 +4,14 @@ import { HttpRouter } from "effect/unstable/http"
 import { Actor } from "../../../index.ts"
 import { Actors, Database } from "../../../runtime/index.ts"
 import { TurnHooks } from "../../../runtime/turn/hooks.ts"
+import { serve } from "../../../serve/layer.ts"
+import { Auth } from "../../../runtime/index.ts"
 
-const Increment = Actor.command("Increment", { input: Schema.Finite, output: Schema.Finite })
+const Increment = Actor.command("Increment", { payload: Schema.Finite, success: Schema.Finite })
 
-export class Incremented extends Actor.Event<Incremented>()("Incremented", {
+export const Incremented = Actor.event("Incremented", {
   count: Schema.Finite,
-}) {}
+})
 
 /** Served by a process the parent kills mid-command, then by a fresh one on the same port. */
 export const ServedCounter = Actor.make("ServedCounter", {
@@ -48,9 +50,7 @@ const program = Effect.gen(function* () {
     Layer.provide(BunCrypto.layer),
   )
 
-  const app = Actor.serve({ actors: [ServedCounter], auth: Actor.auth.none }).pipe(
-    Layer.provide(runtime),
-  )
+  const app = serve({ actors: [ServedCounter], auth: Auth.none }).pipe(Layer.provide(runtime))
 
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
 

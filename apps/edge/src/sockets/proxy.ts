@@ -1,13 +1,12 @@
 import {
   ActorError,
-  actorErrorBody,
   ClientWireMessage,
-  closeCodeOf,
   reauthenticationDigest,
   requestDigest,
   SUBPROTOCOL,
   Unauthorized,
 } from "@durable-actors/core"
+import { actorErrorBody, closeCodeOf } from "@durable-actors/core/runtime"
 import type { ServerWebSocket } from "bun"
 import { Data, Deferred, Effect, Option, Predicate, Queue, Result, Schema } from "effect"
 import type { Principal } from "../principals/authenticate.ts"

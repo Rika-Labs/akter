@@ -31,27 +31,27 @@ import type {
 import { pauseReplay, replayedThrough } from "./read-your-writes.ts"
 import { Notebook, tablesDdl, tablesFixture, tablesLayer } from "./tables.ts"
 
-class Recorded extends Actor.Event<Recorded>()("Recorded", { body: Schema.String }) {}
+const Recorded = Actor.event("Recorded", { body: Schema.String })
 
-class Ship extends Actor.effect<Ship>()("Ship", {
-  input: { body: Schema.String },
+const Ship = Actor.job("Ship", {
+  payload: { body: Schema.String },
   success: Schema.String,
-}) {}
+})
 
-const Record = Actor.command("Record", { input: Schema.String })
+const Record = Actor.command("Record", { payload: Schema.String })
 
 const Tick = Actor.command("Tick")
 
-const Shipped = Actor.command("Shipped", { input: Schema.String })
+const Shipped = Actor.command("Shipped", { payload: Schema.String })
 
-const Snapshot = Actor.stream("Snapshot", { output: Schema.String })
+const Snapshot = Actor.stream("Snapshot", { success: Schema.String })
 
-const Settle = Actor.workflow("Settle", { output: Schema.String })
+const Settle = Actor.workflow("Settle", { success: Schema.String })
 
 const attachments = Actor.blob("attachments")
 
 const Read = Actor.query("Read", {
-  output: Schema.Struct({
+  success: Schema.Struct({
     entries: Schema.Array(Schema.String),
     ticks: Schema.Int,
     shipped: Schema.Array(Schema.String),
@@ -67,11 +67,10 @@ const Ledger = Actor.make("Ledger", {
     shipped: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   events: [Recorded],
-  effects: [Ship],
+  jobs: { Ship: { job: Ship, onSuccess: Shipped } },
   blobs: [attachments],
   api: { Record, Read, Snapshot, Settle },
   internal: { Tick, Shipped },
-  policy: { effects: { Ship: { onSuccess: Shipped } } },
 })
 
 const ledgerLayer = Layer.mergeAll(
@@ -84,7 +83,7 @@ const ledgerLayer = Layer.mergeAll(
         yield* turn.blob(attachments).set("latest", new TextEncoder().encode(body))
         const self = yield* Ledger.intents(turn.id)
         yield* self.Tick().pipe(Intent.after("1 second"), Intent.key("tick"))
-        yield* turn.perform(Ship.make({ body }))
+        yield* turn.enqueue(Ship.make({ body }))
       }),
       Tick: Effect.fnUntraced(function* () {
         const turn = yield* Ledger.Turn
@@ -109,7 +108,7 @@ const ledgerLayer = Layer.mergeAll(
       Settle: () => Effect.succeed("settled"),
     }),
   ),
-  Ledger.toEffectLayer(Effect.succeed({ Ship: ({ body }) => Effect.succeed(body) })),
+  Ledger.toJobLayer(Effect.succeed({ Ship: ({ body }) => Effect.succeed(body) })),
   Ledger.toQueryLayer(
     Effect.succeed({
       Read: Effect.fnUntraced(function* () {
@@ -133,8 +132,8 @@ const Replicated = Actor.make("Replicated", {
     entries: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   }),
   api: {
-    Put: Actor.command("Put", { input: Schema.String }),
-    Read: Actor.query("Read", { output: Schema.Array(Schema.String) }),
+    Put: Actor.command("Put", { payload: Schema.String }),
+    Read: Actor.query("Read", { success: Schema.Array(Schema.String) }),
   },
 })
 
@@ -167,7 +166,7 @@ const VIEWS = [
   "events",
   "outbox",
   "timers",
-  "effects",
+  "jobs",
   "dead_letters",
   "workflows",
   "workflow_steps",

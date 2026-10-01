@@ -8,8 +8,18 @@ import {
 } from "../../client/offline/store.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { InternalActors } from "../../runtime/actors.ts"
-import type { ConformanceCase } from "../conformance.ts"
-import { Full, HttpRoom, HttpTally, posted, receipts, runs, serveHttp, tenantOf } from "./http.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
+import {
+  Full,
+  HttpRoom,
+  HttpTally,
+  posted,
+  receipts,
+  runs,
+  serveHttp,
+  tenantOf,
+  httpSuite,
+} from "./http.ts"
 
 const baseFetch = globalThis.fetch.bind(globalThis)
 
@@ -678,3 +688,8 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Offline cases call the served HTTP actors. */
+export const offlineSuite: ConformanceSuite = {
+  uses: [httpSuite],
+}

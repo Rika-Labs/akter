@@ -20,6 +20,7 @@ afterAll(() => harness.dispose())
 
 const backend: ConformanceBackend = {
   independentConnections: false,
+  freshDatabases: true,
   services: BunCrypto.layer,
   httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
   open: () =>
@@ -204,6 +205,7 @@ describe("PGlite migrations", () => {
             { migration_id: 23 },
             { migration_id: 24 },
             { migration_id: 25 },
+            { migration_id: 26 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },
@@ -234,7 +236,7 @@ const insert = (rows: ReadonlyArray<Row>) =>
       rows.map((row) => ({
         routing_key: 1,
         intent_id: row.id,
-        kind: "effect",
+        kind: "job",
         bucket: 0,
         due_at_ms: row.due,
         scheduled_at_ms: row.scheduled,
@@ -292,10 +294,10 @@ describe("capped effect order", () => {
             routingKey: 1n,
             sender,
             capped: [
-              { id: "a", effect: "Capped", dueAt: 1000 },
-              { id: "later", effect: "Capped", dueAt: 5000 },
-              { id: "b", effect: "Capped", dueAt: 1000 },
-              { id: "c", effect: "Capped", dueAt: 1000 },
+              { id: "a", job: "Capped", dueAt: 1000 },
+              { id: "later", job: "Capped", dueAt: 5000 },
+              { id: "b", job: "Capped", dueAt: 1000 },
+              { id: "c", job: "Capped", dueAt: 1000 },
             ],
           })
 
@@ -311,7 +313,7 @@ describe("capped effect order", () => {
             sql,
             routingKey: 1n,
             sender,
-            capped: [{ id: "d", effect: "Capped", dueAt: 1000 }],
+            capped: [{ id: "d", job: "Capped", dueAt: 1000 }],
           })
           expect(yield* ready(["d"])).toEqual({ d: 1004 })
         }),
@@ -330,7 +332,7 @@ describe("creation policy adoption", () => {
         )
 
         const Create = Actor.command("Create")
-        const Read = Actor.command("Read", { output: Schema.Finite })
+        const Read = Actor.command("Read", { success: Schema.Finite })
 
         const state = Actor.state({
           count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
@@ -346,7 +348,8 @@ describe("creation policy adoption", () => {
           key: Schema.NonEmptyString,
           state,
           api: { Create, Read },
-          policy: { createdBy: Create },
+
+          createdBy: Create,
         })
 
         const database = { liveClient: live }
@@ -437,7 +440,7 @@ describe("placement adoption", () => {
           (client) => Effect.promise(() => client.close()),
         )
 
-        const Bump = Actor.command("Bump", { output: Schema.Finite })
+        const Bump = Actor.command("Bump", { success: Schema.Finite })
 
         const deploy = (placement: "tenant" | "actor") => {
           const Placed = Actor.make("Placed", {
@@ -563,7 +566,7 @@ describe("singleton activation", () => {
           (client) => Effect.promise(() => client.close()),
         )
 
-        const Ping = Actor.command("Ping", { output: Schema.String })
+        const Ping = Actor.command("Ping", { success: Schema.String })
         const Healthy = Actor.make("HealthySingleton", { key: Actor.singleton, api: { Ping } })
         const Broken = Actor.make("BrokenSingleton", { key: Actor.singleton, api: { Ping } })
         const builds = { healthy: 0, broken: 0 }
@@ -627,7 +630,7 @@ describe("singleton activation", () => {
           (client) => Effect.promise(() => client.close()),
         )
 
-        const Ping = Actor.command("Ping", { output: Schema.String })
+        const Ping = Actor.command("Ping", { success: Schema.String })
 
         const Drowsy = Actor.make("DrowsySingleton", {
           key: Actor.singleton,
@@ -679,9 +682,9 @@ describe("minted actor policy changes", () => {
           (client) => Effect.promise(() => client.close()),
         )
 
-        const Open = Actor.command("Open", { input: Schema.String })
-        const Title = Actor.command("Title", { output: Schema.String })
-        const Spawn = Actor.command("Spawn", { output: Schema.String })
+        const Open = Actor.command("Open", { payload: Schema.String })
+        const Title = Actor.command("Title", { success: Schema.String })
+        const Spawn = Actor.command("Spawn", { success: Schema.String })
 
         const state = Actor.state({
           title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -690,7 +693,8 @@ describe("minted actor policy changes", () => {
         const Before = Actor.make("PolicyChild", {
           state,
           api: { Open, Title },
-          policy: { createdBy: Open },
+
+          createdBy: Open,
         })
 
         const After = Actor.make("PolicyChild", { state, api: { Open, Title } })

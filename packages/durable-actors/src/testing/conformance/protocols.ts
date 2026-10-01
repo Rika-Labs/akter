@@ -1,11 +1,11 @@
 import { Cause, Effect, Encoding, Exit, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
-import { Actor, Unauthorized } from "../../index.ts"
+import { Unauthorized } from "../../index.ts"
 import { InvalidInput } from "../../errors/actor.ts"
 import { CommandConflict, CommandExpired } from "../../errors/actor.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import { MCP_VERSION } from "../../serve/mcp/endpoint.ts"
-import type { ConformanceCase } from "../conformance.ts"
+import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import {
   envelope,
   HttpLobby,
@@ -18,7 +18,9 @@ import {
   serveHttp,
   tenantOf,
   tokens,
+  httpSuite,
 } from "./http.ts"
+import { serve } from "../../serve/layer.ts"
 
 const options = { openapi: { path: "/openapi.json" }, mcp: { path: "/mcp" } } as const
 
@@ -478,7 +480,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
   },
   {
     name: "fails missing, invalid, and expired credentials with the HTTP body before any JSON-RPC, and applies authorize to tool calls",
-    run: ({ expect, environment, fixture }) =>
+    run: ({ expect, environment, access }) =>
       environment.run(
         Effect.gen(function* () {
           const server = yield* serveHttp(mcpConformanceOptions)
@@ -502,8 +504,8 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
 
           const commandId = yield* mint(server, token)
 
-          fixture.denied.add("Post")
-          fixture.denied.add("Count")
+          access.denied.add("Post")
+          access.denied.add("Count")
 
           const denied = yield* Effect.gen(function* () {
             const command = yield* callTool(server, token, "HttpRoom.Post", {
@@ -524,7 +526,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {
-                fixture.denied.clear()
+                access.denied.clear()
               }),
             ),
           )
@@ -837,7 +839,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const path of ["/protocol", "/command-ids", "/ready", "/actors/Room"] as const) {
             const exit = yield* HttpRouter.toHttpEffect(
-              Actor.serve({ actors: [HttpRoom], auth: tokens, mcp: { path } }).pipe(
+              serve({ actors: [HttpRoom], auth: tokens, mcp: { path } }).pipe(
                 Layer.provide(internal),
               ),
             ).pipe(Effect.exit)
@@ -848,7 +850,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           }
 
           const same = yield* HttpRouter.toHttpEffect(
-            Actor.serve({
+            serve({
               actors: [HttpRoom],
               auth: tokens,
               openapi: { path: "/docs" },
@@ -861,7 +863,7 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           const lobby = yield* HttpRouter.toHttpEffect(
-            Actor.serve({ actors: [HttpLobby], auth: tokens, mcp: { path: "/mcp" } }).pipe(
+            serve({ actors: [HttpLobby], auth: tokens, mcp: { path: "/mcp" } }).pipe(
               Layer.provide(internal),
             ),
           ).pipe(Effect.exit)
@@ -871,3 +873,8 @@ export const protocolsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
 ]
+
+/** Protocol cases call the served HTTP actors. */
+export const protocolsSuite: ConformanceSuite = {
+  uses: [httpSuite],
+}

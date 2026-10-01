@@ -1,4 +1,4 @@
-import { AssertionKeySet } from "@durable-actors/core"
+import { AssertionKeySet } from "@durable-actors/core/runtime"
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 

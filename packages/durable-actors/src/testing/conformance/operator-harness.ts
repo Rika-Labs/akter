@@ -29,7 +29,7 @@ export interface Harness {
     body?: Schema.Json,
   ) => Effect.Effect<Answer>
   readonly deadLetters: Effect.Effect<
-    ReadonlyArray<{ effect_id: string; effect: string; ambiguous: boolean }>
+    ReadonlyArray<{ job_id: string; job: string; ambiguous: boolean }>
   >
   /**
    * Every audit row in the order the requests wrote them. `at_ms` has
@@ -156,8 +156,8 @@ export const operatorHarness = <A, E>({
               body: text.length === 0 ? null : yield* decodeJson(text).pipe(Effect.orDie),
             }
           }),
-        deadLetters: sql<{ effect_id: string; effect: string; ambiguous: boolean }>`
-          SELECT effect_id, effect, ambiguous FROM actor_dead_letters ORDER BY dead_at_ms`.pipe(
+        deadLetters: sql<{ job_id: string; job: string; ambiguous: boolean }>`
+          SELECT job_id, job, ambiguous FROM actor_dead_letters ORDER BY dead_at_ms`.pipe(
           Effect.orDie,
         ),
         audit: sql<AuditRow>`SELECT operator, action, actor_id, target, capability, reason, outcome

@@ -4,7 +4,7 @@ import { ActorError, ActorUnavailable } from "../errors/actor.ts"
 /**
  * Whether this runner should receive traffic. A runner is ready once its
  * storage answers, its schemas are migrated and compatible (checked when the
- * layer builds), it registers at least one actor, effect, or query layer, its
+ * layer builds), it registers at least one actor, job, or query layer, its
  * routing is up, and it is not draining. Readiness never waits for actors to
  * wake or workflows to finish.
  */
@@ -15,7 +15,7 @@ export type Readiness =
       /**
        * `draining` or `drained` after `drain`; `storage` when the database does
        * not answer; `routing` once sharding has shut down; `unregistered` before
-       * any actor, effect, or query layer registers.
+       * any actor, job, or query layer registers.
        */
       readonly reason: "draining" | "drained" | "storage" | "routing" | "unregistered"
     }
@@ -24,7 +24,7 @@ export type Readiness =
 export interface DrainReport {
   /**
    * `clean` when claims and background work stopped and every in-flight turn
-   * and effect attempt finished before the deadline; `deadline-expired`
+   * and job attempt finished before the deadline; `deadline-expired`
    * otherwise, when the deadline interrupted what was still in flight.
    */
   readonly outcome: "clean" | "deadline-expired"
@@ -34,11 +34,11 @@ export interface DrainReport {
    */
   readonly interruptedTurns: number
   /**
-   * Effect attempts the deadline interrupted. The provider may have applied
+   * Job attempts the deadline interrupted. The provider may have applied
    * each call, so each stays ambiguous, and another runner takes it over once
    * its lease ends.
    */
-  readonly interruptedEffects: number
+  readonly interruptedJobs: number
 }
 
 /**
@@ -51,8 +51,8 @@ export class RuntimeControl extends Context.Service<
     readonly readiness: Effect.Effect<Readiness>
     /**
      * Makes the runner unready, refuses new commands, and stops claiming
-     * intents, timers, effects, and subscription deliveries, releasing claimed
-     * deliveries to other runners. In-flight turns and effect attempts then
+     * intents, timers, jobs, and subscription deliveries, releasing claimed
+     * deliveries to other runners. In-flight turns and job attempts then
      * get until `deadline` to finish before they are interrupted. Pending
      * durable work stays in the database for other runners. The runner keeps
      * its shards until its layer closes, which hands them to the other runners
@@ -151,7 +151,7 @@ interface Drainable {
   /** Stops claims and releases claimed deliveries. */
   readonly stopClaims: Effect.Effect<void>
   readonly attemptsIdle: Effect.Effect<void>
-  /** Interrupts running effect attempts and returns how many. */
+  /** Interrupts running job attempts and returns how many. */
   readonly interruptAttempts: Effect.Effect<number>
   /** Stops background maintenance such as retention sweeps. */
   readonly stopBackground: Effect.Effect<void>
@@ -167,7 +167,7 @@ interface Drainable {
  * work too: releasing a claimed delivery or ending a sweep writes to the
  * database, which a slow or contended database can hold for longer than the
  * deadline. That stop runs on in the runtime's scope, so claims still end,
- * while the deadline interrupts the turns and effect attempts in flight and
+ * while the deadline interrupts the turns and job attempts in flight and
  * the report says it expired.
  */
 export const runtimeControl = ({
@@ -195,11 +195,11 @@ export const runtimeControl = ({
       )
 
       const done: DrainReport = Option.isSome(finished)
-        ? { outcome: "clean", interruptedTurns: 0, interruptedEffects: 0 }
+        ? { outcome: "clean", interruptedTurns: 0, interruptedJobs: 0 }
         : yield* Effect.all(
             {
               interruptedTurns: runtime.gate.expire,
-              interruptedEffects: runtime.interruptAttempts,
+              interruptedJobs: runtime.interruptAttempts,
             },
             { concurrency: 2 },
           ).pipe(Effect.map((counts) => ({ outcome: "deadline-expired" as const, ...counts })))
@@ -208,7 +208,7 @@ export const runtimeControl = ({
         yield* Effect.logWarning("Drain deadline expired; interrupted in-flight work").pipe(
           Effect.annotateLogs({
             interruptedTurns: done.interruptedTurns,
-            interruptedEffects: done.interruptedEffects,
+            interruptedJobs: done.interruptedJobs,
           }),
         )
 

@@ -1,13 +1,7 @@
 import { Effect, Option, Schema } from "effect"
-import {
-  ActorError,
-  ActorUnavailable,
-  Reason,
-  TransportError,
-  type Unauthorized,
-  withRetryAfter,
-} from "../errors/actor.ts"
+import { ActorError, TransportError } from "../errors/actor.ts"
 import type { DeclaredError } from "../members/command.ts"
+import { actorErrorOf, isDefectBody } from "../protocol/wire.ts"
 import type { OfflineStoreError } from "./offline/store.ts"
 
 /** A response as the client reads it: status, headers, and the raw body text. */
@@ -25,27 +19,9 @@ export interface Reply {
  */
 export type Failure = ActorError | OfflineStoreError | DeclaredError["Type"]
 
-/** The `Unauthorized` codes a credential provider answers, which a fresh credential can resolve. */
-export const CREDENTIAL_CODES: ReadonlySet<Unauthorized["code"]> = new Set([
-  "missing_credentials",
-  "invalid_credentials",
-  "expired",
-])
-
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
-const Envelope = Schema.TaggedStruct("ActorError", {
-  reason: Schema.Struct({ _tag: Schema.String }),
-  retryAfter: Schema.optionalKey(Schema.Finite),
-})
-
-const isEnvelope = Schema.is(Envelope)
-
-const isDefect = Schema.is(Schema.TaggedStruct("Defect", {}))
-
-const isUnavailable = Schema.is(Schema.TaggedStruct("ActorUnavailable", {}))
-
-const decodeReason = Schema.decodeUnknownOption(Schema.toCodecJson(Reason))
+const isEnvelope = Schema.is(Schema.TaggedStruct("ActorError", {}))
 
 /**
  * An HTTP `retry-after` header as milliseconds: delay seconds, or a date
@@ -109,19 +85,6 @@ const statusError = (reply: Reply) =>
     }),
   )
 
-const framework = (body: typeof Envelope.Type, reply: Reply): ActorError | undefined => {
-  const reason = isUnavailable(body.reason)
-    ? Option.some(ActorUnavailable.make({ cause: undefined }))
-    : decodeReason(body.reason)
-
-  if (Option.isNone(reason)) return undefined
-
-  const error = ActorError.make({ reason: reason.value })
-  const retryAfter = body.retryAfter ?? retryAfterHeader({ headers: reply.headers })
-
-  return retryAfter === undefined ? error : withRetryAfter(retryAfter)(error)
-}
-
 /** Decodes the served body of a failed call; `declared` decodes the member's declared errors. */
 export const decodeFailure =
   (declared: ((body: Schema.Json) => Option.Option<Failure>) | undefined) =>
@@ -130,9 +93,16 @@ export const decodeFailure =
 
     if (Option.isNone(body)) return statusError(reply)
 
-    if (isEnvelope(body.value)) return framework(body.value, reply) ?? statusError(reply)
+    if (isEnvelope(body.value))
+      return Option.getOrElse(
+        actorErrorOf({
+          body: body.value,
+          headerRetryAfterMs: retryAfterHeader({ headers: reply.headers }),
+        }),
+        () => statusError(reply),
+      )
 
-    if (isDefect(body.value))
+    if (isDefectBody(body.value))
       return transportFailure(
         TransportError.make({ code: "defect", status: reply.status, retryable: false }),
       )

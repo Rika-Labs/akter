@@ -2,9 +2,9 @@ import { Actor } from "@durable-actors/core"
 import { Effect, Schema } from "effect"
 
 /** Kills every sandbox older than `olderThanHours`; it talks to the provider, so it runs after the turn. */
-export class SweepSandboxes extends Actor.effect<SweepSandboxes>()("SweepSandboxes", {
-  input: { olderThanHours: Schema.Int },
-}) {}
+export const SweepSandboxes = Actor.job("SweepSandboxes", {
+  payload: { olderThanHours: Schema.Int },
+})
 
 /** Runs every hour on the hour from cron; safe to send by hand. */
 export const Sweep = Actor.command("Sweep")
@@ -22,12 +22,9 @@ export const SandboxReaper = Actor.make("SandboxReaper", {
   state: Actor.state({
     sweeps: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
-  effects: [SweepSandboxes],
+  jobs: { SweepSandboxes: { job: SweepSandboxes, onSuccess: Swept } },
   api: { Sweep },
   internal: { Swept },
-  policy: {
-    effects: { SweepSandboxes: { onSuccess: Swept } },
-    cron: { "0 * * * *": Sweep },
-    cronSkipIfOlderThan: "1 hour",
-  },
+  schedules: { "0 * * * *": Sweep },
+  policy: { maxScheduleLag: "1 hour" },
 })

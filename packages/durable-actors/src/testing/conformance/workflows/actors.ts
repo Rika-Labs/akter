@@ -10,6 +10,7 @@ import {
   probeBody,
   ProbeInput,
 } from "../workflow-engine.ts"
+import type { ConformanceSuite } from "../../conformance.ts"
 
 /** Shared by the workflow actors and every workflow case. */
 export interface WorkflowsFixture {
@@ -33,24 +34,24 @@ export const workflowsFixture = (): WorkflowsFixture => ({
   gates: new Map(),
 })
 
-class Paid extends Actor.Event<Paid>()("Paid", { orderId: Schema.String, amount: Schema.Int }) {}
+const Paid = Actor.event("Paid", { orderId: Schema.String, amount: Schema.Int })
 
 export class OutOfStock extends Schema.TaggedError<OutOfStock>()("OutOfStock", {
   sku: Schema.String,
 }) {}
 
 export const Ship = Actor.workflow("Ship", {
-  input: { orderId: Schema.String, sku: Schema.String },
-  output: Schema.String,
-  errors: [OutOfStock],
+  payload: { orderId: Schema.String, sku: Schema.String },
+  success: Schema.String,
+  error: OutOfStock,
   key: ({ orderId }) => orderId,
   versions: { label: { current: 2, min: 0 } },
 })
 
 const Reserve = Ship.step("reserve", {
-  input: Schema.String,
+  payload: Schema.String,
   success: Schema.String,
-  errors: [OutOfStock],
+  error: OutOfStock,
 })
 
 const CoolOff = Ship.sleep("cool-off")
@@ -62,42 +63,42 @@ const Grace = Ship.sleep("grace")
 const FirstSignal = Ship.race("first-signal", { success: Schema.String })
 
 export const Quote = Actor.workflow("Quote", {
-  input: { n: Schema.Int },
-  output: Schema.String,
+  payload: { n: Schema.Int },
+  success: Schema.String,
 })
 
 const Pay = Actor.command("Pay", {
-  input: Schema.Struct({ orderId: Schema.String, amount: Schema.Int }),
+  payload: { orderId: Schema.String, amount: Schema.Int },
 })
 
-const Charge = Actor.command("Charge", { input: Schema.String, output: Schema.Int })
+const Charge = Actor.command("Charge", { payload: Schema.String, success: Schema.Int })
 
-const Record = Actor.command("Record", { input: Schema.String })
+const Record = Actor.command("Record", { payload: Schema.String })
 
 /** Records the tenant and caller of each call it receives. */
 const Audit = Actor.make("Audit", { key: Schema.String, api: { Record } })
 
 /** Sleeps, then calls `Audit` from an activity, so the call runs after a resume. */
 export const Attributed = Actor.workflow("Attributed", {
-  input: { key: Schema.String },
-  output: Schema.String,
+  payload: { key: Schema.String },
+  success: Schema.String,
   key: ({ key }) => key,
 })
 
 const AttributedNap = Attributed.sleep("nap")
 
-const Report = Attributed.step("report", { input: Schema.String, success: Schema.String })
+const Report = Attributed.step("report", { payload: Schema.String, success: Schema.String })
 
 /** Owner-event waits and clocks in the shapes the W2 and clock cases need, by `mode`. */
 export const Watch = Actor.workflow("Watch", {
-  input: { mode: Schema.String, orderId: Schema.String },
-  output: Schema.String,
+  payload: { mode: Schema.String, orderId: Schema.String },
+  success: Schema.String,
   key: ({ mode, orderId }) => `${mode}/${orderId}`,
 })
 
-const WatchHold = Watch.step("hold", { input: Schema.String, success: Schema.String })
+const WatchHold = Watch.step("hold", { payload: Schema.String, success: Schema.String })
 
-const WatchSlow = Watch.step("slow", { input: Schema.String, success: Schema.String })
+const WatchSlow = Watch.step("slow", { payload: Schema.String, success: Schema.String })
 
 const WatchFirst = Watch.wait("first", Paid)
 
@@ -109,18 +110,20 @@ const WatchNapA = Watch.sleep("nap-a")
 
 const WatchNapB = Watch.sleep("nap-b")
 
-const WatchMarkA = Watch.step("mark-a", { input: Schema.String, success: Schema.String })
+const WatchMarkA = Watch.step("mark-a", { payload: Schema.String, success: Schema.String })
 
-const WatchMarkB = Watch.step("mark-b", { input: Schema.String, success: Schema.String })
+const WatchMarkB = Watch.step("mark-b", { payload: Schema.String, success: Schema.String })
 
 const WatchLong = Watch.sleep("long")
 
+const WatchEmit = Watch.step("emit", { payload: Schema.String, success: Schema.String })
+
 const Emit = Actor.command("Emit", {
-  input: Schema.Struct({ orderId: Schema.String, amount: Schema.Int }),
+  payload: { orderId: Schema.String, amount: Schema.Int },
 })
 
 /** Waits for a `Paid` event for order `k`, with no timeout. */
-const Held = Actor.workflow("Held", { output: Schema.String })
+const Held = Actor.workflow("Held", { success: Schema.String })
 
 const HeldPaid = Held.wait("paid", Paid)
 
@@ -133,7 +136,7 @@ export const Keeper = Actor.make("Keeper", {
 })
 
 /** Creates a step constructor inside its body, which the engine must refuse. */
-const Loose = Actor.workflow("Loose", { output: Schema.String })
+const Loose = Actor.workflow("Loose", { success: Schema.String })
 
 let looseSteps = 0
 
@@ -144,13 +147,13 @@ export const Ledger = Actor.make("Ledger", {
 })
 
 const Begin = Actor.command("Begin", {
-  input: Schema.Struct({ orderId: Schema.String, sku: Schema.String }),
-  output: Schema.String,
+  payload: { orderId: Schema.String, sku: Schema.String },
+  success: Schema.String,
 })
 
 const Defer = Actor.command("Defer", {
-  input: Schema.Struct({ orderId: Schema.String, sku: Schema.String }),
-  output: Schema.String,
+  payload: { orderId: Schema.String, sku: Schema.String },
+  success: Schema.String,
 })
 
 export const Shipper = Actor.make("Shipper", {
@@ -160,17 +163,17 @@ export const Shipper = Actor.make("Shipper", {
 })
 
 export const Probe = Actor.workflow("Probe", {
-  input: ProbeInput,
-  output: Schema.String,
-  errors: [Flake],
+  payload: ProbeInput,
+  success: Schema.String,
+  error: Flake,
   key: ({ scenario, key }) => `${scenario}/${key}`,
 })
 
 const probeSteps = {
-  once: Probe.step("once", { success: Schema.String, errors: [Flake] }),
-  fast: Probe.step("fast", { success: Schema.String, errors: [Flake] }),
-  hold: Probe.step("hold", { success: Schema.String, errors: [Flake] }),
-  flaky: Probe.step("flaky", { success: Schema.String, errors: [Flake] }),
+  once: Probe.step("once", { success: Schema.String, error: Flake }),
+  fast: Probe.step("fast", { success: Schema.String, error: Flake }),
+  hold: Probe.step("hold", { success: Schema.String, error: Flake }),
+  flaky: Probe.step("flaky", { success: Schema.String, error: Flake }),
 }
 
 const Nap = Probe.sleep("nap")
@@ -178,7 +181,7 @@ const Nap = Probe.sleep("nap")
 const Pick = Probe.race("pick", { success: Schema.String })
 
 /** Reports whether a body can reach an Effect `WorkflowEngine`, as `DurableDeferred.done` needs. */
-const Inspect = Actor.workflow("Inspect", { output: Schema.String })
+const Inspect = Actor.workflow("Inspect", { success: Schema.String })
 
 export const EngineProbe = Actor.make("EngineProbe", {
   key: Schema.String,
@@ -360,6 +363,32 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
               yield* WatchLong("10 seconds")
 
               return yield* marked(WatchMarkA, "slept")
+
+            case "sibling": {
+              const { id } = yield* Shipper.Workflow
+
+              const [waited, emitted] = yield* Effect.all(
+                [
+                  paid(WatchFirst, true),
+                  WatchEmit.run(orderId, (key) =>
+                    Effect.gen(function* () {
+                      yield* bump(fixture, `emit:${key}`)
+                      const gate = fixture.gates.get(key)
+
+                      if (gate !== undefined) yield* Deferred.await(gate)
+                      yield* (yield* Shipper.get(id))
+                        .Pay({ orderId: key, amount: 8 })
+                        .pipe(Effect.orDie)
+
+                      return "emitted"
+                    }),
+                  ),
+                ],
+                { concurrency: "unbounded" },
+              )
+
+              return `${waited}|${emitted}`
+            }
           }
 
           return yield* Effect.die(new Error(`Unknown mode ${mode}`))
@@ -458,3 +487,9 @@ export const workflowsLayer = (fixture: WorkflowsFixture) =>
 export const workflowsLive = (fixture: WorkflowsFixture) => Layer.mergeAll(workflowsLayer(fixture))
 
 export type { NodeInspectSymbol, Unify }
+
+/** Workflow actors. */
+export const workflowsSuite: ConformanceSuite<WorkflowsFixture> = {
+  fixture: workflowsFixture,
+  layer: workflowsLive,
+}

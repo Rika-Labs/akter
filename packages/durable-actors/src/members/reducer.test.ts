@@ -12,8 +12,8 @@ const CounterState = Actor.state({
 
 const Increment = Actor.reducer("Increment", {
   state: CounterState,
-  input: Schema.Int,
-  errors: [Overflow],
+  payload: Schema.Int,
+  error: Overflow,
   reduce: (state, amount) =>
     state.count + amount > 1_000
       ? Result.fail(Overflow.make({ max: 1_000 }))
@@ -22,9 +22,9 @@ const Increment = Actor.reducer("Increment", {
 
 const Add = Actor.reducer("Add", {
   state: CounterState,
-  input: Schema.Int,
+  payload: Schema.Int,
   reduce: (state, amount) => Result.succeed({ count: state.count + amount }),
-  commutative: { combine: (first, second) => first + second },
+  batch: { combine: (first, second) => first + second },
 })
 
 const Reset = Actor.command("Reset")
@@ -43,7 +43,7 @@ describe("reducer declarations", () => {
       ActorError
     >["reason"]["_tag"]
 
-    expectTypeOf<Parameters<Public["Increment"]>>().toEqualTypeOf<[input: number]>()
+    expectTypeOf<Parameters<Public["Increment"]>>().toEqualTypeOf<[payload: number]>()
     expectTypeOf<Effect.Success<ReturnType<Public["Increment"]>>>().toEqualTypeOf<{
       readonly count: number
     }>()
@@ -56,15 +56,17 @@ describe("reducer declarations", () => {
       Exclude<Effect.Error<ReturnType<Public["Add"]>>, ActorError>
     >().toEqualTypeOf<never>()
     expect(Increment.kind).toBe("reducer")
-    expect(Add.errors).toEqual([])
+    expect(Add.error).toBe(Schema.Never)
   })
 
   it("gives reducers no handler in toLayer", () => {
     const Counter = Actor.make("Counter", { state: CounterState, api: { Increment, Reset } })
 
-    expectTypeOf<
-      keyof Effect.Success<Parameters<typeof Counter.toLayer<never, never>>[0]>
-    >().toEqualTypeOf<"Reset" | "Increment">()
+    const _reducerHandler: Layer.Layer<never, never, InternalActors> = Counter.toLayer({
+      Reset: () => Effect.void,
+      // @ts-expect-error a reducer has no handler
+      Increment: () => Effect.void,
+    })
 
     expectTypeOf(Counter.toLayer(Effect.succeed({ Reset: () => Effect.void }))).toEqualTypeOf<
       Layer.Layer<never, never, InternalActors>
@@ -76,7 +78,7 @@ describe("reducer declarations", () => {
       Layer.Layer<never, never, InternalActors>
     >()
 
-    Counter.toLayer(
+    const _serverHandler: Layer.Layer<never, never, InternalActors> = Counter.toLayer(
       // @ts-expect-error a reducer has no server handler
       Effect.succeed({
         Reset: () => Effect.void,
@@ -113,36 +115,36 @@ describe("reducer declarations", () => {
     ).toThrow("commands")
   })
 
-  it("keeps commutative reducers void and free of declared errors", () => {
-    expectTypeOf(Add.output).toEqualTypeOf<Schema.Void>()
-    expectTypeOf(Add.errors).toEqualTypeOf<readonly []>()
+  it("keeps batched reducers void and free of declared errors", () => {
+    expectTypeOf(Add.success).toEqualTypeOf<Schema.Void>()
+    expectTypeOf(Add.error).toEqualTypeOf<Schema.Never>()
 
     const combine = (first: number, second: number) => first + second
 
     const failing = {
       state: CounterState,
-      input: Schema.Int,
+      payload: Schema.Int,
       reduce: () => Result.fail(Overflow.make({ max: 0 })),
-      commutative: { combine },
+      batch: { combine },
     }
 
-    // @ts-expect-error a commutative reducer cannot fail
+    // @ts-expect-error a batched reducer cannot fail
     Actor.reducer("Failing", failing)
 
     const declaring = {
       state: CounterState,
-      input: Schema.Int,
-      errors: [Overflow] as const,
+      payload: Schema.Int,
+      error: Overflow,
       reduce: (state: { readonly count: number }) => Result.succeed(state),
-      commutative: { combine },
+      batch: { combine },
     }
 
-    // @ts-expect-error a commutative reducer declares no errors
-    expect(() => Actor.reducer("Declaring", declaring)).toThrow("cannot declare errors")
+    // @ts-expect-error a batched reducer declares no error
+    expect(() => Actor.reducer("Declaring", declaring)).toThrow("cannot declare an error")
 
     Actor.reducer("Undeclared", {
       state: CounterState,
-      input: Schema.Int,
+      payload: Schema.Int,
       // @ts-expect-error a reducer can only fail with a declared error
       reduce: () => Result.fail(Overflow.make({ max: 0 })),
     })
@@ -160,7 +162,7 @@ describe("reducer declarations", () => {
               Add.reduce(state, second),
             )
 
-            const merged = Add.reduce({ count }, Add.commutative!.combine(first, second))
+            const merged = Add.reduce({ count }, Add.batch!.combine(first, second))
 
             return (
               Result.isSuccess(sequential) &&

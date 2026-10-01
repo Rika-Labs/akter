@@ -21,15 +21,15 @@ export const SpanNames = {
   relayIntent: "durable-actors.relay.intent",
   /** One relay delivery pass over a claimed subscription row. */
   relaySubscription: "durable-actors.relay.subscription",
-  /** One executor attempt of an effect. */
-  effect: (actor: string, effect: string) => `durable-actors.effect/${actor}/${effect}`,
+  /** One executor attempt of a job. */
+  job: (actor: string, job: string) => `durable-actors.job/${actor}/${job}`,
 } as const
 
 const isSystem = Schema.is(System)
 
 /**
  * What started a turn: `command` for an external caller, or the System
- * source of a relay, workflow, or effect route delivery.
+ * source of a relay, workflow, or job route delivery.
  */
 export const triggerOf = (request: Request) =>
   request.external === true

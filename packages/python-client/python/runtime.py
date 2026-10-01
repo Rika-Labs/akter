@@ -13,6 +13,7 @@ never does, including when an id expires.
 
 from __future__ import annotations
 
+import email.utils
 import http.client
 import json
 import random
@@ -54,11 +55,18 @@ MIN_REMAINING_MS = 1000
 
 FIRST_NETWORK_DELAY_S = 0.1
 
-MAX_NETWORK_DELAY_S = 5.0
+MAX_NETWORK_DELAY_S = 2.0
 
-DEFAULT_RETRY_AFTER_MS = 1000
+TIMEOUT_DELAY_S = 0.05
+"""A `Timeout` is retried after this, jittered by half either way: the turn may still be running."""
 
-TIMEOUT_JITTER_S = 0.25
+FUTURE_SLACK_S = 0.05
+
+NOMINAL_RETRY_AFTER_MS = {"ActorUnavailable": 250, "RunnerAtCapacity": 1000, "MailboxFull": 100}
+"""The waits an envelope without `retryAfter` implies, jittered by half either way."""
+
+RETRYABLE_STATUSES = (408, 429)
+"""With any 5xx, statuses a proxy or gateway may answer before a runner saw the request."""
 
 COMMAND_ID = re.compile(r"^v1\.(\d+)\.(\d+)\.[0-9a-f-]{36}$")
 
@@ -82,12 +90,18 @@ class TransportError(Exception):
 
 
 class UnexpectedResponse(Exception):
-    """A response that is not one of the served protocol's bodies."""
+    """A response that is not one of the served protocol's bodies.
 
-    def __init__(self, status: int, text: str) -> None:
+    `retryable` is true for a status a proxy or gateway may answer before any
+    runner saw the request, which the command is retried after with its id.
+    """
+
+    def __init__(self, status: int, text: str, retry_after_ms: Optional[float] = None) -> None:
         super().__init__("unexpected response %d: %s" % (status, text[:200]))
         self.status = status
         self.text = text
+        self.retryable = status >= 500 or status in RETRYABLE_STATUSES
+        self.retry_after_ms = retry_after_ms
 
 
 class Defect(Exception):
@@ -113,7 +127,7 @@ class DeclaredError(Exception):
 class ActorError(Exception):
     """A framework failure: `tag` is the reason (`CommandExpired`, `Unauthorized`, ...)."""
 
-    def __init__(self, status: int, body: Dict[str, Any], header_retry_after: Optional[str]) -> None:
+    def __init__(self, status: int, body: Dict[str, Any], header_retry_after_ms: Optional[float]) -> None:
         reason: Dict[str, Any] = body.get("reason") or {}
         super().__init__("%s (status %d)" % (reason.get("_tag"), status))
         self.status = status
@@ -123,9 +137,9 @@ class ActorError(Exception):
         self.code: Optional[str] = reason.get("code")
         self.is_retryable: bool = bool(body.get("isRetryable"))
         retry_after = body.get("retryAfter")
-        if retry_after is None and header_retry_after is not None and header_retry_after.isdigit():
-            retry_after = int(header_retry_after) * 1000
-        self.retry_after_ms: Optional[float] = retry_after
+        self.retry_after_ms: Optional[float] = (
+            retry_after if retry_after is not None else header_retry_after_ms
+        )
         self.command_id: Optional[str] = reason.get("commandId")
 
 
@@ -221,6 +235,28 @@ def _lower(items: Any) -> Dict[str, str]:
     return {name.lower(): value for name, value in items}
 
 
+def retry_after_header(headers: Dict[str, str], now_ms: float) -> Optional[float]:
+    """A `retry-after` header in milliseconds: delay seconds, or an HTTP date
+    measured from the response's `date`, else from `now_ms`."""
+    value = (headers.get("retry-after") or "").strip()
+    if value == "":
+        return None
+    if value.isdigit():
+        return int(value) * 1000.0
+    try:
+        at = email.utils.parsedate_to_datetime(value).timestamp() * 1000.0
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    sent = now_ms
+    date = headers.get("date")
+    if date is not None:
+        try:
+            sent = email.utils.parsedate_to_datetime(date).timestamp() * 1000.0
+        except (TypeError, ValueError, IndexError, OverflowError):
+            pass
+    return max(0.0, at - sent)
+
+
 class Runtime:
     """Sends requests for a generated client, keeping one id per command.
 
@@ -288,6 +324,7 @@ class Runtime:
                 issued_at, expires_at = int(parsed.group(1)), int(parsed.group(2))
 
         refreshed = False
+        future_retried = False
         attempt = 0
         while True:
             attempt += 1
@@ -296,12 +333,23 @@ class Runtime:
                 response = self._send("POST", route, headers, payload)
                 return self._decode(response)
             except NetworkFailure as failure:
-                delay = min(MAX_NETWORK_DELAY_S, FIRST_NETWORK_DELAY_S * 2 ** (attempt - 1))
-                delay *= 0.5 + self._jitter()
+                delay = self._backoff(attempt)
                 if not self._may_retry(attempt, expires_at, delay):
                     raise TransportError(str(failure)) from failure
+            except UnexpectedResponse as unexpected:
+                if not unexpected.retryable:
+                    raise
+                delay = (
+                    unexpected.retry_after_ms / 1000.0
+                    if unexpected.retry_after_ms is not None
+                    else self._backoff(attempt)
+                )
+                if not self._may_retry(attempt, expires_at, delay):
+                    raise
             except ActorError as error:
-                delay_or_none = self._delay(error, issued_at)
+                delay_or_none = self._delay(error, issued_at, future_retried)
+                if error.tag == "InvalidCommandId":
+                    future_retried = True
                 if error.tag == "Unauthorized" and error.code == "expired":
                     if refreshed or not callable(self._token):
                         raise
@@ -312,15 +360,32 @@ class Runtime:
                 delay = delay_or_none
             self._sleep(delay)
 
-    def _delay(self, error: ActorError, issued_at: Optional[int]) -> Optional[float]:
-        """Seconds to wait before retrying with the same id, or None when the failure is final."""
-        if error.tag in ("ActorUnavailable", "RunnerAtCapacity", "MailboxFull"):
-            after = error.retry_after_ms if error.retry_after_ms is not None else DEFAULT_RETRY_AFTER_MS
-            return after / 1000.0 * (0.5 + self._jitter())
+    def _backoff(self, attempt: int) -> float:
+        delay = min(MAX_NETWORK_DELAY_S, FIRST_NETWORK_DELAY_S * 2 ** (attempt - 1))
+        return delay * (0.5 + self._jitter())
+
+    def _delay(
+        self, error: ActorError, issued_at: Optional[int], future_retried: bool
+    ) -> Optional[float]:
+        """Seconds to wait before retrying with the same id, or None when the failure is final.
+
+        A server's `retryAfter` is already jittered, so it is waited out as sent.
+        An id the server found in its future is resent once, after its issue time.
+        """
+        nominal = NOMINAL_RETRY_AFTER_MS.get(error.tag)
+        if nominal is not None:
+            if error.retry_after_ms is None:
+                return nominal / 1000.0 * (0.5 + self._jitter())
+            return error.retry_after_ms / 1000.0
         if error.tag == "Timeout":
-            return self._jitter() * TIMEOUT_JITTER_S
-        if error.tag == "InvalidCommandId" and error.code == "future" and issued_at is not None:
-            return max(0.0, (issued_at - self._server_now_ms()) / 1000.0)
+            return TIMEOUT_DELAY_S * (0.5 + self._jitter())
+        if (
+            error.tag == "InvalidCommandId"
+            and error.code == "future"
+            and issued_at is not None
+            and not future_retried
+        ):
+            return max(FUTURE_SLACK_S, (issued_at - self._server_now_ms()) / 1000.0 + FUTURE_SLACK_S)
         return None
 
     def _may_retry(self, attempt: int, expires_at: Optional[int], delay: float) -> bool:
@@ -373,19 +438,18 @@ class Runtime:
         if response.status == 204:
             return None
         text = response.body.decode("utf-8", errors="replace")
+        header_retry_after = retry_after_header(response.headers, self._now() * 1000.0)
         try:
             body = json.loads(text) if text else None
         except ValueError:
-            raise UnexpectedResponse(response.status, text) from None
+            raise UnexpectedResponse(response.status, text, header_retry_after) from None
         if 200 <= response.status < 300:
             return body
         if isinstance(body, dict) and body.get("_tag") == "ActorError":
             reason = (body.get("reason") or {}).get("_tag", "")
-            raise REASONS.get(reason, ActorError)(
-                response.status, body, response.headers.get("retry-after")
-            )
+            raise REASONS.get(reason, ActorError)(response.status, body, header_retry_after)
         if isinstance(body, dict) and body.get("_tag") == "Defect":
             raise Defect(response.status, body)
         if isinstance(body, dict) and isinstance(body.get("_tag"), str):
             raise DeclaredError(response.status, body)
-        raise UnexpectedResponse(response.status, text)
+        raise UnexpectedResponse(response.status, text, header_retry_after)
