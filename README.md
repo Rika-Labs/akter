@@ -1,14 +1,126 @@
 <div align="center">
 
-# durable-actors
+# Durable Actors
 
-_An Effect-native actor framework with durable identity, transactional turns, and ordinary relational data. One database per deployment, not per actor._
+**The framework for durable, stateful backends that power realtime apps, background work, and agents.**
 
-[![Status](https://img.shields.io/badge/status-alpha-blue)](docs/milestones/README.md) [![Effect](https://img.shields.io/badge/Effect-4.0.0--rc.116-blue)](https://effect.website) [![Bun](https://img.shields.io/badge/Bun-1.4.2-black)](https://bun.sh)
+[Quickstart](docs/quickstart.md) · [Concepts](docs/guides/concepts.md) · [API](docs/api/README.md) · [Comparison](docs/guides/comparison.md)
 
 </div>
 
-**The framework is in alpha and not production-ready.** M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)). Actors have typed commands, reducers, and queries; keyed state, owned tables, and blobs; events, intents, timers, jobs, workflows, schedules, connections, streams, and cross-actor subscriptions. `Actors.serve` serves them over HTTP, WebSocket, SSE, OpenAPI, and MCP, and `@durable-actors/core/client` is the Promise client. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection, multi-runner, and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Provider support (Neki) remains gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and executable evidence.
+Define each part of your app once: its data, the commands it accepts, the work it schedules, and the clients it updates. The framework keeps all of it consistent, retries what fails, and picks up where it left off.
+
+## What you build with it
+
+- **Realtime apps.** Chat rooms, shared documents, and live dashboards that store their history, push every change to connected clients, and keep sockets open while idle parts of the app sleep.
+- **Background work.** Payments, emails, imports, and billing runs that retry with backoff, run on schedules, and end up in a dead letter you can act on instead of disappearing.
+- **Agents.** Sessions that keep their transcript, stream output to the browser, pause for an approval, and resume after a crash or a deploy.
+
+Each of these is an actor: an addressable part of your app, such as one order, one room, or one agent session, that handles one command at a time and owns its data, its background work, and its live connections.
+
+## What it looks like
+
+An order that records its lines, emits an event, and charges the customer. The contract is the only file clients import:
+
+```ts title="src/order/contract.ts"
+import { Actor } from "@durable-actors/core"
+import { integer, pgTable, text } from "drizzle-orm/pg-core"
+import { Schema } from "effect"
+
+export const orderLines = Actor.table(
+  pgTable("order_lines", {
+    sku: text("sku").primaryKey(),
+    quantity: integer("quantity").notNull(),
+    unitPrice: integer("unit_price").notNull(),
+  }),
+)
+
+export const OrderPlaced = Actor.event("OrderPlaced", { total: Schema.Int })
+
+export class AlreadyPlaced extends Schema.TaggedError<AlreadyPlaced>()("AlreadyPlaced", {}) {}
+
+export const Charge = Actor.job("Charge", {
+  payload: { amount: Schema.Int },
+  success: Schema.Struct({ chargeId: Schema.String }),
+})
+
+export const Place = Actor.command("Place", {
+  payload: {
+    lines: Schema.Array(
+      Schema.Struct({ sku: Schema.String, quantity: Schema.Int, unitPrice: Schema.Int }),
+    ),
+  },
+  success: Schema.Int,
+  error: AlreadyPlaced,
+})
+
+export const Charged = Actor.command("Charged", { payload: { chargeId: Schema.String } })
+
+export const Order = Actor.make("Order", {
+  key: Schema.NonEmptyString,
+  state: Actor.state({
+    total: Schema.optional(Schema.Int),
+    chargeId: Schema.optional(Schema.String),
+  }),
+  tables: [orderLines],
+  events: [OrderPlaced],
+  jobs: { Charge: { job: Charge, onSuccess: Charged } },
+  api: { Place },
+  internal: { Charged },
+})
+```
+
+The handlers. Each one runs inside its command's transaction:
+
+```ts title="src/order/layer.ts"
+import { Effect } from "effect"
+import { AlreadyPlaced, Charge, Order, OrderPlaced, orderLines } from "./contract.ts"
+
+export const OrderLive = Order.toLayer({
+  Place: Effect.fn(function* ({ lines }) {
+    const turn = yield* Order.Turn
+
+    if (turn.state.total !== undefined) return yield* AlreadyPlaced.make({})
+
+    const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0)
+
+    yield* turn.rows(orderLines).insert(lines)
+    yield* turn.emit(OrderPlaced.make({ total }))
+    yield* turn.enqueue(Charge.make({ amount: total }))
+    yield* turn.state.set({ total })
+
+    return total
+  }),
+
+  Charged: Effect.fn(function* ({ chargeId }) {
+    const turn = yield* Order.Turn
+
+    yield* turn.state.set({ chargeId })
+  }),
+})
+```
+
+Calling it from anywhere in your app. The handle is typed from the contract, including the `AlreadyPlaced` failure:
+
+```ts title="src/checkout.ts"
+import { Effect } from "effect"
+import { Order } from "./order/contract.ts"
+
+export const checkout = Effect.gen(function* () {
+  const order = yield* Order.get("o-1")
+
+  return yield* order.Place({ lines: [{ sku: "mug", quantity: 2, unitPrice: 1200 }] })
+})
+```
+
+`Place` inserts the lines, emits `OrderPlaced`, records the total, and enqueues `Charge` in one commit. The charge runs only after that commit, outside the transaction, and its result comes back to the order as the `Charged` command.
+
+### What happens when…
+
+- **…the process dies before the commit?** Nothing was written: no lines, no event, no charge. The caller retries with the same command ID, and the order is placed once.
+- **…it dies after the commit, before the reply?** The retry finds the stored result and returns the same total without running the handler again.
+- **…the payment provider times out?** `Charge` retries with backoff under one job ID, which the executor passes to the provider as its idempotency key. When the retries run out, the job lands in a dead letter that an `onDeadLetter` command can turn into order state.
+- **…the order sits idle?** It sleeps. Its state and pending work stay in the database, and the next command, timer, or job result wakes it.
 
 ## Quickstart
 
@@ -17,174 +129,83 @@ bun create @durable-actors my-app   # or: --template chat
 cd my-app && bun install
 bun start   # visits: 1
 bun start   # visits: 2, read back from ./.data
-bun test
+bun test    # retry, crash, and restart tests
 ```
 
-The generated app stores its data in file-backed [PGlite](https://pglite.dev), so it needs no Docker or database server; `DATABASE_URL=postgres://...` switches it to Postgres. PGlite here is for development and one process per data directory, not production. Neither package is on npm before the `0.1.0-alpha` release, so for now the [quickstart](docs/quickstart.md) runs the scaffolder from a checkout against a locally packed tarball.
+The generated app runs on [PGlite](https://pglite.dev), an embedded Postgres, so there's no Docker or database server to set up. Set `DATABASE_URL=postgres://...` to run the same code on Postgres. The [quickstart](docs/quickstart.md) walks through the generated files.
+
+## What you get
+
+- **One transaction per command.** State, rows, events, files, timers, messages to other actors, and jobs commit together. Handlers never hold the transaction open while waiting on the network; slow or external work is recorded and runs after the commit.
+- **Safe retries.** Every command carries an ID. A retry with the same ID returns the stored result, and reusing an ID with different input is rejected.
+- **Data you own.** State and rows live in your own Postgres as ordinary Drizzle tables, scoped to their actor and tenant. Report across them with plain SQL.
+- **Work that outlives the request.** Jobs with retries and dead letters, timers, cron schedules, and workflows that sleep and wait for events.
+- **Realtime.** Event feeds that resume from a cursor, WebSocket connections that stay open while an idle actor sleeps, and live streams for output such as tokens.
+- **One definition, every interface.** Typed Effect handles, a browser-safe Promise client with optimistic updates, and, through `Actors.serve`, HTTP, WebSocket, and SSE endpoints, an OpenAPI document, and an MCP endpoint.
+- **Tests that crash it.** `ActorTest` runs the real transaction path with virtual time, injected crashes, and deterministic simulation.
+
+## Built on Effect
+
+Durable Actors is written with [Effect](https://effect.website) and uses its Cluster, SQL, and Workflow modules rather than a second runtime beside them. Commands, queries, events, and errors are declared with Schema, so inputs, outputs, and failures stay typed from the handler to the client. Handlers get their dependencies from Layers, a fiber an actor starts is interrupted when it sleeps, and tests advance the clock instead of waiting for it.
+
+## How it works
+
+```text
+command ─► fence ─► receipt ─► handler ─► COMMIT ─► reply
+                                            │
+                    state · rows · events · receipt · outbox
+                                            │
+                                            ▼
+                after commit: deliver messages, fire timers, run jobs
+```
+
+Each command checks that this process still owns the actor, looks for a stored receipt for its command ID, runs the handler, and commits. Ownership is checked in the database, so a process that has lost an actor can't commit for it. Everything the handler hands off is written to an outbox in the same commit and delivered afterwards. [Concepts](docs/guides/concepts.md) explains the model, and the [runtime contracts](docs/contracts/README.md) state each guarantee precisely.
+
+## How it compares
+
+- **Cloudflare Durable Objects** have the same one-request-at-a-time model on Cloudflare's platform, with storage attached to each object. Durable Actors keeps data in your Postgres and runs in your own process.
+- **Rivet Actors** keep state in memory and save it on an interval. Here a command's reply waits for its transaction to commit, and a retry returns the recorded result.
+- **Temporal and Restate** record a function's steps so it can resume after a crash. A Durable Actors command is a short transaction instead, and anything slow becomes a job or workflow owned by the actor.
+
+The [comparison](docs/guides/comparison.md) covers each in detail and says when to choose it instead.
 
 ## Install
-
-> **Alpha, single runner.** `0.1.0-alpha.0` is the first alpha release candidate; follow [the release procedure](docs/operations/05-releasing.md) for its publication status. Run one runtime process per database: multi-runner operation is not supported yet. APIs and stored formats may change between alphas without a migration path, so don't point it at data you need to keep.
-
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later and Postgres (or PGlite for tests). Effect, Drizzle and the Effect SQL drivers are peer dependencies pinned to the exact release candidates the framework is tested against, so install those versions beside it:
 
 ```sh
 bun add @durable-actors/core@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
-```ts
-import { Actor } from "@durable-actors/core"
-import { Actors, Database } from "@durable-actors/core/runtime"
-import { ActorTest } from "@durable-actors/core/testing"
-```
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later. Effect, its SQL drivers, and Drizzle are peer dependencies pinned to the versions the framework is tested with, so your app and the framework share one copy of each.
 
-Changes are listed in the [changelog](packages/durable-actors/CHANGELOG.md). The code is licensed under [Apache-2.0](LICENSE).
-
-## The API
-
-Define an actor, implement its commands, and get a typed handle. This is the quickstart's counter, and CI runs it on PGlite and Postgres. `src/counter/contract.ts` declares the actor's public shape:
-
-```ts title="src/counter/contract.ts"
-import { Actor } from "@durable-actors/core"
-import { Effect, Schema } from "effect"
-
-export const Increment = Actor.command("Increment", { payload: Schema.Int, success: Schema.Int })
-
-export const Counter = Actor.make("Counter", {
-  key: Schema.NonEmptyString,
-  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
-  api: { Increment },
-})
-```
-
-`src/counter/layer.ts` implements the handler, which runs inside the turn's transaction:
-
-```ts title="src/counter/layer.ts"
-import { Effect } from "effect"
-import { Counter } from "./contract.ts"
-
-export const CounterLive = Counter.toLayer({
-  Increment: Effect.fn(function* (amount) {
-    const turn = yield* Counter.Turn
-    yield* turn.state.set({ count: turn.state.count + amount })
-
-    return turn.state.count
-  }),
-})
-```
-
-`src/main.ts` wires the runtime and makes one call. `Database.pglite` keeps its files in `./.data`; use `Database.postgres` with a `DATABASE_URL` for anything beyond one process:
-
-```ts title="src/main.ts"
-import { BunCrypto } from "@effect/platform-bun"
-import { Actors, Database } from "@durable-actors/core/runtime"
-import { Console, Effect, Layer } from "effect"
-import { Counter } from "./counter/contract.ts"
-import { CounterLive } from "./counter/layer.ts"
-
-const live = CounterLive.pipe(
-  Layer.provideMerge(Actors.layer()),
-  Layer.provide(Database.pglite({ dataDir: "./.data" })),
-  Layer.provide(BunCrypto.layer),
-)
-
-const program = Effect.gen(function* () {
-  const counter = yield* Counter.get("visits")
-  const visits = yield* counter.Increment(1)
-
-  yield* Console.log(`visits: ${visits}`)
-})
-```
-
-Code in your own process runs as the trusted `System` caller in the `"default"` tenant, so it names neither a caller nor a tenant. A served actor is closed to outside callers until it declares who may use it with `access` on `Actor.make`; `Actor.access.public` opens it to anyone, for demos. Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
-
-## Why Effect for actors?
-
-An actor framework has to coordinate state, ownership, retries, resources, and failures. Effect supplies the building blocks; Durable Actors adds the actor-specific contracts around them.
-
-- **Typed contracts:** schemas define inputs, outputs, events, and declared errors. Handles preserve the error channel instead of reducing every failure to an untyped exception.
-- **Dependency injection:** actor handlers compose through services and layers; database and transport wiring stay at the application boundary.
-- **Structured concurrency:** activations own their resources. A fiber forked in an actor's layer starts on wake and is interrupted on sleep, rather than becoming an orphaned background task.
-- **Durable execution:** Cluster, SQL, Workflow, Clock, and Deferred primitives underpin placement, turns, activities, timers, and waits; the framework does not introduce a second runtime beside Effect.
-- **Faithful testing:** `ActorTest` uses real turns, SQL storage, and serialization with controlled time and injected faults—not a fake context that bypasses the transaction.
-
-These are design requirements.
-
-## Core Concepts
-
-One constructor, `Actor.make`, with one definition object. Its sections define the actor's behavior:
-
-- **Commands, reducers, and queries:** commands run serialized in short transactions and are delivered directly; reducers are pure transitions that also run optimistically on the client; queries read committed rows from the nearest caught-up replica without waking the actor.
-- **State, tables, and blobs:** compressed keyed state, actor-owned Drizzle tables, and database-backed binary chunks share the turn boundary. Activation-local values in a layer are explicitly ephemeral.
-- **Events and connections:** durable events replay after a cursor; streams and broadcasts are live. Typed connections can park while the activation sleeps, but transport loss still requires reconnecting.
-- **Intents and jobs:** turns record work for other actors, timers, and external providers in one actor-shard outbox. Delivery follows commit; jobs remain at least once unless a provider proves stronger guarantees.
-- **Workflows and schedules:** workflows are members of their owning actor. `schedules` runs commands on cron expressions or intervals; `key: Actor.singleton` expresses cluster-wide ownership without another actor constructor.
-
-The framework has no AI-specific toolkit. `Actors.serve` derives OpenAPI and an MCP endpoint from the same definitions as transports, and coding agents are applications built from these same primitives.
-
-## The model
-
-One relational database per deployment region, with tenants inside it. Actors own mutation, not a private database or exclusive visibility over every row.
-
-```text
-command → generation fence → receipt lookup → handler → commit
-                                                       ↓
-                                          reply, delivery, observation
-```
-
-The turn commits its state, owned rows, database blobs, events, intents, jobs, and receipt together. A lease or an in-memory activation cannot authorize a write on its own; the database fence must validate it.
-
-Handlers do not hold that transaction open while waiting for another actor, a socket, a timer, or an external API. They record an intent instead. See [command turns](docs/contracts/02-command-turns.md) and [context capabilities](docs/api/02-context.md).
-
-## What happens when…
-
-**…the process dies after commit but before replying?** The caller retries with the same command ID. The retained receipt returns the original result without running the handler again. Reusing the ID with different input is a conflict.
-
-**…the actor hibernates?** Committed state and future work remain in the database; activation-local values and resources disappear. Parking can preserve a socket while its transport stays alive, not after the process holding that socket dies.
-
-**…an external provider's response is lost?** A missing response is not proof of failure. The application needs provider idempotency or reconciliation before an unsafe retry; an actor receipt does not make an arbitrary external effect exactly once.
-
-**…the process dies before commit?** Nothing was durable. The caller's handle retries with the same command ID and the command executes once. Work that must survive the caller is recorded as an intent or a workflow.
-
-**…the backend is Neki?** Every intent is written to an outbox on the sending actor's shard and delivered after commit, so no write needs a cross-shard transaction. Neki locking, pinning, and outbox recovery remain provider-specific verification gates.
-
-Crash and runner-loss recovery have fault tests on Postgres; Neki remains a provider-specific verification gate.
-
-## One package, four entries
-
-| Entry                          | Responsibility                                                                                 |
+| Import                         | What it holds                                                                                  |
 | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `@durable-actors/core`         | Browser-safe declarations: actor contracts, members, policies, identity, errors, and handles.  |
-| `@durable-actors/core/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, database integration, topology, and migrations.        |
+| `@durable-actors/core`         | Browser-safe declarations: `Actor.make`, commands, queries, events, jobs, errors, and handles. |
+| `@durable-actors/core/runtime` | `Actors.layer`, `Actors.serve`, `Auth`, and the database layers.                               |
 | `@durable-actors/core/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
-| `@durable-actors/core/testing` | `ActorTest`, fault controls, inspection, and backend conformance.                              |
+| `@durable-actors/core/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
 
-The same design targets **embedded** use inside an Effect application, **served** use through `Actors.serve`, and **hosted** operation behind managed ingress. Embedded and served use are implemented, and hosted runners behind the edge are built (M4.8). Serving is optional; embedded callers do not need an HTTP hop.
+## Status
+
+Durable Actors is in alpha. APIs and storage formats can change between releases, and each database runs one runtime process for now. The [support matrix](docs/operations/support-matrix.md) lists what is supported today, and the [changelog](packages/durable-actors/CHANGELOG.md) lists what each release contains.
 
 ## Documentation
 
-- [Start here](docs/README.md) — the design and documentation authority order.
-- [Public API](docs/api/README.md) — declarations, contexts, clients, and Drizzle integration.
-- [Runtime contracts](docs/contracts/README.md) — transactions, ownership, receipts, recovery, and security.
-- [Architecture](docs/architecture/README.md) — topology, storage, dispatch, and repository layout.
-- [Verification](docs/verification/README.md) — invariants, failure cases, and evidence required for support.
-- [Milestones](docs/milestones/README.md) — implementation scope and sequencing.
+- [Quickstart](docs/quickstart.md): create, run, and test an app.
+- [Concepts](docs/guides/concepts.md): actors, commands, receipts, and the work that continues after a commit.
+- [Guides](docs/guides/README.md): Effect inside the transaction, testing, and deploying.
+- [API reference](docs/api/README.md): declarations, contexts, the client, Drizzle, and generated clients.
+- [Fit and non-fit](docs/product/fit-and-non-fit.md): when Durable Actors is the right tool, and when it isn't.
+- [Runtime contracts](docs/contracts/README.md): exactly what each guarantee covers and where it stops.
 
-The [research archive](research/README.md) preserves the exploration and type-level sketches. `docs/` is the implementation-facing source of truth when older proposals disagree.
-
-## Dev
-
-Use [Bun](https://bun.sh) **1.4.2**. Effect and its adapters are pinned to **4.0.0**; install the lockfile rather than independently upgrading the runtime packages.
+## Contributing
 
 ```sh
 bun install --frozen-lockfile
 bun run check
 ```
 
-`check` runs repository structure validation, formatting, lint, typechecks, tests, and builds. These checks validate the current monorepo; passing them does not establish an actor runtime that has not been implemented.
+`check` runs the structure, format, lint, type, test, build, and package checks. Database integration tests need a disposable Postgres in `TEST_DATABASE_URL`; [CI](.github/ci.md) has the details. Design decisions are recorded in [`docs/decisions`](docs/decisions/README.md).
 
-Database integration checks use `bun run check:ci` with an explicitly configured disposable Postgres instance through `TEST_DATABASE_URL`; never point that variable at a production database. See [CI and verification](.github/ci.md). If installation or compiler patching fails on a different Bun version, use the pinned version and retry the frozen install rather than editing dependency versions.
+## License
 
-## Status
-
-Durable Actors is in alpha, before a production release. M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)); Neki support and production claims still need provider-specific evidence. Feedback is welcome; a documented API is not yet a production guarantee.
+[Apache-2.0](LICENSE), copyright Rika Labs.

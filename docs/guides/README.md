@@ -5,7 +5,9 @@
 **Owner role:** documentation.  
 **Change policy:** change with `apps/docs/src/pages.ts` when a page is added to or removed from the site.
 
-Durable Actors is an Effect-native actor framework on Postgres. You declare an actor with `Actor.make`, and each command it receives runs as one turn inside one database transaction: the actor's state, its owned Drizzle rows, its events, the command's receipt, and the work it hands off all commit together or not at all.
+Durable Actors is the framework for durable, stateful backends that power realtime apps, background work, and agents.
+
+You declare an actor with `Actor.make`, and each command it receives runs as one turn inside one database transaction: the actor's state, its owned Drizzle rows, its events, the command's receipt, and the work it hands off all commit together or not at all.
 
 The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) runs it from a checkout. What has shipped is listed in each API page's implemented subset; everything else on those pages is accepted design.
 
