@@ -119,10 +119,6 @@ export const OrderLive = Order.toLayer({
 - [Quickstart](https://github.com/Rika-Labs/durable-actors/blob/main/docs/quickstart.md): create, run, and test an app.
 - [Concepts](https://github.com/Rika-Labs/durable-actors/blob/main/docs/guides/concepts.md): actors, commands, receipts, and the work that continues after a commit.
 
-## Status
-
-This is an alpha. APIs and storage formats can change between releases, and each database runs one runtime process for now. [CHANGELOG.md](CHANGELOG.md) lists what each release contains.
-
 ## License
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
