@@ -614,6 +614,7 @@ export const cronConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const sql = yield* SqlClient.SqlClient
+          yield* startOfMinute
           const heartbeat = yield* Heartbeat.get("removed")
           yield* heartbeat.Open()
           const { ref } = heartbeat
