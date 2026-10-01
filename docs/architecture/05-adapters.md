@@ -25,7 +25,7 @@ The published operation matrix for Drizzle is in [Drizzle integration](../api/04
 | `group` select with inner/left joins                                  | supported          | supported        | unverified |
 | raw SQL, `db.query`, `returning`, joins in writes, CTEs, foreign keys | rejected           | rejected         | rejected   |
 
-"Supported" means the [automatic adapter scoping](../verification/01-conformance.md) cases pass on that backend; contention and independent-connection cases run on Postgres only.
+"Supported" means the automatic adapter scoping cases pass on that backend; contention and independent-connection cases run on Postgres only.
 
 Topology adapters provide single-runner operation or HTTP-connected runners using verified advertise addresses. Kubernetes topology was removed from the current public surface. Railway requires proof that replicas can reach each other's `railnet0` address. Transport adapters back Effect RPC, HTTP, WebSocket, SSE, and OpenAPI without changing actor semantics.
 

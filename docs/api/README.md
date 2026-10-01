@@ -5,7 +5,7 @@
 **Owner role:** API/SDK.  
 **Change policy:** breaking changes require protocol/version review and migration guidance.
 
-This is the accepted API design, not a claim that every interface is implemented. [ADR 0010](../decisions/0010-one-way-effect-native-api.md) defines its shape: one way to make an actor, one way to call it, and one typed context service per phase. The [server API's foundation subset](01-server-api.md#implemented-foundation-subset) and PGlite/Postgres-backed `ActorTest` now run; the Promise client serves commands, queries, optimistic reducers, event feeds, streams, and connections ([implemented subset](03-typescript-sdk.md#implemented-subset-m34)); `Fleet` and the sketches below remain planned. See [ADR 0007](../decisions/0007-foundation-command-protocol.md), [ADR 0008](../decisions/0008-foundation-completion.md), and the bounded [conformance evidence](../verification/01-conformance.md#foundation-evidence).
+This is the accepted API design, not a claim that every interface is implemented. [ADR 0010](../decisions/0010-one-way-effect-native-api.md) defines its shape: one way to make an actor, one way to call it, and one typed context service per phase. The [server API's foundation subset](01-server-api.md#implemented-foundation-subset) and PGlite/Postgres-backed `ActorTest` now run; the Promise client serves commands, queries, optimistic reducers, event feeds, streams, and connections ([implemented subset](03-typescript-sdk.md#implemented-subset-m34)); `Fleet` and the sketches below remain planned. See [ADR 0007](../decisions/0007-foundation-command-protocol.md), [ADR 0008](../decisions/0008-foundation-completion.md), and the bounded conformance evidence.
 
 - [Server API](01-server-api.md)
 - [Context capabilities](02-context.md)

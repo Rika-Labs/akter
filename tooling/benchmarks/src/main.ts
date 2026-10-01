@@ -48,7 +48,6 @@ import { workflowCheck } from "./scenarios/workflow-check.ts"
 import { workflows } from "./scenarios/workflows.ts"
 import { mint } from "./scenarios/mint.ts"
 import { cron } from "./scenarios/cron.ts"
-import { orders } from "./scenarios/orders.ts"
 import { embeddedPglite } from "./scenarios/embedded-pglite.ts"
 import { coldStart } from "./scenarios/cold-start.ts"
 
@@ -86,7 +85,6 @@ const SCENARIOS: ReadonlyArray<Scenario> = [
   workflowCheck,
   mint,
   cron,
-  orders,
   embeddedPglite,
   coldStart,
   rls,

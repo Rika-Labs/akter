@@ -20,7 +20,6 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - The framework is `packages/durable-actors`, published as `@durable-actors/core`; it imports no other workspace package.
 - Other reusable code belongs in `packages/*` as `@durable-actors/<directory>`.
 - Deployable processes and the CLI belong in `apps/*`.
-- Runnable examples belong in `examples/*`; they are the end-to-end corpus.
 - Infrastructure belongs in `infra/`.
 - Tooling belongs in `tooling/*`.
 - Effect is the runtime foundation; do not create a separate Effect package.

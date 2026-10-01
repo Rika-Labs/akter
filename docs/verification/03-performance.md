@@ -688,7 +688,7 @@ With 10 samples, p99 is not meaningful.
 
 ### M4 exit rehearsal: drain, failover, and restore on the served chat room (#306)
 
-`CHAT_BACKEND=postgres bun --bun node_modules/vitest/vitest.mjs run --root . examples/chat/src/rehearsal`, on Dallen's MacBook Pro (Apple silicon, Docker Desktop) with load averages of 20–60 from other worktrees. Each run prints one `REHEARSAL` line. The drill is [`examples/chat/src/rehearsal/deployment.test.ts`](../../examples/chat/src/rehearsal/deployment.test.ts), and it runs in the chat package's `test:integration` script.
+`CHAT_BACKEND=postgres bun --bun node_modules/vitest/vitest.mjs run --root . examples/chat/src/rehearsal`, on Dallen's MacBook Pro (Apple silicon, Docker Desktop) with load averages of 20–60 from other worktrees. Each run prints one `REHEARSAL` line. The drill is `examples/chat/src/rehearsal/deployment.test.ts`, and it runs in the chat package's `test:integration` script.
 
 **Setup.** The T10 pair: a Postgres 18.6 primary with a synchronous standby in Docker, behind the drill's TCP endpoint. The chat room (`RoomLive`, with its moderation effect, feed, blobs and idle timer) runs on three `ActorTest.cluster` runners. Each runner has its own HTTP listener serving `Actor.serve({ actors: [Room] })` over that runner's runtime, as three processes behind a load balancer would. Six clients post to twelve rooms. Each post takes an id from `/command-ids`, goes only to a listener whose `/ready` answers 200, and is retried under the same idempotency key until it is acknowledged.
 

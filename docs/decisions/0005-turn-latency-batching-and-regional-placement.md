@@ -70,7 +70,7 @@ This amends foundation F1 from "one relational database per deployment" to "one 
 
 ## Consequences and evidence
 
-The [command-turn](../contracts/02-command-turns.md), [transaction](../contracts/03-transactions.md), [storage ownership](../contracts/06-storage-ownership.md), [security](../contracts/10-security.md), [dispatch](../architecture/04-dispatch.md), [topology](../architecture/01-topology.md), [storage layout](../architecture/03-storage-layout.md), [deployment](../vision/07-deployment.md), and [conformance](../verification/01-conformance.md#implementation-decision-checks) documents are updated to match.
+The [command-turn](../contracts/02-command-turns.md), [transaction](../contracts/03-transactions.md), [storage ownership](../contracts/06-storage-ownership.md), [security](../contracts/10-security.md), [dispatch](../architecture/04-dispatch.md), [topology](../architecture/01-topology.md), [storage layout](../architecture/03-storage-layout.md), [deployment](../vision/07-deployment.md), and conformance documents are updated to match.
 
 The tenant directory, edge routing by home region, cross-region relay, and tenant move need designs before multi-region support is claimed. No public API for choosing a tenant's home region is specified here.
 

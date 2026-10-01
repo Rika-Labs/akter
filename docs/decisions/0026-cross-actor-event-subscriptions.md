@@ -685,7 +685,7 @@ In this change:
 - [M3](../milestones/M3.md): M3.7's evidence list matches this design.
 - [Server API](../api/01-server-api.md) and [context](../api/02-context.md): `subscriptions`, `Actor.subscription`, `Actor.Delivery`, `turn.subscribe`, `turn.unsubscribe`, and the two policies (target API).
 - [Data model](../architecture/data-model.md), [transaction catalog](../architecture/transaction-catalog.md), and [glossary](../GLOSSARY.md).
-- [Conformance](../verification/01-conformance.md): the **Subscription delivery** gate and decision check. [Failure matrix](../verification/02-failure-matrix.md): the new rows. [Invariants](../verification/invariants.md): E2. [Performance](../verification/03-performance.md): the baseline.
+- Conformance: the **Subscription delivery** gate and decision check. [Failure matrix](../verification/02-failure-matrix.md): the new rows. [Invariants](../verification/invariants.md): E2. [Performance](../verification/03-performance.md): the baseline.
 
 ## Required evidence (#94, `conformance/subscriptions.ts`, migration `0017_subscriptions`)
 

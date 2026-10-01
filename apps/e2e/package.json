@@ -8,9 +8,7 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@durable-actors/chat": "workspace:*",
     "@durable-actors/console": "workspace:*",
-    "@durable-actors/counter": "workspace:*",
     "@playwright/test": "1.63.0"
   }
 }

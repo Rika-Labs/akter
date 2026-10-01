@@ -27,7 +27,6 @@ tester.run("durable-actors/filename-kebab-case", filenameKebabCaseRule, {
   invalid: [
     { code: "export {};", filename: "packages/deployments/src/Deployment.ts", errors: [error] },
     { code: "export {};", filename: "apps/console/src/App.test.tsx", errors: [error] },
-    { code: "export {};", filename: "examples/counter/src/Counter_Actor.ts", errors: [error] },
     { code: "export {};", filename: "tooling/structure/src/treeCheck.ts", errors: [error] },
     { code: "export {};", filename: "infra/src/Railway.ts", errors: [error] },
   ],

@@ -32,7 +32,7 @@
 
 ## Evidence
 
-`examples/subscriptions/src/account/layer.test.ts` on PGlite and Postgres; see the [conformance ledger](../verification/01-conformance.md).
+`examples/subscriptions/src/account/layer.test.ts` on PGlite and Postgres; see the conformance ledger.
 
 ## Revisit when
 

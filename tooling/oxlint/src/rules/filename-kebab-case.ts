@@ -10,7 +10,7 @@ export const filenameKebabCaseRule = defineRule({
     type: "suggestion",
     docs: {
       description:
-        "Require source filenames to be kebab-case under the governed tree (apps/, packages/, examples/, tooling/, infra/).",
+        "Require source filenames to be kebab-case under the governed tree (apps/, packages/, tooling/, infra/).",
     },
     messages: {
       notKebab:

@@ -28,14 +28,11 @@ packages/
   observability/            @durable-actors/observability
   postgres/                 @durable-actors/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
   ui/                       @durable-actors/ui         console components; its own package because Babel compiles StyleX before the console imports it
-examples/                   runnable examples that double as the end-to-end corpus
-  counter/  chat/  coding-agent/  orders/  subscriptions/
 infra/                      @durable-actors/infra      Alchemy: alchemy.run.ts, src/railway/, docker/<app>/Dockerfile
 tooling/
   oxlint/                   @durable-actors/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @durable-actors/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
   benchmarks/               @durable-actors/benchmarks  `bun run bench` performance harness (ADR 0018)
-  doc-checks/               @durable-actors/doc-checks  typechecks doc examples and checks repository links (ADR 0061)
 benchmarks/                 committed benchmark results and how to read them; data only, no code
 docs/  research/  .github/src/
 ```

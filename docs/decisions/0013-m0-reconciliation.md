@@ -1,6 +1,6 @@
 # ADR 0013: Reconcile the shipped M0 code with ADRs 0010–0012
 
-**Status:** implementation decision (2026-09-23); evidence is recorded in [conformance](../verification/01-conformance.md#foundation-evidence).
+**Status:** implementation decision (2026-09-23); evidence is recorded in conformance.
 
 **Responsibility:** record how the M0 implementation was changed to match the accepted API and delivery decisions, and what remains unimplemented.
 
@@ -46,7 +46,7 @@ The following remain target design only: reducers, queries, streams, connections
 ## Consequences
 
 - **Superseded M0 surface:** ADR 0008's `Actor.make` options, lifecycle combinators, `Actors.mint`, `get` options, and `onDefect` hook, plus ADR 0007's persisted Cluster envelopes, are superseded for the implementation. Their protocol, receipt, expiry, and authorization rules are unchanged.
-- **Renamed conformance cases:** cases that asserted redelivery from stored envelopes are renamed and now assert caller retry and receipt replay; see the [conformance ledger](../verification/01-conformance.md#foundation-evidence).
+- **Renamed conformance cases:** cases that asserted redelivery from stored envelopes are renamed and now assert caller retry and receipt replay; see the conformance ledger.
 - **No data migration:** existing databases need none, because the framework never created Cluster message tables through its own migrations.
 
 ## Revisit when

@@ -13,7 +13,7 @@ The second slice adds the remaining foundation surface: all three identity modes
 
 The third slice reconciles both with ADRs 0010–0012 ([ADR 0013](../decisions/0013-m0-reconciliation.md)): `Actor.make(name, { key, state, api, internal, policy })`, input-only handlers reading a per-actor `X.Turn` service, `X.create()` as the only minting path, `Actor.as`/`Actor.tenant` instead of `get` options, telemetry-only defects instead of `onDefect`, and direct commands with no Cluster message storage.
 
-**M0 is complete (2026-09-22).** The [conformance ledger](../verification/01-conformance.md#foundation-evidence) records 35 named cases: 30 run on both PGlite and Postgres, and five independent-connection cases run only on Postgres. Backend-specific tests prove database lifecycle, migration rollback, and real process-kill recovery. Repository checks and semantic review pass; the PR records CI evidence for its exact pushed revision. This closes the foundation milestone, not production, multi-runner, or provider certification. M1 owned data and durable consequences are next. The scope and exit criteria below remain unchanged.
+**M0 is complete (2026-09-22).** The conformance ledger records 35 named cases: 30 run on both PGlite and Postgres, and five independent-connection cases run only on Postgres. Backend-specific tests prove database lifecycle, migration rollback, and real process-kill recovery. Repository checks and semantic review pass; the PR records CI evidence for its exact pushed revision. This closes the foundation milestone, not production, multi-runner, or provider certification. M1 owned data and durable consequences are next. The scope and exit criteria below remain unchanged.
 
 ## Included
 

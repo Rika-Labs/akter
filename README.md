@@ -8,7 +8,7 @@ _An Effect-native actor framework with durable identity, transactional turns, an
 
 </div>
 
-**The framework is in alpha and not production-ready.** M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)). Actors have typed commands, reducers, and queries; keyed state, owned tables, and blobs; events, intents, timers, jobs, workflows, schedules, connections, streams, and cross-actor subscriptions. `Actors.serve` serves them over HTTP, WebSocket, SSE, OpenAPI, and MCP, and `@durable-actors/core/client` is the Promise client. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection, multi-runner, and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Provider support (Neki) remains gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and [executable evidence](docs/verification/01-conformance.md#foundation-evidence).
+**The framework is in alpha and not production-ready.** M0, M2, and M4 are built, M1 is in progress, and M3, M5, and M6 are open ([milestones](docs/milestones/README.md)). Actors have typed commands, reducers, and queries; keyed state, owned tables, and blobs; events, intents, timers, jobs, workflows, schedules, connections, streams, and cross-actor subscriptions. `Actors.serve` serves them over HTTP, WebSocket, SSE, OpenAPI, and MCP, and `@durable-actors/core/client` is the Promise client. The shared PGlite/Postgres harness exercises the real runtime; Postgres adds independent-connection, multi-runner, and process-kill recovery evidence. The alpha package is `@durable-actors/core`; see [Install](#install). Provider support (Neki) remains gated. See the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset) and executable evidence.
 
 ## Quickstart
 
@@ -96,7 +96,7 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Code in your own process runs as the trusted `System` caller in the `"default"` tenant, so it names neither a caller nor a tenant. A served actor is closed to outside callers until it declares who may use it with `access` on `Actor.make`; `Actor.access.public` opens it to anyone, for demos. Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error, and [`examples/chat`](examples/chat) adds blobs, jobs, and retention. [`examples/orders`](examples/orders) places orders inside an app with its own Postgres tables, mints a shipment actor per package, charges through an idempotent job, and proves with a SIGKILL crash drill that no acknowledged order is lost and no payment is taken twice. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
+Code in your own process runs as the trusted `System` caller in the `"default"` tenant, so it names neither a caller nor a tenant. A served actor is closed to outside callers until it declares who may use it with `access` on `Actor.make`; `Actor.access.public` opens it to anyone, for demos. Acquiring a handle writes nothing; the first command establishes durable state. A retried command with the same command ID replays its receipt instead of running again. The [chat template](packages/create/templates/chat/src/room/contract.ts) adds an owned Drizzle table, events, a reducer, queries, and a declared error. What runs today is listed in the [implemented subset](docs/api/01-server-api.md#implemented-foundation-subset); the [server API](docs/api/01-server-api.md) also describes planned members.
 
 ## Why Effect for actors?
 
@@ -108,7 +108,7 @@ An actor framework has to coordinate state, ownership, retries, resources, and f
 - **Durable execution:** Cluster, SQL, Workflow, Clock, and Deferred primitives underpin placement, turns, activities, timers, and waits; the framework does not introduce a second runtime beside Effect.
 - **Faithful testing:** `ActorTest` uses real turns, SQL storage, and serialization with controlled time and injected faults—not a fake context that bypasses the transaction.
 
-These are design requirements. The [verification gates](docs/verification/01-conformance.md#design-verification-gates) determine when each can be claimed as implemented.
+These are design requirements.
 
 ## Core Concepts
 
@@ -148,7 +148,7 @@ Handlers do not hold that transaction open while waiting for another actor, a so
 
 **…the backend is Neki?** Every intent is written to an outbox on the sending actor's shard and delivered after commit, so no write needs a cross-shard transaction. Neki locking, pinning, and outbox recovery remain provider-specific verification gates.
 
-Crash and runner-loss recovery have fault tests on Postgres ([conformance](docs/verification/01-conformance.md)); Neki remains a provider-specific verification gate.
+Crash and runner-loss recovery have fault tests on Postgres; Neki remains a provider-specific verification gate.
 
 ## One package, four entries
 

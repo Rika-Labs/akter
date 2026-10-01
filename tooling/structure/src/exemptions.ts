@@ -4,12 +4,7 @@
  */
 export interface Exemption {
   readonly path: string
-  readonly rule:
-    | "tests-beside-sources"
-    | "index-not-entry"
-    | "wildcard-exports"
-    | "structure-rules"
-    | "ledger-cases"
+  readonly rule: "tests-beside-sources" | "index-not-entry" | "wildcard-exports" | "structure-rules"
   readonly reason: string
 }
 

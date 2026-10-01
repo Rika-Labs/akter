@@ -95,7 +95,6 @@ import { watchConformance, watchSuite } from "./conformance/watch.ts"
 import { workflowVersionsConformance } from "./conformance/workflow-versions.ts"
 import { workflowsConformance } from "./conformance/workflows.ts"
 import { workflowsSuite } from "./conformance/workflows/actors.ts"
-import { engineCases } from "./conformance/workflow-engine.ts"
 import { foundationConformance, foundationSuite } from "./foundation.ts"
 
 /**
@@ -487,60 +486,6 @@ export const capabilitiesOf = (
     ...(backend.logicalDecoding === true ? (["logicalDecoding"] as const) : []),
     ...(backend.freshDatabases ? (["freshDatabase"] as const) : []),
   ])
-
-/** The backends the repository runs cases on, by the capabilities each provides. */
-const evidenceBackends = {
-  pglite: capabilitiesOf({ independentConnections: false, freshDatabases: true }),
-  postgres: capabilitiesOf({
-    independentConnections: true,
-    hasReplica: true,
-    logicalDecoding: true,
-    freshDatabases: true,
-  }),
-  neki: capabilitiesOf({ independentConnections: true, neki: true, freshDatabases: false }),
-} as const
-
-/** One registered case a verification ledger may cite, and where it can produce evidence. */
-export interface EvidenceEntry {
-  readonly name: string
-  /** The conformance group, or `workflowEngine` for the upstream differential cases. */
-  readonly group: ConformanceGroup | "workflowEngine"
-  readonly requires: ReadonlyArray<ConformanceRequirement>
-  /**
-   * For each backend, whether it runs the case or skips it by name. Postgres
-   * assumes the CI server's replica and logical decoding; the hosted edge
-   * runs only the edge groups. A listed backend is where evidence can come
-   * from, not evidence that the case passed there.
-   */
-  readonly backends: Readonly<Record<keyof typeof evidenceBackends, "runs" | "skips">>
-}
-
-/**
- * Every case a verification ledger may cite: the conformance registry and
- * the workflow-engine differential cases, derived from their registrations.
- */
-export const evidenceIndex: ReadonlyArray<EvidenceEntry> = [
-  ...allGroups.flatMap((group) =>
-    conformanceGroups[group].cases.map((conformanceCase) => {
-      const requires = requirementsOf(conformanceCase)
-
-      const backends = Object.fromEntries(
-        Object.entries(evidenceBackends).map(([backend, provided]) => [
-          backend,
-          requires.every((required) => provided.has(required)) ? "runs" : "skips",
-        ]),
-      ) as EvidenceEntry["backends"]
-
-      return { name: conformanceCase.name, group, requires, backends }
-    }),
-  ),
-  ...engineCases.map(({ name }) => ({
-    name,
-    group: "workflowEngine" as const,
-    requires: [],
-    backends: { pglite: "runs", postgres: "skips", neki: "skips" } as const,
-  })),
-]
 
 /** `suites` and every suite they use, each once, dependencies first. */
 const withDependencies = (

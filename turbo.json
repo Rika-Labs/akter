@@ -56,22 +56,6 @@
       "outputs": [],
       "env": ["CI"]
     },
-    "@durable-actors/doc-checks#test": {
-      "dependsOn": ["^build", "transit"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/README.md",
-        "$TURBO_ROOT$/docs/**",
-        "$TURBO_ROOT$/apps/*/README.md",
-        "$TURBO_ROOT$/packages/*/README.md",
-        "$TURBO_ROOT$/examples/*/README.md",
-        "$TURBO_ROOT$/tooling/*/README.md",
-        "$TURBO_ROOT$/infra/README.md",
-        "$TURBO_ROOT$/vitest.config.ts"
-      ],
-      "outputs": [],
-      "env": ["CI"]
-    },
     "@durable-actors/infra#transit": {
       "dependsOn": ["^transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "$TURBO_ROOT$/.github/src/**"]

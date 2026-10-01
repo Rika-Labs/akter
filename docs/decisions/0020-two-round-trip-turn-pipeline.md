@@ -247,7 +247,7 @@ The clarifications apply only to a runtime that pipelines, which none does yet. 
 
 ## Verification the implementation (P4) must add
 
-**Ledger check: "Two-round-trip turns and state cache".** It's updated in [conformance](../verification/01-conformance.md). The implementing unit adds these cases to `conformance/pipeline.ts`:
+**Ledger check: "Two-round-trip turns and state cache".** It's updated in conformance. The implementing unit adds these cases to `conformance/pipeline.ts`:
 
 - `warm turn takes two round trips` (Postgres, through a counting TCP relay);
 - `wake takes two round trips` (Postgres);

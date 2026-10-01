@@ -134,7 +134,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 
 **Verification.**
 
-- [Conformance](../verification/01-conformance.md): a **Payload migration chain** gate row, and `conformance/payload-migrations.ts` with the cases below.
+- Conformance: a **Payload migration chain** gate row, and `conformance/payload-migrations.ts` with the cases below.
 - [Invariants](../verification/invariants.md): extend S1 to events and effects, or add an E-row: "a retained event decodes through its chain for its whole retention window".
 - [Failure matrix](../verification/02-failure-matrix.md): "Deploy drops a chain step a retained value needs" and "Rollback past a payload schema change", both refused at startup.
 

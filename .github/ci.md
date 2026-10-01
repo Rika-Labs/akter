@@ -76,9 +76,7 @@ Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses o
 isolated worker. This avoids multiplying a package-level worker pool by another
 CPU-sized pool. No isolation is disabled. PostgreSQL integration results are
 never cached; their task is selected by the affected graph and requires explicit
-disposable database configuration. Semantic-rule review is advisory and runs
-in-thread through the global Jev plugin's `.amp/rules/` evaluation; it is not a
-Turbo task or CI job. CI does not run Jev or supply its provider credentials.
+disposable database configuration.
 
 Every Verify run uploads exact-SHA evidence and `.turbo/runs` summaries, including
 on failure. The evidence gate still requires a successful current-SHA run. Use

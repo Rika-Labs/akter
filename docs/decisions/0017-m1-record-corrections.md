@@ -18,7 +18,7 @@ Planning M1 ([milestone](../milestones/M1.md)) found four records that no longer
 
 ### ADR 0013's "Not implemented" list is stale
 
-[ADR 0013](0013-m0-reconciliation.md) lists queries, placement, `routing_key`, and the two-round-trip path as unimplemented. Queries (`Actor.query`, `X.Read`), `placement`, and `routing_key` have since shipped in M1.1 and M1.2, and state migrations in M1.3. The two-round-trip and pipelined turn paths remain unimplemented. ADR 0013 is no longer a status record: [M1](../milestones/M1.md) tracks what is implemented, and the [conformance ledger](../verification/01-conformance.md) records the evidence.
+[ADR 0013](0013-m0-reconciliation.md) lists queries, placement, `routing_key`, and the two-round-trip path as unimplemented. Queries (`Actor.query`, `X.Read`), `placement`, and `routing_key` have since shipped in M1.1 and M1.2, and state migrations in M1.3. The two-round-trip and pipelined turn paths remain unimplemented. ADR 0013 is no longer a status record: [M1](../milestones/M1.md) tracks what is implemented, and the conformance ledger records the evidence.
 
 ### Outlast is a separate product; ADR 0015 is superseded
 
@@ -39,7 +39,7 @@ Planning M1 ([milestone](../milestones/M1.md)) found four records that no longer
 - `packages/durable-actors/src/runtime/storage/codec.ts` compresses with `Bun.zstdCompressSync` and no dictionary.
 - `packages/durable-actors/src/runtime/database/migrations.ts`: `0003_routing_state` creates `actor_state.value bytea` and `actor_placements (actor_type, placement, encoding)` with `placement IN ('tenant', 'actor')`.
 - `refuses to start an actor type under a different placement than its stored rows` in `packages/durable-actors/src/runtime/database/pglite.test.ts`.
-- M1.1–M1.3 shipped in PRs #18, #19, and #25; their cases are listed in the [conformance ledger](../verification/01-conformance.md).
+- M1.1–M1.3 shipped in PRs #18, #19, and #25; their cases are listed in the conformance ledger.
 
 ## Alternatives
 

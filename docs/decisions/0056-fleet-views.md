@@ -153,7 +153,7 @@ Two gauges per view join [ADR 0049](0049-observability-names-metrics-and-defect-
 - `the statements of a turn are unchanged when views are registered` (**Fleet: never on the turn path**);
 - `0025_fleet applies`, and an OpenAPI case in `conformance/http.ts` for `GET /fleet/{View}` as `durable.fleet.<View>` with `x-durable-transport: "sse"`.
 
-The [fleet check](../verification/01-conformance.md) names these. A `fleet` benchmark scenario (proposed for T15's pass; M6.md lists only `watch` fan-out and cold start there) measures WAL bytes per update with and without full replica identity, maintainer throughput against group size, and freshness against batch size, and its results go to [performance](../verification/03-performance.md).
+The fleet check names these. A `fleet` benchmark scenario (proposed for T15's pass; M6.md lists only `watch` fan-out and cold start there) measures WAL bytes per update with and without full replica identity, maintainer throughput against group size, and freshness against batch size, and its results go to [performance](../verification/03-performance.md).
 
 ## Revisit when
 

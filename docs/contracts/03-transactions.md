@@ -17,4 +17,4 @@ On every backend, intents and timers MUST be written to `actor_outbox` in the ac
 
 An adapter that pipelines turn statements MUST prove that the server executes them in submission order within the transaction, and that a failed statement aborts every statement pipelined after it, so that the final `COMMIT` rolls back ([ADR 0020](../decisions/0020-two-round-trip-turn-pipeline.md)).
 
-Adapters MUST prove locking, connection pinning, rollback, and relay recovery through the gates in [conformance](../verification/01-conformance.md). SQL protocol compatibility alone is insufficient.
+Adapters MUST prove locking, connection pinning, rollback, and relay recovery through the gates in conformance. SQL protocol compatibility alone is insufficient.

@@ -148,7 +148,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 
 **Verification.**
 
-- [Conformance](../verification/01-conformance.md): the edge half of **Hosted assertions and operator authority** gets the cases below in `conformance/assertions.ts`. **Regional placement** is recorded as deferred to L.1.
+- Conformance: the edge half of **Hosted assertions and operator authority** gets the cases below in `conformance/assertions.ts`. **Regional placement** is recorded as deferred to L.1.
 - [Performance](../verification/03-performance.md): **Remote users** is recorded as deferred to L.1.
 - [Failure matrix](../verification/02-failure-matrix.md): new rows "Edge signing key revoked or rotated", "Assertion for another region or deployment", and, for L.1, "Directory cache stale during a tenant move".
 - [Support matrix](../operations/support-matrix.md): add "Hosted single-region path". Change "Multi-region home placement" to "designed (ADR 0031); built in L.1".
