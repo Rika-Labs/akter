@@ -160,6 +160,7 @@ export const workflowWaitConformance: ReadonlyArray<ConformanceCase<WorkflowsFix
   },
   {
     name: "workflows: a workflow command that kicks a running execution commits and answers while the owner call its activity makes waits behind it",
+    requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment, fixture }) =>
       environment.run(
