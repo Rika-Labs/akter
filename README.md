@@ -144,10 +144,6 @@ The generated app runs on [PGlite](https://pglite.dev), an embedded Postgres, so
 - **One definition, every interface.** Typed Effect handles, a browser-safe Promise client with optimistic updates, and, through `Actors.serve`, HTTP, WebSocket, and SSE endpoints, an OpenAPI document, and an MCP endpoint.
 - **Tests that crash it.** `ActorTest` runs the real transaction path with virtual time, injected crashes, and deterministic simulation.
 
-## Built on Effect
-
-Durable Actors is written with [Effect](https://effect.website) and uses its Cluster, SQL, and Workflow modules rather than a second runtime beside them. Commands, queries, events, and errors are declared with Schema, so inputs, outputs, and failures stay typed from the handler to the client. Handlers get their dependencies from Layers, a fiber an actor starts is interrupted when it sleeps, and tests advance the clock instead of waiting for it.
-
 ## How it works
 
 ```text
@@ -184,10 +180,6 @@ The runtime needs [Bun](https://bun.sh) 1.4.2 or later. Effect, its SQL drivers,
 | `@durable-actors/core/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
 | `@durable-actors/core/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
 
-## Status
-
-Durable Actors is in alpha. APIs and storage formats can change between releases, and each database runs one runtime process for now. The [support matrix](docs/operations/support-matrix.md) lists what is supported today, and the [changelog](packages/durable-actors/CHANGELOG.md) lists what each release contains.
-
 ## Documentation
 
 - [Quickstart](docs/quickstart.md): create, run, and test an app.
@@ -196,15 +188,6 @@ Durable Actors is in alpha. APIs and storage formats can change between releases
 - [API reference](docs/api/README.md): declarations, contexts, the client, Drizzle, and generated clients.
 - [Fit and non-fit](docs/product/fit-and-non-fit.md): when Durable Actors is the right tool, and when it isn't.
 - [Runtime contracts](docs/contracts/README.md): exactly what each guarantee covers and where it stops.
-
-## Contributing
-
-```sh
-bun install --frozen-lockfile
-bun run check
-```
-
-`check` runs the structure, format, lint, type, test, build, and package checks. Database integration tests need a disposable Postgres in `TEST_DATABASE_URL`; [CI](.github/ci.md) has the details. Design decisions are recorded in [`docs/decisions`](docs/decisions/README.md).
 
 ## License
 
