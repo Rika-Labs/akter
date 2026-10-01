@@ -142,7 +142,7 @@ Unhandled declared failures roll back business changes and staged notifications 
 
 ## Minted child ids
 
-`turn.mint(Child)` derives its id as [ADR 0025](../decisions/0025-turn-mint.md) specifies: SHA-256 over the length-prefixed UTF-8 fields `akter/mint/v1`, tenant, parent type, parent id (empty for a singleton), command id, decimal ordinal, and child type; the first 16 bytes get the version-8 and RFC 9562 variant bits and are written as lowercase hyphenated hex. These vectors are checked in [`identity/mint.test.ts`](../../packages/akter/src/identity/mint.test.ts). Every row uses command id `v1.1767225600000.1767312000000.0190a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b`:
+`turn.mint(Child)` derives its id as [ADR 0025](../decisions/0025-turn-mint.md) specifies: SHA-256 over the length-prefixed UTF-8 fields `durable-actors/mint/v1`, tenant, parent type, parent id (empty for a singleton), command id, decimal ordinal, and child type; the first 16 bytes get the version-8 and RFC 9562 variant bits and are written as lowercase hyphenated hex. These vectors are checked in [`identity/mint.test.ts`](../../packages/akter/src/identity/mint.test.ts). Every row uses command id `v1.1767225600000.1767312000000.0190a3b4-5c6d-4e7f-8a9b-0c1d2e3f4a5b`:
 
 | Tenant  | Parent type | Parent id | Ordinal | Child type | Id                                     |
 | ------- | ----------- | --------- | ------- | ---------- | -------------------------------------- |

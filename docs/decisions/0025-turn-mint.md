@@ -45,7 +45,7 @@ Split: Effect.fn(function* ({ packages }) {
 The id is a UUID version 8 built from SHA-256:
 
 ```text
-fields  = [ "akter/mint/v1", tenant, parentType, parentId, commandId, ordinal, childType ]
+fields  = [ "durable-actors/mint/v1", tenant, parentType, parentId, commandId, ordinal, childType ]
 encoded = concat(for f in fields: u32be(byteLength(utf8(f))) ++ utf8(f))
 digest  = SHA-256(encoded)
 bytes   = digest[0..16]
@@ -178,4 +178,4 @@ Dallen accepted every proposed default on 2026-09-28.
 3. **Optional label, `turn.mint(Child, { label })`, replacing the ordinal?** Not now; ordinals are enough and labels can be added under a new domain string.
 4. **Record parent–child links (a `children` table or index)?** No; inspection can read the parent's outbox and receipts.
 5. **`turn.mint` in workflow bodies?** No; workflows mint through a command turn.
-6. **Id version 8 with SHA-256 and the domain string `akter/mint/v1`?** Yes.
+6. **Id version 8 with SHA-256 and the domain string `durable-actors/mint/v1`?** Yes.

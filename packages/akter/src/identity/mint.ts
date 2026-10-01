@@ -13,7 +13,11 @@ export interface MintInput {
   readonly child: string
 }
 
-const DOMAIN = "akter/mint/v1"
+/**
+ * The digest's domain string. It predates the Akter name and stays as it is,
+ * because every minted id already stored was derived with it.
+ */
+const DOMAIN = "durable-actors/mint/v1"
 
 const SINGLETON_ID = "singleton"
 
