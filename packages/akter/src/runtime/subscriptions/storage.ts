@@ -29,10 +29,14 @@ export const rowColumns = ({
  * and after (`now`) the change, each empty for an inactive or absent row. A
  * summary row counts the active rows of its source that follow its tag, so
  * each count moves by the rows that gained the tag less the rows that lost
- * it. Increments upsert and decrements update in place, each atomically
- * against concurrent writers, and `tags_removed` returns the counts it
- * lowered, since one that reached 0 must be deleted before the transaction
- * commits.
+ * it. Every count moves in one upsert that takes its rows in key order, so
+ * concurrent writers of one source's counts lock them in the same order and
+ * never deadlock; an update whose lock order followed the plan would, and its
+ * victim's change would wait out a retry. The proposed row holds no negative
+ * count, which the summary's check refuses before the conflict is found, so
+ * the update reads the signed delta itself. A decrement upserts against the
+ * latest version of its row, and `tags_moved` returns every count it set,
+ * since one that reached 0 must be deleted before the transaction commits.
  */
 export const summarize = ({
   sql,
@@ -54,17 +58,15 @@ export const summarize = ({
         WHERE NOT x.tag = ANY(c.now)) moved
       GROUP BY routing_key, tenant_id, source_type, source_id, tag
       HAVING sum(d) <> 0),
-    tags_added AS (
-      INSERT INTO actor_subscription_tags (routing_key, tenant_id, source_type, source_id, event, rows)
-      SELECT routing_key, tenant_id, source_type, source_id, tag, d FROM tag_delta WHERE d > 0
+    tags_moved AS (
+      INSERT INTO actor_subscription_tags AS t (routing_key, tenant_id, source_type, source_id, event, rows)
+      SELECT routing_key, tenant_id, source_type, source_id, tag, greatest(d, 0) FROM tag_delta
+      ORDER BY routing_key, tenant_id, source_type, source_id, tag
       ON CONFLICT (routing_key, tenant_id, source_type, source_id, event)
-      DO UPDATE SET rows = actor_subscription_tags.rows + EXCLUDED.rows
-      RETURNING 1),
-    tags_removed AS (
-      UPDATE actor_subscription_tags t SET rows = t.rows + d.d
-      FROM tag_delta d
-      WHERE d.d < 0 AND t.routing_key = d.routing_key AND t.tenant_id = d.tenant_id
-        AND t.source_type = d.source_type AND t.source_id = d.source_id AND t.event = d.tag
+      DO UPDATE SET rows = t.rows + (SELECT d.d FROM tag_delta d
+        WHERE d.routing_key = EXCLUDED.routing_key AND d.tenant_id = EXCLUDED.tenant_id
+          AND d.source_type = EXCLUDED.source_type AND d.source_id = EXCLUDED.source_id
+          AND d.tag = EXCLUDED.event)
       RETURNING t.routing_key, t.tenant_id, t.source_type, t.source_id, t.event, t.rows)`
 }
 
@@ -107,7 +109,7 @@ export const changeRows = Effect.fnUntraced(function* (
         ${summarize({ sql, changed: "changed" })}
         SELECT (SELECT count(*) FROM new_rows)::int AS rows,
           (SELECT json_agg(json_build_array(routing_key::text, tenant_id, source_type, source_id,
-            event)) FROM tags_removed WHERE rows = 0)::text AS emptied`
+            event)) FROM tags_moved WHERE rows = 0)::text AS emptied`
 
       if (result!.emptied !== null)
         yield* sql`DELETE FROM actor_subscription_tags t
