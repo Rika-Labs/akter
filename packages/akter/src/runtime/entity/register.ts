@@ -280,7 +280,11 @@ const keepSingletonAwake = Effect.fnUntraced(function* (
  *   order, so an activation has one transaction in flight. Commands enqueue
  *   synchronously when Cluster delivers the request, and replies follow the
  *   batch's commit; broadcasts go out first. With `pipelining`, the next batch
- *   already waiting is taken while the previous one commits.
+ *   already waiting is taken while the previous one commits. Its admission
+ *   waits until a batch with a workflow command is published, because that
+ *   batch's kick can re-arm a running execution's timer under the generation
+ *   row lock the admission would hold, and the next batch may be the very call
+ *   that execution's activity is waiting on.
  * - A retryable failure committed nothing. The worker ends the activation,
  *   waits its backoff, starts the next one in place, and only then answers each
  *   unanswered command `ActorUnavailable`, so a caller never retries into the
@@ -769,6 +773,8 @@ export const registerActor = Effect.fnUntraced(function* (
             next: pipelining ? following : Effect.undefined,
             prepare: owner.prepare(owned),
             committed: publish,
+            publishesUnderLock: (batch) =>
+              batch.some(({ request }) => workflowRoutes.has(request.command)),
             observe,
           },
           owned.cache,
