@@ -1,7 +1,9 @@
+import { Redacted } from "effect"
+
 /**
- * Server-side probes release a vanished runner's sessions and their advisory
- * and row locks instead of waiting for the operating system's long defaults.
- * Callers can tune these for their network or disable them explicitly.
+ * Server-side probes let idle backends release a vanished runner's sessions
+ * and locks instead of waiting for the operating system's long defaults.
+ * Callers can tune the probes or restore the operating system's defaults.
  */
 export const withKeepalives = <
   A extends {
@@ -29,4 +31,3 @@ export const withKeepalives = <
 
   return { ...config, startupOptions: `${defaults} ${options}`.trim() }
 }
-import { Redacted } from "effect"
