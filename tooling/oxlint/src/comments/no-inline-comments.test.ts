@@ -11,7 +11,7 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "inlineComment" }
 
-tester.run("durable-actors/no-inline-comments", noInlineCommentsRule, {
+tester.run("akter/no-inline-comments", noInlineCommentsRule, {
   valid: [
     "/** Why the retry cap is three. */\nexport const cap = 3",
     "/**\n * Sign the original bytes: re-encoding changes the signature.\n */\nexport function sign() {}",

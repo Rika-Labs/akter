@@ -2,8 +2,8 @@ import { Data, Schema } from "effect"
 import { createElement } from "react"
 import { renderToString } from "react-dom/server"
 import { describe, expect, expectTypeOf, it } from "vitest"
-import { Actor, Fleet } from "@durable-actors/core"
-import { fleetClient } from "@durable-actors/core/client"
+import { Actor, Fleet } from "@rikalabs/akter"
+import { fleetClient } from "@rikalabs/akter/client"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import {
   useActor,
@@ -14,7 +14,7 @@ import {
   useQuery,
   useWatch,
 } from "./index.ts"
-import type { ConnectionMessage, ProgressOfConnection } from "@durable-actors/core/client"
+import type { ConnectionMessage, ProgressOfConnection } from "@rikalabs/akter/client"
 import { keepLast, receive } from "./connection.ts"
 
 const Posted = Actor.event("Posted", { text: Schema.String })
@@ -82,7 +82,7 @@ const Page = () => {
   )
 }
 
-describe("@durable-actors/react", () => {
+describe("@akter/react", () => {
   it("renders on a server without fetching, connecting, or touching browser globals", () => {
     expect("window" in globalThis).toBe(false)
     expect(renderToString(createElement(Page))).toBe(

@@ -1,5 +1,5 @@
 {
-  "name": "@durable-actors/python-client",
+  "name": "@akter/python-client",
   "private": true,
   "description": "Generates a Python client from a served OpenAPI document: typed models, one method per public member, and a runtime that keeps one command id across retries.",
   "type": "module",
@@ -17,7 +17,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@durable-actors/core": "workspace:*",
+    "@rikalabs/akter": "workspace:*",
     "vitest": "catalog:"
   }
 }

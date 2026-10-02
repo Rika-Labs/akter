@@ -1,4 +1,4 @@
-import { ActorError, type Failure, NotCreated } from "@durable-actors/core/client"
+import { ActorError, type Failure, NotCreated } from "@rikalabs/akter/client"
 import { Effect, Schedule, Schema } from "effect"
 
 /** How long a read of an actor no command has created yet waits before asking again. */

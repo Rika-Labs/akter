@@ -1,6 +1,6 @@
 # ADR 0020: The two-round-trip turn pipeline
 
-**Status:** accepted (2026-09-26, Dallen, on [#54](https://github.com/Rika-Labs/durable-actors/issues/54)). Dallen set the target on 2026-09-25: two SQL round trips per turn, and no one-round-trip fast path. On acceptance, he also approved the connection split (`maxConnections` 50 plus `offTurnConnections` 10) and the narrower batch allowance. Implementation (P4) and its evidence remain pending.
+**Status:** accepted (2026-09-26, Dallen, on [#54](https://github.com/Rika-Labs/akter/issues/54)). Dallen set the target on 2026-09-25: two SQL round trips per turn, and no one-round-trip fast path. On acceptance, he also approved the connection split (`maxConnections` 50 plus `offTurnConnections` 10) and the narrower batch allowance. Implementation (P4) and its evidence remain pending.
 
 **Responsibility:** decide how the runtime issues a command turn in two database round trips, as [ADR 0005](0005-turn-latency-batching-and-regional-placement.md) requires, and what the implementation must prove.
 
@@ -241,7 +241,7 @@ These recommended defaults were accepted with the ADR.
 - **[Contract 02](../contracts/02-command-turns.md), narrowed:** the next batch may send its admission statements while the previous batch commits. Its handlers must not run until its own fence and receipts are validated. This replaces "the next batch MAY execute in memory while the previous batch commits", from ADR 0005.
 - **[Contract 03](../contracts/03-transactions.md), clarification:** an adapter that pipelines must prove two things. The server runs pipelined statements in submission order inside the transaction. And a failed statement aborts everything pipelined after it, so `COMMIT` rolls back.
 - **Unchanged:** contracts 01, 04, 09, and 10, and invariant R2. The handler still runs only after the fence and the receipt.
-- **For P5 to revisit:** the ledger check **Pipelined batches** and invariant B1 still hold as written, but with the narrowed allowance, batch N+1 has no staged work to hide until N's commit reply arrives. P5 ([#160](https://github.com/Rika-Labs/durable-actors/issues/160)) rewrote both, the "Pipelined batch N fails to commit" row, and ADR 0011's pipelining text to match, and built same-flight admission rather than deferring it.
+- **For P5 to revisit:** the ledger check **Pipelined batches** and invariant B1 still hold as written, but with the narrowed allowance, batch N+1 has no staged work to hide until N's commit reply arrives. P5 ([#160](https://github.com/Rika-Labs/akter/issues/160)) rewrote both, the "Pipelined batch N fails to commit" row, and ADR 0011's pipelining text to match, and built same-flight admission rather than deferring it.
 
 The clarifications apply only to a runtime that pipelines, which none does yet. The narrowed batch allowance constrains P5, which doesn't exist yet.
 

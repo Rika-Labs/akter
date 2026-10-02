@@ -23,9 +23,9 @@ const TEST_FILE = /\.test\.[cm]?[jt]sx?$/
 
 const E2E_FILE = /\.e2e\.[cm]?[jt]sx?$/
 
-const APP_PACKAGE = /^@durable-actors\/(api|console|docs|edge|cli)$/
+const APP_PACKAGE = /^@akter\/(api|console|edge|cli)$/
 
-const WORKSPACE_PACKAGE = /^@durable-actors\//
+const WORKSPACE_PACKAGE = /^@akter\//
 
 /** A tracked file's repository-relative path and its text. */
 export interface TreeFile {
@@ -133,9 +133,7 @@ const checkManifests = (input: {
     const manifest = parsed.value
 
     const expected =
-      basename === "durable-actors"
-        ? "@durable-actors/core"
-        : `@durable-actors/${dir === "" ? "monorepo" : basename}`
+      basename === "akter" ? "@rikalabs/akter" : `@akter/${dir === "" ? "monorepo" : basename}`
 
     if (manifest.name !== expected)
       input.findings.push({
@@ -154,7 +152,7 @@ const checkManifests = (input: {
           message: `depends on app package '${dep}'; dependency direction is apps -> packages, never app-ward`,
         })
 
-      if (basename === "durable-actors" && WORKSPACE_PACKAGE.test(dep))
+      if (basename === "akter" && WORKSPACE_PACKAGE.test(dep))
         input.findings.push({
           path: file.path,
           rule: "structure-rules",

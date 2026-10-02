@@ -11,7 +11,7 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "decisionReference" }
 
-tester.run("durable-actors/no-decision-references", noDecisionReferencesRule, {
+tester.run("akter/no-decision-references", noDecisionReferencesRule, {
   valid: [
     "// Commands are direct: the receipt is the only admission record.\nexport {}",
     "/** Which rows share a shard: the tenant (default) or each actor on its own. */\nexport {}",

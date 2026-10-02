@@ -25,7 +25,7 @@ Other constraints:
 
 - ADR 0006 forbids foreign keys from high-volume actor tables to shared low-cardinality parent rows (multixact exhaustion) and global counters touched by every turn.
 - Turn transactions on Neki are `tx_mode = 'single'` and `fanout = 'single'`, so a turn cannot read a second shard.
-- Research on external blob stores ([v1 blob storage](../../research/v1/source/extracted-package/durable-actors/docs/BLOB_STORAGE.md)) prefers immutable content-addressed objects, uploaded first and then referenced from a turn, with orphans collected after a grace window. The same shape fits a database table.
+- Research on external blob stores ([v1 blob storage](../../research/v1/source/extracted-package/akter/docs/BLOB_STORAGE.md)) prefers immutable content-addressed objects, uploaded first and then referenced from a turn, with orphans collected after a grace window. The same shape fits a database table.
 - [Vision 03](../vision/03-relational-data.md) says external object-storage APIs are not the blob surface. This ADR keeps content in Postgres.
 
 ## Decision

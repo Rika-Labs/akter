@@ -13,7 +13,7 @@ The runtime MUST decode caller identity per request and serialize it into the en
 
 Commands MUST map committed outputs and declared failures through receipts. Framework failures MUST use the [single error envelope](error-model.md). Queries read committed rows without waking an activation. Event streams MUST carry cursors. Connections declared by `Actor.connection` MUST carry typed frames and restore parked connection state. They also carry framework control frames outside each member's frame unions: `Resync { after, reason, deadline }` and `ResyncReplayed { through }` from server to client after an ungraceful owner death, and `ResyncDone { through }` from client to server, in an envelope variant separate from member frames; only the holder creates `Resync` and consumes `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)).
 
-The Effect handle, Promise client from `@durable-actors/core/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `durable-actors.<Actor>/<Command>`.
+The Effect handle, Promise client from `@rikalabs/akter/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `akter.<Actor>/<Command>`.
 
 ## Hosted assertions ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md))
 

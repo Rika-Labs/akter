@@ -22,7 +22,7 @@ Planning M1 ([milestone](../milestones/M1.md)) found four records that no longer
 
 ### Outlast is a separate product; ADR 0015 is superseded
 
-[ADR 0015](0015-durable-agent-runtime-boundary.md) planned a durable agent runtime as an adapter package inside this project. That runtime is now Outlast, a separate product in its own repository that compiles each session to an ordinary `Actor.make` and depends on the published `durable-actors` package. This repository builds no agent runtime, agent package, or sandbox provider boundary. Milestone M7 is withdrawn; framework features Outlast needs are proposed here through ordinary ADRs and scheduled in ordinary milestones. The core package stays AI-neutral.
+[ADR 0015](0015-durable-agent-runtime-boundary.md) planned a durable agent runtime as an adapter package inside this project. That runtime is now Outlast, a separate product in its own repository that compiles each session to an ordinary `Actor.make` and depends on the published `akter` package. This repository builds no agent runtime, agent package, or sandbox provider boundary. Milestone M7 is withdrawn; framework features Outlast needs are proposed here through ordinary ADRs and scheduled in ordinary milestones. The core package stays AI-neutral.
 
 ### State uses plain zstd with a stored codec version
 
@@ -36,9 +36,9 @@ Planning M1 ([milestone](../milestones/M1.md)) found four records that no longer
 
 ## Evidence
 
-- `packages/durable-actors/src/runtime/storage/codec.ts` compresses with `Bun.zstdCompressSync` and no dictionary.
-- `packages/durable-actors/src/runtime/database/migrations.ts`: `0003_routing_state` creates `actor_state.value bytea` and `actor_placements (actor_type, placement, encoding)` with `placement IN ('tenant', 'actor')`.
-- `refuses to start an actor type under a different placement than its stored rows` in `packages/durable-actors/src/runtime/database/pglite.test.ts`.
+- `packages/akter/src/runtime/storage/codec.ts` compresses with `Bun.zstdCompressSync` and no dictionary.
+- `packages/akter/src/runtime/database/migrations.ts`: `0003_routing_state` creates `actor_state.value bytea` and `actor_placements (actor_type, placement, encoding)` with `placement IN ('tenant', 'actor')`.
+- `refuses to start an actor type under a different placement than its stored rows` in `packages/akter/src/runtime/database/pglite.test.ts`.
 - M1.1–M1.3 shipped in PRs #18, #19, and #25; their cases are listed in the conformance ledger.
 
 ## Alternatives

@@ -5,11 +5,11 @@
 **Owner role:** product/marketing.
 **Change policy:** a change requires product sign-off.
 
-Durable Actors is an Effect-native actor framework for applications that need identity, relational business data, realtime clients, and durable work in one model. `Actor.make` covers stateful actors, singleton services, cron-triggered commands, and actor-owned workflows instead of making developers compose separate application primitives.
+Akter is an Effect-native actor framework for applications that need identity, relational business data, realtime clients, and durable work in one model. `Actor.make` covers stateful actors, singleton services, cron-triggered commands, and actor-owned workflows instead of making developers compose separate application primitives.
 
 ## Honest comparison
 
-| Product                         | Strongest fit                                                                                                | Durable Actors difference                                                                                                                                            | Prefer the alternative when                                                                                                       |
+| Product                         | Strongest fit                                                                                                | Akter difference                                                                                                                                                     | Prefer the alternative when                                                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | Rivet Actors                    | Self-hostable actor infrastructure with polished actor-local ergonomics and broad client reach               | Adds one-transaction command turns over keyed state and relational `OwnedTable` data, retained receipts, Effect-native contracts, and actor-owned workflows and jobs | Rivet's existing ecosystem, languages, deployment support, or storage model fits better                                           |
 | Cloudflare Durable Objects      | Globally distributed, managed object-local coordination tightly integrated with Cloudflare                   | Keeps ordinary Postgres and Drizzle as the relational system of record, supports embedded and self-hosted operation, and makes deployment ownership portable         | Cloudflare's edge placement, platform integration, and managed object storage are the primary requirements                        |
@@ -21,7 +21,7 @@ Durable Actors is an Effect-native actor framework for applications that need id
 - Do not imply benchmark, scale, regional, or availability advantages without evidence.
 - Do not claim broadcasts are durable or external effects are exactly once.
 - Do not position the framework as an AI platform. Agents are a compelling actor workload, and OpenAPI is the tool-generation boundary.
-- Do not hide operational maturity: Durable Actors must earn confidence through conformance tests, observability, and production evidence.
+- Do not hide operational maturity: Akter must earn confidence through conformance tests, observability, and production evidence.
 
 See [fit and non-fit](fit-and-non-fit.md) and the [vision](../vision/README.md).
 

@@ -12,7 +12,7 @@
 
 ## Context
 
-M1 shipped the outbox relay (#34, M1.6) and effects (#36, M1.7) on one embedded runner. That runner owns all 256 buckets, runs one relay pass at a time under a local semaphore, and settles at most 16 rows of a pass concurrently. The relay code is [`runtime/turn/relay.ts`](../../packages/durable-actors/src/runtime/turn/relay.ts).
+M1 shipped the outbox relay (#34, M1.6) and effects (#36, M1.7) on one embedded runner. That runner owns all 256 buckets, runs one relay pass at a time under a local semaphore, and settles at most 16 rows of a pass concurrently. The relay code is [`runtime/turn/relay.ts`](../../packages/akter/src/runtime/turn/relay.ts).
 
 Four things in that design stop it from working, or working well, with several runners:
 

@@ -1,6 +1,6 @@
 # ADR 0050: Operator authority, audited repair, and `durable inspect`
 
-**Status:** accepted (2026-09-30, Dallen). Built with M4.6 ([#226](https://github.com/Rika-Labs/durable-actors/issues/226)). It makes concrete the operator rule of [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md) and the operator receipt access of [ADR 0004](0004-receipt-access-revocation-and-expiry.md), amends [ADR 0049](0049-observability-names-metrics-and-defect-spans.md) section 3, and uses migration `0023_operator_audit`.
+**Status:** accepted (2026-09-30, Dallen). Built with M4.6 ([#226](https://github.com/Rika-Labs/akter/issues/226)). It makes concrete the operator rule of [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md) and the operator receipt access of [ADR 0004](0004-receipt-access-revocation-and-expiry.md), amends [ADR 0049](0049-observability-names-metrics-and-defect-spans.md) section 3, and uses migration `0023_operator_audit`.
 
 **Responsibility:** define who is an operator, what an operator may do to which resources, how each operator action is recorded, and what `durable inspect` shows.
 
@@ -80,8 +80,8 @@ ADR 0003 requires "separate action- and resource-scoped capabilities and audited
 
 ## Consequences
 
-- `@durable-actors/core/runtime` exports `Operators.serve`, `OperatorAuth.make` and `.tokens`, and the `OperatorGrant`, `Capability`, `OperatorAction`, and `AuditRecord` schemas.
-- `durable-actors.effect.dead_letters` is unchanged; retried and discarded dead letters are visible in `durable.operator_audit`.
+- `@rikalabs/akter/runtime` exports `Operators.serve`, `OperatorAuth.make` and `.tokens`, and the `OperatorGrant`, `Capability`, `OperatorAction`, and `AuditRecord` schemas.
+- `akter.effect.dead_letters` is unchanged; retried and discarded dead letters are visible in `durable.operator_audit`.
 - The inspector's "Retrying a dead letter waits for audited repair" note points to `durable dead-letters retry`.
 - Subscription skip (ADR 0026 question 6) is the `subscriptions.skip` action, audited like a repair.
 

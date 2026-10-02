@@ -5,7 +5,7 @@ import { Pool } from "pg"
 
 /** Drizzle handle over its own pool for the auth library. */
 export class AuthDatabase extends Context.Service<AuthDatabase, ReturnType<typeof drizzle>>()(
-  "@durable-actors/postgres/AuthDatabase",
+  "@akter/postgres/AuthDatabase",
 ) {}
 
 /**

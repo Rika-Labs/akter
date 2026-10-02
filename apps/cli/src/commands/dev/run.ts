@@ -1,5 +1,5 @@
-import { User } from "@durable-actors/core"
-import { Auth, Database, Inspector } from "@durable-actors/core/runtime"
+import { User } from "@rikalabs/akter"
+import { Auth, Database, Inspector } from "@rikalabs/akter/runtime"
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Schema } from "effect"
 import type { Cause, Crypto } from "effect"

@@ -3,7 +3,7 @@ import {
   CommandExpired,
   type CommandOptions,
   type Failure,
-} from "@durable-actors/core/client"
+} from "@rikalabs/akter/client"
 import { Schema } from "effect"
 import { useCallback, useRef, useState } from "react"
 

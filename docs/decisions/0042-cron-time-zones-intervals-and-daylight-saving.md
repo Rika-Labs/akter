@@ -1,6 +1,6 @@
 # ADR 0042: Cron time zones, fixed intervals, and daylight saving
 
-**Status:** accepted (2026-09-28, Dallen, with every recommended default below). It amends [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 5, where the tick key is `$cron:<canonical expression>` and expressions are evaluated in UTC. The contract and API amendments listed under [Amendments](#amendments) land in the same change. The implementation is M2.5's follow-up to [#132](https://github.com/Rika-Labs/durable-actors/pull/132).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default below). It amends [ADR 0021](0021-multi-runner-relay-singleton-and-cron.md) section 5, where the tick key is `$cron:<canonical expression>` and expressions are evaluated in UTC. The contract and API amendments listed under [Amendments](#amendments) land in the same change. The implementation is M2.5's follow-up to [#132](https://github.com/Rika-Labs/akter/pull/132).
 
 **Responsibility:** decide how a `policy.cron` entry names a time zone or a fixed interval, what its tick key is, which instants a zoned schedule fires at across daylight-saving transitions, and how ADR 0021's catch-up rule applies to zones and intervals.
 

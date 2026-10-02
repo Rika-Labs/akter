@@ -5,8 +5,8 @@ import {
   InvalidInput,
   requestDigest,
   Unauthorized,
-} from "@durable-actors/core"
-import { actorErrorBody, statusOf } from "@durable-actors/core/runtime"
+} from "@rikalabs/akter"
+import { actorErrorBody, statusOf } from "@rikalabs/akter/runtime"
 import { Clock, Effect, Option, Result, Schema, Stream } from "effect"
 import {
   type HttpClient,

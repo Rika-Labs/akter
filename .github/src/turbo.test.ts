@@ -32,10 +32,10 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
         yield* fs.writeFileString(`${root}/vitest.config.ts`, "export default {}")
 
         for (const [path, name, dependencies] of [
-          ["packages/ui", "@durable-actors/ui", "{}"],
-          ["apps/web", "@durable-actors/web", '{"@durable-actors/ui":"workspace:*"}'],
-          ["apps/api", "@durable-actors/api", "{}"],
-          ["infra", "@durable-actors/infra", "{}"],
+          ["packages/ui", "@akter/ui", "{}"],
+          ["apps/web", "@akter/web", '{"@akter/ui":"workspace:*"}'],
+          ["apps/api", "@akter/api", "{}"],
+          ["infra", "@akter/infra", "{}"],
         ]) {
           yield* fs.makeDirectory(`${root}/${path}/src`, { recursive: true })
           yield* fs.writeFileString(
@@ -95,21 +95,16 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
           )
 
         expect(
-          baseline.tasks.find((task) => task.taskId === "@durable-actors/web#typecheck")
-            ?.dependencies,
-        ).toEqual(["@durable-actors/web#transit"])
+          baseline.tasks.find((task) => task.taskId === "@akter/web#typecheck")?.dependencies,
+        ).toEqual(["@akter/web#transit"])
         expect(
-          baseline.tasks.find((task) => task.taskId === "@durable-actors/api#test:integration")
+          baseline.tasks.find((task) => task.taskId === "@akter/api#test:integration")
             ?.resolvedTaskDefinition.cache,
         ).toBe(false)
         yield* fs.writeFileString(`${root}/packages/ui/README.md`, "Changed docs")
         const docs = yield* report()
-        expect(hash(docs, "@durable-actors/web#typecheck")).toBe(
-          hash(baseline, "@durable-actors/web#typecheck"),
-        )
-        expect(hash(docs, "@durable-actors/ui#build")).toBe(
-          hash(baseline, "@durable-actors/ui#build"),
-        )
+        expect(hash(docs, "@akter/web#typecheck")).toBe(hash(baseline, "@akter/web#typecheck"))
+        expect(hash(docs, "@akter/ui#build")).toBe(hash(baseline, "@akter/ui#build"))
         expect(
           (yield* affected()).tasks.filter((task) => task.command !== "<NONEXISTENT>"),
         ).toEqual([])
@@ -119,27 +114,23 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
           'export const value = "breaking"',
         )
         const changed = yield* report()
-        expect(hash(changed, "@durable-actors/web#typecheck")).not.toBe(
-          hash(baseline, "@durable-actors/web#typecheck"),
+        expect(hash(changed, "@akter/web#typecheck")).not.toBe(
+          hash(baseline, "@akter/web#typecheck"),
         )
-        expect(hash(changed, "@durable-actors/api#typecheck")).toBe(
-          hash(baseline, "@durable-actors/api#typecheck"),
-        )
+        expect(hash(changed, "@akter/api#typecheck")).toBe(hash(baseline, "@akter/api#typecheck"))
         const selected = (yield* affected()).tasks.map((task) => task.taskId)
-        expect(selected).toContain("@durable-actors/web#typecheck")
-        expect(selected).not.toContain("@durable-actors/api#typecheck")
+        expect(selected).toContain("@akter/web#typecheck")
+        expect(selected).not.toContain("@akter/api#typecheck")
 
         yield* fs.writeFileString(`${root}/.github/src/policy.ts`, "export const policy = 2")
-        expect(hash(yield* report(), "@durable-actors/infra#typecheck")).not.toBe(
-          hash(changed, "@durable-actors/infra#typecheck"),
+        expect(hash(yield* report(), "@akter/infra#typecheck")).not.toBe(
+          hash(changed, "@akter/infra#typecheck"),
         )
         yield* fs.writeFileString(
           `${root}/tooling/oxlint/anti-slop/plugin.ts`,
           "export default { changed: true }",
         )
-        expect(hash(yield* report(), "@durable-actors/api#lint")).not.toBe(
-          hash(changed, "@durable-actors/api#lint"),
-        )
+        expect(hash(yield* report(), "@akter/api#lint")).not.toBe(hash(changed, "@akter/api#lint"))
       }).pipe(Effect.scoped),
     )
     .finally(() => runtime.dispose())

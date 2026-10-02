@@ -16,7 +16,7 @@ Settled names ([ADR 0010](../decisions/0010-one-way-effect-native-api.md)):
 - Context services: `X.Turn`, `X.Read`, `X.Connection`, `X.Workflow`, `X.Executor`, and the runtime marker `Actor.InTurn`
 - Ambient scope: `Actor.as`, `Actor.tenant`, `Actor.commandId`
 - Fleet reads: `Fleet.view`, `Fleet.subscribe`
-- `Actors.layer`, `Actors.serve`, and `Auth` from `@durable-actors/core/runtime`
+- `Actors.layer`, `Actors.serve`, and `Auth` from `@rikalabs/akter/runtime`
 - `ActorTest`, `test.actor`, `ActorTest.simulate`
 
 A command's PascalCase tag is also its `api` key, handler key, and handle method. There is one name per concept and one way to do each task; a second spelling exists only when it changes outcomes materially.

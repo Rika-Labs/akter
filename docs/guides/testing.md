@@ -5,7 +5,7 @@
 **Owner role:** verification.  
 **Change policy:** change with the `/testing` entry of the [server API](../api/01-server-api.md#implemented-foundation-subset) and the quickstart templates in `packages/create/templates`.
 
-`ActorTest` from `@durable-actors/core/testing` runs your actors on the same turn, serialization, and storage path as production, against a real database. There is no in-memory fake of the runtime: a test that passes has committed the same rows the app would.
+`ActorTest` from `@rikalabs/akter/testing` runs your actors on the same turn, serialization, and storage path as production, against a real database. There is no in-memory fake of the runtime: a test that passes has committed the same rows the app would.
 
 ## A first test
 

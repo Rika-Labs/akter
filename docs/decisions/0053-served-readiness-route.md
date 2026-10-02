@@ -12,7 +12,7 @@
 
 ## Context
 
-M4.2 ([#245](https://github.com/Rika-Labs/durable-actors/pull/245)) built `RuntimeControl` from [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md). `RuntimeControl.readiness` answers `{ ready: true }` or `{ ready: false, reason }`, and `drain` makes the runner unready before it refuses new work. A served runner had no route that exposed this. Every deployment had to wire `readiness` into a route of its own, and the hosted edge ([ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md)) had no standard way to probe a runner before routing to it. Dallen decided on 2026-09-29 that `Actor.serve` exposes readiness itself.
+M4.2 ([#245](https://github.com/Rika-Labs/akter/pull/245)) built `RuntimeControl` from [ADR 0003](0003-failure-scoping-drain-and-hosted-trust.md). `RuntimeControl.readiness` answers `{ ready: true }` or `{ ready: false, reason }`, and `drain` makes the runner unready before it refuses new work. A served runner had no route that exposed this. Every deployment had to wire `readiness` into a route of its own, and the hosted edge ([ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md)) had no standard way to probe a runner before routing to it. Dallen decided on 2026-09-29 that `Actor.serve` exposes readiness itself.
 
 ## Decision
 

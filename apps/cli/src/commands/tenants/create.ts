@@ -1,5 +1,5 @@
-import { Actor, User } from "@durable-actors/core"
-import { Actors, Database } from "@durable-actors/core/runtime"
+import { Actor, User } from "@rikalabs/akter"
+import { Actors, Database } from "@rikalabs/akter/runtime"
 import {
   DeploymentId,
   DeploymentsLive,
@@ -9,7 +9,7 @@ import {
   tenantHomeKey,
   TenantHomeReads,
   TenantName,
-} from "@durable-actors/deployments"
+} from "@akter/deployments"
 import { BunCrypto } from "@effect/platform-bun"
 import { Console, Effect, Layer, type Redacted } from "effect"
 import { Argument, Command, Flag } from "effect/cli"

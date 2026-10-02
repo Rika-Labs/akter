@@ -1,4 +1,4 @@
-import { ActorError, NotCreated, Unauthorized } from "@durable-actors/core/client"
+import { ActorError, NotCreated, Unauthorized } from "@rikalabs/akter/client"
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import { followCreated } from "./created.ts"

@@ -73,7 +73,7 @@ Nothing is released yet, so framework migrations still carry no compatibility co
 
 ### Two runtime versions behind one database
 
-During a rolling deploy a runner of the old release and one of the new release serve one database, and an actor's shard moves from one to the other as runners restart. What stays true, and is verified on Postgres by `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` in [`conformance/restore.ts`](../../packages/durable-actors/src/testing/conformance/restore.ts):
+During a rolling deploy a runner of the old release and one of the new release serve one database, and an actor's shard moves from one to the other as runners restart. What stays true, and is verified on Postgres by `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` in [`conformance/restore.ts`](../../packages/akter/src/testing/conformance/restore.ts):
 
 - A command id admitted under one version replays its receipt under the other, without running either version's handler.
 - An expired id is refused by every runner, before and after a sweep prunes its receipt, because expiry is bound to the id and read from the database clock.
@@ -105,4 +105,4 @@ The runtime refuses to start an enforced table whose guard trigger is missing or
 
 ## Before rollout
 
-Test the migration through `@durable-actors/core/testing` against PGlite and Postgres, on a copy of production-shaped data, with a runner of the previous release still serving; run the same conformance cases on Neki when hosted support is affected.
+Test the migration through `@rikalabs/akter/testing` against PGlite and Postgres, on a copy of production-shaped data, with a runner of the previous release still serving; run the same conformance cases on Neki when hosted support is affected.

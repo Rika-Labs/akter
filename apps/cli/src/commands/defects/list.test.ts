@@ -1,6 +1,6 @@
-import { Actor } from "@durable-actors/core"
-import { OperatorAuth, Operators } from "@durable-actors/core/runtime"
-import { ActorTest } from "@durable-actors/core/testing"
+import { Actor } from "@rikalabs/akter"
+import { OperatorAuth, Operators } from "@rikalabs/akter/runtime"
+import { ActorTest } from "@rikalabs/akter/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { Clock, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpRouter } from "effect/http"
@@ -156,7 +156,7 @@ describe("durable defects list", () => {
         { actorType: "Boiler", actorId: "b1", command: "Break", tenant: "plant" },
         { actorType: "Boiler", actorId: "b1", command: "Break", tenant: "plant" },
       ])
-      expect(defects[0]!.span).toBe("durable-actors.Boiler/Break")
+      expect(defects[0]!.span).toBe("akter.Boiler/Break")
       expect(defects[0]!.traceId).toMatch(/^[0-9a-f]{32}$/)
       expect(defects[0]!.cause).toContain("boiler broke: pressure")
       expect(defects[1]!.cause).toContain("boiler broke: heat")
@@ -237,8 +237,6 @@ describe("durable defects list", () => {
       expect(text[0]).toContain("Boiler/b1  Break ")
       expect(text[0]).toContain("tenant=plant")
       expect(formatDefects({ defects: [], json: false })).toBe("No defects.")
-      expect(formatDefects({ defects, json: true })).toContain(
-        `"span": "durable-actors.Boiler/Break"`,
-      )
+      expect(formatDefects({ defects, json: true })).toContain(`"span": "akter.Boiler/Break"`)
     }).pipe(Effect.scoped, Effect.runPromise))
 })

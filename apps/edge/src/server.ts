@@ -1,4 +1,4 @@
-import { InvalidInput, SUBPROTOCOL } from "@durable-actors/core"
+import { InvalidInput, SUBPROTOCOL } from "@rikalabs/akter"
 import type { Server } from "bun"
 import { Crypto, Effect, Layer, Predicate, Queue, Result } from "effect"
 import { Base64Url } from "effect/encoding"

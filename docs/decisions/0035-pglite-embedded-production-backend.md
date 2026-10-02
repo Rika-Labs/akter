@@ -19,7 +19,7 @@ Today PGlite is for tests and development only:
 
 What the code does:
 
-- `Database.pglite(config)` (`runtime/database/pglite.ts`) opens `new PGlite(config)`, waits for it, and closes it after in-flight queries settle. `packages/durable-actors` pins `@electric-sql/pglite` at exactly `0.5.8`.
+- `Database.pglite(config)` (`runtime/database/pglite.ts`) opens `new PGlite(config)`, waits for it, and closes it after in-flight queries settle. `packages/akter` pins `@electric-sql/pglite` at exactly `0.5.8`.
 - PGlite's `NodeFS` mounts `dataDir` through Emscripten's `NODEFS` and takes no lock of its own. Checked on 2026-09-28 with PGlite 0.5.8 under Bun: a file-backed instance writes `postmaster.pid` and `PG_VERSION` (`18`), yet a second `new PGlite({ dataDir })` on the same directory, opened in the same process while the first was still open, started and read the first one's committed rows. Nothing stops two runtimes from writing one `dataDir`. PGlite also exposes a `relaxedDurability` option and `dumpDataDir()`, which returns a tarball of the data directory.
 - On PGlite, `Actors.layer` keeps Cluster's runner bookkeeping in memory, because `SqlRunnerStorage` would hold PGlite's only connection. Receipts, state, the outbox, and migrations stay in SQL (`runtime/layer.ts`).
 - The framework migrator runs at boot on every backend, and refuses a database whose applied ids have gaps it cannot fill ([migrations](../operations/02-migrations.md)).
@@ -34,7 +34,7 @@ File-backed PGlite is a supported production backend for **one process** that em
 
 ### 2. One process per `dataDir`, enforced
 
-- `Database.pglite({ dataDir })` takes an exclusive, non-blocking `flock` on `<dataDir>/.durable-actors.lock` before it opens PGlite, and holds it until the layer's scope closes. It reaches `flock(2)` through `bun:ffi` on Linux and macOS.
+- `Database.pglite({ dataDir })` takes an exclusive, non-blocking `flock` on `<dataDir>/.akter.lock` before it opens PGlite, and holds it until the layer's scope closes. It reaches `flock(2)` through `bun:ffi` on Linux and macOS.
 - A second process fails at layer build with the typed startup error `DataDirLocked { dataDir }`. It never opens PGlite, so it can't write a byte.
 - The kernel releases the lock when the process dies, SIGKILL included, so a crash leaves no stale lock and a restart needs no manual step.
 - The lock is advisory. It protects against a second runtime, not against a user copying files by hand. A `dataDir` on a network filesystem, where `flock` isn't reliable, is unsupported. Windows is unsupported until it has its own lock and evidence (open question 2).

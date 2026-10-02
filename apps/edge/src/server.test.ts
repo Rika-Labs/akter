@@ -1,5 +1,5 @@
-import { publishedKeys } from "@durable-actors/deployments"
-import { migrate } from "@durable-actors/postgres/migrate"
+import { publishedKeys } from "@akter/deployments"
+import { migrate } from "@akter/postgres/migrate"
 import {
   type ConformanceBackend,
   type ConformanceEdge,
@@ -7,7 +7,7 @@ import {
   type EdgeKey,
   edgeKey,
   type HostedEdge,
-} from "@durable-actors/core/testing"
+} from "@rikalabs/akter/testing"
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {

@@ -12,7 +12,7 @@
 
 ## Context
 
-A competitive review estimated that a warm in-region write costs roughly the same on Durable Actors, Rivet (FoundationDB tier), and Durable Objects: single-digit milliseconds. Three gaps remained:
+A competitive review estimated that a warm in-region write costs roughly the same on Akter, Rivet (FoundationDB tier), and Durable Objects: single-digit milliseconds. Three gaps remained:
 
 - **Round trips.** PlanetScale Postgres acknowledges a commit only after at least one replica in another availability zone stores it ([replica consistency](https://planetscale.com/docs/postgres/scaling/replicas)). Every statement also passes through a Neki router. A turn issued as sequential statements (`BEGIN`, tenant scope, fence, receipt, state read, writes, receipt result, `COMMIT`) pays one network hop per statement.
 - **Hot actors.** With one committed transaction per command, one actor's durable throughput is roughly `1 / turn latency`: an estimated 150–400 commands/second. Cloudflare documents a soft limit of 1,000 requests/second per Durable Object; Rivet's `c.state` goes faster by saving on a one-second throttle, accepting loss of unsaved writes on a crash.

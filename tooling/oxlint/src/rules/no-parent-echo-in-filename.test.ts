@@ -11,11 +11,11 @@ const tester = new RuleTester({ languageOptions: { parserOptions: { lang: "ts" }
 
 const error = { messageId: "parentEcho" }
 
-tester.run("durable-actors/no-parent-echo-in-filename", noParentEchoInFilenameRule, {
+tester.run("akter/no-parent-echo-in-filename", noParentEchoInFilenameRule, {
   valid: [
     { code: "export {};", filename: "packages/deployments/src/deployment/contract.ts" },
     { code: "export {};", filename: "packages/deployments/src/deployment/layer.ts" },
-    { code: "export {};", filename: "packages/durable-actors/src/runtime/turn/execute.ts" },
+    { code: "export {};", filename: "packages/akter/src/runtime/turn/execute.ts" },
     { code: "export {};", filename: "packages/deployments/src/runners/runner.ts" },
     { code: "export {};", filename: "packages/api.ts" },
     { code: "export {};", filename: "research/v4/example/coding-agent.ts" },

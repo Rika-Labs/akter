@@ -15,7 +15,7 @@
       {
         "name": "@effect/language-service",
         "diagnostics": false,
-        "allowedDuplicatedPackages": ["@durable-actors/core"]
+        "allowedDuplicatedPackages": ["@rikalabs/akter"]
       }
     ]
   },

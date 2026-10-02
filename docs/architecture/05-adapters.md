@@ -5,7 +5,7 @@
 **Owner role:** platform/runtime.
 **Change policy:** a change that alters a contract guarantee requires an ADR.
 
-The public distribution is one package, `@durable-actors/core`, with four entries: `.`, `@durable-actors/core/runtime`, `@durable-actors/core/client`, and `@durable-actors/core/testing`. Provider mechanics stay behind the runtime entry; browser contracts and clients never import SQL or Cluster internals.
+The public distribution is one package, `@rikalabs/akter`, with four entries: `.`, `@rikalabs/akter/runtime`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`. Provider mechanics stay behind the runtime entry; browser contracts and clients never import SQL or Cluster internals.
 
 The primary database adapter is Postgres. It must preserve transaction scope, `SELECT ... FOR UPDATE` fencing, tenant scoping, pooling behavior, migrations, receipts, and restore semantics. Neki is a hosted-deployment adapter with an explicit outbox relay and conformance gates; wire compatibility alone is not support.
 
@@ -31,4 +31,4 @@ Topology adapters provide single-runner operation or HTTP-connected runners usin
 
 External calls are declared jobs executed after commit under their retry and dead-letter policies. Framework blobs are database-backed chunks, not an external object-storage adapter. Runtime clocks use Effect `Clock` so tests can control time. Application provider integrations may narrow capabilities, but must report unsupported guarantees rather than silently weakening them.
 
-The conformance suite in `@durable-actors/core/testing` is the authority for Postgres, PGlite, and Neki behavior. See [support matrix](../operations/support-matrix.md).
+The conformance suite in `@rikalabs/akter/testing` is the authority for Postgres, PGlite, and Neki behavior. See [support matrix](../operations/support-matrix.md).

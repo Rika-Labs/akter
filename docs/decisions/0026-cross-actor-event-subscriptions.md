@@ -2,7 +2,7 @@
 
 **Status:** accepted (2026-09-26, Dallen, with every recommended default; proposed 2026-09-26). It amends [contract 04](../contracts/04-receipts.md), [contract 05](../contracts/05-messaging.md), [contract 07](../contracts/07-realtime.md), [contract 10](../contracts/10-security.md), and [retention](../operations/retention.md). It builds on the outbox ([ADR 0011](0011-direct-commands-outbox-and-performance.md)) and the multi-runner relay ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)). The amendments listed under [Amendments](#amendments) land in the same change.
 
-**Responsibility:** decide how one actor follows another actor's committed events and is woken durably when a new one commits, even while it sleeps, so that the build unit ([#94](https://github.com/Rika-Labs/durable-actors/issues/94), migration `0017_subscriptions`) has no open design questions.
+**Responsibility:** decide how one actor follows another actor's committed events and is woken durably when a new one commits, even while it sleeps, so that the build unit ([#94](https://github.com/Rika-Labs/akter/issues/94), migration `0017_subscriptions`) has no open design questions.
 
 **Authority:** design decision record.
 
@@ -86,7 +86,7 @@ A subscription is a declared member of the subscriber. Each committed event of t
 ### 1. Declaration: `Actor.subscription` in a `subscriptions` section
 
 ```ts
-import { Actor } from "durable-actors"
+import { Actor } from "akter"
 
 // The handler's input names only the source and the event classes, so the command
 // can be declared before the subscription that references it.
@@ -294,7 +294,7 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
   - Every settle does the same union for the claiming runner's declaration.
   - When a runner starts with a dynamic declaration, it widens that subscription's existing rows once: `UPDATE … SET events = <union> WHERE subscription = $tag AND active AND NOT events @> $tags`, 1,000 rows per statement, adding each widened row's new tags to the tag summary in the same statement. It keeps `delivered`, `epoch`, and the cursor, and it is idempotent, so every runner of a rolling deploy may run it. A widened row with a matching event after `delivered` is made due.
 
-  An old runner in a rolling deploy therefore can't shrink a row back. A class added to a routed subscription starts at each source's first matching commit on a runner that has the new declaration. A class added to a dynamic subscription starts once the first runner with the new declaration has widened its rows, so a caught-up row whose next event is only of the new class still wakes. Events of that class after the row's `delivered` are delivered in either case, because delivery reads by position. A class removed from a declaration stays on the row, so the declaration lists its tag under `retired` (`Actor.subscription(tag, { source, events, retired?, handler, route? })`); rows carrying it stay claimable, and delivery skips that class and moves past. A class dropped without `retired` leaves its rows unclaimed and due, counted in `durable-actors.subscription.incompatible`, until a declaration that knows it is deployed.
+  An old runner in a rolling deploy therefore can't shrink a row back. A class added to a routed subscription starts at each source's first matching commit on a runner that has the new declaration. A class added to a dynamic subscription starts once the first runner with the new declaration has widened its rows, so a caught-up row whose next event is only of the new class still wakes. Events of that class after the row's `delivered` are delivered in either case, because delivery reads by position. A class removed from a declaration stays on the row, so the declaration lists its tag under `retired` (`Actor.subscription(tag, { source, events, retired?, handler, route? })`); rows carrying it stay claimable, and delivery skips that class and moves past. A class dropped without `retired` leaves its rows unclaimed and due, counted in `akter.subscription.incompatible`, until a declaration that knows it is deployed.
 
 - **One pair is sequential.** A single `(subscription, source, subscriber)` has at most one delivery in flight, so its throughput is one relay → turn → settle cycle per event, and turn batches don't help it. Turn batches help fan-in, where many rows deliver to one subscriber at once.
 
@@ -322,7 +322,7 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
   - `Applied`.
   - `AlreadyApplied`.
   - `Stale` or `Unsubscribed`. The relay deletes the source row where its epoch equals the delivery's.
-  - `NotCreated`. This means a routed subscriber whose `createdBy` policy refuses creation. Today that rejection commits no receipt, so without a rule the delivery would retry forever. The rejection therefore upserts the subscriber-side cursor row at epoch 0 with `applied = greatest(applied, cursor)`, in the round trip that read it, so a stale delivery of the same event that arrives after another command created the subscriber is `AlreadyApplied`. The row is keyed by the subscriber and lives in its shard, so no cross-shard read is needed; it is deleted with the subscriber. The relay advances past the event and counts it in `durable-actors.subscription.skipped`. Routed events for a subscriber that doesn't exist are dropped. A subscriber that must see them lists the handler in `createdBy`, so the delivery creates it. A dynamic subscriber always exists, because it subscribed in a committed turn.
+  - `NotCreated`. This means a routed subscriber whose `createdBy` policy refuses creation. Today that rejection commits no receipt, so without a rule the delivery would retry forever. The rejection therefore upserts the subscriber-side cursor row at epoch 0 with `applied = greatest(applied, cursor)`, in the round trip that read it, so a stale delivery of the same event that arrives after another command created the subscriber is `AlreadyApplied`. The row is keyed by the subscriber and lives in its shard, so no cross-shard read is needed; it is deleted with the subscriber. The relay advances past the event and counts it in `akter.subscription.skipped`. Routed events for a subscriber that doesn't exist are dropped. A subscriber that must see them lists the handler in `createdBy`, so the delivery creates it. A dynamic subscriber always exists, because it subscribed in a committed turn.
 - **The retry horizon doesn't apply.** A delivery is trusted recovery of committed work ([contract 04](../contracts/04-receipts.md)), so the external retry horizon doesn't bound it.
 
 ### 5. Ordering per publisher
@@ -337,7 +337,7 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
 
 - **The publisher is never slowed by its subscribers.** Its commit is O(1) (section 3). Nothing a subscriber does blocks, fails, or delays a publisher turn.
 - **A slow subscriber throttles itself.** Its deliveries are ordinary commands, so they wait in its mailbox and turn loop. `RunnerAtCapacity`, `MailboxFull`, and timeouts back the row off with the capped backoff.
-- **Lag is measured, not bounded.** `durable-actors.subscription.lag` reports events and milliseconds behind the source's head for each row that has one or more undelivered matching events. The retention hold bounds how far a subscriber can lag before a `RetentionGap` ([section 7](#7-retention-and-keepevents)). M4.3 adds an alert on rows with `attempts ≥ 8`, as for intents.
+- **Lag is measured, not bounded.** `akter.subscription.lag` reports events and milliseconds behind the source's head for each row that has one or more undelivered matching events. The retention hold bounds how far a subscriber can lag before a `RetentionGap` ([section 7](#7-retention-and-keepevents)). M4.3 adds an alert on rows with `attempts ≥ 8`, as for intents.
 - **A poison event is retried, not skipped.** One that makes the handler defect every time blocks its row with backoff capped at `relay.maxBackoff` (256 s), and `last_error` records the cause. Skipping would break the ordering guarantee without telling anyone. Operator skip (`durable subscriptions skip <row> --through <cursor>`) is an M4 operator capability ([open question 6](#q6-poison-deliveries)).
 - **No drop policy exists.** No setting sheds deliveries under load. Live, lossy fan-out is what connections and streams are for ([ADR 0023](0023-connections-parking-and-streams.md)).
 
@@ -349,10 +349,10 @@ A rolled-back or declared-failure turn emits no events, so it writes neither.
   - `resumeAfter` is the oldest retained sequence minus 1, or the source's `event_sequence` when nothing is retained.
   - Pruning is by position, not by tag, so a gap can be reported even when none of the pruned events matched the subscription.
   - The handler decides how to resynchronize. It might mark itself stale and start a workflow that reads the source's state through a query, or stage an intent asking the source to re-publish a snapshot event.
-- **Which rows can receive a gap.** Dynamic rows and routed rows with `route: Actor.singleton` always can. A routed row with an id `route` can't: `route` needs the pruned event to name a subscriber. That row increments its `gaps` column, logs `Subscription gap without a recipient`, and counts it in `durable-actors.subscription.undeliverable_gaps`. Then it resumes. The hold makes this rare: a routed row gaps only after its delivery has been blocked for longer than the hold. Id-routed projections that can't tolerate a gap need a periodic reconciliation, such as a cron that re-reads the source.
+- **Which rows can receive a gap.** Dynamic rows and routed rows with `route: Actor.singleton` always can. A routed row with an id `route` can't: `route` needs the pruned event to name a subscriber. That row increments its `gaps` column, logs `Subscription gap without a recipient`, and counts it in `akter.subscription.undeliverable_gaps`. Then it resumes. The hold makes this rare: a routed row gaps only after its delivery has been blocked for longer than the hold. Id-routed projections that can't tolerate a gap need a periodic reconciliation, such as a cron that re-reads the source.
 - **The gap ends in the gap's own commit.** A declared failure in the gap handler still commits and moves past the gap, like any delivery.
 - **A new `"start"` subscription** to a source whose history is already pruned begins with a `RetentionGap` from cursor 0.
-- **Metric.** `durable-actors.subscription.pinned_events` reports how many events subscriptions hold back.
+- **Metric.** `akter.subscription.pinned_events` reports how many events subscriptions hold back.
 
 ### 8. Authorization and tenancy
 

@@ -1,4 +1,4 @@
-import type { AssertionClaims } from "@durable-actors/core/runtime"
+import type { AssertionClaims } from "@rikalabs/akter/runtime"
 import { Clock, Duration, Effect } from "effect"
 import type { Principal } from "../principals/authenticate.ts"
 
