@@ -68,7 +68,7 @@ The brief says Rivet has just announced cross-actor subscriptions. I couldn't fi
 
 ### Measured starting point
 
-The new `subscriptions` scenario measures hand-rolled fan-out: a publisher turn that stages one intent per subscriber, which is the commit-time fan-out this ADR rejects. The intents fall due in a day, so only the publisher's turn is timed. The results are in [`addc1db-adr-0026-baseline`](../../benchmarks/results/2026-09-26-addc1db-adr-0026-baseline-postgres.json), with a same-SHA repeat as the noise reference, and [performance](../verification/03-performance.md#cross-actor-subscriptions-baseline) summarizes them. The handler generates the intent ids, so the command payload is the same size at every n. On Postgres 18.6 (one 4-vCPU VM, one publisher):
+The new `subscriptions` scenario measures hand-rolled fan-out: a publisher turn that stages one intent per subscriber, which is the commit-time fan-out this ADR rejects. The intents fall due in a day, so only the publisher's turn is timed. The results are in `addc1db-adr-0026-baseline`, with a same-SHA repeat as the noise reference, and [performance](../../BENCHMARKS.md) summarizes them. The handler generates the intent ids, so the command payload is the same size at every n. On Postgres 18.6 (one 4-vCPU VM, one publisher):
 
 | Subscribers | Publisher turn p50 (run / repeat) | p99 (run / repeat) | Publishes/s | Statements per turn | Client-process CPU per turn |
 | ----------: | --------------------------------: | -----------------: | ----------: | ------------------: | --------------------------: |
@@ -685,7 +685,7 @@ In this change:
 - [M3](../milestones/M3.md): M3.7's evidence list matches this design.
 - [Server API](../api/01-server-api.md) and [context](../api/02-context.md): `subscriptions`, `Actor.subscription`, `Actor.Delivery`, `turn.subscribe`, `turn.unsubscribe`, and the two policies (target API).
 - [Data model](../architecture/data-model.md), [transaction catalog](../architecture/transaction-catalog.md), and [glossary](../GLOSSARY.md).
-- Conformance: the **Subscription delivery** gate and decision check. [Failure matrix](../verification/02-failure-matrix.md): the new rows. [Invariants](../verification/invariants.md): E2. [Performance](../verification/03-performance.md): the baseline.
+- Conformance: the **Subscription delivery** gate and decision check. [Failure matrix](../verification/02-failure-matrix.md): the new rows. [Invariants](../verification/invariants.md): E2. [Performance](../../BENCHMARKS.md): the baseline.
 
 ## Required evidence (#94, `conformance/subscriptions.ts`, migration `0017_subscriptions`)
 

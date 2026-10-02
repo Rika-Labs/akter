@@ -16,7 +16,7 @@ Rivet claims billions of actors per cluster. Its source code shows those are mos
 
 Akter keeps one relational store per deployment region so that SQL can see across actors. That store scales like Rivet's only if every hot path touches one shard and does work proportional to the actors that are active, not the actors that exist. Two parts of the accepted design need clarification for that to hold:
 
-- On Neki, actor data currently shares **tenant-local placement**. A deployment with one large tenant therefore cannot grow past one shard (roughly 10,000 turns/second and 15 TB, by the estimates in [performance](../verification/03-performance.md)).
+- On Neki, actor data currently shares **tenant-local placement**. A deployment with one large tenant therefore cannot grow past one shard (roughly 10,000 turns/second and 15 TB, by the estimates in [performance](../../BENCHMARKS.md)).
 - No query is yet assigned a consistency or cost tier. A join that runs locally at 100,000 actors becomes a scatter across every shard at a trillion.
 
 ## Decisions
@@ -73,9 +73,9 @@ Hosted deployments will offload the state and blobs of actors idle beyond a rete
 
 ## Consequences and evidence
 
-The [storage layout](../architecture/03-storage-layout.md), [dispatch](../architecture/04-dispatch.md), [storage ownership](../contracts/06-storage-ownership.md), [support matrix](../operations/support-matrix.md), conformance, and [performance](../verification/03-performance.md) documents are updated to match. The Neki `cluster_*` tables remain in a single shard group; that group is the expected first global bottleneck and must be measured before a hosted scale claim.
+The [storage layout](../architecture/03-storage-layout.md), [dispatch](../architecture/04-dispatch.md), [storage ownership](../contracts/06-storage-ownership.md), [support matrix](../operations/support-matrix.md), conformance, and [performance](../../BENCHMARKS.md) documents are updated to match. The Neki `cluster_*` tables remain in a single shard group; that group is the expected first global bottleneck and must be measured before a hosted scale claim.
 
-No part of this ADR is implemented. The planning envelope in [performance](../verification/03-performance.md) consists of hypotheses, not product claims.
+No part of this ADR is implemented. The planning envelope in [performance](../../BENCHMARKS.md) consists of hypotheses, not product claims.
 
 ## Revisit when
 

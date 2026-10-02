@@ -18,7 +18,7 @@ A competitive review estimated that a warm in-region write costs roughly the sam
 - **Hot actors.** With one committed transaction per command, one actor's durable throughput is roughly `1 / turn latency`: an estimated 150–400 commands/second. Cloudflare documents a soft limit of 1,000 requests/second per Durable Object; Rivet's `c.state` goes faster by saving on a one-second throttle, accepting loss of unsaved writes on a crash.
 - **Distance.** One database per deployment means users on another continent pay 50–150 ms per request. Durable Objects place an object near its first caller; Rivet places actors per region.
 
-These figures are estimates from published benchmarks and vendor documentation, not measurements of this runtime. [Performance](../verification/03-performance.md) defines the benchmarks that must confirm or replace them.
+These figures are estimates from published benchmarks and vendor documentation, not measurements of this runtime. [Performance](../../BENCHMARKS.md) defines the benchmarks that must confirm or replace them.
 
 ## Decisions
 
@@ -74,7 +74,7 @@ The [command-turn](../contracts/02-command-turns.md), [transaction](../contracts
 
 The tenant directory, edge routing by home region, cross-region relay, and tenant move need designs before multi-region support is claimed. No public API for choosing a tenant's home region is specified here.
 
-Working targets, all unmeasured: in-region warm write p50 of 3–6 ms on Neki; hot-actor throughput of 2,000–10,000 commands/second with turn batches. They are hypotheses for the [benchmarks](../verification/03-performance.md), not product claims.
+Working targets, all unmeasured: in-region warm write p50 of 3–6 ms on Neki; hot-actor throughput of 2,000–10,000 commands/second with turn batches. They are hypotheses for the [benchmarks](../../BENCHMARKS.md), not product claims.
 
 ## Revisit when
 

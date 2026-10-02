@@ -17,7 +17,7 @@
 What exists today that the design must fit:
 
 - `actor_state.value` is `bytea NOT NULL`, one row per key, with a `$version` row counting state migrations (`0003_routing_state`, `state/migration.ts`). `actor_blobs` holds chunked `bytea` per entry (`0009_blobs`). Both lead with `routing_key` and reference `actor_generations`.
-- Waking an activation acquires a new generation on `actor_generations` and then reads `actor_state` ([server API](../api/01-server-api.md)). Warm turns reuse cached state and take two round trips as the target ([ADR 0020](0020-two-round-trip-turn-pipeline.md)). The measured wake is 3.7 ms p50 and 9.0 ms p99 against a 5–15 ms target ([performance](../verification/03-performance.md)).
+- Waking an activation acquires a new generation on `actor_generations` and then reads `actor_state` ([server API](../api/01-server-api.md)). Warm turns reuse cached state and take two round trips as the target ([ADR 0020](0020-two-round-trip-turn-pipeline.md)). The measured wake is 3.7 ms p50 and 9.0 ms p99 against a 5–15 ms target ([performance](../../BENCHMARKS.md)).
 - [Contract 03](../contracts/03-transactions.md): external calls MUST happen outside the transaction. So ADR 0011's "rehydrate in the admission round trip" cannot mean fetching an object inside the turn transaction.
 - ADR 0006 forbids indexes on columns that change every turn, and global scans whose cost grows with stored actors. An "idle since" column updated by every turn would break both.
 - `policy.hibernateAfter` (default 60 s) already marks the moment an activation goes idle. Keyed outbox timers already provide "fire at time T unless replaced", with a `(bucket, kind, due_at_ms)` index whose scans cost what is due ([ADR 0021](0021-multi-runner-relay-singleton-and-cron.md)).
@@ -114,7 +114,7 @@ This ADR is docs only. At acceptance only the support-matrix row, the ledger's d
 
 - Conformance: a **Cold tier** gate row.
 - [Failure matrix](../verification/02-failure-matrix.md): rows for a crash between upload and flip, a wake racing an offload, a crash between fetch and write-back, an object-store outage on a cold wake, a digest mismatch, and a restore that references old objects.
-- [Performance](../verification/03-performance.md): a cold-wake latency case.
+- [Performance](../../BENCHMARKS.md): a cold-wake latency case.
 - [Support matrix](../operations/support-matrix.md): "Cold tier: designed (ADR 0036); not built".
 
 ## Migration

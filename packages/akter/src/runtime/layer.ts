@@ -46,6 +46,7 @@ import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { ReadReplica, replicaLayer } from "./database/replica.ts"
+import { withKeepalives } from "./database/keepalive.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./jobs/isolation.ts"
@@ -1387,6 +1388,9 @@ export const Database = {
    * Queries read there once it has replayed the commit version their caller
    * last saw, and read the primary when it is behind or fails. Its pool
    * (`maxConnections` default 10) opens connections only as queries need them.
+   * All three pools request server TCP keepalives at 5 seconds idle, 2 seconds
+   * between probes, and 3 probes. `startupParameters` overrides these defaults
+   * independently on the primary and replica configurations.
    *
    * Registers a `regclass` codec because the pinned driver lacks one and the
    * migrator needs it on restart; remove once Effect #8309 lands.
@@ -1408,12 +1412,13 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, replica, ...pool } = options
+    const { offTurnConnections, replica, ...configured } = options
+    const pool = withKeepalives(configured)
 
     return Layer.mergeAll(
       PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
-      replicaLayer(replica === undefined ? undefined : { ...replica, types }),
+      replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
     )
   },
   pglite,

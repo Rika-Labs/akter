@@ -178,19 +178,6 @@
         "vitest": "catalog:",
       },
     },
-    "tooling/benchmarks": {
-      "name": "@akter/benchmarks",
-      "dependencies": {
-        "@effect/platform-bun": "catalog:",
-        "@electric-sql/pglite": "0.5.8",
-        "@rikalabs/akter": "workspace:*",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "vitest": "catalog:",
-      },
-    },
     "tooling/oxlint": {
       "name": "@akter/oxlint",
       "dependencies": {
@@ -236,8 +223,6 @@
     "vitest": "5.0.1",
   },
   "packages": {
-    "@akter/benchmarks": ["@akter/benchmarks@workspace:tooling/benchmarks"],
-
     "@akter/cli": ["@akter/cli@workspace:apps/cli"],
 
     "@akter/console": ["@akter/console@workspace:apps/console"],

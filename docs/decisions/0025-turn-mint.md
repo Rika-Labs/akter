@@ -161,13 +161,13 @@ Conformance cases in `conformance/mint.ts`, shared by PGlite and Postgres 18.6. 
 
 ## Benchmark plan (`mint`)
 
-Added in M2.15 under `tooling/benchmarks`:
+The M2.15 scenario used this plan; the consolidated record is now [BENCHMARKS.md](../../BENCHMARKS.md):
 
 - Environment: Bun 1.4.2, real Postgres 18.6 in Docker on the benchmark host, one runner.
 - Workloads: a turn that mints and sends to 0, 1, 10, and 100 children; the same children created with `X.create()` followed by one command each, as a comparison.
 - Measures: p50/p95/p99 parent-turn latency, time until every child is created, statements and round trips per parent turn, and derivation cost per id in a micro-benchmark.
 - Five repeats after warm-up; report coefficient of variation and rerun if it exceeds 10 %.
-- Expected: no statement beyond the intents already staged. The Statements baseline must not change for existing scenarios.
+- Expected: no statement beyond the intents already staged. The historical Statements gate was removed with the harness.
 
 ## Decided questions
 

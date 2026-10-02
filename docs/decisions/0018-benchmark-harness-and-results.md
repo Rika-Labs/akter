@@ -1,10 +1,16 @@
 # ADR 0018: Benchmark harness and committed results
 
-**Status:** accepted (2026-09-25)
+**Status:** superseded (2026-10-01). The benchmark CLI, stored results directory, benchmark scripts, and `Statements` CI job were removed. [BENCHMARKS.md](../../BENCHMARKS.md) is the consolidated record of the performed runs, comparisons, failures, fixes, published vendor measurements, and limitations. Accepted 2026-09-25. The decision below is historical, not an instruction to recreate the harness.
+
+## Replacement decision
+
+Run the comparison serially on clean, cgroup-limited Daytona hardware, keeping agent work and repository verification on Dallen's Mac. Preserve the report in one root file rather than maintaining a benchmark workspace or a statements gate. Do not add Markdown, link, or evidence linters. Runtime regression tests remain part of ordinary code verification.
+
+The restart drills exposed stale Postgres sessions holding shard advisory locks after a vanished runner and startup/shutdown SQLSTATEs being mistaken for deterministic actor defects. The runtime now requests server TCP keepalive defaults for its three pools, preserving caller overrides, and retries shutdown/recovery and resource-exhaustion codes rather than inventing a permanent failure. Dropped databases and configuration limits remain non-retryable. This changes recovery policy, not the database's authority or the atomic receipt/state transaction; the owning [recovery contract](../contracts/09-recovery.md) records the boundary. The report documents measured recovery separately from the probe settings, and does not claim pooler or provider support without evidence.
 
 ## Context
 
-[Performance](../verification/03-performance.md) requires measured numbers, with a reproducible command, fixture, and raw result, before any estimate becomes a claim. ADRs 0005, 0006, and 0011 size shards and set latency and throughput targets from published benchmarks, but nothing has measured this runtime. Each later slice (outbox, timers, events, effects) also changes the turn path, so every change needs a baseline it can be compared against.
+[Performance](../../BENCHMARKS.md) requires measured numbers, with a reproducible command, fixture, and raw result, before any estimate becomes a claim. ADRs 0005, 0006, and 0011 size shards and set latency and throughput targets from published benchmarks, but nothing has measured this runtime. Each later slice (outbox, timers, events, effects) also changes the turn path, so every change needs a baseline it can be compared against.
 
 The [repository structure](../architecture/repository-structure.md) requires an ADR for a new top-level directory and for a new workspace package.
 
