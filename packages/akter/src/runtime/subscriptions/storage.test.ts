@@ -1,5 +1,15 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Exit, Fiber, Layer, ManagedRuntime, Redacted, Schedule } from "effect"
+import {
+  Config,
+  Crypto,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Redacted,
+  Schedule,
+} from "effect"
 import { SqlClient } from "effect/sql"
 import { Pool, type PoolClient } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -87,7 +97,10 @@ const poll = <R extends object>(
   until: (rows: ReadonlyArray<R>) => boolean,
 ) =>
   Effect.promise(() => watcher.query<R>(query, [...params])).pipe(
-    Effect.repeat({ schedule: Schedule.spaced("10 millis"), until: (result) => until(result.rows) }),
+    Effect.repeat({
+      schedule: Schedule.spaced("10 millis"),
+      until: (result) => until(result.rows),
+    }),
     Effect.timeout("10 seconds"),
     Effect.orDie,
     Effect.map((result) => result.rows),
