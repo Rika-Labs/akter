@@ -7,7 +7,18 @@
       "types": "./src/index.ts",
       "default": "./dist/index.js"
     },
-    "./styles.css": "./dist/styles.css"
+    "./styles.css": "./dist/styles.css",
+    "./tokens.stylex": {
+      "types": "./src/tokens.stylex.ts",
+      "default": "./src/tokens.stylex.ts"
+    },
+    "./brand": {
+      "types": "./src/brand/index.ts",
+      "default": "./src/brand/index.ts"
+    },
+    "./fonts/PolySans-variable.woff2": "./assets/fonts/PolySans-variable.woff2",
+    "./fonts/SagittaireDisplay-Regular.woff2": "./assets/fonts/SagittaireDisplay-Regular.woff2",
+    "./fonts/GeistMono-latin.woff2": "./assets/fonts/GeistMono-latin.woff2"
   },
   "scripts": {
     "build": "bun src/build.ts",
