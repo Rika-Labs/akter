@@ -152,7 +152,7 @@ These are the recommended answers. Dallen decides them when accepting this recor
   - a role granted only `durable` reads its transaction's tenant through every view and is denied every protected table;
   - startup refuses a missing role, a view owned by an exempt role, a view the tenant role can act as, and an owned table the role owns.
 - Drizzle-kit output for owned tables in `tables/owned.test.ts`.
-- Benchmark `rls`, run against the view-owner script (see [performance](../verification/03-performance.md)).
+- Benchmark `rls`, run against the view-owner script (see [performance](../../BENCHMARKS.md)).
 
 ## Revisit when
 

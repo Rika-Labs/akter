@@ -247,7 +247,7 @@ Cases run on real Postgres with the in-process multi-runner harness and `Transpo
 - `caps accepted progress per actor and per runner` — the counters report drops; unrelated actors' turns keep their latency.
 - `sends nothing for actor types that do not opt in` — no `Progress` messages leave the pool, and no parked actor wakes.
 - `streams progress to an Actor.stream handler through read.progress and drops the oldest when its buffer is full`.
-- `keeps turn statement counts unchanged` — the Statements gate over `benchmarks/baselines/statements.json`.
+- `keeps turn statement counts unchanged` — the historical Statements gate, since removed with the harness.
 - `filters stream progress by effect input` — two concurrent `Transcode` effects on one actor; an `Encoding` stream filtering on `p.effect.assetId` sees only its asset's frames.
 - `bounds effect checks` — at most one effect check per effect id per 5 seconds per activation, by statement count over a 30-second reporting effect.
 - `discards buffered progress at the route` — a paused client with buffered progress resumes after the route commits and receives the route's frame and no progress for the effect; the same for cancellation and a route-less settle.
@@ -272,13 +272,13 @@ Cases run on real Postgres with the in-process multi-runner harness and `Transpo
 
 ## Benchmark plan (`progress`, M2.18)
 
-This ADR is documentation only; there is nothing to measure until M2.18. M2.18 adds `tooling/benchmarks/src/scenarios/progress.ts` and commits its results under `benchmarks/results/`:
+The M2.18 `progress` scenario used the following plan. The harness and stored result directory were retired in 2026-10-01; see [BENCHMARKS.md](../../BENCHMARKS.md) for the consolidated results and limitations:
 
 - **Environment.** Real Postgres 18.6 in Docker on one host, three in-process runners (executor, owner, and holder on different runners), `Transport.inProcess`, Bun 1.4.2; the result JSON records CPU, memory, and commit.
 - **Workloads.** (a) 1,000 actors, each with one effect reporting every 50 ms for 30 s to one connection; (b) one actor with 100 concurrent effects and 1,000 connections under `to: "all"`; (c) 1,000 effects on an actor type that does not opt in, as the zero-cost control; (d) workload (a) with the connection's client paused.
 - **Measures.** `exec.progress` call cost (p50/p95/p99, must not suspend); executor-to-client latency p50/p95/p99; frames delivered versus sent and drop counts by reason; effect-check reads per activation; turn latency of unrelated turns on the owner with and without progress (must be within noise); holder memory per connection in (d); messages sent in (c), which must be zero.
 - **Repeats.** Five runs per workload after one warm-up; report the median of each percentile and the coefficient of variation, and treat a difference under 2 × CoV as noise.
-- **Statements gate.** Turn statement counts in `benchmarks/baselines/statements.json` must not change. Any change is explained in the M2.18 PR.
+- **Statement counts.** Compare the counts directly when evaluating a runtime change; the historical Statements gate was removed with the harness.
 
 ## Decided questions
 

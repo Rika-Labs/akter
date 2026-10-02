@@ -103,7 +103,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 **Verification.**
 
 - Conformance: a **PGlite embedded production** gate row, and `conformance/crash/pglite-production.ts` with the cases below. The existing "PGlite in tests" rows are unchanged.
-- [Performance](../verification/03-performance.md): turn and wake latency on file-backed PGlite, and the largest measured `dataDir`.
+- [Performance](../../BENCHMARKS.md): turn and wake latency on file-backed PGlite, and the largest measured `dataDir`.
 
 ## Migration
 

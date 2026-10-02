@@ -38,8 +38,6 @@
     "test": "turbo run test --concurrency=100%",
     "test:integration": "turbo run test:integration --concurrency=100%",
     "test:e2e": "turbo run test:e2e --filter=@durable-actors/e2e",
-    "bench": "bun tooling/benchmarks/src/main.ts",
-    "bench:compare": "bun tooling/benchmarks/src/compare.ts",
     "lint:directives": "bun tooling/oxlint/src/directives.ts",
     "lint": "bun run lint:directives && bun run lint:structure && GOMAXPROCS=1 turbo run lint lint:root --concurrency=100%",
     "lint:structure": "bun tooling/structure/src/index.ts",

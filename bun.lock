@@ -209,19 +209,6 @@
         "vitest": "catalog:",
       },
     },
-    "tooling/benchmarks": {
-      "name": "@durable-actors/benchmarks",
-      "dependencies": {
-        "@durable-actors/core": "workspace:*",
-        "@effect/platform-bun": "catalog:",
-        "@electric-sql/pglite": "0.5.8",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-      },
-      "devDependencies": {
-        "vitest": "catalog:",
-      },
-    },
     "tooling/oxlint": {
       "name": "@durable-actors/oxlint",
       "dependencies": {
@@ -320,8 +307,6 @@
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.12.1", "", {}, "sha512-yHwomvolVafvUXhy5TdiJVkuNCxXn+bKOs2aWiWEQh/5YaV97Oa/abJz3dmx7lxgIUsUlS1Jl4mEfvJPo3YsVw=="],
 
     "@dual-bundle/import-meta-resolve": ["@dual-bundle/import-meta-resolve@4.2.1", "", {}, "sha512-id+7YRUgoUX6CgV0DtuhirQWodeeA7Lf4i2x71JS/vtA5pRb/hIGWlw+G6MeXvsM+MXrz0VAydTGElX1rAfgPg=="],
-
-    "@durable-actors/benchmarks": ["@durable-actors/benchmarks@workspace:tooling/benchmarks"],
 
     "@durable-actors/cli": ["@durable-actors/cli@workspace:apps/cli"],
 

@@ -29,14 +29,14 @@ Dallen has approved `SELECT … FOR UPDATE SKIP LOCKED` claims on every runner a
 
 All numbers come from the committed result files. One 4-vCPU AMD EPYC VM ran the client, the runtime, and Postgres 18.6 ([ADR 0018](0018-benchmark-harness-and-results.md)):
 
-| Case (Postgres)                        | Throughput | p50      | p99      | Statements per op | File                                                                                             |
-| -------------------------------------- | ---------- | -------- | -------- | ----------------- | ------------------------------------------------------------------------------------------------ |
-| `outbox/delivery-sequential`           | 145.3/s    | 6.29 ms  | 17.88 ms | 22.13             | [`7806184-outbox`](../../benchmarks/results/2026-09-25-7806184-outbox-postgres.json)             |
-| `outbox/delivery-concurrent-16`        | 284.5/s    | 54.95 ms | 94.71 ms | 20.25             | same                                                                                             |
-| `outbox/drain-20000`                   | 661.4/s    | –        | –        | 8.02              | same                                                                                             |
-| `outbox/delivery-beside-100000-timers` | 152.3/s    | 6.01 ms  | 16.85 ms | 22.13             | same; relay scan mean 0.294 ms (0.207 ms beside 10,000)                                          |
-| `effect-round-trip/sequential`         | 106.0/s    | 9.31 ms  | 14.88 ms | 29.01             | [`5c06070-m1.7-effects`](../../benchmarks/results/2026-09-25-5c06070-m1.7-effects-postgres.json) |
-| `effect-round-trip/concurrent-64`      | 225.4/s    | 276.8 ms | 420.3 ms | 25.07             | same                                                                                             |
+| Case (Postgres)                        | Throughput | p50      | p99      | Statements per op | File                                                    |
+| -------------------------------------- | ---------- | -------- | -------- | ----------------- | ------------------------------------------------------- |
+| `outbox/delivery-sequential`           | 145.3/s    | 6.29 ms  | 17.88 ms | 22.13             | `7806184-outbox`                                        |
+| `outbox/delivery-concurrent-16`        | 284.5/s    | 54.95 ms | 94.71 ms | 20.25             | same                                                    |
+| `outbox/drain-20000`                   | 661.4/s    | –        | –        | 8.02              | same                                                    |
+| `outbox/delivery-beside-100000-timers` | 152.3/s    | 6.01 ms  | 16.85 ms | 22.13             | same; relay scan mean 0.294 ms (0.207 ms beside 10,000) |
+| `effect-round-trip/sequential`         | 106.0/s    | 9.31 ms  | 14.88 ms | 29.01             | `5c06070-m1.7-effects`                                  |
+| `effect-round-trip/concurrent-64`      | 225.4/s    | 276.8 ms | 420.3 ms | 25.07             | same                                                    |
 
 The scan cost barely changes between 10,000 and 100,000 sleeping timers, which is the due-work property from ADR 0006. With 64 concurrent callers, the effect round trip is capped by the relay: 64 performed effects queue behind 16 settle slots, one pass at a time.
 
@@ -90,7 +90,7 @@ CREATE INDEX actor_outbox_due_kind ON actor_outbox (bucket, kind, due_at_ms);
 DROP INDEX actor_outbox_due;
 ```
 
-Claims and backoff overwrite `due_at_ms`. `scheduled_at_ms` keeps the time the row first became due: an intent's due time, a timer's `Intent.after`/`Intent.at` time, or a cron tick's scheduled time. Relay lag (`now − coalesce(scheduled_at_ms, due_at_ms)`, required by [performance](../verification/03-performance.md)) and the cron skip window ([section 5](#5-cron-keyed-self-timers-rewritten-by-the-relay)) read it. It isn't indexed, and claims don't write it. The index puts `kind` after `bucket` so effect rows that wait for an executor or for pool permits never sit in the intent scan's range, and the reverse.
+Claims and backoff overwrite `due_at_ms`. `scheduled_at_ms` keeps the time the row first became due: an intent's due time, a timer's `Intent.after`/`Intent.at` time, or a cron tick's scheduled time. Relay lag (`now − coalesce(scheduled_at_ms, due_at_ms)`, required by [performance](../../BENCHMARKS.md)) and the cron skip window ([section 5](#5-cron-keyed-self-timers-rewritten-by-the-relay)) read it. It isn't indexed, and claims don't write it. The index puts `kind` after `bucket` so effect rows that wait for an executor or for pool permits never sit in the intent scan's range, and the reverse.
 
 **Behaviour change (ADR 0006, ADR 0011, contract 03, dispatch and storage-layout docs).** A runner no longer scans "only the buckets it owns". Every runner's relay may deliver any due row.
 

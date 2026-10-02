@@ -12,7 +12,7 @@
 
 ## Context
 
-ADR 0005 decided that a turn costs two database round trips. The first, admission, carries `BEGIN`, tenant scope, the generation fence, and receipt resolution. The second, commit, carries the writes, the receipt, and `COMMIT`. It left the mechanism open. A warm turn took 14 sequential round trips, and #43 cut that to 10 ([performance](../verification/03-performance.md)). Over a real network, or through a Neki router with a cross-zone commit, round trips are the cost that matters most.
+ADR 0005 decided that a turn costs two database round trips. The first, admission, carries `BEGIN`, tenant scope, the generation fence, and receipt resolution. The second, commit, carries the writes, the receipt, and `COMMIT`. It left the mechanism open. A warm turn took 14 sequential round trips, and #43 cut that to 10 ([performance](../../BENCHMARKS.md)). Over a real network, or through a Neki router with a cross-zone commit, round trips are the cost that matters most.
 
 The issue that opened this work (#54) assumed the runtime drives node `pg` 8.23, which it said had no pipeline mode. Both halves of that turned out wrong:
 

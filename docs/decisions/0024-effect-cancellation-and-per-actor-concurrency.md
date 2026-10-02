@@ -228,13 +228,13 @@ Cases run on real Postgres with the in-process multi-runner harness; the single-
 
 ## Benchmark plan (`effect-concurrency`, M2.13)
 
-This ADR is documentation only; there is nothing to measure until M2.13. M2.13 adds `tooling/benchmarks/src/scenarios/effect-concurrency.ts` and commits its results under `benchmarks/results/`:
+The M2.13 `effect-concurrency` scenario used the following plan. The harness and stored result directory were retired in 2026-10-01; see [BENCHMARKS.md](../../BENCHMARKS.md) for the consolidated results and limitations:
 
 - **Environment.** Real Postgres 18.6 in Docker on one host, three in-process runners, Bun 1.4.2; the result JSON records CPU, memory, and commit.
 - **Workloads.** (a) 1,000 actors × 10 effects of a 50 ms fake provider, uncapped versus `perActor: 2`; (b) one hot actor with 1,000 effects and `perActor: 1` alongside 1,000 cold actors with one effect each; (c) 1,000 running effects cancelled from turns on another runner.
 - **Measures.** Effect start latency (due → claim) p50/p95/p99; throughput in effects per second; the maximum in-flight attempts per actor observed by the fake provider (must be ≤ `perActor`); cancel-to-interrupt latency p50/p95/p99 with default and 1-second `cancelCheck`; statements and round trips per capped claim and per cancelling commit.
 - **Repeats.** Five runs per configuration after one warm-up; report the median of each percentile and the coefficient of variation, and treat a difference under 2 × CoV as noise.
-- **Statements gate.** Turn statement counts in `benchmarks/baselines/statements.json` must not change: a keyed perform and a cancel are part of the existing commit statement. Any change is explained in the M2.13 PR.
+- **Statement counts.** A keyed perform and a cancel are part of the existing commit statement. The historical Statements gate was removed with the harness.
 
 ## Open questions for Dallen, with recommended defaults
 

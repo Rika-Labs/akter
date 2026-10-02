@@ -25,8 +25,6 @@ packages/
 tooling/
   oxlint/                   @durable-actors/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @durable-actors/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
-  benchmarks/               @durable-actors/benchmarks  `bun run bench` performance harness (ADR 0018)
-benchmarks/                 committed benchmark results and how to read them; data only, no code
 docs/  research/  .github/src/
 ```
 

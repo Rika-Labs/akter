@@ -37,6 +37,7 @@ import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
 import { activationOwner } from "../connections/owner.ts"
 import type { Authorize } from "../connections/streams.ts"
 import { TenantScope } from "../database/tenancy.ts"
+import { transientSqlError } from "../database/transient.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import { connectionsEntity } from "../connections/protocol.ts"
 import type { Transport } from "../connections/transport.ts"
@@ -202,7 +203,7 @@ const withinTurnSpan =
 const retryable = (cause: Cause.Cause<unknown>) => {
   const defect = Cause.squash(cause)
 
-  return Schema.is(RetryTurn)(defect) || (SqlError.isSqlError(defect) && defect.isRetryable)
+  return Schema.is(RetryTurn)(defect) || (SqlError.isSqlError(defect) && transientSqlError(defect))
 }
 
 /**

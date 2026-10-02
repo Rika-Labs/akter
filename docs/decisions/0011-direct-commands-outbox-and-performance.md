@@ -73,7 +73,7 @@ Every command commits with PlanetScale's cross-availability-zone acknowledgment.
 
 ### Evidence comes from deterministic simulation and published benchmarks
 
-`ActorTest.simulate({ seed, faults }, program)` runs the real turn path under a seeded scheduler and injected faults: crash before and after commit, dropped replies, primary failover, relay crash, and clock skew. It asserts exactly-once receipts and outbox delivery, and every simulation failure reproduces from its seed. The benchmark scenarios in [performance](../verification/03-performance.md) are published with their harness and raw results.
+`ActorTest.simulate({ seed, faults }, program)` runs the real turn path under a seeded scheduler and injected faults: crash before and after commit, dropped replies, primary failover, relay crash, and clock skew. It asserts exactly-once receipts and outbox delivery, and every simulation failure reproduces from its seed. The benchmark scenarios in [performance](../../BENCHMARKS.md) are published with their harness and raw results.
 
 ### Deferred
 

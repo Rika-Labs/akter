@@ -70,18 +70,18 @@ Decided on 2026-09-26: Apache-2.0; the package is `@durable-actors/core` with `/
 
 These run across milestones. Each milestone document lists the slices it owns.
 
-| Programme                                                                                                                          | Slices                                                                                                      |
-| ---------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Multi-runner in-process harness                                                                                                    | M2.1                                                                                                        |
-| CI gate on statements per operation                                                                                                | T2 (M2)                                                                                                     |
-| Property tests                                                                                                                     | T3 (M2)                                                                                                     |
-| CI reliability and process-kill coverage                                                                                           | T4, T4b (M2)                                                                                                |
-| A benchmark scenario for every feature, on a cloud VM                                                                              | T5 (M2), then every slice                                                                                   |
-| Deterministic simulation (`ActorTest.simulate`)                                                                                    | T6 (M2), M5.4                                                                                               |
-| Failure drills for correctness: runner kill and relay crash; Postgres failover                                                     | T7 (M2), T10 (M4)                                                                                           |
-| Cloud-VM benchmark passes at milestone close                                                                                       | M1.10, T9 (M3), T15 (M6)                                                                                    |
-| Round trips and turn batches                                                                                                       | P1–P6 (M2); two round trips is the target                                                                   |
-| [Required scale benchmarks](../verification/03-performance.md#required-scale-benchmarks), 72-hour soak, drills at scale, Neki runs | [#66](https://github.com/Rika-Labs/durable-actors/issues/66), run by the delivery lead; nothing waits on it |
+| Programme                                                                                  | Slices                                                                                                      |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Multi-runner in-process harness                                                            | M2.1                                                                                                        |
+| CI gate on statements per operation                                                        | T2 (M2)                                                                                                     |
+| Property tests                                                                             | T3 (M2)                                                                                                     |
+| CI reliability and process-kill coverage                                                   | T4, T4b (M2)                                                                                                |
+| A benchmark scenario for every feature, on a cloud VM                                      | T5 (M2), then every slice                                                                                   |
+| Deterministic simulation (`ActorTest.simulate`)                                            | T6 (M2), M5.4                                                                                               |
+| Failure drills for correctness: runner kill and relay crash; Postgres failover             | T7 (M2), T10 (M4)                                                                                           |
+| Cloud-VM benchmark passes at milestone close                                               | M1.10, T9 (M3), T15 (M6)                                                                                    |
+| Round trips and turn batches                                                               | P1–P6 (M2); two round trips is the target                                                                   |
+| [Required scale benchmarks](../../BENCHMARKS.md), 72-hour soak, drills at scale, Neki runs | [#66](https://github.com/Rika-Labs/durable-actors/issues/66), run by the delivery lead; nothing waits on it |
 
 ## Reserved numbers
 

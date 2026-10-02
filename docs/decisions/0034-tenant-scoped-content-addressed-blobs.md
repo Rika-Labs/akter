@@ -130,7 +130,7 @@ These landed with the acceptance, as labelled targets until the slice builds the
 
 - Conformance: a **Content blobs** gate row, and `conformance/content-blobs.ts` with the cases below.
 - [Failure matrix](../verification/02-failure-matrix.md): "Crash after upload, before attach", "Sweep races an attach", and "Grant key rotated".
-- [Performance](../verification/03-performance.md): the `content-blobs` benchmark.
+- [Performance](../../BENCHMARKS.md): the `content-blobs` benchmark.
 - [Support matrix](../operations/support-matrix.md): a "Content blobs" row.
 
 ## Migration
