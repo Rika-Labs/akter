@@ -11,9 +11,11 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/src"
   },
   "dependencies": {
+    "@akter/cloud-api": "workspace:*",
     "@akter/ui": "workspace:*",
     "@effect/platform-browser": "catalog:",
     "@stylexjs/stylex": "catalog:",
+    "better-auth": "1.7.7",
     "effect": "catalog:",
     "foldkit": "catalog:"
   },
