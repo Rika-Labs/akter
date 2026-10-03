@@ -22,7 +22,9 @@ import { RuntimeGroup } from "./groups/runtime.ts"
 /**
  * The console's control-plane and runtime-inspection API. Every endpoint lives
  * under `/api` and requires `Authentication`; a browser client carries the
- * session cookie and a machine client sends `x-api-key`.
+ * session cookie and a machine client sends `x-api-key`. Sign-in, sign-up,
+ * email verification and password reset are Better Auth's own routes under
+ * `/auth`, not part of this API.
  */
 export class CloudApi extends HttpApi.make("akter-cloud")
   .add(
