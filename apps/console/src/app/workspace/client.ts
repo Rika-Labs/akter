@@ -54,6 +54,7 @@ export const workspaceFrom: {
       pinned: pins.map((pin) => {
         const separator = pin.address.indexOf("/")
         return {
+          commandScope: { projectId: pin.projectId, environment: pin.environment },
           actorType: pin.address.slice(0, separator),
           key: pin.address.slice(separator + 1),
           awake: pin.status === "awake",

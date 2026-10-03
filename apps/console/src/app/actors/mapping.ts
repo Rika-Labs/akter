@@ -1,11 +1,28 @@
 import type {
   ActorInspector,
+  ActorTypeActivity,
   ActorInstance as CloudActorInstance,
   ActorTimelineEntry,
 } from "@akter/cloud-api"
 import { type DateTime, Predicate } from "effect"
-import { ago, clock, splitAddress } from "../overview/time.ts"
-import { type ActorInstance, ActorPage } from "./model.ts"
+import { orderedSeries } from "../overview/mapping.ts"
+import { ago, clock, seriesLabel, splitAddress } from "../overview/time.ts"
+import { type ActorInstance, ActorPage, type TypeActivity } from "./model.ts"
+
+/** A type's activity as the page draws it: the series oldest first with UTC labels, the commands as the API ranks them. */
+export const toTypeActivity = (activity: ActorTypeActivity): TypeActivity => {
+  const series = orderedSeries(activity.series)
+  return {
+    window: activity.window,
+    hours: series.map((point) => seriesLabel(activity.window)(point.at)),
+    perSecond: series.map((point) => point.value),
+    commands: activity.commands.map((command) => ({
+      name: command.command,
+      count: command.count,
+      perSecond: command.perSecond,
+    })),
+  }
+}
 
 /** An owned-table cell as text: strings as written, everything else as its JSON form. */
 export const cellText = (cell: ActorInspector["tables"][number]["rows"][number][number]): string =>

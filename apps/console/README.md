@@ -25,8 +25,8 @@ credentialed CORS and cookie configuration on the API server.
 For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
 proxy `/api` and `/auth` through Vite (the default target is `http://127.0.0.1:3001`). The
 accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
-The backend is not in this checkout's base yet; when testing it from a separate worktree, set
-`API_PROXY_TARGET` to its API port and `API_ORIGIN` and `CONSOLE_ORIGIN` to the console origin.
+Set `API_PROXY_TARGET` to its API port and `CONSOLE_ORIGIN` to the console origin. A same-origin
+development proxy can also use the console origin as `API_ORIGIN`.
 
 Set `VITE_CONSOLE_FIXTURES=1` before starting/building, or visit `/?fixtures=1`, to run without a
 backend. The query flag and its tab storage are honoured only in Vite development mode;
@@ -42,16 +42,27 @@ or reported as successful merely because a backend is unimplemented.
 Environment-variable reads expose only names and provenance. Values are write-only inputs;
 neither secret values nor masked tails are displayed.
 
-The hosted commands page currently shows a snapshot from `runtime.listCommands`. The declared
-SSE stream wraps `CommandLogEntry` without converting its `DateTime.Utc` field to a JSON codec,
-so the generated client rejects ordinary ISO timestamps. Live streaming remains unavailable
-until that contract is corrected; only explicit fixture mode synthesizes a moving tail.
+The commands page loads a snapshot and then receives UTC-decoded command events over SSE. Pause
+closes the stream; reconnect refreshes the snapshot before opening another stream. A stream that
+is unavailable or interrupted leaves the snapshot visible with an inline explanation. Sample
+pages never start a stream or simulate new turns.
 
-The contract has no send-command endpoint, no rollback destination/semantics, no actor-type
-activity series or per-command volumes, and no latency histogram. The console does not invent
-those live measurements or actions: unavailable actions are refused, a live rollback is disabled,
-and overview latency uses the provided p99 series. Paged inspectors currently load a first page;
-workflow and audit truncation is labelled. Display times are UTC.
+The inspector's Send command dialog accepts JSON and an optional command ID, shows the actor's
+result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
+fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
+response reuse the same receipt key. The dialog captures the actor's project and environment
+and closes on every URL change; navigation can never retarget an old actor address. Deployment detail offers
+earlier successful deployments in the same environment as rollback targets and displays
+`rolledBackFrom` on the newly created deployment.
+
+Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
+requests each actor type's `/latency` histogram at the chosen window and sums counts only when
+windows and bucket boundaries match. Its unbounded tail remains explicit and it computes no
+combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
+histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
+Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
+times are UTC. The local API currently answers runtime and deployment endpoints with typed 501s;
+protocol/browser tests exercise their declared responses, not a live runner implementation.
 
 ## Layout
 
@@ -73,7 +84,7 @@ organization/project/environment resolution, typed error presentation and explic
 Signed out: `/sign-in`, `/sign-up`, `/verify-email`, `/forgot-password`, `/reset-password`,
 `/invitations/:id`, `/onboarding?step=organization|project|deploy`.
 
-The emailed `/accept-invitation?invitationId=…` link also resolves to the invitation page.
+Emailed invitation links use `/invitations/:id`; the earlier compatibility URL is no longer routed.
 
 Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
 `/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,

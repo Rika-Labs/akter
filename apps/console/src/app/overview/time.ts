@@ -1,3 +1,4 @@
+import type { SeriesWindow } from "@akter/cloud-api"
 import { DateTime } from "effect"
 
 const secondsBetween = (from: DateTime.Utc, to: DateTime.Utc): number =>
@@ -34,6 +35,29 @@ export const clockMillis = (at: DateTime.Utc): string => DateTime.formatIso(at).
 
 /** The UTC hour and minute, `14:00`, for chart axes. */
 export const hourLabel = (at: DateTime.Utc): string => DateTime.formatIso(at).slice(11, 16)
+
+/** The windows a series can cover, shortest first, as the API names them. */
+export const seriesWindows: ReadonlyArray<SeriesWindow> = ["1h", "24h", "7d"]
+
+/** A window in words for headings and menus: `last hour`, `last 24 hours`, `last 7 days`. */
+export const windowName: Readonly<Record<SeriesWindow, string>> = {
+  "1h": "last hour",
+  "24h": "last 24 hours",
+  "7d": "last 7 days",
+}
+
+/** The seconds a window reaches back. */
+export const windowSeconds: Readonly<Record<SeriesWindow, number>> = {
+  "1h": 3600,
+  "24h": 86_400,
+  "7d": 604_800,
+}
+
+/** A chart axis label in UTC: the time of day within a day, the date and time across days. */
+export const seriesLabel =
+  (window: SeriesWindow) =>
+  (at: DateTime.Utc): string =>
+    window === "7d" ? DateTime.formatIso(at).slice(5, 16).replace("T", " ") : hourLabel(at)
 
 /** Splits an actor address `Type/key` at its first slash; keys may contain slashes. */
 export const splitAddress = (address: string) => {

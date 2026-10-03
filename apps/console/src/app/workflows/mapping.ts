@@ -6,7 +6,9 @@ import { type Schedule, type WorkflowRun, WorkflowsPage } from "./model.ts"
 
 /**
  * One workflow as a row. `Waiting` is a wait on an event and `Sleeping` a wait on a timer. The step
- * reads `<name> · <index> of <total>`, with the index as the contract reports it.
+ * reads `<name> · <index> of <total>`, with the index written exactly as the contract reports it:
+ * it counts from 1, so a run on its first step reads `1 of <total>` and a run on its last reads
+ * `<total> of <total>`, and the console never adds or subtracts one.
  */
 export const toWorkflowRun =
   (now: DateTime.Utc) =>

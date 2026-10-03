@@ -46,6 +46,18 @@ describe("workflow mapping", () => {
       }),
     ))
 
+  it("writes the contract's 1-based step index unchanged at the first and final step", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const base = yield* decode(Workflow, workflow({}))
+        const at = (index: number, total: number) =>
+          toWorkflowRun(now)({ ...base, step: { index, total, name: "ship" } }).step
+        expect(at(1, 5)).toBe("ship · 1 of 5")
+        expect(at(5, 5)).toBe("ship · 5 of 5")
+        expect(at(1, 1)).toBe("ship · 1 of 1")
+      }),
+    ))
+
   it("writes a schedule's last run and a never-run schedule differently", () =>
     Effect.runPromise(
       Effect.gen(function* () {

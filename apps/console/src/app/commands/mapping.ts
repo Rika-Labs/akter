@@ -1,8 +1,8 @@
-import type { CommandLogEntry } from "@akter/cloud-api"
+import type { CommandFailed, CommandLogEntry, CommandSent } from "@akter/cloud-api"
 import { formatDuration } from "@akter/ui/geometry"
 import { DateTime, Match } from "effect"
 import { clockMillis, splitAddress } from "../overview/time.ts"
-import type { Tail, TailEntry } from "./model.ts"
+import { CommandRejected, CommandSucceeded, type Tail, type TailEntry } from "./model.ts"
 
 /** The most turns the tail keeps. */
 export const tailCapacity = 60
@@ -49,3 +49,15 @@ export const toRecentTurns = (entries: ReadonlyArray<CommandLogEntry>): Readonly
     .sort((left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at))
     .map((entry, index) => toTailEntry(index)(entry))
     .reverse()
+
+/** The actor's return value, flagged when it came from the stored receipt of an earlier send. */
+export const toSucceeded = (sent: CommandSent): CommandSucceeded => CommandSucceeded.make(sent)
+
+/** The actor's own typed error, kept as an answer rather than a transport failure. */
+export const toRejected = (failed: CommandFailed): CommandRejected =>
+  CommandRejected.make({
+    commandId: failed.commandId,
+    errorTag: failed.errorTag,
+    error: failed.error,
+    replayed: failed.replayed,
+  })

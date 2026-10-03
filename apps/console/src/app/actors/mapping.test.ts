@@ -1,7 +1,7 @@
-import { ActorInspector, ActorInstance } from "@akter/cloud-api"
+import { ActorInspector, ActorInstance, ActorTypeActivity } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { cellText, toActorInstance, toActorPage } from "./mapping.ts"
+import { cellText, toActorInstance, toActorPage, toTypeActivity } from "./mapping.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(schema)))(JSON.stringify(input))
@@ -149,6 +149,45 @@ describe("actor instance mapping", () => {
           lastCommand: "Add",
           lastTurn: "2m",
         })
+      }),
+    ))
+})
+
+describe("actor type activity mapping", () => {
+  const activity = {
+    window: "7d",
+    series: [
+      { at: "2026-10-03T14:00:00.000Z", value: 30 },
+      { at: "2026-10-02T14:00:00.000Z", value: 10 },
+      { at: "2026-10-03T02:00:00.000Z", value: 20 },
+    ],
+    commands: [
+      { command: "Place", count: 604_800, perSecond: 1 },
+      { command: "Refund", count: 60_480, perSecond: 0.1 },
+    ],
+  }
+
+  it("orders the series oldest first and labels each instant in UTC with its date over a week", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const mapped = toTypeActivity(yield* decode(ActorTypeActivity, activity))
+        expect(mapped.window).toBe("7d")
+        expect(mapped.perSecond).toEqual([10, 20, 30])
+        expect(mapped.hours).toEqual(["10-02 14:00", "10-03 02:00", "10-03 14:00"])
+        const day = toTypeActivity(yield* decode(ActorTypeActivity, { ...activity, window: "24h" }))
+        expect(day.hours).toEqual(["14:00", "02:00", "14:00"])
+        expect(day.perSecond).toEqual([10, 20, 30])
+      }),
+    ))
+
+  it("keeps the busiest-first command volumes with their window totals", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const mapped = toTypeActivity(yield* decode(ActorTypeActivity, activity))
+        expect(mapped.commands).toEqual([
+          { name: "Place", count: 604_800, perSecond: 1 },
+          { name: "Refund", count: 60_480, perSecond: 0.1 },
+        ])
       }),
     ))
 })

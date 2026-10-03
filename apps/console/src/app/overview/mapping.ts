@@ -1,8 +1,8 @@
-import type { Overview, SeriesPoint } from "@akter/cloud-api"
+import type { Overview, SeriesPoint, SeriesWindow, TurnLatency } from "@akter/cloud-api"
 import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import { DateTime } from "effect"
 import { shortCommit, toDeployRecord } from "../deployments/mapping.ts"
-import { OverviewPage } from "./model.ts"
+import { type LatencyDistribution, OverviewPage } from "./model.ts"
 import { hourLabel } from "./time.ts"
 
 /** Database CPU at or above this share of capacity is flagged. */
@@ -44,13 +44,60 @@ export const deployMarkers =
   }
 
 /**
+ * The turn latency of every actor type, added up bucket by bucket. The API reports one histogram
+ * per actor type, so the project's distribution exists only when every type counted the same
+ * window into the same bounds; otherwise there is nothing honest to add and it is `undefined`. The
+ * last bucket has a null bound and is written as slower than the bound before it. No percentile is
+ * derived, because percentiles of separate histograms cannot be combined.
+ */
+export const toLatencyDistribution =
+  (window: SeriesWindow) =>
+  (latencies: ReadonlyArray<TurnLatency>): LatencyDistribution | undefined => {
+    const [first] = latencies
+    if (first === undefined) return { window, total: 0, bars: [] }
+    const bounds = first.buckets.map((bucket) => bucket.upToMs)
+    const comparable = latencies.every(
+      (latency) =>
+        latency.window === window &&
+        latency.buckets.length === bounds.length &&
+        latency.buckets.every((bucket, index) => bucket.upToMs === bounds[index]),
+    )
+    if (!comparable) return undefined
+    const counts = bounds.map((_, index) =>
+      latencies.reduce((sum, latency) => sum + (latency.buckets[index]?.count ?? 0), 0),
+    )
+    return {
+      window,
+      total: counts.reduce((sum, count) => sum + count, 0),
+      bars: bounds.map((bound, index) => {
+        const previous = index === 0 ? null : bounds[index - 1]
+        const label =
+          bound !== null
+            ? previous === null || previous === undefined
+              ? `≤ ${formatDuration(bound)}`
+              : `${String(previous)}–${String(bound)} ms`
+            : previous === null || previous === undefined
+              ? "All turns"
+              : `> ${formatDuration(previous)}`
+        return { label, count: counts[index] ?? 0, tail: bound === null }
+      }),
+    }
+  }
+
+/**
  * The overview the runtime API reports, drawn as the console's page. The API has no yesterday
  * comparison, no history behind the awake, in-flight or dead-letter counts, and no database vendor
  * in its health report, so those parts of the page are empty or plain.
  */
 export const toOverviewPage =
   (now: DateTime.Utc) =>
-  (input: Readonly<{ project: string; overview: Overview }>): OverviewPage => {
+  (
+    input: Readonly<{
+      project: string
+      overview: Overview
+      distribution?: LatencyDistribution | undefined
+    }>,
+  ): OverviewPage => {
     const { overview } = input
     const throughput = orderedSeries(overview.throughput)
     const p99 = orderedSeries(overview.p99)
@@ -121,6 +168,7 @@ export const toOverviewPage =
         hours: p99.map((point) => hourLabel(point.at)),
         p99Series: p99.map((point) => point.value),
       },
+      distribution: input.distribution,
       deploys: overview.recentDeployments.slice(0, 3).map((deployment) => {
         const record = toDeployRecord(now)(deployment)
         return {

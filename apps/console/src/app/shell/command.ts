@@ -14,12 +14,15 @@ import {
   fixturesEnabled,
   rememberAuthReturn,
   signInDestination,
+  newCommandId,
 } from "../api/client.ts"
 import * as Auth from "../auth/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
 import { rollBackDeployment } from "../deployments/client.ts"
+import { sendCommand } from "../commands/client.ts"
+import { CommandScope } from "../commands/model.ts"
 import * as Settings from "../settings/client.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
@@ -30,12 +33,13 @@ import {
   DismissedToast,
   FailedAction,
   FailedMutation,
+  AnsweredCommand,
+  FailedCommand,
+  PreparedCommandId,
   Mutated,
   FailedPage,
-  LoadedFixtureTail,
   LoadedPage,
   LoadedWorkspace,
-  ReceivedTurn,
   ResentVerification,
   RetriedPage,
   SentRecoveryEmail,
@@ -310,21 +314,49 @@ export const SelectEnvironment = Command.define("SelectEnvironment", {
     ),
 })
 
-/** Fixture mode only: the commands page's opening tail, imported when it is asked for. */
-export const LoadFixtureTail = Command.define("LoadFixtureTail", {
-  messages: [LoadedFixtureTail],
-  execute: Effect.promise(() => import("../commands/fixtures.ts")).pipe(
-    Effect.map((module) => LoadedFixtureTail({ entries: module.openingTail })),
-  ),
+/** Persists the requested chart window before reloading its endpoint data. */
+export const SelectSeriesWindow = Command.define("SelectSeriesWindow", {
+  args: { value: S.String },
+  messages: [RetriedPage],
+  execute: ({ value }) =>
+    Effect.try(() => sessionStorage.setItem("console-series-window", value)).pipe(
+      Effect.ignore,
+      Effect.as(RetriedPage()),
+    ),
 })
 
-/** Fixture mode only: the next replayed turn for the live tail. */
-export const NextFixtureTurn = Command.define("NextFixtureTurn", {
-  args: { sequence: S.Finite },
-  messages: [ReceivedTurn],
-  execute: ({ sequence }) =>
-    Effect.promise(() => import("../commands/fixtures.ts")).pipe(
-      Effect.map((module) => ReceivedTurn({ entry: module.tailEntry(sequence) })),
+/** Sends a command without closing the dialog so its result or typed refusal stays visible. */
+export const SendActorCommand = Command.define("SendActorCommand", {
+  args: {
+    session: S.Finite,
+    scope: CommandScope,
+    address: S.String,
+    command: S.String,
+    payload: S.String,
+    commandId: S.String.pipe(S.check(S.isMinLength(1))),
+  },
+  messages: [AnsweredCommand, FailedCommand],
+  execute: (request) =>
+    sendCommand(request).pipe(
+      Effect.map((answer) => AnsweredCommand({ session: request.session, answer })),
+      Effect.catch((error) =>
+        Effect.succeed(
+          FailedCommand({ session: request.session, kind: error.kind, message: error.message }),
+        ),
+      ),
+    ),
+})
+
+/** A fresh id on opening makes an interrupted send safe to retry without changing its receipt key. */
+export const NewCommandId = Command.define("NewCommandId", {
+  args: { session: S.Finite },
+  messages: [PreparedCommandId, FailedCommand],
+  execute: ({ session }) =>
+    newCommandId.pipe(
+      Effect.map((id) => PreparedCommandId({ session, id })),
+      Effect.catch((error) =>
+        Effect.succeed(FailedCommand({ session, kind: error.kind, message: error.message })),
+      ),
     ),
 })
 
@@ -441,8 +473,16 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         ),
       RollBack: ({ id, commit }) =>
         rollBackDeployment(id).pipe(
-          Effect.andThen(
-            done(`Rolling back to ${commit}`, "Actors move to the previous runners as they drain."),
+          Effect.map(({ deploy, rolledBackFrom }) =>
+            CompletedAuth({
+              href: Routes.deployment({ commit: deploy.commit }),
+              refresh: true,
+              title: `Rolling back to ${commit}`,
+              description:
+                rolledBackFrom === null
+                  ? "The new deployment is starting."
+                  : `Redeploying ${rolledBackFrom.commit ?? rolledBackFrom.id}.`,
+            }),
           ),
         ),
     }),

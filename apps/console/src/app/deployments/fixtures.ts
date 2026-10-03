@@ -105,7 +105,13 @@ const deploymentOf = (deploy: DeployRecord): DeploymentPage =>
       { id: "r5", region: "eu-west-1", actors: 6_077, cpu: "21%", health: "healthy" as const },
       { id: "r6", region: "eu-west-1", actors: 6_300, cpu: "24%", health: "healthy" as const },
     ].slice(0, deploy.runners),
-    rollbackTo: deploy.status === "Live" ? "77be010" : null,
+    rollbackTargets:
+      deploy.status === "Live"
+        ? deploys
+            .slice(deploys.indexOf(deploy) + 1)
+            .filter((earlier) => earlier.status === "Drained" || earlier.status === "Rolled back")
+        : [],
+    rolledBackFrom: null,
     diffUrl: `https://github.com/acme/storefront/commit/${deploy.commit}`,
     log: [
       "$ bun install            ok  2.1 s",

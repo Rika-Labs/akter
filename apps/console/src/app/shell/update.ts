@@ -2,8 +2,8 @@ import { Function, Match, Option, Predicate } from "effect"
 import * as Navigation from "foldkit/navigation"
 import type { Return } from "foldkit/update"
 import { type Url, toString } from "foldkit/url"
-import { fixturesEnabled } from "../api/client.ts"
-import { toOpeningTail } from "../commands/mapping.ts"
+import { selectedWindow } from "../api/client.ts"
+import { toOpeningTail, toTailEntry } from "../commands/mapping.ts"
 import { settingsSeed } from "../settings/keys.ts"
 import {
   choiceFields,
@@ -26,17 +26,18 @@ import {
   HideDialog,
   HidePopovers,
   LoadExternal,
-  LoadFixtureTail,
   LoadPage,
   LoadWorkspace,
   Mutate,
-  NextFixtureTurn,
   PushUrl,
   ReplaceUrl,
   RequestReset,
   ResendVerification,
   ResetPassword,
   SelectEnvironment,
+  SelectSeriesWindow,
+  SendActorCommand,
+  NewCommandId,
   ShowDialog,
   SignIn,
   SignInWithProvider,
@@ -100,7 +101,6 @@ const defaultChoices = {
 const initial = (flags: Flags, url: Url): Result => {
   const route = Routes.parseUrl(url)
   const environment = storedEnvironment()
-  const fixtures = fixturesEnabled()
   const failure = flags.workspace.error
   return {
     model: {
@@ -136,16 +136,24 @@ const initial = (flags: Flags, url: Url): Result => {
         defaultEnvironment: environment,
         environment,
         variableEnvironment: environment,
+        seriesWindow: selectedWindow(),
       },
       settingsQuery: "",
       tail: { entries: [], paused: false, filter: "all", next: 0 },
+      tailStatus: "idle",
+      tailSession: 0,
+      tailError: Option.none(),
+      commandAnswer: Option.none(),
+      commandError: Option.none(),
+      commandUsedId: Option.none(),
+      sendingCommand: false,
+      commandSession: 0,
       resolved: [],
       revoked: [],
     },
     commands: [
       LoadPage({ route }),
       ApplyTheme({ preference: flags.theme }),
-      ...(fixtures ? [LoadFixtureTail()] : []),
       ...(failure === undefined ? [] : [ExpireToast({ id: "toast-0" })]),
     ],
   }
@@ -198,12 +206,6 @@ const settingsPage = (model: Model) =>
   Option.flatMap(model.page, (page) =>
     Predicate.isTagged(page, "SettingsPage") ? Option.some(page) : Option.none(),
   )
-
-const deploymentId = (model: Model, commit: string): string =>
-  Option.match(model.page, {
-    onNone: () => "",
-    onSome: (page) => (Predicate.isTagged(page, "DeploymentPage") ? page.deploy.id : commit),
-  })
 
 const mutate = (model: Model, action: Action): Result =>
   canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
@@ -268,9 +270,41 @@ const confirm = (model: Model, dialog: Dialog): Result =>
           }),
         )
       },
-      SendCommand: () => unavailable(model, "Sending commands from the console"),
-      RollBack: ({ commit }) =>
-        mutate(model, Action.RollBack({ id: deploymentId(model, commit), commit })),
+      SendCommand: ({ address, scope }) => {
+        if (model.pageSample || model.loading || model.sendingCommand) return { model }
+        const commandId = (model.fields["command-id"] ?? "").trim()
+        if (commandId === "")
+          return {
+            model: {
+              ...model,
+              sendingCommand: true,
+              commandAnswer: Option.none(),
+              commandError: Option.none(),
+            },
+            commands: [NewCommandId({ session: model.commandSession })],
+          }
+        return {
+          model: {
+            ...model,
+            sendingCommand: true,
+            commandAnswer: Option.none(),
+            commandError: Option.none(),
+            commandUsedId: Option.some(commandId),
+            fields: { ...model.fields, "command-id": commandId },
+          },
+          commands: [
+            SendActorCommand({
+              session: model.commandSession,
+              address,
+              scope,
+              command: (model.fields["command-name"] ?? "").trim(),
+              payload: model.fields["command-payload"] ?? "{}",
+              commandId,
+            }),
+          ],
+        }
+      },
+      RollBack: ({ id, commit }) => mutate(model, Action.RollBack({ id, commit })),
       DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
       KeyCreated: () => ({ model }),
     }),
@@ -456,9 +490,17 @@ const step = (model: Model, message: Message): Result =>
         model: {
           ...model,
           route,
-          dialog: Option.filter(model.dialog, (open) => !Predicate.isTagged(open, "KeyCreated")),
+          dialog: Option.none(),
           drawer: false,
           loading: true,
+          tailStatus: "idle",
+          tailSession: model.tailSession + 1,
+          tailError: Option.none(),
+          commandAnswer: Option.none(),
+          commandError: Option.none(),
+          commandUsedId: Option.none(),
+          sendingCommand: false,
+          commandSession: model.commandSession + 1,
           page: Option.none(),
           pageError: Option.none(),
           pageSample: false,
@@ -469,9 +511,7 @@ const step = (model: Model, message: Message): Result =>
         commands: [
           LoadPage({ route, allowSignIn: model.allowSignIn }),
           HidePopovers(),
-          ...(Option.exists(model.dialog, (open) => Predicate.isTagged(open, "KeyCreated"))
-            ? [HideDialog({ id: dialogId })]
-            : []),
+          ...(Option.isSome(model.dialog) ? [HideDialog({ id: dialogId })] : []),
         ],
       }
     },
@@ -495,6 +535,12 @@ const step = (model: Model, message: Message): Result =>
           pageSample: sample,
           allowSignIn: false,
           loading: false,
+          tailSession: model.tailSession + 1,
+          tailStatus:
+            Option.exists(page, (loaded) => Predicate.isTagged(loaded, "CommandsPage")) && !sample
+              ? "connecting"
+              : "idle",
+          tailError: Option.none(),
           toggles: { ...model.toggles, ...seed?.toggles },
           choices: {
             ...model.choices,
@@ -591,6 +637,10 @@ const step = (model: Model, message: Message): Result =>
     },
     ChoseSetting: ({ key, value }) => {
       const next = { ...model, choices: { ...model.choices, [key]: value } }
+      if (key === "seriesWindow" && ["1h", "24h", "7d"].includes(value))
+        return model.pageSample
+          ? { model }
+          : { model: next, commands: [SelectSeriesWindow({ value })] }
       const action = Action.SaveChoice({ key, value })
       if (
         savesChoice(key) &&
@@ -616,25 +666,53 @@ const step = (model: Model, message: Message): Result =>
     ChangedSettingsQuery: ({ query }) => ({ model: { ...model, settingsQuery: query } }),
     SubmittedForm: ({ form }) => submit(model, form),
     OpenedDialog: ({ dialog }) =>
-      then(closePalette(model), (next) => ({
-        model: { ...next, dialog: Option.some(dialog) },
-        commands: [ShowDialog({ id: dialogId, focus: dialogFocus(dialog) })],
-      })),
+      then(closePalette(model), (next) => {
+        const session = next.commandSession + 1
+        const sending = Predicate.isTagged(dialog, "SendCommand")
+        return {
+          model: {
+            ...next,
+            dialog: Option.some(dialog),
+            fields: sending
+              ? { ...next.fields, "command-id": "", "command-payload": "{}", "command-name": "" }
+              : next.fields,
+            commandAnswer: Option.none(),
+            commandError: Option.none(),
+            commandUsedId: Option.none(),
+            sendingCommand: false,
+            commandSession: session,
+          },
+          commands: [
+            ShowDialog({ id: dialogId, focus: dialogFocus(dialog) }),
+            ...(sending ? [NewCommandId({ session })] : []),
+          ],
+        }
+      }),
     ClosedDialog: () => ({
-      model: { ...model, dialog: Option.none() },
+      model: {
+        ...model,
+        dialog: Option.none(),
+        commandAnswer: Option.none(),
+        commandError: Option.none(),
+        commandUsedId: Option.none(),
+        sendingCommand: false,
+        commandSession: model.commandSession + 1,
+      },
       commands: [HideDialog({ id: dialogId })],
     }),
     ConfirmedDialog: () =>
       Option.match(model.dialog, {
         onNone: () => ({ model }),
         onSome: (dialog) =>
-          then(
-            {
-              model: { ...model, dialog: Option.none() },
-              commands: [HideDialog({ id: dialogId })],
-            },
-            (next) => confirm(next, dialog),
-          ),
+          Predicate.isTagged(dialog, "SendCommand")
+            ? confirm(model, dialog)
+            : then(
+                {
+                  model: { ...model, dialog: Option.none() },
+                  commands: [HideDialog({ id: dialogId })],
+                },
+                (next) => confirm(next, dialog),
+              ),
       }),
     CopiedText: ({ text, label }) =>
       then({ model, commands: [WriteClipboard({ text })] }, (next) =>
@@ -643,26 +721,88 @@ const step = (model: Model, message: Message): Result =>
     DismissedToast: ({ id }) => ({
       model: { ...model, toasts: model.toasts.filter((entry) => entry.id !== id) },
     }),
-    TickedTail: () =>
-      model.tail.paused || !AppRoute.isAnyOf(["Commands"])(model.route)
+    ConnectedTail: ({ session }) =>
+      session !== model.tailSession
         ? { model }
-        : { model, commands: [NextFixtureTurn({ sequence: model.tail.next })] },
-    ReceivedTurn: ({ entry }) => ({
-      model: {
-        ...model,
-        tail: {
-          ...model.tail,
-          entries: [entry, ...model.tail.entries].slice(0, 60),
-          next: model.tail.next + 1,
+        : {
+            model: { ...model, tailStatus: "live", tailError: Option.none() },
+          },
+    StreamedTurn: ({ session, entry }) =>
+      session !== model.tailSession || model.tail.paused || model.pageSample
+        ? { model }
+        : {
+            model: {
+              ...model,
+              tail: {
+                ...model.tail,
+                entries: [toTailEntry(model.tail.next)(entry), ...model.tail.entries].slice(0, 60),
+                next: model.tail.next + 1,
+              },
+            },
+          },
+    StoppedTail: ({ session, kind, message }) => {
+      if (session !== model.tailSession || !AppRoute.isAnyOf(["Commands"])(model.route))
+        return { model }
+      if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
+      return {
+        model: {
+          ...model,
+          tailStatus: kind === "NotImplemented" ? "unavailable" : "error",
+          tailError: Option.some(message),
+          tail: { ...model.tail, paused: true },
         },
-      },
-    }),
-    LoadedFixtureTail: ({ entries }) => ({
-      model: { ...model, tail: { ...model.tail, entries, next: entries.length } },
-    }),
-    ToggledTail: () => ({
-      model: { ...model, tail: { ...model.tail, paused: !model.tail.paused } },
-    }),
+      }
+    },
+    AnsweredCommand: ({ session, answer }) =>
+      session !== model.commandSession
+        ? { model }
+        : {
+            model: {
+              ...model,
+              sendingCommand: false,
+              commandAnswer: Option.some(answer),
+              commandError: Option.none(),
+            },
+          },
+    FailedCommand: ({ session, kind, message }) => {
+      if (session !== model.commandSession) return { model }
+      if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
+      return { model: { ...model, sendingCommand: false, commandError: Option.some(message) } }
+    },
+    PreparedCommandId: ({ session, id }) => {
+      if (session !== model.commandSession || (model.fields["command-id"] ?? "").trim() !== "")
+        return { model }
+      const prepared = { ...model, fields: { ...model.fields, "command-id": id } }
+      return Option.match(model.dialog, {
+        onNone: () => ({ model }),
+        onSome: (dialog) =>
+          model.sendingCommand && Predicate.isTagged(dialog, "SendCommand")
+            ? confirm({ ...prepared, sendingCommand: false }, dialog)
+            : { model: prepared },
+      })
+    },
+    ToggledTail: () =>
+      model.pageSample
+        ? { model }
+        : model.tail.paused
+          ? {
+              model: {
+                ...model,
+                loading: true,
+                tailStatus: "connecting",
+                tailError: Option.none(),
+                tail: { ...model.tail, paused: false },
+              },
+              commands: [LoadPage({ route: model.route })],
+            }
+          : {
+              model: {
+                ...model,
+                tailStatus: "paused",
+                tailError: Option.none(),
+                tail: { ...model.tail, paused: true },
+              },
+            },
     ChangedTailFilter: ({ filter }) => ({ model: { ...model, tail: { ...model.tail, filter } } }),
     RetriedDeadLetter: ({ id }) => mutate(model, Action.RetryDeadLetters({ ids: [id] })),
     RetriedAllDeadLetters: () => {

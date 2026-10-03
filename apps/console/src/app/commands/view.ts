@@ -2,7 +2,7 @@ import { button, dataTable, pageBody, pageHeader, select, status, styleAttribute
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import type { HtmlBuilder } from "foldkit/html"
-import { fixturesEnabled } from "../api/client.ts"
+import { Option } from "effect"
 import * as Routes from "../navigation/routes.ts"
 import { ChangedTailFilter, type Message, ToggledTail } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
@@ -32,8 +32,8 @@ const result = (h: HtmlBuilder<Message>, entry: TailEntry) =>
     : status(h, { tone: entry.result === "error" ? "attention" : "idle", label: entry.detail })
 
 /**
- * Committed turns, newest first. Hosted reads are a snapshot until the stream's UTC codec is
- * available; fixture mode demonstrates the pauseable tail. The filter narrows either to one type.
+ * Committed turns, newest first. Live data continues over the hosted stream, and a paused stream
+ * refreshes its opening snapshot before reconnecting. Sample data never starts a stream.
  */
 export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): Screen => {
   const entries =
@@ -41,7 +41,15 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
       ? model.tail.entries
       : model.tail.entries.filter((entry) => entry.actorType === model.tail.filter)
   const newest = model.tail.entries[0]?.sequence ?? 0
-  const fixtures = fixturesEnabled()
+  const label = model.pageSample
+    ? "Sample"
+    : model.tailStatus === "live"
+      ? "Live"
+      : model.tailStatus === "connecting"
+        ? "Connecting"
+        : model.tailStatus === "paused"
+          ? "Paused"
+          : "Snapshot"
   return {
     title: "Commands",
     crumbs: [{ label: "Commands" }],
@@ -57,10 +65,10 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
         disabled: model.pageSample,
         onChange: (filter) => ChangedTailFilter({ filter }),
       }),
-      ...(fixtures
+      ...(!model.pageSample
         ? [
             button(h, {
-              label: model.tail.paused ? "Resume" : "Pause",
+              label: model.tail.paused ? "Reconnect" : "Pause",
               icon: model.tail.paused ? "play" : "pause",
               size: "sm",
               disabled: model.pageSample,
@@ -78,12 +86,24 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
             [h.AriaLive("polite"), ...styleAttributes(h, styles.live)],
             [
               status(h, {
-                tone: !fixtures || model.tail.paused ? "idle" : "pending",
-                label: !fixtures ? "Snapshot" : model.tail.paused ? "Paused" : "Live",
+                tone: model.tailStatus === "live" ? "pending" : "idle",
+                label,
               }),
             ],
           ),
         ],
+      }),
+      Option.match(model.tailError, {
+        onNone: () => h.empty,
+        onSome: (message) =>
+          h.p(
+            [h.Role("status"), ...styleAttributes(h, styles.quiet)],
+            [
+              model.tailStatus === "unavailable"
+                ? "Live updates aren’t connected yet. Showing the latest fetched commands."
+                : message,
+            ],
+          ),
       }),
       dataTable(h, {
         label: "Committed turns, newest first",

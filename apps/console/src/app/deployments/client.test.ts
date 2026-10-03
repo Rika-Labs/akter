@@ -36,8 +36,14 @@ describe("deployments client in fixture mode", () => {
         const live = yield* loadDeployment("a3f9c21")
         expect(live.sample).toBe(true)
         expect(Schema.is(DeploymentPage)(live.data)).toBe(true)
-        expect(live.data).toMatchObject({ rollbackTo: "77be010", shift: { moved: 48_210 } })
-        expect((yield* loadDeployment("77be010")).data?.rollbackTo).toBeNull()
+        expect(live.data).toMatchObject({ shift: { moved: 48_210 }, rolledBackFrom: null })
+        expect(live.data?.rollbackTargets.map((target) => target.commit)).toEqual([
+          "77be010",
+          "5d2e7c3",
+          "1c0d4a8",
+          "e91f6b2",
+        ])
+        expect((yield* loadDeployment("77be010")).data?.rollbackTargets).toEqual([])
         expect((yield* loadDeployment("0000000")).data).toBeUndefined()
       }),
     ))
@@ -124,6 +130,184 @@ describe("deployments client against the live API", () => {
         const error = yield* loadDeployment("abcdef0").pipe(Effect.flip)
         expect(error).toMatchObject({ kind: "InvalidResponse" })
         expect(deploymentRequests()).toHaveLength(100)
+      }),
+    ))
+
+  const deployment = (fields: Record<string, Schema.Json>) => ({
+    id: "dep_x",
+    projectId: "prj_1",
+    environment: "production",
+    commitSha: "a3f9c21d5e8b7a0c4f6d1e2b3a495867c0d1e2f3",
+    message: "Add refunds",
+    author: { name: "dallen", image: null },
+    regions: ["us-east-1"],
+    runnerCount: 2,
+    durationMs: 40_000,
+    status: "drained",
+    rolledBackFrom: null,
+    createdAt: "2026-10-01T10:00:00.000Z",
+    ...fields,
+  })
+
+  const serveHistory = (pages: ReadonlyArray<ReadonlyArray<Record<string, Schema.Json>>>) =>
+    fetch.mockImplementation((input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input))
+      if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+      if (url.pathname.endsWith("/build-log"))
+        return Promise.resolve(json(JSON.stringify({ lines: [], complete: true })))
+      const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
+      if (detail !== undefined) {
+        const found = pages.flat().find((item) => item["id"] === detail)
+        return Promise.resolve(json(JSON.stringify({ ...found, steps: [], runners: [] })))
+      }
+      if (url.pathname.endsWith("/deployments")) {
+        const index = Number(url.searchParams.get("cursor")?.slice(1) ?? "0")
+        const nextCursor = index + 1 < pages.length ? `p${String(index + 1)}` : null
+        return Promise.resolve(json(JSON.stringify({ items: pages[index], nextCursor })))
+      }
+      return Promise.resolve(json(JSON.stringify([project])))
+    })
+
+  const live = deployment({
+    id: "dep_live",
+    commitSha: "a3f9c21d5e8b7a0c4f6d1e2b3a495867c0d1e2f3",
+    status: "live",
+    createdAt: "2026-10-03T10:00:00.000Z",
+  })
+
+  it("lists only earlier successful same-environment deployments as rollback targets", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        serveHistory([
+          [
+            live,
+            deployment({ id: "dep_failed", commitSha: "bbbbbbb", status: "failed" }),
+            deployment({
+              id: "dep_staging",
+              commitSha: "ccccccc",
+              environment: "staging",
+              createdAt: "2026-10-02T10:00:00.000Z",
+            }),
+            deployment({
+              id: "dep_drained",
+              commitSha: "ddddddd",
+              createdAt: "2026-10-02T09:00:00.000Z",
+            }),
+            deployment({
+              id: "dep_rolled",
+              commitSha: "eeeeeee",
+              status: "rolled-back",
+              createdAt: "2026-10-01T09:00:00.000Z",
+              rolledBackFrom: "dep_drained",
+            }),
+          ],
+        ])
+        const loaded = yield* loadDeployment("a3f9c21")
+        expect(loaded.sample).toBe(false)
+        expect(loaded.data?.rollbackTargets.map((target) => target.id)).toEqual([
+          "dep_drained",
+          "dep_rolled",
+        ])
+        serveHistory([
+          [
+            live,
+            deployment({
+              id: "dep_rolled",
+              commitSha: "eeeeeee",
+              status: "rolled-back",
+              rolledBackFrom: "dep_unseen",
+            }),
+          ],
+        ])
+        expect((yield* loadDeployment("eeeeeee")).data).toMatchObject({
+          rolledBackFrom: { id: "dep_unseen" },
+          rollbackTargets: [],
+        })
+      }),
+    ))
+
+  it("keeps paging a live deployment until a target appears, and stops at the history end without one", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        serveHistory([
+          [live, deployment({ id: "dep_failed", commitSha: "bbbbbbb", status: "failed" })],
+          [deployment({ id: "dep_drained", commitSha: "ddddddd" })],
+          [deployment({ id: "dep_older", commitSha: "fffffff" })],
+        ])
+        const found = yield* loadDeployment("a3f9c21")
+        expect(found.data?.rollbackTargets.map((target) => target.id)).toEqual(["dep_drained"])
+        expect(deploymentRequests()).toHaveLength(2)
+
+        fetch.mockClear()
+        serveHistory([
+          [live],
+          [deployment({ id: "dep_failed", commitSha: "bbbbbbb", status: "failed" })],
+        ])
+        expect((yield* loadDeployment("a3f9c21")).data?.rollbackTargets).toEqual([])
+        expect(deploymentRequests()).toHaveLength(2)
+      }),
+    ))
+
+  it("rolls back through the chosen target id and returns the new deployment", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        fetch.mockImplementation((input, init) => {
+          const request = input instanceof Request ? input : new Request(String(input), init)
+          const url = new URL(request.url)
+          if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+          if (url.pathname.endsWith("/rollback"))
+            return Promise.resolve(
+              json(
+                JSON.stringify({
+                  ...deployment({
+                    id: "dep_new",
+                    commitSha: "ddddddd1234567",
+                    status: "in-progress",
+                    durationMs: null,
+                    rolledBackFrom: "dep_drained",
+                    createdAt: "2026-10-03T11:00:00.000Z",
+                  }),
+                  steps: [],
+                  runners: [],
+                }),
+              ),
+            )
+          return Promise.resolve(json(JSON.stringify([project])))
+        })
+        const created = yield* rollBackDeployment("dep_drained")
+        expect(created).toMatchObject({
+          deploy: { id: "dep_new", commit: "ddddddd", status: "Rolling out" },
+          rolledBackFrom: { id: "dep_drained" },
+        })
+        const posts = fetch.mock.calls
+          .map(([input, init]) =>
+            input instanceof Request ? input : new Request(String(input), init),
+          )
+          .filter((request) => request.method === "POST")
+        expect(posts.map((request) => new URL(request.url).pathname)).toEqual([
+          "/api/projects/prj_1/deployments/dep_drained/rollback",
+        ])
+      }),
+    ))
+
+  it("surfaces a refused rollback instead of faking success", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const body = yield* Schema.encodeEffect(Schema.fromJsonString(NotImplemented))(
+          NotImplemented.make({ operation: "deployments.rollback" }),
+        )
+        fetch.mockImplementation((input) => {
+          const url = new URL(input instanceof Request ? input.url : String(input))
+          if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+          if (url.pathname.endsWith("/rollback"))
+            return Promise.resolve(
+              new Response(body, { status: 501, headers: { "content-type": "application/json" } }),
+            )
+          return Promise.resolve(json(JSON.stringify([project])))
+        })
+        expect(yield* rollBackDeployment("dep_drained").pipe(Effect.flip)).toMatchObject({
+          kind: "NotImplemented",
+        })
       }),
     ))
 

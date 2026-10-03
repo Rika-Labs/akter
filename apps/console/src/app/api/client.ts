@@ -1,5 +1,12 @@
-import { CloudApi, Conflict, type EnvironmentName, type Project } from "@akter/cloud-api"
-import { Context, Effect, Function, Layer, ManagedRuntime, Predicate, Schema } from "effect"
+import {
+  CloudApi,
+  Conflict,
+  type EnvironmentName,
+  type Project,
+  type SeriesWindow,
+} from "@akter/cloud-api"
+import { Context, Crypto, Effect, Function, Layer, ManagedRuntime, Predicate, Schema } from "effect"
+import { BrowserCrypto } from "@effect/platform-browser"
 import { FetchHttpClient } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 
@@ -54,6 +61,13 @@ const layer = Layer.effect(
 
 const runtime = ManagedRuntime.make(layer)
 export const cloud = Effect.promise(() => runtime.runPromise(CloudClient))
+const identifiers = ManagedRuntime.make(BrowserCrypto.layer)
+
+/** A fresh receipt key is minted once per opened send dialog so retries can reuse it safely. */
+export const newCommandId = Effect.tryPromise({
+  try: () => identifiers.runPromise(Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4)),
+  catch: (cause) => consoleError(cause),
+})
 
 /** Errors cross the FoldKit command boundary as readable states, never unchecked defects. */
 export class ConsoleError extends Schema.TaggedError<ConsoleError>()("ConsoleError", {
@@ -145,6 +159,12 @@ export const organizationContext = Effect.gen(function* () {
 export const selectedEnvironment = (): EnvironmentName => {
   const selected = storedChoice("console-environment")
   return selected === "staging" || selected === "dev" ? selected : "production"
+}
+
+/** Only the contract's windows can be used to request runtime series. */
+export const selectedWindow = (): SeriesWindow => {
+  const window = storedChoice("console-series-window")
+  return window === "1h" || window === "7d" ? window : "24h"
 }
 
 const storedChoice = (key: string): string | null => {

@@ -1,5 +1,10 @@
-import { ActorTypeSummary as CloudActorTypeSummary, JobStatus } from "@akter/cloud-api"
+import {
+  ActorTypeSummary as CloudActorTypeSummary,
+  JobStatus,
+  SeriesWindow,
+} from "@akter/cloud-api"
 import { Schema as S } from "effect"
+import { CommandScope } from "../commands/model.ts"
 
 /** One actor type deployed in the project and how busy it is, exactly as the runtime API reports it. */
 export const ActorTypeSummary = CloudActorTypeSummary
@@ -21,24 +26,24 @@ export const ActorInstance = S.Struct({
 })
 export type ActorInstance = typeof ActorInstance.Type
 
-/** A command the type accepts and how often it ran today. */
-export const CommandVolume = S.Struct({ name: S.String, today: S.Finite, p99: S.String })
+/** A command the type handled over the window: its total and its mean rate. */
+export const CommandVolume = S.Struct({ name: S.String, count: S.Finite, perSecond: S.Finite })
 
-/** A type's day: commands per second by hour and the volume of each command. */
+/** A type's window: commands per second at each UTC instant and the volume of each command. */
 export const TypeActivity = S.Struct({
+  window: SeriesWindow,
   hours: S.Array(S.String),
   perSecond: S.Array(S.Finite),
   commands: S.Array(CommandVolume),
 })
+export type TypeActivity = typeof TypeActivity.Type
 
-/**
- * One actor type in detail: its numbers and the instances on its first page. `activity` is drawn
- * when the source reports a per-type history.
- */
+/** One actor type in detail: its numbers, its activity over the window, and the instances on its first page. */
 export const ActorTypePage = S.TaggedStruct("ActorTypePage", {
+  commandScope: S.optional(CommandScope),
   summary: ActorTypeSummary,
   instances: S.Array(ActorInstance),
-  activity: S.optional(TypeActivity),
+  activity: TypeActivity,
 })
 export type ActorTypePage = typeof ActorTypePage.Type
 
@@ -94,6 +99,7 @@ export const OwnedTable = S.Struct({
 
 /** Everything the actor inspector shows about one instance. */
 export const ActorPage = S.TaggedStruct("ActorPage", {
+  commandScope: S.optional(CommandScope),
   actorType: S.String,
   key: S.String,
   awake: S.Boolean,
