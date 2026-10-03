@@ -192,6 +192,18 @@
         "vitest": "catalog:",
       },
     },
+    "packages/flags": {
+      "name": "@akter/flags",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/vitest": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/postgres": {
       "name": "@akter/postgres",
       "dependencies": {
@@ -315,6 +327,8 @@
     "@akter/e2e": ["@akter/e2e@workspace:apps/e2e"],
 
     "@akter/edge": ["@akter/edge@workspace:apps/edge"],
+
+    "@akter/flags": ["@akter/flags@workspace:packages/flags"],
 
     "@akter/infra": ["@akter/infra@workspace:infra"],
 
