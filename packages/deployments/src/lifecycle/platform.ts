@@ -1,5 +1,5 @@
 import { Context, type Effect, Schema } from "effect"
-import type { Environment, RolloutRunner } from "./contract.ts"
+import type { Environment, Region, RolloutRunner } from "./contract.ts"
 
 /**
  * A provider step failed. `retryable` failures are tried again with backoff;
@@ -49,6 +49,7 @@ export class RolloutPlatform extends Context.Service<
       readonly environment: Environment
       readonly deploymentId: string
       readonly replacedBy: string
+      readonly regions: ReadonlyArray<Region>
     }) => Effect.Effect<void, PlatformFailure>
   }
 >()("@akter/deployments/lifecycle/platform/RolloutPlatform") {}

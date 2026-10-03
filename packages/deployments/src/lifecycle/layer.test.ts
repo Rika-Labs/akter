@@ -40,6 +40,7 @@ interface Call {
   readonly envSnapshot: string
   readonly jobId: string
   readonly other: string | null
+  readonly regions: ReadonlyArray<string>
 }
 
 /** A scripted provider: it records every call and fails or holds the steps a test names. */
@@ -72,6 +73,7 @@ const step = <A>(
       envSnapshot: "",
       jobId: release.jobId,
       other: null,
+      regions: [],
       ...extra,
     })
 
@@ -92,7 +94,12 @@ const platform = Layer.succeed(
     migrate: (release) => step("migrate", release, release, undefined),
     start: (release) => step("start", release, release, [runner(release)]),
     drain: (input) =>
-      step("drain", { ...input, jobId: input.jobId }, { other: input.replacedBy }, undefined),
+      step(
+        "drain",
+        { ...input, jobId: input.jobId },
+        { other: input.replacedBy, regions: input.regions },
+        undefined,
+      ),
   }),
 )
 
@@ -397,6 +404,7 @@ describe("DeploymentLifecycle", () => {
           ["drain", "d1", "d2"],
         ])
         expect(d2Calls[0]).toMatchObject({ imageDigest: "sha256:d2", envSnapshot: "env-d2" })
+        expect(d2Calls.find(({ step }) => step === "drain")?.regions).toEqual(["us-east-1"])
 
         const page = yield* lifecycle.List({ limit: 1 })
 
@@ -713,6 +721,64 @@ describe("DeploymentLifecycle", () => {
           concurrency: "unbounded",
         })
         expect(yield* count).toBe(before)
+      }),
+    ))
+
+  it("keeps failed-rollout cleanup failures visible without disturbing the live deployment", () =>
+    run(
+      Effect.gen(function* () {
+        const { lifecycle, deploy, settle, pointer, statuses } = yield* environment("p-cleanup")
+        yield* deploy("cleanup-live")
+        provider.failures.set(
+          "start:cleanup-failed",
+          PlatformFailure.make({ reason: "startup unavailable", retryable: false }),
+        )
+        provider.failures.set(
+          "drain:cleanup-failed",
+          PlatformFailure.make({ reason: "cleanup refused", retryable: false }),
+        )
+        yield* deploy("cleanup-failed")
+        expect((yield* lifecycle.Get({ deploymentId: "cleanup-failed" })).steps[3]).toMatchObject({
+          name: "drain-previous",
+          status: "failed",
+          detail: "cleanup refused",
+        })
+
+        provider.failures.set(
+          "start:cleanup-exhausted",
+          PlatformFailure.make({ reason: "startup unavailable", retryable: false }),
+        )
+        provider.failures.set(
+          "drain:cleanup-exhausted",
+          PlatformFailure.make({ reason: "cleanup unavailable", retryable: true }),
+        )
+        yield* deploy("cleanup-exhausted")
+        for (let attempt = 0; attempt < 10; attempt++) {
+          if (
+            (yield* lifecycle.Get({ deploymentId: "cleanup-exhausted" })).steps[3]?.status ===
+            "failed"
+          )
+            break
+          yield* settle
+        }
+        expect(
+          (yield* lifecycle.Get({ deploymentId: "cleanup-exhausted" })).steps[3],
+        ).toMatchObject({
+          name: "drain-previous",
+          status: "failed",
+          detail: expect.stringContaining("cleanup unavailable"),
+        })
+        expect(yield* statuses).toEqual({
+          "cleanup-live": "live",
+          "cleanup-failed": "failed",
+          "cleanup-exhausted": "failed",
+        })
+        expect(yield* pointer).toBe("cleanup-live")
+        expect(
+          provider.calls.filter(
+            ({ step, deploymentId }) => step === "drain" && deploymentId === "cleanup-live",
+          ),
+        ).toEqual([])
       }),
     ))
 })

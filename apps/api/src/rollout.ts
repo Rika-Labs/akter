@@ -7,7 +7,7 @@ import {
   RolloutRouting,
 } from "@akter/deployments/lifecycle"
 import { Runners, runnerActor } from "@akter/deployments/runners"
-import { Context, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
+import { Cause, Context, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
 import { PgClient } from "@effect/sql-pg"
 import { SqlClient } from "effect/sql"
 import { HttpClient, HttpClientRequest } from "effect/http"
@@ -130,7 +130,10 @@ export const rolloutPlatform = (
     RolloutPlatform,
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient
-      const runtime = Context.omit(SqlClient.SqlClient, PgClient.PgClient)(yield* Effect.context<Effect.Services<ReturnType<typeof Runners.get>>>())
+      const runtime = Context.omit(
+        SqlClient.SqlClient,
+        PgClient.PgClient,
+      )(yield* Effect.context<Effect.Services<ReturnType<typeof Runners.get>>>())
       const drain = (deploymentId: string, regions: ReadonlyArray<string>) =>
         Effect.forEach(regions, (region) =>
           Effect.gen(function* () {
@@ -143,7 +146,7 @@ export const rolloutPlatform = (
               }),
               Effect.timeoutOption("3 minutes"),
             )
-            if (Option.isNone(completed) || completed.value.status === "stop-failed")
+            if (Option.isNone(completed) || completed.value.status !== "stopped")
               return yield* PlatformFailure.make({
                 reason: "Runner did not complete its drain",
                 retryable: true,
@@ -215,10 +218,14 @@ export const rolloutPlatform = (
                 ? error
                 : PlatformFailure.make({ reason: "Runner startup failed", retryable: true }),
             ),
-            Effect.onError(() => drain(release.deploymentId, release.regions).pipe(Effect.orDie)),
+            Effect.onError((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : drain(release.deploymentId, release.regions).pipe(Effect.orDie),
+            ),
           ),
         drain: (input) =>
-          drain(input.deploymentId, ["us-east-1", "us-west-2"]).pipe(
+          drain(input.deploymentId, input.regions).pipe(
             Effect.mapError(() =>
               PlatformFailure.make({ reason: "Runner drain failed", retryable: true }),
             ),

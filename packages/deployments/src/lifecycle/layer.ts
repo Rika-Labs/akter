@@ -397,7 +397,7 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
         const name: StepName = result.step
 
         if (result.step === "drain-previous") {
-          if (deployment.status !== "live") return
+          if (deployment.status !== "live" && deployment.status !== "failed") return
 
           yield* endStep(
             rows,
@@ -418,8 +418,10 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
         if (Predicate.isTagged(result, "StepFailed")) {
           yield* fail(rows, deployment.id, name, result.reason, now)
 
-          if (result.step === "start-runners")
+          if (result.step === "start-runners") {
+            yield* startStep(rows, deployment.id, "drain-previous", now)
             yield* enqueue(rows, deployment, "drain-previous", deployment.id)
+          }
 
           return
         }
@@ -455,6 +457,7 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
 
         if (Result.isFailure(activation)) {
           yield* fail(rows, deployment.id, "start-runners", activation.failure.reason, now)
+          yield* startStep(rows, deployment.id, "drain-previous", now)
           yield* enqueue(rows, deployment, "drain-previous", deployment.id)
 
           return
@@ -493,7 +496,12 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
           .update({ status: deployment.rolledBackFrom === null ? "drained" : "rolled-back" })
           .where({ id: previous.value.id })
         yield* startStep(rows, deployment.id, "drain-previous", now)
-        yield* enqueue(rows, deployment, "drain-previous", previous.value.id)
+        yield* enqueue(
+          rows,
+          { ...deployment, regions: previous.value.regions },
+          "drain-previous",
+          previous.value.id,
+        )
       }),
 
       StepDeadLettered: Effect.fnUntraced(function* ({ job, cause: trace }) {
@@ -507,7 +515,7 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
         const name: StepName = job.step
 
         if (job.step === "drain-previous") {
-          if (found.value.status === "live")
+          if (found.value.status === "live" || found.value.status === "failed")
             yield* endStep(rows, job.deploymentId, name, "failed", now, cause)
 
           return
@@ -517,8 +525,10 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
 
         yield* fail(rows, job.deploymentId, name, cause, now)
 
-        if (job.step === "start-runners")
+        if (job.step === "start-runners") {
+          yield* startStep(rows, job.deploymentId, "drain-previous", now)
           yield* enqueue(rows, found.value, "drain-previous", job.deploymentId)
+        }
       }),
     }
   }),
@@ -628,6 +638,7 @@ export const DeploymentLifecycleJobs = DeploymentLifecycle.toJobLayer(
               environment,
               deploymentId: job.replaces ?? "",
               replacedBy: job.deploymentId,
+              regions: job.regions,
             })
 
           return []
