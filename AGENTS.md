@@ -20,6 +20,7 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - The framework is `packages/akter`, published as `@rikalabs/akter`; it imports no other workspace package.
 - Other reusable code belongs in `packages/*` as `@akter/<directory>`.
 - Deployable processes and the CLI belong in `apps/*`.
+- The CLI (`apps/cli`) is built with Effect's `effect/cli` module. Every command, including hosted ones such as `login` and `deploy`, uses it; do not add another argument parser or CLI framework.
 - Infrastructure belongs in `infra/`.
 - Tooling belongs in `tooling/*`.
 - Effect is the runtime foundation; do not create a separate Effect package.
