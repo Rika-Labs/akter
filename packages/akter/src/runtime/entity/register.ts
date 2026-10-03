@@ -390,15 +390,33 @@ export const registerActor = Effect.fnUntraced(function* (
         }).pipe(Effect.andThen(Metric.modify(activations, -1))),
     )
 
+  /**
+   * Runs a delivered command's `queued` hook under the runtime's services,
+   * captures the context its turn runs in, and waits for its reply. Defined
+   * once per actor type because a generator built for every delivery is
+   * compiled again and again as the engine sees new copies of it.
+   */
+  const awaitReply = Effect.fnUntraced(function* (
+    entry: Waiting,
+    mailbox: { readonly queued: (entry: Waiting) => void },
+  ) {
+    entry.context = yield* Effect.context<never>()
+
+    yield* (yield* TurnHooks)
+      .at("queued", entry.request)
+      .pipe(Effect.ensuring(Effect.sync(() => mailbox.queued(entry))))
+
+    return yield* Deferred.await(entry.reply)
+  }, Effect.provideContext(services))
+
   /** Counts what a committed batch wrote. */
-  const countWritten = (done: Done) =>
-    Effect.gen(function* () {
-      yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
-      yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
-      yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
-      yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
-      yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.jobs)
-    })
+  const countWritten = Effect.fnUntraced(function* (done: Done) {
+    yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
+    yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+    yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+    yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+    yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.jobs)
+  })
 
   /**
    * Records a deterministic defect in the defect log under its turn span's
@@ -714,13 +732,46 @@ export const registerActor = Effect.fnUntraced(function* (
         }
       })
 
+      /** Records a finished batch's turn outcomes and duration, or the defect that ended it. */
+      const observed = Effect.fnUntraced(function* (
+        batch: ReadonlyArray<Waiting>,
+        started: number,
+        exit: Exit.Exit<unknown, unknown>,
+      ) {
+        const { request } = batch[0]!
+        const lone = batch.length === 1
+        const labels = labelled.get(batch)
+        const elapsed = (yield* Clock.currentTimeMillis) - started
+
+        if (labels === undefined && Exit.isFailure(exit)) {
+          if (Cause.hasInterruptsOnly(exit.cause)) return
+
+          if (!retryable(exit.cause) && !lone) return
+
+          const deterministic = !retryable(exit.cause)
+
+          if (deterministic) yield* recordDefect(request, exit.cause)
+
+          yield* count(
+            Metrics.turns,
+            { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
+            batch.length,
+          )
+          yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+
+          return
+        }
+
+        for (const label of labels ?? [])
+          yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
+
+        yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+      })
+
       const observe =
         (batch: ReadonlyArray<Waiting>) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>) => {
-          const { request } = batch[0]!
-          const lone = batch.length === 1
-
-          return Effect.flatMap(Clock.currentTimeMillis, (started) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.flatMap(Clock.currentTimeMillis, (started) =>
             Effect.forEach(
               batch,
               ({ request: queued }) =>
@@ -734,40 +785,10 @@ export const registerActor = Effect.fnUntraced(function* (
               { discard: true },
             ).pipe(
               Effect.andThen(effect),
-              Effect.onExit((exit) =>
-                Effect.gen(function* () {
-                  const labels = labelled.get(batch)
-                  const elapsed = (yield* Clock.currentTimeMillis) - started
-
-                  if (labels === undefined && Exit.isFailure(exit)) {
-                    if (Cause.hasInterruptsOnly(exit.cause)) return
-
-                    if (!retryable(exit.cause) && !lone) return
-
-                    const deterministic = !retryable(exit.cause)
-
-                    if (deterministic) yield* recordDefect(request, exit.cause)
-
-                    yield* count(
-                      Metrics.turns,
-                      { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
-                      batch.length,
-                    )
-                    yield* record(Metrics.turnDuration, typeAttributes, elapsed)
-
-                    return
-                  }
-
-                  for (const label of labels ?? [])
-                    yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
-
-                  yield* record(Metrics.turnDuration, typeAttributes, elapsed)
-                }),
-              ),
+              Effect.onExit((exit) => observed(batch, started, exit)),
               withinTurnSpan(batch),
             ),
           )
-        }
 
       const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
         const { owned } = current
@@ -840,6 +861,16 @@ export const registerActor = Effect.fnUntraced(function* (
           }
         }, Effect.provideContext(services))
 
+      const turnBatch = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>) {
+        if (refused !== undefined) return yield* restart(batch, Cause.die(refused))
+
+        yield* writable
+
+        const stopped = yield* run(batch, true)
+
+        if (stopped !== undefined) yield* recover(stopped)
+      })
+
       yield* Effect.gen(function* () {
         while (true) {
           phase = "idle"
@@ -867,30 +898,18 @@ export const registerActor = Effect.fnUntraced(function* (
             continue
           }
 
-          yield* gate
-            .run(
-              Effect.gen(function* () {
-                if (refused !== undefined) return yield* restart(batch, Cause.die(refused))
-
-                yield* writable
-
-                const stopped = yield* run(batch, true)
-
-                if (stopped !== undefined) yield* recover(stopped)
+          yield* gate.run(turnBatch(batch)).pipe(
+            Effect.catchIf(Schema.is(ActorError), (error) =>
+              Effect.forEach(taken, (entry) => Deferred.fail(entry.reply, error), {
+                discard: true,
               }),
-            )
-            .pipe(
-              Effect.catchIf(Schema.is(ActorError), (error) =>
-                Effect.forEach(taken, (entry) => Deferred.fail(entry.reply, error), {
-                  discard: true,
-                }),
-              ),
-              Effect.provideContext(Context.merge(batch[0]!.context, services)),
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) => restart(batch, cause),
-              ),
-            )
+            ),
+            Effect.provideContext(Context.merge(batch[0]!.context, services)),
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) => restart(batch, cause),
+            ),
+          )
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
 
@@ -933,17 +952,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
           mailbox.offer(entry)
 
-          return Rpc.fork(
-            Effect.gen(function* () {
-              entry.context = yield* Effect.context<never>()
-
-              yield* (yield* TurnHooks)
-                .at("queued", payload)
-                .pipe(Effect.ensuring(Effect.sync(() => mailbox.queued(entry))))
-
-              return yield* Deferred.await(entry.reply)
-            }).pipe(Effect.provideContext(services)),
-          )
+          return Rpc.fork(awaitReply(entry, mailbox))
         },
       })
     }),

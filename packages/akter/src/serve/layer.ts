@@ -454,22 +454,21 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           : stamped
       }
 
-      const guard = (request: HttpServerRequest.HttpServerRequest) =>
-        Effect.gen(function* () {
-          const origin = Headers.get(request.headers, "origin")
+      const guard = Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+        const origin = Headers.get(request.headers, "origin")
 
-          if (
-            Option.isSome(origin) &&
-            !origins.has(origin.value) &&
-            !isSameOrigin({ request, origin: origin.value })
-          )
-            return yield* invalidInput("origin_not_allowed")
+        if (
+          Option.isSome(origin) &&
+          !origins.has(origin.value) &&
+          !isSameOrigin({ request, origin: origin.value })
+        )
+          return yield* invalidInput("origin_not_allowed")
 
-          const protocol = Headers.get(request.headers, "durable-protocol")
+        const protocol = Headers.get(request.headers, "durable-protocol")
 
-          if (Option.isSome(protocol) && protocol.value.trim() !== String(PROTOCOL))
-            return yield* invalidInput("unsupported_protocol")
-        })
+        if (Option.isSome(protocol) && protocol.value.trim() !== String(PROTOCOL))
+          return yield* invalidInput("unsupported_protocol")
+      })
 
       /**
        * Answers one route. A handler passes the authenticated caller in each
@@ -504,104 +503,109 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             ),
           )
 
-      const authenticate = (request: HttpServerRequest.HttpServerRequest, credential?: string) =>
-        Effect.gen(function* () {
-          if (
-            oversizedCredential({
-              provider: options.auth,
-              headers: request.headers,
-              limit: credentialBytes,
-              credential,
-            })
-          )
-            return yield* invalidInput("too_large")
-
-          const cookies = withCookies ? request.cookies : {}
-
-          const authenticated: Authenticated = yield* options.auth
-            .authenticate(
-              credential === undefined
-                ? { headers: request.headers, cookies }
-                : { headers: request.headers, cookies, credential },
-            )
-            .pipe(
-              Effect.provideContext(context),
-              Effect.mapError((reason) => ActorError.make({ reason })),
-            )
-
-          if (!isPrincipal(authenticated.caller))
-            return yield* Effect.die(
-              new Error("Actor.serve: an auth provider returned a System caller"),
-            )
-
-          if (!withinLimits(authenticated)) {
-            yield* Effect.logWarning("Actor.serve: auth provider result exceeds principal limits")
-
-            return yield* ActorError.make({
-              reason: Unauthorized.make({ code: "invalid_credentials" }),
-            })
-          }
-
-          return authenticated
-        })
-
-      const readBytes = (request: HttpServerRequest.HttpServerRequest, limit = requestBytes) =>
-        Effect.gen(function* () {
-          const length = Headers.get(request.headers, "content-length")
-
-          if (Option.isSome(length) && Number(length.value) > limit)
-            return yield* invalidInput("too_large")
-
-          if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
-
-          const unframed =
-            Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
-
-          let received = 0
-
-          const chunks = yield* request.stream.pipe(
-            Stream.catch(() =>
-              unframed && received === 0 ? Stream.empty : Stream.fail(invalidInput("decode")),
-            ),
-            Stream.runFoldEffect(
-              () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
-              (acc, chunk) => {
-                const size = acc.size + chunk.byteLength
-
-                if (size > limit) return Effect.fail(invalidInput("too_large"))
-                received = size
-                acc.chunks.push(chunk)
-
-                return Effect.succeed({ size, chunks: acc.chunks })
-              },
-            ),
-          )
-
-          const body = new Uint8Array(chunks.size)
-          let offset = 0
-
-          for (const chunk of chunks.chunks) {
-            body.set(chunk, offset)
-            offset += chunk.byteLength
-          }
-
-          return body
-        })
-
-      const decodeJsonBody = (request: HttpServerRequest.HttpServerRequest, body: Uint8Array) =>
-        Effect.gen(function* () {
-          if (body.byteLength === 0) return undefined
-
-          if (!Headers.has(request.headers, "content-type"))
-            return yield* invalidInput("unsupported_media_type")
-
-          const text = yield* Effect.try({
-            try: () => strictUtf8.decode(body),
-            catch: () => invalidInput("decode"),
+      const authenticate = Effect.fnUntraced(function* (
+        request: HttpServerRequest.HttpServerRequest,
+        credential?: string,
+      ) {
+        if (
+          oversizedCredential({
+            provider: options.auth,
+            headers: request.headers,
+            limit: credentialBytes,
+            credential,
           })
+        )
+          return yield* invalidInput("too_large")
 
-          return yield* decodeJson(text).pipe(Effect.mapError((error) => undecodable(error)))
+        const cookies = withCookies ? request.cookies : {}
+
+        const authenticated: Authenticated = yield* options.auth
+          .authenticate(
+            credential === undefined
+              ? { headers: request.headers, cookies }
+              : { headers: request.headers, cookies, credential },
+          )
+          .pipe(
+            Effect.provideContext(context),
+            Effect.mapError((reason) => ActorError.make({ reason })),
+          )
+
+        if (!isPrincipal(authenticated.caller))
+          return yield* Effect.die(
+            new Error("Actor.serve: an auth provider returned a System caller"),
+          )
+
+        if (!withinLimits(authenticated)) {
+          yield* Effect.logWarning("Actor.serve: auth provider result exceeds principal limits")
+
+          return yield* ActorError.make({
+            reason: Unauthorized.make({ code: "invalid_credentials" }),
+          })
+        }
+
+        return authenticated
+      })
+
+      const readBytes = Effect.fnUntraced(function* (
+        request: HttpServerRequest.HttpServerRequest,
+        limit = requestBytes,
+      ) {
+        const length = Headers.get(request.headers, "content-length")
+
+        if (Option.isSome(length) && Number(length.value) > limit)
+          return yield* invalidInput("too_large")
+
+        if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
+
+        const unframed = Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
+
+        let received = 0
+
+        const chunks = yield* request.stream.pipe(
+          Stream.catch(() =>
+            unframed && received === 0 ? Stream.empty : Stream.fail(invalidInput("decode")),
+          ),
+          Stream.runFoldEffect(
+            () => ({ size: 0, chunks: [] as Array<Uint8Array> }),
+            (acc, chunk) => {
+              const size = acc.size + chunk.byteLength
+
+              if (size > limit) return Effect.fail(invalidInput("too_large"))
+              received = size
+              acc.chunks.push(chunk)
+
+              return Effect.succeed({ size, chunks: acc.chunks })
+            },
+          ),
+        )
+
+        const body = new Uint8Array(chunks.size)
+        let offset = 0
+
+        for (const chunk of chunks.chunks) {
+          body.set(chunk, offset)
+          offset += chunk.byteLength
+        }
+
+        return body
+      })
+
+      const decodeJsonBody = Effect.fnUntraced(function* (
+        request: HttpServerRequest.HttpServerRequest,
+        body: Uint8Array,
+      ) {
+        if (body.byteLength === 0) return undefined
+
+        if (!Headers.has(request.headers, "content-type"))
+          return yield* invalidInput("unsupported_media_type")
+
+        const text = yield* Effect.try({
+          try: () => strictUtf8.decode(body),
+          catch: () => invalidInput("decode"),
         })
+
+        return yield* decodeJson(text).pipe(Effect.mapError((error) => undecodable(error)))
+      })
 
       const refuseBinding = ActorError.make({
         reason: Unauthorized.make({ code: "invalid_credentials" }),
@@ -660,22 +664,21 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const empty = new Uint8Array(0)
 
       /** Reads a request body a JSON content type or none allows, checked against the credential's binding. */
-      const readBound = (
+      const readBound = Effect.fnUntraced(function* (
         request: HttpServerRequest.HttpServerRequest,
         authenticated: Authenticated,
-      ) =>
-        Effect.gen(function* () {
-          const type = Headers.get(request.headers, "content-type")
+      ) {
+        const type = Headers.get(request.headers, "content-type")
 
-          if (Option.isSome(type) && !JSON_TYPE.test(type.value))
-            return yield* invalidInput("unsupported_media_type")
+        if (Option.isSome(type) && !JSON_TYPE.test(type.value))
+          return yield* invalidInput("unsupported_media_type")
 
-          const body = yield* readBytes(request)
+        const body = yield* readBytes(request)
 
-          yield* checkBinding(authenticated, request, body)
+        yield* checkBinding(authenticated, request, body)
 
-          return body
-        })
+        return body
+      })
 
       const refOf = (definition: ServedDefinition, id: string, authenticated: Authenticated) =>
         ActorRef.make({ tenant: authenticated.tenant, actor: definition.name, id })
@@ -710,24 +713,26 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         )
       }
 
+      const successBody = Effect.fnUntraced(function* (member: ServedMember, value: string) {
+        if (SchemaAST.isVoid(member.output.ast))
+          return { ok: true, status: 204, body: undefined } as const
+
+        const decoded = yield* decodeSuccess(value)
+
+        return { ok: true, status: 200, body: decoded.value ?? null } as const
+      }, Effect.orDie)
+
+      const failureBody = Effect.fnUntraced(function* (member: ServedMember, value: string) {
+        const status = yield* member.failureStatus(value)
+
+        return { ok: false, status, body: yield* decodeJson(value) } as const
+      }, Effect.orDie)
+
       const outcomeBody = (member: ServedMember, outcome: Outcome) =>
         Match.value(outcome).pipe(
           Match.tagsExhaustive({
-            Success: (success): Effect.Effect<OutcomeBody> =>
-              Effect.gen(function* () {
-                if (SchemaAST.isVoid(member.output.ast))
-                  return { ok: true, status: 204, body: undefined } as const
-
-                const decoded = yield* decodeSuccess(success.value)
-
-                return { ok: true, status: 200, body: decoded.value ?? null } as const
-              }).pipe(Effect.orDie),
-            Failure: (failure): Effect.Effect<OutcomeBody> =>
-              Effect.gen(function* () {
-                const status = yield* member.failureStatus(failure.value)
-
-                return { ok: false, status, body: yield* decodeJson(failure.value) } as const
-              }).pipe(Effect.orDie),
+            Success: (success): Effect.Effect<OutcomeBody> => successBody(member, success.value),
+            Failure: (failure): Effect.Effect<OutcomeBody> => failureBody(member, failure.value),
             Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
             Acknowledged: (acknowledged) =>
               Effect.die(new Error(`Unexpected ${acknowledged.reason} acknowledgement`)),
