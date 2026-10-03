@@ -7,11 +7,15 @@ import {
 } from "effect/cluster"
 import { SqlClient } from "effect/sql"
 import { Coordination } from "../database/coordination.ts"
+import { prepareRunnerStorage } from "../database/neki/migrations.ts"
 
 /** Builds Cluster registrations and lock storage on the deployment's authority, never on a runner's data shard. */
 export const coordinatedRunnerStorage = Effect.gen(function* () {
   const sql = (yield* Coordination) ?? (yield* SqlClient.SqlClient)
-  return yield* SqlRunnerStorage.make({}).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+  return yield* prepareRunnerStorage.pipe(
+    Effect.andThen(SqlRunnerStorage.make({})),
+    Effect.provideService(SqlClient.SqlClient, sql),
+  )
 })
 
 /**

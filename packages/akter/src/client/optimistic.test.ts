@@ -1,5 +1,5 @@
 import { Effect, Predicate, Result, Schema } from "effect"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { OptimisticReducer } from "../actor/served.ts"
 import { Optimistic } from "./optimistic.ts"
 
@@ -13,8 +13,13 @@ const reducer: OptimisticReducer = {
 const settle = Effect.sleep("1 millis")
 
 describe("Optimistic", () => {
+  beforeEach(() => {
+    if (globalThis.reportError === undefined) vi.stubGlobal("reportError", () => undefined)
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it("reports a throwing listener and still adds the input and calls the others", () => {

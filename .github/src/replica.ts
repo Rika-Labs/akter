@@ -11,9 +11,9 @@
  */
 import { Effect } from "effect"
 
-const CONTAINER = "durable-replica"
+const CONTAINER = Bun.env["TEST_REPLICA_CONTAINER"] ?? "durable-replica"
 
-const PORT = "5433"
+const PORT = Bun.env["TEST_REPLICA_PORT"] ?? "5433"
 
 const run = Effect.fn("run")(function* (command: ReadonlyArray<string>) {
   const child = Bun.spawn([...command], { stdout: "pipe", stderr: "pipe" })
@@ -43,6 +43,13 @@ const unavailable = (reason: string) =>
  * admits replication connections only over loopback.
  */
 const program = Effect.gen(function* () {
+  if (
+    !/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/.test(CONTAINER) ||
+    !/^\d+$/.test(PORT) ||
+    Number(PORT) < 1 ||
+    Number(PORT) > 65535
+  )
+    return yield* Effect.die(new Error("Invalid replica container name or port"))
   const primary = Bun.env["TEST_DATABASE_URL"]
 
   if (primary === undefined || primary === "") return yield* unavailable("TEST_DATABASE_URL unset")
@@ -109,7 +116,12 @@ const program = Effect.gen(function* () {
     "SELECT pg_reload_conf()",
   ])
 
-  yield* run(["docker", "rm", "-f", CONTAINER])
+  if ((yield* run(["docker", "inspect", CONTAINER])).ok)
+    return yield* Effect.die(
+      new Error(
+        `Replica container ${CONTAINER} already exists; remove only your own container before retrying`,
+      ),
+    )
   yield* must([
     "docker",
     "run",

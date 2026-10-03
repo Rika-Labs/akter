@@ -7,6 +7,7 @@ import * as Queries from "../../runtime/inspector/queries.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { Auth } from "../../runtime/index.ts"
+import { serveFetch, zstdDecompress } from "./platform.ts"
 
 const Noted = Actor.event("Noted", { body: Schema.String })
 
@@ -116,7 +117,7 @@ const operators = Auth.make((request) =>
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
-/** Serves the inspector from a real listening Bun server for the rest of the scope. */
+/** Serves the inspector from a real listening server for the rest of the scope. */
 const serveInspector = Effect.gen(function* () {
   const context = yield* Effect.context<SqlClient.SqlClient>()
 
@@ -125,21 +126,12 @@ const serveInspector = Effect.gen(function* () {
     { disableLogger: true },
   )
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: (request) => web.handler(request),
-  })
-
-  yield* Effect.addFinalizer(() =>
-    Effect.promise(() => server.stop(true)).pipe(
-      Effect.andThen(Effect.promise(() => web.dispose())),
-    ),
-  )
+  yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
+  const port = yield* serveFetch((request) => web.handler(request))
 
   const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient)
 
-  const url = `http://127.0.0.1:${server.port}`
+  const url = `http://127.0.0.1:${port}`
 
   return (path: string, tenant?: string, origin?: string) =>
     Effect.gen(function* () {
@@ -189,7 +181,7 @@ const decodeJsonSync = (json: string) => Option.getOrThrow(parseJson(json))
 
 /** Independent decode of a compressed view value: the bytes as Postgres stores them. */
 const rawJson = (bytes: Uint8Array) =>
-  decodeJsonSync(new TextDecoder().decode(Bun.zstdDecompressSync(bytes)))
+  decodeJsonSync(new TextDecoder().decode(zstdDecompress(bytes)))
 
 const eventually = <E, R>(check: Effect.Effect<boolean, E, R>, what: string) =>
   check.pipe(

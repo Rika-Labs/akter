@@ -1,18 +1,69 @@
-import { BunCrypto } from "@effect/platform-bun"
-import { Clock, Config, Context, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import {
+  Clock,
+  Config,
+  Context,
+  Crypto,
+  Effect,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+} from "effect"
 import { afterAll, describe, expect, it } from "vitest"
 import { PgClient } from "@effect/sql-pg"
 import { SqlClient } from "effect/sql"
 import { databaseName, disposableDatabase, sweepStaleDatabases } from "../../database.ts"
+import { cryptoLayer } from "../platform.ts"
+import { postgresBackend } from "./database.ts"
 
 /** Each `DROP DATABASE` waits for a checkpoint, which takes seconds on a shared server. */
 const DROPS_MS = 60_000
 
-const harness = ManagedRuntime.make(BunCrypto.layer)
+const harness = ManagedRuntime.make(cryptoLayer)
 
 afterAll(() => harness.dispose())
 
 describe("Postgres test databases", () => {
+  const replicaUrl = Option.getOrUndefined(
+    Effect.runSync(Config.option(Config.String("TEST_REPLICA_DATABASE_URL"))),
+  )
+
+  it.runIf(replicaUrl !== undefined)(
+    "waits for a new database to reach a paused replica instead of failing its control connection",
+    () =>
+      harness.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const primary = yield* Config.Redacted("TEST_DATABASE_URL")
+            const control = Context.get(
+              yield* Layer.build(
+                PgClient.layer({ url: Redacted.make(replicaUrl!), maxConnections: 1 }),
+              ),
+              SqlClient.SqlClient,
+            )
+            yield* Effect.acquireRelease(control`SELECT pg_wal_replay_pause()`, () =>
+              control`SELECT pg_wal_replay_resume()`.pipe(Effect.asVoid, Effect.orDie),
+            )
+            const backend = postgresBackend({
+              url: Effect.succeed(Redacted.value(primary)),
+              replicaUrl,
+            })
+            const opened = yield* Effect.acquireRelease(
+              Effect.promise(() => backend.open()),
+              (opened) => opened.close,
+            )
+            const replica = opened.replica!
+            const connected = yield* replica.connect.pipe(Effect.forkChild)
+            yield* Effect.sleep("150 millis")
+            expect(connected.pollUnsafe()).toBeUndefined()
+            yield* control`SELECT pg_wal_replay_resume()`
+            const connection = yield* Fiber.join(connected)
+            expect(yield* connection.query("SELECT 37 AS value")).toEqual([{ value: 37 }])
+          }),
+        ),
+      ),
+  )
   it(
     "drops a disposable database with its scope and sweeps only databases older than an hour",
     { timeout: DROPS_MS },
