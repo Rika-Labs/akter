@@ -139,9 +139,15 @@ export const dockerRunners = (options: DockerOptions) =>
           id: container.Id,
           state,
           url:
-            state !== "running" ? null : options.routeViaNetwork
-              ? privateAddress ? `http://${privateAddress}:${options.port}` : null
-              : bound !== undefined ? `http://${options.publishHost ?? "127.0.0.1"}:${bound.HostPort}` : null,
+            state !== "running"
+              ? null
+              : options.routeViaNetwork
+                ? privateAddress
+                  ? `http://${privateAddress}:${options.port}`
+                  : null
+                : bound !== undefined
+                  ? `http://${options.publishHost ?? "127.0.0.1"}:${bound.HostPort}`
+                  : null,
           basePath: options.basePath ?? "",
         } satisfies Runner
       })

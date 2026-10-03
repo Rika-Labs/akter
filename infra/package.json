@@ -12,13 +12,13 @@
     "destroy": "alchemy destroy"
   },
   "dependencies": {
-    "@rikalabs/akter": "workspace:*",
     "@distilled.cloud/aws": "catalog:",
     "@distilled.cloud/axiom": "catalog:",
     "@distilled.cloud/cloudflare": "catalog:",
     "@distilled.cloud/planetscale": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "alchemy": "catalog:",
     "effect": "catalog:"
   },

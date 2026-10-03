@@ -1,7 +1,14 @@
 import { Effect, Exit, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { Conflict, Forbidden, NotFound, NotImplemented, Unauthorized, Unavailable } from "./errors.ts"
+import {
+  Conflict,
+  Forbidden,
+  NotFound,
+  NotImplemented,
+  Unauthorized,
+  Unavailable,
+} from "./errors.ts"
 
 const expectRoundTrip = <T extends { readonly _tag: string }, E>(
   schema: Schema.Codec<T, E>,
@@ -23,14 +30,17 @@ describe("errors", () => {
     expectRoundTrip(NotFound, NotFound.make({ resource: "project", id: "prj_1" }))
     expectRoundTrip(Conflict, Conflict.make({ message: "slug taken" }))
     expectRoundTrip(NotImplemented, NotImplemented.make({ operation: "deployments.create" }))
-    expectRoundTrip(Unavailable, Unavailable.make({ message: "No ready capacity", retryAfterSeconds: 1 }))
+    expectRoundTrip(
+      Unavailable,
+      Unavailable.make({ message: "No ready capacity", retryAfterSeconds: 1 }),
+    )
   })
 
   it("answers each error with its own status", () => {
     const status = (schema: Schema.Top) => schema.ast.annotations?.["httpApiStatus"]
-    expect([Unauthorized, Forbidden, NotFound, Conflict, NotImplemented, Unavailable].map(status)).toEqual([
-      401, 403, 404, 409, 501, 503,
-    ])
+    expect(
+      [Unauthorized, Forbidden, NotFound, Conflict, NotImplemented, Unavailable].map(status),
+    ).toEqual([401, 403, 404, 409, 501, 503])
   })
 
   it("accepts only the credential codes the security contract names", () => {

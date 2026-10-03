@@ -110,7 +110,11 @@ export const loadOptions = Effect.gen(function* () {
   return {
     issuer: yield* Config.String("EDGE_ISSUER"),
     controlPlaneUrl: yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL"),
-    signingKeys: yield* decodeKeys(Redacted.value(keys)).pipe(Effect.catch(() => Effect.die(new Error("EDGE_SIGNING_KEYS must contain a valid private signing-key array")))),
+    signingKeys: yield* decodeKeys(Redacted.value(keys)).pipe(
+      Effect.catch(() =>
+        Effect.die(new Error("EDGE_SIGNING_KEYS must contain a valid private signing-key array")),
+      ),
+    ),
     hostname: yield* Config.String("HOST").pipe(Config.withDefault("0.0.0.0")),
     port: yield* Config.Port("PORT").pipe(Config.withDefault(8080)),
     assertionLifetime: lifetime,
