@@ -87,6 +87,7 @@ import {
   tableShardLease,
 } from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
+import { MailboxRefusals, mailboxRefusals } from "./topology/admission.ts"
 import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
 import { ContentStore } from "../handles/content.ts"
 import { isContent } from "../members/blob.ts"
@@ -439,6 +440,19 @@ export const layer = (options: Options = {}) => {
       })
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const refusals = yield* MailboxRefusals
+      refusals.refuse = (address) => {
+        const registration = registrations.get(address.entityType)
+        if (
+          registration === undefined ||
+          residency.get(address.entityType)?.(address.entityId) !== true
+        )
+          return undefined
+
+        return registration.policy.mailboxCapacity === "unbounded"
+          ? overloaded("activation")
+          : ActorError.make({ reason: MailboxFull.make({}) })
+      }
       const diagnostics: Parameters<typeof actorRegistration>[0]["diagnostics"] = new Map()
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
@@ -791,12 +805,14 @@ export const layer = (options: Options = {}) => {
                     external ? { ...request, external, queuedAtMs } : { ...request, queuedAtMs },
                   )
                   .pipe(
+                    Effect.interruptible,
                     Effect.forkIn(scope),
                     Effect.tap((fiber) =>
                       Effect.sync(() => {
                         pending?.add(fiber)
                       }),
                     ),
+                    Effect.uninterruptible,
                   ),
               ),
               Effect.flatMap(Fiber.join),
@@ -1188,14 +1204,19 @@ export const layer = (options: Options = {}) => {
               .admit(
                 dispatch(request, true, pending).pipe(
                   Effect.tap(observe),
-                  Effect.onExit((exit) => Deferred.done(reply, exit)),
+                  Effect.onExit((exit) =>
+                    [...pending].some((fiber) => fiber.pollUnsafe() === undefined)
+                      ? Deferred.done(reply, exit)
+                      : Effect.void,
+                  ),
                   Effect.ensuring(
                     Effect.suspend(() => Effect.forEach(pending, Fiber.await, { discard: true })),
                   ),
                 ),
               )
               .pipe(
-                Effect.catchCause((cause) => Deferred.failCause(reply, cause)),
+                Effect.onExit((exit) => Deferred.done(reply, exit)),
+                Effect.ignoreCause,
                 Effect.forkIn(scope),
               )
 
@@ -1398,6 +1419,7 @@ export const layer = (options: Options = {}) => {
           ),
         ),
         Layer.provideMerge(directMessages),
+        Layer.provideMerge(mailboxRefusals),
         Layer.provide([
           runnerStorage === "memory"
             ? Layer.effect(

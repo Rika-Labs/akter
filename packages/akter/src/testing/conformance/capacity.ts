@@ -1,10 +1,23 @@
-import { Clock, Crypto, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Scope } from "effect"
+import {
+  Clock,
+  Context,
+  Crypto,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Schema,
+  Scope,
+} from "effect"
 import { Actor, ActorError, Actors, MailboxFull, RunnerAtCapacity } from "../../index.ts"
 import { ACTIVATION_MAILBOX } from "../../runtime/entity/register.ts"
 import type { Request } from "../../runtime/request.ts"
 import { TurnConnections } from "../../runtime/turn/pipeline.ts"
 import { TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
 import { ActorTest, type TestOptions } from "../actor-test.ts"
+import { ActorCluster } from "../cluster.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 const Touch = Actor.command("Touch", { success: Schema.Finite })
@@ -478,6 +491,75 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
         }),
       )
     },
+  },
+  {
+    name: "a remote default mailbox refuses with serialized ActorUnavailable and retryAfter without retrying or receipting the command",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ environment, expect }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const services = yield* Layer.build(
+            ActorTest.cluster({
+              database: yield* environment.freshDatabase,
+              runners: 2,
+              holdersOnly: [1],
+              shardLockExpiration: "5 seconds",
+              admission: { concurrency: ACTIVATION_MAILBOX * 2 },
+              actors: CapacityLive,
+            }).pipe(Layer.provide(Layer.succeed(Crypto.Crypto, yield* Crypto.Crypto))),
+          )
+          const cluster = Context.get(services, ActorCluster)
+          yield* cluster.ready
+          const actor = yield* cluster.on(1)(Hot.get("remote-hot"))
+          expect(yield* cluster.on(1)(actor.Touch())).toBe(1)
+          const pause = yield* cluster.on(0)(
+            Effect.flatMap(ActorTest, (test) => test.pauseNext("beforeHandler")),
+          )
+          const held = yield* cluster.on(1)(actor.Touch()).pipe(Effect.forkScoped)
+          yield* pause.reached
+
+          const queued = yield* Effect.forEach(Array.from({ length: ACTIVATION_MAILBOX - 1 }), () =>
+            Effect.gen(function* () {
+              const reached = yield* cluster.on(0)(
+                Effect.flatMap(ActorTest, (test) => test.pauseNext("queued")),
+              )
+              const fiber = yield* cluster.on(1)(actor.Touch()).pipe(Effect.forkScoped)
+              yield* reached.reached
+              yield* reached.release
+              return fiber
+            }),
+          )
+          const overflow = actor.Touch()
+          const exit = yield* cluster.on(1)(overflow).pipe(Effect.exit)
+          expect(reasonOf(exit)).toBe("ActorUnavailable")
+          const error = Exit.findErrorOption(exit).pipe(
+            Option.filter(Schema.is(ActorError)),
+            Option.getOrThrow,
+          )
+          expect(error.reason).toMatchObject({ overloaded: true })
+          expect(error.isRetryable).toBe(true)
+          expect(Option.getOrThrow(error.retryAfter)).toBeGreaterThanOrEqual(125)
+          expect(Option.getOrThrow(error.retryAfter)).toBeLessThanOrEqual(375)
+
+          yield* pause.release
+          yield* Fiber.join(held)
+          yield* Effect.forEach(queued, Fiber.join)
+          const inspect = cluster.on(0)(
+            Effect.flatMap(ActorTest, (test) => test.inspect(actor.ref)),
+          )
+          expect(yield* inspect).toMatchObject({
+            receipts: ACTIVATION_MAILBOX + 1,
+            state: { count: ACTIVATION_MAILBOX + 1 },
+          })
+          expect(yield* cluster.on(1)(overflow)).toBe(ACTIVATION_MAILBOX + 2)
+          expect(yield* cluster.on(1)(overflow)).toBe(ACTIVATION_MAILBOX + 2)
+          expect(yield* inspect).toMatchObject({
+            receipts: ACTIVATION_MAILBOX + 2,
+            state: { count: ACTIVATION_MAILBOX + 2 },
+          })
+        }),
+      ),
   },
   {
     name: "a caller over capacity succeeds on retry once an idle actor hibernates",
