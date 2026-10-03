@@ -110,6 +110,7 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     },
     socialProviders: { github: options.github, google: options.google },
     account: { accountLinking: { enabled: false } },
+    rateLimit: { enabled: options.production },
     plugins: [organizationPlugin, keyPlugin, ssoPlugin] satisfies [
       typeof organizationPlugin,
       typeof keyPlugin,

@@ -965,6 +965,68 @@ describe("outgoing mail", () => {
     ))
 })
 
+describe("production rate limiting", () => {
+  it.each([
+    { production: true, throttled: true },
+    { production: false, throttled: false },
+  ])(
+    "throttles repeated password guesses only when production is $production",
+    ({ production, throttled }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* createDatabase
+          const origin = "https://api.akter.test"
+          const sqlLayer = PgClient.layer({ url: Redacted.make(url), maxConnections: 4 })
+          const services = yield* Layer.build(
+            Auth.layer({
+              databaseUrl: Redacted.make(url),
+              secret: Redacted.make("a-local-test-signing-secret-long-enough"),
+              origin,
+              port: 0,
+              production,
+              emailMode: "local",
+              emailFrom: "Akter <auth@localhost>",
+            }).pipe(
+              Layer.provideMerge(
+                Layer.mergeAll(
+                  localEmail.pipe(Layer.provide(sqlLayer)),
+                  Postgres(url),
+                  sqlLayer,
+                  processRuntimeLayer,
+                ),
+              ),
+            ),
+          )
+          const auth = Context.get(services, Auth)
+          const statuses: Array<number> = []
+          for (let attempt = 0; attempt < 8; attempt++) {
+            const response = yield* Effect.promise(() =>
+              auth.handler(
+                new Request(`${origin}/auth/sign-in/email`, {
+                  method: "POST",
+                  headers: {
+                    "content-type": "application/json",
+                    origin,
+                    "x-forwarded-for": "203.0.113.7",
+                  },
+                  body: JSON.stringify({
+                    email: "nobody@example.test",
+                    password: "a-wrong-password-guess",
+                  }),
+                }),
+              ),
+            )
+            statuses.push(response.status)
+          }
+
+          expect(statuses.includes(429)).toBe(throttled)
+          expect(statuses[0]).toBe(401)
+        }),
+      ).pipe(Effect.runPromise),
+    60_000,
+  )
+})
+
 describe("organization teams", () => {
   it("lets a member create a team and keeps non-members out", () =>
     run(
