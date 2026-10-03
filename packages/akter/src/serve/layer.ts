@@ -422,22 +422,25 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
 
+      /**
+       * A runner that accepts edge assertions is hosted, and its edge reserves
+       * capacity for any keyed request as a command. A query, watch or stream
+       * never commits a receipt that could settle that reservation, so a hosted
+       * runner refuses a command identity on them whether or not the request
+       * carries an assertion, and the edge releases the reservation on that
+       * refusal.
+       */
       const queryIdentity = Effect.fnUntraced(function* (
         request: HttpServerRequest.HttpServerRequest,
       ) {
-        if (
-          !withAssertion ||
-          !Headers.has(request.headers, ASSERTION_HEADER) ||
-          !Headers.has(request.headers, "idempotency-key")
-        )
-          return
+        if (!withAssertion || !Headers.has(request.headers, "idempotency-key")) return
         return yield* ActorError.make({
           reason: InvalidInput.make({
             code: "decode",
             issues: [
               {
                 path: "idempotency-key",
-                message: "Hosted queries and watches do not accept command identities",
+                message: "Hosted queries, watches and streams do not accept command identities",
               },
             ],
           }),
@@ -885,6 +888,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
           const authenticated = yield* authenticate(request)
+
+          yield* queryIdentity(request)
+
           const bytes = yield* readBound(request, authenticated)
           const body = yield* decodeJsonBody(request, bytes)
 

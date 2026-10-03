@@ -26,6 +26,7 @@ import {
   type Quotas,
   quotaFailure,
   QuotaUnavailable,
+  type Lease,
   type Reservation,
   UnsupportedBillingRoute,
 } from "../quotas.ts"
@@ -203,6 +204,11 @@ const bodyOf = (request: Request | Response, limit: number) =>
  * forwards no assertion, and the runner decides whether the route needs one.
  * The assertion is used only for this request's attempts, and only while it
  * lives.
+ *
+ * A watch takes its connection lease before it reserves or reaches a runner,
+ * so a connection-cap refusal leaves no usage behind. The lease belongs to the
+ * request until its event stream takes it over, and every other exit,
+ * including interruption, releases it.
  */
 export const forward = Effect.fnUntraced(function* (
   edge: Edge,
@@ -258,6 +264,24 @@ export const forward = Effect.fnUntraced(function* (
   for (const [name, value] of request.headers) if (!DROPPED.has(name)) headers[name] = value
 
   const tenant = verified?.tenant ?? ANONYMOUS_TENANT
+
+  let held: Lease | undefined
+  let handedOff = false
+
+  if (metering.kind === "read" && url.pathname.endsWith("/watch")) {
+    const leased = yield* edge.quotas
+      .acquireLease({ deployment: deployment.id, tenant, kind: "sse" })
+      .pipe(Effect.result)
+
+    if (Result.isFailure(leased)) return yield* quotaRefusal(leased.failure)
+
+    const lease = leased.success
+
+    held = lease
+    yield* Effect.addFinalizer(() =>
+      handedOff ? Effect.void : edge.quotas.releaseLease(lease).pipe(Effect.ignore),
+    )
+  }
 
   let reservation: Reservation | undefined
 
@@ -373,9 +397,12 @@ export const forward = Effect.fnUntraced(function* (
     )
       yield* edge.quotas.release(reservation).pipe(Effect.ignore)
 
-    const leased = yield* edge.quotas
-      .acquireLease({ deployment: deployment.id, tenant, kind: "sse" })
-      .pipe(Effect.result)
+    const leased =
+      held === undefined
+        ? yield* edge.quotas
+            .acquireLease({ deployment: deployment.id, tenant, kind: "sse" })
+            .pipe(Effect.result)
+        : Result.succeed(held)
 
     if (Result.isSuccess(leased)) {
       const lease = leased.success
@@ -394,6 +421,8 @@ export const forward = Effect.fnUntraced(function* (
         Stream.ensuring(edge.quotas.releaseLease(lease).pipe(Effect.ignore)),
       )
 
+      handedOff = true
+
       return passThrough(response.value, guarded)
     }
 
@@ -406,7 +435,7 @@ export const forward = Effect.fnUntraced(function* (
     yield* edge.quotas.release(reservation).pipe(Effect.ignore)
 
   return yield* refusal(unavailable("No runner answered"))
-})
+}, Effect.scoped)
 
 /**
  * The query parameter a metered read carries to its runner, whose value is the

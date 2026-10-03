@@ -46,7 +46,7 @@ import {
   type HttpClientResponse,
   type HttpMethod,
 } from "effect/http"
-import { SqlClient } from "effect/sql"
+import { SqlClient, type SqlError } from "effect/sql"
 import { afterAll, describe, expect, it } from "vitest"
 import { type FixtureEdge, type FixtureOptions, type Provisioned, startEdge } from "./fixtures.ts"
 import {
@@ -1497,6 +1497,99 @@ describe("quotas service", () => {
           yield* a.service.release(original)
           expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 5 })
           expect(yield* reservationCount(edge)).toBe(1)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "decides an admission waiting on a committed plan or spend limit change by the new value, never the replaced one",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({ plan: "pro" })
+          const { service } = yield* instance(edge.provisioned, 5000, 1000)
+
+          const blocked = edge.sql<{ readonly n: number }>`
+            SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'
+          `.pipe(Effect.map(([row]) => (row?.n ?? 0) > 0))
+
+          const during = Effect.fnUntraced(function* <A, E>(
+            change: Effect.Effect<unknown, SqlError.SqlError>,
+            admission: Effect.Effect<A, E>,
+          ) {
+            const changed = yield* Deferred.make<void>()
+            const commit = yield* Deferred.make<void>()
+            const writer = yield* edge.sql
+              .withTransaction(
+                change.pipe(
+                  Effect.andThen(Deferred.succeed(changed, undefined)),
+                  Effect.andThen(Deferred.await(commit)),
+                ),
+              )
+              .pipe(Effect.orDie, Effect.forkScoped)
+
+            yield* Deferred.await(changed)
+
+            let settled = false
+            const admitting = yield* admission.pipe(
+              Effect.result,
+              Effect.ensuring(Effect.sync(() => void (settled = true))),
+              Effect.forkScoped,
+            )
+
+            yield* blocked.pipe(
+              Effect.filterOrFail((waiting) => waiting || settled),
+              Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 500 }),
+              Effect.orDie,
+            )
+
+            expect(settled).toBe(false)
+
+            yield* Deferred.succeed(commit, undefined)
+            yield* Fiber.join(writer)
+
+            return yield* Fiber.join(admitting)
+          })
+
+          const limited = yield* during(
+            edge.sql`UPDATE cloud_billing_account SET spend_limit_cents = 0
+              WHERE organization_id = ${edge.organizationId}`,
+            service.reserveCommand({
+              ...bind(edge),
+              actor: "Order",
+              id: "o-1",
+              commandId: "after-limit",
+            }),
+          )
+
+          expect(Result.isFailure(limited) && limited.failure).toBeInstanceOf(SpendLimitExceeded)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 0 })
+
+          yield* edge.sql`UPDATE cloud_billing_account
+            SET plan = 'enterprise', subscribed_plan = 'enterprise', spend_limit_cents = NULL
+            WHERE organization_id = ${edge.organizationId}`.pipe(Effect.orDie)
+
+          const input = { ...bind(edge), kind: "socket" as const }
+
+          for (let n = 0; n < 3; n++) yield* service.acquireLease(input)
+
+          const downgraded = yield* during(
+            edge.sql`UPDATE cloud_billing_account SET plan = 'free'
+              WHERE organization_id = ${edge.organizationId}`,
+            service.acquireLease(input),
+          )
+
+          expect(Result.isFailure(downgraded) && downgraded.failure).toEqual(
+            ConnectionLimitExceeded.make({
+              organizationId: edge.organizationId,
+              kind: "socket",
+              limit: 3,
+              open: 3,
+            }),
+          )
+          expect(yield* leaseCount(edge)).toBe(3)
         }),
       ),
     60_000,

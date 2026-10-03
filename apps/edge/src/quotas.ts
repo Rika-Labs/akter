@@ -123,7 +123,10 @@ const decoded = (segment: string) => {
  * unkeyed one is a read (1 unit). A singleton omits `{id}`. Only the
  * authenticated edge can sign the usage token a read settles by, so an
  * anonymous unkeyed POST under `/actors` is unsupported, while an anonymous
- * command still settles through its own command id. Feeds (`GET .../events`)
+ * command still settles through its own command id. A content grant
+ * (`POST .../content/{blob}/{name}/grant`, the only member path of five or more
+ * segments) records neither a receipt nor a read, so it is unsupported keyed
+ * or not. Feeds (`GET .../events`)
  * cost a connection lease and no units, and every other request under
  * `/actors`, the protocol routes and preflights are free. Credentialed
  * requests elsewhere, including inspector GETs and MCP calls whose command
@@ -158,6 +161,8 @@ export const meteringOf = (request: {
   if (rest.length < 2) return request.credentialed ? { kind: "unsupported" } : { kind: "free" }
 
   if (method !== "POST") return { kind: "free" }
+
+  if (rest.length >= 5 && rest.at(-1) === "grant") return { kind: "unsupported" }
 
   const actor = rest[0] ?? ""
   const id =
@@ -363,6 +368,13 @@ export const quotas = Effect.fnUntraced(function* (
     Effect.forkScoped,
   )
 
+  /**
+   * Reads a tenant's organization, plan and spend limit. The account row is
+   * share-locked, so inside an admission transaction a plan or limit change
+   * either commits before the read or waits for the admission to commit: no
+   * admission decides on a cap that a committed change already replaced. The
+   * account row is always locked before usage rows and the connection lock.
+   */
   const bind = Effect.fnUntraced(function* (deployment: string, tenant: string) {
     const [mapping] = yield* sql<{ readonly organizationId: string; readonly projectId: string }>`
       SELECT organization_id AS "organizationId", project_id AS "projectId"
@@ -382,6 +394,7 @@ export const quotas = Effect.fnUntraced(function* (
     }>`
       SELECT plan, subscribed_plan AS "subscribedPlan", spend_limit_cents::float8 AS "spendLimitCents"
       FROM cloud_billing_account WHERE organization_id = ${mapping.organizationId}
+      FOR SHARE
     `
 
     if (account === undefined)
@@ -411,7 +424,6 @@ export const quotas = Effect.fnUntraced(function* (
     readonly commandId: string
     readonly kind: "command" | "read"
   }) {
-    const bound = yield* bind(input.deployment, input.tenant)
     const units = input.kind === "command" ? COMMAND_UNITS : READ_UNITS
 
     const identity = yield* encodeIdentity([
@@ -424,6 +436,8 @@ export const quotas = Effect.fnUntraced(function* (
 
     return yield* sql.withTransaction(
       Effect.gen(function* () {
+        const bound = yield* bind(input.deployment, input.tenant)
+
         const [now] = yield* sql<{ readonly period: string }>`
           SELECT to_char(now() AT TIME ZONE 'utc', 'YYYY-MM') AS period
         `
@@ -607,12 +621,13 @@ export const quotas = Effect.fnUntraced(function* (
       readonly kind: "socket" | "sse"
     }) {
       const began = yield* Clock.currentTimeMillis
-      const bound = yield* bind(input.deployment, input.tenant).pipe(recover)
       const id = yield* random.randomUUIDv4.pipe(Effect.orDie)
 
-      yield* sql
+      const bound = yield* sql
         .withTransaction(
           Effect.gen(function* () {
+            const bound = yield* bind(input.deployment, input.tenant)
+
             yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(${`connections:${bound.organizationId}`}, 0))`
 
             yield* sql`
@@ -642,6 +657,8 @@ export const quotas = Effect.fnUntraced(function* (
               VALUES (${id}, ${bound.organizationId}, ${input.deployment}, ${input.tenant},
                 ${input.kind}, ${edgeId}, now() + ${ttlSeconds} * interval '1 second')
             `
+
+            return bound
           }),
         )
         .pipe(recover)
