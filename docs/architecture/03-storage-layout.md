@@ -1,6 +1,6 @@
 # Runtime storage layout
 
-All per-actor and per-tenant framework primary keys and unique indexes include `routing_key`; the migrated Postgres catalog test covers all 18 such tables and the outbox's partial timer key. Deployment registries are separate, colocated deployment-wide metadata, not actor records. The complete registry exception list and audit result are recorded in [ADR 0064](../decisions/0064-due-work-shard-ranges.md); no key repair or data migration was needed.
+All per-actor and per-tenant framework primary keys and unique indexes include `routing_key`; the migrated Postgres catalog test covers all 18 such tables and the outbox's partial timer key. Deployment registries are separate, colocated deployment-wide metadata, not actor records. The complete registry exception list and audit result are recorded in [ADR 0067](../decisions/0067-due-work-shard-ranges.md); no key repair or data migration was needed.
 
 **Responsibility:** organize framework-private durable records.  
 **Authority:** design.  

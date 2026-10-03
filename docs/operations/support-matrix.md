@@ -1,6 +1,6 @@
 # Backend support matrix
 
-The data shard map's ordinary database path is covered by real Postgres range-boundary, `SKIP LOCKED`, failed-settle, public-API intent/timer/job/cron, holder-liveness, and session-isolation tests in `runtime/database/shards.test.ts`. Its default claim remains one statement and one network flight. `runtime/database/migrations.test.ts` checks all per-actor and per-tenant primary and unique keys from the migrated catalog, including partial indexes. These are Postgres results, not a two-shard Neki result: `EXPLAIN (NEKI_PLAN)` and a real Neki topology remain unverified, pending #66 and a supplied map ([ADR 0064](../decisions/0064-due-work-shard-ranges.md)).
+The data shard map's ordinary database path is covered by real Postgres range-boundary, `SKIP LOCKED`, failed-settle, public-API intent/timer/job/cron, holder-liveness, and session-isolation tests in `runtime/database/shards.test.ts`. Its default claim remains one statement and one network flight. `runtime/database/migrations.test.ts` checks all per-actor and per-tenant primary and unique keys from the migrated catalog, including partial indexes. These are Postgres results, not a two-shard Neki result: `EXPLAIN (NEKI_PLAN)` and a real Neki topology remain unverified, pending #66 and a supplied map ([ADR 0067](../decisions/0067-due-work-shard-ranges.md)).
 
 **Responsibility:** show real capability differences by backend.  
 **Authority:** operational evidence.  

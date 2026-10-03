@@ -1,4 +1,4 @@
-# ADR 0064: Due-work scans use the data shard map
+# ADR 0067: Due-work scans use the data shard map
 
 **Status:** implementation decision (2026-10-03).
 

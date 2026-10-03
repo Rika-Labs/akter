@@ -1,6 +1,6 @@
 # Architecture decisions
 
-- [ADR 0064: Due-work scans use the data shard map](0064-due-work-shard-ranges.md) (implementation decision, 2026-10-03) makes relay claims, capped-job discovery, subscription probes, and holder liveness use one data bucket range at a time; isolates optional Neki shard targeting on dedicated sessions; preserves the ordinary database's one-statement, one-flight claim; and records the catalog-backed routing-key uniqueness audit. Neki topology and plan evidence remain unverified.
+- [ADR 0067: Due-work scans use the data shard map](0067-due-work-shard-ranges.md) (implementation decision, 2026-10-03) makes relay claims, capped-job discovery, subscription probes, and holder liveness use one data bucket range at a time; isolates optional Neki shard targeting on dedicated sessions; preserves the ordinary database's one-statement, one-flight claim; and records the catalog-backed routing-key uniqueness audit. Neki topology and plan evidence remain unverified.
 
 **Responsibility:** index the architecture decisions and their recorded rationale.  
 **Authority:** historical decision record.  
