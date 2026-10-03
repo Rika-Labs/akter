@@ -108,6 +108,8 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     ],
     advanced: {
       useSecureCookies: options.production,
+      disableCSRFCheck: false,
+      disableOriginCheck: false,
       backgroundTasks: {
         handler: (promise: Promise<unknown>) => {
           pending.add(promise)

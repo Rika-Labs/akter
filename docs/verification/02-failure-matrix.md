@@ -215,3 +215,20 @@ Required by [contract 11](../contracts/11-control-plane.md); they run against re
 | An environment row names a project of another organization      | The foreign key refuses it.                                                   |
 | Concurrent pins by one user                                     | Every pin is kept; a repeated pin changes nothing.                            |
 | Migrations run from several processes                           | No error, and existing rows are unchanged.                                    |
+
+## Control-plane authentication
+
+These scenarios use real Postgres and HTTP in `apps/api/src/server.test.ts` and a loopback OIDC IdP in `apps/api/src/auth.test.ts`; they do not establish real Neki, SES, external OAuth, DNS verification or SAML support.
+
+| Fault point                                                                            | Required result                                                                                    |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Password is wrong or email is unverified                                               | No session is issued; verification happens through the stored local email link.                    |
+| Another organization or a different invitee names a resource                           | Access is refused before a membership, project or key can be read or mutated.                      |
+| Read-only or project-only API key exceeds its grant                                    | The API refuses the write or organization-wide read, even when a session cookie is also available. |
+| A presented key is expired, altered or revoked                                         | The next request fails authentication; an invalid explicit key cannot fall back to a cookie.       |
+| Audit insert fails during key revocation                                               | The plugin row remains enabled, its binding remains unrevoked and requests still succeed.          |
+| Browser supplies a foreign Origin for a cookie-authenticated mutation                  | The mutation is refused and the persisted record is unchanged.                                     |
+| OIDC state is absent, forged, expired, replayed or belongs to another browser/provider | No token request is spent and no user or session is created.                                       |
+| OIDC token has a bad signature, issuer, audience, expiry or algorithm                  | Login fails without creating a user or session.                                                    |
+| IdP asserts another domain or an existing password user's email                        | No implicit link is made; the existing account and session remain unchanged.                       |
+| SSO organization lacks Enterprise entitlement or the provider's domain is unverified   | Registration/login is refused and no SSO identity is established.                                  |

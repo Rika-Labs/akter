@@ -19,7 +19,7 @@ import { Auth, processRuntimeLayer } from "./auth.ts"
 import type { ApiOptions } from "./config.ts"
 import { localEmail, sesEmail } from "./email.ts"
 import { PendingLayers } from "./pending.ts"
-import { RepositoryLive } from "./repository.ts"
+import { Repository, RepositoryLive } from "./repository.ts"
 import { ControlLayers } from "./control.ts"
 import { SqlClient } from "effect/sql"
 
@@ -33,14 +33,85 @@ const authRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth
     const sql = yield* SqlClient.SqlClient
+    const repository = yield* Repository
+    const teamRoutes = [
+      "create-team",
+      "remove-team",
+      "update-team",
+      "list-teams",
+      "set-active-team",
+      "list-user-teams",
+      "list-team-members",
+      "add-team-member",
+      "remove-team-member",
+    ].map((name) => `/auth/organization/${name}`)
     yield* router.add(
       "*",
       "/auth/*",
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
         const path = request.url.split("?")[0] ?? ""
-        if (path.startsWith("/auth/organization/") || path.startsWith("/auth/api-key/"))
+        if (
+          (path.startsWith("/auth/organization/") && !teamRoutes.includes(path)) ||
+          path.startsWith("/auth/api-key/")
+        )
           return HttpServerResponse.empty({ status: 404 })
+        if (teamRoutes.includes(path)) {
+          const session = yield* Effect.tryPromise(() =>
+            auth.api.getSession({ headers: new Headers(request.headers) }),
+          ).pipe(Effect.orDie)
+          if (session === null || !session.user.emailVerified)
+            return HttpServerResponse.empty({ status: 401 })
+          const mutation = [
+            "create-team",
+            "remove-team",
+            "update-team",
+            "add-team-member",
+            "remove-team-member",
+          ].some((name) => path.endsWith(`/${name}`))
+          if (mutation) {
+            const web = yield* HttpServerRequest.toWeb(request)
+            const body = yield* Effect.tryPromise(() => web.clone().json()).pipe(
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(
+                  Schema.Struct({
+                    organizationId: Schema.optional(Schema.String),
+                    teamId: Schema.optional(Schema.String),
+                  }),
+                ),
+              ),
+              Effect.orDie,
+            )
+            const rows =
+              body.teamId === undefined
+                ? []
+                : yield* sql<{
+                    organizationId: string
+                  }>`SELECT "organizationId" FROM team WHERE id = ${body.teamId}`.pipe(Effect.orDie)
+            const organizationId =
+              rows[0]?.organizationId ?? body.organizationId ?? session.session.activeOrganizationId
+            if (organizationId === undefined || organizationId === null)
+              return HttpServerResponse.empty({ status: 403 })
+            const [member] = yield* sql<{
+              role: string
+            }>`SELECT role FROM member WHERE "organizationId" = ${organizationId} AND "userId" = ${session.user.id}`.pipe(
+              Effect.orDie,
+            )
+            if (member === undefined || (member.role !== "owner" && member.role !== "admin"))
+              return HttpServerResponse.empty({ status: 403 })
+            const action = `team.${path.slice(path.lastIndexOf("/") + 1)}`
+            const input = {
+              organizationId,
+              actor: { kind: "user", id: session.user.id, name: session.user.name },
+              target: { type: "team", id: body.teamId ?? null },
+            } satisfies Omit<Parameters<Repository["Service"]["recordAudit"]>[0], "action">
+            yield* repository.recordAudit({ ...input, action: `${action}.requested` })
+            const response = yield* HttpEffect.fromWebHandler(auth.handler)
+            if (response.status >= 200 && response.status < 300)
+              yield* repository.recordAudit({ ...input, action })
+            return response
+          }
+        }
         if (
           [
             "/auth/sso/register",

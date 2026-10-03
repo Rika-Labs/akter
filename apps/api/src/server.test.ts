@@ -158,6 +158,29 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         const membership = yield* read(created, Cloud.OrganizationMembership)
         expect(membership.role).toBe("owner")
         const org = membership.organization.id
+        const teamResponse = yield* request({
+          path: "/auth/organization/create-team",
+          method: "POST",
+          cookie: alice.cookie,
+          body: { organizationId: org, name: "Operators" },
+        })
+        expect(teamResponse.status).toBe(200)
+        const team = yield* read(
+          teamResponse,
+          Schema.Struct({ id: Schema.String, name: Schema.String }),
+        )
+        expect(team.name).toBe("Operators")
+        expect(
+          (yield* request({
+            path: "/auth/organization/update-team",
+            method: "POST",
+            cookie: outsider.cookie,
+            body: { teamId: team.id, data: { name: "Stolen" } },
+          })).status,
+        ).toBe(403)
+        expect(
+          (yield* sql<{ name: string }>`SELECT name FROM team WHERE id = ${team.id}`)[0]?.name,
+        ).toBe("Operators")
         expect(
           (yield* request({ path: `/api/organizations/${org}/members`, cookie: outsider.cookie }))
             .status,
@@ -367,6 +390,14 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         expect(
           yield* sql`SELECT id FROM "ssoProvider" WHERE "providerId" = ${`enterprise-${suffix}`}`,
         ).toHaveLength(0)
+        const removeTeam = yield* request({
+          path: "/auth/organization/remove-team",
+          method: "POST",
+          cookie: alice.cookie,
+          body: { teamId: team.id },
+        })
+        expect(removeTeam.status).toBe(200)
+        expect(yield* sql`SELECT id FROM team WHERE id = ${team.id}`).toHaveLength(0)
         const revoked = yield* request({
           path: `/api/organizations/${org}/api-keys/${credential.key.id}`,
           method: "DELETE",

@@ -1,5 +1,9 @@
 # Verification
 
+## Local control-plane support
+
+`apps/api` has real-Postgres evidence for email/password verification, organizations/teams/invitations, organization-owned API keys, project/environment metadata, personal preferences and atomic audited mutations. Its OIDC suite uses an actual loopback IdP with signed tokens and rejection paths. `packages/cloud-api` covers the browser-safe console and runtime schemas and typed errors. Deployments, runtime proxying/SSE, environment values, domains, regions, provider integrations, usage and Stripe billing are declared but return `NotImplemented`; real Neki, SES sending, GitHub/Google OAuth, DNS verification and SAML support are not established by local tests.
+
 **Responsibility:** index the verification documents and their evidence requirements.  
 **Authority:** evidence.  
 **Owner role:** verification/reliability.  

@@ -5,7 +5,7 @@
 **Owner role:** cloud and security.  
 **Change policy:** security review is required for any change to organization scoping, the audit log, or how the API reaches runners; every new durable record needs a failure test ([ADR 0065](../decisions/0065-open-source-control-plane.md)).
 
-Better Auth is the authority for users, sessions, organizations, members, invitations and API keys. The control plane MUST take the caller's organization and user from the verified identity of the request and MUST NOT accept either from a request body. Roles and API-key permissions are checked before the repository is called; the repository's scoping is a second, independent barrier.
+Better Auth is the authority for users, sessions, organizations, teams, members, invitations and API keys. Organization and project IDs supplied in URLs or creation payloads are resource selectors, not authority: the API MUST establish access using the verified identity before reading or writing them. A session's user and a key's owning organization never come from request attribution headers or an unverified payload. Roles and API-key permissions are checked before the repository is called; the repository's scoping is a second, independent barrier.
 
 ## Records
 
@@ -43,6 +43,8 @@ Where the control plane writes its own rows after a Better Auth call (an API key
 Better Auth runs through `@alchemy.run/better-auth` with a long-lived Bun `RuntimeContext`, a scoped Postgres pool and serialized startup migrations. Verified email/password sessions and organization-owned `@better-auth/api-key` keys are the two callers. Password reset revokes sessions. Each request reads authority from Postgres; a key's organization/project/permission binding is an additional restriction, never an alternative to the plugin's hashed-key validation. An explicitly supplied API key takes precedence over a cookie, and mutations authenticated by a cookie refuse untrusted browser origins. Stored key material never contains the full presented key.
 
 Enterprise SSO uses `@better-auth/sso`. Operator-configured organization IDs gate provider registration and login; registration and provider changes also require an owner/admin session. A login checks the persisted provider, its verified domain and exact email domain, and refuses implicit account linking. OIDC has local IdP evidence; SAML, real DNS verification, external OAuth, SES delivery and Neki behavior remain unverified.
+
+Team reads and membership/session operations use Better Auth's mounted team endpoints. Team mutations require a verified owner/admin session and produce requested/completion audit entries around the native plugin transaction. Raw organization/member/invitation/API-key management is not mounted: those callers use the typed cloud API so they cannot bypass its scope or audit requirements.
 
 `Email` is an Effect service. Local delivery appends `cloud_email_outbox`, containing recipient, subject and body; it is readable only in the local development stack and tests. Production uses Distilled SESv2, not the local outbox. Verification/reset links and keys MUST NOT enter access logs; the API disables path logging and Better Auth diagnostic payload logging. Auth background work is tracked only while pending, removed when settled, and awaited on process shutdown rather than retained indefinitely in memory.
 
