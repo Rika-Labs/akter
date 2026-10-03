@@ -57,6 +57,7 @@ export {
   QuotaExceeded,
   SpendLimitExceeded,
   ConnectionLimitExceeded,
+  StorageQuotaExceeded,
   SessionEnded,
   Timeout,
   TransportError,

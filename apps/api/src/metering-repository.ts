@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, DateTime, Effect, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 
 /** The organization and project a deployment's tenant is metered to. */
@@ -33,7 +33,11 @@ const SCHEMA_LOCK = 7_243_001
  * actual hours), and settles a matching edge reservation: the reservation
  * becomes `committed` and its units leave `reserved_units` of the
  * reservation's original period. The account row is locked before the
- * reservation, the order the edge uses.
+ * reservation, the order the edge uses. A storage row also moves the tenant's
+ * latest sample in `cloud_meter_storage_sample`, after the account locks and
+ * only to a strictly newer hour, so an import after an outage cannot leave a
+ * cap on an older, larger sample and a replayed older sample cannot raise it.
+ * A late storage row changes nothing there: its hour was sealed before it.
  */
 const migrations: ReadonlyArray<string> = [
   `CREATE TABLE IF NOT EXISTS cloud_meter_tenant (
@@ -168,6 +172,23 @@ const migrations: ReadonlyArray<string> = [
   $$`,
   `CREATE OR REPLACE TRIGGER cloud_meter_bind BEFORE INSERT ON cloud_meter_evidence
     FOR EACH ROW EXECUTE FUNCTION cloud_meter_bind()`,
+  `CREATE TABLE IF NOT EXISTS cloud_meter_storage_sample (
+    deployment_id text NOT NULL,
+    tenant text NOT NULL,
+    hour timestamptz NOT NULL,
+    logical_bytes double precision NOT NULL CHECK (logical_bytes >= 0),
+    PRIMARY KEY (deployment_id, tenant)
+  )`,
+  `CREATE OR REPLACE FUNCTION cloud_meter_storage_observe(
+    observed_deployment text, observed_tenant text, observed_hour timestamptz,
+    observed_bytes double precision
+  ) RETURNS void LANGUAGE sql AS $$
+    INSERT INTO cloud_meter_storage_sample (deployment_id, tenant, hour, logical_bytes)
+    VALUES (observed_deployment, observed_tenant, observed_hour, observed_bytes)
+    ON CONFLICT (deployment_id, tenant) DO UPDATE
+    SET hour = excluded.hour, logical_bytes = excluded.logical_bytes
+    WHERE cloud_meter_storage_sample.hour < excluded.hour
+  $$`,
   `CREATE OR REPLACE FUNCTION cloud_meter_count() RETURNS trigger LANGUAGE plpgsql AS $$
   DECLARE
     commands bigint := (NEW.kind = 'command')::int;
@@ -209,6 +230,10 @@ const migrations: ReadonlyArray<string> = [
     LOOP
       NULL;
     END LOOP;
+    IF NEW.kind = 'storage' THEN
+      PERFORM cloud_meter_storage_observe(NEW.deployment_id, NEW.tenant_name, NEW.hour,
+        NEW.storage_byte_hours);
+    END IF;
     INSERT INTO cloud_meter_hour (routing_key, tenant_id, actor_id, hour, organization_id,
       project_id, command_count, read_count, storage_byte_hours)
     VALUES (NEW.routing_key, NEW.tenant_id, NEW.actor_id, NEW.hour, NEW.organization_id,
@@ -290,6 +315,17 @@ export class MeteringRepository extends Context.Service<
     ) => Effect.Effect<Option.Option<MeterBinding>>
     /** The provider customer the organization's billing account is durably bound to. */
     readonly customerOf: (organizationId: string) => Effect.Effect<Option.Option<string>>
+    /**
+     * Publishes a deployment's storage samples of `hour` as each tenant's
+     * latest sample, under the same strictly-newer rule the import trigger
+     * uses, so the edge's Free storage cap follows a sample before its hour is
+     * imported.
+     */
+    readonly observeStorage: (
+      deployment: string,
+      hour: DateTime.Utc,
+      samples: ReadonlyArray<{ readonly tenant: string; readonly logicalBytes: number }>,
+    ) => Effect.Effect<void>
   }
 >()("@akter/api/metering-repository/MeteringRepository") {}
 
@@ -337,6 +373,19 @@ export const MeteringRepositoryLive = Layer.effect(
           Effect.map(([row]) => Option.fromNullishOr(row?.customer_id)),
           Effect.orDie,
         ),
+      observeStorage: (deployment, hour, samples) => {
+        const ordered = samples.toSorted((left, right) => (left.tenant < right.tenant ? -1 : 1))
+
+        return ordered.length === 0
+          ? Effect.void
+          : sql`
+              SELECT cloud_meter_storage_observe(${deployment}, sampled.tenant,
+                ${DateTime.toDateUtc(hour)}, sampled.bytes)
+              FROM unnest(${ordered.map(({ tenant }) => tenant)}::text[],
+                ${ordered.map(({ logicalBytes }) => logicalBytes)}::float8[])
+                AS sampled(tenant, bytes)
+            `.pipe(Effect.asVoid, Effect.orDie)
+      },
     }
   }),
 )

@@ -60,6 +60,8 @@ export const PricingConfigSchema = Schema.Struct({
       free.includedCommands === 1_000_000 &&
       free.commandQuota === 1_000_000 &&
       free.commandOverageCentsPerMillion === 0 &&
+      free.includedStorageGb === 0.5 &&
+      free.storageCentsPerGbMonth === 0 &&
       !free.provisional
     )
   }),
@@ -98,7 +100,7 @@ export const defaultPricingConfig: PricingConfig & { readonly readCommandWeight:
       commandQuota: 1_000_000,
       commandOverageCentsPerMillion: 0,
       includedStorageGb: 0.5,
-      storageCentsPerGbMonth: 30,
+      storageCentsPerGbMonth: 0,
       concurrentConnections: 100,
       provisional: false,
     },

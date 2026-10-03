@@ -94,6 +94,33 @@ const importHour = Effect.fnUntraced(function* (
 })
 
 describe("usageReport from actor-imported real Postgres usage", () => {
+  it("reports sampled Free storage excess without charging it", () =>
+    run(
+      Effect.gen(function* () {
+        yield* project("org-free-storage", "project-free-storage", "Free storage")
+        yield* importHour("project-free-storage", "2024-02-01T00:00:00Z", 2, 3, 600_000_001 * 696)
+        const report = yield* usageReport("org-free-storage", "free", "2024-02")
+        expect(report.meters.find(({ meter }) => meter === "storageGb")).toEqual({
+          meter: "storageGb",
+          used: 0.600000001,
+          included: 0.5,
+          overage: 0.10000000099999995,
+          overageCostCents: 0,
+        })
+        expect(report.byProject).toEqual([
+          {
+            projectId: "project-free-storage",
+            name: "Free storage",
+            commands: 2,
+            reads: 3,
+            storageGbMonths: 0.600000001,
+            estimatedCostCents: 0,
+          },
+        ])
+        expect(report.pricing.storagePerGbCents).toBe(0)
+      }),
+    ))
+
   it("applies shared allowances once, keeps reads weighted by fifths, and attributes only variable costs to projects", () =>
     run(
       Effect.gen(function* () {

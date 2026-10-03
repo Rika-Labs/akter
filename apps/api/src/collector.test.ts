@@ -21,6 +21,7 @@ import {
 } from "./collector.ts"
 import { createDatabase } from "./fixtures.ts"
 import { UsageActor, UsageActorLive, usageKey } from "./metering-actor.ts"
+import { MeteringRepository } from "./metering-repository.ts"
 
 const deployment = "collector-test-cell"
 const current = DateTime.startOf(DateTime.nowUnsafe(), "hour")
@@ -201,6 +202,7 @@ describe("CollectorActor with the real cell journal and local Stripe provider", 
         expect(yield* sourceCounts).toEqual([
           { hour: firstLabel, total: 330, acknowledged: 330 },
           { hour: nextLabel, total: 8, acknowledged: 0 },
+          { hour: DateTime.formatIso(current).slice(0, 19), total: 2, acknowledged: 0 },
         ])
         expect((yield* test.inspect(collector.ref)).state).toMatchObject({
           hour: hourMs,
@@ -215,6 +217,7 @@ describe("CollectorActor with the real cell journal and local Stripe provider", 
         expect(yield* sourceCounts).toEqual([
           { hour: firstLabel, total: 330, acknowledged: 330 },
           { hour: nextLabel, total: 8, acknowledged: 8 },
+          { hour: DateTime.formatIso(current).slice(0, 19), total: 2, acknowledged: 0 },
         ])
         expect(yield* rollups).toEqual([
           {
@@ -310,7 +313,10 @@ describe("CollectorActor with the real cell journal and local Stripe provider", 
         yield* test.advance(0)
         yield* advanceRetries
 
-        expect(yield* sourceCounts).toEqual([{ hour: firstLabel, total: 60, acknowledged: 0 }])
+        expect(yield* sourceCounts).toEqual([
+          { hour: firstLabel, total: 60, acknowledged: 0 },
+          { hour: DateTime.formatIso(current).slice(0, 19), total: 2, acknowledged: 0 },
+        ])
         const interrupted = yield* test.inspect(collector.ref)
         expect(interrupted.state).toMatchObject({
           hour: hourMs,
@@ -337,7 +343,10 @@ describe("CollectorActor with the real cell journal and local Stripe provider", 
 
         yield* allocated("unbound", "org-recovered", "project-recovered")
         yield* advanceRetries
-        expect(yield* sourceCounts).toEqual([{ hour: firstLabel, total: 60, acknowledged: 60 }])
+        expect(yield* sourceCounts).toEqual([
+          { hour: firstLabel, total: 60, acknowledged: 60 },
+          { hour: DateTime.formatIso(current).slice(0, 19), total: 2, acknowledged: 0 },
+        ])
         expect(
           (yield* rollups).map(({ tenant, commands, reads, sealed, sent }) => ({
             tenant,
@@ -358,6 +367,41 @@ describe("CollectorActor with the real cell journal and local Stripe provider", 
           { organization_id: "org-known", units: 20 },
           { organization_id: "org-recovered", units: 118 },
         ])
+      }),
+    ))
+
+  it("moves a tenant's latest storage sample only to a strictly newer hour, whether published or imported", () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        const repository = yield* MeteringRepository
+        yield* sql`INSERT INTO cloud_meter_tenant (deployment_id, tenant, organization_id, project_id)
+          VALUES (${deployment}, 'alpha', 'org-alpha', 'project-alpha')`
+        const usage = yield* UsageActor.get(yield* usageKey(deployment, "alpha"))
+        const currentLabel = DateTime.formatIso(current).slice(0, 19)
+        const latest = sql<{ hour: string; bytes: number }>`
+          SELECT to_char(hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS hour,
+            logical_bytes AS bytes
+          FROM cloud_meter_storage_sample WHERE deployment_id = ${deployment} AND tenant = 'alpha'`
+        const published = (at: DateTime.Utc, logicalBytes: number) =>
+          repository.observeStorage(deployment, at, [{ tenant: "alpha", logicalBytes }])
+        const imported = (eventId: string, at: number, storageByteHours: number) =>
+          usage.Import({ events: [{ kind: "storage", eventId, hour: at, storageByteHours }] })
+
+        yield* published(DateTime.makeUnsafe(nextHour), 600_000_001)
+        expect(yield* latest).toEqual([{ hour: nextLabel, bytes: 600_000_001 }])
+
+        yield* imported("older-zero", hourMs, 0)
+        yield* published(DateTime.makeUnsafe(hour), 0)
+        expect(yield* latest).toEqual([{ hour: nextLabel, bytes: 600_000_001 }])
+
+        yield* imported("newer-zero", DateTime.toEpochMillis(current), 0)
+        expect(yield* latest).toEqual([{ hour: currentLabel, bytes: 0 }])
+
+        yield* published(DateTime.makeUnsafe(nextHour), 600_000_001)
+        yield* published(current, 600_000_001)
+        yield* imported("older-full", nextHourMs, 600_000_001)
+        expect(yield* latest).toEqual([{ hour: currentLabel, bytes: 0 }])
       }),
     ))
 })

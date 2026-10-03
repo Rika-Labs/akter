@@ -997,6 +997,55 @@ describe("a persisted current-hour storage sample", () => {
       }),
     ))
 
+  it("records zero for a previously sampled tenant whose rows were all deleted", () =>
+    runEmpty(
+      Effect.gen(function* () {
+        const usage = yield* CellUsage
+        const sql = yield* SqlClient.SqlClient
+        const hour = yield* setup
+        const earlier = (hours: number) => DateTime.formatIso(DateTime.subtract(hour, { hours }))
+        const fixture = (deployment: string, tenant: string, hours: number, bytes: number) =>
+          sql`
+            INSERT INTO cloud_meter_cell_journal
+              (deployment_id, tenant_id, actor_type, actor_id, kind, hour, recorded_at, storage_byte_hours)
+            VALUES (${deployment}, ${tenant}, '', '', 'storage', ${earlier(hours)}::timestamptz,
+              clock_timestamp(), ${bytes})`
+
+        yield* sql`INSERT INTO meter_probe VALUES ('beta', 2, repeat('b', 512))`
+        yield* fixture(DEPLOYMENT, "beta", 2, 600_000_000)
+        yield* fixture(DEPLOYMENT, "eta", 3, 5000)
+        yield* fixture(DEPLOYMENT, "eta", 2, 0)
+        yield* fixture("dep_other", "other", 2, 999)
+        yield* sql`DELETE FROM meter_probe WHERE tenant_id = 'beta'`
+
+        const sample = yield* usage.sampleStorage(hour)
+        const alpha = sample.samples.find(({ tenant }) => tenant === "alpha")
+
+        expect(sample.samples.map(({ tenant }) => tenant)).toEqual(["alpha", "beta"])
+        expect(alpha!.logicalBytes).toBeGreaterThan(0)
+        expect(sample.samples.find(({ tenant }) => tenant === "beta")).toEqual({
+          tenant: "beta",
+          logicalBytes: 0,
+        })
+
+        yield* sql`INSERT INTO meter_probe VALUES ('beta', 3, repeat('b', 512))`
+        expect((yield* usage.sampleStorage(hour)).samples).toEqual(sample.samples)
+
+        const rows = yield* sql<{ deployment_id: string; tenant_id: string; bytes: string }>`
+          SELECT deployment_id, tenant_id, storage_byte_hours::text AS bytes
+          FROM cloud_meter_cell_journal
+          WHERE kind = 'storage' AND hour = ${DateTime.formatIso(hour)}::timestamptz
+          ORDER BY tenant_id`
+
+        expect(
+          rows.map(({ deployment_id, tenant_id, bytes }) => [deployment_id, tenant_id, bytes]),
+        ).toEqual([
+          [DEPLOYMENT, "alpha", String(alpha!.logicalBytes)],
+          [DEPLOYMENT, "beta", "0"],
+        ])
+      }),
+    ))
+
   it("still refuses a role that cannot see every attributed row", () =>
     runEmpty(
       Effect.scoped(

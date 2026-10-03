@@ -107,7 +107,10 @@ export class StorageNotObservable extends Schema.TaggedError<StorageNotObservabl
  * `sampleStorage` records each tenant's stored bytes for the database's
  * current hour; the collector calls it every minute, so the first call of the
  * hour persists that hour's sample and later calls return it unchanged even
- * though tenants kept writing. For any other hour it returns the samples
+ * though tenants kept writing. A tenant whose latest sample was positive
+ * receives a zero sample after all its attributed rows are deleted; a tenant
+ * whose latest sample is already zero does not need repeated zero rows. For
+ * any other hour it returns the samples
  * already persisted, or fails `StorageSampleUnavailable`: bytes are never
  * estimated for an hour nobody observed, so a downtime leaves its hours
  * without a sample. Bytes are the sum of `pg_column_size` over the tenant's

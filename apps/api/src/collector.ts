@@ -4,6 +4,7 @@ import { Actor } from "@rikalabs/akter"
 import { Context, DateTime, Effect, Layer, Predicate, type Redacted, Schema } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
 import { MeterEvent, UsageActor, usageKey } from "./metering-actor.ts"
+import { MeteringRepository, MeteringRepositoryLive } from "./metering-repository.ts"
 
 const HOUR_MS = 3_600_000
 const TENANTS_PER_JOB = 128
@@ -176,15 +177,23 @@ export const CollectorCommands = CollectorActor.toLayer({
   }),
 })
 
+/**
+ * Each collection first samples the cell's current hour and publishes it as
+ * the tenants' latest storage, committed on its own before any import, so the
+ * edge's Free storage cap follows a new sample within a collection rather than
+ * after its hour is sealed and imported.
+ */
 export const CollectorJobs = CollectorActor.toJobLayer(
   Effect.gen(function* () {
     const sources = yield* MeterSources
+    const repository = yield* MeteringRepository
     return {
       Collect: Effect.fnUntraced(function* (cursor) {
         const { ref } = yield* CollectorActor.Executor
         const source = yield* sources.get(ref.id)
         const current = yield* source.currentHour
-        yield* source.journal.sampleStorage(current)
+        const sampled = yield* source.journal.sampleStorage(current)
+        yield* repository.observeStorage(ref.id, sampled.hour, sampled.samples)
 
         if (cursor.phase === "discover") {
           const earliest = yield* source.journal.earliestHour
@@ -244,7 +253,7 @@ export const CollectorJobs = CollectorActor.toJobLayer(
       }),
     }
   }),
-)
+).pipe(Layer.provide(MeteringRepositoryLive))
 
 export const CollectorLive = (cells: ReadonlyArray<MeterCell>) =>
   Layer.mergeAll(CollectorCommands, CollectorJobs).pipe(Layer.provide(MeterSourcesLive(cells)))

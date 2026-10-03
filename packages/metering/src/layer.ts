@@ -138,6 +138,11 @@ const install = (sql: SqlClient.SqlClient) =>
  * Journal rows outlive receipt retention and never expire: a command's row is
  * unique per deployment, tenant, actor and command id, so a command whose
  * receipt was pruned and which runs again still counts once.
+ *
+ * A storage sample also records zero bytes for every tenant whose latest
+ * sample was positive but which no longer has an attributed row, so a tenant
+ * that deleted its data gets a lower latest sample instead of keeping its old
+ * one. A tenant already at zero gets no further rows.
  */
 export const CellUsageLive = (options: { readonly deploymentId: string }) =>
   Layer.effectContext(
@@ -264,7 +269,15 @@ export const CellUsageLive = (options: { readonly deploymentId: string }) =>
           const kept = yield* persisted
           if (!target!.current || kept.length > 0) return yield* sampled(kept)
 
-          const totals = new Map<string, number>()
+          const held = yield* sql<{ tenant_id: string }>`
+            SELECT tenant_id FROM (
+              SELECT DISTINCT ON (tenant_id) tenant_id, storage_byte_hours
+              FROM cloud_meter_cell_journal
+              WHERE kind = 'storage' AND deployment_id = ${options.deploymentId}
+              ORDER BY tenant_id, hour DESC
+            ) AS latest
+            WHERE storage_byte_hours > 0`
+          const totals = new Map(held.map((row) => [row.tenant_id, 0]))
           for (const table of attributed) {
             const rows = yield* sql<{ tenant_id: string; bytes: string }>`
               SELECT tenant_id, sum(pg_column_size(t.*))::text AS bytes

@@ -34,6 +34,8 @@ The intended public console origin is `https://app.akter.dev` (site `akter.dev`,
 
 Hosted edge quota refusals distinguish command allowance, spend limit and concurrent connection limits. Unknown allocations fail closed. Metered hosted MCP requests are not yet attributable to a command receipt and are refused rather than guessed. Realtime messages are free, with WebSocket and SSE sessions sharing the concurrent connection cap.
 
+Free storage uses a 0.5 decimal GB sampled admission cap with no overage billing; paid storage is $0.30/GB-month over allowance. At or above 500,000,000 bytes in the tenant's latest sample, new commands receive `StorageQuotaExceeded` (429), while reads, queries and existing command reservations continue. A later lower sample restores command admission. Storage is sampled hourly: growth can briefly overshoot by up to one sampling interval, and Free excess is never billed. The Free command cap and spend limits apply only when new requests are admitted at the edge. Already admitted internal turns, relay deliveries, timers and jobs may finish; there is no strict cell-side command-credit system.
+
 ## Errors
 
 `Unauthorized` (401) comes from the authentication middleware. A caller without the role or key permission an operation needs gets `Forbidden` (403); the project access barrier gives that same answer for a missing project or one in another organization. After access is established, a resource absent from that scope is `NotFound` (404). A taken project slug or environment name is `Conflict` (409). An endpoint declared but not yet implemented answers `NotImplemented` (501).

@@ -11,6 +11,7 @@ import {
   QuotaExceeded,
   SessionEnded,
   SpendLimitExceeded,
+  StorageQuotaExceeded,
   Timeout,
   Unauthorized,
   withRetryAfter,
@@ -38,6 +39,7 @@ const reasonSchemas = {
     "ConnectionLimitExceeded",
     ConnectionLimitExceeded.fields,
   ),
+  StorageQuotaExceeded: Schema.TaggedStruct("StorageQuotaExceeded", StorageQuotaExceeded.fields),
   InvalidInput: Schema.TaggedStruct("InvalidInput", InvalidInput.fields),
   SessionEnded: Schema.TaggedStruct("SessionEnded", SessionEnded.fields),
 } as const
@@ -102,6 +104,7 @@ export const statusOf = (reason: Reason): number =>
       QuotaExceeded: () => 429,
       SpendLimitExceeded: () => 402,
       ConnectionLimitExceeded: () => 429,
+      StorageQuotaExceeded: () => 429,
       Timeout: () => 504,
       NotCreated: () => 404,
       MailboxFull: () => 429,
@@ -120,6 +123,7 @@ export const closeCodeOf = (reason: Reason): number =>
       QuotaExceeded: () => 1008,
       SpendLimitExceeded: () => 1008,
       ConnectionLimitExceeded: () => 1008,
+      StorageQuotaExceeded: () => 1008,
       NotCreated: () => 4404,
       Unauthorized: (unauthorized) =>
         unauthorized.code === "reauthorization_unavailable" ? 1013 : 1008,

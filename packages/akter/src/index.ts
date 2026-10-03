@@ -158,6 +158,7 @@ export {
   QuotaExceeded,
   SpendLimitExceeded,
   ConnectionLimitExceeded,
+  StorageQuotaExceeded,
   SessionEnded,
 } from "./errors/actor.ts"
 

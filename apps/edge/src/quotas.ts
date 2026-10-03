@@ -1,7 +1,17 @@
 import { Pricing } from "@akter/billing"
-import { ConnectionLimitExceeded, QuotaExceeded, SpendLimitExceeded } from "@rikalabs/akter"
+import {
+  ConnectionLimitExceeded,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
+} from "@rikalabs/akter"
 
-export { ConnectionLimitExceeded, QuotaExceeded, SpendLimitExceeded } from "@rikalabs/akter"
+export {
+  ConnectionLimitExceeded,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
+} from "@rikalabs/akter"
 import { Clock, Crypto, Deferred, Duration, Effect, Fiber, Match, Schedule, Schema } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
 import type { EdgeOptions } from "./config.ts"
@@ -39,6 +49,7 @@ export type QuotaError =
   | QuotaExceeded
   | SpendLimitExceeded
   | ConnectionLimitExceeded
+  | StorageQuotaExceeded
   | QuotaUnbound
   | QuotaUnavailable
   | UnsupportedBillingRoute
@@ -48,6 +59,7 @@ const ReasonCodec = Schema.toCodecJson(
     QuotaExceeded,
     SpendLimitExceeded,
     ConnectionLimitExceeded,
+    StorageQuotaExceeded,
     QuotaUnbound,
     QuotaUnavailable,
     UnsupportedBillingRoute,
@@ -76,6 +88,7 @@ export const quotaFailure = Effect.fnUntraced(function* (error: QuotaError) {
       QuotaExceeded: () => [429, 1008, false] as const,
       ConnectionLimitExceeded: () => [429, 1008, true] as const,
       SpendLimitExceeded: () => [402, 1008, false] as const,
+      StorageQuotaExceeded: () => [429, 1008, false] as const,
       UnsupportedBillingRoute: () => [501, 1008, false] as const,
       QuotaUnbound: () => [503, 1013, false] as const,
       QuotaUnavailable: () => [503, 1013, true] as const,
@@ -222,6 +235,12 @@ interface Account {
  * edge itself releases one only when no attempt ever left it, because after
  * an attempt it cannot know whether the command or read executed.
  *
+ * A Free tenant whose latest storage sample is at or over its tier's
+ * included decimal gigabytes takes no new command until a lower sample
+ * arrives; reads and a command that already holds its reservation still pass.
+ * A tenant with no sample yet is not refused, because no evidence says it is
+ * over.
+ *
  * Reads are reserved with a fresh UUID and kept once an attempt started: a
  * read that executed with a lost reply is still chargeable, and only the
  * runner's own read journal can settle it.
@@ -318,6 +337,13 @@ export const quotas = Effect.fnUntraced(function* (
           ADD COLUMN IF NOT EXISTS admissions bigint NOT NULL DEFAULT 1`
         yield* sql`CREATE INDEX IF NOT EXISTS cloud_usage_reservation_open
           ON cloud_usage_reservation (organization_id, state)`
+        yield* sql`CREATE TABLE IF NOT EXISTS cloud_meter_storage_sample (
+          deployment_id text NOT NULL,
+          tenant text NOT NULL,
+          hour timestamptz NOT NULL,
+          logical_bytes double precision NOT NULL CHECK (logical_bytes >= 0),
+          PRIMARY KEY (deployment_id, tenant)
+        )`
         yield* sql`CREATE TABLE IF NOT EXISTS cloud_connection_lease (
           lease_id text PRIMARY KEY,
           organization_id text NOT NULL,
@@ -479,6 +505,24 @@ export const quotas = Effect.fnUntraced(function* (
             WHERE identity = ${identity}`
 
           return reservation(existing.period, true)
+        }
+
+        if (input.kind === "command" && bound.tier.id === "free") {
+          const limitBytes = bound.tier.includedStorageGb * 1_000_000_000
+          const [sample] = yield* sql<{ readonly logicalBytes: number }>`
+            SELECT logical_bytes AS "logicalBytes" FROM cloud_meter_storage_sample
+            WHERE deployment_id = ${input.deployment} AND tenant = ${input.tenant}
+            FOR SHARE
+          `
+
+          if (sample !== undefined && sample.logicalBytes >= limitBytes)
+            return yield* StorageQuotaExceeded.make({
+              organizationId: bound.organizationId,
+              deployment: input.deployment,
+              tenant: input.tenant,
+              limitBytes,
+              usedBytes: sample.logicalBytes,
+            })
         }
 
         const used = account.commandUnits + account.reservedUnits

@@ -34,6 +34,16 @@ describe("plans", () => {
         tiers: [...defaultPricingConfig.tiers, defaultPricingConfig.tiers[0]],
       }),
     ).toBe(false)
+    for (const override of [{ includedStorageGb: 1 }, { storageCentsPerGbMonth: 30 }]) {
+      expect(
+        valid({
+          ...defaultPricingConfig,
+          tiers: defaultPricingConfig.tiers.map((tier) =>
+            tier.id === "free" ? { ...tier, ...override } : tier,
+          ),
+        }),
+      ).toBe(false)
+    }
     expect(
       valid({
         ...defaultPricingConfig,
@@ -89,6 +99,15 @@ describe("plans", () => {
 })
 
 describe("cost estimates", () => {
+  it.effect(
+    "never prices Free storage overage while paid storage stays thirty cents per GB-month",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* estimate("free", 1_000_000, 0.5)).storageCents).toBe(0)
+        expect((yield* estimate("free", 1_000_000, 8.75)).totalCents).toBe(0)
+        expect((yield* estimate("pro", 25_000_000, 12.5)).storageCents).toBe(75)
+      }),
+  )
   it.effect("charges only the base price inside every allowance", () =>
     Effect.gen(function* () {
       expect(yield* estimate("pro", 25_000_000, 10)).toMatchObject({

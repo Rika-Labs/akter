@@ -16,7 +16,7 @@
 
 A newly committed command receipt costs one command unit. A replay of that receipt costs nothing. A terminal declared failure which commits a receipt counts; an authorization refusal, conflict, expired identity or transaction rollback without a committed receipt does not. Internal commands count when they commit receipts. Realtime messages themselves are free.
 
-A completed query costs 0.2 command units. Accounting uses integer fifths of a command, so five reads equal one command without floating-point drift. Monthly allowances and overages combine commands and weighted reads. Durable storage costs $0.30 per decimal GB-month above the tier's allowance; hourly byte samples are integrated over the actual number of hours in the UTC billing month. Retrying a sample must not charge its bytes again.
+A completed query costs 0.2 command units. Accounting uses integer fifths of a command, so five reads equal one command without floating-point drift. Monthly allowances and overages combine commands and weighted reads. Paid-tier durable storage costs $0.30 per decimal GB-month above the tier's allowance; hourly byte samples are integrated over the actual number of hours in the UTC billing month. Retrying a sample must not charge its bytes again. Free storage has a sampled admission cap of 0.5 decimal GB and no billed storage overage.
 
 The Free tier includes 1,000,000 command units per UTC calendar month, as a hard cap. It has no paid command overage. Realtime is limited by concurrent connections, including SSE and WebSocket sessions, rather than by message volume.
 
@@ -24,7 +24,7 @@ Pricing and entitlements are configuration, not commercial offers embedded in ha
 
 | Tier       | Base/month          | Included commands | Overage/million    | Storage included | Concurrent connections |
 | ---------- | ------------------- | ----------------- | ------------------ | ---------------- | ---------------------- |
-| Free       | $0                  | 1M, hard cap      | none               | 0.5 GB           | 100                    |
+| Free       | $0                  | 1M, hard cap      | none               | 0.5 GB, hard cap | 100                    |
 | Pro        | $25, provisional    | 25M               | $1.00, provisional | 10 GB            | 5,000                  |
 | Team       | $249, provisional   | 300M              | $0.60, provisional | 100 GB           | 50,000                 |
 | Enterprise | $2,500, provisional | 5B                | $0.50, provisional | 1,000 GB         | operator configured    |
@@ -57,11 +57,13 @@ The local development stack uses a SQL-backed local Stripe service, creates no r
 
 The edge checks the organization's current entitlements and durable usage/reservations before forwarding. Free admission reserves capacity so concurrent edges cannot spend the same remaining allowance while hourly collection lags. A command replay reuses its reservation identity and needs no new capacity. Ambiguous requests retain their reservation until durable evidence reconciles them; losing an edge must not reopen the cap.
 
-Paid organizations can set a nullable monthly spend limit. Admission estimates the next unit using the same configured price rules as usage reporting. Concurrent connections use organization-wide durable leases. A connection whose lease cannot be renewed is closed before it can continue after expiry. Unknown billing bindings fail closed.
+Paid organizations can set a nullable monthly spend limit. Admission estimates the next unit using the same configured price rules as usage reporting. The Free command cap and paid spend caps are enforced only when a new request is admitted at the edge. Already admitted internal turns, relay deliveries, timers and jobs may finish; there is no strict cell-side command-credit system. Concurrent connections use organization-wide durable leases. A connection whose lease cannot be renewed is closed before it can continue after expiry. Unknown billing bindings fail closed.
 
 Quota, spend-limit and connection-limit refusals have distinct typed reasons and are not committed receipts or billable reads. The cloud API exposes plan, payment method, invoices, spend limit, used/included/overage units, daily committed commands and project usage/cost estimates, and identifies provisional paid pricing.
 
 Admission locks the billing-account projection while deciding on a plan or spend limit. Watches acquire a lease before the runner performs their first read. Hosted noncommand members reject a command identity rather than retaining an unmatchable reservation. Uncorrelatable content grants, credentialed nonmember routes and anonymous unkeyed member POSTs are explicitly unsupported until their accounting protocol exists.
+
+When a Free tenant's most recent logical-byte sample reaches 500,000,000 bytes, the edge refuses new commands with `StorageQuotaExceeded` (429), without a receipt or reservation. Reads and queries continue, existing command reservations remain replayable, and a later sample below the cap reopens admission. Storage is sampled hourly, so growth between samples can briefly overshoot the cap by up to one sampling interval; this excess is never billed. The collector publishes current samples before sealed-hour billing import, and older samples cannot regress that projection. This is sampled edge admission, not a pre-commit storage check or a cell-side credit system.
 
 ## Alternatives
 

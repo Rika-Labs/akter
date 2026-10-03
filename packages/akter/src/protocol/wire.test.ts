@@ -5,6 +5,7 @@ import {
   ConnectionLimitExceeded,
   QuotaExceeded,
   SpendLimitExceeded,
+  StorageQuotaExceeded,
   Unauthorized,
 } from "../errors/actor.ts"
 import corpus from "./exchanges.json" with { type: "json" }
@@ -80,10 +81,18 @@ describe("actorErrorOf", () => {
           limit: 100,
           open: 100,
         })
+        const storage = StorageQuotaExceeded.make({
+          organizationId: "org",
+          deployment: "dep",
+          tenant: "acme",
+          limitBytes: 500_000_000,
+          usedBytes: 600_000_001,
+        })
         const cases = [
           { reason: quota, status: 429, retryable: false },
           { reason: spend, status: 402, retryable: false },
           { reason: connections, status: 429, retryable: true },
+          { reason: storage, status: 429, retryable: false },
         ]
 
         for (const entry of cases) {
@@ -102,6 +111,7 @@ describe("actorErrorOf", () => {
 
         expect(Option.getOrUndefined(ActorError.make({ reason: quota }).retryAfter)).toBe(75_123)
         expect(Option.isNone(ActorError.make({ reason: spend }).retryAfter)).toBe(true)
+        expect(Option.isNone(ActorError.make({ reason: storage }).retryAfter)).toBe(true)
       }),
     ))
 

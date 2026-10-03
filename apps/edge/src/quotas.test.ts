@@ -54,9 +54,11 @@ import {
   ConnectionLimitExceeded,
   meteringOf,
   QuotaExceeded,
+  quotaFailure,
   QuotaUnbound,
   quotas,
   SpendLimitExceeded,
+  StorageQuotaExceeded,
 } from "./quotas.ts"
 
 const harness = ManagedRuntime.make(Layer.mergeAll(BunCrypto.layer, FetchHttpClient.layer))
@@ -83,13 +85,19 @@ const tier = (id: PlanId, patch: Partial<PricingTier>): PricingTier => ({
 
 /**
  * A small pricing table so each boundary is a few requests away: Free stops
- * at 10 weighted commands (50 units) and 3 connections; Pro costs 1000 cents
+ * at 10 weighted commands (50 units), 500,000,000 sampled bytes and 3
+ * connections; Pro costs 1000 cents
  * plus 1 cent per command beyond 2, with 2 connections.
  */
 const pricing: PricingConfig = {
   readCommandWeight: 0.2,
   tiers: [
-    tier("free", { includedCommands: 10, commandQuota: 10, concurrentConnections: 3 }),
+    tier("free", {
+      includedCommands: 10,
+      commandQuota: 10,
+      includedStorageGb: 0.5,
+      concurrentConnections: 3,
+    }),
     tier("pro", {
       basePriceCents: 1000,
       includedCommands: 2,
@@ -1590,6 +1598,69 @@ describe("quotas service", () => {
             }),
           )
           expect(yield* leaseCount(edge)).toBe(3)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "refuses a Free tenant's new commands from its latest storage sample at the included bytes, never its reads, replays or a paid plan",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({ plan: "free" })
+          const { service } = yield* instance(edge.provisioned, 5000, 1000)
+          const command = (commandId: string) =>
+            service.reserveCommand({ ...bind(edge), actor: "Order", id: "o-1", commandId })
+          const sampled = (bytes: number) =>
+            edge.sql`
+              INSERT INTO cloud_meter_storage_sample (deployment_id, tenant, hour, logical_bytes)
+              VALUES (${edge.deployment}, 'acme', date_trunc('hour', now()), ${bytes})
+              ON CONFLICT (deployment_id, tenant) DO UPDATE SET logical_bytes = excluded.logical_bytes
+            `.pipe(Effect.orDie)
+          const refusal = (usedBytes: number) =>
+            StorageQuotaExceeded.make({
+              organizationId: edge.organizationId,
+              deployment: edge.deployment,
+              tenant: "acme",
+              limitBytes: 500_000_000,
+              usedBytes,
+            })
+
+          yield* sampled(499_999_999)
+          expect((yield* command("held")).reused).toBe(false)
+
+          yield* sampled(500_000_000)
+          expect(yield* command("at-limit").pipe(Effect.flip)).toEqual(refusal(500_000_000))
+
+          yield* sampled(600_000_001)
+          expect(yield* command("over-limit").pipe(Effect.flip)).toEqual(refusal(600_000_001))
+          expect(yield* reservationCount(edge)).toBe(1)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 5 })
+
+          expect((yield* command("held")).reused).toBe(true)
+          expect(
+            (yield* service.reserveRead({ ...bind(edge), actor: "Order", id: "o-1" })).kind,
+          ).toBe("read")
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 6 })
+
+          const failure = yield* quotaFailure(refusal(600_000_001))
+
+          expect([failure.status, failure.closeCode, failure.retryAfterMs]).toEqual([
+            429,
+            1008,
+            undefined,
+          ])
+          expect(failure.body.isRetryable).toBe(false)
+
+          yield* sampled(0)
+          expect((yield* command("at-limit")).reused).toBe(false)
+
+          yield* sampled(600_000_001)
+          yield* edge.sql`UPDATE cloud_billing_account SET plan = 'pro', subscribed_plan = 'pro'
+            WHERE organization_id = ${edge.organizationId}`.pipe(Effect.orDie)
+          expect((yield* command("paid")).reused).toBe(false)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 16 })
         }),
       ),
     60_000,

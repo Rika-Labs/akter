@@ -156,6 +156,22 @@ export class ConnectionLimitExceeded extends Schema.TaggedError<ConnectionLimitE
   },
 ) {}
 
+/**
+ * A Free tenant's latest storage sample is at or over its plan's included
+ * bytes. Waiting for the next period does not lift it; the tenant must hold
+ * less data before new commands are admitted, so it carries no retry time.
+ */
+export class StorageQuotaExceeded extends Schema.TaggedError<StorageQuotaExceeded>()(
+  "StorageQuotaExceeded",
+  {
+    organizationId: Schema.String,
+    deployment: Schema.String,
+    tenant: Schema.String,
+    limitBytes: Schema.Finite,
+    usedBytes: Schema.Finite,
+  },
+) {}
+
 const RETRYABLE_SESSION_ENDS = new Set([
   "SlowConsumer",
   "HolderShutdown",
@@ -204,6 +220,7 @@ export const Reason = Schema.Union([
   QuotaExceeded,
   SpendLimitExceeded,
   ConnectionLimitExceeded,
+  StorageQuotaExceeded,
   SessionEnded,
   InvalidInput,
   TransportError,
