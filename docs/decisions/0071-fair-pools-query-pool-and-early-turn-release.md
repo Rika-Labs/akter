@@ -1,4 +1,4 @@
-# ADR 0064: First-come, first-served pools, a query pool, and releasing the turn session before publish
+# ADR 0071: First-come, first-served pools, a query pool, and releasing the turn session before publish
 
 **Status:** proposed (2026-10-03, on [#492](https://github.com/Rika-Labs/akter/issues/492)). It amends [ADR 0019](0019-runner-capacity-and-pool-size.md)'s connection budget and [ADR 0020](0020-two-round-trip-turn-pipeline.md)'s pools and lease span.
 
