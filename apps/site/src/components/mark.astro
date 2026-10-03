@@ -1,0 +1,28 @@
+---
+import { mark, markViewBox } from "@akter/ui/brand"
+
+interface Props {
+  size?: number | string
+}
+
+const { size = 24 } = Astro.props
+---
+
+<svg
+  viewBox={markViewBox}
+  width={size}
+  height={size}
+  aria-hidden="true"
+  fill="none"
+  stroke="currentColor"
+>
+  {
+    mark.map((figure) =>
+      figure.tag === "polyline" ? (
+        <polyline {...figure.attributes} stroke-width={figure.strokeWidth} />
+      ) : (
+        <line {...figure.attributes} stroke-width={figure.strokeWidth} />
+      ),
+    )
+  }
+</svg>

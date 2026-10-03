@@ -1,0 +1,29 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import type { DocPage, Sidebar } from "./collection.ts"
+import { sidebar as styles } from "./docs.styles.ts"
+
+interface Props {
+  groups: ReadonlyArray<Sidebar>
+  current: DocPage
+}
+
+const { groups, current } = Astro.props
+---
+
+{
+  groups.map((group) => (
+    <div {...stylex.attrs(styles.group)}>
+      <span {...stylex.attrs(styles.groupTitle)}>{group.title}</span>
+      {group.pages.map((page) => (
+        <a
+          href={page.url}
+          aria-current={page === current ? "page" : undefined}
+          {...stylex.attrs(styles.link, page === current && styles.current)}
+        >
+          {page.label}
+        </a>
+      ))}
+    </div>
+  ))
+}

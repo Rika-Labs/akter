@@ -1,0 +1,117 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import Container from "../components/container.astro"
+import PageHeader from "../components/page-header.astro"
+import Panel from "../components/panel.astro"
+import Status from "../components/status.astro"
+import { examples, topics } from "../examples/catalog.ts"
+import { featured, filters, grid } from "../examples/examples.styles.ts"
+import Drawing from "../illustrations/drawing.astro"
+import { containerCard, orderScene } from "../illustrations/scenes.ts"
+import Base from "../layouts/base.astro"
+import { orderExample } from "../landing/readme-examples.ts"
+import { githubUrl } from "../site.ts"
+import { text } from "../styles/text.styles.ts"
+
+const handlerLines = orderExample.handler.code.split("\n")
+const turnLines = handlerLines
+  .slice(
+    handlerLines.findIndex((line) => line.includes("turn.rows(")),
+    handlerLines.findIndex((line) => line.includes("turn.state.set({ total })")) + 1,
+  )
+  .map((line) => line.trim())
+const classes = {
+  chip: stylex.attrs(filters.chip).class ?? "",
+  on: stylex.attrs(filters.chip, filters.on).class ?? "",
+}
+---
+
+<Base
+  title="Examples"
+  description="Every Akter example is an actor: small, complete apps that show the contract, the transaction, a failure and the recovery. Counter and Order and payment exist today; the rest are planned."
+  path="/examples"
+  current="/examples"
+>
+  <Container>
+    <PageHeader
+      title="Every example is an actor."
+      lead="Small, complete apps you can clone and run. Each one shows the contract, the transaction, a failure, and the recovery, not just the happy path."
+    />
+
+    <div {...stylex.attrs(filters.root)} role="group" aria-label="Filter examples" data-filters data-chip={classes.chip} data-chip-on={classes.on}>
+      <button type="button" data-topic="All" aria-pressed="true" class={classes.on}>All</button>
+      {topics.map((topic) => <button type="button" data-topic={topic} aria-pressed="false" class={classes.chip}>{topic}</button>)}
+    </div>
+
+    <Panel padding="none" clip>
+      <div {...stylex.attrs(featured.root)}>
+        <div {...stylex.attrs(featured.art)}>
+          <svg viewBox="0 0 470 300" role="img" aria-label="A gantry crane lifting a container beside a stack, at a quay" {...stylex.attrs(featured.svg)}>
+            <Drawing items={orderScene} />
+          </svg>
+        </div>
+        <div {...stylex.attrs(featured.body)}>
+          <Status state="live">Featured</Status>
+          <h2 {...stylex.attrs(text.display, featured.title)}>Order and payment</h2>
+          <p {...stylex.attrs(text.body, featured.text)}>
+            Place inserts the lines, emits OrderPlaced, records the total and enqueues Charge in one commit. The charge runs after the commit, with retries and a dead letter.
+          </p>
+          <pre {...stylex.attrs(featured.code)}>{turnLines.join("\n")}</pre>
+          <a href={`${githubUrl}#what-it-looks-like`} {...stylex.attrs(featured.link)}>Read the example in the README →</a>
+        </div>
+      </div>
+    </Panel>
+
+    <div {...stylex.attrs(grid.root)} data-grid>
+      {
+        examples.map((example, index) => {
+          const available = example.availability.kind === "available" ? example.availability : undefined
+          return (
+            <Panel
+              as={available === undefined ? "div" : "a"}
+              href={available?.href}
+              data-topic={example.topic}
+              interactive={available !== undefined}
+              padding="none"
+              clip
+            >
+              <div {...stylex.attrs(grid.art)}>
+                <svg viewBox="0 0 260 150" aria-hidden="true" {...stylex.attrs(grid.svg)}>
+                  <Drawing items={containerCard(example.glyph, index + 1)} />
+                </svg>
+              </div>
+              <div {...stylex.attrs(grid.body)}>
+                <Status state={available === undefined ? "planned" : "live"}>{available?.where ?? "Planned"}</Status>
+                <h3 {...stylex.attrs(text.display, grid.title)}>{example.title}</h3>
+                <p {...stylex.attrs(grid.text)}>{example.summary}</p>
+              </div>
+            </Panel>
+          )
+        })
+      }
+    </div>
+  </Container>
+
+  <script>
+    const root = document.querySelector<HTMLElement>("[data-filters]")
+    const cards = document.querySelectorAll<HTMLElement>("[data-grid] > [data-topic]")
+    const buttons = root?.querySelectorAll<HTMLButtonElement>("button[data-topic]") ?? []
+    const idle = (root?.dataset["chip"] ?? "").split(" ").filter((name) => name !== "")
+    const active = (root?.dataset["chipOn"] ?? "").split(" ").filter((name) => name !== "")
+
+    for (const button of buttons)
+      button.addEventListener("click", () => {
+        const topic = button.dataset["topic"]
+
+        for (const other of buttons) {
+          const on = other === button
+
+          other.setAttribute("aria-pressed", String(on))
+          other.classList.remove(...idle, ...active)
+          other.classList.add(...(on ? active : idle))
+        }
+
+        for (const card of cards) card.hidden = topic !== "All" && card.dataset["topic"] !== topic
+      })
+  </script>
+</Base>
