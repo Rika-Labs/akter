@@ -38,6 +38,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
               variant: "ghost",
               size: "sm",
               icon: "retry",
+              disabled: model.pageSample,
               onClick: RetriedAllDeadLetters(),
             }),
           ],
@@ -97,10 +98,12 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                   key: letter.id,
                   cells: [
                     `${letter.job} · ${letter.jobId}`,
-                    h.a(
-                      [h.Href(Routes.actor({ actorType: letter.actorType, key: letter.key }))],
-                      [`${letter.actorType}/${letter.key}`],
-                    ),
+                    model.pageSample
+                      ? `${letter.actorType}/${letter.key}`
+                      : h.a(
+                          [h.Href(Routes.actor({ actorType: letter.actorType, key: letter.key }))],
+                          [`${letter.actorType}/${letter.key}`],
+                        ),
                     letter.error,
                     letter.since,
                     h.span(
@@ -110,6 +113,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                           label: "Discard",
                           variant: "ghost",
                           size: "sm",
+                          disabled: model.pageSample,
                           onClick: OpenedDialog({
                             dialog: Dialog.DiscardDeadLetter({ id: letter.id }),
                           }),
@@ -118,6 +122,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                         button(h, {
                           label: "Retry",
                           size: "sm",
+                          disabled: model.pageSample,
                           onClick: RetriedDeadLetter({ id: letter.id }),
                           attributes: [h.AriaLabel(`Retry ${letter.jobId}`)],
                         }),

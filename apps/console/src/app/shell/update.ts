@@ -44,9 +44,9 @@ import {
   SignUp,
   WriteClipboard,
 } from "./command.ts"
-import { Action } from "./action.ts"
+import { Action, canMutate } from "./action.ts"
 import { Message } from "./message.ts"
-import { Dialog, type Flags, type Model, type Toast } from "./model.ts"
+import { Dialog, type Flags, type Model, type Toast, withoutPasswords } from "./model.ts"
 import { paletteResults } from "./palette.ts"
 
 type Result = Return<Model, Message>
@@ -108,6 +108,8 @@ const initial = (flags: Flags, url: Url): Result => {
       workspace: flags.workspace,
       page: Option.none(),
       pageError: Option.none(),
+      pageSample: false,
+      allowSignIn: false,
       submitting: false,
       formError: Option.none(),
       loading: true,
@@ -203,8 +205,10 @@ const deploymentId = (model: Model, commit: string): string =>
     onSome: (page) => (Predicate.isTagged(page, "DeploymentPage") ? page.deploy.id : commit),
   })
 
-const mutate = (model: Model, action: Action, simulated: () => Result): Result =>
-  fixturesEnabled() ? simulated() : { model, commands: [Mutate({ action })] }
+const mutate = (model: Model, action: Action): Result =>
+  canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
+    ? { model, commands: [Mutate({ action })] }
+    : toast(model, { title: "Sample data is read-only.", tone: "warning" })
 
 const unavailable = (model: Model, what: string): Result =>
   toast(model, { title: `${what} isn’t available yet`, tone: "warning" })
@@ -227,13 +231,7 @@ const deadLetterIds = (model: Model): ReadonlyArray<string> =>
 const confirm = (model: Model, dialog: Dialog): Result =>
   Match.value(dialog).pipe(
     Match.tagsExhaustive({
-      DiscardDeadLetter: ({ id }) =>
-        mutate(model, Action.DiscardDeadLetter({ id }), () =>
-          toast(
-            { ...model, resolved: [...model.resolved, id] },
-            { title: `Discarded ${id}`, description: "The job will not run again.", tone: "idle" },
-          ),
-        ),
+      DiscardDeadLetter: ({ id }) => mutate(model, Action.DiscardDeadLetter({ id })),
       RevokeKey: ({ name }) =>
         mutate(
           model,
@@ -244,15 +242,6 @@ const confirm = (model: Model, dialog: Dialog): Result =>
             }),
             name,
           }),
-          () =>
-            toast(
-              { ...model, revoked: [...model.revoked, name] },
-              {
-                title: `Revoked ${name}`,
-                description: "Requests using it now fail.",
-                tone: "idle",
-              },
-            ),
         ),
       CreateKey: () => {
         const cleared = { ...model, fields: { ...model.fields, "key-name": "" } }
@@ -263,12 +252,6 @@ const confirm = (model: Model, dialog: Dialog): Result =>
             permission: model.choices["keyScope"] ?? "write",
             projectScoped: model.choices["keyProject"] !== "organization",
           }),
-          () =>
-            toast(cleared, {
-              title: `Created ${model.fields["key-name"] ?? "key"}`,
-              description: "Copy it now; it is shown once.",
-              tone: "live",
-            }),
         )
       },
       AddVariable: () => {
@@ -283,38 +266,12 @@ const confirm = (model: Model, dialog: Dialog): Result =>
             name: model.fields["variable-name"] ?? "",
             value: model.fields["variable-value"] ?? "",
           }),
-          () =>
-            toast(cleared, {
-              title: `Saved ${model.fields["variable-name"] ?? "variable"}`,
-              description: "It takes effect on the next deploy.",
-              tone: "live",
-            }),
         )
       },
-      SendCommand: ({ address }) =>
-        fixturesEnabled()
-          ? toast(model, {
-              title: `${model.fields["command-name"] ?? "Command"} committed`,
-              description: `${address} · 3.2 ms`,
-              tone: "live",
-            })
-          : unavailable(model, "Sending commands from the console"),
+      SendCommand: () => unavailable(model, "Sending commands from the console"),
       RollBack: ({ commit }) =>
-        mutate(model, Action.RollBack({ id: deploymentId(model, commit), commit }), () =>
-          toast(model, {
-            title: `Rolling back to ${commit}`,
-            description: "Actors move to the previous runners as they drain.",
-            tone: "live",
-          }),
-        ),
-      DeleteProject: ({ project }) =>
-        mutate(model, Action.DeleteProject({ slug: project }), () =>
-          toast(model, {
-            title: `${project} scheduled for deletion`,
-            description: "Runners stop now; the database is kept for 7 days.",
-            tone: "danger",
-          }),
-        ),
+        mutate(model, Action.RollBack({ id: deploymentId(model, commit), commit })),
+      DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
       KeyCreated: () => ({ model }),
     }),
   )
@@ -413,18 +370,16 @@ const authForm = (model: Model, form: string): Result | undefined =>
 
 const submit = (model: Model, form: string): Result => {
   if (model.submitting) return { model }
+  if (isAuthRoute(model.route) && model.pageSample)
+    return reject(model, "Sample data is read-only.")
   const handled = authForm(model, form)
   if (handled !== undefined) return handled
   return Match.value(form).pipe(
     Match.when("profile", () =>
-      mutate(model, Action.UpdateProfile({ name: model.fields["display-name"] ?? "" }), () =>
-        toast(model, { title: "Saved", tone: "live" }),
-      ),
+      mutate(model, Action.UpdateProfile({ name: model.fields["display-name"] ?? "" })),
     ),
     Match.when("password", () =>
-      mutate(model, Action.SendPasswordReset({ email: model.workspace.person.email }), () =>
-        toast(model, { title: "Saved", tone: "live" }),
-      ),
+      mutate(model, Action.SendPasswordReset({ email: model.workspace.person.email })),
     ),
     Match.when("organization", () => {
       const page = settingsPage(model)
@@ -439,7 +394,6 @@ const submit = (model: Model, form: string): Result => {
             model.fields["org-slug"] ??
             Option.match(organization, { onNone: () => "", onSome: (found) => found.slug }),
         }),
-        () => toast(model, { title: "Saved", tone: "live" }),
       )
     }),
     Match.when("invite-member", () => {
@@ -450,11 +404,6 @@ const submit = (model: Model, form: string): Result => {
           email: model.fields["invite-email"] ?? "",
           role: model.choices["inviteRole"] ?? "member",
         }),
-        () =>
-          toast(cleared, {
-            title: `Invitation sent to ${model.fields["invite-email"] ?? "them"}`,
-            tone: "live",
-          }),
       )
     }),
     Match.when("add-domain", () => {
@@ -465,57 +414,31 @@ const submit = (model: Model, form: string): Result => {
           hostname: model.fields["domain"] ?? "",
           environment: model.choices["domain-environment"] ?? "production",
         }),
-        () =>
-          toast(cleared, {
-            title: `Added ${model.fields["domain"] ?? "domain"}`,
-            description: "Waiting for its CNAME record.",
-            tone: "idle",
-          }),
       )
     }),
     Match.when("change-plan", () => {
       const current = Option.flatMap(settingsPage(model), (page) =>
         Option.fromNullishOr(page.billing),
       ).pipe(Option.map((billing) => billing.plan.id))
-      const simulated = () => toast(model, { title: "Saved", tone: "live" })
-      if (Option.contains(current, "enterprise"))
-        return mutate(model, Action.OpenBillingPortal(), simulated)
+      if (Option.contains(current, "enterprise")) return mutate(model, Action.OpenBillingPortal())
       const plan = Option.contains(current, "pro") ? "enterprise" : "pro"
-      return mutate(model, Action.StartCheckout({ plan }), simulated)
+      return mutate(model, Action.StartCheckout({ plan }))
     }),
-    Match.when("stripe-portal", () =>
-      mutate(model, Action.OpenBillingPortal(), () =>
-        toast(model, { title: "Saved", tone: "live" }),
-      ),
-    ),
+    Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),
     Match.orElse((name) => {
       const [prefix, id] = name.split(":")
-      const simulated = () => toast(model, { title: "Saved", tone: "live" })
       if (prefix === "resend-invite" && id !== undefined)
-        return mutate(model, Action.ResendInvitation({ id }), simulated)
+        return mutate(model, Action.ResendInvitation({ id }))
       if (prefix === "verify-domain" && id !== undefined)
-        return mutate(model, Action.VerifyDomain({ id }), simulated)
+        return mutate(model, Action.VerifyDomain({ id }))
       if (name.startsWith("add-region-"))
-        return mutate(
-          model,
-          Action.AddRegion({ region: name.slice("add-region-".length) }),
-          simulated,
-        )
+        return mutate(model, Action.AddRegion({ region: name.slice("add-region-".length) }))
       if (name.startsWith("connect-"))
-        return mutate(
-          model,
-          Action.ConnectIntegration({ kind: name.slice("connect-".length) }),
-          simulated,
-        )
-      return fixturesEnabled() ? simulated() : unavailable(model, "That")
+        return mutate(model, Action.ConnectIntegration({ kind: name.slice("connect-".length) }))
+      return unavailable(model, "That")
     }),
   )
 }
-
-const passwordFields = ["password", "new-password", "confirm-password"]
-
-const withoutPasswords = (fields: Model["fields"]): Model["fields"] =>
-  Object.fromEntries(Object.entries(fields).filter(([name]) => !passwordFields.includes(name)))
 
 const redirectFor = (kind: string): string | undefined =>
   Match.value(kind).pipe(
@@ -536,12 +459,15 @@ const step = (model: Model, message: Message): Result =>
           dialog: Option.filter(model.dialog, (open) => !Predicate.isTagged(open, "KeyCreated")),
           drawer: false,
           loading: true,
+          page: Option.none(),
           pageError: Option.none(),
+          pageSample: false,
           formError: Option.none(),
           submitting: false,
+          fields: withoutPasswords(model.fields),
         },
         commands: [
-          LoadPage({ route }),
+          LoadPage({ route, allowSignIn: model.allowSignIn }),
           HidePopovers(),
           ...(Option.exists(model.dialog, (open) => Predicate.isTagged(open, "KeyCreated"))
             ? [HideDialog({ id: dialogId })]
@@ -555,7 +481,7 @@ const step = (model: Model, message: Message): Result =>
         External: ({ href }): Result => ({ model, commands: [LoadExternal({ href })] }),
       }),
     RequestedHref: ({ href }) => then(closePalette(model), (next) => go(next, href)),
-    LoadedPage: ({ page }) => {
+    LoadedPage: ({ page, sample }) => {
       const seed = Option.match(page, {
         onNone: () => undefined,
         onSome: (loaded) =>
@@ -566,6 +492,8 @@ const step = (model: Model, message: Message): Result =>
           ...model,
           page,
           pageError: Option.none(),
+          pageSample: sample,
+          allowSignIn: false,
           loading: false,
           toggles: { ...model.toggles, ...seed?.toggles },
           choices: {
@@ -587,14 +515,17 @@ const step = (model: Model, message: Message): Result =>
     FailedPage: ({ kind, message }) => {
       const href = redirectFor(kind)
       if (href !== undefined)
-        return { model: { ...model, loading: false }, commands: [ReplaceUrl({ href })] }
+        return {
+          model: { ...model, loading: false, allowSignIn: kind === "Unauthorized" },
+          commands: [ReplaceUrl({ href })],
+        }
       return {
         model: { ...model, loading: false, pageError: Option.some({ kind, message }) },
       }
     },
     RetriedPage: () => ({
       model: { ...model, loading: true, pageError: Option.none() },
-      commands: [LoadPage({ route: model.route }), LoadWorkspace()],
+      commands: [LoadPage({ route: model.route, allowSignIn: model.allowSignIn }), LoadWorkspace()],
     }),
     LoadedWorkspace: ({ workspace }) => ({ model: { ...model, workspace } }),
     ToggledDrawer: () => ({ model: { ...model, drawer: !model.drawer } }),
@@ -650,15 +581,23 @@ const step = (model: Model, message: Message): Result =>
     ToggledSetting: ({ key }) => {
       const enabled = model.toggles[key] !== true
       const next = { ...model, toggles: { ...model.toggles, [key]: enabled } }
-      if (fixturesEnabled() || !savesToggle(key)) return { model: next }
-      return { model: next, commands: [Mutate({ action: Action.SaveToggle({ key, enabled }) })] }
+      if (!savesToggle(key)) return { model: next }
+      const action = Action.SaveToggle({ key, enabled })
+      if (
+        !canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
+      )
+        return mutate(model, action)
+      return mutate(next, action)
     },
     ChoseSetting: ({ key, value }) => {
       const next = { ...model, choices: { ...model.choices, [key]: value } }
-      const saves =
-        fixturesEnabled() || !savesChoice(key)
-          ? []
-          : [Mutate({ action: Action.SaveChoice({ key, value }) })]
+      const action = Action.SaveChoice({ key, value })
+      if (
+        savesChoice(key) &&
+        !canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
+      )
+        return mutate(model, action)
+      const saves = savesChoice(key) ? [Mutate({ action })] : []
       if (!environmentKeys.includes(key) || !environments.some((name) => name === value))
         return { model: next, commands: saves }
       return {
@@ -725,21 +664,10 @@ const step = (model: Model, message: Message): Result =>
       model: { ...model, tail: { ...model.tail, paused: !model.tail.paused } },
     }),
     ChangedTailFilter: ({ filter }) => ({ model: { ...model, tail: { ...model.tail, filter } } }),
-    RetriedDeadLetter: ({ id }) =>
-      mutate(model, Action.RetryDeadLetters({ ids: [id] }), () =>
-        toast(
-          { ...model, resolved: [...model.resolved, id] },
-          { title: `Retrying ${id}`, description: "Its attempt count starts again.", tone: "live" },
-        ),
-      ),
+    RetriedDeadLetter: ({ id }) => mutate(model, Action.RetryDeadLetters({ ids: [id] })),
     RetriedAllDeadLetters: () => {
       const open = deadLetterIds(model).filter((id) => !model.resolved.includes(id))
-      return mutate(model, Action.RetryDeadLetters({ ids: open }), () =>
-        toast(
-          { ...model, resolved: [...model.resolved, ...open] },
-          { title: `Retrying ${String(open.length)} jobs`, tone: "live" },
-        ),
-      )
+      return mutate(model, Action.RetryDeadLetters({ ids: open }))
     },
     Mutated: ({ title, description, reload }) =>
       then(toast(model, { title, description, tone: "live" }), (next) => ({

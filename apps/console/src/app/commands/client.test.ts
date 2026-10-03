@@ -15,7 +15,8 @@ describe("commands client in fixture mode", () => {
   it("carries the actor types and the opening tail, newest first", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const page = yield* loadCommands
+        const { data: page, sample } = yield* loadCommands
+        expect(sample).toBe(true)
         expect(Schema.is(CommandsPage)(page)).toBe(true)
         expect(page.recent).toHaveLength(14)
         expect(page.recent[0]?.sequence).toBe(13)

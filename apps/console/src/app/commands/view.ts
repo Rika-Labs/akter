@@ -54,6 +54,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
           { value: "all", label: "All types" },
           ...page.types.map((type) => ({ value: type, label: type })),
         ],
+        disabled: model.pageSample,
         onChange: (filter) => ChangedTailFilter({ filter }),
       }),
       ...(fixtures
@@ -62,6 +63,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
               label: model.tail.paused ? "Resume" : "Pause",
               icon: model.tail.paused ? "play" : "pause",
               size: "sm",
+              disabled: model.pageSample,
               onClick: ToggledTail(),
               attributes: [h.AriaPressed(String(model.tail.paused))],
             }),
@@ -107,13 +109,15 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
           cells: [
             entry.time,
             entry.took,
-            h.a(
-              [
-                h.Href(Routes.actor({ actorType: entry.actorType, key: entry.key })),
-                ...styleAttributes(h, styles.link),
-              ],
-              [`${entry.actorType}/${entry.key}`],
-            ),
+            model.pageSample
+              ? `${entry.actorType}/${entry.key}`
+              : h.a(
+                  [
+                    h.Href(Routes.actor({ actorType: entry.actorType, key: entry.key })),
+                    ...styleAttributes(h, styles.link),
+                  ],
+                  [`${entry.actorType}/${entry.key}`],
+                ),
             entry.command,
             result(h, entry),
           ],

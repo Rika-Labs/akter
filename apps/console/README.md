@@ -29,11 +29,15 @@ The backend is not in this checkout's base yet; when testing it from a separate 
 `API_PROXY_TARGET` to its API port and `API_ORIGIN` and `CONSOLE_ORIGIN` to the console origin.
 
 Set `VITE_CONSOLE_FIXTURES=1` before starting/building, or visit `/?fixtures=1`, to run without a
-backend. The query flag persists for the tab; `?fixtures=0` turns it off. Fixture mode bypasses
-auth and simulates mutations for browser tests. In real mode, route fixtures are imported lazily
+backend. The query flag and its tab storage are honoured only in Vite development mode;
+production builds ignore them. `VITE_CONSOLE_FIXTURES=1` is an explicit build-time preview switch.
+Sample pages carry a quiet notice and sample-backed controls and record links are read-only.
+In real mode, route fixtures are imported lazily
 only when an endpoint returns the typed `NotImplemented` error; transport, permission and
-conflict errors are rendered rather than silently replaced with sample data. Mutations are
-never reported as successful merely because a backend is unimplemented.
+conflict errors are rendered rather than silently replaced with sample data. Missing organization
+or project context never substitutes a sample identity. Mixed settings pages retain source per
+slice, so sample endpoints do not disable real API-key controls. Mutations are never simulated
+or reported as successful merely because a backend is unimplemented.
 
 Environment-variable reads expose only names and provenance. Values are write-only inputs;
 neither secret values nor masked tails are displayed.

@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test"
 
-test("moves from the overview to an actor through the sidebar and its tables", async ({ page }) => {
+test("navigates sample pages without treating sample rows as live actor identities", async ({
+  page,
+}) => {
   await page.goto("/")
 
   await expect(page).toHaveTitle("Overview · Akter")
   await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible()
+  await expect(page.getByRole("note")).toHaveText("Sample data — this page isn’t connected yet.")
 
   const navigation = page.getByRole("navigation", { name: "Project" })
   await navigation.getByRole("link", { name: "Actors" }).click()
@@ -14,16 +17,17 @@ test("moves from the overview to an actor through the sidebar and its tables", a
     "aria-current",
     "page",
   )
-  await page.getByRole("searchbox", { name: "Filter actor types" }).fill("refund")
+  await expect(page.getByRole("searchbox", { name: "Filter actor types" })).toBeDisabled()
   const types = page.getByRole("table", { name: "Actor types" })
-  await expect(types.getByRole("row")).toHaveCount(2)
-  await types.getByRole("link", { name: "Order" }).click()
+  await expect(types.getByRole("row")).toHaveCount(9)
+  await expect(types.getByRole("link")).toHaveCount(0)
+  await page.goto("/actors/Order")
 
   await expect(page).toHaveURL(/\/actors\/Order$/)
-  await page
-    .getByRole("table", { name: "Order instances" })
-    .getByRole("link", { name: "ord_9a01" })
-    .click()
+  await expect(page.getByRole("table", { name: "Order instances" }).getByRole("link")).toHaveCount(
+    0,
+  )
+  await page.goto("/actors/Order/ord_9a01")
 
   await expect(page).toHaveURL(/\/actors\/Order\/ord_9a01$/)
   await expect(page.getByRole("heading", { level: 1, name: "Order/ord_9a01" })).toBeVisible()
@@ -56,7 +60,7 @@ test("swaps the sidebar for the settings navigation and back", async ({ page }) 
   await expect(page.getByRole("navigation", { name: "Project" })).toBeVisible()
 })
 
-test("inspects an actor's rows and receipts and sends it a command", async ({ page }) => {
+test("inspects sample actor rows and receipts without sending a command", async ({ page }) => {
   await page.goto("/actors/Order/ord_8f2c")
 
   const properties = page.getByRole("complementary", { name: "Properties" })
@@ -81,26 +85,22 @@ test("inspects an actor's rows and receipts and sends it a command", async ({ pa
     page.getByRole("table", { name: "Receipts" }).getByRole("row", { name: /replayed/ }),
   ).toBeVisible()
 
-  await page.getByRole("button", { name: "Send command" }).click()
-  const dialog = page.getByRole("dialog", { name: "Send a command" })
-  await expect(dialog.getByLabel("Command", { exact: true })).toBeFocused()
-  await dialog.getByLabel("Command", { exact: true }).fill("Refund")
-  await dialog.getByRole("button", { name: "Send command" }).click()
-
-  await expect(dialog).toBeHidden()
-  await expect(page.getByRole("status").filter({ hasText: "Refund committed" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Send command" })).toBeDisabled()
+  await expect(page.getByRole("note")).toHaveCount(1)
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(page.getByRole("status").filter({ hasText: "Refund committed" })).toHaveCount(0)
 })
 
-test("retries a dead letter and the sidebar count follows", async ({ page }) => {
+test("keeps sample dead letters read-only and never reports a retry", async ({ page }) => {
   await page.goto("/jobs")
 
   const jobs = page.getByRole("navigation", { name: "Project" }).getByRole("link", { name: /Jobs/ })
-  await expect(jobs).toContainText("3")
-  await page.getByRole("button", { name: "Retry job_31c" }).click()
-
-  await expect(page.getByRole("table", { name: "Dead letters" }).getByRole("row")).toHaveCount(3)
-  await expect(jobs).toContainText("2")
-  await expect(page.getByRole("status").filter({ hasText: "Retrying job_31c" })).toBeVisible()
+  await expect(jobs).toHaveText("Jobs")
+  await expect(page.getByRole("button", { name: "Retry job_31c" })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Retry all" })).toBeDisabled()
+  await expect(page.getByRole("table", { name: "Dead letters" }).getByRole("row")).toHaveCount(4)
+  await expect(page.getByRole("note")).toHaveCount(1)
+  await expect(page.getByRole("status").filter({ hasText: "Retrying" })).toHaveCount(0)
 })
 
 test("opens the command palette anywhere, navigates and switches the theme", async ({ page }) => {

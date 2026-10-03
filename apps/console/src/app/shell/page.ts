@@ -1,5 +1,5 @@
 import { Effect, Option, Schema as S } from "effect"
-import type { ConsoleError } from "../api/client.ts"
+import { fixturesEnabled, type ConsoleError, type Loaded } from "../api/client.ts"
 import { ActorPage, ActorTypePage, ActorsPage } from "../actors/model.ts"
 import { loadActor, loadActorType, loadActors } from "../actors/client.ts"
 import { loadInvitation } from "../auth/client.ts"
@@ -42,12 +42,20 @@ export const PageData = S.Union([
 ])
 export type PageData = typeof PageData.Type
 
-const some = (effect: Effect.Effect<PageData | undefined, ConsoleError>) =>
-  effect.pipe(Effect.map((data) => Option.fromNullishOr(data)))
+/** A page's data with the provenance its client reported; `none` renders as not found. */
+export type LoadedPage = Loaded<Option.Option<PageData>>
 
-const none = Effect.succeed(Option.none<PageData>())
+const some = (effect: Effect.Effect<Loaded<PageData | undefined>, ConsoleError>) =>
+  effect.pipe(
+    Effect.map((loaded): LoadedPage => ({
+      data: Option.fromNullishOr(loaded.data),
+      sample: loaded.sample,
+    })),
+  )
 
-const pageFor = (route: AppRoute): Effect.Effect<Option.Option<PageData>, ConsoleError> =>
+const none = Effect.sync((): LoadedPage => ({ data: Option.none(), sample: fixturesEnabled() }))
+
+const pageFor = (route: AppRoute): Effect.Effect<LoadedPage, ConsoleError> =>
   AppRoute.match(route, {
     SignIn: () => none,
     SignUp: () => none,
@@ -89,7 +97,10 @@ const pageFor = (route: AppRoute): Effect.Effect<Option.Option<PageData>, Consol
  * Loads the data a route renders after checking the session the route needs. `none` means the route
  * needs no data (sign-in, settings that read only preferences) or names something that does not
  * exist, which renders as not found. A failure carries the `ConsoleError` the page shows;
- * `Unauthorized` and `SignedIn` mean the shell should redirect instead.
+ * `Unauthorized` and `SignedIn` mean the shell should redirect instead. `allowSignIn` is passed to
+ * the session guard so a refused API session can still reach the sign-in screen.
  */
-export const loadPage = (route: AppRoute): Effect.Effect<Option.Option<PageData>, ConsoleError> =>
-  guardRoute({ route }).pipe(Effect.andThen(pageFor(route)))
+export const loadPage = (
+  input: Readonly<{ route: AppRoute; allowSignIn?: boolean }>,
+): Effect.Effect<LoadedPage, ConsoleError> =>
+  guardRoute(input).pipe(Effect.andThen(pageFor(input.route)))

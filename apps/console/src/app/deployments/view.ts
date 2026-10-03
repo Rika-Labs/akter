@@ -6,7 +6,7 @@ import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { DeploymentsPage } from "./model.ts"
 
 /** The deploy history: each deploy starts new runners, moves actors over and drains the old ones. */
-export const deploymentsScreen = ({ h, page }: ScreenInput<DeploymentsPage>): Screen => {
+export const deploymentsScreen = ({ h, model, page }: ScreenInput<DeploymentsPage>): Screen => {
   const command = `bunx akter deploy --env ${page.environment}`
   return {
     title: "Deployments",
@@ -22,6 +22,7 @@ export const deploymentsScreen = ({ h, page }: ScreenInput<DeploymentsPage>): Sc
         label: "Deploy",
         variant: "primary",
         size: "sm",
+        disabled: model.pageSample,
         onClick: CopiedText({ text: command, label: "deploy command" }),
       }),
     ],
@@ -46,7 +47,7 @@ export const deploymentsScreen = ({ h, page }: ScreenInput<DeploymentsPage>): Sc
         ],
         rows: page.deploys.map((deploy) => ({
           key: deploy.commit,
-          href: Routes.deployment({ commit: deploy.commit }),
+          href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
           cells: [
             deploy.commit,
             deploy.message,
@@ -64,7 +65,9 @@ export const deploymentsScreen = ({ h, page }: ScreenInput<DeploymentsPage>): Sc
           codeBlock(h, {
             code: `$ ${command}`,
             language: "shell",
-            onCopy: CopiedText({ text: command, label: "deploy command" }),
+            onCopy: model.pageSample
+              ? undefined
+              : CopiedText({ text: command, label: "deploy command" }),
           }),
         ],
       }),

@@ -1,5 +1,7 @@
-import { Schema as S } from "effect"
+import { Option, Predicate, Schema as S } from "effect"
 import { defineTaggedUnion } from "foldkit/schema"
+import { blockedBySample } from "../settings/sample.ts"
+import type { PageData } from "./page.ts"
 
 /**
  * A change the console makes through the cloud API, named for what it does. Each one is run by the
@@ -28,3 +30,21 @@ export const Action = defineTaggedUnion({
   RollBack: { id: S.String, commit: S.String },
 })
 export type Action = typeof Action.Type
+
+/** Sample provenance blocks admission even when an event bypasses a disabled control. */
+export const canMutate = (
+  input: Readonly<{
+    page: Option.Option<PageData>
+    sample: boolean
+    loading: boolean
+    action: Action
+  }>,
+): boolean =>
+  !input.loading &&
+  Option.match(input.page, {
+    onNone: () => !input.sample,
+    onSome: (page) =>
+      Predicate.isTagged(page, "SettingsPage")
+        ? !blockedBySample(page, input.action)
+        : !input.sample,
+  })

@@ -15,7 +15,8 @@ describe("connections client in fixture mode", () => {
   it("serves the fixture connections", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const page = yield* loadConnections
+        const { data: page, sample } = yield* loadConnections
+        expect(sample).toBe(true)
         expect(Schema.is(ConnectionsPage)(page)).toBe(true)
         expect(page.byType).toHaveLength(4)
       }),

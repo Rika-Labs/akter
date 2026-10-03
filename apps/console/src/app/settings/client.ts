@@ -25,9 +25,12 @@ import {
   cloud,
   ConsoleError,
   consoleError,
+  fixturesEnabled,
   load,
+  type Loaded,
   organizationContext,
   projectContext,
+  withProject,
 } from "../api/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import {
@@ -51,57 +54,21 @@ import {
   toOrganizationSummary,
   toPendingInvitations,
   toProjectSummary,
-  toRegions,
+  toRegionChoices,
   toUsage,
+  toVariable,
 } from "./mapping.ts"
-import { emptySettings, type SettingsPage, type SettingsSlice } from "./model.ts"
+import { emptySettings, type SettingsPage, SettingsSection, type SettingsSlice } from "./model.ts"
 import type * as Fixtures from "./fixtures.ts"
 
 type Api = Effect.Success<typeof cloud>
 
-type SliceName =
-  | "preferences"
-  | "notifications"
-  | "profile"
-  | "organization"
-  | "project"
-  | "environments"
-  | "regions"
-  | "domains"
-  | "keys"
-  | "endpoints"
-  | "integrations"
-  | "members"
-  | "invitations"
-  | "billing"
-  | "invoices"
-  | "usage"
-  | "audit"
-
-const allSlices: ReadonlyArray<SliceName> = [
-  "preferences",
-  "notifications",
-  "profile",
-  "organization",
-  "project",
-  "environments",
-  "regions",
-  "domains",
-  "keys",
-  "endpoints",
-  "integrations",
-  "members",
-  "invitations",
-  "billing",
-  "invoices",
-  "usage",
-  "audit",
-]
+const allSlices: ReadonlyArray<SettingsSection> = SettingsSection.literals
 
 /** The slices a settings route renders; any other route reads none. */
-const slicesFor = (route: AppRoute): ReadonlyArray<SliceName> => {
+const slicesFor = (route: AppRoute): ReadonlyArray<SettingsSection> => {
   const of =
-    (...names: ReadonlyArray<SliceName>) =>
+    (...names: ReadonlyArray<SettingsSection>) =>
     () =>
       names
   return AppRoute.matchOrElse(
@@ -129,22 +96,54 @@ const slicesFor = (route: AppRoute): ReadonlyArray<SliceName> => {
 const slice = <E>(
   live: Effect.Effect<SettingsSlice, E>,
   pick: (fixtures: typeof Fixtures) => SettingsSlice,
-): Effect.Effect<SettingsSlice, ConsoleError> =>
+): Effect.Effect<Loaded<SettingsSlice>, ConsoleError> =>
   load(live, () => import("./fixtures.ts").then(pick))
+
+/**
+ * A slice read through the project. `run` reports its own source when only part of what it reads is
+ * sample, and the fixture replaces the whole slice only when `run` fails with NotImplemented.
+ */
+const mixedProjectSlice = <E>(
+  run: (
+    api: Api,
+    context: Effect.Success<typeof projectContext>,
+  ) => Effect.Effect<Loaded<SettingsSlice>, E>,
+  pick: (fixtures: typeof Fixtures) => SettingsSlice,
+): Effect.Effect<Loaded<SettingsSlice>, ConsoleError> =>
+  withProject(run, () =>
+    import("./fixtures.ts").then((fixtures) => ({ data: pick(fixtures), sample: true })),
+  ).pipe(Effect.map(({ data, sample }) => ({ data: data.data, sample: sample || data.sample })))
+
+const projectSlice = <E>(
+  run: (
+    api: Api,
+    context: Effect.Success<typeof projectContext>,
+  ) => Effect.Effect<SettingsSlice, E>,
+  pick: (fixtures: typeof Fixtures) => SettingsSlice,
+): Effect.Effect<Loaded<SettingsSlice>, ConsoleError> =>
+  mixedProjectSlice(
+    (api, context) => run(api, context).pipe(Effect.map((data) => ({ data, sample: false }))),
+    pick,
+  )
 
 /**
  * Loads what the settings pages read from the control plane. With a route it loads only the
  * endpoints that page renders, so one endpoint that is not implemented yet falls back to its own
  * fixture and never to another page's data; without one it loads every slice. Billing figures come
  * from the control plane's Stripe records, never from the browser talking to Stripe.
+ *
+ * Each slice records whether it is sample data in `sampleSections`, and the envelope is sample when
+ * any slice is. The organization and project the pages act on come from the control plane only: a
+ * context that cannot be resolved fails the load instead of falling back to a sample identity.
  */
-export const loadSettings = (route?: AppRoute): Effect.Effect<SettingsPage, ConsoleError> =>
+export const loadSettings = (route?: AppRoute): Effect.Effect<Loaded<SettingsPage>, ConsoleError> =>
   Effect.gen(function* () {
     const api = yield* cloud
     const organization = yield* Effect.cached(organizationContext)
-    const project = yield* Effect.cached(projectContext)
 
-    const slices: Readonly<Record<SliceName, Effect.Effect<SettingsSlice, ConsoleError>>> = {
+    const slices: Readonly<
+      Record<SettingsSection, Effect.Effect<Loaded<SettingsSlice>, ConsoleError>>
+    > = {
       preferences: slice(
         api.account.getPreferences().pipe(Effect.map((preferences) => ({ preferences }))),
         (fixtures) => fixtures.preferencesSlice,
@@ -174,51 +173,84 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<SettingsPage, Cons
         ),
         (fixtures) => fixtures.organizationSlice,
       ),
-      project: slice(
-        project.pipe(
-          Effect.map((context) => ({
-            project: toProjectSummary(context),
-          })),
-        ),
+      project: projectSlice(
+        (_, context) => Effect.succeed({ project: toProjectSummary(context) }),
         (fixtures) => fixtures.projectSlice,
       ),
-      environments: slice(
-        Effect.gen(function* () {
-          const { project: current } = yield* project
-          const params = { projectId: current.id }
-          const environments = yield* api.projects.listEnvironments({ params })
-          const variables = yield* Effect.forEach(
-            environments,
-            (environment) =>
-              api.environmentVariables.list({
-                params: { ...params, environment: environment.name },
-              }),
-            { concurrency: "unbounded" },
-          )
-          return { environments: toEnvironments({ environments, variables }) }
-        }),
+      environments: mixedProjectSlice(
+        (api, { project: current }) =>
+          Effect.gen(function* () {
+            const params = { projectId: current.id }
+            const environments = yield* api.projects.listEnvironments({ params })
+            const variables = yield* Effect.forEach(
+              environments,
+              (environment) =>
+                load(
+                  api.environmentVariables
+                    .list({ params: { ...params, environment: environment.name } })
+                    .pipe(Effect.map((listed) => listed.map(toVariable))),
+                  () =>
+                    import("./fixtures.ts").then(
+                      ({ environmentsSlice }) =>
+                        environmentsSlice.environments?.find(
+                          (entry) => entry.environment === environment.name,
+                        )?.variables ?? [],
+                    ),
+                ),
+              { concurrency: "unbounded" },
+            )
+            return {
+              data: {
+                environments: toEnvironments({
+                  environments,
+                  variables: variables.map((entry) => entry.data),
+                }),
+              },
+              sample: variables.some((entry) => entry.sample),
+            }
+          }),
         (fixtures) => fixtures.environmentsSlice,
       ),
-      regions: slice(
-        Effect.gen(function* () {
-          const { project: current, environment } = yield* project
-          const [catalog, running] = yield* Effect.all(
-            [
-              api.regions.catalog(),
-              api.regions.list({ params: { projectId: current.id, environment } }),
-            ],
-            { concurrency: "unbounded" },
-          )
-          return { regions: toRegions({ catalog, running }) }
-        }),
+      regions: mixedProjectSlice(
+        (api, { project: current, environment }) =>
+          Effect.gen(function* () {
+            const [catalog, running] = yield* Effect.all(
+              [
+                load(api.regions.catalog(), () =>
+                  sampleRegions().then((regions) => regions.map(({ id, city }) => ({ id, city }))),
+                ),
+                load(
+                  api.regions
+                    .list({ params: { projectId: current.id, environment } })
+                    .pipe(
+                      Effect.map((entries) =>
+                        entries.map((entry) => ({ ...entry.region, home: entry.home })),
+                      ),
+                    ),
+                  () => Promise.resolve([{ id: current.homeRegion, city: "", home: true }]),
+                ),
+              ],
+              { concurrency: "unbounded" },
+            )
+            const known = running.sample
+              ? running.data.flatMap((entry) => {
+                  const region = catalog.data.find((candidate) => candidate.id === entry.id)
+                  return region === undefined ? [] : [{ ...region, home: entry.home }]
+                })
+              : running.data
+            return {
+              data: { regions: toRegionChoices({ catalog: catalog.data, running: known }) },
+              sample: catalog.sample || running.sample,
+            }
+          }),
         (fixtures) => fixtures.regionsSlice,
       ),
-      domains: slice(
-        Effect.gen(function* () {
-          const { project: current } = yield* project
-          const domains = yield* api.domains.list({ params: { projectId: current.id } })
-          return { domains: domains.map(toDomain) }
-        }),
+      domains: projectSlice(
+        (api, { project: current }) =>
+          Effect.gen(function* () {
+            const domains = yield* api.domains.list({ params: { projectId: current.id } })
+            return { domains: domains.map(toDomain) }
+          }),
         (fixtures) => fixtures.domainsSlice,
       ),
       keys: slice(
@@ -232,22 +264,22 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<SettingsPage, Cons
         }),
         (fixtures) => fixtures.keysSlice,
       ),
-      endpoints: slice(
-        Effect.gen(function* () {
-          const { project: current, environment } = yield* project
-          const endpoints = yield* api.projects.getEndpoints({
-            params: { projectId: current.id, environment },
-          })
-          return { endpoints: toEndpoints(endpoints) }
-        }),
+      endpoints: projectSlice(
+        (api, { project: current, environment }) =>
+          Effect.gen(function* () {
+            const endpoints = yield* api.projects.getEndpoints({
+              params: { projectId: current.id, environment },
+            })
+            return { endpoints: toEndpoints(endpoints) }
+          }),
         (fixtures) => fixtures.endpointsSlice,
       ),
-      integrations: slice(
-        Effect.gen(function* () {
-          const { project: current } = yield* project
-          const integrations = yield* api.integrations.list({ params: { projectId: current.id } })
-          return { integrations: toIntegrations(integrations) }
-        }),
+      integrations: projectSlice(
+        (api, { project: current }) =>
+          Effect.gen(function* () {
+            const integrations = yield* api.integrations.list({ params: { projectId: current.id } })
+            return { integrations: toIntegrations(integrations) }
+          }),
         (fixtures) => fixtures.integrationsSlice,
       ),
       members: slice(
@@ -309,12 +341,23 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<SettingsPage, Cons
 
     const loaded = yield* Effect.forEach(
       route === undefined ? allSlices : slicesFor(route),
-      (name) => slices[name],
+      (name) => slices[name].pipe(Effect.map((result) => ({ name, ...result }))),
       { concurrency: "unbounded" },
     )
-    const page: SettingsPage = Object.assign({ ...emptySettings }, ...loaded)
-    return page
+    const forced = fixturesEnabled()
+    const sampleSections = forced
+      ? allSlices
+      : loaded.filter((result) => result.sample).map((result) => result.name)
+    const page: SettingsPage = Object.assign(
+      { ...emptySettings },
+      ...loaded.map((result) => result.data),
+      { sampleSections },
+    )
+    return { data: page, sample: forced || sampleSections.length > 0 }
   })
+
+const sampleRegions = () =>
+  import("./fixtures.ts").then(({ regionsSlice }) => regionsSlice.regions ?? [])
 
 const auditPageSize = 100
 

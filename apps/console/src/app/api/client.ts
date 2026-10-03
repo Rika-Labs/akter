@@ -17,6 +17,7 @@ export const apiOrigin: {
 /** Fixture mode is explicit and survives client-side navigation through session storage. */
 export const fixturesEnabled = (): boolean => {
   if (import.meta.env.VITE_CONSOLE_FIXTURES === "1") return true
+  if (!import.meta.env.DEV) return false
   if (typeof window === "undefined") return false
   const flag = new URLSearchParams(window.location.search).get("fixtures")
   try {
@@ -64,10 +65,6 @@ export class ConsoleError extends Schema.TaggedError<ConsoleError>()("ConsoleErr
 export const consoleError = (cause: unknown): ConsoleError => {
   if (Schema.is(ConsoleError)(cause)) return cause
   if (Predicate.isTagged(cause, "Unauthorized")) {
-    if (typeof window !== "undefined" && window.location.pathname !== "/sign-in") {
-      rememberAuthReturn()
-      window.location.assign("/sign-in")
-    }
     return ConsoleError.make({ kind: "Unauthorized", message: "Sign in to continue." })
   }
   if (Predicate.isTagged(cause, "Forbidden"))
@@ -90,18 +87,35 @@ export const consoleError = (cause: unknown): ConsoleError => {
   })
 }
 
-/** A fixture is imported only when explicitly requested or an endpoint answers `NotImplemented`. */
+/** The source travels with the data so sample rows cannot acquire live actions. */
+export interface Loaded<A> {
+  readonly data: A
+  readonly sample: boolean
+}
+
+/** A fixture is imported only when explicitly requested or its endpoint answers `NotImplemented`. */
 export const load: {
-  <A, E>(live: Effect.Effect<A, E>, fixture: () => Promise<A>): Effect.Effect<A, ConsoleError>
-  <A>(fixture: () => Promise<A>): <E>(live: Effect.Effect<A, E>) => Effect.Effect<A, ConsoleError>
+  <A, E>(
+    live: Effect.Effect<A, E>,
+    fixture: () => Promise<A>,
+  ): Effect.Effect<Loaded<A>, ConsoleError>
+  <A>(
+    fixture: () => Promise<A>,
+  ): <E>(live: Effect.Effect<A, E>) => Effect.Effect<Loaded<A>, ConsoleError>
 } = Function.dual(
   2,
-  <A, E>(live: Effect.Effect<A, E>, fixture: () => Promise<A>): Effect.Effect<A, ConsoleError> => {
-    const fallback = Effect.tryPromise({ try: fixture, catch: consoleError })
+  <A, E>(
+    live: Effect.Effect<A, E>,
+    fixture: () => Promise<A>,
+  ): Effect.Effect<Loaded<A>, ConsoleError> => {
+    const fallback = Effect.tryPromise({ try: fixture, catch: consoleError }).pipe(
+      Effect.map((data) => ({ data, sample: true })),
+    )
     return Effect.suspend(() =>
       fixturesEnabled()
         ? fallback
         : live.pipe(
+            Effect.map((data) => ({ data, sample: false })),
             Effect.catch((error) =>
               Predicate.isTagged(error, "NotImplemented")
                 ? fallback
@@ -125,7 +139,7 @@ export const organizationContext = Effect.gen(function* () {
       message: "Create an organization to get started.",
     })
   return membership
-})
+}).pipe(Effect.mapError(consoleError))
 
 /** Only contract environments can be used in an API path. */
 export const selectedEnvironment = (): EnvironmentName => {
@@ -151,21 +165,35 @@ export const rememberAuthReturn = (): void => {
   }
 }
 
-/** Consumes an internal return path; a stored external URL or auth page can never become a redirect. */
-export const signInDestination = (fallback: string): string => {
+/** Resolves an internal return path without consuming it before an authentication attempt succeeds. */
+export const peekSignInDestination = (fallback: string): string => {
   const stored = storedChoice("console-auth-return")
+  if (stored === null || typeof location === "undefined") return fallback
+  try {
+    const target = new URL(stored, location.origin)
+    if (
+      target.origin !== location.origin ||
+      !stored.startsWith("/") ||
+      /^\/(sign-in|sign-up|forgot-password|reset-password|verify-email)(?:[/?]|$)/.test(
+        target.pathname,
+      )
+    )
+      return fallback
+    return `${target.pathname}${target.search}${target.hash}`
+  } catch {
+    return fallback
+  }
+}
+
+/** Consumes the remembered destination only after successful authentication. */
+export const signInDestination = (fallback: string): string => {
+  const destination = peekSignInDestination(fallback)
   try {
     if (typeof sessionStorage !== "undefined") sessionStorage.removeItem("console-auth-return")
   } catch {
     return fallback
   }
-  return stored !== null &&
-    stored.startsWith("/") &&
-    !stored.startsWith("//") &&
-    !stored.includes("\\") &&
-    !/^\/(sign-in|sign-up|forgot-password|reset-password|verify-email)(?:[/?]|$)/.test(stored)
-    ? stored
-    : fallback
+  return destination
 }
 
 const rememberProject = (slug: string): void => {
@@ -198,4 +226,46 @@ export const projectContext = Effect.gen(function* () {
       message: "Choose or create a project to continue.",
     })
   return { project, environment: selectedEnvironment(), organizationId: organization.id }
-})
+}).pipe(Effect.mapError(consoleError))
+
+/** Project identity must resolve before an endpoint may fall back to sample data. */
+export const withProject: {
+  <A, E>(
+    run: (
+      api: HttpApiClient.ForApi<typeof CloudApi>,
+      context: Effect.Success<typeof projectContext>,
+    ) => Effect.Effect<A, E>,
+    fixture: () => Promise<A>,
+  ): Effect.Effect<Loaded<A>, ConsoleError>
+  <A>(
+    fixture: () => Promise<A>,
+  ): <E>(
+    run: (
+      api: HttpApiClient.ForApi<typeof CloudApi>,
+      context: Effect.Success<typeof projectContext>,
+    ) => Effect.Effect<A, E>,
+  ) => Effect.Effect<Loaded<A>, ConsoleError>
+} = Function.dual(
+  2,
+  <A, E>(
+    run: (
+      api: HttpApiClient.ForApi<typeof CloudApi>,
+      context: Effect.Success<typeof projectContext>,
+    ) => Effect.Effect<A, E>,
+    fixture: () => Promise<A>,
+  ) =>
+    Effect.suspend(() =>
+      fixturesEnabled()
+        ? load(
+            Effect.fail(
+              ConsoleError.make({ kind: "Sample", message: "Sample data is read-only." }),
+            ),
+            fixture,
+          )
+        : Effect.gen(function* () {
+            const api = yield* cloud
+            const context = yield* projectContext
+            return yield* load(run(api, context), fixture)
+          }),
+    ),
+)

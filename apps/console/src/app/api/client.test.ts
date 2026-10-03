@@ -5,6 +5,7 @@ import {
   apiOrigin,
   cloud,
   consoleError,
+  fixturesEnabled,
   load,
   rememberAuthReturn,
   signInDestination,
@@ -66,7 +67,7 @@ describe("cloud client", () => {
           yield* api.account.me()
           return "real"
         })
-        expect(yield* load(effect, fixture)).toBe("sample")
+        expect(yield* load(effect, fixture)).toEqual({ data: "sample", sample: true })
         expect(fixture).toHaveBeenCalledOnce()
       }),
     ))
@@ -77,7 +78,10 @@ describe("route fallback", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const fixture = vi.fn(() => Promise.resolve("sample"))
-        expect(yield* load(Effect.succeed("real"), fixture)).toBe("real")
+        expect(yield* load(Effect.succeed("real"), fixture)).toEqual({
+          data: "real",
+          sample: false,
+        })
         expect(fixture).not.toHaveBeenCalled()
       }),
     ))
@@ -88,7 +92,7 @@ describe("route fallback", () => {
         const fixture = vi.fn(() => Promise.resolve("sample"))
         expect(
           yield* load(Effect.fail(NotImplemented.make({ operation: "billing.summary" })), fixture),
-        ).toBe("sample")
+        ).toEqual({ data: "sample", sample: true })
         fixture.mockClear()
         for (const error of [
           Forbidden.make({ message: "denied" }),
@@ -114,7 +118,10 @@ describe("route fallback", () => {
       Effect.gen(function* () {
         vi.stubEnv("VITE_CONSOLE_FIXTURES", "1")
         const live = vi.fn(() => "real")
-        expect(yield* load(Effect.sync(live), () => Promise.resolve("sample"))).toBe("sample")
+        expect(yield* load(Effect.sync(live), () => Promise.resolve("sample"))).toEqual({
+          data: "sample",
+          sample: true,
+        })
         expect(live).not.toHaveBeenCalled()
       }),
     ))
@@ -127,7 +134,11 @@ it("preserves a protected return path once without accepting external or auth re
     setItem: (key: string, value: string) => items.set(key, value),
     removeItem: (key: string) => items.delete(key),
   })
-  vi.stubGlobal("location", { pathname: "/invitations/inv_9", search: "" })
+  vi.stubGlobal("location", {
+    origin: "https://console.test",
+    pathname: "/invitations/inv_9",
+    search: "",
+  })
   rememberAuthReturn()
   expect(signInDestination("/")).toBe("/invitations/inv_9")
   expect(signInDestination("/")).toBe("/")
@@ -140,4 +151,34 @@ it("preserves a protected return path once without accepting external or auth re
     items.set("console-auth-return", rejected)
     expect(signInDestination("/")).toBe("/")
   }
+})
+
+it("ignores the query and stored fixture flag in production while retaining the build-time switch", () => {
+  vi.stubEnv("DEV", false)
+  vi.stubEnv("VITE_CONSOLE_FIXTURES", "0")
+  const getItem = vi.fn(() => "1")
+  const setItem = vi.fn()
+  vi.stubGlobal("window", {
+    location: { search: "?fixtures=1" },
+    sessionStorage: { getItem, setItem },
+  })
+  expect(fixturesEnabled()).toBe(false)
+  expect(getItem).not.toHaveBeenCalled()
+  expect(setItem).not.toHaveBeenCalled()
+  vi.stubEnv("VITE_CONSOLE_FIXTURES", "1")
+  expect(fixturesEnabled()).toBe(true)
+})
+
+it("maps Unauthorized without navigation or storage side effects", () => {
+  const assign = vi.fn()
+  const setItem = vi.fn()
+  vi.stubGlobal("window", {
+    location: { pathname: "/settings", assign },
+    sessionStorage: { setItem },
+  })
+  expect(consoleError(Unauthorized.make({ code: "expired", message: "Expired." })).kind).toBe(
+    "Unauthorized",
+  )
+  expect(assign).not.toHaveBeenCalled()
+  expect(setItem).not.toHaveBeenCalled()
 })

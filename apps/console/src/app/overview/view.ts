@@ -60,19 +60,21 @@ export const deployStatus =
   (deploy: Pick<DeploySummary, "status">) =>
     status(h, { label: deploy.status, tone: deployTones[deploy.status] })
 
-const healthLinks = (page: OverviewPage): ReadonlyMap<string, string> => {
+const healthLinks = (page: OverviewPage, sample: boolean): ReadonlyMap<string, string> => {
   const live = page.deploys.find((deploy) => deploy.status === "Live")
   return new Map([
     ["Database", Routes.regions()],
     ["Dead letters", Routes.jobs()],
     [
       "Runners",
-      live === undefined ? Routes.deployments() : Routes.deployment({ commit: live.commit }),
+      live === undefined || sample
+        ? Routes.deployments()
+        : Routes.deployment({ commit: live.commit }),
     ],
   ])
 }
 
-const rangeMenu = (h: HtmlBuilder<Message>) =>
+const rangeMenu = (h: HtmlBuilder<Message>, sample: boolean) =>
   dropdownMenu(h, {
     id: "range-menu",
     label: "Time range",
@@ -91,6 +93,7 @@ const rangeMenu = (h: HtmlBuilder<Message>) =>
       h.button(
         [
           h.Type("button"),
+          h.Disabled(sample),
           ...attributes,
           h.AriaLabel("Time range: last 24 hours"),
           ...styleAttributes(h, styles.trigger),
@@ -100,13 +103,13 @@ const rangeMenu = (h: HtmlBuilder<Message>) =>
   })
 
 /** The project overview: headline numbers, throughput, health, latency and recent deploys. */
-export const overviewScreen = ({ h, page }: ScreenInput<OverviewPage>): Screen => {
-  const links = healthLinks(page)
+export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): Screen => {
+  const links = healthLinks(page, model.pageSample)
   return {
     title: "Overview",
     crumbs: [{ label: "Overview" }],
     actions: [
-      rangeMenu(h),
+      rangeMenu(h, model.pageSample),
       button(h, { label: "Deploy", variant: "primary", size: "sm", href: Routes.deployments() }),
     ],
     body: pageBody(h, [
@@ -222,7 +225,7 @@ export const overviewScreen = ({ h, page }: ScreenInput<OverviewPage>): Screen =
                 ],
                 rows: page.deploys.map((deploy) => ({
                   key: deploy.commit,
-                  href: Routes.deployment({ commit: deploy.commit }),
+                  href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
                   cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
                 })),
               }),
@@ -238,7 +241,7 @@ const deploySteps =
   "# 1 · sign in\n$ bunx akter login\n# 2 · link this folder to the project\n$ bunx akter link\n# 3 · deploy\n$ bunx akter deploy"
 
 /** A project with nothing deployed yet: how to ship the first actor, and what a turn will do. */
-export const emptyProjectScreen = ({ h, page }: ScreenInput<EmptyProjectPage>): Screen => ({
+export const emptyProjectScreen = ({ h, model, page }: ScreenInput<EmptyProjectPage>): Screen => ({
   title: page.project,
   crumbs: [{ label: "Overview" }],
   actions: [
@@ -267,10 +270,12 @@ export const emptyProjectScreen = ({ h, page }: ScreenInput<EmptyProjectPage>): 
                 codeBlock(h, {
                   code: deploySteps,
                   language: "shell",
-                  onCopy: CopiedText({
-                    text: "bunx akter login && bunx akter link && bunx akter deploy",
-                    label: "deploy commands",
-                  }),
+                  onCopy: model.pageSample
+                    ? undefined
+                    : CopiedText({
+                        text: "bunx akter login && bunx akter link && bunx akter deploy",
+                        label: "deploy commands",
+                      }),
                 }),
                 h.p(
                   [...styleAttributes(h, styles.quiet)],

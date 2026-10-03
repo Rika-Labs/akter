@@ -14,7 +14,6 @@ import type {
   Organization,
   Project,
   ProjectEndpoints,
-  ProjectRegion,
   Region,
   Role,
   Usage as CloudUsage,
@@ -56,11 +55,11 @@ export const toVariable = (variable: EnvVariable): Variable => ({
 /** The variables of each environment, in the order the environments were listed. */
 export const toEnvironments = (input: {
   readonly environments: ReadonlyArray<Environment>
-  readonly variables: ReadonlyArray<ReadonlyArray<EnvVariable>>
+  readonly variables: ReadonlyArray<ReadonlyArray<Variable>>
 }): ReadonlyArray<EnvironmentVariables> =>
   input.environments.map((environment, index) => ({
     environment: environment.name,
-    variables: (input.variables[index] ?? []).map(toVariable),
+    variables: input.variables[index] ?? [],
   }))
 
 export const toProjectSummary = (input: {
@@ -178,18 +177,18 @@ export const toPendingInvitations = (
  * The home region and replicas come from the environment's own regions; every other region in the
  * catalog is available to add.
  */
-export const toRegions = (input: {
+export const toRegionChoices = (input: {
   readonly catalog: ReadonlyArray<Region>
-  readonly running: ReadonlyArray<ProjectRegion>
+  readonly running: ReadonlyArray<Region & Readonly<{ home: boolean }>>
 }): ReadonlyArray<RegionChoice> => {
   const { catalog, running } = input
   const inUse = running.map((entry) => ({
-    id: entry.region.id,
-    city: entry.region.city,
+    id: entry.id,
+    city: entry.city,
     role: entry.home ? ("Home" as const) : ("Replica" as const),
   }))
   const available = catalog.flatMap((region) =>
-    running.some((entry) => entry.region.id === region.id)
+    running.some((entry) => entry.id === region.id)
       ? []
       : [{ id: region.id, city: region.city, role: "Available" as const }],
   )

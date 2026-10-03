@@ -1,4 +1,12 @@
-import { appFrame, commandPalette, iconButton, styleAttributes, toaster, topBar } from "@akter/ui"
+import {
+  appFrame,
+  commandPalette,
+  iconButton,
+  settingsRow,
+  styleAttributes,
+  toaster,
+  topBar,
+} from "@akter/ui"
 import { Function, Option } from "effect"
 import type { Document, Html, HtmlBuilder } from "foldkit/html"
 import { actorScreen } from "../actors/inspector/view.ts"
@@ -201,10 +209,34 @@ const overlays = (h: HtmlBuilder<Message>, model: Model): ReadonlyArray<Html> =>
 const render = (model: Model, h: HtmlBuilder<Message>): Document => {
   const screen = screenFor(h, model)
   const title = `${screen.title} · Akter`
+  const notice =
+    model.pageSample && !model.loading
+      ? h.div(
+          [...styleAttributes(h, styles.sampleNotice)],
+          [
+            settingsRow(h, {
+              label: "Sample data — this page isn’t connected yet.",
+              attributes: [h.Role("note"), h.DataAttribute("slot", "sample-notice")],
+            }),
+          ],
+        )
+      : h.empty
   if (isAuthRoute(model.route))
     return {
       title,
-      body: h.div([...styleAttributes(h, styles.root)], [screen.body, ...overlays(h, model)]),
+      body: h.div(
+        [...styleAttributes(h, styles.root)],
+        [
+          notice,
+          model.pageSample
+            ? h.fieldset(
+                [h.Disabled(true), ...styleAttributes(h, styles.sampleForm)],
+                [screen.body],
+              )
+            : screen.body,
+          ...overlays(h, model),
+        ],
+      ),
     }
   const settings = isSettingsRoute(model.route)
   const menu = h.span(
@@ -239,6 +271,7 @@ const render = (model: Model, h: HtmlBuilder<Message>): Document => {
           mainLabel: screen.title,
           main: [
             settings ? h.div([...styleAttributes(h, styles.settingsBar)], [bar]) : bar,
+            notice,
             screen.body,
           ],
         }),

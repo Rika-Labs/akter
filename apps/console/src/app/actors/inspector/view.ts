@@ -83,14 +83,19 @@ const jobLabels: Readonly<Record<ActorPage["jobs"][number]["status"], string>> =
   dead: "Dead",
 }
 
-const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Html =>
+const panel = (
+  h: HtmlBuilder<Message>,
+  page: ActorPage,
+  tab: InspectorTab,
+  sample: boolean,
+): Html =>
   Match.value(tab).pipe(
     Match.when("state", () =>
       codeBlock(h, {
         title: `Committed state · turn ${String(page.turn)}`,
         code: page.state,
         language: "json",
-        onCopy: CopiedText({ text: page.state, label: "state" }),
+        onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
       }),
     ),
     Match.when("rows", () =>
@@ -210,11 +215,13 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
         label: "Copy address",
         variant: "ghost",
         size: "sm",
+        disabled: model.pageSample,
         onClick: CopiedText({ text: address, label: "address" }),
       }),
       button(h, {
         label: "Send command",
         size: "sm",
+        disabled: model.pageSample,
         onClick: OpenedDialog({ dialog: Dialog.SendCommand({ address }) }),
       }),
     ],
@@ -240,7 +247,7 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
             }),
             h.div(
               [h.DataAttribute("panel", tab), ...styleAttributes(h, styles.panel)],
-              [panel(h, page, tab)],
+              [panel(h, page, tab, model.pageSample)],
             ),
             section(h, {
               title: "Activity",

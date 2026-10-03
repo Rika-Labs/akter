@@ -51,6 +51,7 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
         icon: "filter",
         type: "search",
         style: layout.filter,
+        disabled: model.pageSample,
         onInput: (value) => ChangedField({ name: "actor-filter", value }),
       }),
       dataTable(h, {
@@ -72,7 +73,7 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
         ],
         rows: types.map((type) => ({
           key: type.name,
-          href: Routes.actorType({ actorType: type.name }),
+          href: model.pageSample ? undefined : Routes.actorType({ actorType: type.name }),
           cells: [
             type.name,
             type.commands.join(", "),

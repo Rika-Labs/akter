@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { ConsoleError } from "../api/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import { slugify } from "./model.ts"
@@ -48,6 +48,21 @@ const json = (body: Schema.Json, status = 200) =>
 const path = (seen: Seen | undefined) => new URL(seen?.url ?? origin).pathname
 
 const run = <A, E>(program: Effect.Effect<A, E>) => Effect.runPromise(program)
+
+const rememberReturn = (stored: string) => {
+  const items = new Map<string, string>([["console-auth-return", stored]])
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => items.set(key, value),
+    removeItem: (key: string) => items.delete(key),
+  })
+  vi.stubGlobal("location", { origin, pathname: "/sign-in", search: "" })
+  return items
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe("session access", () => {
   it("sends a signed-out visitor from every protected page to sign in", () => {
@@ -99,6 +114,31 @@ describe("session access", () => {
       }),
     )
   })
+
+  it("opens sign-in for a signed-in visitor only when the API just refused the session", () =>
+    run(
+      Effect.gen(function* () {
+        const read = Effect.succeed(signedIn)
+        const looped = yield* Effect.flip(guardRoute({ route: AppRoute.SignIn(), read }))
+        expect(looped.kind).toBe("SignedIn")
+        const allowed = yield* Effect.exit(
+          guardRoute({ route: AppRoute.SignIn(), read, allowSignIn: true }),
+        )
+        expect(allowed._tag).toBe("Success")
+        const signUp = yield* Effect.flip(
+          guardRoute({ route: AppRoute.SignUp(), read, allowSignIn: true }),
+        )
+        expect(signUp.kind).toBe("SignedIn")
+        const protectedRoute = yield* Effect.flip(
+          guardRoute({
+            route: AppRoute.Overview(),
+            read: Effect.succeed(signedOut),
+            allowSignIn: true,
+          }),
+        )
+        expect(protectedRoute.kind).toBe("Unauthorized")
+      }),
+    ))
 
   it("names the redirect a signed-in visitor on an auth screen gets", () =>
     run(
@@ -270,6 +310,45 @@ describe("Better Auth wire contract", () => {
       Effect.gen(function* () {
         const error = yield* Effect.flip(down.signInEmail({ email: "ada@acme.dev", password: "x" }))
         expect(error.kind).toBe("Unavailable")
+      }),
+    )
+  })
+})
+
+describe("return path after sign-in", () => {
+  it("keeps the remembered page when sign-up or social sign-in fails, and uses it in the callback", () => {
+    const items = rememberReturn("/invitations/inv_9?ref=mail")
+    const failing = backend(() => json({ code: "USER_ALREADY_EXISTS", message: "exists" }, 422))
+    return run(
+      Effect.gen(function* () {
+        yield* Effect.flip(
+          failing.auth.signUpEmail({ name: "Ada", email: "ada@acme.dev", password: "pw" }),
+        )
+        yield* Effect.flip(failing.auth.signInSocial("github"))
+        expect(items.get("console-auth-return")).toBe("/invitations/inv_9?ref=mail")
+        expect(failing.seen[0]?.body).toMatchObject({
+          callbackURL: "https://console.test/invitations/inv_9?ref=mail",
+        })
+        expect(failing.seen[1]?.body).toMatchObject({
+          callbackURL: "https://console.test/invitations/inv_9?ref=mail",
+        })
+      }),
+    )
+  })
+
+  it("consumes the remembered page once sign-up or social sign-in succeeds", () => {
+    const items = rememberReturn("/invitations/inv_9")
+    const signedUp = backend(() =>
+      json({ user: { id: "u_1", name: "Ada", email: "ada@acme.dev", emailVerified: false } }),
+    )
+    const social = backend(() => json({ url: "https://github.com/login/oauth/authorize" }))
+    return run(
+      Effect.gen(function* () {
+        yield* signedUp.auth.signUpEmail({ name: "Ada", email: "ada@acme.dev", password: "pw" })
+        expect(items.has("console-auth-return")).toBe(false)
+        items.set("console-auth-return", "/invitations/inv_9")
+        yield* social.auth.signInSocial("github")
+        expect(items.has("console-auth-return")).toBe(false)
       }),
     )
   })

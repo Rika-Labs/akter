@@ -20,7 +20,7 @@ import type { ActorTypePage } from "../model.ts"
  * One actor type: its numbers, its instances, and, when the source reports a per-type history, its
  * traffic and command volumes.
  */
-export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen => {
+export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>): Screen => {
   const { summary, activity } = page
   const first = page.instances[0]
   return {
@@ -36,6 +36,7 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
             button(h, {
               label: "Send command",
               size: "sm",
+              disabled: model.pageSample,
               onClick: OpenedDialog({
                 dialog: Dialog.SendCommand({ address: `${summary.name}/${first.key}` }),
               }),
@@ -138,7 +139,9 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
             ],
             rows: page.instances.map((instance) => ({
               key: instance.key,
-              href: Routes.actor({ actorType: summary.name, key: instance.key }),
+              href: model.pageSample
+                ? undefined
+                : Routes.actor({ actorType: summary.name, key: instance.key }),
               cells: [
                 instance.key,
                 status(h, {

@@ -16,16 +16,18 @@ describe("overview client in fixture mode", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const overview = yield* loadOverview
-        expect(Schema.is(OverviewPage)(overview)).toBe(true)
+        expect(overview.sample).toBe(true)
+        expect(Schema.is(OverviewPage)(overview.data)).toBe(true)
         const deployed = yield* loadProject("storefront")
-        expect(Schema.is(OverviewPage)(deployed)).toBe(true)
-        expect(deployed).toMatchObject({ project: "storefront" })
+        expect(deployed.sample).toBe(true)
+        expect(Schema.is(OverviewPage)(deployed.data)).toBe(true)
+        expect(deployed.data).toMatchObject({ project: "storefront" })
         const fresh = yield* loadProject("support-bot")
-        expect(Schema.is(EmptyProjectPage)(fresh)).toBe(true)
-        expect(fresh).toMatchObject({ project: "support-bot", region: "eu-west-1" })
+        expect(Schema.is(EmptyProjectPage)(fresh.data)).toBe(true)
+        expect(fresh.data).toMatchObject({ project: "support-bot", region: "eu-west-1" })
         const unknown = yield* loadProject("unknown")
-        expect(Schema.is(EmptyProjectPage)(unknown)).toBe(true)
-        expect(unknown).toMatchObject({ region: "us-east-1" })
+        expect(Schema.is(EmptyProjectPage)(unknown.data)).toBe(true)
+        expect(unknown.data).toMatchObject({ region: "us-east-1" })
       }),
     ))
 })

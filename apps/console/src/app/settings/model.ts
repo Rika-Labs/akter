@@ -180,9 +180,33 @@ export const AuditEntry = S.Struct({
 })
 export type AuditEntry = typeof AuditEntry.Type
 
+/** The slices a settings page can load; each one is read from one endpoint group and has its own source. */
+export const SettingsSection = S.Literals([
+  "preferences",
+  "notifications",
+  "profile",
+  "organization",
+  "project",
+  "environments",
+  "regions",
+  "domains",
+  "keys",
+  "endpoints",
+  "integrations",
+  "members",
+  "invitations",
+  "billing",
+  "invoices",
+  "usage",
+  "audit",
+])
+export type SettingsSection = typeof SettingsSection.Type
+
 /**
  * What the settings pages read. A route loads only the slices it renders, so every other slice
- * holds its empty value: an empty array, or null for a single record.
+ * holds its empty value: an empty array, or null for a single record. `sampleSections` names the
+ * slices that hold sample data rather than the control plane's answer; nothing they show may be
+ * acted on.
  */
 export const SettingsPage = S.TaggedStruct("SettingsPage", {
   preferences: S.NullOr(Preferences),
@@ -203,11 +227,12 @@ export const SettingsPage = S.TaggedStruct("SettingsPage", {
   usage: S.NullOr(Usage),
   audit: S.Array(AuditEntry),
   auditTruncated: S.Boolean,
+  sampleSections: S.Array(SettingsSection),
 })
 export type SettingsPage = typeof SettingsPage.Type
 
 /** The part of a settings page one endpoint group supplies. */
-export type SettingsSlice = Partial<Omit<SettingsPage, "_tag">>
+export type SettingsSlice = Partial<Omit<SettingsPage, "_tag" | "sampleSections">>
 
 /** A settings page with nothing loaded. */
 export const emptySettings: SettingsPage = SettingsPage.make({
@@ -229,4 +254,5 @@ export const emptySettings: SettingsPage = SettingsPage.make({
   usage: null,
   audit: [],
   auditTruncated: false,
+  sampleSections: [],
 })

@@ -2,32 +2,32 @@ import { DeadLetterId } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import {
   cloud,
-  type ConsoleError,
+  ConsoleError,
   consoleError,
   fixturesEnabled,
-  load,
+  type Loaded,
   projectContext,
+  withProject,
 } from "../api/client.ts"
 import { toJobsPage } from "./mapping.ts"
 import type { JobsPage } from "./model.ts"
 
 /** Loads the queue totals and the first page of dead letters. */
-export const loadJobs: Effect.Effect<JobsPage, ConsoleError> = load(
-  Effect.gen(function* () {
-    const api = yield* cloud
-    const { project, environment } = yield* projectContext
-    const params = { projectId: project.id, environment }
-    const summary = yield* api.runtime.getJobs({ params })
-    const deadLetters = yield* api.runtime.listDeadLetters({ params, query: { limit: 100 } })
-    return toJobsPage(yield* DateTime.now)({ summary, deadLetters: deadLetters.items })
-  }),
+export const loadJobs: Effect.Effect<Loaded<JobsPage>, ConsoleError> = withProject(
+  (api, { project, environment }) =>
+    Effect.gen(function* () {
+      const params = { projectId: project.id, environment }
+      const summary = yield* api.runtime.getJobs({ params })
+      const deadLetters = yield* api.runtime.listDeadLetters({ params, query: { limit: 100 } })
+      return toJobsPage(yield* DateTime.now)({ summary, deadLetters: deadLetters.items })
+    }),
   () => import("./fixtures.ts").then((fixtures) => fixtures.jobs),
 )
 
 const resolveDeadLetter = (action: "retryDeadLetter" | "discardDeadLetter", id: string) =>
   Effect.suspend(() =>
     fixturesEnabled()
-      ? Effect.void
+      ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data can’t be changed." }))
       : Effect.gen(function* () {
           const api = yield* cloud
           const { project, environment } = yield* projectContext
@@ -39,8 +39,9 @@ const resolveDeadLetter = (action: "retryDeadLetter" | "discardDeadLetter", id: 
   )
 
 /**
- * Sends a dead letter back to the queue. Fixture mode attempts nothing, and a refusal, including
- * an endpoint that is not implemented, fails with a `ConsoleError` instead of a fake success.
+ * Sends a dead letter back to the queue. Fixture mode attempts nothing and fails with a `Sample`
+ * `ConsoleError`, and a refusal, including an endpoint that is not implemented, fails with a
+ * `ConsoleError` instead of a fake success.
  */
 export const retryDeadLetter = (id: string): Effect.Effect<void, ConsoleError> =>
   resolveDeadLetter("retryDeadLetter", id)

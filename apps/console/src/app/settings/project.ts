@@ -28,6 +28,7 @@ import {
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import { formatDate, formatInstant } from "./format.ts"
 import type { Domain, Integration, SettingsPage } from "./model.ts"
+import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
@@ -80,6 +81,7 @@ export const environmentScreen = ({ h, model, page }: ScreenInput<SettingsPage>)
                 variant: "primary",
                 size: "sm",
                 icon: "plus",
+                disabled: isSample(page, "environments"),
                 onClick: OpenedDialog({ dialog: Dialog.AddVariable() }),
               }),
             ],
@@ -157,6 +159,7 @@ export const regionsSettingsScreen = ({ h, page }: ScreenInput<SettingsPage>): S
               label: "Add",
               size: "sm",
               icon: "plus",
+              disabled: isSample(page, "regions"),
               onClick: SubmittedForm({ form: `add-region-${region.id}` }),
             }),
           }),
@@ -176,8 +179,9 @@ const dnsText = (domain: Domain): string =>
   domain.records.map((record) => `${record.type}  ${record.name}  ${record.value}`).join("\n")
 
 /** Project › Domains: custom domains and the DNS records each one still needs. */
-export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "Domains", [
+export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const disabled = isSample(page, "domains")
+  return screen(h, "Domains", [
     h.form(
       [h.OnSubmit(SubmittedForm({ form: "add-domain" })), ...styleAttributes(h, styles.inline)],
       [
@@ -187,6 +191,7 @@ export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           value: model.fields["domain"] ?? "",
           placeholder: "api.example.com",
           required: true,
+          disabled,
           style: styles.grow,
           onInput: (value) => ChangedField({ name: "domain", value }),
         }),
@@ -195,10 +200,11 @@ export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           label: "Environment",
           value: model.choices["domain-environment"] ?? "production",
           size: "md",
+          disabled,
           options: Object.entries(environmentLabels).map(([value, label]) => ({ value, label })),
           onChange: (value) => ChoseSetting({ key: "domain-environment", value }),
         }),
-        button(h, { label: "Add domain", variant: "primary", type: "submit" }),
+        button(h, { label: "Add domain", variant: "primary", type: "submit", disabled }),
       ],
     ),
     settingsGroup(h, {
@@ -216,6 +222,7 @@ export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                 : button(h, {
                     label: "Verify",
                     size: "sm",
+                    disabled,
                     onClick: SubmittedForm({ form: `verify-domain:${domain.id}` }),
                     attributes: [h.AriaLabel(`Verify ${domain.hostname}`)],
                   }),
@@ -236,7 +243,9 @@ export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                 codeBlock(h, {
                   code: dnsText(domain),
                   language: "text",
-                  onCopy: CopiedText({ text: dnsText(domain), label: "DNS records" }),
+                  onCopy: disabled
+                    ? undefined
+                    : CopiedText({ text: dnsText(domain), label: "DNS records" }),
                 }),
               ],
             ),
@@ -244,6 +253,7 @@ export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         }),
       ),
   ])
+}
 
 /** Project › API keys: keys for the CLI, CI and services, and the endpoints they call. */
 export const keysScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen =>
@@ -254,6 +264,7 @@ export const keysScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scree
         variant: "primary",
         size: "sm",
         icon: "plus",
+        disabled: isSample(page, "keys"),
         onClick: OpenedDialog({ dialog: Dialog.CreateKey() }),
       }),
       title: "Keys",
@@ -275,6 +286,7 @@ export const keysScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scree
               label: "Revoke",
               variant: "ghost",
               size: "sm",
+              disabled: isSample(page, "keys"),
               onClick: OpenedDialog({ dialog: Dialog.RevokeKey({ name: key.name }) }),
               attributes: [h.AriaLabel(`Revoke ${key.name}`)],
             }),
@@ -290,7 +302,10 @@ export const keysScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scree
           control: iconButton(h, {
             label: `Copy ${endpoint.label} endpoint`,
             icon: "copy",
-            onClick: CopiedText({ text: endpoint.value, label: `${endpoint.label} endpoint` }),
+            onClick: isSample(page, "endpoints")
+              ? undefined
+              : CopiedText({ text: endpoint.value, label: `${endpoint.label} endpoint` }),
+            attributes: isSample(page, "endpoints") ? [h.Disabled(true)] : [],
             tooltip: "top",
           }),
         }),
@@ -315,7 +330,10 @@ export const integrationsScreen = ({ h, page }: ScreenInput<SettingsPage>): Scre
           label: integration.name,
           description: integration.detail,
           icon: integrationIcons[integration.kind],
-          href: integration.status === "connected" ? Routes.settingsIntegrations() : undefined,
+          href:
+            integration.status === "connected" && !isSample(page, "integrations")
+              ? Routes.settingsIntegrations()
+              : undefined,
           control:
             integration.status === "connected"
               ? status(h, { tone: "live", label: "Connected" })
@@ -328,6 +346,7 @@ export const integrationsScreen = ({ h, page }: ScreenInput<SettingsPage>): Scre
                     button(h, {
                       label: integration.status === "error" ? "Reconnect" : "Connect",
                       size: "sm",
+                      disabled: isSample(page, "integrations"),
                       onClick: SubmittedForm({ form: `connect-${integration.kind}` }),
                     }),
                   ],

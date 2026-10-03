@@ -33,6 +33,7 @@ import {
 } from "./format.ts"
 import { memberRoleKey, parseSpendLimit, spendLimitKey, spendLimitValue } from "./keys.ts"
 import type { SettingsPage, UsageMeter } from "./model.ts"
+import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
@@ -58,6 +59,7 @@ const assignableRoles = [
 export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
   const { organization, project } = page
   if (organization === null) return screen(h, "Organization", [])
+  const organizationSample = isSample(page, "organization")
   return screen(h, "Organization", [
     settingsGroup(h, {
       rows: [
@@ -68,6 +70,7 @@ export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>
             label: "Organization name",
             value: model.fields["org-name"] ?? organization.name,
             size: "sm",
+            disabled: organizationSample,
             onInput: (value) => ChangedField({ name: "org-name", value }),
           }),
         }),
@@ -80,6 +83,7 @@ export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>
             value: model.fields["org-slug"] ?? organization.slug,
             size: "sm",
             mono: true,
+            disabled: organizationSample,
             onInput: (value) => ChangedField({ name: "org-slug", value }),
           }),
         }),
@@ -91,6 +95,7 @@ export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>
         button(h, {
           label: "Save",
           variant: "primary",
+          disabled: organizationSample,
           onClick: SubmittedForm({ form: "organization" }),
         }),
       ],
@@ -108,6 +113,7 @@ export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>
                 control: button(h, {
                   label: "Delete project",
                   size: "sm",
+                  disabled: isSample(page, "project"),
                   onClick: OpenedDialog({
                     dialog: Dialog.DeleteProject({ project: project.slug }),
                   }),
@@ -122,6 +128,9 @@ export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>
 /** Organization › Members: who has access, in which role, and pending invitations. */
 export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
   const canManage = page.organization?.role === "owner" || page.organization?.role === "admin"
+  const inviteDisabled = isSample(page, "organization", "invitations")
+  const rolesDisabled = isSample(page, "organization", "members")
+  const resendDisabled = isSample(page, "organization", "invitations")
   return screen(h, "Members", [
     ...(canManage
       ? [
@@ -142,6 +151,7 @@ export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                     value: model.fields["invite-email"] ?? "",
                     placeholder: "Invite by email",
                     required: true,
+                    disabled: inviteDisabled,
                     onInput: (value) => ChangedField({ name: "invite-email", value }),
                   }),
                 ],
@@ -151,10 +161,16 @@ export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                 label: "Role",
                 value: model.choices["inviteRole"] ?? "member",
                 size: "md",
+                disabled: inviteDisabled,
                 options: assignableRoles,
                 onChange: (value) => ChoseSetting({ key: "inviteRole", value }),
               }),
-              button(h, { label: "Invite", variant: "primary", type: "submit" }),
+              button(h, {
+                label: "Invite",
+                variant: "primary",
+                type: "submit",
+                disabled: inviteDisabled,
+              }),
             ],
           ),
         ]
@@ -172,6 +188,7 @@ export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                     name: memberRoleKey(member.id),
                     label: `Role for ${member.name}`,
                     value: model.choices[memberRoleKey(member.id)] ?? member.role,
+                    disabled: rolesDisabled,
                     options: assignableRoles,
                     onChange: (value) => ChoseSetting({ key: memberRoleKey(member.id), value }),
                   }),
@@ -186,6 +203,7 @@ export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                   label: "Resend",
                   variant: "ghost",
                   size: "sm",
+                  disabled: resendDisabled,
                   onClick: SubmittedForm({ form: `resend-invite:${invitation.id}` }),
                   attributes: [h.AriaLabel(`Resend invitation to ${invitation.email}`)],
                 })
@@ -224,6 +242,7 @@ const spendLimitOptions = (limitCents: number | null) => {
 export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
   const { billing } = page
   if (billing === null) return screen(h, "Billing", [])
+  const billingSample = isSample(page, "billing")
   const limit = parseSpendLimit(
     model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
   )
@@ -244,6 +263,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           control: button(h, {
             label: billing.plan.id === "free" ? "Upgrade" : "Change plan",
             size: "sm",
+            disabled: billingSample,
             onClick: SubmittedForm({ form: "change-plan" }),
           }),
         }),
@@ -278,6 +298,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
             variant: "ghost",
             size: "sm",
             trailingIcon: "external",
+            disabled: billingSample,
             onClick: SubmittedForm({ form: "stripe-portal" }),
           }),
         }),
@@ -288,6 +309,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
             name: spendLimitKey,
             label: "Monthly spend limit",
             value: model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
+            disabled: billingSample,
             options: spendLimitOptions(billing.spendLimit.limitCents),
             onChange: (value) => ChoseSetting({ key: spendLimitKey, value }),
           }),
@@ -315,7 +337,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         settingsRow(h, {
           label: formatMonth(invoice.periodStart),
           description: `${invoice.number} · ${invoice.status}`,
-          href: invoice.pdfUrl ?? undefined,
+          href: isSample(page, "invoices") ? undefined : (invoice.pdfUrl ?? undefined),
           control: h.span(
             [...styleAttributes(h, styles.muted)],
             [formatCurrency(dollars(invoice.amountCents))],

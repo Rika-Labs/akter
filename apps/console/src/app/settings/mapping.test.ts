@@ -40,7 +40,7 @@ import {
   toKeys,
   toPendingInvitations,
   toProjectSummary,
-  toRegions,
+  toRegionChoices,
   toUsage,
   toVariable,
 } from "./mapping.ts"
@@ -198,6 +198,7 @@ describe("project", () => {
           ] as const,
           (entry) => decode(Region)(entry),
         )
+        const flat = (entry: ProjectRegion) => ({ ...entry.region, home: entry.home })
         const running = (home: boolean) =>
           decode(ProjectRegion)({
             region: { id: "us-west-2", city: "Oregon" },
@@ -212,11 +213,13 @@ describe("project", () => {
             backups: { pointInTimeRecovery: false, latestBackupAt: null },
             largestTables: [],
           })
-        expect(toRegions({ catalog, running: [yield* running(true)] })).toEqual([
+        expect(toRegionChoices({ catalog, running: [flat(yield* running(true))] })).toEqual([
           { id: "us-west-2", city: "Oregon", role: "Home" },
           { id: "us-east-1", city: "Virginia", role: "Available" },
         ])
-        expect(toRegions({ catalog, running: [yield* running(false)] })[0]?.role).toBe("Replica")
+        expect(toRegionChoices({ catalog, running: [flat(yield* running(false))] })[0]?.role).toBe(
+          "Replica",
+        )
       }),
     ))
 

@@ -33,7 +33,7 @@ const healthLabels: Readonly<Record<Runner["health"], string>> = {
 }
 
 /** One deploy: how its rollout went, the runners it started, and its build log. */
-export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Screen => {
+export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>): Screen => {
   const { deploy } = page
   return {
     title: deploy.message,
@@ -42,7 +42,7 @@ export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Scre
       { label: deploy.commit, mono: true },
     ],
     actions: [
-      ...(page.diffUrl === undefined
+      ...(page.diffUrl === undefined || model.pageSample
         ? []
         : [
             button(h, {
@@ -60,7 +60,7 @@ export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Scre
         onClick: OpenedDialog({
           dialog: Dialog.RollBack({ commit: page.rollbackTo ?? deploy.commit }),
         }),
-        disabled: deploy.status !== "Live" || page.rollbackTo === null,
+        disabled: model.pageSample || deploy.status !== "Live" || page.rollbackTo === null,
       }),
     ],
     body: pageBody(h, [
@@ -144,7 +144,9 @@ export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Scre
                 code: page.log,
                 language: "log",
                 size: "small",
-                onCopy: CopiedText({ text: page.log, label: "build log" }),
+                onCopy: model.pageSample
+                  ? undefined
+                  : CopiedText({ text: page.log, label: "build log" }),
               }),
             ],
           }),

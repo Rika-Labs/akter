@@ -23,7 +23,7 @@ const tones: Readonly<Record<WorkflowsPage["runs"][number]["status"], StatusTone
 }
 
 /** Workflows and timers: long-running work owned by actors, and the schedules that start it. */
-export const workflowsScreen = ({ h, page }: ScreenInput<WorkflowsPage>): Screen => {
+export const workflowsScreen = ({ h, model, page }: ScreenInput<WorkflowsPage>): Screen => {
   const schedules = section(h, {
     title: "Schedules",
     meta: "cron",
@@ -121,7 +121,9 @@ export const workflowsScreen = ({ h, page }: ScreenInput<WorkflowsPage>): Screen
             ],
             rows: page.runs.map((run) => ({
               key: run.id,
-              href: Routes.actor({ actorType: run.actorType, key: run.key }),
+              href: model.pageSample
+                ? undefined
+                : Routes.actor({ actorType: run.actorType, key: run.key }),
               cells: [
                 run.workflow,
                 `${run.actorType}/${run.key}`,

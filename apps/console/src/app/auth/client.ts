@@ -6,6 +6,7 @@ import {
   consoleError,
   fixturesEnabled,
   load,
+  type Loaded,
   organizationContext,
 } from "../api/client.ts"
 import { InvitationPage, slugify } from "./model.ts"
@@ -17,7 +18,7 @@ const capitalized = (word: string): string => `${word.charAt(0).toUpperCase()}${
  * Loads the invitation the signed-in person was sent. An invitation that is no longer pending is
  * an error rather than a form that could not succeed.
  */
-export const loadInvitation = (id: string): Effect.Effect<InvitationPage, ConsoleError> =>
+export const loadInvitation = (id: string): Effect.Effect<Loaded<InvitationPage>, ConsoleError> =>
   load(
     Effect.gen(function* () {
       const api = yield* cloud
@@ -41,9 +42,11 @@ export const loadInvitation = (id: string): Effect.Effect<InvitationPage, Consol
     () => import("./fixtures.ts").then((module) => module.invitation(id)),
   )
 
-const live = <A, E>(real: Effect.Effect<A, E>, fixture: A): Effect.Effect<A, ConsoleError> =>
+const sample = ConsoleError.make({ kind: "Sample", message: "Sample data is read-only." })
+
+const live = <A, E>(real: Effect.Effect<A, E>): Effect.Effect<A, ConsoleError> =>
   Effect.suspend(() =>
-    fixturesEnabled() ? Effect.succeed(fixture) : real.pipe(Effect.mapError(consoleError)),
+    fixturesEnabled() ? Effect.fail(sample) : real.pipe(Effect.mapError(consoleError)),
   )
 
 const invalid = (message: string) => ConsoleError.make({ kind: "Invalid", message })
@@ -60,21 +63,18 @@ const slugMessage = "Use lowercase letters, digits and hyphens for the URL, up t
 
 /** Signs in with email and password; an unverified address fails with kind `EMAIL_NOT_VERIFIED`. */
 export const signInEmail = (input: Readonly<{ email: string; password: string }>) =>
-  live(auth.signInEmail(input).pipe(Effect.asVoid), undefined)
+  live(auth.signInEmail(input).pipe(Effect.asVoid))
 
 /** Creates an account; `verified` is false while the address still has to be confirmed. */
 export const signUpEmail = (input: Readonly<{ name: string; email: string; password: string }>) =>
-  live(
-    auth.signUpEmail(input).pipe(Effect.map((data) => ({ verified: data.user.emailVerified }))),
-    { verified: false },
-  )
+  live(auth.signUpEmail(input).pipe(Effect.map((data) => ({ verified: data.user.emailVerified }))))
 
 /** The provider's authorization URL, which the page then opens. */
-export const socialUrl = (provider: "github" | "google") => auth.signInSocial(provider)
+export const socialUrl = (provider: "github" | "google") => live(auth.signInSocial(provider))
 
 /** Sends another verification email. */
 export const resendVerification = (email: string) =>
-  live(auth.sendVerificationEmail(email).pipe(Effect.asVoid), undefined)
+  live(auth.sendVerificationEmail(email).pipe(Effect.asVoid))
 
 /** Whether the signed-in person has verified their address since the last check. */
 export const checkVerified = live(
@@ -89,12 +89,11 @@ export const checkVerified = live(
           ),
     ),
   ),
-  undefined,
 )
 
 /** Emails a reset link; the answer never says whether the address has an account. */
 export const requestReset = (email: string) =>
-  live(auth.requestPasswordReset(email).pipe(Effect.asVoid), undefined)
+  live(auth.requestPasswordReset(email).pipe(Effect.asVoid))
 
 /** Sets a new password from the token the emailed link carried in the page's query. */
 export const resetPassword = (newPassword: string) =>
@@ -106,11 +105,10 @@ export const resetPassword = (newPassword: string) =>
         return Effect.fail(invalid("This reset link is invalid or has expired. Request a new one."))
       return auth.resetPassword({ newPassword, token }).pipe(Effect.asVoid)
     }),
-    undefined,
   )
 
 /** Ends the session. */
-export const signOut = live(auth.signOut.pipe(Effect.asVoid), undefined)
+export const signOut = live(auth.signOut.pipe(Effect.asVoid))
 
 /** Creates the organization and makes it the active one. */
 export const createOrganization = ({ name, slug }: Readonly<{ name: string; slug: string }>) =>
@@ -126,7 +124,6 @@ export const createOrganization = ({ name, slug }: Readonly<{ name: string; slug
         payload: { organizationId: membership.organization.id },
       })
     }),
-    undefined,
   )
 
 /** Creates a project in the active organization. */
@@ -142,7 +139,6 @@ export const createProject = ({ name, region }: Readonly<{ name: string; region:
       const { organization } = yield* organizationContext
       yield* api.projects.create({ params: { organizationId: organization.id }, payload })
     }),
-    undefined,
   )
 
 /** Accepts the invitation and reports which organization and role it granted. */
@@ -154,7 +150,6 @@ export const acceptInvitation = (id: string) =>
       const membership = yield* api.invitations.accept({ params: { invitationId } })
       return { organization: membership.organization.name, role: capitalized(membership.role) }
     }),
-    { organization: "Acme", role: "Member" },
   )
 
 /** Declines the invitation. */
@@ -165,5 +160,4 @@ export const declineInvitation = (id: string) =>
       const invitationId = yield* S.decodeEffect(InvitationId)(id)
       yield* api.invitations.decline({ params: { invitationId } })
     }),
-    undefined,
   )

@@ -23,6 +23,7 @@ import type { Preference } from "../shell/theme.ts"
 import type { SettingsPage } from "./model.ts"
 import { type NotificationChannel, notificationKey } from "./keys.ts"
 import { choiceRow, toggleRow } from "./rows.ts"
+import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
@@ -55,8 +56,9 @@ const timeZoneOptions = (current: string | undefined) => {
 }
 
 /** Account › General: interface defaults and the live tail's behaviour. */
-export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "General", [
+export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const disabled = isSample(page, "preferences")
+  return screen(h, "General", [
     settingsGroup(h, {
       title: "Interface",
       rows: [
@@ -66,6 +68,7 @@ export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           key: "defaultEnvironment",
           label: "Default environment",
           initial: page.preferences?.defaultEnvironment,
+          disabled,
           options: environmentOptions,
         }),
         toggleRow({
@@ -74,6 +77,7 @@ export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           key: "openInNewTab",
           label: "Open actor links in a new tab",
           initial: page.preferences?.openActorLinksInNewTab,
+          disabled,
         }),
         choiceRow({
           h,
@@ -81,6 +85,7 @@ export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           key: "timeZone",
           label: "Time zone",
           initial: page.preferences?.timeZone,
+          disabled,
           options: timeZoneOptions(model.choices["timeZone"] ?? page.preferences?.timeZone),
         }),
       ],
@@ -94,6 +99,7 @@ export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           key: "pauseOnScroll",
           label: "Pause when I scroll",
           initial: page.preferences?.pauseLiveTailOnScroll,
+          disabled,
         }),
         toggleRow({
           h,
@@ -101,10 +107,12 @@ export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           key: "showReplayed",
           label: "Show replayed commands",
           initial: page.preferences?.showReplayedCommands,
+          disabled,
         }),
       ],
     }),
   ])
+}
 
 const preview = (h: H, scheme: "light" | "dark"): Html =>
   h.span(
@@ -177,6 +185,7 @@ export const appearanceScreen = ({ h, model }: ScreenInput<SettingsPage>): Scree
 export const profileScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
   const profile = page.profile
   if (profile === null) return screen(h, "Profile", [])
+  const disabled = isSample(page, "profile")
   return screen(h, "Profile", [
     settingsGroup(h, {
       rows: [
@@ -196,9 +205,10 @@ export const profileScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                 value: model.fields["display-name"] ?? profile.name,
                 size: "sm",
                 required: true,
+                disabled,
                 onInput: (value) => ChangedField({ name: "display-name", value }),
               }),
-              button(h, { label: "Save", size: "sm", type: "submit" }),
+              button(h, { label: "Save", size: "sm", type: "submit", disabled }),
             ],
           ),
         }),
@@ -220,6 +230,7 @@ export const profileScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           control: button(h, {
             label: "Change",
             size: "sm",
+            disabled,
             onClick: SubmittedForm({ form: "password" }),
           }),
         }),
@@ -241,6 +252,7 @@ const notificationEvents: ReadonlyArray<Readonly<{ event: NotificationEvent; lab
 
 /** Account › Notifications: which events reach you by email and in Slack. */
 export const notificationsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const disabled = isSample(page, "notifications")
   const rows = (channel: NotificationChannel) =>
     notificationEvents.map(({ event, label }) =>
       toggleRow({
@@ -248,6 +260,7 @@ export const notificationsScreen = ({ h, model, page }: ScreenInput<SettingsPage
         model,
         key: notificationKey({ channel, event }),
         label,
+        disabled,
         initial: page.notifications.find((entry) => entry.event === event)?.[channel],
       }),
     )

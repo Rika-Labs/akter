@@ -15,7 +15,8 @@ describe("workflows client in fixture mode", () => {
   it("serves fixture workflows, schedules and the timer history", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const page = yield* loadWorkflows
+        const { data: page, sample } = yield* loadWorkflows
+        expect(sample).toBe(true)
         expect(Schema.is(WorkflowsPage)(page)).toBe(true)
         expect(page.runs).toHaveLength(5)
         expect(page.fired?.values).toHaveLength(48)

@@ -10,6 +10,7 @@ export interface PreferenceRow {
   readonly key: string
   readonly label: string
   readonly description?: string
+  readonly disabled?: boolean
 }
 
 /** A switch row bound to one named preference. */
@@ -19,6 +20,7 @@ export const toggleRow = (row: PreferenceRow & Readonly<{ initial?: boolean }>):
     description: row.description,
     control: switchControl(row.h, {
       checked: row.model.toggles[row.key] ?? row.initial ?? false,
+      disabled: row.disabled,
       label: row.label,
       onToggle: ToggledSetting({ key: row.key }),
       attributes: [row.h.DataAttribute("setting", row.key)],
@@ -39,6 +41,7 @@ export const choiceRow = (
     control: select(row.h, {
       name: row.key,
       label: row.label,
+      disabled: row.disabled,
       value: row.model.choices[row.key] ?? row.initial ?? row.options[0]?.value ?? "",
       options: row.options,
       onChange: (value) => ChoseSetting({ key: row.key, value }),

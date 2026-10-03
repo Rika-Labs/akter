@@ -6,7 +6,7 @@ import {
   apiOrigin,
   ConsoleError,
   fixturesEnabled,
-  rememberAuthReturn,
+  peekSignInDestination,
   signInDestination,
 } from "../api/client.ts"
 
@@ -135,19 +135,22 @@ export const makeAuth = (input: Readonly<{ client: () => AuthClient; origin?: ()
       answered(SignedUpAnswer, (auth) =>
         auth.signUp.email({
           ...input,
-          callbackURL: `${origin()}${signInDestination("/onboarding")}`,
+          callbackURL: `${origin()}${peekSignInDestination("/onboarding")}`,
         }),
-      ),
+      ).pipe(Effect.tap(() => Effect.sync(() => signInDestination("/onboarding")))),
     signInSocial: (provider: "github" | "google") =>
       answered(SocialAnswer, (auth) =>
         auth.signIn.social({
           provider,
-          callbackURL: `${origin()}${signInDestination("/")}`,
+          callbackURL: `${origin()}${peekSignInDestination("/")}`,
           newUserCallbackURL: `${origin()}/onboarding`,
           errorCallbackURL: `${origin()}/sign-in`,
           disableRedirect: true,
         }),
-      ).pipe(Effect.map(({ url }) => url)),
+      ).pipe(
+        Effect.tap(() => Effect.sync(() => signInDestination("/"))),
+        Effect.map(({ url }) => url),
+      ),
     signOut: answered(SuccessAnswer, (auth) => auth.signOut()),
     sendVerificationEmail: (email: string) =>
       answered(StatusAnswer, (auth) =>
@@ -190,24 +193,28 @@ export const accessFor = (
 /**
  * Reads the session and fails with `Unauthorized` or `SignedIn` when the route belongs elsewhere;
  * the shell turns either into a redirect. Pages open to everyone skip the call, a session that
- * cannot be read counts as signed out, and fixture mode never calls the service.
+ * cannot be read counts as signed out, and fixture mode never calls the service. `allowSignIn`
+ * keeps the sign-in screen open for a visitor whose session the API just refused, since sending
+ * them back to the overview would loop. Remembering the return path is the caller's job, so the
+ * guard itself reads and decides only.
  */
 export const guardRoute = (
   input: Readonly<{
     route: AppRoute
+    allowSignIn?: boolean
     read?: Effect.Effect<Option.Option<SessionUser>, ConsoleError>
   }>,
 ): Effect.Effect<void, ConsoleError> =>
   Effect.suspend(() => {
-    const { route, read = auth.session } = input
+    const { route, allowSignIn = false, read = auth.session } = input
     if (fixturesEnabled() || AppRoute.isAnyOf(["ResetPassword", "NotFound"])(route))
       return Effect.void
+    if (allowSignIn && AppRoute.isAnyOf(["SignIn"])(route)) return Effect.void
     return read.pipe(
       Effect.orElseSucceed(() => Option.none<SessionUser>()),
       Effect.flatMap((session) => {
         const access = accessFor({ route, session })
         if (access === "allow") return Effect.void
-        if (access === "sign-in") rememberAuthReturn()
         return Effect.fail(
           access === "sign-in"
             ? ConsoleError.make({ kind: "Unauthorized", message: "Sign in to continue." })

@@ -13,9 +13,10 @@ import { currentProject } from "./sidebar.ts"
  */
 export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> => {
   const page = Option.getOrUndefined(model.page)
-  const actorTypes = Predicate.isTagged(page, "ActorsPage") ? page.types : []
-  const deploys = Predicate.isTagged(page, "DeploymentsPage") ? page.deploys : []
-  const sender = model.workspace.pinned[0]
+  const actorTypes = !model.pageSample && Predicate.isTagged(page, "ActorsPage") ? page.types : []
+  const deploys =
+    !model.pageSample && Predicate.isTagged(page, "DeploymentsPage") ? page.deploys : []
+  const sender = model.pageSample ? undefined : model.workspace.pinned[0]
   return [
     ...[...appDestinations, ...secondaryDestinations].map((destination) => ({
       id: `page-${destination.id}`,

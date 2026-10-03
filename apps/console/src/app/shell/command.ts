@@ -9,7 +9,12 @@ import {
   RegionId,
   ApiKeyPermission,
 } from "@akter/cloud-api"
-import { ConsoleError, fixturesEnabled, signInDestination } from "../api/client.ts"
+import {
+  ConsoleError,
+  fixturesEnabled,
+  rememberAuthReturn,
+  signInDestination,
+} from "../api/client.ts"
 import * as Auth from "../auth/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
@@ -40,14 +45,18 @@ import { applyPreference, Preference } from "./theme.ts"
 
 /**
  * Loads the open route's data through its client. A failure becomes a message so the shell can
- * redirect or show it, never an unhandled error.
+ * redirect or show it, never an unhandled error; an `Unauthorized` one first remembers the page so
+ * signing in can return to it. `allowSignIn` lets the sign-in screen open despite a live session.
  */
 export const LoadPage = Command.define("LoadPage", {
-  args: { route: AppRoute },
+  args: { route: AppRoute, allowSignIn: S.optional(S.Boolean) },
   messages: [LoadedPage, FailedPage],
-  execute: ({ route }) =>
-    loadPage(route).pipe(
-      Effect.map((page) => LoadedPage({ page })),
+  execute: ({ route, allowSignIn }) =>
+    loadPage({ route, allowSignIn: allowSignIn ?? false }).pipe(
+      Effect.map(({ data, sample }) => LoadedPage({ page: data, sample })),
+      Effect.tapError((error) =>
+        error.kind === "Unauthorized" ? Effect.sync(rememberAuthReturn) : Effect.void,
+      ),
       Effect.catch((error) =>
         Effect.succeed(FailedPage({ kind: error.kind, message: error.message })),
       ),
@@ -178,12 +187,10 @@ export const SignInWithProvider = Command.define("SignInWithProvider", {
   args: { provider: S.Literals(["github", "google"]) },
   messages: [CompletedAuth, FailedAction, CompletedEffect],
   execute: ({ provider }) =>
-    fixturesEnabled()
-      ? completed(Routes.overview(), true)
-      : Auth.socialUrl(provider).pipe(
-          Effect.flatMap((url) => Navigation.load(url).pipe(Effect.as(CompletedEffect()))),
-          Effect.catch(failed),
-        ),
+    Auth.socialUrl(provider).pipe(
+      Effect.flatMap((url) => Navigation.load(url).pipe(Effect.as(CompletedEffect()))),
+      Effect.catch(failed),
+    ),
 })
 
 /** Sends another verification email. */
@@ -446,7 +453,9 @@ export const Mutate = Command.define("Mutate", {
   args: { action: Action },
   messages: [Mutated, CreatedKey, CompletedAuth, CompletedEffect, FailedMutation],
   execute: ({ action }) =>
-    perform(action).pipe(
-      Effect.catch((error) => Effect.succeed(FailedMutation({ message: error.message }))),
-    ),
+    Effect.suspend(() =>
+      fixturesEnabled()
+        ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data is read-only." }))
+        : perform(action),
+    ).pipe(Effect.catch((error) => Effect.succeed(FailedMutation({ message: error.message })))),
 })

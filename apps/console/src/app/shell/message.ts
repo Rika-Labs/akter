@@ -13,7 +13,7 @@ export const Message = defineMessageUnion({
   ChangedUrl: { url: Url },
   RequestedUrl: { request: UrlRequest },
   RequestedHref: { href: S.String },
-  LoadedPage: { page: S.Option(PageData) },
+  LoadedPage: { page: S.Option(PageData), sample: S.Boolean },
   FailedPage: { kind: S.String, message: S.String },
   RetriedPage: {},
   LoadedWorkspace: { workspace: Workspace },
