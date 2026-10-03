@@ -34,7 +34,7 @@ describe("deployment rollback", () => {
       commitSha: "abcdef1234",
       environmentSnapshot: { APP_SETTING: "asymmetric value" },
     }
-    const valid = (value: unknown) =>
+    const valid = (value: Schema.Json) =>
       Exit.isSuccess(Effect.runSyncExit(Schema.decodeUnknownEffect(RecordBuild)(value)))
     expect(valid(input)).toBe(true)
     expect(valid({ ...input, image: `sha256:${"b".repeat(64)}` })).toBe(true)
@@ -51,7 +51,7 @@ describe("deployment rollback", () => {
 
   it("keeps unmeasured runner metrics unknown instead of substituting zero", () => {
     const runner = Effect.runSync(
-      Schema.decodeUnknownEffect(DeploymentRunner)({
+      Schema.decodeEffect(DeploymentRunner)({
         id: "runner-one",
         region: "us-east-1",
         actorCount: null,
@@ -63,9 +63,7 @@ describe("deployment rollback", () => {
     expect(runner.cpuPercent).toBeNull()
     expect(
       Exit.isFailure(
-        Effect.runSyncExit(
-          Schema.decodeUnknownEffect(DeploymentRunner)({ ...runner, cpuPercent: -0.25 }),
-        ),
+        Effect.runSyncExit(Schema.decodeEffect(DeploymentRunner)({ ...runner, cpuPercent: -0.25 })),
       ),
     ).toBe(true)
   })
