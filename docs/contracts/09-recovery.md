@@ -1,5 +1,9 @@
 # Failure and recovery
 
+The same recovery, receipt replay and fencing guarantees apply on Bun 1.4.2+ and Node 24+. File-backed PGlite must keep its exclusive kernel directory lock on both runtimes; runtime selection must not change routing keys or the encoding of durable state. See [runtime portability](../decisions/0069-node-runtime.md) for the platform boundary and evidence limits.
+
+Once WebSocket close publishes an ended connection, its owner-row cleanup MUST survive interruption by the session's other reader finishing. A process crash still follows the durable connection recovery path; an in-process reader race cannot substitute for it.
+
 **Responsibility:** define behavior across crashes and restarts.  
 **Authority:** normative.  
 **Owner role:** reliability.  

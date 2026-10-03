@@ -1,4 +1,14 @@
-import { Crypto, Effect, Exit, ManagedRuntime, Redacted, Scope } from "effect"
+import {
+  Crypto,
+  Data,
+  Effect,
+  Exit,
+  ManagedRuntime,
+  Redacted,
+  Schedule,
+  Schema,
+  Scope,
+} from "effect"
 import type { Config } from "effect"
 import { Pool } from "pg"
 import type { ConformanceBackend, ConformanceDatabase } from "../../conformance.ts"
@@ -6,6 +16,11 @@ import { disposableDatabase } from "../../database.ts"
 import { cryptoLayer, httpServerLayer } from "../platform.ts"
 
 const harness = ManagedRuntime.make(cryptoLayer)
+
+/** Database creation on the primary has not reached the asynchronous standby yet. */
+class ReplicaDatabasePending extends Data.TaggedError("ReplicaDatabasePending")<{
+  readonly cause: unknown
+}> {}
 
 export interface PostgresBackendOptions {
   /** The server's connection string; each suite creates databases on it. */
@@ -31,7 +46,10 @@ export interface PostgresBackendOptions {
  * Databases created on the primary replicate, so a replica serves each under
  * the same name. A template copy is a whole-database snapshot of a stopped
  * deployment; a disposed runtime's server sessions can outlive its pool
- * briefly, and Postgres refuses to copy a database with sessions.
+ * briefly, and Postgres refuses to copy a database with sessions. A replica
+ * control connection waits for the newly created database to exist, because
+ * asynchronous replay need not have applied its creation when the primary
+ * returns; later control queries and their replay checks are never retried.
  */
 export const postgresBackend = (options: PostgresBackendOptions): ConformanceBackend => ({
   independentConnections: true,
@@ -95,6 +113,22 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
                   ),
                   (pool) => Effect.promise(() => pool.end()),
                 ).pipe(
+                  Effect.tap((pool) =>
+                    Effect.tryPromise({
+                      try: () => pool.query("SELECT 1"),
+                      catch: (cause) => {
+                        if (Schema.is(Schema.Struct({ code: Schema.Literal("3D000") }))(cause))
+                          return new ReplicaDatabasePending({ cause })
+                        throw cause
+                      },
+                    }).pipe(
+                      Effect.retry({
+                        schedule: Schedule.spaced("25 millis"),
+                        times: 400,
+                      }),
+                      Effect.orDie,
+                    ),
+                  ),
                   Effect.map((pool) => ({
                     query: (statement: string, parameters?: ReadonlyArray<unknown>) =>
                       Effect.promise(() =>

@@ -1,5 +1,5 @@
 import { Config, Console, Effect } from "effect"
-import { flockExclusive } from "./flock.ts"
+import { flockExclusive } from "../../../runtime/database/flock.ts"
 
 /**
  * Takes the lock on `FLOCK_PATH` and prints `HELD`, then waits to be killed; a pending timer keeps Node alive, which `Effect.never` does not, or

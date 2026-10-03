@@ -1,14 +1,18 @@
-import { BunServices } from "@effect/platform-bun"
 import { Config, Effect, FileSystem, Layer, ManagedRuntime, type Scope, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { afterAll, describe, expect, it } from "vitest"
-import { DataDirLocked } from "../../errors/database.ts"
-import { LOCK_FILE, pglite, POSTGRES_MAJOR } from "./pglite.ts"
+import { DataDirLocked } from "../../../errors/database.ts"
+import { LOCK_FILE, pglite, POSTGRES_MAJOR } from "../../../runtime/database/pglite.ts"
 
 const fixture = new URL("./pglite-node.ts", import.meta.url).pathname
 
+const services =
+  process.versions.bun === undefined
+    ? (await import("@effect/platform-node")).NodeServices.layer
+    : (await import("@effect/platform-bun")).BunServices.layer
+
 describe("file-backed PGlite under Node", () => {
-  const runtime = ManagedRuntime.make(BunServices.layer)
+  const runtime = ManagedRuntime.make(services)
   afterAll(() => runtime.dispose())
 
   const run = <A, E>(

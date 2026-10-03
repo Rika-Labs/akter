@@ -1,13 +1,17 @@
-import { BunServices } from "@effect/platform-bun"
 import { Config, Effect, FileSystem, ManagedRuntime, type Scope, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { flockExclusive } from "./flock.ts"
 
-const holder = new URL("./flock-holder.ts", import.meta.url).pathname
+const holder = new URL("../../testing/conformance/crash/flock-holder.ts", import.meta.url).pathname
+
+const services =
+  process.versions.bun === undefined
+    ? (await import("@effect/platform-node")).NodeServices.layer
+    : (await import("@effect/platform-bun")).BunServices.layer
 
 describe("flockExclusive", () => {
-  const runtime = ManagedRuntime.make(BunServices.layer)
+  const runtime = ManagedRuntime.make(services)
   afterAll(() => runtime.dispose())
 
   const run = <A, E>(

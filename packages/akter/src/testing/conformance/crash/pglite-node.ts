@@ -1,7 +1,7 @@
 import { Config, Console, Context, Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
-import { DataDirLocked, DataDirVersion } from "../../errors/database.ts"
-import { pglite } from "./pglite.ts"
+import { DataDirLocked, DataDirVersion } from "../../../errors/database.ts"
+import { pglite } from "../../../runtime/database/pglite.ts"
 
 /**
  * One process on a file-backed PGlite `dataDir`, started by `pglite-node.test.ts`

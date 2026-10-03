@@ -9,6 +9,8 @@ Use an ADR when a choice changes an interface, invariant, data model, deployment
 
 Decisions do not override newer accepted requirements. When a decision is superseded, preserve it and link the replacement.
 
+- [ADR 0069: Node and Bun runtime portability](0069-node-runtime.md) adds Node 24+ platform layers while preserving routing keys, zstd state and file-backed PGlite kernel locks.
+
 - [ADR 0001: Repository structure](0001-repository-structure.md) defines the one-package framework and role-folder layout.
 - [ADR 0002: Clarify the adopted v4 contracts](0002-v4-contract-clarifications.md) reconciles the final API, transaction, and capability decisions without claiming runtime implementation.
 - [ADR 0003: Failure rollback, automatic scoping, drain, and hosted trust](0003-failure-scoping-drain-and-hosted-trust.md) resolves the corresponding open decisions from ADR 0002 and requires context-scoped adapters, without claiming implementation or backend support.

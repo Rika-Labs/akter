@@ -34,7 +34,8 @@
     "prepare": "effect-tsgo patch --oxlint",
     "dev": "bun --env-file=.env run turbo run dev",
     "build": "turbo run build",
-    "typecheck": "GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
+    "typecheck": "bun run typecheck:ci && GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
+    "typecheck:ci": "tsc --noEmit -p .github/tsconfig.verify.json",
     "test": "turbo run test --concurrency=100%",
     "test:integration": "turbo run test:integration --concurrency=100%",
     "test:e2e": "turbo run test:e2e --filter=@akter/e2e",
@@ -43,11 +44,13 @@
     "lint:structure": "bun tooling/structure/src/index.ts",
     "pack:check": "bun .github/src/pack.ts",
     "pack:smoke": "bun .github/src/release/smoke.ts",
-    "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts",
+    "test:node:core": "node --expose-gc node_modules/vitest/vitest.mjs run --config packages/akter/vitest.node.config.ts && node node_modules/vitest/vitest.mjs run packages/akter/src/client/clock.test.ts packages/akter/src/client/optimistic.test.ts packages/akter/src/client/report.test.ts packages/akter/src/client/offline/queue.test.ts packages/akter/src/runtime/storage/platform.test.ts packages/akter/src/identity/digest.test.ts packages/akter/src/serve/origin.test.ts packages/akter/src/runtime/database/flock.test.ts packages/akter/src/testing/conformance/crash/pglite-node.test.ts packages/akter/src/testing/conformance/postgres/database.test.ts",
+    "test:node": "bun run test:node:core && SMOKE_RUNTIME=node bun run pack:smoke",
+    "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts .github/src/verify.ts .github/src/verify.test.ts .github/src/replica.ts .github/src/node-postgres.ts .github/src/release/smoke.ts",
     "format": "oxfmt . '!research/**'",
     "format:check": "oxfmt --check . '!research/**'",
     "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100% && bun run pack:check",
-    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run pack:check && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && REPLICA=$(bun .github/src/replica.ts) && TEST_REPLICA_DATABASE_URL=$REPLICA GOMAXPROCS=1 turbo run lint lint:root typecheck test build test:integration test:e2e --concurrency=100% --summarize"
+    "check:ci": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run typecheck:ci && bun --bun node_modules/vitest/vitest.mjs run .github/src/verify.test.ts && bun run pack:check && SMOKE_RUNTIME=node bun run pack:smoke && bun run pack:smoke && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && REPLICA=$(bun .github/src/replica.ts) && NODE_DATABASE=$(bun .github/src/node-postgres.ts) && NODE_REPLICA=$(TEST_DATABASE_URL=$NODE_DATABASE TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434 bun .github/src/replica.ts) && TEST_REPLICA_DATABASE_URL=$REPLICA TEST_NODE_REPLICA_DATABASE_URL=$NODE_REPLICA TEST_NODE_DATABASE_URL=$NODE_DATABASE GOMAXPROCS=1 bun .github/src/verify.ts"
   },
   "devDependencies": {
     "@effect/platform-bun": "catalog:",
