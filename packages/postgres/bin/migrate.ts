@@ -1,5 +1,5 @@
 import { BunFileSystem } from "@effect/platform-bun"
-import { Config, Effect, FileSystem, Layer } from "effect"
+import { Config, Effect, FileSystem, Function, Layer, Predicate } from "effect"
 import { Pool, type PoolClient } from "pg"
 
 const query = (client: PoolClient, text: string, values: Array<unknown> = []) =>
@@ -55,18 +55,24 @@ const migrateEffect = Effect.fn("Database.migrate")(function* (url: string, star
  * order and one transaction each, under a session advisory lock so concurrent
  * callers apply each file once. A failing file is rolled back and rejects.
  */
-export const migrate = (url: string, options?: { readonly startAt: string }): Promise<void> =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const context = yield* Layer.build(BunFileSystem.layer)
-        yield* migrateEffect(url, options?.startAt).pipe(
-          Effect.provideContext(context),
-          Effect.orDie,
-        )
-      }),
+export const migrate: {
+  (url: string, options?: { readonly startAt: string }): Promise<void>
+  (options?: { readonly startAt: string }): (url: string) => Promise<void>
+} = Function.dual(
+  (args) => Predicate.isString(args[0]),
+  (url: string, options?: { readonly startAt: string }): Promise<void> =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(BunFileSystem.layer)
+          yield* migrateEffect(url, options?.startAt).pipe(
+            Effect.provideContext(context),
+            Effect.orDie,
+          )
+        }),
+      ),
     ),
-  )
+)
 
 if (import.meta.main) {
   void Effect.runPromise(
