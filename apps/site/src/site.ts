@@ -13,6 +13,12 @@ export const githubUrl = "https://github.com/Rika-Labs/akter"
  */
 export const consoleUrl = "https://app.akter.dev"
 
+/** The public documentation, hosted on Mintlify from the repository's `docs/` directory. */
+export const docsUrl = "https://docs.akter.dev"
+
+/** The documentation's first page, where a new developer starts. */
+export const quickstartUrl = `${docsUrl}/quickstart`
+
 /** Where "Talk to us" and the Enterprise plan point until a sales address exists. */
 export const contactUrl = "mailto:hello@akter.dev"
 
@@ -31,7 +37,7 @@ export interface Destination {
 
 /** The header's page links, in order. */
 export const pages: ReadonlyArray<Destination> = [
-  { label: "Docs", href: "/docs" },
+  { label: "Docs", href: docsUrl },
   { label: "Examples", href: "/examples" },
   { label: "Benchmarks", href: "/benchmarks" },
   { label: "Pricing", href: "/pricing" },

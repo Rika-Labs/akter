@@ -1,3 +1,8 @@
+---
+title: "Generated contracts"
+description: "What actor definitions expose to clients."
+---
+
 # Generated contracts
 
 **Responsibility:** define what actor definitions expose to clients.  
