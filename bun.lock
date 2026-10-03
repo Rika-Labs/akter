@@ -232,7 +232,6 @@
     "@effect/sql-pglite": "4.0.0",
     "@effect/vitest": "4.0.0",
     "@foldkit/vite-plugin": "0.24.0",
-    "@stylexjs/babel-plugin": "0.19.1",
     "@stylexjs/stylex": "0.19.1",
     "@stylexjs/unplugin": "0.19.1",
     "@types/react": "19.3.0",
