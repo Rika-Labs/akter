@@ -6,11 +6,14 @@ import {
   CommandConflict,
   CommandExpired,
   InvalidCommandId,
+  Unauthorized,
   User,
 } from "../../index.ts"
 import { type ActorRef, callerKey } from "../../identity/caller.ts"
 import { commandTimes } from "../../identity/command.ts"
 import { routingKey } from "../../runtime/storage/codec.ts"
+import { InternalActors } from "../../runtime/actors.ts"
+import { databaseTime } from "../../runtime/turn/admission.ts"
 import { hashCanonical } from "../../runtime/turn/receipt.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
@@ -68,6 +71,39 @@ const writeReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: stri
 /** Receipt admission cases: replay by canonical payload hash, admission fenced inside the turn, and terminal rejection of malformed or expired identities. */
 export const admissionConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "refuses an external caller's redelivery flag before any handler or receipt",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const actors = yield* InternalActors
+          const adder = yield* Adder.get("forged-redelivery")
+          const commandId = yield* (yield* Actors).mintCommandId
+          const before = executions.count
+
+          for (const metadata of [
+            { redelivered: false },
+            { redelivered: true },
+            { clockOffset: 60_000 },
+          ])
+            expect(
+              yield* actors
+                .execute({
+                  ref: adder.ref,
+                  caller: User.make({ subject: "alice" }),
+                  command: "Echo",
+                  commandId,
+                  payload: '{"value":"forged"}',
+                  ...metadata,
+                })
+                .pipe(Effect.flip),
+            ).toMatchObject({ reason: Unauthorized.make({ code: "access_denied" }) })
+
+          expect(executions.count).toBe(before)
+          expect(yield* (yield* ActorTest).receiptsFor(adder.ref, "Echo")).toBe(0)
+        }),
+      ),
+  },
+  {
     name: "replays a receipt another runner stored by its canonical payload hash and conflicts on a changed payload",
     run: ({ expect, environment }) =>
       environment.run(
@@ -116,6 +152,33 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
           })
           expect(executions.count).toBe(before)
           expect(yield* test.inspect(adder.ref)).toMatchObject({ generation: "1", receipts: 3 })
+        }),
+      ),
+  },
+  {
+    name: "rechecks expiry before the reply against a clock read after the commit, not the admission clock",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const adder = yield* Adder.get("expires-mid-turn")
+          expect(yield* adder.Echo("warm")).toBe("warm")
+          const before = executions.count
+          const pause = yield* test.pauseNext("beforeHandler")
+          const now = yield* databaseTime
+          const id = `v1.${now - 59_500}.${now + 500}.6c0f9e2a-4b1d-4c3e-9a7f-1e2d3c4b5a69`
+
+          const call = yield* adder
+            .Echo("late")
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+
+          yield* pause.reached
+          yield* Effect.sleep("600 millis")
+          yield* pause.release
+
+          expect((yield* Fiber.join(call)).reason).toEqual(CommandExpired.make({ commandId: id }))
+          expect(executions.count).toBe(before + 1)
+          expect(yield* test.receiptsFor(adder.ref, "Echo")).toBe(2)
         }),
       ),
   },

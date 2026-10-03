@@ -8,6 +8,7 @@ import {
   Metric,
   Option,
   Predicate,
+  Schedule,
   Schema,
   type Scope,
   Tracer,
@@ -266,6 +267,16 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* author.Bump(2).pipe(Actor.commandId(commandId))).toBe(2)
 
+          yield* Effect.sync(() =>
+            withAttribute(spans, SpanNames.turn("ObsAuthor", "Bump"), "command.id", commandId),
+          ).pipe(
+            Effect.repeat({
+              until: (finished) => finished.length === 1,
+              schedule: Schedule.spaced("10 millis"),
+              times: 200,
+            }),
+          )
+
           const [turn] = withAttribute(
             spans,
             SpanNames.turn("ObsAuthor", "Bump"),
@@ -306,7 +317,7 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "answers a retried command id from its receipt in the admission span, without a second turn",
+    name: "answers a retried command id from its receipt in a turn span marked replayed, without running the handler again",
     run: ({ expect, environment }) =>
       withTelemetry(environment, ({ spans }) =>
         Effect.gen(function* () {
@@ -315,18 +326,25 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
 
           yield* author.Bump(1).pipe(Actor.commandId(commandId))
           expect(yield* author.Bump(1).pipe(Actor.commandId(commandId))).toBe(1)
+          expect(yield* author.Bump(1)).toBe(2)
 
-          const admissions = withAttribute(spans, SpanNames.admission, "command.id", commandId)
+          const turns = withAttribute(
+            spans,
+            SpanNames.turn("ObsAuthor", "Bump"),
+            "command.id",
+            commandId,
+          )
 
-          expect(admissions.map((span) => span.attributes.get("admission.replayed"))).toEqual([
-            undefined,
-            true,
-          ])
           expect(
-            withAttribute(spans, SpanNames.turn("ObsAuthor", "Bump"), "command.id", commandId)
-              .length,
-          ).toBe(1)
-          expect(yield* valueOf("akter.receipts.written", { actor_type: "ObsAuthor" })).toBe(1)
+            turns.map((span) => [
+              span.attributes.get("turn.replayed"),
+              span.attributes.get("turn.outcome"),
+            ]),
+          ).toEqual([
+            [false, "success"],
+            [true, "replay"],
+          ])
+          expect(yield* valueOf("akter.receipts.written", { actor_type: "ObsAuthor" })).toBe(2)
           expect(yield* valueOf("akter.receipts.replayed", { actor_type: "ObsAuthor" })).toBe(1)
         }),
       ),
@@ -433,6 +451,14 @@ export const observabilityConformance: ReadonlyArray<ConformanceCase> = [
           yield* (yield* Author.get("a6")).Bump(1)
 
           const author = { actor_type: "ObsAuthor" }
+
+          yield* valueOf("akter.turn.duration_ms", author).pipe(
+            Effect.repeat({
+              until: (recorded) => recorded === 3,
+              schedule: Schedule.spaced("10 millis"),
+              times: 200,
+            }),
+          )
 
           expect(yield* valueOf("akter.turns", { ...author, outcome: "success" })).toBe(3)
           expect(yield* valueOf("akter.receipts.written", author)).toBe(3)

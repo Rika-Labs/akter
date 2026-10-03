@@ -25,7 +25,7 @@ import { receiptMarginMs } from "../storage/retention.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
-import { databaseTime, FrameworkClock } from "./admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
@@ -190,6 +190,8 @@ interface Session {
 export interface Delivery {
   readonly request: Request
   readonly command: RegisteredCommand
+  /** Set only after this external id passes the fenced admission check. */
+  admitted?: boolean
 }
 
 /**
@@ -278,6 +280,8 @@ export interface Done {
   readonly written: Written
   /** The commit version each caller's later queries wait for. */
   readonly version: string
+  /** The database clock read on the turn's session after the transaction ended. */
+  readonly endedAtMs: number
   /** What the batch changed that a watched query may have read; nothing when it rolled back. */
   readonly wrote: WriteSet
   /** The commit made outbox or subscription work due now, so the relay should claim it at once. */
@@ -294,6 +298,7 @@ export interface Done {
 interface Ended<W extends Delivery, P> {
   readonly plan: Plan
   readonly version: string
+  readonly endedAtMs: number
   readonly following?: ReadonlyArray<W> | undefined
   readonly chained?: P | undefined
 }
@@ -380,9 +385,11 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * nothing runs, the activation drops its cache, and the retry reloads under a
  * new generation.
  *
- * Admission checks. An external command still runs past expiry, but not once
- * retention cleanup may have pruned a receipt of its id that committed
- * meanwhile, or the expired id would run again. Only the relay's subscription
+ * Admission checks. External ids are validated against the fenced read's
+ * clock before their receipt is released or handler runs. An owner reports
+ * that admission on a retryable failure, so only a previously admitted
+ * redelivery can run past expiry, and not once retention could have pruned
+ * its receipt. No pre-delivery receipt read is needed. Only the relay's subscription
  * deliveries reach a handler, and only a handler takes one, so no caller
  * reaches it around the cursor or route. A routed event for a subscriber its
  * creating command has not created is skipped, and its cursor keeps a stale
@@ -425,7 +432,9 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * receipt replies arrive. If N's commit fails, the next batch's transaction
  * is rolled back unseen with it. The commit version is read on the same
  * session after the transaction ends, in the same flight, so it covers the
- * batch's commit record and any receipt it replayed.
+ * batch's commit record and any receipt it replayed. The same statement reads
+ * a fresh clock after the transaction ended for the external expiry recheck,
+ * never reusing admission time.
  *
  * The session is unsafe from the moment a `BEGIN` may be queued until a
  * transaction-ending reply with nothing queued behind it. Any other exit
@@ -658,7 +667,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         if (
           request.external === true &&
-          now >= commandTimes(request.commandId).expiresAt + expiryMarginMs
+          Number(admitted.now) + (request.clockOffset ?? clock.offsetMillis()) >=
+            commandTimes(request.commandId).expiresAt + expiryMarginMs
         ) {
           settled[index] = Result.fail(
             ActorError.make({ reason: CommandExpired.make({ commandId: request.commandId }) }),
@@ -741,10 +751,34 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             )
       }
 
-      const admitOne = (index: number) =>
-        Effect.flatMap(hashCanonical(admissions[index]!.canonical), (hash) =>
+      const admitOne = (index: number) => {
+        const request = batch[index]!.request
+        const identityNow =
+          Number(admissions[index]!.now) + (request.clockOffset ?? clock.offsetMillis())
+        const hashed = Effect.flatMap(hashCanonical(admissions[index]!.canonical), (hash) =>
           admitHashed(index, hash),
         )
+
+        if (request.external !== true) return hashed
+
+        return Effect.flatMap(
+          checkIdentity(request.commandId, retryWindowMs, identityNow).pipe(Effect.result),
+          (identity) => {
+            if (
+              Result.isFailure(identity) &&
+              (request.redelivered !== true || !Schema.is(CommandExpired)(identity.failure.reason))
+            ) {
+              settled[index] = Result.fail(identity.failure)
+
+              return Effect.undefined
+            }
+
+            batch[index]!.admitted = true
+
+            return hashed
+          },
+        )
+      }
 
       let index = 0
 
@@ -1008,7 +1042,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
    * Remembers what a commit proved and hands the ended batch to the
    * activation, which publishes it. Only a commit replaces the cache.
    */
-  const finish = (batch: ReadonlyArray<W>, plan: Plan, version: string) =>
+  const finish = (batch: ReadonlyArray<W>, plan: Plan, version: string, endedAtMs: number) =>
     Effect.suspend(() => {
       if (plan.writes !== undefined) {
         cache.generation = plan.generation
@@ -1030,6 +1064,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         replays: plan.replays,
         written: plan.writes === undefined ? nothingWritten : plan.written,
         version,
+        endedAtMs,
         wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
         wake:
           plan.wake ||
@@ -1070,7 +1105,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         Effect.andThen(() => (pending === undefined ? open(admitting) : Effect.succeed(pending))),
         Effect.flatMap((admitted) =>
           transact(admitting, admitted).pipe(
-            Effect.tap((ended) => finish(admitting, ended.plan, ended.version)),
+            Effect.tap((ended) => finish(admitting, ended.plan, ended.version, ended.endedAtMs)),
             run.observe(admitting),
           ),
         ),
@@ -1182,6 +1217,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
           let tag: string | undefined
           let version = ""
+          let endedAtMs = 0
 
           const commit: ReadonlyArray<Statement> = [
             ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
@@ -1191,7 +1227,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               if (!chained) open = false
             }),
             Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
-              version = (result.rows[0] as { version: string }).version
+              const ended = result.rows[0] as { version: string; now: string }
+              version = ended.version
+              endedAtMs = Number(ended.now)
             }),
           ]
 
@@ -1215,6 +1253,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               () => ({
                 plan,
                 version,
+                endedAtMs,
                 ending,
                 tag,
                 following,
@@ -1306,9 +1345,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             ),
         )
 
-        const rows = yield* sql.unsafe<{ version: string }>(COMMIT_VERSION)
+        const [ended] = yield* sql.unsafe<{ version: string; now: string }>(COMMIT_VERSION)
 
-        return { plan, version: rows[0]!.version }
+        return {
+          plan,
+          version: ended!.version,
+          endedAtMs: Number(ended!.now),
+        }
       }),
   )
 

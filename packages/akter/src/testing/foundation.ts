@@ -431,7 +431,10 @@ export const foundationConformance: ReadonlyArray<ConformanceCase<FoundationFixt
                 const test = yield* ActorTest
                 const before = yield* test.inspect(singleton.ref)
                 expect(yield* singleton.Ping().pipe(Actor.commandId(saved.id))).toBe("singleton")
-                expect(yield* test.inspect(singleton.ref)).toEqual(before)
+                expect(yield* test.inspect(singleton.ref)).toEqual({
+                  ...before,
+                  generation: String(Number(before.generation) + 1),
+                })
               }),
             ),
           )
