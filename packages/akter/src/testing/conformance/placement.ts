@@ -15,6 +15,7 @@ import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { serve } from "../../serve/layer.ts"
 import { Auth } from "../../runtime/index.ts"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 
 const orderRows = Actor.table(pgTable("placement_orders", { id: text("id").primaryKey() }))
 
@@ -143,7 +144,8 @@ export const placementLayer = Layer.unwrap(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    for (const statement of placementDdl) yield* sql.unsafe(statement)
+    for (const statement of placementDdl)
+      yield* retryPoolRefusal(sql.unsafe(statement)).pipe(Effect.orDie)
 
     return Layer.mergeAll(
       Order.toLayer(

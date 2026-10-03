@@ -33,6 +33,10 @@ Open-loop writes past a runner's capacity queued for seconds (BENCHMARKS.md, ope
 
 A refused command never reached a turn: it writes no receipt and changes no state, and its retry under the same command id runs it at most once. Admitted commands keep exactly-once semantics, because admission changes only transient scheduling and connection acquisition, not fence, receipt, handler, or commit ordering.
 
+### Concurrent registration
+
+Actor and query layers register concurrently during startup, so an application with more layers than pool checkout slots can fill the bound without accepting any command. Registration retries only the runtime's pre-statement checkout refusal, with exponential backoff from 10 ms capped at 250 ms, before converting other SQL failures into startup defects. Each preparatory SQL operation is retried separately: the runtime never replays a completed registration or its scope finalizers. Placement and schema incompatibilities still fail startup. External command and query checkouts retain their refusal behavior.
+
 ## Alternatives
 
 - **A fixed in-flight limit with immediate refusal.** Measured first. 64 slots capped throughput near 670/s on the benchmark container, because transient stalls (cold activations, collections) filled the slots and every arrival during them was refused; 128 and 256 slots refused almost nothing at 2,000/s while requests queued for seconds in the accept path, which no in-process counter sees.

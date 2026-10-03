@@ -1,6 +1,7 @@
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, Effect, Exit, Fiber, Layer, Result, Schema } from "effect"
 import { SqlClient } from "effect/sql"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { BATCH_CAP, MERGE_CAP } from "../../runtime/entity/mailbox.ts"
@@ -72,9 +73,11 @@ const ran = (label: string) => runs.set(label, (runs.get(label) ?? 0) + 1)
 export const batchesLayer = Layer.unwrap(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    yield* sql.unsafe(`CREATE TABLE IF NOT EXISTS batch_marks (
+    yield* retryPoolRefusal(
+      sql.unsafe(`CREATE TABLE IF NOT EXISTS batch_marks (
       routing_key bigint, tenant_id text, actor_id text, id text,
-      PRIMARY KEY (routing_key, tenant_id, actor_id, id))`)
+      PRIMARY KEY (routing_key, tenant_id, actor_id, id))`),
+    )
 
     return Ledger.toLayer(
       Effect.succeed({

@@ -17,6 +17,7 @@ import {
 } from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/sql"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 import { Actor, ActorError, ActorUnavailable, Actors, Intent } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
@@ -106,9 +107,11 @@ const actorsLive = (probe: Probe) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* sql.unsafe(`CREATE TABLE IF NOT EXISTS pipeline_marks (
+      yield* retryPoolRefusal(
+        sql.unsafe(`CREATE TABLE IF NOT EXISTS pipeline_marks (
         routing_key bigint, tenant_id text, actor_id text, id text,
-        PRIMARY KEY (routing_key, tenant_id, actor_id, id))`)
+        PRIMARY KEY (routing_key, tenant_id, actor_id, id))`),
+      )
 
       return Layer.mergeAll(
         Meter.toLayer(

@@ -1,5 +1,5 @@
 import { PgClient, PgPool } from "@effect/sql-pg"
-import { Duration, Effect, Schema } from "effect"
+import { Duration, Effect, Schedule, Schema } from "effect"
 import { SqlClient, SqlError, Statement } from "effect/sql"
 import type { SqlConnection } from "effect/sql"
 import { admissionLimit, isOverloaded } from "../admission.ts"
@@ -20,6 +20,15 @@ export const isPoolRefusal = (cause: unknown) =>
   SqlError.isSqlError(cause) &&
   Schema.is(ActorError)(cause.reason.cause) &&
   isOverloaded(cause.reason.cause)
+
+/** Retries a pre-statement checkout refusal for scoped startup and background work. */
+export const retryPoolRefusal = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.retry({
+      while: isPoolRefusal,
+      schedule: Schedule.min([Schedule.exponential("10 millis", 2), Schedule.spaced("250 millis")]),
+    }),
+  )
 
 /** Postgres can answer COMMIT with ROLLBACK when a transaction has already aborted. */
 const commit = (connection: SqlConnection.Connection) =>

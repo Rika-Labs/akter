@@ -1,3 +1,4 @@
+import { BunCrypto } from "@effect/platform-bun"
 import {
   Config,
   Context,
@@ -10,6 +11,7 @@ import {
   Option,
   Redacted,
   Scope,
+  Schema,
   Stream,
 } from "effect"
 import { afterAll, describe, expect, it } from "vitest"
@@ -17,10 +19,60 @@ import { Reactivity } from "effect/reactivity"
 import { boundedPool, isPoolRefusal } from "./bounded.ts"
 import { TurnConnections, turnConnections } from "../turn/pipeline.ts"
 import { Coordination, coordinationLayer } from "./coordination.ts"
+import { Actor } from "../../index.ts"
+import { ActorTest } from "../../testing/actor-test.ts"
+import { disposableDatabase } from "../../testing/database.ts"
 
 describe("bounded Postgres checkout queues", () => {
-  const runtime = ManagedRuntime.make(Reactivity.layer)
+  const runtime = ManagedRuntime.make(Layer.merge(Reactivity.layer, BunCrypto.layer))
   afterAll(() => runtime.dispose())
+  it("retries checkout refusals while concurrently registering actor and query layers", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const database = yield* disposableDatabase({
+            url: Redacted.make(yield* Config.String("TEST_DATABASE_URL")),
+          })
+          const Ping = Actor.command("Ping", { payload: Schema.Int, success: Schema.Int })
+          const Value = Actor.query("Value", { success: Schema.Int })
+          const actors = Array.from({ length: 80 }, (_, index) =>
+            Actor.make(`StartupPool${index}`, {
+              key: Schema.String,
+              state: Actor.state({}),
+              api: { Ping, Value },
+            }),
+          )
+          const layers = actors.flatMap((actor) => [
+            actor.toLayer(Effect.succeed({ Ping: (value: number) => Effect.succeed(value) })),
+            actor.toQueryLayer(Effect.succeed({ Value: () => Effect.succeed(37) })),
+          ])
+          const live = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              ManagedRuntime.make(
+                Layer.mergeAll(Layer.empty, ...layers).pipe(
+                  Layer.provideMerge(ActorTest.layer({ database, maxConnections: 2 })),
+                  Layer.provide(BunCrypto.layer),
+                ),
+              ),
+            ),
+            (live) => Effect.promise(() => live.dispose()),
+          )
+          yield* Effect.promise(() =>
+            live.runPromise(
+              Effect.gen(function* () {
+                const test = yield* ActorTest
+                for (const [index, actor] of actors.entries()) {
+                  const handle = yield* actor.get("probe")
+                  expect(yield* handle.Ping(index + 11)).toBe(index + 11)
+                  expect(yield* handle.Value()).toBe(37)
+                  expect(yield* test.inspect(handle.ref)).toMatchObject({ receipts: 1 })
+                }
+              }),
+            ),
+          )
+        }),
+      ),
+    ))
   it("uses one connection for nested transactions and streaming reads without checking out again", () =>
     runtime.runPromise(
       Effect.scoped(

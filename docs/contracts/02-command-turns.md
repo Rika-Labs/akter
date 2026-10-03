@@ -9,6 +9,8 @@ External admission MUST check current authorization and command expiry under the
 
 A runner MAY refuse overload before durable admission. Such a refusal MUST run no handler and write no receipt, MUST be retryable `ActorUnavailable` with a retry delay, and MUST preserve the caller's command identity on retry. Accepted turns retain every transaction and receipt guarantee below. A caller stopping its wait MUST NOT free the executing attempt's admission slot or cancel its turn. The runtime's bounded command queue and each storage checkout queue are transient scheduling controls, never durable authority.
 
+Concurrent actor, query, and job layer registration MUST retry a pre-statement pool checkout refusal with backoff instead of converting it into a startup defect. Registration MUST still reject incompatible placement, tables, workflows, and payload versions; it MUST NOT retry statement failures or unknown commit outcomes as checkout refusals. This startup retry does not change external command overload responses.
+
 Every admitted command attempt MUST execute within one framework-owned transaction, in this order:
 
 1. lock and validate the generation fence;
