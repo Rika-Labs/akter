@@ -14,11 +14,14 @@ const repository = new URL("../../", import.meta.url).pathname
 /**
  * One compiler pass covers the console and `@akter/ui`, which the console consumes as TypeScript
  * source. Tokens stay in `light-dark()` so the Appearance preference can switch `color-scheme`.
+ * The console ships as one application chunk (about 165 kB gzipped, mostly Effect and FoldKit), so
+ * the chunk warning sits above it rather than splitting routes that every session loads anyway.
  */
 export default defineConfig(({ command }) => ({
   build: {
     target: "es2023",
     cssTarget: ["chrome124", "firefox128", "safari18"],
+    chunkSizeWarningLimit: 640,
     manifest: true,
   },
   server: { host: "127.0.0.1" },
