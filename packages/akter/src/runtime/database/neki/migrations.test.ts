@@ -12,6 +12,7 @@ import {
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { ShardingConfig } from "effect/cluster"
+import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actors } from "../../index.ts"
@@ -382,6 +383,39 @@ const describeMigrations = (neki: boolean) => {
 
 describe("Neki migration protocol on real Postgres", () => {
   describeMigrations(false)
+
+  it("replays a migration whose statements already carry their own existence guards", () =>
+    harness.runPromise(
+      withDatabase((url, pool) =>
+        Effect.gen(function* () {
+          yield* run(
+            url,
+            migrator({
+              "0001_guarded": Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                yield* sql`CREATE TABLE IF NOT EXISTS guarded_forms (id integer PRIMARY KEY)`
+                yield* sql`ALTER TABLE guarded_forms ADD COLUMN IF NOT EXISTS note text, ADD COLUMN IF NOT EXISTS extra integer`
+                yield* sql`CREATE INDEX IF NOT EXISTS guarded_forms_note ON guarded_forms (note)`
+                yield* sql`DROP INDEX IF EXISTS guarded_forms_note`
+                yield* sql`DROP TABLE IF EXISTS guarded_forms_absent`
+              }),
+            }),
+          )
+          expect(
+            (yield* query(
+              pool,
+              "SELECT column_name FROM information_schema.columns WHERE table_name = 'guarded_forms' ORDER BY column_name",
+            )).rows,
+          ).toEqual([{ column_name: "extra" }, { column_name: "id" }, { column_name: "note" }])
+          expect(
+            (yield* query(
+              pool,
+              "SELECT count(*)::int AS steps, count(*) FILTER (WHERE completed)::int AS completed FROM actor_migration_steps",
+            )).rows,
+          ).toEqual([{ steps: 6, completed: 6 }])
+        }),
+      ),
+    ))
 
   it("starts six Actors.layer runners together on a completely fresh Postgres database", () =>
     harness.runPromise(

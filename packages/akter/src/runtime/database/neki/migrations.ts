@@ -127,13 +127,19 @@ const identifier = '(?:"(?:[^"]|"")+"|[a-z_][a-z_0-9]*)(?:\\.(?:"(?:[^"]|"")+"|[
 const alter = new RegExp(`^ALTER TABLE (${identifier})\\s+([\\s\\S]+)$`, "i")
 const unquote = (name: string) => name.replace(/^"|"$/g, "").replaceAll('""', '"')
 
-/** Resumption rewrites only the framework's audited DDL forms; an unknown form fails closed. */
+/**
+ * Resumption rewrites only the framework's audited DDL forms; an unknown form fails closed.
+ * A statement that already carries its own existence guard is replayed unchanged.
+ */
 const replayDdl = (sql: SqlClient.SqlClient, text: string) =>
   Effect.gen(function* () {
     if (/^CREATE (?:UNIQUE )?(?:TABLE|INDEX|SCHEMA) /i.test(text))
-      return text.replace(/^(CREATE (?:UNIQUE )?(?:TABLE|INDEX|SCHEMA)) /i, "$1 IF NOT EXISTS ")
+      return text.replace(
+        /^(CREATE (?:UNIQUE )?(?:TABLE|INDEX|SCHEMA)) (?!IF NOT EXISTS )/i,
+        "$1 IF NOT EXISTS ",
+      )
     if (/^DROP (?:TABLE|INDEX|VIEW) /i.test(text))
-      return text.replace(/^(DROP (?:TABLE|INDEX|VIEW)) /i, "$1 IF EXISTS ")
+      return text.replace(/^(DROP (?:TABLE|INDEX|VIEW)) (?!IF EXISTS )/i, "$1 IF EXISTS ")
     if (/^CREATE (?:OR REPLACE )?(?:VIEW|FUNCTION) /i.test(text))
       return text.replace(/^CREATE (?:OR REPLACE )?/i, "CREATE OR REPLACE ")
 
@@ -150,9 +156,9 @@ const replayDdl = (sql: SqlClient.SqlClient, text: string) =>
       const table = match[1]!
       const action = match[2]!
       if (/^ADD COLUMN /i.test(action))
-        return `ALTER TABLE ${table} ${action.replace(/^ADD COLUMN /i, "ADD COLUMN IF NOT EXISTS ")}`
+        return `ALTER TABLE ${table} ${action.replace(/^ADD COLUMN (?!IF NOT EXISTS )/i, "ADD COLUMN IF NOT EXISTS ")}`
       if (/^DROP CONSTRAINT /i.test(action))
-        return `ALTER TABLE ${table} ${action.replace(/^DROP CONSTRAINT /i, "DROP CONSTRAINT IF EXISTS ")}`
+        return `ALTER TABLE ${table} ${action.replace(/^DROP CONSTRAINT (?!IF EXISTS )/i, "DROP CONSTRAINT IF EXISTS ")}`
       if (/^ENABLE ROW LEVEL SECURITY$/i.test(action)) return text
       const constraint = new RegExp(`^ADD CONSTRAINT (${identifier})\\s+`, "i").exec(action)
       if (constraint !== null) {
