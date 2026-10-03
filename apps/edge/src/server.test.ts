@@ -29,7 +29,7 @@ import {
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
-import { ActorUnavailable, SUBPROTOCOL } from "@rikalabs/akter"
+import { SUBPROTOCOL } from "@rikalabs/akter"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { EdgeOptions } from "./config.ts"
 import { makeEdge } from "./server.ts"
@@ -347,7 +347,7 @@ const spoofed = {
 const unavailableEnd = Schema.fromJsonString(
   Schema.Struct({
     t: Schema.Literal("end"),
-    error: Schema.Struct({ reason: Schema.toCodecJson(ActorUnavailable) }),
+    error: Schema.Struct({ reason: Schema.TaggedStruct("ActorUnavailable", {}) }),
   }),
 )
 
@@ -599,7 +599,7 @@ describe("Hosted edge client address", () => {
           Effect.orDie,
         )
 
-        expect(ended.error.reason).toBeInstanceOf(ActorUnavailable)
+        expect(ended.error.reason._tag).toBe("ActorUnavailable")
         expect(yield* session.closed).toBe(1013)
         expect(runner.seen).toHaveLength(0)
       }),
