@@ -1,4 +1,4 @@
-# ADR 0065: The open-source cloud control plane: ownership, evidence, compute and trust
+# ADR 0074: The open-source cloud control plane: ownership, evidence, compute and trust
 
 **Status:** accepted (2026-10-03). Records Dallen's decisions of 2026-10-02 and 2026-10-03 for the Akter Cloud control plane. It supersedes the `apps/*` licensing caveat in [ADR 0029](0029-licence-package-name-and-release-policy.md) and amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) with the control plane's own access path.
 

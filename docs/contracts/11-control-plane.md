@@ -3,7 +3,7 @@
 **Responsibility:** define the durable records and guarantees of the Akter Cloud control plane (`apps/api`): projects, environments, user preferences and the audit log.  
 **Authority:** normative.  
 **Owner role:** cloud and security.  
-**Change policy:** security review is required for any change to organization scoping, the audit log, or how the API reaches runners; every new durable record needs a failure test ([ADR 0065](../decisions/0065-open-source-control-plane.md)).
+**Change policy:** security review is required for any change to organization scoping, the audit log, or how the API reaches runners; every new durable record needs a failure test ([ADR 0074](../decisions/0074-open-source-control-plane.md)).
 
 Better Auth is the authority for users, sessions, organizations, teams, members, invitations and API keys. Organization and project IDs supplied in URLs or creation payloads are resource selectors, not authority: the API MUST establish access using the verified identity before reading or writing them. A session's user and a key's owning organization never come from request attribution headers or an unverified payload. Roles and API-key permissions are checked before the repository is called; the repository's scoping is a second, independent barrier.
 

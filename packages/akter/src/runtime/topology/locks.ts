@@ -1,6 +1,18 @@
 import { Context, Duration, Effect, PrimaryKey } from "effect"
-import { type RunnerAddress, type RunnerStorage, type ShardId } from "effect/cluster"
-import type { SqlClient } from "effect/sql"
+import {
+  type RunnerAddress,
+  type RunnerStorage,
+  type ShardId,
+  SqlRunnerStorage,
+} from "effect/cluster"
+import { SqlClient } from "effect/sql"
+import { Coordination } from "../database/coordination.ts"
+
+/** Builds Cluster registrations and lock storage on the deployment's authority, never on a runner's data shard. */
+export const coordinatedRunnerStorage = Effect.gen(function* () {
+  const sql = (yield* Coordination) ?? (yield* SqlClient.SqlClient)
+  return yield* SqlRunnerStorage.make({}).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+})
 
 /**
  * Whether this runner still holds a shard's lock, read from the database. A

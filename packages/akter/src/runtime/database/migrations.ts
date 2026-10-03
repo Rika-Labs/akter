@@ -972,6 +972,10 @@ export const migrations = {
         ('operator_audit', 1)
       ) AS v(view_name, version)`
   }),
+  "0027_coordination": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE IF NOT EXISTS actor_coordination (resource text PRIMARY KEY)`
+  }),
   "0029_runner_configuration": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_deployment ADD COLUMN runner_shards integer,

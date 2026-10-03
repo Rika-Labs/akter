@@ -5,6 +5,8 @@
 **Owner role:** operations/platform.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
+For separate actor-data databases, configure `Database.postgres({ coordination: { url: Redacted.make(authorityUrl) } })` on every runner with the same unsharded authoritative primary. That pool owns resource locks, Cluster runner/shard ownership, and the fleet maintainer lock; include its connections in the server budget. Startup creates its coordination-only schema with a separate migration ledger, so its login needs DDL privileges. Never point it at a read replica. On Neki, keep its tables in the authoritative group and use an explicitly authoritative endpoint for session advisory locks, or select Cluster table leases through existing sharding wiring. This prepares lock placement; it does not certify Neki routing, singleton failover, or a multi-shard logical feed. Switching an existing deployment's authority requires stopping every runner first, or old and new runners will coordinate independently ([ADR 0066](../decisions/0066-authoritative-coordination.md)).
+
 The intended deployment has one shared relational database and one `Actors.layer` runtime per runner process; a deployment may have multiple runners. Embedded and served processes are implemented; `Runner.socket` is the public multi-process Postgres configuration ([deploy guide](../guides/deploy.md#several-runners)). Its evidence is three Bun processes on loopback, not hosted or separate-host certification. The operating shapes are:
 
 - **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside the application.
@@ -92,7 +94,7 @@ Fleet views ([ADR 0056](../decisions/0056-fleet-views.md)) are maintained from P
 
 The runtime refuses to start, naming the fix, when `wal_level` is below logical, the login lacks `REPLICATION`, a source is outside the publication or lacks full replica identity, the slot is missing or lost, a source's actor type is not tenant-placed, the index or the derived table is missing, or the row-level-security tenant role owns a derived table.
 
-One runner at a time maintains the views: it holds the session advisory lock `akter/fleet` on a connection of its off-turn pool, and the others retry every two seconds. It polls the slot every 200 ms, recomputes each touched group, commits, and only then advances the slot, so a crash replays a batch harmlessly. Update-heavy sources write more WAL under full replica identity, and an unread slot pins WAL until `max_slot_wal_keep_size` invalidates it; see the [runbook](runbooks.md#fleet-views).
+One runner at a time maintains the views: it holds the session advisory lock `akter/fleet` on a connection of its off-turn pool (the coordination pool when one is configured), and the others retry every two seconds. It polls the slot every 200 ms, recomputes each touched group, commits, and only then advances the slot, so a crash replays a batch harmlessly. Update-heavy sources write more WAL under full replica identity, and an unread slot pins WAL until `max_slot_wal_keep_size` invalidates it; see the [runbook](runbooks.md#fleet-views).
 
 ## Readiness and bounded graceful drain
 

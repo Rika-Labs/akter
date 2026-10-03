@@ -1,0 +1,27 @@
+{
+  "name": "@akter/infra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../node_modules/vitest/vitest.mjs run --root .. infra/src",
+    "plan": "alchemy plan",
+    "plan:offline": "bun src/preview.ts",
+    "deploy": "alchemy deploy",
+    "destroy": "alchemy destroy"
+  },
+  "dependencies": {
+    "@distilled.cloud/aws": "catalog:",
+    "@distilled.cloud/axiom": "catalog:",
+    "@distilled.cloud/cloudflare": "catalog:",
+    "@distilled.cloud/planetscale": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "alchemy": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
+}
