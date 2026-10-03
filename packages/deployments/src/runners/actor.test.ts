@@ -30,6 +30,9 @@ let loseAcceptedReply = false
 let heldStart:
   | { deploymentId: string; reached: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
   | undefined
+let heldStop:
+  | { id: string; reached: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+  | undefined
 let addressLater: "fail" | { reached: Deferred.Deferred<void> } | undefined
 const answer = (result: { id: string; url: string; basePath: string }) =>
   addressLater === undefined
@@ -62,9 +65,21 @@ const fake = Layer.succeed(RunnerPlatform, {
   stop: (id) =>
     Effect.suspend(() => {
       if (rejectStop) return platformError({ operation: "stop", code: "refused" })
-      stopped.push(id)
       calls.push(`stop:${id}`)
-      return Effect.void
+      const gate = heldStop
+      const wait =
+        gate?.id === id
+          ? Deferred.succeed(gate.reached, undefined).pipe(
+              Effect.andThen(Deferred.await(gate.release)),
+            )
+          : Effect.void
+      return wait.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            stopped.push(id)
+          }),
+        ),
+      )
     }),
   describe: (id) => {
     if (addressLater === "fail")
@@ -110,6 +125,7 @@ afterEach(() => {
   rejectStop = false
   loseAcceptedReply = false
   heldStart = undefined
+  heldStop = undefined
   addressLater = undefined
 })
 
@@ -221,17 +237,29 @@ describe("durable runner provisioning", () => {
         yield* sql`UPDATE deployment SET scale_to_zero = true WHERE id = 'idle-paid'`.pipe(
           Effect.orDie,
         )
+        const capacity = yield* free.Lookup()
+        const reached = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        heldStop = { id: capacity.taskId!, reached, release }
         yield* free.Idle({ idleSeconds: 60 })
         yield* paid.Idle({ idleSeconds: 60 })
-        expect(
-          yield* sql`SELECT url FROM deployment_runner WHERE deployment_id = 'idle-free'`,
-        ).toHaveLength(0)
-        expect(
-          yield* sql`SELECT url FROM deployment_runner WHERE deployment_id = 'idle-paid'`,
-        ).toHaveLength(1)
-        expect(yield* status("idle-free")).toEqual({ status: "stopping" })
+        const advancing = yield* test.advance(0).pipe(Effect.forkChild)
+        yield* Effect.gen(function* () {
+          yield* Deferred.await(reached)
+          expect(
+            yield* sql`SELECT url FROM deployment_runner WHERE deployment_id = 'idle-free'`,
+          ).toHaveLength(0)
+          expect(
+            yield* sql`SELECT url FROM deployment_runner WHERE deployment_id = 'idle-paid'`,
+          ).toHaveLength(1)
+          expect(yield* status("idle-free")).toEqual({ status: "stopping" })
+          expect(stopped).not.toContain(capacity.taskId)
+        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)))
+        yield* Fiber.join(advancing)
+        heldStop = undefined
         yield* test.advance(0)
         expect(yield* status("idle-free")).toEqual({ status: "stopped" })
+        expect(stopped).toContain(capacity.taskId)
         const count = starts.size
         yield* free.Wake()
         yield* test.advance(0)
