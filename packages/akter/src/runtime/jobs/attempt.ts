@@ -55,7 +55,13 @@ export const groupRow = ({
     AND o.actor_type = ${group.actor_type} AND o.actor_id = ${group.actor_id}
     AND o.command = ${group.command} AND o.kind = 'job'`
 
-/** The actor's shard-local generation row serializes claims and wakes of its capped jobs. */
+/**
+ * The actor's shard-local generation row serializes claims and wakes of its
+ * capped jobs, and conflicts with an actor turn's own lock on it. The lock
+ * is `NO KEY UPDATE` so it does not block the key-share lock a settling
+ * attempt's dead-letter insert takes on the row while it holds the job row
+ * this claim then waits for; a stronger lock would deadlock the two.
+ */
 export const groupLock = ({
   sql,
   group,
@@ -66,7 +72,7 @@ export const groupLock = ({
   sql`SELECT 1 FROM actor_generations
     WHERE routing_key = ${BigInt(group.routing_key)} AND tenant_id = ${group.tenant_id}
       AND actor_type = ${group.actor_type} AND actor_id = ${group.actor_id}
-    FOR UPDATE`
+    FOR NO KEY UPDATE`
 
 /**
  * Makes the oldest waiting row of `group` due now, after one of its attempts

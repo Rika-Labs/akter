@@ -94,7 +94,7 @@ Fleet views ([ADR 0056](../decisions/0056-fleet-views.md)) are maintained from P
 
 The runtime refuses to start, naming the fix, when `wal_level` is below logical, the login lacks `REPLICATION`, a source is outside the publication or lacks full replica identity, the slot is missing or lost, a source's actor type is not tenant-placed, the index or the derived table is missing, or the row-level-security tenant role owns a derived table.
 
-One runner at a time maintains the views: it holds the session advisory lock `akter/fleet` on a connection of its off-turn pool, and the others retry every two seconds. It polls the slot every 200 ms, recomputes each touched group, commits, and only then advances the slot, so a crash replays a batch harmlessly. Update-heavy sources write more WAL under full replica identity, and an unread slot pins WAL until `max_slot_wal_keep_size` invalidates it; see the [runbook](runbooks.md#fleet-views).
+One runner at a time maintains the views: it holds the session advisory lock `akter/fleet` on a connection of its off-turn pool (the coordination pool when one is configured), and the others retry every two seconds. It polls the slot every 200 ms, recomputes each touched group, commits, and only then advances the slot, so a crash replays a batch harmlessly. Update-heavy sources write more WAL under full replica identity, and an unread slot pins WAL until `max_slot_wal_keep_size` invalidates it; see the [runbook](runbooks.md#fleet-views).
 
 ## Readiness and bounded graceful drain
 

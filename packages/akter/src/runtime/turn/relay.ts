@@ -375,8 +375,8 @@ const cappedGroups = ({
     ORDER BY min(o.due_at_ms) LIMIT ${limit}`
 
 /**
- * Claims one capped group's jobs in its own transaction, under the group's
- * advisory lock, so claims on every runner see each other's running rows. It
+ * Claims one capped group's jobs in its own transaction, under its actor's
+ * generation row lock, so claims on every runner see each other's running rows. It
  * settles cancelled rows whose attempt ended, starts the oldest rows by
  * `(ready_at_ms, intent_id)` while fewer than `cap` attempts hold a live
  * lease, and moves the group's other due rows out of the due range as

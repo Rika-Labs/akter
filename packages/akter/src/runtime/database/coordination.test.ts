@@ -22,6 +22,7 @@ import { Actor, Fleet } from "../../index.ts"
 import { Database } from "../layer.ts"
 import { maintain } from "../fleet/maintainer.ts"
 import { groupLock } from "../jobs/attempt.ts"
+import { claimCapped } from "../turn/relay.ts"
 import { sweep } from "../storage/retention.ts"
 import { coordinatedRunnerStorage, tableShardLease } from "../topology/locks.ts"
 import { acceptWorkflows } from "../workflows/compatibility.ts"
@@ -421,6 +422,65 @@ describe("authoritative coordination across data databases", () => {
           yield* blocked(a.pool, a.name)
           yield* release
           expect(yield* Fiber.join(locked)).toHaveLength(1)
+        }),
+      ),
+    ))
+
+  it("does not deadlock a capped claim with an attempt dead-lettering its running row", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { a } = yield* databases
+          const sql = Context.get(a.services, SqlClient.SqlClient)
+          yield* Effect.promise(() =>
+            a.pool.query(`INSERT INTO actor_outbox
+              (routing_key, intent_id, bucket, due_at_ms, tenant_id, actor_type, actor_id,
+                target_type, target_id, command, payload, caller, kind, running, ready_at_ms,
+                scheduled_at_ms, attempts)
+              VALUES (42, 'job-1', 0, 9000000000000, 'tenant', 'Coordinated', 'one',
+                'Coordinated', 'one', 'Work', '{}', '{}', 'job', true, 0, 0, 1)`),
+          )
+          const settling = yield* Effect.acquireRelease(
+            Effect.promise(() => a.pool.connect()),
+            (client) =>
+              Effect.promise(() => client.query("ROLLBACK")).pipe(
+                Effect.ensuring(Effect.sync(() => client.release())),
+              ),
+          )
+          yield* Effect.promise(() => settling.query("BEGIN"))
+          yield* Effect.promise(() =>
+            settling.query(
+              "UPDATE actor_outbox SET running = false WHERE routing_key = 42 AND intent_id = 'job-1'",
+            ),
+          )
+          const claim = yield* Effect.forkChild(
+            Effect.exit(
+              claimCapped({
+                sql,
+                now: sql`(floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)`,
+                group: {
+                  routing_key: "42",
+                  tenant_id: "tenant",
+                  actor_type: actor.name,
+                  actor_id: "one",
+                  command: "Work",
+                },
+                cap: 1,
+                maxAttempts: 3,
+                permits: 1,
+                leaseMs: 30_000,
+              }),
+            ),
+          )
+          yield* blocked(a.pool, a.name)
+          yield* Effect.promise(() =>
+            settling.query(`INSERT INTO actor_dead_letters
+              (routing_key, job_id, tenant_id, actor_type, actor_id, job, payload, attempts,
+                cause, ambiguous, dead_at_ms)
+              VALUES (42, 'job-1', 'tenant', 'Coordinated', 'one', 'Work', '{}', 1, 'x', false, 0)`),
+          )
+          yield* Effect.promise(() => settling.query("COMMIT"))
+          expect(Exit.isSuccess(yield* Fiber.join(claim))).toBe(true)
         }),
       ),
     ))

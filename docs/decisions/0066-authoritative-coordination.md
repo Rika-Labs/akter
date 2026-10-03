@@ -40,7 +40,7 @@ Local fences use the distinct `local/` resource namespace. Two independent clien
 
 ### Capped jobs lock the actor's generation row on its data shard
 
-`runtime/jobs/attempt.ts` replaces its hash-based advisory lock with `SELECT ... FOR UPDATE` on the actor's generation row, naming the complete `(routing_key, tenant_id, actor_type, actor_id)` key. Capped claims and waiting-row wakes already run in transactions, so the row lock covers their count and updates. Actor turns use the same row and the same generation-before-outbox lock order.
+`runtime/jobs/attempt.ts` replaces its hash-based advisory lock with `SELECT ... FOR NO KEY UPDATE` on the actor's generation row, naming the complete `(routing_key, tenant_id, actor_type, actor_id)` key. The lock is `NO KEY UPDATE` because a settling attempt holds its job row and then takes a key-share lock on that generation row for its dead-letter insert, while a claim holding the generation row waits for that job row; `FOR UPDATE` conflicts with the key share and deadlocks the two. `NO KEY UPDATE` still conflicts with other claims, wakes, and actor turns, which take `FOR UPDATE`. Capped claims and waiting-row wakes already run in transactions, so the row lock covers their count and updates. Actor turns use the same row and the same generation-before-outbox lock order.
 
 This deliberately serializes capped jobs of different types on the same actor, and may briefly delay an actor turn. It avoids a new per-job authority table and cross-database coordination on a hot path. Actors on different shards do not share a cap, so allowing their claims to proceed independently is correct. Attempt renewal, cancellation, guarded settling, and generation fences are unchanged.
 
