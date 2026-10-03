@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 
 import { ReadErrors, WriteErrors } from "../errors.ts"
 import { DeadLetterId, EnvironmentName, Page, pageQuery, ProjectId } from "../primitives.ts"
@@ -10,8 +10,10 @@ import {
   ActorJob,
   ActorTimelineEntry,
   ActorTypeSummary,
+  CommandFailed,
   CommandLogEntry,
   CommandOutcome,
+  CommandSent,
   ConnectionsSummary,
   DeadLetter,
   JobsSummary,
@@ -20,6 +22,7 @@ import {
   Receipt,
   Schedule,
   SearchResult,
+  SendCommand,
   SidebarCounts,
   TimersSummary,
   Workflow,
@@ -122,6 +125,19 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       success: Page(CommandLogEntry),
       error: ReadErrors,
     },
+  ),
+  HttpApiEndpoint.post(
+    "sendCommand",
+    "/projects/:projectId/environments/:environment/runtime/commands",
+    {
+      params: environmentParams,
+      payload: SendCommand,
+      success: CommandSent,
+      error: [...WriteErrors, CommandFailed],
+    },
+  ).annotate(
+    OpenApi.Description,
+    "Runs one command on one actor through the runner that owns it and answers with the actor's result. Requires write permission on the project. `commandId` defaults to a freshly minted id; resending the same id replays the stored receipt and sets `replayed`. An error the actor itself returns is a 422 `CommandFailed` carrying its tag and payload.",
   ),
   HttpApiEndpoint.get(
     "streamCommands",

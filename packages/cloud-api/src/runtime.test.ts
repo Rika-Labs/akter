@@ -2,7 +2,16 @@ import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
 import { RuntimeGroup } from "./groups/runtime.ts"
-import { ActorInspector, CommandLogEntry, OwnedTableRows } from "./runtime.ts"
+import { CloudApi } from "./contract.ts"
+import { OpenApi } from "effect/http-api"
+import {
+  ActorInspector,
+  CommandFailed,
+  CommandLogEntry,
+  CommandSent,
+  OwnedTableRows,
+  SendCommand,
+} from "./runtime.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Effect.runSync(
@@ -122,5 +131,38 @@ describe("runtime models", () => {
       Effect.runSync(Schema.decodeEffect(Schema.toCodecJson(CommandLogEntry))(payload)),
     )
     expect(JSON.parse(String(encoded.data))).toEqual(payload)
+  })
+
+  it("sends a command with a JSON payload and an optional idempotency id", () => {
+    const base = {
+      address: "Counter/room-1",
+      command: "Increment",
+      payload: { by: 2, tags: [null] },
+    }
+    expect(decode(SendCommand, base).payload).toEqual(base.payload)
+    expect(decode(SendCommand, { ...base, commandId: "cmd_7" }).commandId).toBe("cmd_7")
+    expect(decode(SendCommand, base).commandId).toBeUndefined()
+    expect(rejects(SendCommand, { ...base, address: "Counter" })).toBe(true)
+    expect(rejects(SendCommand, { ...base, command: "" })).toBe(true)
+    expect(rejects(SendCommand, { ...base, commandId: "" })).toBe(true)
+    expect(rejects(SendCommand, { address: base.address, command: base.command })).toBe(true)
+  })
+
+  it("answers a sent command with its result and replayed flag, or a typed 422 error", () => {
+    const sent = { commandId: "cmd_7", result: { count: 3 }, replayed: true }
+    expect(encode(CommandSent, decode(CommandSent, sent))).toEqual(sent)
+    expect(rejects(CommandSent, { commandId: "cmd_7", result: { count: 3 } })).toBe(true)
+    const operation =
+      OpenApi.fromApi(CloudApi).paths[
+        "/api/projects/{projectId}/environments/{environment}/runtime/commands"
+      ]?.post
+    expect(Object.keys(operation?.responses ?? {})).toEqual(
+      expect.arrayContaining(["200", "401", "403", "404", "409", "422", "501"]),
+    )
+    expect(operation?.description).toContain("commandId")
+    expect(
+      CommandFailed.make({ commandId: "c", errorTag: "OutOfStock", error: null, replayed: false })
+        ._tag,
+    ).toBe("CommandFailed")
   })
 })

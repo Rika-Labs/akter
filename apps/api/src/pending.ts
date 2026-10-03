@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { CloudApi, NotImplemented } from "@akter/cloud-api"
+import { Access } from "./access.ts"
 
 const notImplemented = (operation: string) => Effect.fail(NotImplemented.make({ operation }))
 
@@ -63,8 +64,9 @@ export const DeploymentsNotImplemented = HttpApiBuilder.group(CloudApi, "deploym
 )
 
 export const RuntimeNotImplemented = HttpApiBuilder.group(CloudApi, "runtime", (handlers) =>
-  Effect.succeed(
-    handlers
+  Effect.gen(function* () {
+    const access = yield* Access
+    return handlers
       .handle("getOverview", () => notImplemented("runtime.getOverview"))
       .handle("getSidebarCounts", () => notImplemented("runtime.getSidebarCounts"))
       .handle("search", () => notImplemented("runtime.search"))
@@ -86,8 +88,13 @@ export const RuntimeNotImplemented = HttpApiBuilder.group(CloudApi, "runtime", (
       .handle("listWorkflows", () => notImplemented("runtime.listWorkflows"))
       .handle("getTimers", () => notImplemented("runtime.getTimers"))
       .handle("listSchedules", () => notImplemented("runtime.listSchedules"))
-      .handle("getConnections", () => notImplemented("runtime.getConnections")),
-  ),
+      .handle("getConnections", () => notImplemented("runtime.getConnections"))
+      .handle("sendCommand", ({ params }) =>
+        access
+          .project(params.projectId, "write")
+          .pipe(Effect.andThen(notImplemented("runtime.sendCommand"))),
+      )
+  }),
 )
 
 export const BillingNotImplemented = HttpApiBuilder.group(CloudApi, "billing", (handlers) =>

@@ -499,4 +499,57 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
       }),
     { timeout: 60000 },
   )
+
+  it.effect(
+    "authorizes sending a command before the runner proxy exists",
+    () =>
+      Effect.gen(function* () {
+        const { request } = yield* testServer
+        const sql = yield* SqlClient.SqlClient
+        const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+        const signup = signupWith(request, sql, suffix)
+        const owner = yield* signup("send-owner")
+        const outsider = yield* signup("send-outsider")
+        const created = yield* request({
+          path: "/api/organizations",
+          method: "POST",
+          cookie: owner.cookie,
+          body: { name: "Send organization", slug: `send-${suffix}` },
+        })
+        const org = (yield* read(created, Cloud.OrganizationMembership)).organization.id
+        const projectResponse = yield* request({
+          path: `/api/organizations/${org}/projects`,
+          method: "POST",
+          cookie: owner.cookie,
+          body: { name: "Sender", slug: "sender", homeRegion: "us-west-2" },
+        })
+        const project = yield* read(projectResponse, Cloud.Project)
+        const readKey = yield* read(
+          yield* request({
+            path: `/api/organizations/${org}/api-keys`,
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: "reader", permission: "read" },
+          }),
+          Cloud.CreatedApiKey,
+        )
+        const send = (input: { readonly cookie?: string; readonly key?: string }) =>
+          request({
+            path: `/api/projects/${project.id}/environments/dev/runtime/commands`,
+            method: "POST",
+            body: { address: "Counter/room-1", command: "Increment", payload: { by: 1 } },
+            ...input,
+          })
+
+        const anonymous = yield* send({})
+        const stranger = yield* send({ cookie: outsider.cookie })
+        const reader = yield* send({ key: readKey.secret })
+        const allowed = yield* send({ cookie: owner.cookie })
+
+        expect([anonymous.status, stranger.status, reader.status]).toEqual([401, 403, 403])
+        expect(allowed.status).toBe(501)
+        expect((yield* read(allowed, Cloud.NotImplemented)).operation).toBe("runtime.sendCommand")
+      }),
+    { timeout: 60000 },
+  )
 })

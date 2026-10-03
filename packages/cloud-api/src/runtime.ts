@@ -142,6 +142,45 @@ export const CommandLogEntry = Schema.Struct({
 })
 export type CommandLogEntry = typeof CommandLogEntry.Type
 
+const commandName = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(128)))
+
+/**
+ * A command the console sends to one actor. `commandId` is the idempotency
+ * key: when omitted the server mints a new one, and when a caller resends the
+ * same id the runner answers from its stored receipt without running the
+ * command again.
+ */
+export const SendCommand = Schema.Struct({
+  address: ActorAddress,
+  command: commandName,
+  payload: Schema.Json,
+  commandId: Schema.optional(commandName),
+})
+export type SendCommand = typeof SendCommand.Type
+
+/** The actor's return value for a command; `replayed` is true when it came from the stored receipt of an earlier send of the same `commandId`. */
+export const CommandSent = Schema.Struct({
+  commandId: Schema.String,
+  result: Schema.Json,
+  replayed: Schema.Boolean,
+})
+export type CommandSent = typeof CommandSent.Type
+
+/**
+ * The actor ran the command and returned a typed error, answered 422. `errorTag`
+ * and `error` are the actor's own error; `replayed` is as in `CommandSent`.
+ */
+export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
+  "CommandFailed",
+  {
+    commandId: Schema.String,
+    errorTag: Schema.String,
+    error: Schema.Json,
+    replayed: Schema.Boolean,
+  },
+  { httpApiStatus: 422 },
+) {}
+
 export const JobTypeStats = Schema.Struct({
   jobName: Schema.String,
   done: NonNegativeInt,
