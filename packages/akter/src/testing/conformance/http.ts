@@ -44,6 +44,7 @@ import { buildServedApi, openApiDocument } from "../../serve/api.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { Auth } from "../../runtime/index.ts"
+import { serveFetch } from "./platform.ts"
 
 export class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
@@ -313,7 +314,7 @@ export interface Server {
   readonly mint: (offsetMs?: number, windowMs?: number) => Effect.Effect<string>
 }
 
-/** Serves the HTTP actors from a real listening Bun server for the rest of the scope. */
+/** Serves the HTTP actors from a real listening server for the rest of the scope. */
 export const serveHttp = Effect.fnUntraced(function* (
   options?: Partial<ServeOptions<never>>,
 ): Effect.fn.Return<
@@ -332,19 +333,10 @@ export const serveHttp = Effect.fnUntraced(function* (
 
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: (request) => web.handler(request),
-  })
+  yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
+  const port = yield* serveFetch((request) => web.handler(request))
 
-  yield* Effect.addFinalizer(() =>
-    Effect.promise(() => server.stop(true)).pipe(
-      Effect.andThen(Effect.promise(() => web.dispose())),
-    ),
-  )
-
-  const url = `http://127.0.0.1:${server.port}`
+  const url = `http://127.0.0.1:${port}`
 
   return {
     url,

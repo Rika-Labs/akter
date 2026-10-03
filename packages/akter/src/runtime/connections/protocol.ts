@@ -3,6 +3,7 @@ import { ClusterSchema, Entity, type EntityId } from "effect/cluster"
 import { Rpc } from "effect/rpc"
 import { ActorError, SessionEnded } from "../../errors/actor.ts"
 import { ActorRef, Caller } from "../../identity/caller.ts"
+import { hash64 } from "../storage/platform.ts"
 
 /**
  * The framework connection member an event feed opens. It has no handler, and
@@ -136,7 +137,7 @@ const HOLDER_SEPARATOR = "|"
  * stores shard ids in 50 characters, so the group is a hash of the address.
  */
 export const holderGroup = (address: { readonly host: string; readonly port: number }) =>
-  `h${BigInt.asUintN(64, Bun.hash.xxHash3(`${address.host}:${address.port}`)).toString(36)}`
+  `h${BigInt.asUintN(64, hash64(`${address.host}:${address.port}`)).toString(36)}`
 
 /** The entity id addressing one holder incarnation, from its runner identity and epoch. */
 export const holderEntityId = (address: { readonly holder: string; readonly epoch: string }) =>

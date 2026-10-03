@@ -25,8 +25,11 @@ export const monotonic = (): number => performance.timeOrigin + performance.now(
  */
 export class DatabaseClock {
   private samples: Array<Sample> = []
+  private readonly local: () => number
 
-  constructor(private readonly local: () => number = monotonic) {}
+  constructor(local: () => number = monotonic) {
+    this.local = local
+  }
 
   /** The local time now, for stamping a request before it is sent. */
   readonly localNow = (): number => this.local()

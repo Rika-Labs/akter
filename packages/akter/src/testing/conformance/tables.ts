@@ -347,8 +347,9 @@ const NotebookReads = Notebook.toQueryLayer(
     }),
     QueryWrite: Effect.fnUntraced(function* () {
       const rows = (yield* Notebook.Read).rows(notes) as ScopedRows<typeof notes>
+      const attempted = rows.insert({ id: "from-query", body: "from-query" })
 
-      yield* rows.insert({ id: "from-query", body: "from-query" })
+      yield* attempted
     }),
     Catalog: Effect.fnUntraced(function* (left) {
       return yield* (yield* Notebook.Read).group((db) => {

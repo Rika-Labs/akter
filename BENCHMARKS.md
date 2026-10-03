@@ -1,5 +1,84 @@
 # Akter benchmarks
 
+## Served-command CPU follow-up (#491, 2026-10-03)
+
+This follow-up compares refreshed `origin/main` snapshot `ec73e6d25` with
+generator reuse in `runtime/entity/register.ts`, `runtime/turn/execute.ts`, and
+`serve/layer.ts`. The `actor/turns.ts` rewrite was removed after the bisect
+showed no reliable sequential benefit. The durable protocol, generation fence, SQL groups, receipts,
+reply ordering, observability, and request-body limits are unchanged. The harness
+and raw profiles remain outside the repository in
+`~/.capy/work/akter-perf/cpu-profile/`.
+
+The app, Postgres, and driver shared a Daytona sandbox capped at four CPUs and
+4 GiB. App and database containers each had `--cpus=3` and were pinned to CPUs
+0–2, sharing three CPUs rather than receiving three each. The driver had
+`--cpus=1` and was pinned to CPU 3. Requests used the Docker network, not the
+Daytona preview proxy. The host exposed 64 allowed CPUs, but the sandbox's
+`cpu.max` was `400000 100000`; the four-CPU quota remained the shared limit.
+Versions were Bun 1.4.2, Effect 4.0.0, and Postgres 18.6-bookworm, with normal
+durable commits and `pg_stat_statements`. The timing harness did not override
+Postgres's default `wal_level=replica`; the verification container below used
+logical WAL. Each case used a
+fresh database and runtime, a 10-second warm-up, and a 30-second measurement.
+Before/after order was forward, reverse, forward across three repeats. The
+64-caller case acknowledged all 10,000 setup commands in every run. A fourth
+profiled repeat used `bun --cpu-prof` and is excluded from the timing table.
+The final sequential profiles were retained. The final concurrent profiled
+runs completed their workload but produced no profile file before the harness's
+30-second shutdown wait ended, so that artifact is incomplete; earlier
+concurrent profiles remain diagnostic evidence only.
+The final sandbox was deleted after the round.
+
+App CPU is the change in
+`process.cpuUsage()` divided by measured successful commands; it includes JIT,
+GC, helper threads, and runtime background work. Main-thread CPU is reported
+separately from Linux task `schedstat`. These short, low-rate sequential runs
+include compilation work and are not a long-running steady-state CPU estimate.
+
+Values are the median of three runs, with the minimum–maximum in brackets.
+
+| Workload                | Version | App CPU ms/command  | Main-thread ms/command | Successful commands/s | HTTP p50 ms            | HTTP p99 ms               | HTTP max ms               |
+| ----------------------- | ------- | ------------------- | ---------------------- | --------------------- | ---------------------- | ------------------------- | ------------------------- |
+| Sequential, one key     | Before  | 2.193 [2.025–2.340] | 1.133 [1.100–1.185]    | 460.1 [434.7–552.3]   | 1.855 [1.524–1.858]    | 5.486 [4.974–11.482]      | 61.424 [54.104–65.377]    |
+| Sequential, one key     | After   | 1.640 [1.518–1.700] | 1.070 [1.055–1.102]    | 546.7 [472.3–602.1]   | 1.511 [1.396–1.815]    | 5.667 [4.111–6.380]       | 93.052 [51.856–113.474]   |
+| 64 callers, 10,000 keys | Before  | 1.315 [1.280–1.377] | 1.065 [1.046–1.081]    | 884.5 [874.7–906.6]   | 57.972 [56.595–60.032] | 194.357 [189.359–202.944] | 387.230 [370.902–440.807] |
+| 64 callers, 10,000 keys | After   | 1.219 [1.185–1.254] | 1.014 [1.004–1.025]    | 938.4 [921.6–946.6]   | 54.770 [54.698–56.501] | 182.997 [177.961–187.808] | 357.475 [339.623–463.790] |
+
+All measured requests succeeded: before/after sequential counts were 43,413 and
+48,633; 64-caller counts were 80,169 and 84,346. Median app CPU fell **25.2%**
+sequentially and **7.3%** at 64 callers. Sequential p50 improved **18.5%** and
+throughput improved **18.8%**; the 25% CPU target is met within the measured
+round's noise, while the lower-p50 and higher-throughput conditions are met.
+Concurrent p50, p99 and throughput also improved at the median. Maxima overlap,
+so no tail-latency claim is made. The final comparison is on refreshed
+`origin/main`; #493 was not present in that snapshot. Earlier preview-proxy,
+pre-lint, pre-ordering-fix and pre-main cohorts remain diagnostic raw data only.
+
+CPU profiles put most main-thread work in Effect execution and Postgres driver
+continuations rather than hashing or output JSON. Separate diagnostic JSC
+compile logs showed repeated compilation of generator bodies allocated for
+each request or turn. Reusing generator functions and replacing short-lived
+generators with ordinary Effect combinators removes that repeated work without
+changing the durable transaction. The next CPU experiment should isolate
+remaining stream-adapter and driver/Effect overhead with longer steady-state
+windows, rather than remove fences or receipts.
+
+On the final refreshed-main revision, repository typecheck (17 tasks), lint (18
+tasks), formatting, and unit suites passed. The framework unit suite passed
+871 tests with 228 existing skips. The configured integration suite passed
+854 tests with 818 existing backend/project skips; the separately executed
+Postgres crash, restore, runner-death, and failover drills passed all 15 tests.
+The five connection/fleet/progress/subscription/transport projects passed all
+168 tests in a serial regression run. One singleton takeover case timed out in
+the full parallel run and passed in three serial repetitions; it was rerun
+without changing its assertion or deadline. These checks used Bun 1.4.2 on the
+Mac and an isolated Postgres 18.6-bookworm container on port 55407 with
+`pg_stat_statements` and logical WAL enabled. The container was removed after
+verification. No Neki or streaming-replica support claim is added here.
+
+## Original comparison report (2026-10-01–02)
+
 This report measures Akter (formerly Durable Actors) and eight comparison configurations on the same cgroup-limited Daytona sandbox. It is a comparison of these single-node deployments and adapters, not a ranking of the vendors' managed services. In particular, local Cloudflare workerd does **not** run Cloudflare's production replication network, and Rivet's default state-saving policy does **not** acknowledge at the same durability boundary as the explicitly saved variant. Raw comparison records retain the system identifier `durable`; it denotes our framework, not a different competitor.
 
 Measurements were collected on 2026-10-01–02. On the current Akter snapshot, three repeat cohorts give sequential write p50 **1.62 ms**, hot-key throughput **1,647 op/s**, fresh 10,000-key throughput **791 op/s**, and fresh read p50 **0.40 ms**. Its final crash/partition control verified **192,794 acknowledged IDs with zero loss, duplicates, unknown outcomes, misrouting, or failed reads**. These are same-host observations, not production SLOs. Plain Postgres/Redis were much faster, Restate outperformed Akter across many keys, and cloud/isolate advantages are not measured here.

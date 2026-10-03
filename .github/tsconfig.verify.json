@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "src/verify.ts",
+    "src/verify.test.ts",
+    "src/replica.ts",
+    "src/node-postgres.ts",
+    "src/release/smoke.ts"
+  ]
+}

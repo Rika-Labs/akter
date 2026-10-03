@@ -1,4 +1,5 @@
 import { Effect, Redacted } from "effect"
+import { sha256Bytes } from "../../identity/digest.ts"
 import type { ActorUnavailable } from "../../errors/actor.ts"
 import { Unauthorized } from "../../errors/actor.ts"
 import { type AuthRequest, bearerToken } from "../../serve/auth.ts"
@@ -20,7 +21,7 @@ const make = <R = never>(authenticate: OperatorAuth<R>["authenticate"]): Operato
   authenticate,
 })
 
-const digest = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest()
+const digest = (text: string) => sha256Bytes(new TextEncoder().encode(text))
 
 /**
  * Compares digests without an early exit, and every configured digest is

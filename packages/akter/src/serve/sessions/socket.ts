@@ -110,7 +110,8 @@ interface SessionOptions {
  *   it is too, and an unknown `t` fails to decode; both end the session.
  * - However the session stops, even by interruption when the server drops the
  *   socket or shuts down, the holder closes the connection and the owner its
- *   row.
+ *   row. Once close publishes the ended session, cleanup cannot be interrupted
+ *   by the outbound reader finishing first, or the durable row would remain.
  * - A failed write means the peer is gone; it ends the session like a close.
  * - Frames carry cursors only when the holder stamped them; `stampCursor:
  *   false` has none. Executor progress has its own message, never `frame`, and
@@ -247,19 +248,20 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
   }
 
   const { held, principal } = opened.success
+  const close = Effect.uninterruptible(held.close)
 
   const shutdown = refuse(
     ActorError.make({ reason: SessionEnded.make({ cause: "HolderShutdown", resync: true }) }),
   )
 
-  yield* Effect.addFinalizer(() => finishWith(shutdown).pipe(Effect.andThen(held.close)))
+  yield* Effect.addFinalizer(() => finishWith(shutdown).pipe(Effect.andThen(close)))
 
   let expiresAt = expiryOf(principal)
   const renewed = yield* Queue.sliding<void>(1)
 
   const gone = Effect.sync(() => {
     finished = true
-  }).pipe(Effect.andThen(held.close))
+  }).pipe(Effect.andThen(close))
 
   const opening = send({
     t: "open",
@@ -347,8 +349,8 @@ export const socketSession = Effect.fnUntraced(function* (options: SessionOption
     Effect.flatMap(parse),
     Effect.flatMap(handle),
     Effect.forever,
-    Effect.catchTag("Refusal", (refusal) => finishWith(refusal).pipe(Effect.andThen(held.close))),
-    Effect.catch(() => held.close),
+    Effect.catchTag("Refusal", (refusal) => finishWith(refusal).pipe(Effect.andThen(close))),
+    Effect.catch(() => close),
   )
 
   const reauthenticate = Effect.gen(function* () {
