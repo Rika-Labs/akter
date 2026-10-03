@@ -1382,9 +1382,10 @@ export const layer = (options: Options = {}) => {
 /** Database layers for `Actors.layer`: `postgres` for real deployments, `pglite` for embedded and test use. */
 export const Database = {
   /**
-   * A runner holds three pools. Turns lease sessions from the turn pool,
-   * `maxConnections` (default 50): a command holds one session for its whole
-   * turn, so a pool smaller than the commands in flight queues callers behind
+   * A runner holds three primary pools, plus optional replica and coordination
+   * pools. Turns lease sessions from the turn pool, `maxConnections` (default
+   * 50): a command holds one session until its transaction ends, so a pool
+   * smaller than the commands in flight queues callers behind
    * it. Queries read from the query pool, `queryConnections` (default 10),
    * except those of types with owned tables or blobs. Command admission,
    * receipt replays, the relay, migrations, and cluster storage use the
@@ -1399,7 +1400,7 @@ export const Database = {
    * Queries read there once it has replayed the commit version their caller
    * last saw, and read the primary when it is behind or fails. Its pool
    * (`maxConnections` default 10) opens connections only as queries need them.
-   * All three pools request server TCP keepalives at 5 seconds idle, 2 seconds
+   * Every pool requests server TCP keepalives at 5 seconds idle, 2 seconds
    * between probes, and 3 probes. `startupParameters` overrides these defaults
    * independently on the primary and replica configurations.
    *
