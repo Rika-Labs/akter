@@ -245,12 +245,12 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
                         Match.when(
                           "pending_checkout",
                           () =>
-                            "A checkout is already open; retry its original request identity or wait for it to expire",
+                            `A checkout is already open; retry with Idempotency-Key ${error.requestId} or wait for it to expire`,
                         ),
                         Match.when(
                           "ambiguous_checkout",
                           () =>
-                            "The earlier checkout outcome is unknown and needs reconciliation before another checkout",
+                            `The earlier checkout outcome is unknown; retry with Idempotency-Key ${error.requestId} to recover it before another checkout`,
                         ),
                         Match.exhaustive,
                       ),

@@ -1,5 +1,7 @@
 import {
   BillingProviderError,
+  CatalogNotReady,
+  CheckoutExpired,
   type BillingDetails,
   type BillingEvent,
   type HostedSession,
@@ -69,7 +71,12 @@ const provider = {
   failChange: false,
   failRead: false,
   failEnsure: false,
-  failCheckout: undefined as "retryable" | "unknown_tier" | undefined,
+  failCheckout: undefined as
+    | "retryable"
+    | "unknown_tier"
+    | "catalog_not_ready"
+    | "expired"
+    | undefined,
   customerFor: new Map<string, string>(),
   calls: {
     ensureCustomer: [] as Array<{
@@ -121,31 +128,42 @@ const FakeBilling = Layer.succeed(
             })
       }),
     startCheckout: (input) =>
-      Effect.suspend((): Effect.Effect<HostedSession, BillingProviderError | UnknownTier> => {
-        provider.calls.startCheckout.push({
-          customerId: input.customerId,
-          tierId: input.tierId,
-          idempotencyKey: input.idempotencyKey,
-        })
+      Effect.suspend(
+        (): Effect.Effect<
+          HostedSession,
+          BillingProviderError | UnknownTier | CatalogNotReady | CheckoutExpired
+        > => {
+          provider.calls.startCheckout.push({
+            customerId: input.customerId,
+            tierId: input.tierId,
+            idempotencyKey: input.idempotencyKey,
+          })
 
-        if (provider.failCheckout === "unknown_tier")
-          return Effect.fail(UnknownTier.make({ tierId: input.tierId }))
+          if (provider.failCheckout === "unknown_tier")
+            return Effect.fail(UnknownTier.make({ tierId: input.tierId }))
 
-        if (provider.failCheckout === "retryable")
-          return Effect.fail(
-            BillingProviderError.make({
-              operation: "startCheckout",
-              message: "provider down",
-              retryable: true,
-            }),
-          )
+          if (provider.failCheckout === "catalog_not_ready")
+            return Effect.fail(CatalogNotReady.make({ tierId: input.tierId }))
 
-        const key = input.idempotencyKey ?? "none"
-        const url = provider.sessions.get(key) ?? `https://pay.test/${key}`
-        provider.sessions.set(key, url)
+          if (provider.failCheckout === "expired")
+            return Effect.fail(CheckoutExpired.make({ sessionId: `cs_${input.idempotencyKey}` }))
 
-        return Effect.succeed({ id: `cs_${key}`, url })
-      }),
+          if (provider.failCheckout === "retryable")
+            return Effect.fail(
+              BillingProviderError.make({
+                operation: "startCheckout",
+                message: "provider down",
+                retryable: true,
+              }),
+            )
+
+          const key = input.idempotencyKey ?? "none"
+          const url = provider.sessions.get(key) ?? `https://pay.test/${key}`
+          provider.sessions.set(key, url)
+
+          return Effect.succeed({ id: `cs_${key}`, url })
+        },
+      ),
     openPortal: (input) =>
       Effect.sync(() => {
         provider.calls.openPortal.push({
@@ -785,10 +803,94 @@ describe("BillingActor subscription lifecycle", () => {
             }),
           ),
         )
-        expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("failed")
+        provider.failCheckout = "catalog_not_ready"
+        expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("pending")
+        yield* test.advance(0)
+        expect(yield* actor.GetRequest({ requestId: "lost" })).toMatchObject({
+          status: "failed",
+          ambiguous: true,
+          failure: "catalog_not_ready",
+        })
+        expect(yield* actor.StartCheckout(checkout("new")).pipe(Effect.exit)).toEqual(
+          Exit.fail(
+            CheckoutBlocked.make({
+              organizationId: org,
+              reason: "ambiguous_checkout",
+              requestId: "lost",
+            }),
+          ),
+        )
+        provider.failCheckout = undefined
+        expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("pending")
+        expect(
+          yield* actor.StartCheckout({ ...checkout("lost"), tierId: "team" }).pipe(Effect.exit),
+        ).toEqual(Exit.fail(RequestConflict.make({ requestId: "lost" })))
+        expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("pending")
+        yield* test.advance(0)
+        expect(yield* actor.GetRequest({ requestId: "lost" })).toMatchObject({
+          status: "ready",
+          ambiguous: false,
+          sessionId: `cs_${org}:lost`,
+          url: `https://pay.test/${org}:lost`,
+        })
         expect(
           provider.calls.startCheckout.filter((call) => call.customerId === customerId),
-        ).toHaveLength(4)
+        ).toHaveLength(6)
+        expect(
+          new Set(
+            provider.calls.startCheckout
+              .filter((call) => call.customerId === customerId)
+              .map((call) => call.idempotencyKey),
+          ),
+        ).toEqual(new Set([`${org}:lost`]))
+        expect(yield* actor.StartCheckout(checkout("new")).pipe(Effect.exit)).toEqual(
+          Exit.fail(
+            CheckoutBlocked.make({
+              organizationId: org,
+              reason: "pending_checkout",
+              requestId: "lost",
+            }),
+          ),
+        )
+      }),
+    ))
+
+  it("releases an ambiguous checkout fence only after the provider proves its session expired", () =>
+    run(
+      Effect.gen(function* () {
+        const org = "org-recovered-expiry"
+        const { actor, test, customerId } = yield* bound(org)
+        provider.failCheckout = "retryable"
+        yield* actor.StartCheckout(checkout("lost"))
+        yield* exhaust
+        expect(yield* actor.GetRequest({ requestId: "lost" })).toMatchObject({
+          status: "failed",
+          ambiguous: true,
+        })
+        provider.failCheckout = "expired"
+        expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("pending")
+        yield* test.advance(0)
+        expect(yield* actor.GetRequest({ requestId: "lost" })).toMatchObject({
+          status: "expired",
+          ambiguous: false,
+          failure: "checkout_expired",
+        })
+        provider.failCheckout = undefined
+        expect((yield* actor.StartCheckout(checkout("new"))).status).toBe("pending")
+        yield* test.advance(0)
+        expect((yield* actor.GetRequest({ requestId: "new" }))?.status).toBe("ready")
+        expect(
+          provider.calls.startCheckout
+            .filter((call) => call.customerId === customerId)
+            .map((call) => call.idempotencyKey),
+        ).toEqual([
+          `${org}:lost`,
+          `${org}:lost`,
+          `${org}:lost`,
+          `${org}:lost`,
+          `${org}:lost`,
+          `${org}:new`,
+        ])
       }),
     ))
 

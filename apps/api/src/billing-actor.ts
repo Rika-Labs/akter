@@ -2,6 +2,7 @@ import {
   type BillingEvent,
   type BillingProviderError,
   type CatalogNotReady,
+  type CheckoutExpired,
   type HostedSession,
   type PlanId,
   Pricing,
@@ -197,7 +198,9 @@ export const SetSpendLimit = Actor.command("SetSpendLimit", {
 /**
  * Records a checkout request and enqueues the job that asks the provider for
  * the hosted page; the outcome is read with `GetRequest`. The same `requestId`
- * and input returns the existing request.
+ * and input returns the existing request. A failed ambiguous checkout can be
+ * retried under that same identity; provider lookups and idempotency recover
+ * its session without permitting a second initial checkout.
  */
 export const StartCheckout = Actor.command("StartCheckout", {
   payload: { requestId: RequestId, tierId: PaidPlan, successUrl: Url, cancelUrl: Url },
@@ -575,6 +578,16 @@ export const BillingActorCommands = (options: BillingActorOptions = {}) =>
           if (existing.value.kind !== kind || existing.value.input !== input)
             return yield* RequestConflict.make({ requestId })
 
+          if (
+            kind === "checkout" &&
+            existing.value.status === "failed" &&
+            existing.value.ambiguous
+          ) {
+            yield* stage(state)
+            yield* requests.update({ status: "pending", failure: null }).where({ requestId })
+            return requestView({ ...existing.value, status: "pending", failure: null })
+          }
+
           return requestView(existing.value)
         }
 
@@ -622,7 +635,24 @@ export const BillingActorCommands = (options: BillingActorOptions = {}) =>
           return
         }
 
-        yield* requests.update(outcome).where({ requestId })
+        if (existing.value.kind === "checkout" && outcome.failure === "checkout_expired") {
+          yield* requests
+            .update({ ...outcome, status: "expired", ambiguous: false })
+            .where({ requestId })
+          return
+        }
+
+        yield* requests
+          .update({
+            ...outcome,
+            ambiguous:
+              existing.value.kind === "checkout" &&
+              existing.value.ambiguous &&
+              outcome.status === "failed"
+                ? true
+                : (outcome.ambiguous ?? existing.value.ambiguous),
+          })
+          .where({ requestId })
       })
 
       const refresh = Effect.gen(function* () {
@@ -720,9 +750,10 @@ export const BillingActorCommands = (options: BillingActorOptions = {}) =>
 
                 const outstanding = checkouts.find(
                   (found) =>
-                    found.status === "pending" ||
-                    found.status === "ready" ||
-                    (found.status === "failed" && found.ambiguous),
+                    found.requestId !== requestId &&
+                    (found.status === "pending" ||
+                      found.status === "ready" ||
+                      (found.status === "failed" && found.ambiguous)),
                 )
 
                 if (outstanding !== undefined)
@@ -852,7 +883,7 @@ export const BillingActorCommands = (options: BillingActorOptions = {}) =>
         RequestResolved: (result) =>
           Match.value(result).pipe(
             Match.tag("Ready", ({ requestId, url, sessionId }) =>
-              settleRequest(requestId, { status: "ready", url, sessionId }),
+              settleRequest(requestId, { status: "ready", url, sessionId, ambiguous: false }),
             ),
             Match.tag("Rejected", ({ requestId, reason, ambiguous }) =>
               Effect.gen(function* () {
@@ -1014,7 +1045,7 @@ export const BillingActorJobs = BillingActor.toJobLayer(
       requestId: string,
       call: Effect.Effect<
         HostedSession,
-        BillingProviderError | UnknownTier | UnknownCustomer | CatalogNotReady
+        BillingProviderError | UnknownTier | UnknownCustomer | CatalogNotReady | CheckoutExpired
       >,
     ) =>
       call.pipe(
@@ -1023,6 +1054,7 @@ export const BillingActorJobs = BillingActor.toJobLayer(
           UnknownTier: () => rejected(requestId, "unknown_tier"),
           UnknownCustomer: () => rejected(requestId, "unknown_customer"),
           CatalogNotReady: () => rejected(requestId, "catalog_not_ready"),
+          CheckoutExpired: () => rejected(requestId, "checkout_expired"),
           BillingProviderError: (error) =>
             error.retryable ? Effect.fail(error) : rejected(requestId, "provider_rejected", true),
         }),
