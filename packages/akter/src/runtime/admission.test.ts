@@ -33,6 +33,10 @@ describe("admissionLimit", () => {
 
       expect(isOverloaded(decoded)).toBe(true)
       expect(decoded.reason).toMatchObject({ overloaded: true })
+      expect(decoded.isRetryable).toBe(true)
+      const retryAfter = Option.getOrThrow(decoded.retryAfter)
+      expect(retryAfter).toBeGreaterThanOrEqual(125)
+      expect(retryAfter).toBeLessThanOrEqual(375)
     }),
   )
   it.effect("hands a freed slot to the oldest waiter before any newcomer", () =>

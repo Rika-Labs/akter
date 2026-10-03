@@ -7,6 +7,7 @@ import {
   Context,
   Crypto,
   Duration,
+  Deferred,
   Effect,
   Fiber,
   Layer,
@@ -717,7 +718,11 @@ export const layer = (options: Options = {}) => {
         })
 
       const dispatch = Effect.fnUntraced(
-        function* (request: Request, external: boolean) {
+        function* (
+          request: Request,
+          external: boolean,
+          pending?: Set<Fiber.Fiber<unknown, unknown>>,
+        ) {
           const registration = registrations.get(request.ref.actor)
 
           if (registration === undefined)
@@ -785,7 +790,14 @@ export const layer = (options: Options = {}) => {
                   .Execute(
                     external ? { ...request, external, queuedAtMs } : { ...request, queuedAtMs },
                   )
-                  .pipe(Effect.forkIn(scope)),
+                  .pipe(
+                    Effect.forkIn(scope),
+                    Effect.tap((fiber) =>
+                      Effect.sync(() => {
+                        pending?.add(fiber)
+                      }),
+                    ),
+                  ),
               ),
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {
@@ -855,7 +867,7 @@ export const layer = (options: Options = {}) => {
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
-        (effect, request, external) =>
+        (effect, ...[request, external]: [Request, boolean, Set<Fiber.Fiber<unknown, unknown>>?]) =>
           effect.pipe(
             Effect.withSpan(
               SpanNames.admission,
@@ -1168,9 +1180,27 @@ export const layer = (options: Options = {}) => {
             (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
           ).pipe(Effect.provideContext(services)),
         execute: (request) =>
-          admission
-            .admit(dispatch(request, true))
-            .pipe(Effect.tap(observe), Effect.forkIn(scope), Effect.flatMap(Fiber.join)),
+          Effect.gen(function* () {
+            const reply = yield* Deferred.make<Executed, ActorError>()
+            const pending = new Set<Fiber.Fiber<unknown, unknown>>()
+
+            yield* admission
+              .admit(
+                dispatch(request, true, pending).pipe(
+                  Effect.tap(observe),
+                  Effect.onExit((exit) => Deferred.done(reply, exit)),
+                  Effect.ensuring(
+                    Effect.suspend(() => Effect.forEach(pending, Fiber.await, { discard: true })),
+                  ),
+                ),
+              )
+              .pipe(
+                Effect.catchCause((cause) => Deferred.failCause(reply, cause)),
+                Effect.forkIn(scope),
+              )
+
+            return yield* Deferred.await(reply)
+          }),
         overloaded: admission.full,
         admitRequest: requests.admit,
         deliver: (request) =>

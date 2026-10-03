@@ -347,6 +347,41 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "a delivery timeout retains admission until the accepted turn settles, then the same id replays exactly once",
+    requiresIndependentConnections: true,
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      withCapacity(
+        environment,
+        { maxResidentActors: 8, admission: { concurrency: 1, wait: "50 millis" } },
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actor = yield* Unbounded.get("timed-out")
+          const pause = yield* test.pauseNext("beforeHandler")
+          const touch = actor.Touch()
+          const caller = yield* touch.pipe(Effect.forkScoped)
+          yield* pause.reached
+          expect(reasonOf(yield* Fiber.await(caller))).toBe("Timeout")
+
+          const other = yield* Unbounded.get("timeout-still-full")
+          expect(reasonOf(yield* other.Touch().pipe(Effect.exit))).toBe("ActorUnavailable")
+          expect(yield* test.inspect(other.ref)).toMatchObject({ receipts: 0 })
+
+          yield* pause.release
+          yield* Effect.sleep("10 millis").pipe(
+            Effect.repeat({
+              until: Effect.fnUntraced(function* () {
+                return (yield* test.inspect(actor.ref)).receipts === 1
+              }),
+            }),
+          )
+          expect(yield* touch).toBe(1)
+          expect(yield* test.inspect(actor.ref)).toMatchObject({ receipts: 1, state: { count: 1 } })
+          expect(yield* other.Touch()).toBe(1)
+        }),
+      ),
+  },
+  {
     name: "a full turn checkout queue refuses before the handler or fence and retries the same id exactly once after capacity returns",
     requiresIndependentConnections: true,
     timeoutMs: 30_000,
