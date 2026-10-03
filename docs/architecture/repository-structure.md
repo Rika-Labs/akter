@@ -24,6 +24,7 @@ packages/
 tooling/
   oxlint/                   @akter/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @akter/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
+infra/                      @akter/infra      Alchemy AWS/Cloudflare/Axiom/Neki infrastructure; separate organization and regional service stacks (ADR 0065)
 BENCHMARKS.md               consolidated performance and recovery report
 docs/  research/  .github/src/
 ```

@@ -20,7 +20,7 @@ import type { ActorRef, Caller } from "../../identity/caller.ts"
 import type { Placement } from "../storage/codec.ts"
 import { type ConnectionCommands, connectionSecret } from "../../identity/connection.ts"
 import { FrameworkClock } from "../turn/admission.ts"
-import { BUCKETS } from "../turn/outbox.ts"
+import { shardClients } from "../database/shards.ts"
 import {
   ClientMessage,
   type Deliver,
@@ -306,6 +306,7 @@ const ended = (cause: SessionEnded["cause"], resync: boolean, retryAfterMs?: num
  */
 export const connectionHolder = Effect.fnUntraced(function* (options: HolderOptions) {
   const sql = yield* SqlClient.SqlClient
+  const shards = yield* shardClients
   const crypto = yield* Crypto.Crypto
   const clock = yield* FrameworkClock
   const scope = yield* Effect.scope
@@ -908,14 +909,17 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
       const transport = options.transport()
       const checked = [...held.values()].filter((connection) => connection.open)
 
-      const rows = yield* sql<{ connection_id: string }>`
+      const rows = (yield* Effect.forEach(
+        shards,
+        ({ sql, range }) => sql<{ connection_id: string }>`
         SELECT c.connection_id
-        FROM generate_series(${BUCKETS.first}::int, ${BUCKETS.last}::int) AS b(bucket)
+        FROM generate_series(${range.first}::int, ${range.last}::int) AS b(bucket)
         CROSS JOIN LATERAL (
           SELECT connection_id FROM actor_connections
           WHERE actor_connections.bucket = b.bucket AND holder = ${transport.holder}
             AND holder_epoch = ${transport.epoch}
-        ) c`
+        ) c`,
+      )).flat()
 
       lastLiveness = at
       livenessFailedSince = undefined

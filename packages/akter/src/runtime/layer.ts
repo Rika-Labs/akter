@@ -19,13 +19,11 @@ import {
   ClusterError,
   Entity,
   EntityId,
-  MessageStorage,
   RunnerHealth,
   Runners,
   RunnerStorage,
   Sharding,
   ShardingConfig,
-  SqlRunnerStorage,
 } from "effect/cluster"
 import { SqlClient, SqlError } from "effect/sql"
 import {
@@ -46,6 +44,7 @@ import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { ReadReplica, replicaLayer } from "./database/replica.ts"
+import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
@@ -79,7 +78,12 @@ import { DEFAULT_WRITER_WINDOW_MS, refreshWriters } from "./payloads/versions.ts
 import type { PayloadDeclaration } from "../members/payload.ts"
 import { ExecutionTarget, INTERRUPT, RESUME } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
-import { keepAcquiredShards, ShardLease, tableShardLease } from "./topology/locks.ts"
+import {
+  coordinatedRunnerStorage,
+  keepAcquiredShards,
+  ShardLease,
+  tableShardLease,
+} from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
 import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
 import { ContentStore } from "../handles/content.ts"
@@ -94,6 +98,13 @@ import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
 import { servingReadiness } from "./readiness.ts"
+import {
+  acquiredShards,
+  checkRunnerConfiguration,
+  RunnerReadiness,
+  RunnerWiring,
+} from "./runner.ts"
+
 import { actorRegistration } from "./registration.ts"
 import { startSweeps } from "./sweeps.ts"
 import type { AnyFleetView } from "../tables/fleet.ts"
@@ -249,31 +260,6 @@ const CLAIM_MARGIN_MS = 5000
 
 /** The claim lease when no actor type is registered: default policies' 30 s + 2 s + margin. */
 const DEFAULT_CLAIM_LEASE_MS = 37_000
-
-/**
- * How a runtime joins a cluster of runners instead of running as the embedded
- * single runner. Package-internal: `ActorTest.cluster` provides it to each of
- * its runners.
- */
-export class RunnerWiring extends Context.Service<
-  RunnerWiring,
-  {
-    readonly config: Partial<ShardingConfig.ShardingConfig["Service"]>
-    /** Provides `Sharding` together with the runner-to-runner transport. */
-    readonly sharding: Layer.Layer<
-      Sharding.Sharding,
-      never,
-      | ShardingConfig.ShardingConfig
-      | MessageStorage.MessageStorage
-      | RunnerStorage.RunnerStorage
-      | RunnerHealth.RunnerHealth
-    >
-    /** Wraps the SQL runner storage, e.g. to withhold heartbeats or a graceful release. */
-    readonly storage: (
-      storage: RunnerStorage.RunnerStorage["Service"],
-    ) => RunnerStorage.RunnerStorage["Service"]
-  }
->()("@rikalabs/akter/runtime/layer/RunnerWiring") {}
 
 /** How long a progress send may take before it is given up as a lost frame. */
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
@@ -708,7 +694,8 @@ export const layer = (options: Options = {}) => {
           return yield* Effect.gen(function* () {
             if (
               external &&
-              (request.delivery !== undefined ||
+              (request.intent !== undefined ||
+                request.delivery !== undefined ||
                 (Schema.is(System)(request.caller) &&
                   (request.caller.mint !== undefined || request.caller.source === "subscription")))
             )
@@ -1268,6 +1255,7 @@ export const layer = (options: Options = {}) => {
   return Layer.unwrap(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
+      const coordination = (yield* Coordination) ?? sql
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
       yield* migrate
 
@@ -1306,9 +1294,26 @@ export const layer = (options: Options = {}) => {
         ? "memory"
         : "sql"
 
+      if (wiring?.production === true && runnerStorage === "memory")
+        return yield* Effect.die(
+          new Error(
+            "Runner.socket requires Postgres; PGlite cannot share ownership between processes",
+          ),
+        )
+
+      yield* checkRunnerConfiguration(wiring)
+
       const sharding = (
         wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
       ).pipe(
+        Layer.merge(
+          Layer.effect(
+            RunnerReadiness,
+            wiring?.production === true
+              ? acquiredShards
+              : Effect.succeed({ acquired: () => Effect.succeed(true) }),
+          ),
+        ),
         Layer.provideMerge(directMessages),
         Layer.provide([
           runnerStorage === "memory"
@@ -1318,7 +1323,7 @@ export const layer = (options: Options = {}) => {
               )
             : Layer.effect(
                 RunnerStorage.RunnerStorage,
-                SqlRunnerStorage.make({}).pipe(
+                coordinatedRunnerStorage.pipe(
                   Effect.map(wiring?.storage ?? ((storage) => storage)),
                   Effect.map(keepAcquiredShards),
                 ),
@@ -1347,7 +1352,7 @@ export const layer = (options: Options = {}) => {
           ? Layer.succeed(
               ShardLease,
               tableShardLease({
-                sql,
+                sql: coordination,
                 address: address.value,
                 expiration: Duration.fromInputUnsafe(
                   config.shardLockExpiration ?? ShardingConfig.defaults.shardLockExpiration,
@@ -1380,7 +1385,9 @@ export const Database = {
    * `maxConnections` (default 50): a command holds one session for its whole
    * turn, so a pool smaller than the commands in flight queues callers behind
    * it. Queries, the relay, migrations, and cluster storage use the off-turn
-   * pool, `offTurnConnections` (default 10). Both open connections only as
+   * pool, `offTurnConnections` (default 10), unless `coordination` moves
+   * Cluster storage and deployment locks to an independent unsharded primary.
+   * All runners must designate the same authority. Pools open connections only as
    * load needs them. Keep the sum of both across runners below the server's
    * `max_connections`.
    *
@@ -1399,6 +1406,8 @@ export const Database = {
     options: Omit<PgClient.PgPoolConfig, "types"> & {
       readonly offTurnConnections?: number
       readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
+      /** An unsharded primary shared by every runner; owns coordination rows and Cluster and fleet locks. */
+      readonly coordination?: Omit<PgClient.PgPoolConfig, "types"> | undefined
     },
   ) => {
     const types = PgTypes.makeRegistry()
@@ -1412,13 +1421,16 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, replica, ...configured } = options
+    const { offTurnConnections, replica, coordination, ...configured } = options
     const pool = withKeepalives(configured)
 
     return Layer.mergeAll(
       PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
+      coordinationLayer(
+        coordination === undefined ? undefined : { ...withKeepalives(coordination), types },
+      ),
     )
   },
   pglite,
