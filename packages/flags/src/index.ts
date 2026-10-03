@@ -11,4 +11,4 @@ export {
 export type { Flag, Registry, Target } from "./evaluation.ts"
 export { makeFlags } from "./layer.ts"
 export { OverrideStore, StoreError, memoryStore } from "./store.ts"
-export { postgresStore } from "./postgres.ts"
+export { flagMigrations, migrateFlags, postgresStore } from "./postgres.ts"

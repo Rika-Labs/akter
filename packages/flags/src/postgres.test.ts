@@ -1,5 +1,4 @@
 import { PgClient } from "@effect/sql-pg"
-import { migrate } from "@akter/postgres/migrate"
 import {
   Config,
   Deferred,
@@ -15,7 +14,7 @@ import { SqlClient } from "effect/sql"
 import { expect, it } from "@effect/vitest"
 import { flag, InvalidOverride } from "./evaluation.ts"
 import { makeFlags } from "./layer.ts"
-import { postgresStore } from "./postgres.ts"
+import { migrateFlags, postgresStore } from "./postgres.ts"
 import { OverrideStore, StoreError } from "./store.ts"
 
 const { Flags, layer } = makeFlags({ mode: flag(Schema.String)("default") })
@@ -25,7 +24,6 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const url = yield* Config.String("TEST_DATABASE_URL")
-      yield* Effect.promise(() => migrate(url))
       const database = PgClient.layer({ url: Redacted.make(url) })
       const live = Layer.mergeAll(layer.pipe(Layer.provide(postgresStore)), postgresStore).pipe(
         Layer.provideMerge(database),
@@ -37,6 +35,7 @@ it.effect(
             Effect.gen(function* () {
               const flags = yield* Flags
               const sql = yield* SqlClient.SqlClient
+              yield* Effect.all([migrateFlags, migrateFlags], { concurrency: "unbounded" })
               yield* flags.remove("mode")
               yield* flags.set("mode", {
                 users: { special: "user" },

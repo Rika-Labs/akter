@@ -159,7 +159,6 @@
         "effect": "catalog:",
       },
       "devDependencies": {
-        "@akter/postgres": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
         "@effect/vitest": "catalog:",

@@ -12,7 +12,7 @@ Add private workspace package `packages/flags` as `@akter/flags`. Its root expor
 
 Use application-owned Effect Schema declarations with typed defaults and JSON-encoded overrides. Explicit user rules precede organization rules, stable identity-based percentage rollouts, global overrides and defaults. FNV-1a fixes cohort assignment across browser/server evaluation and restarts without a vendor or external crypto dependency.
 
-Store one complete override rule per flag key in the control-plane database, installed by `packages/postgres/migrations/0005_feature_flags.sql`. Reads are uncached and replacements atomic. A scoped API snapshot contains resolved values only, avoiding disclosure of other users' targeting data. Applications retain responsibility for authentication and administrative write authorization; flags are not access-control policy.
+Store one complete override rule per flag key in the control-plane database, created by the package's idempotent `migrateFlags`, so a host with its own startup migrations (the control-plane API) can run or append it instead of depending on a second migration runner. Moving the call into `apps/api` startup is a follow-up once that app lands. Reads are uncached and replacements atomic. A scoped API snapshot contains resolved values only, avoiding disclosure of other users' targeting data. Applications retain responsibility for authentication and administrative write authorization; flags are not access-control policy.
 
 ## Consequences
 
