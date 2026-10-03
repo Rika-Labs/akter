@@ -1,8 +1,8 @@
 # Akter console
 
 `@akter/console` is the hosted product console: a FoldKit client application built with Vite,
-`@foldkit/vite-plugin` and `@stylexjs/unplugin`. It renders every page from typed fixtures until
-the hosted API exists. Components, charts and tokens come from `@akter/ui`, compiled from source in
+`@foldkit/vite-plugin` and `@stylexjs/unplugin`. Data comes from the shared `@akter/cloud-api`
+contract; auth uses Better Auth's `/auth` routes. Components, charts and tokens come from `@akter/ui`, compiled from source in
 the same StyleX pass.
 
 ## Run it
@@ -15,6 +15,55 @@ From `apps/console`:
   client routes. Any static host with the same fallback can serve the build; there is no console
   server.
 
+## API and fixture mode
+
+The console uses `HttpApiClient.make(CloudApi)` with session credentials included. Set
+`VITE_API_BASE_URL` to the API mount (default `/api`); the contract's `/api` prefix is applied
+exactly once. Better Auth uses the same origin's `/auth` mount. A cross-origin deployment needs
+credentialed CORS and cookie configuration on the API server.
+
+For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
+proxy `/api` and `/auth` through Vite (the default target is `http://127.0.0.1:3001`). The
+accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
+Set `API_PROXY_TARGET` to its API port and `CONSOLE_ORIGIN` to the console origin. A same-origin
+development proxy can also use the console origin as `API_ORIGIN`.
+
+Set `VITE_CONSOLE_FIXTURES=1` before starting/building, or visit `/?fixtures=1`, to run without a
+backend. The query flag and its tab storage are honoured only in Vite development mode;
+production builds ignore them. `VITE_CONSOLE_FIXTURES=1` is an explicit build-time preview switch.
+Sample pages carry a quiet notice and sample-backed controls and record links are read-only.
+In real mode, route fixtures are imported lazily
+only when an endpoint returns the typed `NotImplemented` error; transport, permission and
+conflict errors are rendered rather than silently replaced with sample data. Missing organization
+or project context never substitutes a sample identity. Mixed settings pages retain source per
+slice, so sample endpoints do not disable real API-key controls. Mutations are never simulated
+or reported as successful merely because a backend is unimplemented.
+
+Environment-variable reads expose only names and provenance. Values are write-only inputs;
+neither secret values nor masked tails are displayed.
+
+The commands page loads a snapshot and then receives UTC-decoded command events over SSE. Pause
+closes the stream; reconnect refreshes the snapshot before opening another stream. A stream that
+is unavailable or interrupted leaves the snapshot visible with an inline explanation. Sample
+pages never start a stream or simulate new turns.
+
+The inspector's Send command dialog accepts JSON and an optional command ID, shows the actor's
+result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
+fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
+response reuse the same receipt key. The dialog captures the actor's project and environment
+and closes on every URL change; navigation can never retarget an old actor address. Deployment detail offers
+earlier successful deployments in the same environment as rollback targets and displays
+`rolledBackFrom` on the newly created deployment.
+
+Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
+requests each actor type's `/latency` histogram at the chosen window and sums counts only when
+windows and bucket boundaries match. Its unbounded tail remains explicit and it computes no
+combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
+histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
+Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
+times are UTC. The local API currently answers runtime and deployment endpoints with typed 501s;
+protocol/browser tests exercise their declared responses, not a live runner implementation.
+
 ## Layout
 
 ```text
@@ -26,14 +75,16 @@ src/
     <page>/              model.ts (schemas), client.ts (Effect loader), fixtures.ts, view.ts
 ```
 
-Each page reads its data through its own `client.ts`, an `Effect` that resolves the page's schema.
-Today those return fixtures; the hosted API's client replaces each body without changing its type,
-and a page can keep its fixture as the fallback while an endpoint is unimplemented.
+Each page reads its data through its own `client.ts`, an `Effect` that maps the cloud contract to
+the page's presentation schema. `app/api/client.ts` owns the shared cookie-bearing client,
+organization/project/environment resolution, typed error presentation and explicit fallback.
 
 ## Pages
 
 Signed out: `/sign-in`, `/sign-up`, `/verify-email`, `/forgot-password`, `/reset-password`,
 `/invitations/:id`, `/onboarding?step=organization|project|deploy`.
+
+Emailed invitation links use `/invitations/:id`; the earlier compatibility URL is no longer routed.
 
 Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
 `/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,

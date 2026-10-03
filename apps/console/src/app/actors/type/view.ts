@@ -10,15 +10,18 @@ import {
   statRow,
   status,
 } from "@akter/ui"
-import { formatCompact, formatInteger } from "@akter/ui/geometry"
+import { formatCompact, formatDuration, formatInteger } from "@akter/ui/geometry"
 import * as Routes from "../../navigation/routes.ts"
 import { OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
+import { windowName } from "../../overview/time.ts"
+import { windowMenu } from "../../overview/window.ts"
 import type { ActorTypePage } from "../model.ts"
 
-/** One actor type: its numbers, its traffic, its commands and its hottest instances. */
-export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen => {
-  const { summary } = page
+/** One actor type: its numbers, its traffic and command volumes over the selected window, and its instances. */
+export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>): Screen => {
+  const { summary, activity } = page
+  const first = page.instances[0]
   return {
     title: summary.name,
     crumbs: [
@@ -26,15 +29,25 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
       { label: summary.name, mono: true },
     ],
     actions: [
-      button(h, {
-        label: "Send command",
-        size: "sm",
-        onClick: OpenedDialog({
-          dialog: Dialog.SendCommand({
-            address: `${summary.name}/${page.instances[0]?.key ?? "key"}`,
-          }),
-        }),
-      }),
+      windowMenu(h, { id: "range-menu", selected: activity.window, disabled: model.pageSample }),
+      ...(first === undefined
+        ? []
+        : [
+            button(h, {
+              label: "Send command",
+              size: "sm",
+              disabled: model.pageSample || page.commandScope === undefined,
+              onClick:
+                page.commandScope === undefined
+                  ? undefined
+                  : OpenedDialog({
+                      dialog: Dialog.SendCommand({
+                        address: `${summary.name}/${first.key}`,
+                        scope: page.commandScope,
+                      }),
+                    }),
+            }),
+          ]),
     ],
     body: pageBody(h, [
       pageHeader(h, {
@@ -49,10 +62,13 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
           { label: "Awake", value: formatInteger(summary.awake) },
           {
             label: "Commands / s",
-            value: formatInteger(summary.perSecond),
-            trend: page.perSecond.slice(-40),
+            value: formatInteger(summary.commandsPerSecond),
+            trend: activity.perSecond.slice(-40),
           },
-          { label: "p99 turn", value: summary.p99 },
+          {
+            label: "p99 turn",
+            value: summary.commandsPerSecond === 0 ? "—" : formatDuration(summary.p99Ms),
+          },
         ],
       }),
       columns(h, {
@@ -60,18 +76,18 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
         children: [
           section(h, {
             title: "Commands per second",
-            meta: "last 24 hours",
+            meta: windowName[activity.window],
             children: [
               lineChart(h, {
                 id: `type-${summary.name}`,
-                label: `${summary.name} commands per second`,
-                categories: page.hours,
+                label: `${summary.name} commands per second, ${windowName[activity.window]}`,
+                categories: activity.hours,
                 height: 180,
                 series: [
                   {
                     id: "rate",
                     label: summary.name,
-                    values: page.perSecond,
+                    values: activity.perSecond,
                     variant: "primary",
                     area: true,
                   },
@@ -82,15 +98,15 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
           }),
           section(h, {
             title: "By command",
-            meta: "today",
+            meta: windowName[activity.window],
             children: [
               barChart(h, {
-                label: `${summary.name} commands today`,
+                label: `${summary.name} commands, ${windowName[activity.window]}`,
                 orientation: "horizontal",
-                data: page.commands.map((command, index) => ({
+                data: activity.commands.map((command, index) => ({
                   key: command.name,
                   label: command.name,
-                  value: command.today,
+                  value: command.count,
                   highlight: index === 0,
                 })),
               }),
@@ -100,7 +116,7 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
       }),
       section(h, {
         title: "Instances",
-        meta: "busiest first",
+        meta: `${formatInteger(page.instances.length)} shown`,
         children: [
           dataTable(h, {
             label: `${summary.name} instances`,
@@ -115,16 +131,10 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
                 hideBelow: "narrow",
               },
               {
-                key: "mailbox",
-                label: "Mailbox",
-                width: "5rem",
-                align: "end",
-                hideBelow: "compact",
-              },
-              {
-                key: "runner",
-                label: "Runner",
+                key: "command",
+                label: "Last command",
                 width: "minmax(0, 1fr)",
+                mono: true,
                 muted: true,
                 hideBelow: "narrow",
               },
@@ -132,7 +142,9 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
             ],
             rows: page.instances.map((instance) => ({
               key: instance.key,
-              href: Routes.actor({ actorType: summary.name, key: instance.key }),
+              href: model.pageSample
+                ? undefined
+                : Routes.actor({ actorType: summary.name, key: instance.key }),
               cells: [
                 instance.key,
                 status(h, {
@@ -140,8 +152,7 @@ export const actorTypeScreen = ({ h, page }: ScreenInput<ActorTypePage>): Screen
                   label: instance.awake ? "Awake" : "Asleep",
                 }),
                 String(instance.generation),
-                String(instance.mailbox),
-                instance.runner,
+                instance.lastCommand,
                 instance.lastTurn,
               ],
             })),

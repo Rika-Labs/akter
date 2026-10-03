@@ -2,23 +2,52 @@ import { Function, Match, Option, Predicate } from "effect"
 import * as Navigation from "foldkit/navigation"
 import type { Return } from "foldkit/update"
 import { type Url, toString } from "foldkit/url"
-import { openingTail } from "../commands/fixtures.ts"
-import { nextTurn } from "../commands/client.ts"
-import { AppRoute } from "../navigation/routes.ts"
+import { selectedWindow } from "../api/client.ts"
+import { toOpeningTail, toTailEntry } from "../commands/mapping.ts"
+import { settingsSeed } from "../settings/keys.ts"
+import {
+  choiceFields,
+  parseMemberRoleKey,
+  parseNotificationKey,
+  spendLimitKey,
+  toggleFields,
+} from "../settings/keys.ts"
+import { slugify } from "../auth/model.ts"
+import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
+  AcceptInvitation,
   ApplyTheme,
+  ContinueVerified,
+  CreateOrganization,
+  CreateProject,
+  DeclineInvitation,
   ExpireToast,
   HideDialog,
   HidePopovers,
   LoadExternal,
   LoadPage,
+  LoadWorkspace,
+  Mutate,
   PushUrl,
+  ReplaceUrl,
+  RequestReset,
+  ResendVerification,
+  ResetPassword,
+  SelectEnvironment,
+  SelectSeriesWindow,
+  SendActorCommand,
+  NewCommandId,
   ShowDialog,
+  SignIn,
+  SignInWithProvider,
+  SignOut,
+  SignUp,
   WriteClipboard,
 } from "./command.ts"
+import { Action, canMutate } from "./action.ts"
 import { Message } from "./message.ts"
-import type { Dialog, Flags, Model, Toast } from "./model.ts"
+import { Dialog, type Flags, type Model, type Toast, withoutPasswords } from "./model.ts"
 import { paletteResults } from "./palette.ts"
 
 type Result = Return<Model, Message>
@@ -42,42 +71,91 @@ const defaultToggles = {
   twoFactor: false,
 } satisfies Readonly<Record<string, boolean>>
 
+const environments = ["production", "staging", "dev"] as const
+
+const environmentKeys = ["defaultEnvironment", "environment", "variableEnvironment"]
+
+const storedEnvironment = (): string => {
+  try {
+    const stored = window.sessionStorage.getItem("console-environment")
+    return environments.find((name) => name === stored) ?? "production"
+  } catch {
+    return "production"
+  }
+}
+
 const defaultChoices = {
   defaultEnvironment: "production",
   timeZone: "local",
   spendLimit: "500",
   environment: "production",
-  inviteRole: "Member",
+  inviteRole: "member",
   homeRegion: "us-east-1",
   auditFilter: "all",
   receiptRetention: "30",
-  keyScope: "deploy",
+  keyScope: "write",
+  keyProject: "project",
   variableEnvironment: "production",
 } satisfies Readonly<Record<string, string>>
 
 const initial = (flags: Flags, url: Url): Result => {
   const route = Routes.parseUrl(url)
+  const environment = storedEnvironment()
+  const failure = flags.workspace.error
   return {
     model: {
       route,
       workspace: flags.workspace,
       page: Option.none(),
+      pageError: Option.none(),
+      pageSample: false,
+      allowSignIn: false,
+      submitting: false,
+      formError: Option.none(),
       loading: true,
       theme: flags.theme,
       drawer: false,
       palette: { open: false, query: "" },
       dialog: Option.none(),
-      toasts: [],
-      toastCount: 0,
+      toasts:
+        failure === undefined
+          ? []
+          : [
+              {
+                id: "toast-0",
+                title: "Workspace unavailable",
+                description: failure,
+                tone: "danger",
+              },
+            ],
+      toastCount: failure === undefined ? 0 : 1,
       fields: {},
       toggles: defaultToggles,
-      choices: defaultChoices,
+      choices: {
+        ...defaultChoices,
+        defaultEnvironment: environment,
+        environment,
+        variableEnvironment: environment,
+        seriesWindow: selectedWindow(),
+      },
       settingsQuery: "",
-      tail: { entries: openingTail, paused: false, filter: "all", next: openingTail.length },
+      tail: { entries: [], paused: false, filter: "all", next: 0 },
+      tailStatus: "idle",
+      tailSession: 0,
+      tailError: Option.none(),
+      commandAnswer: Option.none(),
+      commandError: Option.none(),
+      commandUsedId: Option.none(),
+      sendingCommand: false,
+      commandSession: 0,
       resolved: [],
       revoked: [],
     },
-    commands: [LoadPage({ route }), ApplyTheme({ preference: flags.theme })],
+    commands: [
+      LoadPage({ route }),
+      ApplyTheme({ preference: flags.theme }),
+      ...(failure === undefined ? [] : [ExpireToast({ id: "toast-0" })]),
+    ],
   }
 }
 
@@ -124,6 +202,27 @@ const dialogFocus = (dialog: Dialog): string =>
     Match.orElse(() => "[data-dialog-confirm]"),
   )
 
+const settingsPage = (model: Model) =>
+  Option.flatMap(model.page, (page) =>
+    Predicate.isTagged(page, "SettingsPage") ? Option.some(page) : Option.none(),
+  )
+
+const mutate = (model: Model, action: Action): Result =>
+  canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
+    ? { model, commands: [Mutate({ action })] }
+    : toast(model, { title: "Sample data is read-only.", tone: "warning" })
+
+const unavailable = (model: Model, what: string): Result =>
+  toast(model, { title: `${what} isn’t available yet`, tone: "warning" })
+
+const savesToggle = (key: string): boolean =>
+  Object.keys(toggleFields).includes(key) || parseNotificationKey(key) !== undefined
+
+const savesChoice = (key: string): boolean =>
+  Object.keys(choiceFields).includes(key) ||
+  key === spendLimitKey ||
+  parseMemberRoleKey(key) !== undefined
+
 const deadLetterIds = (model: Model): ReadonlyArray<string> =>
   Option.match(model.page, {
     onNone: () => [],
@@ -134,104 +233,253 @@ const deadLetterIds = (model: Model): ReadonlyArray<string> =>
 const confirm = (model: Model, dialog: Dialog): Result =>
   Match.value(dialog).pipe(
     Match.tagsExhaustive({
-      DiscardDeadLetter: ({ id }) =>
-        toast(
-          { ...model, resolved: [...model.resolved, id] },
-          { title: `Discarded ${id}`, description: "The job will not run again.", tone: "idle" },
-        ),
+      DiscardDeadLetter: ({ id }) => mutate(model, Action.DiscardDeadLetter({ id })),
       RevokeKey: ({ name }) =>
-        toast(
-          { ...model, revoked: [...model.revoked, name] },
-          { title: `Revoked ${name}`, description: "Requests using it now fail.", tone: "idle" },
+        mutate(
+          model,
+          Action.RevokeKey({
+            id: Option.match(settingsPage(model), {
+              onNone: () => "",
+              onSome: (page) => page.keys.find((key) => key.name === name)?.id ?? "",
+            }),
+            name,
+          }),
         ),
-      CreateKey: () =>
-        toast(model, {
-          title: `Created ${model.fields["key-name"] ?? "key"}`,
-          description: "Copy it now; it is shown once.",
-          tone: "live",
-        }),
-      AddVariable: () =>
-        toast(model, {
-          title: `Saved ${model.fields["variable-name"] ?? "variable"}`,
-          description: "It takes effect on the next deploy.",
-          tone: "live",
-        }),
-      SendCommand: ({ address }) =>
-        toast(model, {
-          title: `${model.fields["command-name"] ?? "Command"} committed`,
-          description: `${address} · 3.2 ms`,
-          tone: "live",
-        }),
-      RollBack: ({ commit }) =>
-        toast(model, {
-          title: `Rolling back to ${commit}`,
-          description: "Actors move to the previous runners as they drain.",
-          tone: "live",
-        }),
-      DeleteProject: ({ project }) =>
-        toast(model, {
-          title: `${project} scheduled for deletion`,
-          description: "Runners stop now; the database is kept for 7 days.",
-          tone: "danger",
-        }),
+      CreateKey: () => {
+        const cleared = { ...model, fields: { ...model.fields, "key-name": "" } }
+        return mutate(
+          cleared,
+          Action.CreateKey({
+            name: model.fields["key-name"] ?? "",
+            permission: model.choices["keyScope"] ?? "write",
+            projectScoped: model.choices["keyProject"] !== "organization",
+          }),
+        )
+      },
+      AddVariable: () => {
+        const cleared = {
+          ...model,
+          fields: { ...model.fields, "variable-name": "", "variable-value": "" },
+        }
+        return mutate(
+          cleared,
+          Action.SetVariable({
+            environment: model.choices["variableEnvironment"] ?? "production",
+            name: model.fields["variable-name"] ?? "",
+            value: model.fields["variable-value"] ?? "",
+          }),
+        )
+      },
+      SendCommand: ({ address, scope }) => {
+        if (model.pageSample || model.loading || model.sendingCommand) return { model }
+        const commandId = (model.fields["command-id"] ?? "").trim()
+        if (commandId === "")
+          return {
+            model: {
+              ...model,
+              sendingCommand: true,
+              commandAnswer: Option.none(),
+              commandError: Option.none(),
+            },
+            commands: [NewCommandId({ session: model.commandSession })],
+          }
+        return {
+          model: {
+            ...model,
+            sendingCommand: true,
+            commandAnswer: Option.none(),
+            commandError: Option.none(),
+            commandUsedId: Option.some(commandId),
+            fields: { ...model.fields, "command-id": commandId },
+          },
+          commands: [
+            SendActorCommand({
+              session: model.commandSession,
+              address,
+              scope,
+              command: (model.fields["command-name"] ?? "").trim(),
+              payload: model.fields["command-payload"] ?? "{}",
+              commandId,
+            }),
+          ],
+        }
+      },
+      RollBack: ({ id, commit }) => mutate(model, Action.RollBack({ id, commit })),
+      DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
+      KeyCreated: () => ({ model }),
     }),
   )
 
-const submit = (model: Model, form: string): Result =>
+const minimumPassword = 12
+
+const typed = (model: Model, name: string): string => (model.fields[name] ?? "").trim()
+
+const pending = (model: Model, command: Result["commands"]): Result => ({
+  model: { ...model, submitting: true, formError: Option.none() },
+  commands: command,
+})
+
+const reject = (model: Model, message: string): Result => ({
+  model: { ...model, formError: Option.some(message) },
+})
+
+const invitationId = (model: Model): string =>
+  AppRoute.isAnyOf(["AcceptInvitation"])(model.route) ? model.route.invitation : ""
+
+const authForm = (model: Model, form: string): Result | undefined =>
   Match.value(form).pipe(
-    Match.when("sign-in", () => go(model, Routes.overview())),
-    Match.when("sign-up", () => go(model, Routes.verifyEmail())),
+    Match.when("sign-in", () =>
+      typed(model, "email") === "" || (model.fields["password"] ?? "") === ""
+        ? reject(model, "Enter your email and password.")
+        : pending(model, [
+            SignIn({ email: typed(model, "email"), password: model.fields["password"] ?? "" }),
+          ]),
+    ),
+    Match.when("sign-up", () => {
+      const password = model.fields["new-password"] ?? ""
+      if (typed(model, "name") === "" || typed(model, "email") === "")
+        return reject(model, "Enter your name and email.")
+      if (password.length < minimumPassword)
+        return reject(model, `Use at least ${String(minimumPassword)} characters.`)
+      return pending(model, [
+        SignUp({ name: typed(model, "name"), email: typed(model, "email"), password }),
+      ])
+    }),
+    Match.when("social-github", () => pending(model, [SignInWithProvider({ provider: "github" })])),
+    Match.when("social-google", () => pending(model, [SignInWithProvider({ provider: "google" })])),
+    Match.when("forgot", () =>
+      typed(model, "email") === ""
+        ? reject(model, "Enter the email you signed up with.")
+        : pending(model, [RequestReset({ email: typed(model, "email") })]),
+    ),
+    Match.when("reset", () => {
+      const password = model.fields["new-password"] ?? ""
+      if (password.length < minimumPassword)
+        return reject(model, `Use at least ${String(minimumPassword)} characters.`)
+      if (password !== (model.fields["confirm-password"] ?? ""))
+        return reject(model, "The two passwords don’t match.")
+      return pending(model, [ResetPassword({ password })])
+    }),
     Match.when("verify-resend", () =>
-      toast(model, {
-        title: "Verification email sent",
-        description: model.fields["email"] ?? "",
-        tone: "live",
-      }),
+      typed(model, "email") === ""
+        ? reject(model, "Enter your email on the sign-in page first.")
+        : pending(model, [ResendVerification({ email: typed(model, "email") })]),
     ),
-    Match.when("forgot", () => ({
-      model: { ...model, fields: { ...model.fields, recoverySent: "yes" } },
-    })),
-    Match.when("reset", () =>
-      then(go(model, Routes.signIn()), (next) =>
-        toast(next, {
-          title: "Password updated",
-          description: "Sign in with your new password.",
-          tone: "live",
-        }),
-      ),
-    ),
+    Match.when("verify-continue", () => pending(model, [ContinueVerified()])),
     Match.when("accept-invitation", () =>
-      then(go(model, Routes.overview()), (next) =>
-        toast(next, {
-          title: "Welcome to Acme",
-          description: "You joined as a Member.",
-          tone: "live",
+      pending(model, [AcceptInvitation({ id: invitationId(model) })]),
+    ),
+    Match.when("decline-invitation", () =>
+      pending(model, [DeclineInvitation({ id: invitationId(model) })]),
+    ),
+    Match.when("onboarding-organization", () => {
+      const name = typed(model, "org-name")
+      if (name === "") return reject(model, "Name your organization.")
+      return pending(model, [
+        CreateOrganization({
+          name,
+          slug: typed(model, "org-slug") === "" ? slugify(name) : typed(model, "org-slug"),
         }),
-      ),
+      ])
+    }),
+    Match.when("onboarding-project", () => {
+      const name = typed(model, "project-name")
+      if (name === "") return reject(model, "Name your project.")
+      return pending(model, [
+        CreateProject({ name, region: model.choices["homeRegion"] ?? "us-east-1" }),
+      ])
+    }),
+    Match.when("onboarding-deploy", () => {
+      const slug = slugify(typed(model, "project-name"))
+      return then(
+        go(model, slug === "" ? Routes.overview() : Routes.project({ project: slug })),
+        (next) => ({
+          model: next,
+          commands: [LoadWorkspace()],
+        }),
+      )
+    }),
+    Match.orElse(() => undefined),
+  )
+
+const submit = (model: Model, form: string): Result => {
+  if (model.submitting) return { model }
+  if (isAuthRoute(model.route) && model.pageSample)
+    return reject(model, "Sample data is read-only.")
+  const handled = authForm(model, form)
+  if (handled !== undefined) return handled
+  return Match.value(form).pipe(
+    Match.when("profile", () =>
+      mutate(model, Action.UpdateProfile({ name: model.fields["display-name"] ?? "" })),
     ),
-    Match.when("decline-invitation", () => go(model, Routes.signIn())),
-    Match.when("onboarding-organization", () => go(model, Routes.onboarding({ step: "project" }))),
-    Match.when("onboarding-project", () => go(model, Routes.onboarding({ step: "deploy" }))),
-    Match.when("onboarding-deploy", () =>
-      go(model, Routes.project({ project: model.fields["project-name"] ?? "support-bot" })),
+    Match.when("password", () =>
+      mutate(model, Action.SendPasswordReset({ email: model.workspace.person.email })),
     ),
-    Match.when("invite-member", () =>
-      toast(
-        { ...model, fields: { ...model.fields, "invite-email": "" } },
-        { title: `Invitation sent to ${model.fields["invite-email"] ?? "them"}`, tone: "live" },
-      ),
-    ),
-    Match.when("add-domain", () =>
-      toast(
-        { ...model, fields: { ...model.fields, domain: "" } },
-        {
-          title: `Added ${model.fields["domain"] ?? "domain"}`,
-          description: "Waiting for its CNAME record.",
-          tone: "idle",
-        },
-      ),
-    ),
-    Match.orElse(() => toast(model, { title: "Saved", tone: "live" })),
+    Match.when("organization", () => {
+      const page = settingsPage(model)
+      const organization = Option.flatMap(page, (found) => Option.fromNullishOr(found.organization))
+      return mutate(
+        model,
+        Action.UpdateOrganization({
+          name:
+            model.fields["org-name"] ??
+            Option.match(organization, { onNone: () => "", onSome: (found) => found.name }),
+          slug:
+            model.fields["org-slug"] ??
+            Option.match(organization, { onNone: () => "", onSome: (found) => found.slug }),
+        }),
+      )
+    }),
+    Match.when("invite-member", () => {
+      const cleared = { ...model, fields: { ...model.fields, "invite-email": "" } }
+      return mutate(
+        cleared,
+        Action.InviteMember({
+          email: model.fields["invite-email"] ?? "",
+          role: model.choices["inviteRole"] ?? "member",
+        }),
+      )
+    }),
+    Match.when("add-domain", () => {
+      const cleared = { ...model, fields: { ...model.fields, domain: "" } }
+      return mutate(
+        cleared,
+        Action.AddDomain({
+          hostname: model.fields["domain"] ?? "",
+          environment: model.choices["domain-environment"] ?? "production",
+        }),
+      )
+    }),
+    Match.when("change-plan", () => {
+      const current = Option.flatMap(settingsPage(model), (page) =>
+        Option.fromNullishOr(page.billing),
+      ).pipe(Option.map((billing) => billing.plan.id))
+      if (Option.contains(current, "enterprise")) return mutate(model, Action.OpenBillingPortal())
+      const plan = Option.contains(current, "pro") ? "enterprise" : "pro"
+      return mutate(model, Action.StartCheckout({ plan }))
+    }),
+    Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),
+    Match.orElse((name) => {
+      const [prefix, id] = name.split(":")
+      if (prefix === "resend-invite" && id !== undefined)
+        return mutate(model, Action.ResendInvitation({ id }))
+      if (prefix === "verify-domain" && id !== undefined)
+        return mutate(model, Action.VerifyDomain({ id }))
+      if (name.startsWith("add-region-"))
+        return mutate(model, Action.AddRegion({ region: name.slice("add-region-".length) }))
+      if (name.startsWith("connect-"))
+        return mutate(model, Action.ConnectIntegration({ kind: name.slice("connect-".length) }))
+      return unavailable(model, "That")
+    }),
+  )
+}
+
+const redirectFor = (kind: string): string | undefined =>
+  Match.value(kind).pipe(
+    Match.when("Unauthorized", () => Routes.signIn()),
+    Match.when("SignedIn", () => Routes.overview()),
+    Match.when("Onboarding", () => Routes.onboarding({})),
+    Match.orElse(() => undefined),
   )
 
 const step = (model: Model, message: Message): Result =>
@@ -239,8 +487,32 @@ const step = (model: Model, message: Message): Result =>
     ChangedUrl: ({ url }) => {
       const route = Routes.parseUrl(url)
       return {
-        model: { ...model, route, drawer: false, loading: true },
-        commands: [LoadPage({ route }), HidePopovers()],
+        model: {
+          ...model,
+          route,
+          dialog: Option.none(),
+          drawer: false,
+          loading: true,
+          tailStatus: "idle",
+          tailSession: model.tailSession + 1,
+          tailError: Option.none(),
+          commandAnswer: Option.none(),
+          commandError: Option.none(),
+          commandUsedId: Option.none(),
+          sendingCommand: false,
+          commandSession: model.commandSession + 1,
+          page: Option.none(),
+          pageError: Option.none(),
+          pageSample: false,
+          formError: Option.none(),
+          submitting: false,
+          fields: withoutPasswords(model.fields),
+        },
+        commands: [
+          LoadPage({ route, allowSignIn: model.allowSignIn }),
+          HidePopovers(),
+          ...(Option.isSome(model.dialog) ? [HideDialog({ id: dialogId })] : []),
+        ],
       }
     },
     RequestedUrl: ({ request }) =>
@@ -249,7 +521,59 @@ const step = (model: Model, message: Message): Result =>
         External: ({ href }): Result => ({ model, commands: [LoadExternal({ href })] }),
       }),
     RequestedHref: ({ href }) => then(closePalette(model), (next) => go(next, href)),
-    LoadedPage: ({ page }) => ({ model: { ...model, page, loading: false } }),
+    LoadedPage: ({ page, sample }) => {
+      const seed = Option.match(page, {
+        onNone: () => undefined,
+        onSome: (loaded) =>
+          Predicate.isTagged(loaded, "SettingsPage") ? settingsSeed(loaded) : undefined,
+      })
+      return {
+        model: {
+          ...model,
+          page,
+          pageError: Option.none(),
+          pageSample: sample,
+          allowSignIn: false,
+          loading: false,
+          tailSession: model.tailSession + 1,
+          tailStatus:
+            Option.exists(page, (loaded) => Predicate.isTagged(loaded, "CommandsPage")) && !sample
+              ? "connecting"
+              : "idle",
+          tailError: Option.none(),
+          toggles: { ...model.toggles, ...seed?.toggles },
+          choices: {
+            ...model.choices,
+            ...Object.fromEntries(
+              Object.entries(seed?.choices ?? {}).filter(([key]) => !environmentKeys.includes(key)),
+            ),
+          },
+          tail: Option.match(page, {
+            onNone: () => model.tail,
+            onSome: (loaded) =>
+              Predicate.isTagged(loaded, "CommandsPage")
+                ? toOpeningTail(model.tail)(loaded.recent)
+                : model.tail,
+          }),
+        },
+      }
+    },
+    FailedPage: ({ kind, message }) => {
+      const href = redirectFor(kind)
+      if (href !== undefined)
+        return {
+          model: { ...model, loading: false, allowSignIn: kind === "Unauthorized" },
+          commands: [ReplaceUrl({ href })],
+        }
+      return {
+        model: { ...model, loading: false, pageError: Option.some({ kind, message }) },
+      }
+    },
+    RetriedPage: () => ({
+      model: { ...model, loading: true, pageError: Option.none() },
+      commands: [LoadPage({ route: model.route, allowSignIn: model.allowSignIn }), LoadWorkspace()],
+    }),
+    LoadedWorkspace: ({ workspace }) => ({ model: { ...model, workspace } }),
     ToggledDrawer: () => ({ model: { ...model, drawer: !model.drawer } }),
     ClosedDrawer: () => ({ model: { ...model, drawer: false } }),
     OpenedPalette: () => (model.palette.open ? { model } : openPalette(model)),
@@ -293,37 +617,102 @@ const step = (model: Model, message: Message): Result =>
         model: { ...next, theme: preference },
         commands: [ApplyTheme({ preference })],
       })),
-    ChangedField: ({ name, value }) => ({
-      model: { ...model, fields: { ...model.fields, [name]: value } },
-    }),
-    ToggledSetting: ({ key }) => ({
-      model: { ...model, toggles: { ...model.toggles, [key]: model.toggles[key] !== true } },
-    }),
-    ChoseSetting: ({ key, value }) => ({
-      model: { ...model, choices: { ...model.choices, [key]: value } },
-    }),
+    ChangedField: ({ name, value }) => {
+      const fields = { ...model.fields, [name]: value }
+      if (name === "org-name" && model.fields["org-slug-edited"] !== "yes")
+        fields["org-slug"] = slugify(value)
+      if (name === "org-slug") fields["org-slug-edited"] = "yes"
+      return { model: { ...model, fields } }
+    },
+    ToggledSetting: ({ key }) => {
+      const enabled = model.toggles[key] !== true
+      const next = { ...model, toggles: { ...model.toggles, [key]: enabled } }
+      if (!savesToggle(key)) return { model: next }
+      const action = Action.SaveToggle({ key, enabled })
+      if (
+        !canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
+      )
+        return mutate(model, action)
+      return mutate(next, action)
+    },
+    ChoseSetting: ({ key, value }) => {
+      const next = { ...model, choices: { ...model.choices, [key]: value } }
+      if (key === "seriesWindow" && ["1h", "24h", "7d"].includes(value))
+        return model.pageSample
+          ? { model }
+          : { model: next, commands: [SelectSeriesWindow({ value })] }
+      const action = Action.SaveChoice({ key, value })
+      if (
+        savesChoice(key) &&
+        !canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
+      )
+        return mutate(model, action)
+      const saves = savesChoice(key) ? [Mutate({ action })] : []
+      if (!environmentKeys.includes(key) || !environments.some((name) => name === value))
+        return { model: next, commands: saves }
+      return {
+        model: {
+          ...next,
+          choices: {
+            ...next.choices,
+            defaultEnvironment: value,
+            environment: value,
+            variableEnvironment: value,
+          },
+        },
+        commands: [...saves, SelectEnvironment({ value })],
+      }
+    },
     ChangedSettingsQuery: ({ query }) => ({ model: { ...model, settingsQuery: query } }),
     SubmittedForm: ({ form }) => submit(model, form),
     OpenedDialog: ({ dialog }) =>
-      then(closePalette(model), (next) => ({
-        model: { ...next, dialog: Option.some(dialog) },
-        commands: [ShowDialog({ id: dialogId, focus: dialogFocus(dialog) })],
-      })),
+      then(closePalette(model), (next) => {
+        const session = next.commandSession + 1
+        const sending = Predicate.isTagged(dialog, "SendCommand")
+        return {
+          model: {
+            ...next,
+            dialog: Option.some(dialog),
+            fields: sending
+              ? { ...next.fields, "command-id": "", "command-payload": "{}", "command-name": "" }
+              : next.fields,
+            commandAnswer: Option.none(),
+            commandError: Option.none(),
+            commandUsedId: Option.none(),
+            sendingCommand: false,
+            commandSession: session,
+          },
+          commands: [
+            ShowDialog({ id: dialogId, focus: dialogFocus(dialog) }),
+            ...(sending ? [NewCommandId({ session })] : []),
+          ],
+        }
+      }),
     ClosedDialog: () => ({
-      model: { ...model, dialog: Option.none() },
+      model: {
+        ...model,
+        dialog: Option.none(),
+        commandAnswer: Option.none(),
+        commandError: Option.none(),
+        commandUsedId: Option.none(),
+        sendingCommand: false,
+        commandSession: model.commandSession + 1,
+      },
       commands: [HideDialog({ id: dialogId })],
     }),
     ConfirmedDialog: () =>
       Option.match(model.dialog, {
         onNone: () => ({ model }),
         onSome: (dialog) =>
-          then(
-            {
-              model: { ...model, dialog: Option.none() },
-              commands: [HideDialog({ id: dialogId })],
-            },
-            (next) => confirm(next, dialog),
-          ),
+          Predicate.isTagged(dialog, "SendCommand")
+            ? confirm(model, dialog)
+            : then(
+                {
+                  model: { ...model, dialog: Option.none() },
+                  commands: [HideDialog({ id: dialogId })],
+                },
+                (next) => confirm(next, dialog),
+              ),
       }),
     CopiedText: ({ text, label }) =>
       then({ model, commands: [WriteClipboard({ text })] }, (next) =>
@@ -332,36 +721,155 @@ const step = (model: Model, message: Message): Result =>
     DismissedToast: ({ id }) => ({
       model: { ...model, toasts: model.toasts.filter((entry) => entry.id !== id) },
     }),
-    TickedTail: () =>
-      model.tail.paused || !AppRoute.isAnyOf(["Commands"])(model.route)
+    ConnectedTail: ({ session }) =>
+      session !== model.tailSession
+        ? { model }
+        : {
+            model: { ...model, tailStatus: "live", tailError: Option.none() },
+          },
+    StreamedTurn: ({ session, entry }) =>
+      session !== model.tailSession || model.tail.paused || model.pageSample
         ? { model }
         : {
             model: {
               ...model,
               tail: {
                 ...model.tail,
-                entries: [nextTurn(model.tail.next), ...model.tail.entries].slice(0, 60),
+                entries: [toTailEntry(model.tail.next)(entry), ...model.tail.entries].slice(0, 60),
                 next: model.tail.next + 1,
               },
             },
           },
-    ToggledTail: () => ({
-      model: { ...model, tail: { ...model.tail, paused: !model.tail.paused } },
-    }),
+    StoppedTail: ({ session, kind, message }) => {
+      if (session !== model.tailSession || !AppRoute.isAnyOf(["Commands"])(model.route))
+        return { model }
+      if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
+      return {
+        model: {
+          ...model,
+          tailStatus: kind === "NotImplemented" ? "unavailable" : "error",
+          tailError: Option.some(message),
+          tail: { ...model.tail, paused: true },
+        },
+      }
+    },
+    AnsweredCommand: ({ session, answer }) =>
+      session !== model.commandSession
+        ? { model }
+        : {
+            model: {
+              ...model,
+              sendingCommand: false,
+              commandAnswer: Option.some(answer),
+              commandError: Option.none(),
+            },
+          },
+    FailedCommand: ({ session, kind, message }) => {
+      if (session !== model.commandSession) return { model }
+      if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
+      return { model: { ...model, sendingCommand: false, commandError: Option.some(message) } }
+    },
+    PreparedCommandId: ({ session, id }) => {
+      if (session !== model.commandSession || (model.fields["command-id"] ?? "").trim() !== "")
+        return { model }
+      const prepared = { ...model, fields: { ...model.fields, "command-id": id } }
+      return Option.match(model.dialog, {
+        onNone: () => ({ model }),
+        onSome: (dialog) =>
+          model.sendingCommand && Predicate.isTagged(dialog, "SendCommand")
+            ? confirm({ ...prepared, sendingCommand: false }, dialog)
+            : { model: prepared },
+      })
+    },
+    ToggledTail: () =>
+      model.pageSample
+        ? { model }
+        : model.tail.paused
+          ? {
+              model: {
+                ...model,
+                loading: true,
+                tailStatus: "connecting",
+                tailError: Option.none(),
+                tail: { ...model.tail, paused: false },
+              },
+              commands: [LoadPage({ route: model.route })],
+            }
+          : {
+              model: {
+                ...model,
+                tailStatus: "paused",
+                tailError: Option.none(),
+                tail: { ...model.tail, paused: true },
+              },
+            },
     ChangedTailFilter: ({ filter }) => ({ model: { ...model, tail: { ...model.tail, filter } } }),
-    RetriedDeadLetter: ({ id }) =>
-      toast(
-        { ...model, resolved: [...model.resolved, id] },
-        { title: `Retrying ${id}`, description: "Its attempt count starts again.", tone: "live" },
-      ),
+    RetriedDeadLetter: ({ id }) => mutate(model, Action.RetryDeadLetters({ ids: [id] })),
     RetriedAllDeadLetters: () => {
       const open = deadLetterIds(model).filter((id) => !model.resolved.includes(id))
-      return toast(
-        { ...model, resolved: [...model.resolved, ...open] },
-        { title: `Retrying ${String(open.length)} jobs`, tone: "live" },
-      )
+      return mutate(model, Action.RetryDeadLetters({ ids: open }))
     },
-    SignedOut: () => then(closePalette(model), (next) => go(next, Routes.signIn())),
+    Mutated: ({ title, description, reload }) =>
+      then(toast(model, { title, description, tone: "live" }), (next) => ({
+        model: next,
+        commands: reload ? [LoadPage({ route: next.route }), LoadWorkspace()] : [],
+      })),
+    FailedMutation: ({ message }) =>
+      then(toast(model, { title: message, tone: "danger" }), (next) => ({
+        model: next,
+        commands: isAuthRoute(next.route) ? [] : [LoadPage({ route: next.route })],
+      })),
+    CreatedKey: ({ name, secret }) =>
+      then(
+        {
+          model: { ...model, dialog: Option.some(Dialog.KeyCreated({ name, secret })) },
+          commands: [ShowDialog({ id: dialogId, focus: "[data-dialog-confirm]" })],
+        },
+        (next) => ({
+          model: next,
+          commands: [LoadPage({ route: next.route })],
+        }),
+      ),
+    SignedOut: () => then(closePalette(model), (next) => ({ model: next, commands: [SignOut()] })),
+    CompletedAuth: ({ href, refresh, title, description }) =>
+      then(
+        {
+          model: {
+            ...model,
+            submitting: false,
+            formError: Option.none(),
+            fields: withoutPasswords(model.fields),
+            page: refresh ? Option.none() : model.page,
+          },
+          commands: refresh ? [LoadWorkspace()] : [],
+        },
+        (next) =>
+          then(go(next, href), (arrived) =>
+            title === undefined
+              ? { model: arrived }
+              : toast(arrived, { title, description, tone: "live" }),
+          ),
+      ),
+    FailedAction: ({ message }) =>
+      isAuthRoute(model.route)
+        ? { model: { ...model, submitting: false, formError: Option.some(message) } }
+        : toast({ ...model, submitting: false }, { title: message, tone: "danger" }),
+    SentRecoveryEmail: () => ({
+      model: {
+        ...model,
+        submitting: false,
+        fields: { ...model.fields, recoverySent: "yes" },
+      },
+    }),
+    ResentVerification: () =>
+      toast(
+        { ...model, submitting: false },
+        {
+          title: "Verification email sent",
+          description: model.fields["email"] ?? "",
+          tone: "live",
+        },
+      ),
     CompletedEffect: () => ({ model }),
   })
 

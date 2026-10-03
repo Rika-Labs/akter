@@ -1,3 +1,9 @@
+---
+title: "API naming"
+sidebarTitle: "Naming"
+description: "The settled names of Akter's public API."
+---
+
 # API naming
 
 **Responsibility:** keep public terminology deliberate.  

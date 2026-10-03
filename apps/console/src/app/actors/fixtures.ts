@@ -1,5 +1,15 @@
-import { hourLabels, seededSeries } from "../workspace/series.ts"
-import { type ActorInstance, ActorPage, type ActorTypeSummary } from "./model.ts"
+import type { SeriesWindow } from "@akter/cloud-api"
+import { DateTime } from "effect"
+import { seriesLabel, windowSeconds } from "../overview/time.ts"
+import { seededSeries } from "../workspace/series.ts"
+import {
+  type ActorInstance,
+  ActorPage,
+  ActorsPage,
+  ActorTypePage,
+  type ActorTypeSummary,
+  type TypeActivity,
+} from "./model.ts"
 
 /** Fixture actor types for `storefront`. Illustrative test data. */
 export const actorTypes: ReadonlyArray<ActorTypeSummary> = [
@@ -8,64 +18,72 @@ export const actorTypes: ReadonlyArray<ActorTypeSummary> = [
     commands: ["Place", "Charged", "Refund"],
     instances: 412_903,
     awake: 1_204,
-    perSecond: 88,
-    p99: "7 ms",
+    commandsPerSecond: 88,
+    p99Ms: 7,
+    maxMailbox: 0,
   },
   {
     name: "Cart",
     commands: ["Add", "Remove", "Checkout"],
     instances: 1_388_120,
     awake: 39_877,
-    perSecond: 802,
-    p99: "38 ms",
+    commandsPerSecond: 802,
+    p99Ms: 38,
+    maxMailbox: 0,
   },
   {
     name: "Inventory",
     commands: ["Reserve", "Release", "Restock"],
     instances: 8_412,
     awake: 2_950,
-    perSecond: 201,
-    p99: "51 ms",
+    commandsPerSecond: 201,
+    p99Ms: 51,
+    maxMailbox: 0,
   },
   {
     name: "SupportRoom",
     commands: ["Join", "Send", "Leave"],
     instances: 1_904,
     awake: 611,
-    perSecond: 118,
-    p99: "12 ms",
+    commandsPerSecond: 118,
+    p99Ms: 12,
+    maxMailbox: 0,
   },
   {
     name: "AgentSession",
     commands: ["Prompt", "Approve", "Cancel"],
     instances: 290_551,
     awake: 3_560,
-    perSecond: 74,
-    p99: "9 ms",
+    commandsPerSecond: 74,
+    p99Ms: 9,
+    maxMailbox: 0,
   },
   {
     name: "Customer",
     commands: ["Register", "Update", "Delete"],
     instances: 61_210,
     awake: 402,
-    perSecond: 21,
-    p99: "6 ms",
+    commandsPerSecond: 21,
+    p99Ms: 6,
+    maxMailbox: 0,
   },
   {
     name: "Device",
     commands: ["Report", "Configure"],
     instances: 3_088,
     awake: 3_088,
-    perSecond: 330,
-    p99: "4 ms",
+    commandsPerSecond: 330,
+    p99Ms: 4,
+    maxMailbox: 0,
   },
   {
     name: "NightlyReport",
     commands: ["Run", "Retry"],
     instances: 1,
     awake: 0,
-    perSecond: 0,
-    p99: "—",
+    commandsPerSecond: 0,
+    p99Ms: 0,
+    maxMailbox: 0,
   },
 ]
 
@@ -119,38 +137,49 @@ const instanceKeys = new Map<string, ReadonlyArray<string>>(
 )
 
 const lastTurns = ["now", "now", "4s", "12s", "1m", "2m", "14m", "1h"]
-const mailboxes = [4, 1, 0, 2, 0, 0, 0, 0]
 
 /** Fixture instances of a type: its hottest instances by recent turns. */
-export const instancesOf = (actorType: string): ReadonlyArray<ActorInstance> =>
-  (instanceKeys.get(actorType) ?? []).map((key, index) => ({
+export const instancesOf = (summary: ActorTypeSummary): ReadonlyArray<ActorInstance> =>
+  (instanceKeys.get(summary.name) ?? []).map((key, index) => ({
     key,
-    awake: actorType !== "NightlyReport" && index < 6,
+    awake: summary.name !== "NightlyReport" && index < 6,
     generation: 14 + ((index * 7) % 23),
-    lastTurn: actorType === "NightlyReport" ? "9h" : (lastTurns[index] ?? "1h"),
-    mailbox: mailboxes[index] ?? 0,
-    runner: `${index % 3 === 2 ? "eu-west-1" : "us-east-1"}/r${(index % 3) + 1}`,
+    lastCommand: summary.commands[index % summary.commands.length] ?? "—",
+    lastTurn: summary.name === "NightlyReport" ? "9h" : (lastTurns[index] ?? "1h"),
   }))
 
-/** Today's volume per command for a type. */
-export const commandVolumes = (summary: ActorTypeSummary) =>
-  summary.commands.map((name, index) => ({
-    name,
-    today: Math.round((summary.perSecond * 86_400) / (index + 1.6)),
-    p99: index === 0 ? summary.p99 : `${2 + index * 3} ms`,
-  }))
+const activityPoints: Readonly<Record<SeriesWindow, number>> = { "1h": 60, "24h": 96, "7d": 84 }
 
-/** Commands per second for a type over the last day. */
-export const perSecondSeries = (summary: ActorTypeSummary) =>
-  seededSeries({
-    length: 96,
-    base: Math.max(summary.perSecond, 1),
-    volatility: Math.max(summary.perSecond, 4) * 0.2,
-    seed: summary.name.length * 13,
-  })
+const fixtureNow = DateTime.makeUnsafe("2026-10-03T14:00:00.000Z")
 
-/** Hour labels for type charts. */
-export const typeHours = hourLabels({ points: 96, end: 14 })
+/** A type's commands per second and the volume of each command over a window. Illustrative test data. */
+export const typeActivity =
+  (window: SeriesWindow) =>
+  (summary: ActorTypeSummary): TypeActivity => {
+    const length = activityPoints[window]
+    const step = (windowSeconds[window] * 1000) / (length - 1)
+    const labelOf = seriesLabel(window)
+    return {
+      window,
+      hours: Array.from({ length }, (_, index) =>
+        labelOf(
+          DateTime.add(fixtureNow, { milliseconds: -Math.round(step * (length - 1 - index)) }),
+        ),
+      ),
+      perSecond: seededSeries({
+        length,
+        base: Math.max(summary.commandsPerSecond, 1),
+        volatility: Math.max(summary.commandsPerSecond, 4) * 0.2,
+        seed: summary.name.length * 13,
+      }),
+      commands: summary.commands.map((name, index) => {
+        const count = Math.round(
+          (summary.commandsPerSecond * windowSeconds[window]) / (index + 1.6),
+        )
+        return { name, count, perSecond: count / windowSeconds[window] }
+      }),
+    }
+  }
 
 /** The inspected order from the product mocks. Fixture data. */
 export const order: ActorPage = ActorPage.make({
@@ -163,33 +192,31 @@ export const order: ActorPage = ActorPage.make({
   tenant: "acme",
   mailbox: 0,
   state: '{\n  "total": 4200,\n  "chargeId": "ch_3Q9xA2",\n  "status": "paid",\n  "refunded": 0\n}',
-  table: {
-    name: "order_lines",
-    columns: ["sku", "quantity", "unit_price"],
-    rows: [
-      { cells: ["mug", "2", "1200"] },
-      { cells: ["tee", "1", "1500"] },
-      { cells: ["sticker", "3", "100"] },
-    ],
-  },
+  tables: [
+    {
+      name: "order_lines",
+      columns: ["sku", "quantity", "unit_price"],
+      rows: [
+        { cells: ["mug", "2", "1200"] },
+        { cells: ["tee", "1", "1500"] },
+        { cells: ["sticker", "3", "100"] },
+      ],
+    },
+  ],
   receipts: [
     { commandId: "cmd_7Hq2", command: "Place", result: "4200", at: "14:02:11", replayed: false },
     { commandId: "cmd_7Hq2", command: "Place", result: "replayed", at: "14:02:12", replayed: true },
     { commandId: "job_44f", command: "Charged", result: "ok", at: "14:02:17", replayed: false },
   ],
   events: [
-    { cursor: 1184, name: "OrderPlaced", subscribers: 3, at: "14:02:11" },
-    { cursor: 1191, name: "OrderCharged", subscribers: 2, at: "14:02:17" },
+    { cursor: "1184", name: "OrderPlaced", subscribers: 3 },
+    { cursor: "1191", name: "OrderCharged", subscribers: 2 },
   ],
   jobs: [
-    { id: "job_44f", name: "Charge", attempts: 2, status: "Done", at: "14:02:17" },
-    { id: "job_45a", name: "SendReceipt", attempts: 1, status: "Done", at: "14:02:18" },
+    { id: "job_44f", name: "Charge", attempts: 2, status: "done" },
+    { id: "job_45a", name: "SendReceipt", attempts: 1, status: "done" },
   ],
-  connections: [
-    { id: "ws_19c", kind: "WebSocket", client: "storefront-web", since: "14:01:58", parked: false },
-    { id: "ws_1a2", kind: "WebSocket", client: "ops-dashboard", since: "13:40:12", parked: true },
-    { id: "sse_88", kind: "Event feed", client: "fulfilment", since: "09:12:40", parked: false },
-  ],
+  connections: { sockets: 3, feedCursor: "1191" },
   activity: [
     {
       key: "a1",
@@ -233,3 +260,39 @@ export const order: ActorPage = ActorPage.make({
     },
   ],
 })
+
+/** The fixture actor types page. */
+export const actorsPage: ActorsPage = ActorsPage.make({ types: actorTypes })
+
+/** The fixture page for one actor type, or nothing when the fixture project has no such type. */
+export const actorTypePage =
+  (window: SeriesWindow) =>
+  (name: string): ActorTypePage | undefined => {
+    const summary = actorTypes.find((candidate) => candidate.name === name)
+    return summary === undefined
+      ? undefined
+      : ActorTypePage.make({
+          summary,
+          instances: instancesOf(summary),
+          activity: typeActivity(window)(summary),
+        })
+  }
+
+/**
+ * The fixture inspector. It inspects `Order/ord_8f2c` in detail and answers other known instances
+ * with the same shape of data under their own address.
+ */
+export const actorPage = (
+  input: Readonly<{ actorType: string; key: string }>,
+): ActorPage | undefined => {
+  const summary = actorTypes.find((candidate) => candidate.name === input.actorType)
+  if (summary === undefined) return undefined
+  const instance = instancesOf(summary).find((candidate) => candidate.key === input.key)
+  return {
+    ...order,
+    actorType: input.actorType,
+    key: input.key,
+    awake: instance?.awake ?? order.awake,
+    generation: instance?.generation ?? order.generation,
+  }
+}
