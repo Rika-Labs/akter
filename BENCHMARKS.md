@@ -17,7 +17,9 @@ The app, Postgres, and driver shared a Daytona sandbox capped at four CPUs and
 Daytona preview proxy. The host exposed 64 allowed CPUs, but the sandbox's
 `cpu.max` was `400000 100000`; the four-CPU quota remained the shared limit.
 Versions were Bun 1.4.2, Effect 4.0.0, and Postgres 18.6-bookworm, with normal
-durable commits, `pg_stat_statements`, and `wal_level=logical`. Each case used a
+durable commits and `pg_stat_statements`. The timing harness did not override
+Postgres's default `wal_level=replica`; the verification container below used
+logical WAL. Each case used a
 fresh database and runtime, a 10-second warm-up, and a 30-second measurement.
 Before/after order was forward, reverse, forward across three repeats. The
 64-caller case acknowledged all 10,000 setup commands in every run. A fourth
@@ -41,7 +43,7 @@ Values are the median of three runs, with the minimum–maximum in brackets.
 | Sequential, one key     | Before  | 2.193 [2.025–2.340] | 1.133 [1.100–1.185]    | 460.1 [434.7–552.3]   | 1.855 [1.524–1.858]    | 5.486 [4.974–11.482]      | 61.424 [54.104–65.377]    |
 | Sequential, one key     | After   | 1.640 [1.518–1.700] | 1.070 [1.055–1.102]    | 546.7 [472.3–602.1]   | 1.511 [1.396–1.815]    | 5.667 [4.111–6.380]       | 93.052 [51.856–113.474]   |
 | 64 callers, 10,000 keys | Before  | 1.315 [1.280–1.377] | 1.065 [1.046–1.081]    | 884.5 [874.7–906.6]   | 57.972 [56.595–60.032] | 194.357 [189.359–202.944] | 387.230 [370.902–440.807] |
-| 64 callers, 10,000 keys | After   | 1.219 [1.185–1.254] | 1.013 [1.004–1.025]    | 938.4 [919.4–946.6]   | 54.770 [54.698–56.501] | 182.997 [177.961–187.808] | 357.475 [339.623–463.790] |
+| 64 callers, 10,000 keys | After   | 1.219 [1.185–1.254] | 1.014 [1.004–1.025]    | 938.4 [921.6–946.6]   | 54.770 [54.698–56.501] | 182.997 [177.961–187.808] | 357.475 [339.623–463.790] |
 
 All measured requests succeeded: before/after sequential counts were 43,413 and
 48,633; 64-caller counts were 80,169 and 84,346. Median app CPU fell **25.2%**
