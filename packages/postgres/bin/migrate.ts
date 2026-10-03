@@ -5,7 +5,7 @@ import { Pool, type PoolClient } from "pg"
 const query = (client: PoolClient, text: string, values: Array<unknown> = []) =>
   Effect.tryPromise(() => client.query(text, values))
 
-const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
+const migrateEffect = Effect.fn("Database.migrate")(function* (url: string, startAt?: string) {
   const fs = yield* FileSystem.FileSystem
 
   const pool = yield* Effect.acquireRelease(
@@ -28,7 +28,7 @@ const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
     const directory = new URL("../migrations/", import.meta.url)
 
     const names = (yield* fs.readDirectory(directory.pathname))
-      .filter((name) => name.endsWith(".sql"))
+      .filter((name) => name.endsWith(".sql") && (startAt === undefined || name >= startAt))
       .sort()
 
     for (const name of names) {
@@ -55,12 +55,15 @@ const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
  * order and one transaction each, under a session advisory lock so concurrent
  * callers apply each file once. A failing file is rolled back and rejects.
  */
-export const migrate = (url: string): Promise<void> =>
+export const migrate = (url: string, options?: { readonly startAt: string }): Promise<void> =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const context = yield* Layer.build(BunFileSystem.layer)
-        yield* migrateEffect(url).pipe(Effect.provideContext(context), Effect.orDie)
+        yield* migrateEffect(url, options?.startAt).pipe(
+          Effect.provideContext(context),
+          Effect.orDie,
+        )
       }),
     ),
   )

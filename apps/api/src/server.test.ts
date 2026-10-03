@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest"
 import * as Cloud from "@akter/cloud-api"
 import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Layer, Redacted, Schema } from "effect"
+import { Config, Crypto, Effect, Layer, Redacted, Schedule, Schema } from "effect"
 import {
   Cookies,
   FetchHttpClient,
@@ -12,8 +12,6 @@ import {
 } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { infrastructure, routes } from "./server.ts"
-import { Auth } from "./auth.ts"
-import { Repository } from "./repository.ts"
 import type { ApiOptions } from "./config.ts"
 
 const enterpriseOrganizations: Array<string> = []
@@ -31,6 +29,7 @@ const baseOrigin = "http://localhost:3001"
 const TestLive = Layer.unwrap(
   Config.Redacted("TEST_DATABASE_URL").pipe(Effect.map(options), Effect.map(infrastructure)),
 ).pipe(Layer.provideMerge(FetchHttpClient.layer), Layer.provideMerge(BunCrypto.layer))
+const testInfrastructure: Layer.Layer<Layer.Success<typeof TestLive>, unknown, never> = TestLive
 
 interface RequestInput {
   readonly path: string
@@ -42,7 +41,7 @@ interface RequestInput {
 }
 
 const testServer = Effect.gen(function* () {
-  const context = yield* Effect.context<SqlClient.SqlClient | Auth | Repository>()
+  const context = yield* Effect.context<Layer.Success<typeof testInfrastructure>>()
   const web = yield* Effect.acquireRelease(
     Effect.sync(() =>
       HttpRouter.toWebHandler(
@@ -115,7 +114,7 @@ const signupWith = (request: Requester, sql: SqlClient.SqlClient, suffix: string
     const [message] = yield* sql<{
       body: string
       subject: string
-    }>`SELECT body, subject FROM cloud_email_outbox WHERE recipient = ${email} ORDER BY id DESC LIMIT 1`
+    }>`SELECT body, subject FROM cloud_email_outbox WHERE recipient = ${email} ORDER BY id DESC LIMIT 1`.pipe(Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (rows) => rows.length > 0 }), Effect.timeout("5 seconds"), Effect.orDie)
     expect(message?.subject).toBe("Verify your email")
     if (message === undefined) return yield* Effect.die(new Error("Verification email missing"))
     const verifyPath = new URL(message.body).pathname + new URL(message.body).search
@@ -132,7 +131,113 @@ const signupWith = (request: Requester, sql: SqlClient.SqlClient, suffix: string
     return { email, cookie, id: user.user.id }
   })
 
-it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
+it.layer(TestLive, { excludeTestServices: true })("cloud API over real Postgres and Bun HTTP", (it) => {
+  it.effect(
+    "scopes deployment records, serializes creation, and releases the environment after a recorded build failure",
+    () =>
+      Effect.gen(function* () {
+        const { request } = yield* testServer
+        const sql = yield* SqlClient.SqlClient
+        const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+        const signup = signupWith(request, sql, suffix)
+        const owner = yield* signup("deploy-owner")
+        const outsider = yield* signup("deploy-outsider")
+        const organization = yield* read(
+          yield* request({
+            path: "/api/organizations",
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: "Deploy organization", slug: `deploy-${suffix}` },
+          }),
+          Cloud.OrganizationMembership,
+        )
+        const project = yield* read(
+          yield* request({
+            path: `/api/organizations/${organization.organization.id}/projects`,
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: "Deploy project", slug: "deployer", homeRegion: "us-east-1" },
+          }),
+          Cloud.Project,
+        )
+        const path = `/api/projects/${project.id}/deployments`
+        const create = (cookie?: string) =>
+          request({
+            path,
+            method: "POST",
+            cookie,
+            body: { environment: "production", commitSha: "abcdef123456" },
+          })
+        expect((yield* create()).status).toBe(401)
+        expect((yield* create(outsider.cookie)).status).toBe(403)
+        const concurrent = yield* Effect.forEach(
+          Array.from({ length: 8 }),
+          () => create(owner.cookie),
+          { concurrency: "unbounded" },
+        )
+        expect(concurrent.map((response) => response.status).sort()).toEqual([
+          200, 409, 409, 409, 409, 409, 409, 409,
+        ])
+        const created = yield* read(
+          concurrent.find((response) => response.status === 200)!,
+          Cloud.DeploymentDetail,
+        )
+        expect(created.status).toBe("in-progress")
+        expect(
+          (yield* request({ path: `${path}/${created.id}`, cookie: outsider.cookie })).status,
+        ).toBe(403)
+        const failed = yield* read(
+          yield* request({
+            path: `${path}/${created.id}/build-failure`,
+            method: "POST",
+            cookie: owner.cookie,
+            body: { reason: "The external build did not produce an image" },
+          }),
+          Cloud.DeploymentDetail,
+        )
+        expect(failed.status).toBe("failed")
+        expect(failed.steps.map((step) => `${step.name}:${step.status}`)).toEqual([
+          "build:failed",
+          "migrate:skipped",
+          "start-runners:skipped",
+          "drain-previous:skipped",
+        ])
+        expect(
+          yield* sql`SELECT current_deployment_id FROM cloud_environment WHERE project_id = ${project.id} AND name = 'production'`,
+        ).toEqual([{ current_deployment_id: null }])
+        const second = yield* read(yield* create(owner.cookie), Cloud.DeploymentDetail)
+        const firstPage = yield* read(
+          yield* request({ path: `${path}?limit=1`, cookie: owner.cookie }),
+          Cloud.Page(Cloud.DeploymentSummary),
+        )
+        expect(firstPage.items.map((item) => item.id)).toEqual([second.id])
+        expect(firstPage.nextCursor).not.toBeNull()
+        const secondPage = yield* read(
+          yield* request({
+            path: `${path}?limit=1&cursor=${firstPage.nextCursor!}`,
+            cookie: owner.cookie,
+          }),
+          Cloud.Page(Cloud.DeploymentSummary),
+        )
+        expect(secondPage.items.map((item) => item.id)).toEqual([created.id])
+        expect(secondPage.nextCursor).toBeNull()
+        expect(
+          (yield* request({
+            path: `${path}/${created.id}/rollback`,
+            method: "POST",
+            cookie: owner.cookie,
+          })).status,
+        ).toBe(409)
+        yield* request({
+          path: `${path}/${second.id}/build-failure`,
+          method: "POST",
+          cookie: owner.cookie,
+          body: { reason: "Fixture cleanup" },
+        })
+      }),
+    { timeout: 60000 },
+  )
+
   it.effect(
     "verifies emails, isolates organizations, persists control-plane records and immediately refuses revoked keys",
     () =>
@@ -547,8 +652,8 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         const allowed = yield* send({ cookie: owner.cookie })
 
         expect([anonymous.status, stranger.status, reader.status]).toEqual([401, 403, 403])
-        expect(allowed.status).toBe(501)
-        expect((yield* read(allowed, Cloud.NotImplemented)).operation).toBe("runtime.sendCommand")
+        expect(allowed.status).toBe(404)
+        expect((yield* read(allowed, Cloud.NotFound)).resource).toBe("live deployment")
         const series = (
           suffix: string,
           input: { readonly cookie?: string; readonly key?: string },

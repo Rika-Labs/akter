@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src/config.test.ts"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src/config.test.ts apps/edge/src/routing/client-ip.test.ts"
   },
   "dependencies": {
     "@effect/platform-bun": "catalog:",

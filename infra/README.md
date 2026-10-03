@@ -2,6 +2,16 @@
 
 The private `@akter/infra` workspace provisions the AWS, Cloudflare, Axiom, and Neki stack through Alchemy and Distilled. It does not build container images or deploy application source. All provider versions are exact catalog pins.
 
+The chosen public domains are `akter.dev` (site), `app.akter.dev` (console), and `docs.akter.dev` (documentation); none is registered yet. A production stack using zone `akter.dev` creates its console hostname as `app.akter.dev`. Stage zones remain explicitly configured rather than silently sharing production DNS.
+
+## Deployment orchestration bindings
+
+The stack provisions a private runner security group, ARM64 Fargate task-definition permissions, an NLB with preserved Cloudflare source addresses, and empty Secrets Manager entries for edge signing keys and the operator-managed runner environment. Before launching real tasks, populate `<stack-name>/edge-signing-keys` with the edge's private Ed25519 JWK array and `<stack-name>/runner-environment` with the trusted customer-cell bindings required by the image. The edge never forwards its private key. Runners use the API's public `/edge/keys` endpoint or explicitly supplied public keys.
+
+The API receives `RUNNER_ECS_CONFIG` from the provisioned cluster, private subnets, runner security group and execution role. Each customer image must serve HTTPS on its configured runner port with a trusted certificate; HTTP configuration is refused in production. `RUNNER_MIGRATION_COMMAND` is a JSON argument array, defaulting to `["bun", "run", "migrate"]`. Customer-cell assignment, production certificate issuance and provider-specific validation still require authorized setup; local Docker evidence is not certification of these resources.
+
+The API currently hosts its orchestration actors in one embedded process, so its ECS service has one desired task. The edge can have multiple tasks. Multi-process control-plane availability requires socket-runner wiring and separate topology evidence before increasing that count.
+
 ## Credential-free checks
 
 From the repository root:
@@ -43,7 +53,7 @@ The service stack accepts only Alchemy stages `dev`, `staging`, and `prod`. Set 
 | `AKTER_DEV_ACCOUNT_ID`, `AKTER_STAGING_ACCOUNT_ID`, `AKTER_PROD_ACCOUNT_ID` | Three distinct 12-digit member-account IDs.                                                                                                                           |
 | `AKTER_ORGANIZATION_ID`                                                     | Organization expected by the credential guard.                                                                                                                        |
 | `AKTER_<STAGE>_AWS_PROFILE`                                                 | Shared AWS profile, defaulting to `akter-dev`, `akter-staging`, or `akter-prod`; supports Distilled's SSO, process, web-identity, and assume-role profile mechanisms. |
-| `AKTER_<STAGE>_<REGION>_ZONE`                                               | A distinct Cloudflare zone for this deployment, for example `staging-east.example.com`. Region is uppercase with underscores, such as `US_EAST_1`.                    |
+| `AKTER_<STAGE>_<REGION>_ZONE`                                               | A distinct Cloudflare zone for this deployment, for example `staging-east.akter.dev`. Region is uppercase with underscores, such as `US_EAST_1`.                    |
 | `AKTER_<STAGE>_<REGION>_CERTIFICATE_ARN`                                    | Issued ACM certificate in this account and region, covering `api`, `edge`, and `console` under the zone.                                                              |
 | `AKTER_<STAGE>_<REGION>_IMAGE_TAG`                                          | Immutable tag already present in each application ECR repository.                                                                                                     |
 | `AKTER_<STAGE>_<REGION>_CUSTOM_HOSTNAMES`                                   | Optional JSON string array of customer domains managed by this stack. Defaults to `[]`.                                                                               |

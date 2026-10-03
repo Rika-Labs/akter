@@ -3,6 +3,7 @@ export {
   Forbidden,
   NotFound,
   NotImplemented,
+  Unavailable,
   ReadErrors,
   SelfErrors,
   Unauthorized,
@@ -120,6 +121,9 @@ export {
   DeploymentRunner,
   DeploymentStatus,
   DeploymentSummary,
+  ImageDigest,
+  RecordBuild,
+  FailBuild,
   RolloutStep,
   RolloutStepName,
 } from "./deployments.ts"

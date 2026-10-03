@@ -22,6 +22,8 @@
       "name": "@akter/api",
       "dependencies": {
         "@akter/cloud-api": "workspace:*",
+        "@akter/deployments": "workspace:*",
+        "@akter/postgres": "workspace:*",
         "@alchemy.run/better-auth": "2.0.0-beta.80",
         "@better-auth/api-key": "1.7.7",
         "@better-auth/core": "1.7.7",
@@ -30,6 +32,7 @@
         "@distilled.cloud/core": "1.0.0-rc.13",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "alchemy": "2.0.0-beta.80",
         "better-auth": "1.7.7",
         "effect": "catalog:",
@@ -134,6 +137,7 @@
         "@distilled.cloud/planetscale": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "alchemy": "catalog:",
         "effect": "catalog:",
       },
@@ -179,6 +183,7 @@
     "packages/deployments": {
       "name": "@akter/deployments",
       "dependencies": {
+        "@distilled.cloud/aws": "catalog:",
         "@rikalabs/akter": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
@@ -187,6 +192,7 @@
         "@akter/postgres": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@effect/vitest": "catalog:",
         "@types/pg": "8.23.1",
         "pg": "8.23.0",
         "vitest": "catalog:",

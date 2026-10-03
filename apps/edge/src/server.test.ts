@@ -14,6 +14,7 @@ import {
   Config,
   Context,
   Crypto,
+  Deferred,
   Duration,
   Effect,
   Exit,
@@ -23,15 +24,17 @@ import {
   Schedule,
   Schema,
   Scope,
+  Stream,
 } from "effect"
-import { FetchHttpClient } from "effect/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
+import { SUBPROTOCOL } from "@rikalabs/akter"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { EdgeOptions } from "./config.ts"
 import { makeEdge } from "./server.ts"
 
-const harness = ManagedRuntime.make(BunCrypto.layer)
+const harness = ManagedRuntime.make(Layer.mergeAll(BunCrypto.layer, FetchHttpClient.layer))
 
 afterAll(() => harness.dispose())
 
@@ -72,7 +75,12 @@ const startEdge = Effect.fnUntraced(function* (options: {
   readonly signingKeys?: ReadonlyArray<EdgeKey>
   readonly scaleToZero?: boolean
   readonly coldStartSeconds?: number
-}): Effect.fn.Return<HostedEdge, never, Scope.Scope | Crypto.Crypto> {
+  readonly trustedProxies?: EdgeOptions["trustedProxies"]
+}): Effect.fn.Return<
+  HostedEdge & { readonly sql: SqlClient.SqlClient },
+  never,
+  Scope.Scope | Crypto.Crypto
+> {
   const url = yield* createDatabase("edge").pipe(Effect.orDie)
 
   yield* Effect.promise(() => migrate(url))
@@ -118,6 +126,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
     socketMessageBytes: 64 * 1024,
     socketBufferBytes: 1024 * 1024,
     coldStartTimeout: Duration.seconds(options.coldStartSeconds ?? 30),
+    trustedProxies: options.trustedProxies ?? { nlbOnly: false, cloudflare: [] },
   }
 
   const edge = yield* makeEdge(edgeOptions).pipe(Effect.provideContext(control))
@@ -143,6 +152,7 @@ const startEdge = Effect.fnUntraced(function* (options: {
     effect.pipe(Effect.provideContext(control), Effect.orDie, Effect.asVoid)
 
   return {
+    sql,
     url: edge.url,
     issuer: edgeOptions.issuer,
     deployment,
@@ -262,4 +272,277 @@ describeConformance({
   backend,
   groups: ["edge", "coldServeEdge"],
   registrar: { describe, it, beforeAll, afterAll, expect, skip: (name) => it.skip(name) },
+})
+
+/** What a runner saw of one request or upgrade. */
+interface Seen {
+  readonly headers: Headers
+}
+
+/**
+ * A runner that records the headers of every request and upgrade it gets, and
+ * streams `/events` as two server-sent events, the second only after `release`.
+ */
+const startRunner = Effect.fnUntraced(function* () {
+  const seen: Array<Seen> = []
+  const gate = Deferred.makeUnsafe<void>()
+  const text = new TextEncoder()
+
+  const events = Stream.make(text.encode("id: 1\nevent: tick\ndata: first\n\n")).pipe(
+    Stream.concat(
+      Stream.fromEffect(Deferred.await(gate)).pipe(
+        Stream.map(() => text.encode("id: 2\nevent: tick\ndata: second\n\n")),
+      ),
+    ),
+  )
+
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: (request, served) => {
+      seen.push({ headers: request.headers })
+
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        served.upgrade(request, { headers: { "sec-websocket-protocol": SUBPROTOCOL } })
+
+        return undefined
+      }
+
+      if (new URL(request.url).pathname !== "/events") return new Response("ok")
+
+      return new Response(Stream.toReadableStream(events), {
+        headers: { "content-type": "text/event-stream" },
+      })
+    },
+    websocket: {
+      message: (ws, message) => {
+        ws.send(message)
+      },
+    },
+  })
+
+  yield* Effect.addFinalizer(() => Effect.promise(() => server.stop(true)))
+
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    seen,
+    release: () => Deferred.doneUnsafe(gate, Effect.void),
+  }
+})
+
+const spoofed = {
+  "cf-connecting-ip": "198.51.100.7",
+  "x-forwarded-for": "203.0.113.9, 192.0.2.1",
+  "x-forwarded-host": "evil.example",
+  "x-forwarded-proto": "https",
+  "x-real-ip": "203.0.113.10",
+  "true-client-ip": "203.0.113.11",
+  forwarded: "for=203.0.113.12;host=evil.example",
+}
+
+type Started = Effect.Success<ReturnType<typeof startEdge>>
+
+/** A real edge with one recording runner, and a client that never follows or retries. */
+const withEdge = (
+  options: Parameters<typeof startEdge>[0],
+  use: (context: {
+    readonly edge: Started
+    readonly runner: Effect.Success<ReturnType<typeof startRunner>>
+    readonly send: (
+      path: string,
+      headers?: Record<string, string>,
+    ) => Effect.Effect<number, never, never>
+  }) => Effect.Effect<void, never, Scope.Scope | Crypto.Crypto | HttpClient.HttpClient>,
+) =>
+  harness.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const edge = yield* startEdge(options)
+        const runner = yield* startRunner()
+        const client = yield* HttpClient.HttpClient
+
+        yield* edge.addRunner({ region: options.primaryRegion, url: runner.url })
+
+        const send = (path: string, headers: Record<string, string> = {}) =>
+          client
+            .execute(
+              HttpClientRequest.post(`${edge.url}${path}`).pipe(
+                HttpClientRequest.setHeaders(headers),
+                HttpClientRequest.bodyText("{}", "application/json"),
+              ),
+            )
+            .pipe(
+              Effect.flatMap((response) => Effect.as(response.text, response.status)),
+              Effect.orDie,
+            )
+
+        yield* use({ edge, runner, send })
+      }),
+    ),
+  )
+
+const lastRequest = (runner: { readonly seen: ReadonlyArray<Seen> }) => runner.seen.at(-1)!.headers
+
+describe("Hosted edge client address", () => {
+  it("ignores spoofed forwarding headers from a peer outside the trusted lists and tells the runner the peer's address", () =>
+    withEdge(
+      {
+        primaryRegion: "r1",
+        trustedProxies: { nlbOnly: true, cloudflare: ["173.245.48.0/20"] },
+      },
+      ({ edge, runner, send }) =>
+        Effect.gen(function* () {
+          const key = yield* edge.issueApiKey({ tenant: "t1", subject: "u1" })
+
+          yield* send("/actors/Counter/c1/Inc", {
+            ...spoofed,
+            authorization: `Bearer ${key}`,
+            "idempotency-key": "k1",
+          })
+
+          const headers = lastRequest(runner)
+
+          expect(headers.get("x-forwarded-for")).toBe("127.0.0.1")
+          expect(headers.get("x-forwarded-host")).toBe("127.0.0.1")
+          for (const name of [
+            "cf-connecting-ip",
+            "x-forwarded-proto",
+            "x-real-ip",
+            "true-client-ip",
+            "forwarded",
+            "authorization",
+          ])
+            expect(headers.has(name)).toBe(false)
+          expect(headers.has("durable-assertion")).toBe(true)
+        }),
+    ))
+
+  it("believes CF-Connecting-IP only behind the NLB-only gate from a Cloudflare peer, and only when it is an address", () =>
+    withEdge(
+      { primaryRegion: "r1", trustedProxies: { nlbOnly: true, cloudflare: ["127.0.0.1/32"] } },
+      ({ runner, send }) =>
+        Effect.gen(function* () {
+          yield* send("/ping", spoofed)
+          expect(lastRequest(runner).get("x-forwarded-for")).toBe("198.51.100.7")
+          expect(lastRequest(runner).has("cf-connecting-ip")).toBe(false)
+
+          yield* send("/ping", { ...spoofed, "cf-connecting-ip": "2001:DB8::1" })
+          expect(lastRequest(runner).get("x-forwarded-for")).toBe("2001:db8::1")
+
+          yield* send("/ping", { ...spoofed, "cf-connecting-ip": "198.51.100.7, 1.1.1.1" })
+          expect(lastRequest(runner).get("x-forwarded-for")).toBe("127.0.0.1")
+        }),
+    ))
+
+  it.each([
+    { nlbOnly: false, cloudflare: ["127.0.0.1/32"] },
+    { nlbOnly: true, cloudflare: ["10.0.0.0/8"] },
+    { nlbOnly: true, cloudflare: [] },
+  ])(
+    "ignores CF-Connecting-IP without the gate, from a peer outside Cloudflare's ranges, or with no ranges %#",
+    (trustedProxies) =>
+      withEdge({ primaryRegion: "r1", trustedProxies }, ({ runner, send }) =>
+        Effect.gen(function* () {
+          yield* send("/ping", spoofed)
+          expect(lastRequest(runner).get("x-forwarded-for")).toBe("127.0.0.1")
+        }),
+      ),
+  )
+
+  it("streams server-sent events through the edge as they are produced", () =>
+    withEdge({ primaryRegion: "r1" }, ({ edge, runner }) =>
+      Effect.gen(function* () {
+        const client = yield* HttpClient.HttpClient
+        const response = yield* client.get(`${edge.url}/events`).pipe(Effect.orDie)
+        const decoder = new TextDecoder()
+        const received: Array<string> = []
+
+        expect(response.headers["content-type"]).toBe("text/event-stream")
+
+        yield* response.stream.pipe(
+          Stream.runForEach((chunk) =>
+            Effect.sync(() => {
+              received.push(decoder.decode(chunk))
+
+              if (received.join("").includes("data: first")) runner.release()
+            }),
+          ),
+          Effect.orDie,
+        )
+
+        expect(received.join("")).toContain("data: second")
+      }),
+    ))
+
+  it("opens the upstream WebSocket with the edge's own forwarding headers and relays messages both ways", () =>
+    withEdge(
+      { primaryRegion: "r1", trustedProxies: { nlbOnly: true, cloudflare: ["10.0.0.0/8"] } },
+      ({ edge, runner }) =>
+        Effect.gen(function* () {
+          const echoed = Deferred.makeUnsafe<string>()
+
+          const socket: WebSocket = Reflect.construct(WebSocket, [
+            `${edge.url.replace(/^http/, "ws")}/actors/A/1/Room`,
+            { protocols: [SUBPROTOCOL], headers: spoofed },
+          ])
+
+          socket.onopen = () => socket.send("not-a-hello")
+          socket.onmessage = (event) =>
+            Deferred.doneUnsafe(echoed, Effect.succeed(String(event.data)))
+
+          const message = yield* Deferred.await(echoed).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.orDie,
+          )
+
+          socket.close()
+
+          const upgrade = runner.seen.find(({ headers }) => headers.has("upgrade"))!.headers
+
+          expect(message).toBe("not-a-hello")
+          expect(upgrade.get("x-forwarded-for")).toBe("127.0.0.1")
+          expect(upgrade.get("x-forwarded-host")).toBe("127.0.0.1")
+          expect(upgrade.has("cf-connecting-ip")).toBe(false)
+        }),
+    ))
+
+  it("commits deployment activity before forwarding an authenticated request, and for nothing else", () =>
+    withEdge({ primaryRegion: "r1" }, ({ edge, runner, send }) =>
+      Effect.gen(function* () {
+        const { sql } = edge
+
+        const recent = sql<{ readonly recent: boolean }>`
+          SELECT last_activity_at > now() - interval '1 minute' AS recent FROM deployment WHERE id = ${edge.deployment}
+        `.pipe(
+          Effect.map(([row]) => row?.recent),
+          Effect.orDie,
+        )
+
+        yield* sql`UPDATE deployment SET last_activity_at = now() - interval '1 hour' WHERE id = ${edge.deployment}`.pipe(
+          Effect.orDie,
+        )
+
+        yield* send("/ping")
+        expect(yield* recent).toBe(false)
+
+        const key = yield* edge.issueApiKey({ tenant: "t1", subject: "u1" })
+
+        expect(yield* send("/ping", { authorization: `Bearer ${key}` })).toBe(200)
+        expect(yield* recent).toBe(true)
+        expect(runner.seen).toHaveLength(2)
+      }),
+    ))
+
+  it("refuses an authenticated request when its activity cannot be recorded, instead of forwarding it", () =>
+    withEdge({ primaryRegion: "r1" }, ({ edge, runner, send }) =>
+      Effect.gen(function* () {
+        yield* edge.sql`ALTER TABLE deployment DROP COLUMN last_activity_at`.pipe(Effect.orDie)
+
+        const key = yield* edge.issueApiKey({ tenant: "t1", subject: "u1" })
+
+        expect(yield* send("/ping", { authorization: `Bearer ${key}` })).toBe(503)
+        expect(runner.seen).toHaveLength(0)
+        expect(yield* send("/ping")).toBe(200)
+      }),
+    ))
 })

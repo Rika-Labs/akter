@@ -17,5 +17,6 @@ The v4 evidence surface is `ActorTest` from `@rikalabs/akter/testing`, with `des
 - [Performance and capacity](../../BENCHMARKS.md)
 - [Named invariants](invariants.md)
 - [Cloud infrastructure](cloud-infrastructure.md)
+- [Cloud deployments](cloud-deployments.md)
 
 A capability MUST NOT be called supported until its contract invariant, failure rows, relevant §4 gate, and backend cases pass or the documentation marks it unsupported.

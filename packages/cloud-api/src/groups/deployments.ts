@@ -7,6 +7,8 @@ import {
   DeploymentDetail,
   DeploymentStatus,
   DeploymentSummary,
+  RecordBuild,
+  FailBuild,
 } from "../deployments.ts"
 import { ReadErrors, WriteErrors } from "../errors.ts"
 import {
@@ -43,6 +45,22 @@ export class DeploymentsGroup extends HttpApiGroup.make("deployments").add(
     success: DeploymentDetail,
     error: ReadErrors,
   }),
+  HttpApiEndpoint.post("recordBuild", "/projects/:projectId/deployments/:deploymentId/build", {
+    params: deploymentParams,
+    payload: RecordBuild,
+    success: DeploymentDetail,
+    error: WriteErrors,
+  }),
+  HttpApiEndpoint.post(
+    "failBuild",
+    "/projects/:projectId/deployments/:deploymentId/build-failure",
+    {
+      params: deploymentParams,
+      payload: FailBuild,
+      success: DeploymentDetail,
+      error: WriteErrors,
+    },
+  ),
   HttpApiEndpoint.get("getBuildLog", "/projects/:projectId/deployments/:deploymentId/build-log", {
     params: deploymentParams,
     query: { after: Schema.optional(NonNegativeInt) },

@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, Layer, Predicate, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Predicate, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/sql"
 
 /** The kinds of principal that can perform an audited action. */
@@ -236,6 +236,15 @@ export class Repository extends Context.Service<
     readonly recordAudit: (
       input: Audited & { readonly action: string; readonly target: AuditTarget },
     ) => Effect.Effect<AuditEntry>
+    /** Runs inside the lifecycle turn: pointer, project status and audit share its fenced transaction. */
+    readonly activateDeployment: (
+      input: Audited & {
+        readonly projectId: string
+        readonly environment: EnvironmentName
+        readonly deploymentId: string
+        readonly previousDeploymentId: string | null
+      },
+    ) => Effect.Effect<boolean>
     /**
      * The organization's entries, newest first, optionally only one action or
      * one actor; `cursor` is a previous page's `nextCursor`.
@@ -463,6 +472,23 @@ export const RepositoryLive = Layer.effect(
       }))
 
     return {
+      activateDeployment: (input) =>
+        Effect.gen(function* () {
+          if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
+            return yield* Effect.die(
+              new Error("Deployment activation requires its lifecycle transaction"),
+            )
+          const changed =
+            yield* sql`UPDATE cloud_environment SET current_deployment_id = ${input.deploymentId} WHERE organization_id = ${input.organizationId} AND project_id = ${input.projectId} AND name = ${input.environment} AND current_deployment_id IS NOT DISTINCT FROM ${input.previousDeploymentId} RETURNING project_id`
+          if (changed.length !== 1) return false
+          yield* sql`UPDATE cloud_project SET status = 'live' WHERE id = ${input.projectId} AND organization_id = ${input.organizationId}`
+          yield* insertAudit({
+            ...input,
+            action: "deployment.live",
+            target: { type: "deployment", id: input.deploymentId },
+          })
+          return true
+        }).pipe(Effect.orDie),
       listProjects: ({ organizationId }) =>
         sql<ProjectRow>`
           SELECT id, organization_id, name, slug, status, home_region, created_at FROM cloud_project
