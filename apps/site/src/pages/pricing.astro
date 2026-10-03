@@ -1,0 +1,220 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import Button from "../components/button.astro"
+import Container from "../components/container.astro"
+import Faq from "../components/faq.astro"
+import PageHeader from "../components/page-header.astro"
+import Panel from "../components/panel.astro"
+import SectionHeading from "../components/section-heading.astro"
+import Drawing from "../illustrations/drawing.astro"
+import { tierCrane, tierScene } from "../illustrations/scenes.ts"
+import Base from "../layouts/base.astro"
+import { defaults, dollars, estimate } from "../pricing/estimate.ts"
+import { compare, estimator, period, radioAttributes, tiers as styles } from "../pricing/pricing.styles.ts"
+import { comparison, pricingQuestions, tiers } from "../pricing/tiers.ts"
+import { text } from "../styles/text.styles.ts"
+
+const initial = estimate(defaults)
+const controls = [
+  { name: "commands", legend: "Commands per month", checked: 100_000_000, options: [[10_000_000, "10M"], [100_000_000, "100M"], [500_000_000, "500M"], [1_000_000_000, "1B"]] },
+  { name: "runners", legend: "Runners, always on", checked: 3, options: [[1, "1"], [3, "3"], [6, "6"], [12, "12"]] },
+  { name: "storage", legend: "Postgres storage", checked: 500, options: [[50, "50 GB"], [250, "250 GB"], [500, "500 GB"], [1000, "1 TB"]] },
+  { name: "regions", legend: "Regions", checked: 1, options: [[1, "1"], [2, "2"], [3, "3"], [5, "5"]] },
+] as const
+const yearly = (price: number): string => dollars(Math.round((price * 10 * 100) / 12) / 100).replace(/\.00$/, "")
+const monthly = (price: number): string => dollars(price).replace(/\.00$/, "")
+---
+
+<Base
+  title="Pricing"
+  description="Akter is free to self-host under Apache-2.0. Akter cloud runs it for you: runners, Postgres, regions, deploys and an inspector for every actor. Plan prices are placeholders until launch."
+  path="/pricing"
+  current="/pricing"
+>
+  <Container>
+    <PageHeader
+      title="Free to self-host. Pay to not run it."
+      lead="The framework is open source and always will be. Akter cloud runs it for you: runners, Postgres, regions, deploys, and an inspector for every actor."
+      align="center"
+    >
+      <div {...stylex.attrs(period.root)} data-billing-root data-on={stylex.attrs(period.option, period.on).class} data-off={stylex.attrs(period.option).class} role="group" aria-label="Billing period">
+        <button type="button" data-billing="monthly" aria-pressed="true" {...stylex.attrs(period.option, period.on)}>Monthly</button>
+        <button type="button" data-billing="yearly" aria-pressed="false" {...stylex.attrs(period.option)}>Yearly · 2 months free</button>
+      </div>
+    </PageHeader>
+
+    <div {...stylex.attrs(styles.grid)}>
+      {
+        tiers.map((tier) => {
+          const featured = tier.featured === true
+          return (
+            <Panel padding="none" clip tone={featured ? "inverse" : "card"}>
+              <div {...stylex.attrs(styles.card)}>
+                <div {...stylex.attrs(styles.art)} style={featured ? "background:transparent;border-bottom-color:rgb(250 250 249 / 0.16)" : undefined}>
+                  <svg viewBox="0 0 240 110" aria-hidden="true" {...stylex.attrs(styles.svg, featured && styles.inverted)}>
+                    <Drawing items={tier.crane === true ? tierCrane : tierScene(tier.boxes)} />
+                  </svg>
+                </div>
+                <div {...stylex.attrs(styles.body)}>
+                  <h2 {...stylex.attrs(text.display, styles.name)} style={featured ? "color:inherit" : undefined}>{tier.name}</h2>
+                  <p {...stylex.attrs(styles.price, tier.price === "Custom" && styles.custom)}>
+                    {
+                      typeof tier.price === "number" && tier.price > 0 ? (
+                        <>
+                          <span data-show="monthly">{monthly(tier.price)}</span>
+                          <span data-show="yearly" hidden>{yearly(tier.price)}</span>
+                        </>
+                      ) : (
+                        <span>{tier.price === "Custom" ? "Custom" : "$0"}</span>
+                      )
+                    }
+                    {
+                      tier.period !== "" && (
+                        <small {...stylex.attrs(styles.per, featured && styles.perInverse)}>
+                          {typeof tier.price === "number" && tier.price > 0 ? (
+                            <>
+                              <span data-show="monthly">{tier.period}</span>
+                              <span data-show="yearly" hidden>/ mo, billed yearly + usage</span>
+                            </>
+                          ) : (
+                            tier.period
+                          )}
+                        </small>
+                      )
+                    }
+                  </p>
+                  <p {...stylex.attrs(styles.summary, featured && styles.summaryInverse)}>{tier.summary}</p>
+                  <ul {...stylex.attrs(styles.features, featured && styles.featuresInverse)}>
+                    {tier.features.map((feature) => <li {...stylex.attrs(styles.feature, featured && styles.featureInverse)}>{feature}</li>)}
+                  </ul>
+                  <Button href={tier.href} variant={featured ? "inverse" : "secondary"} block external={tier.href.startsWith("http") || tier.href.startsWith("mailto")}>{tier.cta}</Button>
+                </div>
+              </div>
+            </Panel>
+          )
+        })
+      }
+    </div>
+    <p {...stylex.attrs(text.body, text.muted, { marginTop: "1rem", textAlign: "center", fontSize: "0.8125rem" })}>
+      Prices and usage rates on this page are placeholders until Akter cloud launches.
+    </p>
+
+    <section {...stylex.attrs({ marginTop: "6rem", display: "grid", gap: "1.5rem" })}>
+      <SectionHeading align="center">What would my bill be?</SectionHeading>
+      <Panel padding="none">
+        <form {...stylex.attrs(estimator.root)} data-estimator>
+          <div {...stylex.attrs(estimator.controls)}>
+            {
+              controls.map((control) => (
+                <fieldset {...stylex.attrs(estimator.group)}>
+                  <legend {...stylex.attrs(estimator.legend)}>{control.legend}</legend>
+                  <div {...stylex.attrs(estimator.segments)}>
+                    {
+                      control.options.map(([value, label]) => (
+                        <label {...stylex.attrs(estimator.option)}>
+                          <input
+                            type="radio"
+                            name={control.name}
+                            value={value}
+                            checked={value === control.checked}
+                            {...radioAttributes}
+                          />
+                          <span {...stylex.attrs(estimator.label)}>{label}</span>
+                        </label>
+                      ))
+                    }
+                  </div>
+                </fieldset>
+              ))
+            }
+            <p {...stylex.attrs(estimator.note)}>
+              Commands cover every turn: a command, a job result, a timer. Reads over HTTP are free. Idle actors cost storage only. Two or more regions are on Team.
+            </p>
+          </div>
+          <div {...stylex.attrs(estimator.bill)} aria-live="polite">
+            <div {...stylex.attrs(estimator.head)}>
+              <span>Bill of lading · estimate</span>
+              <span data-plan>{initial.plan.name.toUpperCase()}</span>
+            </div>
+            {
+              initial.lines.map((line) => (
+                <div {...stylex.attrs(estimator.line)} data-line>
+                  <span>
+                    <span data-label>{line.label}</span>
+                    <small {...stylex.attrs(estimator.detail)} data-detail>{line.detail ?? ""}</small>
+                  </span>
+                  <span {...stylex.attrs(estimator.amount)} data-amount>{dollars(line.amount)}</span>
+                </div>
+              ))
+            }
+            <div {...stylex.attrs(estimator.split)} aria-hidden="true">
+              {initial.lines.map((line, index) => <span data-segment {...stylex.attrs(estimator.segment)} style={`width:${(line.amount / initial.total) * 100}%;opacity:${[1, 0.78, 0.58, 0.4, 0.26][index] ?? 0.3}`}></span>)}
+            </div>
+            <div {...stylex.attrs(estimator.total)}>
+              <span>Per month</span>
+              <b {...stylex.attrs(estimator.totalValue)} data-total>{dollars(initial.total)}</b>
+            </div>
+            <span {...stylex.attrs(estimator.stamp)}>Estimate</span>
+          </div>
+        </form>
+      </Panel>
+    </section>
+
+    <section {...stylex.attrs({ marginTop: "5rem" })}>
+      <Panel padding="none">
+        <div {...stylex.attrs(compare.wrap)}>
+          <table {...stylex.attrs(compare.table)}>
+            <thead>
+              <tr>
+                <th {...stylex.attrs(compare.corner)}><span {...stylex.attrs(text.hidden)}>Feature</span></th>
+                {tiers.map((tier) => <th scope="col" {...stylex.attrs(compare.head, tier.featured === true && compare.featured)}>{tier.name}</th>)}
+              </tr>
+            </thead>
+            {
+              comparison.map((group) => (
+                <tbody>
+                  <tr><th colspan="5" scope="colgroup" {...stylex.attrs(compare.group)}>{group.title}</th></tr>
+                  {
+                    group.rows.map((row) => (
+                      <tr>
+                        <th scope="row" {...stylex.attrs(compare.label)}>{row.label}</th>
+                        {
+                          row.cells.map((cell, index) => (
+                            <td {...stylex.attrs(compare.cell, tiers[index]?.featured === true && compare.featured)}>
+                              {
+                                cell === true ? (
+                                  <span {...stylex.attrs(compare.yes)}><span aria-hidden="true">■</span><span {...stylex.attrs(text.hidden)}>Included</span></span>
+                                ) : cell === false ? (
+                                  <span {...stylex.attrs(compare.no)}><span aria-hidden="true">—</span><span {...stylex.attrs(text.hidden)}>Not included</span></span>
+                                ) : (
+                                  cell
+                                )
+                              }
+                            </td>
+                          ))
+                        }
+                      </tr>
+                    ))
+                  }
+                </tbody>
+              ))
+            }
+          </table>
+        </div>
+      </Panel>
+    </section>
+
+    <section {...stylex.attrs({ marginTop: "5rem" })}>
+      <Panel>
+        <Faq entries={pricingQuestions} />
+      </Panel>
+    </section>
+  </Container>
+
+  <script>
+    import { bindBilling, bindEstimator } from "../scripts/estimator.ts"
+
+    bindEstimator()
+    bindBilling()
+  </script>
+</Base>

@@ -1,0 +1,41 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import { button } from "./button.styles.ts"
+
+interface Props {
+  href?: string
+  variant?: "primary" | "secondary" | "ghost" | "inverse"
+  size?: "default" | "large"
+  block?: boolean
+  external?: boolean
+  type?: "button" | "submit"
+}
+
+const {
+  href,
+  variant = "secondary",
+  size = "default",
+  block = false,
+  external = false,
+  type = "button",
+} = Astro.props
+const attrs = stylex.attrs(
+  button.root,
+  button[variant],
+  size === "large" && button.large,
+  block && button.block,
+)
+const rel = external ? "noopener noreferrer" : undefined
+---
+
+{
+  href === undefined ? (
+    <button type={type} {...attrs}>
+      <slot />
+    </button>
+  ) : (
+    <a href={href} rel={rel} target={external ? "_blank" : undefined} {...attrs}>
+      <slot />
+    </a>
+  )
+}
