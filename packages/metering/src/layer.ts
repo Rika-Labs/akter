@@ -261,7 +261,8 @@ export const CellUsageLive = (options: { readonly deploymentId: string }) =>
                   ),
                 })
 
-          if (!target!.current) return yield* Effect.flatMap(persisted, sampled)
+          const kept = yield* persisted
+          if (!target!.current || kept.length > 0) return yield* sampled(kept)
 
           const totals = new Map<string, number>()
           for (const table of attributed) {

@@ -1,4 +1,4 @@
-import { type Context, type Crypto, Effect, Semaphore } from "effect"
+import { Context, type Crypto, Effect, Semaphore } from "effect"
 import { Sharding } from "effect/cluster"
 import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable, InvalidInput, NotCreated, Timeout } from "../errors/actor.ts"
@@ -13,7 +13,7 @@ import { caughtUp } from "./database/replica.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
 import { decompress, routingKey } from "./storage/codec.ts"
-import { UsageAccounting } from "./telemetry/usage.ts"
+import { accountsUsage, UsageAccounting } from "./telemetry/usage.ts"
 import { decodeResult } from "./workflows/engine.ts"
 
 /**
@@ -48,6 +48,8 @@ export const committedReads = ({
   readonly holder: Holder
 }): Pick<InternalActors["Service"], "exists" | "query" | "watch" | "pollWorkflow"> => {
   const reruns = Semaphore.makeUnsafe(WATCH_RERUNS)
+  const usage = Context.getUnsafe(services, UsageAccounting)
+  const accounting = accountsUsage(usage) ? usage : undefined
 
   const exists = Effect.fnUntraced(
     function* (ref: ActorRef) {
@@ -168,16 +170,13 @@ export const committedReads = ({
       if (reads === undefined) {
         yield* allow(request, "query")
 
-        if (!Outcome.guards.Defect(outcome)) {
-          const usage = yield* UsageAccounting
-
-          yield* usage.read({
+        if (accounting !== undefined && !Outcome.guards.Defect(outcome))
+          yield* accounting.read({
             ref: request.ref,
             requestToken: request.usageToken,
             watch: false,
             sql: primary,
           })
-        }
       }
 
       return outcome
@@ -207,7 +206,10 @@ export const committedReads = ({
         if (!(yield* exists(request.ref)))
           return yield* ActorError.make({ reason: NotCreated.make({}) })
 
-        const usage = yield* UsageAccounting
+        const rerun = (version: () => string | undefined, reads: ReadSet) =>
+          reruns.withPermit(Effect.suspend(() => query(request, version(), reads)))
+
+        const { usageToken } = request
         let counted = false
 
         return yield* watchStream({
@@ -217,27 +219,32 @@ export const committedReads = ({
           reconcileMs: registration.policy.watch.reconcileMs,
           minVersion,
           expiresAt,
-          rerun: (version, reads) =>
-            reruns.withPermit(Effect.suspend(() => query(request, version(), reads))).pipe(
-              Effect.tap((outcome) =>
-                counted || request.usageToken === undefined || Outcome.guards.Defect(outcome)
-                  ? Effect.void
-                  : allow(request, "query").pipe(
-                      Effect.andThen(
-                        usage.read({
-                          ref: request.ref,
-                          requestToken: request.usageToken,
-                          watch: true,
-                          sql: primary,
-                        }),
-                      ),
-                      Effect.tap(() => Effect.sync(() => void (counted = true))),
-                      Effect.catchIf(SqlError.isSqlError, (cause) =>
-                        Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
-                      ),
+          rerun:
+            accounting === undefined || usageToken === undefined
+              ? rerun
+              : (version, reads) =>
+                  rerun(version, reads).pipe(
+                    Effect.tap((outcome) =>
+                      counted || Outcome.guards.Defect(outcome)
+                        ? Effect.void
+                        : allow(request, "query").pipe(
+                            Effect.andThen(
+                              accounting.read({
+                                ref: request.ref,
+                                requestToken: usageToken,
+                                watch: true,
+                                sql: primary,
+                              }),
+                            ),
+                            Effect.tap(() => Effect.sync(() => void (counted = true))),
+                            Effect.catchIf(SqlError.isSqlError, (cause) =>
+                              Effect.fail(
+                                ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
+                              ),
+                            ),
+                          ),
                     ),
-              ),
-            ),
+                  ),
         })
       }),
     pollWorkflow: Effect.fnUntraced(

@@ -1,7 +1,7 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import { Actor } from "@rikalabs/akter"
-import { UsageAccounting } from "@rikalabs/akter/runtime"
+import { UsageAccounting, type UsageAccountingService } from "@rikalabs/akter/runtime"
 import { ActorTest, InternalActors } from "@rikalabs/akter/testing"
 import {
   Config,
@@ -814,18 +814,221 @@ describe("atomicity with the receipt", () => {
           BEFORE INSERT ON cloud_meter_cell_journal
           FOR EACH ROW EXECUTE FUNCTION cloud_meter_test_poison()`
 
-        const failed = yield* counter
-          .Increment(7)
-          .pipe(Effect.exit, Effect.timeout("4 seconds"), Effect.option)
+        const failed = yield* counter.Increment(7).pipe(Effect.exit, Effect.timeout("4 seconds"))
 
         yield* sql`DROP TRIGGER cloud_meter_test_poison ON cloud_meter_cell_journal`
 
-        expect(Option.isSome(failed) ? Exit.isFailure(failed.value) : true).toBe(true)
+        expect(Exit.isFailure(failed)).toBe(true)
         expect(yield* test.receiptsFor(counter.ref, "Increment")).toBe(0)
         expect((yield* test.inspect(counter.ref)).state).toEqual({})
         expect(yield* journalOf("poisoned")).toHaveLength(0)
         expect(yield* counter.Increment(7)).toBe(7)
         expect(yield* journalOf("poisoned")).toHaveLength(1)
       }),
+    ))
+})
+
+describe("a runtime without a host hook", () => {
+  const Bump = Actor.command("Bump", { payload: Schema.Int, success: Schema.Int })
+  const Watched = Actor.query("Watched", { success: Schema.Int, watch: true })
+
+  let checks = 0
+
+  const Audited = Actor.make("AuditedCounter", {
+    key: Schema.String,
+    state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+    api: { Bump, Watched },
+    access: () =>
+      Effect.sync(() => {
+        checks += 1
+        return true
+      }),
+  })
+
+  const AuditedLive = Audited.toLayer(
+    Effect.succeed({
+      Bump: Effect.fnUntraced(function* (amount: number) {
+        const turn = yield* Audited.Turn
+        yield* turn.state.set({ count: turn.state.count + amount })
+
+        return turn.state.count
+      }),
+    }),
+  )
+
+  const AuditedReads = Audited.toQueryLayer(
+    Effect.succeed({
+      Watched: Effect.fnUntraced(function* () {
+        return (yield* Audited.Read).state.count
+      }),
+    }),
+  )
+
+  interface Calls {
+    commands: number
+    reads: number
+  }
+
+  const counting = (calls: Calls): UsageAccountingService => ({
+    commands: () => Effect.sync(() => void (calls.commands += 1)),
+    read: () => Effect.sync(() => void (calls.reads += 1)),
+  })
+
+  /**
+   * Commits a command, replays it, answers a tokened query and opens a
+   * tokened watch on a fresh database, with `hook` provided when given, and
+   * counts the actor's access checks meanwhile.
+   */
+  const probe = (hook: UsageAccountingService | undefined) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const context = yield* Layer.build(
+          Layer.unwrap(
+            Effect.gen(function* () {
+              const test = ActorTest.layer({ database: yield* database })
+
+              return Layer.mergeAll(AuditedLive, AuditedReads).pipe(
+                Layer.provideMerge(
+                  hook === undefined
+                    ? test
+                    : test.pipe(Layer.provide(Layer.succeed(UsageAccounting, hook))),
+                ),
+              )
+            }),
+          ).pipe(Layer.provide(BunCrypto.layer)),
+        )
+
+        return yield* Effect.gen(function* () {
+          const audited = yield* Audited.get("probe")
+          const bump = audited.Bump(1)
+
+          yield* bump
+          yield* bump
+          checks = 0
+          yield* Effect.gen(function* () {
+            return yield* (yield* Audited.get("probe")).Watched()
+          }).pipe(tokened("probe-query"))
+          yield* Effect.gen(function* () {
+            return yield* (yield* Audited.get("probe")).Watched.watch().pipe(
+              Stream.take(1),
+              Stream.runCollect,
+            )
+          }).pipe(tokened("probe-watch"))
+
+          return checks
+        }).pipe(Effect.provideContext(context))
+      }),
+    ).pipe(Effect.orDie)
+
+  it("never invokes the default hook, and skips the watch's extra access check that a provided no-op hook pays", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fallback = Context.getUnsafe(Context.empty(), UsageAccounting) as {
+          -readonly [K in keyof UsageAccountingService]: UsageAccountingService[K]
+        }
+        const original = { ...fallback }
+        const defaulted: Calls = { commands: 0, reads: 0 }
+        const hooked: Calls = { commands: 0, reads: 0 }
+
+        Object.assign(fallback, counting(defaulted))
+        const unhookedChecks = yield* probe(undefined).pipe(
+          Effect.ensuring(Effect.sync(() => Object.assign(fallback, original))),
+        )
+        const hookedChecks = yield* probe(counting(hooked))
+
+        expect(defaulted).toEqual({ commands: 0, reads: 0 })
+        expect(hooked).toEqual({ commands: 1, reads: 2 })
+        expect(hookedChecks - unhookedChecks).toBe(1)
+      }),
+    ))
+})
+
+describe("a persisted current-hour storage sample", () => {
+  const setup = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const [row] = yield* sql<{ hour: Date }>`
+      SELECT date_trunc('hour', clock_timestamp(), 'UTC') AS hour`
+
+    yield* sql`CREATE TABLE meter_probe (tenant_id text NOT NULL, routing_key bigint NOT NULL, body text)`
+    yield* sql`INSERT INTO meter_probe VALUES ('alpha', 1, repeat('a', 64))`
+
+    return DateTime.fromDateUnsafe(row!.hour)
+  }).pipe(Effect.orDie)
+
+  it("is returned without scanning tenant tables again, even while one is locked or has a new tenant", () =>
+    runEmpty(
+      Effect.gen(function* () {
+        const usage = yield* CellUsage
+        const sql = yield* SqlClient.SqlClient
+        const hour = yield* setup
+        const first = yield* usage.sampleStorage(hour)
+
+        expect(first.samples.map(({ tenant }) => tenant)).toEqual(["alpha"])
+
+        yield* sql`INSERT INTO meter_probe VALUES ('beta', 2, repeat('b', 512))`
+        const locked = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const holder = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`LOCK TABLE meter_probe IN ACCESS EXCLUSIVE MODE`
+              yield* Deferred.succeed(locked, undefined)
+              yield* Deferred.await(release)
+            }),
+          )
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(locked)
+
+        const again = yield* usage
+          .sampleStorage(hour)
+          .pipe(
+            Effect.timeoutOption("2 seconds"),
+            Effect.ensuring(Deferred.succeed(release, undefined)),
+          )
+        yield* Fiber.join(holder)
+
+        expect(Option.getOrUndefined(again)?.samples).toEqual(first.samples)
+        expect((yield* usage.sampleStorage(hour)).samples).toEqual(first.samples)
+
+        const [stored] = yield* sql<{ total: number }>`
+          SELECT count(*)::int AS total FROM cloud_meter_cell_journal WHERE kind = 'storage'`
+
+        expect(stored!.total).toBe(1)
+      }),
+    ))
+
+  it("still refuses a role that cannot see every attributed row", () =>
+    runEmpty(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const usage = yield* CellUsage
+          const sql = yield* SqlClient.SqlClient
+          const hour = yield* setup
+
+          yield* usage.sampleStorage(hour)
+          const [named] = yield* sql<{ name: string }>`SELECT current_database() AS name`
+          const role = `meter_probe_${named!.name}`
+          yield* Effect.acquireRelease(
+            sql`CREATE ROLE ${sql(role)} NOLOGIN NOSUPERUSER NOBYPASSRLS`,
+            () =>
+              sql`DROP OWNED BY ${sql(role)}`.pipe(
+                Effect.andThen(sql`DROP ROLE ${sql(role)}`),
+                Effect.orDie,
+              ),
+          )
+          yield* sql`GRANT USAGE ON SCHEMA public TO ${sql(role)}`
+          yield* sql`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${sql(role)}`
+          yield* sql`ALTER TABLE meter_probe ENABLE ROW LEVEL SECURITY`
+
+          const denied = yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SET LOCAL ROLE ${sql(role)}`
+              return yield* Effect.flip(usage.sampleStorage(hour))
+            }),
+          )
+
+          expect(denied).toEqual(StorageNotObservable.make({ tables: ["meter_probe"] }))
+        }),
+      ).pipe(Effect.orDie),
     ))
 })

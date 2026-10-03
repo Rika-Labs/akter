@@ -29,10 +29,24 @@ export interface UsageAccountingService {
   readonly read: (input: UsageRead) => Effect.Effect<void, SqlError.SqlError>
 }
 
+const noUsageAccounting: UsageAccountingService = {
+  commands: () => Effect.void,
+  read: () => Effect.void,
+}
+
+/**
+ * Whether `service` is a host's hook rather than the default. The runtime
+ * recognizes the default by identity and never invokes it, so a runtime
+ * without a host hook allocates, forks and awaits nothing for accounting.
+ */
+export const accountsUsage = (service: UsageAccountingService) => service !== noUsageAccounting
+
 /**
  * An optional hook that lets a host account for the work its actors do
- * without the framework owning any accounting tables. The default does
- * nothing, so a self-hosted runtime pays no cost.
+ * without the framework owning any accounting tables. The default is a
+ * single no-op value the runtime skips, so a self-hosted runtime pays no
+ * cost; a host that provides any other service, even one doing nothing, is
+ * invoked.
  *
  * `commands` is queued in the turn's commit group directly after the
  * receipt insert, so its rows commit or roll back with the receipts. The
@@ -47,5 +61,5 @@ export interface UsageAccountingService {
  */
 export const UsageAccounting = Context.Reference<UsageAccountingService>(
   "@rikalabs/akter/runtime/telemetry/usage/UsageAccounting",
-  { defaultValue: () => ({ commands: () => Effect.void, read: () => Effect.void }) },
+  { defaultValue: () => noUsageAccounting },
 )
