@@ -157,7 +157,9 @@ describe("first-come, first-served pools with Postgres", () => {
               .pipe(Effect.exit)
             expect(Exit.isFailure(exit)).toBe(true)
             const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
-            expect(SqlError.isSqlError(error) && error.reason.cause).toMatchObject({ code: "3B001" })
+            expect(SqlError.isSqlError(error) && error.reason.cause).toMatchObject({
+              code: "3B001",
+            })
           }
           expect(yield* sql`SELECT count(*)::int AS count FROM checkout_savepoints`).toEqual([
             { count: 3 },
