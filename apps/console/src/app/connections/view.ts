@@ -6,7 +6,7 @@ import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { ConnectionsPage } from "./model.ts"
 
 /** Live clients: open sockets, sockets parked while their actors sleep, streams and feeds. */
-export const connectionsScreen = ({ h, page }: ScreenInput<ConnectionsPage>): Screen => ({
+export const connectionsScreen = ({ h, model, page }: ScreenInput<ConnectionsPage>): Screen => ({
   title: "Connections",
   crumbs: [{ label: "Connections" }],
   body: pageBody(h, [
@@ -51,7 +51,7 @@ export const connectionsScreen = ({ h, page }: ScreenInput<ConnectionsPage>): Sc
               label: "Sockets by state",
               format: formatInteger,
               segments: [
-                { label: "Active", value: page.sockets - page.parked, tone: "ink" },
+                { label: "Active", value: Math.max(0, page.sockets - page.parked), tone: "ink" },
                 { label: "Parked", value: page.parked, tone: "muted" },
               ],
             }),
@@ -85,12 +85,12 @@ export const connectionsScreen = ({ h, page }: ScreenInput<ConnectionsPage>): Sc
           ],
           rows: page.byType.map((row) => ({
             key: row.actorType,
-            href: Routes.actorType({ actorType: row.actorType }),
+            href: model.pageSample ? undefined : Routes.actorType({ actorType: row.actorType }),
             cells: [
               row.actorType,
               formatInteger(row.sockets),
               formatInteger(row.parked),
-              `${Math.round((row.parked / row.sockets) * 100)}%`,
+              row.sockets === 0 ? "—" : `${Math.round((row.parked / row.sockets) * 100)}%`,
               formatInteger(row.streams),
             ],
           })),

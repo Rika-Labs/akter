@@ -1,4 +1,13 @@
-import { button, dialog, field, input, select, styleAttributes, textarea } from "@akter/ui"
+import {
+  button,
+  codeBlock,
+  dialog,
+  field,
+  input,
+  select,
+  styleAttributes,
+  textarea,
+} from "@akter/ui"
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { Match, Option } from "effect"
@@ -8,6 +17,7 @@ import {
   ChoseSetting,
   ClosedDialog,
   ConfirmedDialog,
+  CopiedText,
   type Message,
 } from "./message.ts"
 import type { Dialog, Model } from "./model.ts"
@@ -73,18 +83,33 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
           text(h, model, { id: "key-name", label: "Name", placeholder: "ci-deploys", mono: true }),
           field(h, {
             id: "key-scope",
-            label: "Scope",
+            label: "Permission",
             control: select(h, {
               name: "key-scope",
-              value: model.choices["keyScope"] ?? "deploy",
+              value: model.choices["keyScope"] ?? "write",
               size: "md",
               style: styles.full,
               options: [
-                { value: "deploy", label: "Deploy" },
-                { value: "commands", label: "Send commands" },
                 { value: "read", label: "Read only" },
+                { value: "write", label: "Read and write" },
+                { value: "admin", label: "Admin" },
               ],
               onChange: (value) => ChoseSetting({ key: "keyScope", value }),
+            }),
+          }),
+          field(h, {
+            id: "key-project",
+            label: "Applies to",
+            control: select(h, {
+              name: "key-project",
+              value: model.choices["keyProject"] ?? "project",
+              size: "md",
+              style: styles.full,
+              options: [
+                { value: "project", label: "This project" },
+                { value: "organization", label: "Whole organization" },
+              ],
+              onChange: (value) => ChoseSetting({ key: "keyProject", value }),
             }),
           }),
         ],
@@ -94,7 +119,7 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
       }),
       AddVariable: () => ({
         title: "Add a variable",
-        description: "Secrets are encrypted at rest and never shown again in full.",
+        description: "Values are write-only and never read back. Enter a new value to replace one.",
         body: [
           text(h, model, {
             id: "variable-name",
@@ -152,6 +177,20 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         body: [],
         confirm: "Roll back",
         danger: true,
+        ready: true,
+      }),
+      KeyCreated: ({ name, secret }) => ({
+        title: `Copy ${name}`,
+        description: "This is the only time the key is shown. Store it somewhere safe.",
+        body: [
+          codeBlock(h, {
+            language: "text",
+            code: secret,
+            onCopy: CopiedText({ text: secret, label: "API key" }),
+          }),
+        ],
+        confirm: "Done",
+        danger: false,
         ready: true,
       }),
       DeleteProject: ({ project }) => ({

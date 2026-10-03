@@ -1,17 +1,19 @@
 import { Effect } from "effect"
-import { actorTypes } from "../actors/fixtures.ts"
-import { tailEntry } from "./fixtures.ts"
-import { CommandsPage, type TailEntry } from "./model.ts"
+import { type ConsoleError, type Loaded, withProject } from "../api/client.ts"
+import { tailCapacity, toRecentTurns } from "./mapping.ts"
+import { CommandsPage } from "./model.ts"
 
-/** Loads what the live tail page needs before the stream starts. */
-export const loadCommands: Effect.Effect<CommandsPage> = Effect.succeed(
-  CommandsPage.make({
-    types: actorTypes.map((type) => type.name),
-  }),
+/** Loads the actor types the filter offers and the turns committed just before the page opened. */
+export const loadCommands: Effect.Effect<Loaded<CommandsPage>, ConsoleError> = withProject(
+  (api, { project, environment }) =>
+    Effect.gen(function* () {
+      const params = { projectId: project.id, environment }
+      const types = yield* api.runtime.listActorTypes({ params })
+      const recent = yield* api.runtime.listCommands({ params, query: { limit: tailCapacity } })
+      return CommandsPage.make({
+        types: types.map((type) => type.name),
+        recent: toRecentTurns(recent.items),
+      })
+    }),
+  () => import("./fixtures.ts").then((fixtures) => fixtures.commandsPage),
 )
-
-/**
- * The next committed turn after `sequence`. Today it replays fixture turns; the hosted tail will be
- * a server-sent event stream with the same entry type.
- */
-export const nextTurn = (sequence: number): TailEntry => tailEntry(sequence)
