@@ -149,7 +149,7 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
                   cells: [
                     runner.id,
                     runner.region,
-                    formatInteger(runner.actors),
+                    runner.actors === null ? "—" : formatInteger(runner.actors),
                     runner.cpu,
                     status(h, {
                       tone: healthTones[runner.health],

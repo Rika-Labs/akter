@@ -151,7 +151,7 @@ export const toDeploymentPage =
         id: runner.id,
         region: runner.region,
         actors: runner.actorCount,
-        cpu: `${String(Math.round(runner.cpuPercent))}%`,
+        cpu: runner.cpuPercent === null ? "—" : `${String(Math.round(runner.cpuPercent))}%`,
         health: runner.health,
       })),
       log: input.log.lines.map((line) => line.text).join("\n"),
