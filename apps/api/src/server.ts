@@ -3,7 +3,7 @@ import { Postgres } from "@alchemy.run/better-auth/Postgres"
 import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
 import { BunHttpServer } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
-import { Effect, Layer, Redacted, Schema } from "effect"
+import { Effect, Layer, Option, Redacted, Schema } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import {
   FetchHttpClient,
@@ -163,6 +163,18 @@ const authRoutes = HttpRouter.use((router) =>
           )
           if (member === undefined || (member.role !== "owner" && member.role !== "admin"))
             return HttpServerResponse.empty({ status: 403 })
+          const action = `sso.${path.slice(path.lastIndexOf("/") + 1)}`
+          const input = {
+            organizationId,
+            actor: { kind: "user", id: session.user.id, name: session.user.name },
+            target: { type: "sso-provider", id: body.providerId ?? null },
+            ip: Option.getOrUndefined(request.remoteAddress),
+          } satisfies Omit<Parameters<Repository["Service"]["recordAudit"]>[0], "action">
+          yield* repository.recordAudit({ ...input, action: `${action}.requested` })
+          const response = yield* HttpEffect.fromWebHandler(auth.handler)
+          if (response.status >= 200 && response.status < 300)
+            yield* repository.recordAudit({ ...input, action })
+          return response
         }
         return yield* HttpEffect.fromWebHandler(auth.handler)
       }),

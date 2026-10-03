@@ -16,7 +16,9 @@ import { Auth } from "./auth.ts"
 import { Repository } from "./repository.ts"
 import type { ApiOptions } from "./config.ts"
 
+const enterpriseOrganizations: Array<string> = []
 const options = (databaseUrl: Redacted.Redacted<string>): ApiOptions => ({
+  enterpriseOrganizations,
   databaseUrl,
   secret: Redacted.make("api-integration-test-secret-not-for-production"),
   origin: "http://localhost:3001",
@@ -89,6 +91,47 @@ const BasicUser = Schema.Struct({
   user: Schema.Struct({ id: Schema.String, email: Schema.String, emailVerified: Schema.Boolean }),
 })
 
+const password = "correct-horse-battery-staple-42"
+
+type Requester = Effect.Success<typeof testServer>["request"]
+
+const signupWith = (request: Requester, sql: SqlClient.SqlClient, suffix: string) =>
+  Effect.fn(function* (name: string) {
+    const email = `${name}-${suffix}@example.com`
+    const response = yield* request({
+      path: "/auth/sign-up/email",
+      method: "POST",
+      body: { name, email, password },
+    })
+    expect(response.status).toBe(200)
+    const user = yield* read(response, BasicUser)
+    expect(user.user.emailVerified).toBe(false)
+    const denied = yield* request({
+      path: "/auth/sign-in/email",
+      method: "POST",
+      body: { email, password },
+    })
+    expect(denied.status).toBe(403)
+    const [message] = yield* sql<{
+      body: string
+      subject: string
+    }>`SELECT body, subject FROM cloud_email_outbox WHERE recipient = ${email} ORDER BY id DESC LIMIT 1`
+    expect(message?.subject).toBe("Verify your email")
+    if (message === undefined) return yield* Effect.die(new Error("Verification email missing"))
+    const verifyPath = new URL(message.body).pathname + new URL(message.body).search
+    const verified = yield* request({ path: verifyPath })
+    expect(verified.status).toBe(302)
+    const login = yield* request({
+      path: "/auth/sign-in/email",
+      method: "POST",
+      body: { email, password },
+    })
+    expect(login.status).toBe(200)
+    const cookie = Cookies.toCookieHeader(login.cookies)
+    expect(cookie).toContain("better-auth.session_token=")
+    return { email, cookie, id: user.user.id }
+  })
+
 it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
   it.effect(
     "verifies emails, isolates organizations, persists control-plane records and immediately refuses revoked keys",
@@ -97,43 +140,7 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         const { request, origin } = yield* testServer
         const sql = yield* SqlClient.SqlClient
         const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
-        const password = "correct-horse-battery-staple-42"
-        const signup = Effect.fn(function* (name: string) {
-          const email = `${name}-${suffix}@example.com`
-          const response = yield* request({
-            path: "/auth/sign-up/email",
-            method: "POST",
-            body: { name, email, password },
-          })
-          expect(response.status).toBe(200)
-          const user = yield* read(response, BasicUser)
-          expect(user.user.emailVerified).toBe(false)
-          const denied = yield* request({
-            path: "/auth/sign-in/email",
-            method: "POST",
-            body: { email, password },
-          })
-          expect(denied.status).toBe(403)
-          const [message] = yield* sql<{
-            body: string
-            subject: string
-          }>`SELECT body, subject FROM cloud_email_outbox WHERE recipient = ${email} ORDER BY id DESC LIMIT 1`
-          expect(message?.subject).toBe("Verify your email")
-          if (message === undefined)
-            return yield* Effect.die(new Error("Verification email missing"))
-          const verifyPath = new URL(message.body).pathname + new URL(message.body).search
-          const verified = yield* request({ path: verifyPath })
-          expect(verified.status).toBe(302)
-          const login = yield* request({
-            path: "/auth/sign-in/email",
-            method: "POST",
-            body: { email, password },
-          })
-          expect(login.status).toBe(200)
-          const cookie = Cookies.toCookieHeader(login.cookies)
-          expect(cookie).toContain("better-auth.session_token=")
-          return { email, cookie, id: user.user.id }
-        })
+        const signup = signupWith(request, sql, suffix)
         const alice = yield* signup("alice")
         const bob = yield* signup("bob")
         const outsider = yield* signup("outsider")
@@ -439,6 +446,56 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         })
         expect(blockedAuthMutation.status).toBe(404)
         expect(origin).toContain("127.0.0.1")
+      }),
+    { timeout: 60000 },
+  )
+
+  it.effect(
+    "audits every single sign-on provider change an owner makes and refuses everyone else",
+    () =>
+      Effect.gen(function* () {
+        const { request } = yield* testServer
+        const sql = yield* SqlClient.SqlClient
+        const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+        const signup = signupWith(request, sql, suffix)
+        const owner = yield* signup("sso-owner")
+        const outsider = yield* signup("sso-outsider")
+        const created = yield* request({
+          path: "/api/organizations",
+          method: "POST",
+          cookie: owner.cookie,
+          body: { name: "SSO organization", slug: `sso-${suffix}` },
+        })
+        const org = (yield* read(created, Cloud.OrganizationMembership)).organization.id
+        enterpriseOrganizations.push(org)
+        const providerId = `provider-${suffix}`
+        yield* sql`INSERT INTO "ssoProvider" (id, issuer, "userId", "providerId", "organizationId", domain, "domainVerified")
+          VALUES (${`sso-${suffix}`}, 'https://idp.example', ${owner.id}, ${providerId}, ${org}, 'example.com', false)`
+
+        const refused = yield* request({
+          path: "/auth/sso/delete-provider",
+          method: "POST",
+          cookie: outsider.cookie,
+          body: { providerId },
+        })
+        expect(refused.status).toBe(403)
+        const deleted = yield* request({
+          path: "/auth/sso/delete-provider",
+          method: "POST",
+          cookie: owner.cookie,
+          body: { providerId },
+        })
+
+        expect(deleted.status).toBe(200)
+        const entries = yield* sql<{
+          action: string
+          actor_id: string
+          target_id: string
+        }>`SELECT action, actor_id, target_id FROM cloud_audit WHERE organization_id = ${org} AND action LIKE 'sso.%' ORDER BY id`
+        expect(entries).toEqual([
+          { action: "sso.delete-provider.requested", actor_id: owner.id, target_id: providerId },
+          { action: "sso.delete-provider", actor_id: owner.id, target_id: providerId },
+        ])
       }),
     { timeout: 60000 },
   )
