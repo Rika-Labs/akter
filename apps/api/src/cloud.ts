@@ -81,9 +81,9 @@ export const cloudRuntime = (options: ApiOptions) =>
         Effect.gen(function* () {
           const migrations = yield* ImageMigrations
           return rolloutPlatform(options, (release) =>
-            Schema.decodeUnknownEffect(
-              Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
-            )(release.envSnapshot).pipe(
+            Schema.decodeEffect(Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)))(
+              release.envSnapshot,
+            ).pipe(
               Effect.mapError(() =>
                 PlatformFailure.make({ reason: "Invalid environment snapshot", retryable: false }),
               ),

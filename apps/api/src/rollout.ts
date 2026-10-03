@@ -1,4 +1,3 @@
-import { createHash, createHmac } from "node:crypto"
 import {
   ActivationRefused,
   PlatformFailure,
@@ -7,7 +6,18 @@ import {
   RolloutRouting,
 } from "@akter/deployments/lifecycle"
 import { Runners, runnerActor } from "@akter/deployments/runners"
-import { Cause, Context, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
+import {
+  Cause,
+  Context,
+  Effect,
+  Function,
+  Layer,
+  Option,
+  Predicate,
+  Redacted,
+  Schedule,
+  Schema,
+} from "effect"
 import { PgClient } from "@effect/sql-pg"
 import { SqlClient } from "effect/sql"
 import { HttpClient, HttpClientRequest } from "effect/http"
@@ -15,15 +25,27 @@ import type { ApiOptions } from "./config.ts"
 import { Repository } from "./repository.ts"
 
 /** The control-plane service credential is deployment-bound and only its hash is stored at the edge. */
-export const serviceCredential = (secret: Redacted.Redacted<string>, deploymentId: string) =>
-  Redacted.make(
-    createHmac("sha256", Redacted.value(secret))
-      .update(`akter-control-plane/v1\0${deploymentId}`)
-      .digest("hex"),
-  )
+export const serviceCredential: {
+  (secret: Redacted.Redacted<string>, deploymentId: string): Redacted.Redacted<string>
+  (deploymentId: string): (secret: Redacted.Redacted<string>) => Redacted.Redacted<string>
+} = Function.dual(
+  2,
+  (secret: Redacted.Redacted<string>, deploymentId: string): Redacted.Redacted<string> =>
+    Redacted.make(
+      new Bun.CryptoHasher("sha256", Redacted.value(secret))
+        .update(`akter-control-plane/v1\0${deploymentId}`)
+        .digest("hex"),
+    ),
+)
 
-export const environmentHost = (options: ApiOptions, projectId: string, environment: string) =>
-  `${projectId.replaceAll("_", "-")}-${environment}.${options.deploymentDomain ?? "localhost"}`
+export const environmentHost: {
+  (options: ApiOptions, projectId: string, environment: string): string
+  (projectId: string, environment: string): (options: ApiOptions) => string
+} = Function.dual(
+  3,
+  (options: ApiOptions, projectId: string, environment: string): string =>
+    `${projectId.replaceAll("_", "-")}-${environment}.${options.deploymentDomain ?? "localhost"}`,
+)
 
 const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
 
@@ -36,7 +58,7 @@ export const rolloutRouting = (options: ApiOptions) =>
       const repository = yield* Repository
       return {
         register: Effect.fn(function* (release) {
-          const snapshot = yield* Schema.decodeUnknownEffect(Snapshot)(release.envSnapshot).pipe(
+          const snapshot = yield* Schema.decodeEffect(Snapshot)(release.envSnapshot).pipe(
             Effect.catch(() =>
               Effect.die(new Error("The recorded environment snapshot is invalid")),
             ),
@@ -51,9 +73,9 @@ export const rolloutRouting = (options: ApiOptions) =>
                 )
           if (release.rolledBackFrom != null && source === undefined)
             return yield* Effect.die(new Error("The rollback environment snapshot is unavailable"))
-          const tier = options.enterpriseOrganizations?.includes(release.organizationId)
+          const tier = (options.enterpriseOrganizations ?? []).includes(release.organizationId)
             ? "enterprise"
-            : options.paidOrganizations?.includes(release.organizationId)
+            : (options.paidOrganizations ?? []).includes(release.organizationId)
               ? "pro"
               : "free"
           const environment = {
@@ -63,10 +85,11 @@ export const rolloutRouting = (options: ApiOptions) =>
             ASSERTION_REGION: release.regions[0] ?? "us-east-1",
             RUNNER_REGION: release.regions[0] ?? "us-east-1",
           }
-          yield* sql`INSERT INTO deployment (id, primary_region, scale_to_zero, tier, image, environment_snapshot, serving) VALUES (${release.deploymentId}, ${release.regions[0] ?? "us-east-1"}, ${tier === "free"}, ${tier}, ${release.imageDigest}, ${JSON.stringify(environment)}::jsonb, false) ON CONFLICT (id) DO NOTHING`.pipe(
+          const encoded = yield* Schema.encodeEffect(Snapshot)(environment).pipe(Effect.orDie)
+          yield* sql`INSERT INTO deployment (id, primary_region, scale_to_zero, tier, image, environment_snapshot, serving) VALUES (${release.deploymentId}, ${release.regions[0] ?? "us-east-1"}, ${tier === "free"}, ${tier}, ${release.imageDigest}, ${encoded}::jsonb, false) ON CONFLICT (id) DO NOTHING`.pipe(
             Effect.orDie,
           )
-          const hash = createHash("sha256")
+          const hash = new Bun.CryptoHasher("sha256")
             .update(Redacted.value(serviceCredential(options.secret, release.deploymentId)))
             .digest("hex")
           yield* sql`INSERT INTO hosted_api_key (key_hash, deployment_id, tenant, subject) VALUES (${hash}, ${release.deploymentId}, 'default', 'akter-control-plane') ON CONFLICT (key_hash) DO NOTHING`.pipe(
@@ -122,10 +145,7 @@ export const rolloutRouting = (options: ApiOptions) =>
   )
 
 /** Rollout jobs request durable runner capacity, then wait for the same readiness route the edge uses. */
-export const rolloutPlatform = (
-  options: ApiOptions,
-  migrate: RolloutPlatform["Service"]["migrate"],
-) =>
+const makeRolloutPlatform = (options: ApiOptions, migrate: RolloutPlatform["Service"]["migrate"]) =>
   Layer.effect(
     RolloutPlatform,
     Effect.gen(function* () {
@@ -214,7 +234,7 @@ export const rolloutPlatform = (
             }).pipe(Effect.provideContext(runtime)),
           ).pipe(
             Effect.mapError((error) =>
-              error instanceof PlatformFailure
+              Predicate.isTagged(error, "PlatformFailure")
                 ? error
                 : PlatformFailure.make({ reason: "Runner startup failed", retryable: true }),
             ),
@@ -233,3 +253,14 @@ export const rolloutPlatform = (
       } satisfies RolloutPlatform["Service"]
     }),
   )
+
+/** `makeRolloutPlatform` with a pipeable form taking the migration step first. */
+export const rolloutPlatform: {
+  (
+    options: ApiOptions,
+    migrate: RolloutPlatform["Service"]["migrate"],
+  ): ReturnType<typeof makeRolloutPlatform>
+  (
+    migrate: RolloutPlatform["Service"]["migrate"],
+  ): (options: ApiOptions) => ReturnType<typeof makeRolloutPlatform>
+} = Function.dual(2, makeRolloutPlatform)

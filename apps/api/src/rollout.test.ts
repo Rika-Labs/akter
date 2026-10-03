@@ -3,7 +3,7 @@ import { ActivationRefused, RolloutRouting, type ReleaseRecord } from "@akter/de
 import { migrate } from "@akter/postgres/migrate"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
-import { Config, Context, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import { Config, Context, Crypto, Effect, Exit, Layer, ManagedRuntime, Redacted } from "effect"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -187,7 +187,7 @@ describe("rollout routing authority", () => {
           )
           .pipe(Effect.exit)
         expect(failed._tag).toBe("Failure")
-        expect(failed._tag === "Failure" ? String(failed.cause) : "succeeded").toContain(
+        expect(Exit.isFailure(failed) ? String(failed.cause) : "succeeded").toContain(
           "audit unavailable",
         )
         expect(

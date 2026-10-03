@@ -12,6 +12,10 @@ import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
 import { Access } from "./access.ts"
 
+const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String }))
+
+const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
+
 /** Every actor handle is captured under the organization established by access, never by a request payload. */
 export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments", (handlers) =>
   Effect.gen(function* () {
@@ -19,16 +23,12 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
     const sql = yield* SqlClient.SqlClient
     const detail = Effect.fnUntraced(function* (value: DeploymentDetail) {
       if (value.status !== "live")
-        return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.DeploymentDetail))(value).pipe(
-          Effect.orDie,
-        )
+        return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.DeploymentDetail))(value)
       const registered = yield* sql<{
         id: string
         region: "us-east-1" | "us-west-2"
         ready: boolean
-      }>`SELECT provider_id AS id, region, ready FROM deployment_runner WHERE deployment_id = ${value.id} AND provider_id IS NOT NULL AND EXISTS (SELECT 1 FROM deployment_rollout WHERE id = ${value.id} AND organization_id = ${value.organizationId} AND project_id = ${value.projectId}) ORDER BY region, id`.pipe(
-        Effect.orDie,
-      )
+      }>`SELECT provider_id AS id, region, ready FROM deployment_runner WHERE deployment_id = ${value.id} AND provider_id IS NOT NULL AND EXISTS (SELECT 1 FROM deployment_rollout WHERE id = ${value.id} AND organization_id = ${value.organizationId} AND project_id = ${value.projectId}) ORDER BY region, id`
       return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.DeploymentDetail))({
         ...value,
         runnerCount: registered.length,
@@ -41,8 +41,8 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             ? (value.runners.find((known) => known.id === runner.id)?.health ?? "starting")
             : "unhealthy",
         })),
-      }).pipe(Effect.orDie)
-    })
+      })
+    }, Effect.orDie)
     const random = yield* Crypto.Crypto
     const id = random.randomUUIDv4.pipe(Effect.orDie)
     const actorRuntime = yield* Effect.context<Actors>()
@@ -101,7 +101,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
     const readExpected = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
         Effect.catch((error) =>
-          error instanceof DeploymentNotFound
+          Schema.is(DeploymentNotFound)(error)
             ? Cloud.NotFound.make({ resource: "deployment", id: error.deploymentId })
             : Effect.die(error),
         ),
@@ -109,7 +109,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
     const expected = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
         Effect.catch((error): Effect.Effect<never, Cloud.NotFound | Cloud.Conflict> => {
-          if (error instanceof DeploymentNotFound)
+          if (Schema.is(DeploymentNotFound)(error))
             return Cloud.NotFound.make({ resource: "deployment", id: error.deploymentId })
           if (
             ["RolloutInProgress", "DeploymentExists", "RollbackTargetInvalid", "NotBuilding"].some(
@@ -180,13 +180,13 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
               deploymentId: params.deploymentId,
               imageDigest: payload.image,
               commitSha: payload.commitSha,
-              envSnapshot: JSON.stringify(
+              envSnapshot: yield* Schema.encodeEffect(Snapshot)(
                 Object.fromEntries(
                   Object.entries(payload.environmentSnapshot).sort(([left], [right]) =>
                     left < right ? -1 : left > right ? 1 : 0,
                   ),
                 ),
-              ),
+              ).pipe(Effect.orDie),
             })
             .pipe(expected, Effect.flatMap(detail))
         }),
@@ -263,9 +263,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
           const cursor =
             query.cursor === undefined
               ? Option.none()
-              : Schema.decodeUnknownOption(
-                  Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String })),
-                )(Buffer.from(query.cursor, "base64url").toString("utf8"))
+              : Schema.decodeOption(Cursor)(Buffer.from(query.cursor, "base64url").toString("utf8"))
           if (
             query.cursor !== undefined &&
             (Option.isNone(cursor) || !Number.isFinite(Date.parse(cursor.value.at)))
@@ -291,7 +289,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             items: yield* Effect.forEach(items, (item) =>
               detail(item).pipe(
                 Effect.flatMap((current) =>
-                  Schema.decodeUnknownEffect(Schema.toType(Cloud.DeploymentSummary))(current),
+                  Schema.decodeEffect(Schema.toType(Cloud.DeploymentSummary))(current),
                 ),
                 Effect.orDie,
               ),
@@ -299,7 +297,10 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             nextCursor:
               rows.length > limit && last !== undefined
                 ? Buffer.from(
-                    JSON.stringify({ at: last.createdAt.toISOString(), id: last.id }),
+                    yield* Schema.encodeEffect(Cursor)({
+                      at: last.createdAt.toISOString(),
+                      id: last.id,
+                    }).pipe(Effect.orDie),
                   ).toString("base64url")
                 : null,
           }

@@ -97,7 +97,7 @@ export const loadOptions = Effect.gen(function* () {
   const environment = yield* Config.Redacted("RUNNER_ENVIRONMENT").pipe(
     Config.withDefault(Redacted.make("{}")),
   )
-  const runnerEnvironment = yield* Schema.decodeUnknownEffect(
+  const runnerEnvironment = yield* Schema.decodeEffect(
     Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
   )(Redacted.value(environment)).pipe(
     Effect.catch(() =>
@@ -107,7 +107,7 @@ export const loadOptions = Effect.gen(function* () {
   const ecs = yield* Config.String("RUNNER_ECS_CONFIG").pipe(Config.option)
   const runnerEcs = Option.isNone(ecs)
     ? undefined
-    : yield* Schema.decodeUnknownEffect(
+    : yield* Schema.decodeEffect(
         Schema.fromJsonString(
           Schema.Struct({
             regions: Schema.Record(
@@ -133,7 +133,7 @@ export const loadOptions = Effect.gen(function* () {
   const migrationCommand = yield* Config.String("RUNNER_MIGRATION_COMMAND").pipe(
     Config.withDefault('["bun","run","migrate"]'),
   )
-  const parsedMigrationCommand = yield* Schema.decodeUnknownEffect(
+  const parsedMigrationCommand = yield* Schema.decodeEffect(
     Schema.fromJsonString(Schema.Array(Schema.String).check(Schema.isMinLength(1))),
   )(migrationCommand).pipe(
     Effect.catch(() =>

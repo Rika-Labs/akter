@@ -181,9 +181,9 @@ it.layer(TestLive, { excludeTestServices: true })(
             () => create(owner.cookie),
             { concurrency: "unbounded" },
           )
-          expect(concurrent.map((response) => response.status).sort()).toEqual([
-            200, 409, 409, 409, 409, 409, 409, 409,
-          ])
+          expect(
+            concurrent.map((response) => response.status).sort((left, right) => left - right),
+          ).toEqual([200, 409, 409, 409, 409, 409, 409, 409])
           const created = yield* read(
             concurrent.find((response) => response.status === 200)!,
             Cloud.DeploymentDetail,
