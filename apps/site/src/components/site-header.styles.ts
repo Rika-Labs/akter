@@ -71,6 +71,7 @@ export const header = stylex.create({
   menu: {
     display: { default: "none", [queries.tabletDown]: "block" },
     position: "relative",
+    marginInlineStart: "auto",
   },
   menuButton: {
     display: "inline-flex",
