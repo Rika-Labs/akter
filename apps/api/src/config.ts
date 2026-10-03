@@ -144,6 +144,8 @@ export const loadOptions = Effect.gen(function* () {
     return yield* Effect.die(new Error("AUTH_SECRET must contain at least 32 characters"))
   if (production && emailMode === "local")
     return yield* Effect.die(new Error("Production requires SES email delivery"))
+  if (production && Object.keys(runnerEnvironment).length > 0)
+    return yield* Effect.die(new Error("Production cannot use shared runner environment values"))
   if (production && Redacted.value(secret) === publishedDevelopmentSecret)
     return yield* Effect.die(new Error("Production cannot use the published development secret"))
   if (

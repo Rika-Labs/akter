@@ -34,7 +34,7 @@ export const resources = Effect.gen(function* () {
       restrictPublicBuckets: true,
     },
   }).pipe(adopt(true), retain())
-  const { vpc, subnets, loadBalancer, servicesGroup } = yield* network(config)
+  const { vpc, subnets, loadBalancer, servicesGroup, edgeGroup } = yield* network(config)
   const cluster = yield* AWS.ECS.Cluster("Cluster", {
     clusterName: config.name,
     capacityProviders: ["FARGATE", "FARGATE_SPOT"],
@@ -43,16 +43,8 @@ export const resources = Effect.gen(function* () {
   const runnerGroup = yield* AWS.EC2.SecurityGroup("RunnerGroup", {
     vpcId: vpc.vpcId,
     ingress: [
-      { ipProtocol: "tcp", fromPort: 8080, toPort: 8080, referencedGroupId: servicesGroup.groupId },
+      { ipProtocol: "tcp", fromPort: 8080, toPort: 8080, referencedGroupId: edgeGroup.groupId },
     ],
-  })
-  yield* AWS.EC2.SecurityGroupRule("RunnerPeers", {
-    group: runnerGroup,
-    type: "ingress",
-    ipProtocol: "tcp",
-    fromPort: 9000,
-    toPort: 9000,
-    referencedGroupId: runnerGroup.groupId,
   })
   const runnerRepository = yield* AWS.ECR.Repository("RunnerBase", {
     repositoryName: "akter/runner-base",
@@ -76,10 +68,6 @@ export const resources = Effect.gen(function* () {
   })
   const edgeSigningKeys = yield* AWS.SecretsManager.Secret("EdgeSigningKeys", {
     name: `${config.name}/edge-signing-keys`,
-    kmsKeyId: secretsKey.keyArn,
-  })
-  const runnerEnvironment = yield* AWS.SecretsManager.Secret("RunnerEnvironment", {
-    name: `${config.name}/runner-environment`,
     kmsKeyId: secretsKey.keyArn,
   })
   const database = yield* Neki.Database("Database", {
@@ -239,10 +227,41 @@ export const resources = Effect.gen(function* () {
               turnstileSecret.secretArn,
               databaseSecret.secretArn,
               edgeSigningKeys.secretArn,
-              runnerEnvironment.secretArn,
             ],
           },
           { Effect: "Allow", Action: ["kms:Decrypt"], Resource: secretsKey.keyArn },
+        ],
+      },
+    },
+  })
+  const runnerExecutionRole = yield* AWS.IAM.Role("RunnerExecutionRole", {
+    assumeRolePolicyDocument: {
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Principal: { Service: "ecs-tasks.amazonaws.com" },
+          Action: ["sts:AssumeRole"],
+        },
+      ],
+    },
+    inlinePolicies: {
+      Images: {
+        Version: "2012-10-17",
+        Statement: [
+          { Effect: "Allow", Action: ["ecr:GetAuthorizationToken"], Resource: "*" },
+          {
+            Effect: "Allow",
+            Action: [
+              "ecr:BatchCheckLayerAvailability",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchGetImage",
+            ],
+            Resource: [
+              runnerRepository.repositoryArn,
+              `arn:aws:ecr:${config.region}:${config.accountId}:repository/akter/runners/*`,
+            ],
+          },
         ],
       },
     },
@@ -264,19 +283,39 @@ export const resources = Effect.gen(function* () {
         Statement: [
           {
             Effect: "Allow",
-            Action: [
-              "ecs:RegisterTaskDefinition",
-              "ecs:DescribeTaskDefinition",
-              "ecs:RunTask",
-              "ecs:StopTask",
-              "ecs:DescribeTasks",
-            ],
+            Action: ["ecs:RegisterTaskDefinition"],
+            Resource: `arn:aws:ecs:${config.region}:${config.accountId}:task-definition/akter-runner-*`,
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:DescribeTaskDefinition"],
             Resource: "*",
           },
           {
             Effect: "Allow",
+            Action: ["ecs:RunTask"],
+            Resource: `arn:aws:ecs:${config.region}:${config.accountId}:task-definition/akter-runner-*`,
+            Condition: { ArnEquals: { "ecs:cluster": cluster.clusterArn } },
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:StopTask", "ecs:DescribeTasks"],
+            Resource: Output.interpolate`arn:aws:ecs:${config.region}:${config.accountId}:task/${cluster.clusterName}/*`,
+            Condition: {
+              ArnEquals: { "ecs:cluster": cluster.clusterArn },
+              Null: { "aws:ResourceTag/akter:deployment": "false" },
+            },
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:TagResource"],
+            Resource: Output.interpolate`arn:aws:ecs:${config.region}:${config.accountId}:task/${cluster.clusterName}/*`,
+            Condition: { StringEquals: { "ecs:CreateAction": "RunTask" } },
+          },
+          {
+            Effect: "Allow",
             Action: ["iam:PassRole"],
-            Resource: executionRole.roleArn,
+            Resource: runnerExecutionRole.roleArn,
             Condition: { StringEquals: { "iam:PassedToService": "ecs-tasks.amazonaws.com" } },
           },
         ],
@@ -367,7 +406,7 @@ export const resources = Effect.gen(function* () {
                       value: Output.all(
                         cluster.clusterArn,
                         runnerGroup.groupId,
-                        executionRole.roleArn,
+                        runnerExecutionRole.roleArn,
                         ...subnets.map(({ privateSubnetId }) => privateSubnetId),
                       ).pipe(
                         Output.map(([clusterArn, groupId, roleArn, ...privateSubnets]) =>
@@ -424,7 +463,6 @@ export const resources = Effect.gen(function* () {
                       valueFrom: Output.interpolate`${authSecret.secretArn}:password::`,
                     },
                     { name: "TURNSTILE_SECRET", valueFrom: turnstileSecret.secretArn },
-                    { name: "RUNNER_ENVIRONMENT", valueFrom: runnerEnvironment.secretArn },
                   ]
                 : []),
             ],
@@ -441,7 +479,7 @@ export const resources = Effect.gen(function* () {
         desiredCount: application.name === "api" ? 1 : config.stage === "prod" ? 2 : 1,
         subnets: subnets.map(({ privateSubnetId }) => privateSubnetId),
         vpcId: vpc.vpcId,
-        securityGroups: [servicesGroup.groupId],
+        securityGroups: [application.name === "edge" ? edgeGroup.groupId : servicesGroup.groupId],
         assignPublicIp: false,
         capacityProviderStrategy: [{ capacityProvider: "FARGATE", weight: 1 }],
         loadBalancers: [

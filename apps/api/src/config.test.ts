@@ -103,4 +103,12 @@ describe("API configuration", () => {
       expect(result._tag).toBe("Failure")
     }),
   )
+  it.effect("refuses a shared runner environment in production", () =>
+    Effect.gen(function* () {
+      const result = yield* loadProduction({
+        RUNNER_ENVIRONMENT: JSON.stringify({ DATABASE_URL: "postgres://shared" }),
+      })
+      expect(result._tag).toBe("Failure")
+    }),
+  )
 })
