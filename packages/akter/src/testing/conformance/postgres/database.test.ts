@@ -1,14 +1,14 @@
-import { BunCrypto } from "@effect/platform-bun"
 import { Clock, Config, Context, Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { afterAll, describe, expect, it } from "vitest"
 import { PgClient } from "@effect/sql-pg"
 import { SqlClient } from "effect/sql"
 import { databaseName, disposableDatabase, sweepStaleDatabases } from "../../database.ts"
+import { cryptoLayer } from "../platform.ts"
 
 /** Each `DROP DATABASE` waits for a checkpoint, which takes seconds on a shared server. */
 const DROPS_MS = 60_000
 
-const harness = ManagedRuntime.make(BunCrypto.layer)
+const harness = ManagedRuntime.make(cryptoLayer)
 
 afterAll(() => harness.dispose())
 

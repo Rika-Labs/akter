@@ -1,11 +1,11 @@
-import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Crypto, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect"
+import { Crypto, Effect, Exit, ManagedRuntime, Redacted, Scope } from "effect"
 import type { Config } from "effect"
 import { Pool } from "pg"
 import type { ConformanceBackend, ConformanceDatabase } from "../../conformance.ts"
 import { disposableDatabase } from "../../database.ts"
+import { cryptoLayer, httpServerLayer } from "../platform.ts"
 
-const harness = ManagedRuntime.make(BunCrypto.layer)
+const harness = ManagedRuntime.make(cryptoLayer)
 
 export interface PostgresBackendOptions {
   /** The server's connection string; each suite creates databases on it. */
@@ -39,8 +39,8 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
   neki: options.neki === true,
   logicalDecoding: options.logicalDecoding === true,
   freshDatabases: options.freshDatabases !== false,
-  services: BunCrypto.layer,
-  httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
+  services: cryptoLayer,
+  httpServer: httpServerLayer,
   open: () =>
     harness.runPromise(
       Effect.gen(function* () {
