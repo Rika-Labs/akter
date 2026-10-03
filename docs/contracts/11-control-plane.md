@@ -1,0 +1,49 @@
+# Control plane
+
+**Responsibility:** define the durable records and guarantees of the Akter Cloud control plane (`apps/api`): projects, environments, user preferences and the audit log.  
+**Authority:** normative.  
+**Owner role:** cloud and security.  
+**Change policy:** security review is required for any change to organization scoping, the audit log, or how the API reaches runners; every new durable record needs a failure test ([ADR 0065](../decisions/0065-open-source-control-plane.md)).
+
+Better Auth is the authority for users, sessions, organizations, members, invitations and API keys. The control plane MUST take the caller's organization and user from the verified identity of the request and MUST NOT accept either from a request body. Roles and API-key permissions are checked before the repository is called; the repository's scoping is a second, independent barrier.
+
+## Records
+
+The `Repository` service (`apps/api/src/repository.ts`) owns four tables, created by `CREATE TABLE IF NOT EXISTS` migrations that run, serialized by an advisory lock, when its layer is built. Running them again, or from several processes at once, MUST leave existing rows untouched.
+
+| Table               | Holds                                                                                                                                                                                                                                                                              |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloud_project`     | One row per project: id, owning organization, name, slug, status (`empty`, `live`, `deploying`, `failed`), home region, creation time. The slug is unique within an organization.                                                                                                  |
+| `cloud_environment` | One row per environment (`production`, `staging` or `dev`) of a project, keyed by project and name, with the current deployment id when there is one. A foreign key on project and organization together binds it to the project's own organization.                               |
+| `cloud_preference`  | One row per user, whatever organizations the user belongs to: default environment, whether actor links open in a new tab, time zone, live-tail and replayed-command toggles, theme, per-event notification toggles, and the ordered pinned actors (project, environment, address). |
+| `cloud_audit`       | Log per organization that the repository only appends to: actor (user or API key, with the name it had), action, target (type, id, name), IP address and time. Entries are ordered by a monotonically increasing id, newest first when listed.                                     |
+
+Preferences are keyed by the user alone. A person with no organization still has settings, switching the active organization does not change them, and leaving an organization strands nothing. Isolation between organizations does not depend on the key: a pin is accepted only for an environment of the organization the caller has already established from the project, and a pin is only listed after the caller's access to its project has been checked.
+
+## Guarantees
+
+1. **Organization scope.** Every project, environment and audit read and write MUST name the organization in its SQL; preference reads and writes name the user. A project, environment or audit entry of another organization is indistinguishable from one that does not exist: `ProjectNotFound` or `EnvironmentNotFound`, never a permission error that confirms existence.
+2. **One transaction.** Each mutation of a project or environment commits together with its audit entry or not at all: `project.create`, `project.update`, `project.delete`, `environment.create` and `environment.delete`. If the audit write fails, the mutation MUST roll back and the failure is a defect. Preferences and pins belong to one user, change in a single statement or transaction, and are not audited.
+3. **Projects are provisioned whole.** Creating a project inserts the project, its `production`, `staging` and `dev` environments and one `project.create` entry in one transaction; no project exists without its environments. Deleting a project removes it, its environments and every user's pins to it in one transaction and is refused with `ProjectInUse` while any environment has a current deployment. A deleted project is never restored; its id is not reused. Deleting one environment follows the same rules (`EnvironmentInUse`).
+4. **No lost updates.** A project slug is unique per organization and an environment name unique per project even under concurrent writes: exactly one succeeds and the others fail with `ProjectSlugTaken` or `EnvironmentNameTaken`, leaving no row and no audit entry. Concurrent pins by one user MUST all be kept, in the order they committed, and pinning an actor that is already pinned changes nothing.
+5. **Defaults without rows.** A user with no stored preferences reads the defaults (`production`, new tab off, `UTC`, pause live tail on, show replayed commands off, theme `system`, notifications email only); the first change creates the row, and a change names only the fields it sets.
+6. **Pins name real environments.** A pin MUST name an environment of a project of the organization the caller names; otherwise it fails `EnvironmentNotFound` and stores nothing. The pin stores an address only; whether the actor is awake comes from runtime inspection, never from this record.
+7. **Audit cursor.** The audit log is paged by the numeric id of the last entry read, newest first, optionally filtered by action or actor. A cursor the repository did not issue fails `InvalidCursor`; a page never exceeds 100 entries.
+8. **Database failures are defects.** Typed failures are the domain errors above; any other database error ends the request as an opaque 500.
+9. **Runner access.** The control plane MUST reach customer runners only through the edge ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md), [contract 10](10-security.md)); it MUST NOT hold runner addresses or signing keys, and MUST NOT forward a caller's session or API key to a runner.
+
+## Changes made through Better Auth
+
+Better Auth owns organizations, members, invitations and API keys, and commits its own changes in its own transactions. The control plane cannot enclose a Better Auth call and its own audit entry in one transaction, and MUST NOT claim that it does. For mutations of an existing organization, a handler records `<action>.requested` before the call and `<action>` after it succeeds, each in its own transaction. A request that crashes or fails between the two leaves a `requested` entry with no completion; the outcome is unknown and must be checked against Better Auth's records. Initial organization creation only records its completion after Better Auth allocates the organization id; a crash between creation and audit can leave an organization without that entry. Personal profile/session changes and initial sign-up have no organization audit entry.
+
+Where the control plane writes its own rows after a Better Auth call (an API key's binding, the revocation following an organization deletion), those rows and the completion entry commit together. A native key without a control-plane binding fails closed and can never authorize an API request. Key revocation directly disables the plugin's Postgres row and marks the binding revoked in the same transaction as `api-key.revoke`; an audit failure rolls all three back. Verification also requires the organization still to exist, so deletion cannot leave a key admitting work even if the subsequent binding cleanup is interrupted.
+
+## Authentication and email
+
+Better Auth runs through `@alchemy.run/better-auth` with a long-lived Bun `RuntimeContext`, a scoped Postgres pool and serialized startup migrations. Verified email/password sessions and organization-owned `@better-auth/api-key` keys are the two callers. Password reset revokes sessions. Each request reads authority from Postgres; a key's organization/project/permission binding is an additional restriction, never an alternative to the plugin's hashed-key validation. An explicitly supplied API key takes precedence over a cookie, and mutations authenticated by a cookie refuse untrusted browser origins. Stored key material never contains the full presented key.
+
+Enterprise SSO uses `@better-auth/sso`. Operator-configured organization IDs gate provider registration and login; registration and provider changes also require an owner/admin session. A login checks the persisted provider, its verified domain and exact email domain, and refuses implicit account linking. OIDC has local IdP evidence; SAML, real DNS verification, external OAuth, SES delivery and Neki behavior remain unverified.
+
+`Email` is an Effect service. Local delivery appends `cloud_email_outbox`, containing recipient, subject and body; it is readable only in the local development stack and tests. Production uses Distilled SESv2, not the local outbox. Verification/reset links and keys MUST NOT enter access logs; the API disables path logging and Better Auth diagnostic payload logging. Auth background work is tracked only while pending, removed when settled, and awaited on process shutdown rather than retained indefinitely in memory.
+
+Verification: [control-plane invariants](../verification/invariants.md) CP1 to CP5 and the control-plane rows of the [failure matrix](../verification/02-failure-matrix.md).

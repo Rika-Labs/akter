@@ -1,0 +1,32 @@
+{
+  "name": "@akter/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/api/src/config.test.ts",
+    "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/api/src/server.test.ts apps/api/src/repository.test.ts apps/api/src/auth.test.ts"
+  },
+  "dependencies": {
+    "@akter/cloud-api": "workspace:*",
+    "@alchemy.run/better-auth": "2.0.0-beta.80",
+    "@better-auth/api-key": "1.7.7",
+    "@better-auth/sso": "1.7.7",
+    "@distilled.cloud/aws": "1.0.0-rc.13",
+    "@distilled.cloud/core": "1.0.0-rc.13",
+    "@effect/platform-bun": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "alchemy": "2.0.0-beta.80",
+    "better-auth": "1.7.7",
+    "effect": "catalog:",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/pg": "8.23.1",
+    "vitest": "catalog:"
+  }
+}
