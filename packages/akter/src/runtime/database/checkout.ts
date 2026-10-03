@@ -44,9 +44,10 @@ export const fairPool = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
 
   const connection = (session: PgConnection.PgConnection) =>
     asSqlConnection({ connection: session, send: direct })
+  const acquirer = Effect.andThen(gate.take, Effect.map(pool.get, connection))
 
   const sql = yield* SqlClient.make({
-    acquirer: Effect.andThen(gate.take, Effect.map(pool.get, connection)),
+    acquirer,
     borrower: (f) => gate.use(pool.use((session) => f(connection(session)))),
     transactionAcquirer: Effect.andThen(gate.take, Effect.map(pool.reserve, connection)),
     compiler: PgClient.makeCompiler(options.transformQueryNames, options.transformJson),
@@ -75,8 +76,28 @@ export const fairPool = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
         gate.take,
         Effect.flatMap(pool.reserve, (session) => session.listen(channel)),
       ),
-    notify: (channel: string, payload: string) =>
-      Effect.asVoid(sql`SELECT pg_notify(${channel}, ${payload})`),
+    notify: (channel: string, payload: string) => {
+      if (new TextEncoder().encode(channel).byteLength > 63) {
+        const message = "PostgreSQL channel names must not exceed 63 UTF-8 bytes"
+        return Effect.fail(
+          SqlError.SqlError.make({
+            reason: SqlError.UnknownError.make({
+              cause: new Error(message),
+              message,
+              operation: "notify",
+            }),
+          }),
+        )
+      }
+
+      return Effect.asVoid(
+        Effect.scoped(
+          Effect.flatMap(acquirer, (conn) =>
+            conn.executeRaw("SELECT pg_notify($1, $2)", [channel, payload]),
+          ),
+        ),
+      )
+    },
   }) satisfies PgClient.PgClient
 })
 
