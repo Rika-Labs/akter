@@ -1,13 +1,10 @@
 import { stdin } from "node:process"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Clock, Config, Console, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect"
-import { RunnerAddress, RunnerServer } from "effect/cluster"
-import { RpcSerialization, RpcServer } from "effect/rpc"
+import { Clock, Config, Console, Effect, Layer, Redacted, Schedule, Schema } from "effect"
 import { InternalActors } from "../../../../runtime/actors.ts"
 import { Actor, Actors as ActorClient } from "../../../../index.ts"
-import { Actors, Database } from "../../../../runtime/index.ts"
-import { RunnerWiring } from "../../../../runtime/layer.ts"
+import { Actors, Database, Runner, RuntimeControl } from "../../../../runtime/index.ts"
 import { TurnHooks } from "../../../../runtime/turn/hooks.ts"
 
 const Increment = Actor.command("Increment", { payload: Schema.Int })
@@ -28,6 +25,40 @@ const Receiver = Actor.make("DrillReceiver", {
 })
 
 const Sender = Actor.make("DrillSender", { key: Schema.String, api: { Send } })
+
+const Pulse = Actor.command("Pulse")
+const Loop = Actor.command("Loop", { payload: Schema.Int })
+const Pulsed = Actor.event("Pulsed", { by: Schema.Int, source: Schema.String })
+
+const Beacon = Actor.make("DrillBeacon", {
+  key: Actor.singleton,
+  state: count,
+  api: { Loop },
+  internal: { Pulse },
+  events: [Pulsed],
+  schedules: { "@every 1 second": Pulse },
+})
+
+const beacon = Beacon.toLayer(
+  Effect.gen(function* () {
+    const port = yield* Config.Int("DRILL_PORT")
+    const handle = yield* Beacon.get()
+    yield* handle
+      .Loop(port)
+      .pipe(Effect.ignore, Effect.repeat(Schedule.spaced("250 millis")), Effect.forkScoped)
+
+    const record = Effect.fnUntraced(function* (source: string) {
+      const turn = yield* Beacon.Turn
+      yield* turn.state.set({ count: turn.state.count + 1 })
+      yield* turn.emit(Pulsed.make({ by: port, source }))
+    })
+
+    return {
+      Pulse: () => record("cron"),
+      Loop: (from: number) => record(`loop:${from}`),
+    }
+  }),
+)
 
 const bump = Effect.fnUntraced(function* (amount: number) {
   const turn = yield* Counter.Turn
@@ -60,44 +91,36 @@ const runtime = Layer.unwrap(
   Effect.gen(function* () {
     const database = yield* Config.String("DRILL_DATABASE_URL")
     const port = yield* Config.Int("DRILL_PORT")
+    const shards = yield* Config.Int("DRILL_SHARDS").pipe(Config.withDefault(32))
     const blockRelay = yield* Config.Boolean("DRILL_BLOCK_RELAY").pipe(Config.withDefault(false))
-    const address = RunnerAddress.RunnerAddress.make({ host: "127.0.0.1", port })
+    const blockCron = yield* Config.Boolean("DRILL_BLOCK_CRON").pipe(Config.withDefault(false))
+    const background = yield* Config.Boolean("DRILL_BACKGROUND").pipe(Config.withDefault(false))
     let blocked = false
 
     const hooks = Layer.succeed(TurnHooks, {
-      at: (point) =>
-        blockRelay && point === "afterClaim" && !blocked
-          ? Effect.suspend(() => {
-              blocked = true
+      at: (point, request) =>
+        blockCron && point === "beforeOutboxDelete" && request?.command === "Pulse"
+          ? Console.log(`CRON_COMMITTED ${request.commandId}`).pipe(Effect.andThen(Effect.never))
+          : blockRelay && point === "afterClaim" && !blocked
+            ? Effect.suspend(() => {
+                blocked = true
 
-              return Console.log("CLAIMED").pipe(Effect.andThen(Effect.never))
-            })
-          : Effect.void,
+                return Console.log("CLAIMED").pipe(Effect.andThen(Effect.never))
+              })
+            : Effect.void,
     })
 
-    const sharding = RunnerServer.layerWithClients.pipe(
-      Layer.provide(RpcServer.layerProtocolSocketServer),
-      Layer.provide(layerSocketServer),
-      Layer.provide(layerClientProtocol),
-      Layer.provide(RpcSerialization.layerNdjson),
-      Layer.orDie,
-    )
-
-    const wiring = Layer.succeed(RunnerWiring, {
-      config: {
-        runnerAddress: Option.some(address),
-        shardsPerGroup: 32,
-        shardLockExpiration: SHARD_LOCK,
-        shardLockDisableAdvisory: true,
-        refreshAssignmentsInterval: "250 millis",
-        sendRetryInterval: "50 millis",
-        entityTerminationTimeout: "2 seconds",
-      },
-      sharding,
-      storage: (storage) => storage,
+    const wiring = Runner.socket({
+      address: { host: "127.0.0.1", port },
+      listenAddress: { host: "0.0.0.0", port },
+      transport: Layer.merge(layerSocketServer, layerClientProtocol),
+      shardsPerGroup: shards,
+      shardLockExpiration: SHARD_LOCK,
+      refreshAssignmentsInterval: "250 millis",
+      entityTerminationTimeout: "2 seconds",
     })
 
-    return live.pipe(
+    return Layer.merge(live, background ? beacon : Layer.empty).pipe(
       Layer.provideMerge(
         Actors.layer({
           relay: { poll: "200 millis", claimLease: "5 seconds" },
@@ -132,15 +155,19 @@ stdin.once("end", () => {
   for (const release of waiting.values()) release()
 })
 
-const signal = (line: string) =>
+const signal = (line: string, onEnd = true) =>
   Effect.callback<void>((resume) => {
-    if (ended || received.has(line)) resume(Effect.void)
-    else waiting.set(line, () => resume(Effect.void))
+    const release = () => {
+      if ((ended && onEnd) || received.has(line)) resume(Effect.void)
+    }
+    release()
+    waiting.set(line, release)
   })
 
 const program = Effect.gen(function* () {
   const actors = yield* ActorClient
   const internal = yield* InternalActors
+  const control = yield* RuntimeControl
   const operations = yield* Config.Int("DRILL_OPERATIONS")
   const holdAt = yield* Config.Int("DRILL_HOLD_AT").pipe(Config.withDefault(operations))
 
@@ -149,7 +176,21 @@ const program = Effect.gen(function* () {
     Effect.orDie,
   )
 
+  yield* control.readiness.pipe(
+    Effect.repeat({ schedule: Schedule.spaced("50 millis"), until: ({ ready }) => ready }),
+    Effect.timeout("30 seconds"),
+    Effect.orDie,
+  )
   yield* Console.log("READY")
+  yield* signal("DRAIN", false).pipe(
+    Effect.andThen(control.drain({ deadline: "5 seconds" })),
+    Effect.tap((report) => Console.log(`DRAINED ${JSON.stringify(report)}`)),
+    Effect.andThen(control.readiness),
+    Effect.tap((readiness) => Console.log(`READINESS ${JSON.stringify(readiness)}`)),
+    Effect.andThen(signal("EXIT", false)),
+    Effect.andThen(Effect.sync(() => process.kill(process.pid, "SIGTERM"))),
+    Effect.forkScoped,
+  )
   yield* signal("GO")
 
   for (let index = 0; index < operations; index++) {

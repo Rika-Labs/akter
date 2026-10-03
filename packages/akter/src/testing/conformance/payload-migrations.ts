@@ -492,6 +492,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               [24, "adoption"],
               [25, "fleet"],
               [26, "jobs"],
+              [29, "runner_configuration"],
             ])
           }).pipe(Effect.provideContext(client))
         }),

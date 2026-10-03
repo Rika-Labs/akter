@@ -41,6 +41,7 @@ export default defineConfig({
             `${testing}/conformance/crash/**/*.test.ts`,
             `${testing}/conformance/neki/backend.test.ts`,
             "packages/akter/src/runtime/database/migrations.test.ts",
+            "packages/akter/src/runtime/database/shards.test.ts",
             "packages/akter/src/runtime/database/keepalive.test.ts",
             "packages/akter/src/runtime/storage/generation.test.ts",
             "packages/akter/src/runtime/events/append.test.ts",

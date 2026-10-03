@@ -1,5 +1,7 @@
 # Architecture decisions
 
+- [ADR 0067: Due-work scans use the data shard map](0067-due-work-shard-ranges.md) (implementation decision, 2026-10-03) makes relay claims, capped-job discovery, subscription probes, and holder liveness use one data bucket range at a time; isolates optional Neki shard targeting on dedicated sessions; preserves the ordinary database's one-statement, one-flight claim; and records the catalog-backed routing-key uniqueness audit. Neki topology and plan evidence remain unverified.
+
 **Responsibility:** index the architecture decisions and their recorded rationale.  
 **Authority:** historical decision record.  
 **Owner role:** architecture.
@@ -75,3 +77,4 @@ Decisions do not override newer accepted requirements. When a decision is supers
 - [ADR 0063: Greenfield framework simplification](0063-framework-simplification.md) (accepted 2026-09-30, Dallen) authorizes the coordinated unreleased-alpha API/storage vocabulary migration, immutable declaration compilation, canonical jobs, integration-first evidence, and removal of duplicated fixture/protocol/tooling machinery in [plan.md](../../plan.md), without weakening durable guarantees or adding compatibility aliases.
 - [ADR 0064: Web front ends: an Astro marketing site, a FoldKit console, one StyleX design system](0064-web-front-ends.md) (accepted 2026-10-02, Dallen) builds the public website as `apps/site` with Astro and StyleX, rebuilds `apps/console` as a FoldKit client application on Vite following the whorl web app, and makes `@akter/ui` the shared design system: semantic StyleX tokens, shadcn-style FoldKit components, owned SVG charts and diagrams, and framework-free brand geometry used by both apps.
 - [ADR 0065: AWS infrastructure in a stage-isolated Alchemy workspace](0065-aws-alchemy-infrastructure.md) (implementation decision 2026-10-03) adds the private `infra` workspace, retained AWS Organization/account bootstrap, isolated stage-region AWS stacks, and the Neki topology resource, without claiming live-provider or runtime conformance support.
+- [ADR 0068: Public socket runners and acquired-shard readiness](0068-production-multi-runner.md) (implementation decision, 2026-10-03) exposes `Runner.socket` with direct advertisement, platform TCP layers, 256 default shards, table lease locks, persisted layout compatibility, and shard-acquisition readiness. Three-process Bun/Postgres drills cover crash, drain, singleton, and cron recovery on loopback; multi-host and provider gates remain explicit.
