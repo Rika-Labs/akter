@@ -1,0 +1,24 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import { sidebar } from "./docs.styles.ts"
+---
+
+<div {...stylex.attrs(sidebar.search)} data-search>
+  <label {...stylex.attrs(sidebar.field)}>
+    <span hidden>Search the documentation</span>
+    <input
+      type="search"
+      placeholder="Search docs"
+      autocomplete="off"
+      spellcheck="false"
+      data-search-input
+      {...stylex.attrs(sidebar.input)}
+    />
+    <kbd {...stylex.attrs(sidebar.kbd)}>⌘K</kbd>
+  </label>
+  <div {...stylex.attrs(sidebar.results)} data-search-results hidden></div>
+</div>
+<div {...stylex.attrs(sidebar.toggle)} role="group" aria-label="Reading mode">
+  <button type="button" data-mode="human" aria-pressed="true" {...stylex.attrs(sidebar.mode, sidebar.modeOn)}>Human</button>
+  <button type="button" data-mode="agent" aria-pressed="false" {...stylex.attrs(sidebar.mode)}>Agent</button>
+</div>

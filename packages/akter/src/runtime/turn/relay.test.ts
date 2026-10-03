@@ -58,7 +58,7 @@ const due = Effect.gen(function* () {
  * The poll timeout runs on `TestClock` and never fires, so every claim after
  * the first comes from a freed delivery slot while the backlog lasts.
  */
-const runRelay = () =>
+const runRelay = (inspect?: (request: Request) => void) =>
   Effect.gen(function* () {
     yield* seed
     const delivered: Array<Request> = []
@@ -66,6 +66,7 @@ const runRelay = () =>
     const relay = yield* outboxRelay(
       (request) =>
         Effect.sync(() => {
+          inspect?.(request)
           delivered.push(request)
 
           return Outcome.cases.Success.make({ value: "{}" })
@@ -107,14 +108,36 @@ const relayLayer = (options: { readonly failDelete: boolean }) =>
     }),
   )
 
-const measureRelay = (options: { readonly failDelete: boolean }) =>
+const measureRelay = (options: {
+  readonly failDelete: boolean
+  readonly inspect?: (request: Request) => void
+}) =>
   Effect.acquireUseRelease(
     Effect.sync(() => ManagedRuntime.make(relayLayer(options))),
-    (runtime) => Effect.promise(() => runtime.runPromise(Effect.scoped(runRelay()))),
+    (runtime) => Effect.promise(() => runtime.runPromise(Effect.scoped(runRelay(options.inspect)))),
     (runtime) => Effect.promise(() => runtime.dispose()),
   )
 
 describe("outbox relay loop", () => {
+  it("carries the committed row's sender and delivery fields rather than trusting the caller's ref", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const result = yield* measureRelay({
+          failDelete: false,
+          inspect: (request) => {
+            expect(request.caller).toEqual(System.make({ source: "actor" }))
+            expect(request.intent).toEqual({ tenant: "t", actor: "Sender", id: "s" })
+            expect(request.ref).toEqual({ tenant: "t", actor: "Sink", id: "sink" })
+            expect(request.command).toBe("Deliver")
+            expect(request.commandId).toMatch(/^intent-\d+$/)
+            expect(request.payload).toBe("{}")
+          },
+        })
+        expect(result.delivered).toBe(ROWS)
+        expect(result.pending).toBe(0)
+      }),
+    ))
+
   it("claims again as each delivery slot frees while more rows are due", () =>
     Effect.runPromise(
       Effect.gen(function* () {

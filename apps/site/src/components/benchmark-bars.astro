@@ -1,0 +1,118 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import type { BenchmarkCase } from "../benchmarks/report.ts"
+import { formatMeasurement, niceAxis, percentOf } from "../benchmarks/scale.ts"
+import { text } from "../styles/text.styles.ts"
+import { bars } from "./benchmark-bars.styles.ts"
+
+interface Props {
+  data: BenchmarkCase
+  heading?: boolean
+}
+
+const { data, heading = true } = Astro.props
+const axis = niceAxis(Math.max(...data.rows.map((row) => row.reading?.median ?? 0)))
+const footnotes = data.rows
+  .filter((row) => row.errors > 0)
+  .map(
+    (row) =>
+      `* ${row.system}: ${row.errors} measured ${row.errors === 1 ? "error" : "errors"}; the figure counts successful requests only.`,
+  )
+const percent = (value: number): string => `${percentOf(value, axis)}%`
+const describe = (system: string, median: number, low: number, high: number): string =>
+  `${system}: median ${formatMeasurement(median, data.unit)} ${data.unit} across three rounds, range ${formatMeasurement(low, data.unit)} to ${formatMeasurement(high, data.unit)}`
+---
+
+<div {...stylex.attrs(bars.root)}>
+  {
+    heading && (
+      <>
+        <h3 {...stylex.attrs(text.display, bars.title)}>{data.title}</h3>
+        <p {...stylex.attrs(bars.lead)}>{data.lead}</p>
+      </>
+    )
+  }
+  <div {...stylex.attrs(bars.chart)}>
+    {
+      data.rows.map((row, index) => {
+        const us = row.system === "Akter"
+        const reading = row.reading
+        return (
+          <div {...stylex.attrs(bars.row)}>
+            <span {...stylex.attrs(bars.name, us && bars.us, reading === null && bars.uncollected)}>{row.system}</span>
+            <svg {...stylex.attrs(bars.plot)} aria-hidden="true">
+              {axis.ticks.map((tick) => (
+                <line
+                  x1={percent(tick)}
+                  x2={percent(tick)}
+                  y1="0"
+                  y2="100%"
+                  shape-rendering="crispEdges"
+                  {...stylex.attrs(tick === 0 ? bars.gridBase : bars.grid)}
+                />
+              ))}
+              {reading === null ? (
+                <line x1="0" x2="100%" y1="50%" y2="50%" {...stylex.attrs(bars.missing)} />
+              ) : (
+                <>
+                  <g transform="translate(0 -4)">
+                    <rect
+                      x="0"
+                      y="50%"
+                      width={`${Math.max(percentOf(reading.median, axis), 0.7)}%`}
+                      height="8"
+                      rx="4"
+                      style={`animation-delay:${index * 60}ms`}
+                      {...stylex.attrs(bars.bar, us ? bars.barUs : bars.barOther)}
+                    >
+                      <title>{describe(row.system, reading.median, reading.low, reading.high)}</title>
+                    </rect>
+                  </g>
+                  {(reading.high - reading.low) / axis.max >= 0.03 && (
+                    <g transform="translate(0 9)">
+                      <line x1={percent(reading.low)} x2={percent(reading.high)} y1="50%" y2="50%" {...stylex.attrs(bars.range)} />
+                      <rect x={percent(reading.low)} y="50%" width="1" height="6" transform="translate(0 -3)" {...stylex.attrs(bars.rangeFill)} />
+                      <rect x={percent(reading.high)} y="50%" width="1" height="6" transform="translate(0 -3)" {...stylex.attrs(bars.rangeFill)} />
+                    </g>
+                  )}
+                </>
+              )}
+            </svg>
+            <span {...stylex.attrs(bars.value, us && bars.valueUs, reading === null && bars.uncollected)}>
+              {reading === null
+                ? "not collected"
+                : `${formatMeasurement(reading.median, data.unit)} ${data.unit}${row.errors > 0 ? " *" : ""}`}
+            </span>
+          </div>
+        )
+      })
+    }
+    <div {...stylex.attrs(bars.ticks)}>
+      <svg {...stylex.attrs(bars.tickPlot)} aria-hidden="true">
+        {
+          axis.ticks.map((tick, index) => (
+            <text
+              x={percent(tick)}
+              y="14"
+              text-anchor={index === 0 ? "start" : index === axis.ticks.length - 1 ? "end" : "middle"}
+              {...stylex.attrs(bars.tickLabel)}
+            >
+              {tick.toLocaleString("en-US")}
+            </text>
+          ))
+        }
+      </svg>
+    </div>
+  </div>
+  <div {...stylex.attrs(bars.baseline)}>
+    <span>{data.baselines.length > 0 ? "Plain-store baselines" : "Note"}</span>
+    <span {...stylex.attrs(bars.baselineValue)}>
+      {
+        data.baselines.length > 0
+          ? `${data.baselines.map((base) => `${base.name} ${formatMeasurement(base.value, data.unit)}`).join(" · ")} ${data.unit}`
+          : data.note
+      }
+    </span>
+  </div>
+  {footnotes.map((note) => <p {...stylex.attrs(bars.footnote)}>{note}</p>)}
+</div>

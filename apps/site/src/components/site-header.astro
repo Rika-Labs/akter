@@ -1,0 +1,73 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import { consoleUrl, githubUrl, pages } from "../site.ts"
+import Container from "./container.astro"
+import { header } from "./site-header.styles.ts"
+import Wordmark from "./wordmark.astro"
+
+interface Props {
+  current?: string
+  brand?: boolean
+  bordered?: boolean
+  width?: "site" | "landing"
+}
+
+const { current, brand = true, bordered = true, width = "site" } = Astro.props
+const links = [...pages, { label: "Sign in", href: `${consoleUrl}/sign-in` }]
+---
+
+<header {...stylex.attrs(header.root, bordered && header.bordered)}>
+  <Container width={width}>
+    <div {...stylex.attrs(header.bar)}>
+      {
+        brand ? (
+          <a href="/" aria-label="Akter home" {...stylex.attrs(header.home)}>
+            <Wordmark />
+          </a>
+        ) : (
+          <span {...stylex.attrs(header.spacer)} />
+        )
+      }
+      <nav aria-label="Primary" {...stylex.attrs(header.nav)}>
+        {
+          links.map((link) => (
+            <a
+              href={link.href}
+              aria-current={link.href === current ? "page" : undefined}
+              {...stylex.attrs(header.link, link.href === current && header.current)}
+            >
+              {link.label}
+            </a>
+          ))
+        }
+        <a href={githubUrl} rel="noopener noreferrer" {...stylex.attrs(header.github)}>
+          GitHub <span aria-hidden="true">↗</span>
+        </a>
+      </nav>
+      <details {...stylex.attrs(header.menu)}>
+        <summary {...stylex.attrs(header.menuButton)}>
+          Menu
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+            <path d="M1.5 3.5h9M1.5 8.5h9"></path>
+          </svg>
+        </summary>
+        <div {...stylex.attrs(header.menuPanel)}>
+          {
+            links.map((link) => (
+              <a
+                href={link.href}
+                aria-current={link.href === current ? "page" : undefined}
+                {...stylex.attrs(header.menuLink, link.href === current && header.menuCurrent)}
+              >
+                {link.label}
+              </a>
+            ))
+          }
+          <a href={githubUrl} rel="noopener noreferrer" {...stylex.attrs(header.menuLink)}>
+            GitHub <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+      </details>
+    </div>
+  </Container>
+</header>

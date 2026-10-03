@@ -69,6 +69,13 @@ export const Request = Schema.Struct({
    * waits for the turn cannot run the command again.
    */
   external: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The sender of the committed outbox row the relay claimed. The rest of
+   * that row's delivery is this request's target, caller, command id,
+   * command, and payload. Only the relay supplies this provenance, and
+   * external admission rejects it rather than trusting a presented proof.
+   */
+  intent: Schema.optionalKey(ActorRef),
   delivery: Schema.optionalKey(SubscriptionEnvelope),
   /**
    * When the admitting runner sent the command to its owner, by that

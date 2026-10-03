@@ -1,0 +1,50 @@
+import { borders, colors, radius, space, typography } from "@akter/ui/tokens.stylex"
+import * as stylex from "@stylexjs/stylex"
+
+/** Settings-page details: theme previews, inline forms and quiet value text. */
+export const settingsStyles = stylex.create({
+  value: { color: colors.foreground, fontVariantNumeric: "tabular-nums" },
+  muted: { color: colors.mutedForeground },
+  mono: { fontFamily: typography.mono, fontSize: typography.small },
+  inline: { display: "flex", gap: space.sm, alignItems: "center", flexWrap: "wrap" },
+  grow: { flex: "1", minWidth: "12rem" },
+  stack: { display: "grid", gap: space.lg },
+  padded: { padding: space.lg },
+  preview: {
+    display: "grid",
+    gridTemplateColumns: "28% 1fr",
+    gap: space.s,
+    height: "5.5rem",
+    padding: space.s,
+    backgroundColor: colors.background,
+  },
+  previewLight: { colorScheme: "light" },
+  previewDark: { colorScheme: "dark" },
+  previewSplit: { display: "grid", gridTemplateColumns: "1fr 1fr" },
+  previewRail: {
+    display: "grid",
+    alignContent: "start",
+    gap: "5px",
+    padding: "4px",
+    borderRadius: "3px",
+    backgroundColor: colors.sidebar,
+  },
+  previewLine: { height: "4px", borderRadius: radius.full, backgroundColor: colors.border },
+  previewStrong: { backgroundColor: colors.foreground, width: "60%" },
+  previewCard: {
+    display: "grid",
+    alignContent: "start",
+    gap: "5px",
+    padding: "6px",
+    borderRadius: "4px",
+    borderWidth: borders.hairline,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  danger: { color: colors.destructive },
+  plan: { display: "flex", alignItems: "baseline", gap: space.sm },
+  planName: { fontSize: "0.9375rem", fontWeight: typography.weightStrong },
+  integration: { display: "inline-flex" },
+  dns: { display: "grid", gap: space.sm },
+})

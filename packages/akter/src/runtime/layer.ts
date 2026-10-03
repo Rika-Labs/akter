@@ -689,7 +689,8 @@ export const layer = (options: Options = {}) => {
           return yield* Effect.gen(function* () {
             if (
               external &&
-              (request.delivery !== undefined ||
+              (request.intent !== undefined ||
+                request.delivery !== undefined ||
                 (Schema.is(System)(request.caller) &&
                   (request.caller.mint !== undefined || request.caller.source === "subscription")))
             )
