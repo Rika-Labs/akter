@@ -45,7 +45,8 @@ import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
-import { ReadReplica, replicaLayer } from "./database/replica.ts"
+import { fairLayer } from "./database/checkout.ts"
+import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { withKeepalives } from "./database/keepalive.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
@@ -1376,12 +1377,15 @@ export const layer = (options: Options = {}) => {
 /** Database layers for `Actors.layer`: `postgres` for real deployments, `pglite` for embedded and test use. */
 export const Database = {
   /**
-   * A runner holds two pools. Turns lease sessions from the turn pool,
+   * A runner holds three pools. Turns lease sessions from the turn pool,
    * `maxConnections` (default 50): a command holds one session for its whole
    * turn, so a pool smaller than the commands in flight queues callers behind
-   * it. Queries, the relay, migrations, and cluster storage use the off-turn
-   * pool, `offTurnConnections` (default 10). Both open connections only as
-   * load needs them. Keep the sum of both across runners below the server's
+   * it. Queries read from the query pool, `queryConnections` (default 10),
+   * except those of types with owned tables or blobs. Command admission,
+   * receipt replays, the relay, migrations, and cluster storage use the
+   * off-turn pool, `offTurnConnections` (default 10). All three open
+   * connections only as load needs them, and each hands its connections out
+   * first come, first served. Keep the sum across runners below the server's
    * `max_connections`.
    *
    * `replica` is this runner's nearest streaming replica of the same primary.
@@ -1398,6 +1402,7 @@ export const Database = {
   postgres: (
     options: Omit<PgClient.PgPoolConfig, "types"> & {
       readonly offTurnConnections?: number
+      readonly queryConnections?: number
       readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
     },
   ) => {
@@ -1412,12 +1417,13 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, replica, ...configured } = options
+    const { offTurnConnections, queryConnections, replica, ...configured } = options
     const pool = withKeepalives(configured)
 
     return Layer.mergeAll(
-      PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+      fairLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+      queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
     )
   },

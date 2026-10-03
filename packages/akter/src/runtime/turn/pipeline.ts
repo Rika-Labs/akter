@@ -2,6 +2,7 @@ import { PgPool, type PgConnection } from "@effect/sql-pg"
 import { Context, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import type { Scope } from "effect"
 import type { SqlConnection, SqlError } from "effect/sql"
+import { fairGate } from "../database/gate.ts"
 import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
 
 /**
@@ -33,7 +34,8 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
 /**
  * The turn pool: `maxConnections` sessions, each handed to one turn at a
  * time. A concurrency of one keeps the lease exclusive while the session
- * stays unpinned.
+ * stays unpinned. Turns wait for a session first come, first served, so a
+ * turn never waits behind turns that asked after it.
  *
  * On Neki, each session first runs the Neki session settings.
  */
@@ -44,14 +46,16 @@ export const turnConnections = (options: PgPool.Config) =>
       const settings = yield* TurnPoolSettings
       const neki = yield* NekiTurnSessions
 
+      const config = { ...options, ...settings }
+
       const pool = yield* PgPool.make({
-        ...options,
-        ...settings,
+        ...config,
         multiplex: true,
         multiplexConcurrency: 1,
       })
 
-      const acquire = neki ? nekiLease(pool) : pool.get
+      const gate = fairGate(config.maxConnections ?? 10)
+      const acquire = Effect.andThen(gate.take, neki ? nekiLease(pool) : pool.get)
       let leased = 0
       let waiting = 0
 
