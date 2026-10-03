@@ -132,7 +132,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
         actorType: Schema.optional(Schema.String),
         outcome: Schema.optional(CommandOutcome),
       },
-      success: HttpApiSchema.StreamSse({ data: CommandLogEntry }),
+      success: HttpApiSchema.StreamSse({ data: Schema.toCodecJson(CommandLogEntry) }),
       error: ReadErrors,
     },
   ),

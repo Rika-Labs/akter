@@ -1,6 +1,7 @@
-import { Effect, Exit, Schema } from "effect"
+import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
+import { RuntimeGroup } from "./groups/runtime.ts"
 import { ActorInspector, CommandLogEntry, OwnedTableRows } from "./runtime.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
@@ -92,5 +93,34 @@ describe("runtime models", () => {
     expect(decode(CommandLogEntry, entry).outcome).toBe("replayed")
     expect(rejects(CommandLogEntry, { ...entry, outcome: "retried" })).toBe(true)
     expect(rejects(CommandLogEntry, { ...entry, durationMs: -1 })).toBe(true)
+  })
+
+  it("round-trips a live-tail event through the SSE wire form with an ISO timestamp", () => {
+    const [stream] = [...RuntimeGroup.endpoints.streamCommands.success]
+    if (!Predicate.hasProperty(stream, "events") || !Schema.isSchema(stream.events))
+      throw new Error("The commands stream declares no event schema")
+    const payload = {
+      at: "2026-10-03T10:00:01.000Z",
+      durationMs: 3.2,
+      address: "Counter/room-1",
+      command: "Increment",
+      payloadPreview: "{}",
+      outcome: "ok",
+      errorTag: null,
+    }
+
+    const events = stream.events as Schema.Codec<unknown, unknown>
+
+    const decoded = Effect.runSync(
+      Schema.decodeEffect(events)({ event: "message", data: JSON.stringify(payload) }),
+    )
+    const encoded = Effect.runSync(Schema.encodeEffect(events)(decoded))
+
+    if (!Predicate.hasProperty(decoded, "data") || !Predicate.hasProperty(encoded, "data"))
+      throw new Error("The event has no data")
+    expect(decoded.data).toEqual(
+      Effect.runSync(Schema.decodeEffect(Schema.toCodecJson(CommandLogEntry))(payload)),
+    )
+    expect(JSON.parse(String(encoded.data))).toEqual(payload)
   })
 })
