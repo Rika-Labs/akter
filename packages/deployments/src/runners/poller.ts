@@ -19,7 +19,7 @@ export const RunnerPoller = (idleSeconds = 300) =>
           Effect.gen(function* () {
             const runner = yield* runnerActor(deploymentId, region)
             yield* runner.Reconcile()
-            if (wake) yield* runner.Wake()
+            if (wake) yield* runner.WakeIfServing()
             else yield* runner.Idle({ idleSeconds })
           }),
         )

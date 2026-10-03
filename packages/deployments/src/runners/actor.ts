@@ -1,5 +1,5 @@
 import { Actor } from "@rikalabs/akter"
-import { Effect, Layer, Option, Schedule, Schema } from "effect"
+import { Cause, Effect, Layer, Option, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { platformError, RunnerNotFound, RunnerPlatform } from "./contract.ts"
 
@@ -27,6 +27,7 @@ const Stopped = Actor.command("Stopped")
 const StartFailed = Actor.command("StartFailed", { payload: Actor.DeadLetter(Start) })
 const StopFailed = Actor.command("StopFailed", { payload: Actor.DeadLetter(Stop) })
 const Wake = Actor.command("Wake")
+const WakeIfServing = Actor.command("WakeIfServing")
 const Idle = Actor.command("Idle", { payload: { idleSeconds: Schema.Int } })
 const Drain = Actor.command("Drain")
 const Capacity = Schema.Struct({
@@ -63,7 +64,7 @@ export const Runners = Actor.make("CloudRunners", {
     wanted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
     startKey: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   }),
-  api: { Wake, Idle, Drain, Lookup, Reconcile },
+  api: { Wake, WakeIfServing, Idle, Drain, Lookup, Reconcile },
   internal: { Started, Stopped, StartFailed, StopFailed, Checked, CheckFailed },
   jobs: {
     StartRunner: {
@@ -132,13 +133,28 @@ export const RunnerCommands = Runners.toLayer(
       yield* turn.state.set({ status: "stopping" })
       yield* turn.enqueue(Stop.make({ id: turn.state.taskId }))
     })
+    const wake = Effect.fnUntraced(function* () {
+      const turn = yield* Runners.Turn
+      yield* turn.state.set({ wanted: true })
+      if (turn.state.status === "stop-failed" && turn.state.taskId !== null) {
+        yield* turn.state.set({ status: "stopping" })
+        yield* turn.enqueue(Stop.make({ id: turn.state.taskId }))
+        return
+      }
+      if (!["stopped", "failed"].includes(turn.state.status)) return
+      yield* beginStart()
+    })
 
     return {
-      Wake: Effect.fnUntraced(function* () {
+      Wake: wake,
+      WakeIfServing: Effect.fnUntraced(function* () {
         const turn = yield* Runners.Turn
-        yield* turn.state.set({ wanted: true })
-        if (!["stopped", "failed"].includes(turn.state.status)) return
-        yield* beginStart()
+        const [deploymentId] = turn.id.split("/")
+        const [row] = yield* sql<{
+          serving: boolean
+        }>`SELECT serving FROM deployment WHERE id = ${deploymentId} FOR SHARE`.pipe(Effect.orDie)
+        if (row?.serving !== true) return
+        yield* wake()
       }),
       Started: Effect.fnUntraced(function* (result) {
         const turn = yield* Runners.Turn
@@ -231,7 +247,11 @@ export const RunnerCommands = Runners.toLayer(
   }),
 )
 
-/** Provider attempts use the durable job id as their idempotency key across process restarts. */
+/**
+ * Provider attempts use the durable job id as their idempotency key across
+ * process restarts. A typed failure stops the task it started; an interrupted
+ * attempt leaves it for the retry, which finds the same task by that key.
+ */
 export const RunnerJobs = Runners.toJobLayer(
   Effect.gen(function* () {
     const platform = yield* RunnerPlatform
@@ -270,7 +290,11 @@ export const RunnerJobs = Runners.toJobLayer(
                     ? Effect.succeed(value.value)
                     : platformError({ operation: "start", code: "unavailable" }),
                 ),
-                Effect.onError(() => platform.stop(started.id).pipe(Effect.orDie)),
+                Effect.onError((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.void
+                    : platform.stop(started.id).pipe(Effect.orDie),
+                ),
               )
             : started
         if (result.state === "stopped") {

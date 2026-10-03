@@ -14,6 +14,7 @@ import {
   Redacted,
   Schema,
 } from "effect"
+import { RuntimeControl } from "@rikalabs/akter/runtime"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, afterEach, describe, expect, it } from "vitest"
@@ -22,12 +23,18 @@ import { platformError, RunnerPlatform } from "./contract.ts"
 
 const starts = new Map<string, { id: string; url: string; basePath: string }>()
 const stopped: string[] = []
+const calls: string[] = []
 let rejectStart = false
 let rejectStop = false
 let loseAcceptedReply = false
 let heldStart:
   | { deploymentId: string; reached: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
   | undefined
+let addressLater: "fail" | { reached: Deferred.Deferred<void> } | undefined
+const answer = (result: { id: string; url: string; basePath: string }) =>
+  addressLater === undefined
+    ? { ...result, state: "running" as const }
+    : { ...result, url: null, state: "starting" as const }
 const fake = Layer.succeed(RunnerPlatform, {
   start: (spec) =>
     Effect.suspend(() => {
@@ -35,13 +42,14 @@ const fake = Layer.succeed(RunnerPlatform, {
       const existing = starts.get(spec.idempotencyKey)
       if (existing !== undefined && loseAcceptedReply)
         return platformError({ operation: "start", code: "unavailable" })
-      if (existing !== undefined) return Effect.succeed({ ...existing, state: "running" as const })
+      if (existing !== undefined) return Effect.succeed(answer(existing))
       const result = {
         id: `task-${starts.size + 1}`,
         url: `http://127.0.0.1:${20000 + starts.size}`,
         basePath: "",
       }
       starts.set(spec.idempotencyKey, result)
+      calls.push(`start:${result.id}`)
       if (loseAcceptedReply) return platformError({ operation: "start", code: "unavailable" })
       const wait =
         heldStart?.deploymentId === spec.deploymentId
@@ -49,21 +57,27 @@ const fake = Layer.succeed(RunnerPlatform, {
               Effect.andThen(Deferred.await(heldStart.release)),
             )
           : Effect.void
-      return wait.pipe(Effect.as({ ...result, state: "running" as const }))
+      return wait.pipe(Effect.as(answer(result)))
     }),
   stop: (id) =>
     Effect.suspend(() => {
       if (rejectStop) return platformError({ operation: "stop", code: "refused" })
       stopped.push(id)
+      calls.push(`stop:${id}`)
       return Effect.void
     }),
-  describe: (id) =>
-    Effect.succeed({
+  describe: (id) => {
+    if (addressLater === "fail")
+      return platformError({ operation: "describe", code: "unavailable" })
+    if (addressLater !== undefined)
+      return Deferred.succeed(addressLater.reached, undefined).pipe(Effect.andThen(Effect.never))
+    return Effect.succeed({
       id,
       state: stopped.includes(id) ? ("stopped" as const) : ("running" as const),
       url: null,
       basePath: "",
-    }),
+    })
+  },
 })
 
 const live = Layer.unwrap(
@@ -96,6 +110,7 @@ afterEach(() => {
   rejectStop = false
   loseAcceptedReply = false
   heldStart = undefined
+  addressLater = undefined
 })
 
 const exhaustRetries = Effect.gen(function* () {
@@ -203,7 +218,9 @@ describe("durable runner provisioning", () => {
         yield* sql`UPDATE deployment SET last_activity_at = now() - interval '1 hour' WHERE id IN ('idle-free', 'idle-paid')`.pipe(
           Effect.orDie,
         )
-        yield* sql`UPDATE deployment SET scale_to_zero = true WHERE id = 'idle-paid'`.pipe(Effect.orDie)
+        yield* sql`UPDATE deployment SET scale_to_zero = true WHERE id = 'idle-paid'`.pipe(
+          Effect.orDie,
+        )
         yield* free.Idle({ idleSeconds: 60 })
         yield* paid.Idle({ idleSeconds: 60 })
         expect(
@@ -262,13 +279,64 @@ describe("durable runner provisioning", () => {
         yield* exhaustRetries
         rejectStop = false
         expect(yield* status("provider-failures")).toEqual({ status: "stop-failed" })
-        const count = starts.size
+        const stuck = (yield* runner.Lookup()).taskId!
+        const mark = calls.length
         yield* runner.Wake()
         yield* test.advance(0)
-        expect(starts.size).toBe(count)
+        const replacement = yield* runner.Lookup()
+        expect(replacement.status).toBe("running")
+        expect(replacement.taskId).not.toBe(stuck)
+        expect(calls.slice(mark)).toEqual([`stop:${stuck}`, `start:${replacement.taskId}`])
+        expect(
+          yield* sql`SELECT provider_id AS "providerId" FROM deployment_runner WHERE deployment_id = 'provider-failures'`,
+        ).toEqual([{ providerId: replacement.taskId }])
         yield* runner.Drain()
         yield* test.advance(0)
         expect(yield* status("provider-failures")).toEqual({ status: "stopped" })
+      }),
+    ))
+
+  it("ignores a poller wake that lands after the deployment stopped serving, including mid-drain", () =>
+    run(
+      Effect.gen(function* () {
+        const runner = yield* register("stale-wake", "pro")
+        const test = yield* ActorTest
+        const sql = yield* SqlClient.SqlClient
+        const before = starts.size
+        yield* runner.WakeIfServing()
+        yield* test.advance(0)
+        expect(starts.size).toBe(before + 1)
+        const warm = yield* runner.Lookup()
+        expect(warm.status).toBe("running")
+        yield* sql`UPDATE deployment SET serving = false WHERE id = 'stale-wake'`.pipe(Effect.orDie)
+        yield* runner.Drain()
+        yield* runner.WakeIfServing()
+        yield* test.advance(0)
+        yield* runner.WakeIfServing()
+        yield* test.advance(0)
+        expect(yield* status("stale-wake")).toEqual({ status: "stopped" })
+        expect(starts.size).toBe(before + 1)
+        expect(stopped).toContain(warm.taskId)
+        expect(
+          yield* sql`SELECT url FROM deployment_runner WHERE deployment_id = 'stale-wake'`,
+        ).toHaveLength(0)
+      }),
+    ))
+
+  it("still stops the task when address resolution fails with a typed provider error", () =>
+    run(
+      Effect.gen(function* () {
+        const runner = yield* register("typed-describe-failure")
+        addressLater = "fail"
+        yield* runner.Wake()
+        yield* exhaustRetries
+        const task = [...starts.values()].at(-1)!.id
+        expect(yield* status("typed-describe-failure")).toEqual({ status: "failed" })
+        expect(stopped).toContain(task)
+        const sql = yield* SqlClient.SqlClient
+        expect(
+          yield* sql`SELECT url FROM deployment_runner WHERE deployment_id = 'typed-describe-failure'`,
+        ).toHaveLength(0)
       }),
     ))
 
@@ -319,4 +387,26 @@ describe("durable runner provisioning", () => {
         expect(stopped).toContain([...starts.values()].at(-1)!.id)
       }),
     ))
+
+  it("leaves a task to its durable retry when the process interrupts startup", async () => {
+    const isolated = ManagedRuntime.make(live)
+    try {
+      await isolated.runPromise(
+        Effect.gen(function* () {
+          const runner = yield* register("interrupted-start")
+          const reached = yield* Deferred.make<void>()
+          addressLater = { reached }
+          yield* runner.Wake()
+          yield* (yield* ActorTest).advance(0).pipe(Effect.forkChild)
+          yield* Deferred.await(reached)
+          const task = [...starts.values()].at(-1)!.id
+          const report = yield* (yield* RuntimeControl).drain({ deadline: "200 millis" })
+          expect(report).toMatchObject({ outcome: "deadline-expired", interruptedJobs: 1 })
+          expect(stopped).not.toContain(task)
+        }),
+      )
+    } finally {
+      await isolated.dispose()
+    }
+  }, 60000)
 })
