@@ -8,7 +8,17 @@ import {
   NotImplemented,
   Unavailable,
 } from "@akter/cloud-api"
-import { Context, type Duration, Effect, Layer, Match, Option, Predicate, Redacted, Schema } from "effect"
+import {
+  Context,
+  type Duration,
+  Effect,
+  Layer,
+  Match,
+  Option,
+  Predicate,
+  Redacted,
+  Schema,
+} from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Access } from "./access.ts"
@@ -36,6 +46,7 @@ export class RuntimeEdge extends Context.Service<
   RuntimeEdge,
   {
     readonly resolve: (input: {
+      readonly organizationId: string
       readonly projectId: string
       readonly environment: string
     }) => Effect.Effect<RuntimeTarget, NotFound>
@@ -105,10 +116,19 @@ export const makeRuntime = Effect.gen(function* () {
       )
       .pipe(
         Effect.timeout(target.requestTimeout ?? "35 seconds"),
-        Effect.catch(() => Unavailable.make({ message: "The deployment could not be reached", retryAfterSeconds: 1 })),
+        Effect.catch(() =>
+          Unavailable.make({
+            message: "The deployment could not be reached",
+            retryAfterSeconds: 1,
+          }),
+        ),
       )
 
-    if ([502, 503, 504].includes(response.status)) return yield* Unavailable.make({ message: "The deployment is temporarily unavailable", retryAfterSeconds: 1 })
+    if ([502, 503, 504].includes(response.status))
+      return yield* Unavailable.make({
+        message: "The deployment is temporarily unavailable",
+        retryAfterSeconds: 1,
+      })
 
     const text = yield* response.text.pipe(Effect.catch(() => unavailable("body")))
 
@@ -140,6 +160,7 @@ export const makeRuntime = Effect.gen(function* () {
   })
 
   const sendCommand = Effect.fn("Runtime.sendCommand")(function* (input: {
+    readonly organizationId: string
     readonly projectId: string
     readonly environment: string
     readonly address: string
@@ -227,6 +248,7 @@ export const makeRuntime = Effect.gen(function* () {
   })
 
   const actorJobs = Effect.fn("Runtime.actorJobs")(function* (input: {
+    readonly organizationId: string
     readonly projectId: string
     readonly environment: string
     readonly address: string
@@ -294,8 +316,9 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("listActorEvents", () => notImplemented("runtime.listActorEvents"))
       .handle("listActorJobs", ({ params }) =>
         access.project(params.projectId).pipe(
-          Effect.andThen(
+          Effect.flatMap((organizationId) =>
             runtime.actorJobs({
+              organizationId,
               projectId: params.projectId,
               environment: params.environment,
               address: `${params.actorType}/${params.key}`,
@@ -316,11 +339,12 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("getConnections", () => notImplemented("runtime.getConnections"))
       .handle("sendCommand", ({ params, payload }) =>
         access.project(params.projectId, "write").pipe(
-          Effect.andThen(
+          Effect.flatMap((organizationId) =>
             runtime.sendCommand({
+              ...payload,
+              organizationId,
               projectId: params.projectId,
               environment: params.environment,
-              ...payload,
             }),
           ),
         ),

@@ -32,12 +32,12 @@ export const runtimeEdge = (options: ApiOptions) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       return {
-        resolve: ({ projectId, environment }) =>
+        resolve: ({ organizationId, projectId, environment }) =>
           Effect.gen(function* () {
             const [row] = yield* sql<{
               id: string
               host: string
-            }>`SELECT e.current_deployment_id AS id, h.host FROM cloud_environment e JOIN deployment_host h ON h.deployment_id = e.current_deployment_id WHERE e.project_id = ${projectId} AND e.name = ${environment} AND h.host = ${environmentHost(options, projectId, environment)}`.pipe(
+            }>`SELECT e.current_deployment_id AS id, h.host FROM cloud_environment e JOIN deployment_host h ON h.deployment_id = e.current_deployment_id WHERE e.organization_id = ${organizationId} AND e.project_id = ${projectId} AND e.name = ${environment} AND h.host = ${environmentHost(options, projectId, environment)}`.pipe(
               Effect.orDie,
             )
             if (row === undefined)

@@ -1,3 +1,4 @@
+import { NotFound } from "@akter/cloud-api"
 import { ActivationRefused, RolloutRouting, type ReleaseRecord } from "@akter/deployments/lifecycle"
 import { migrate } from "@akter/postgres/migrate"
 import { BunCrypto } from "@effect/platform-bun"
@@ -6,8 +7,10 @@ import { Config, Context, Crypto, Effect, Layer, ManagedRuntime, Redacted } from
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
+import { runtimeEdge } from "./cloud.ts"
 import { Repository, RepositoryLive } from "./repository.ts"
 import { rolloutRouting } from "./rollout.ts"
+import { RuntimeEdge } from "./runtime.ts"
 import type { ApiOptions } from "./config.ts"
 
 const options = {
@@ -201,5 +204,46 @@ describe("rollout routing authority", () => {
         ).toEqual([])
         yield* sql.unsafe("DROP TRIGGER deny_live_audit ON cloud_audit").pipe(Effect.orDie)
       }),
+    ))
+
+  it("resolves a live environment's edge target only for the organization that owns the project", () =>
+    run(
+      Effect.gen(function* () {
+        const repository = yield* Repository
+        const sql = yield* SqlClient.SqlClient
+        const routing = yield* RolloutRouting
+        const project = yield* repository.createProject({
+          organizationId: "org-routing",
+          actor: { kind: "user", id: "user-routing" },
+          name: "Scoped",
+          slug: "scoped",
+          homeRegion: "us-east-1",
+        })
+        const scoped = release(project.id, "release-scoped")
+        yield* sql.withTransaction(routing.register(scoped)).pipe(Effect.orDie)
+        yield* sql
+          .withTransaction(
+            routing.activate({
+              ...scoped,
+              previousDeploymentId: null,
+              initiator: "user:user-routing",
+            }),
+          )
+          .pipe(Effect.orDie)
+        const context = yield* Effect.context<SqlClient.SqlClient>()
+        const edge = Context.get(
+          yield* Layer.build(
+            runtimeEdge(options).pipe(Layer.provide(Layer.succeedContext(context))),
+          ),
+          RuntimeEdge,
+        )
+        const target = { projectId: project.id, environment: "production" }
+        expect((yield* edge.resolve({ ...target, organizationId: "org-routing" })).host).toBe(
+          `${project.id.replaceAll("_", "-")}-production.localhost`,
+        )
+        expect(
+          yield* edge.resolve({ ...target, organizationId: "org-other" }).pipe(Effect.flip),
+        ).toEqual(NotFound.make({ resource: "live deployment", id: `${project.id}/production` }))
+      }).pipe(Effect.scoped),
     ))
 })

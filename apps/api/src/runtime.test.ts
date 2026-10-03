@@ -1,4 +1,10 @@
-import { CommandFailed, Conflict, Forbidden, NotFound, Unavailable as CloudUnavailable } from "@akter/cloud-api"
+import {
+  CommandFailed,
+  Conflict,
+  Forbidden,
+  NotFound,
+  Unavailable as CloudUnavailable,
+} from "@akter/cloud-api"
 import { expect, it } from "@effect/vitest"
 import { Cause, Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
@@ -107,6 +113,7 @@ const live = Layer.effect(
 ).pipe(Layer.provideMerge(standIn), Layer.provideMerge(FetchHttpClient.layer))
 
 const command = {
+  organizationId: "org1",
   projectId: "p1",
   environment: "production",
   address: "Order/o/1",
@@ -247,9 +254,19 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         const runtime = yield* makeRuntime
         const notFound = json(NotFoundBody.make({}), 404)
 
-        for (const answer of [refused(Unavailable.make({}), 503), new Response("<html>bad gateway</html>", { status: 502 })]) {
+        for (const answer of [
+          refused(Unavailable.make({}), 503),
+          new Response("<html>bad gateway</html>", { status: 502 }),
+        ]) {
           yield* edge.answer(inspector(notFound, answer))
-          expect(yield* runtime.sendCommand({ ...command, commandId: "v1.c" }).pipe(Effect.flip)).toEqual(CloudUnavailable.make({ message: "The deployment is temporarily unavailable", retryAfterSeconds: 1 }))
+          expect(
+            yield* runtime.sendCommand({ ...command, commandId: "v1.c" }).pipe(Effect.flip),
+          ).toEqual(
+            CloudUnavailable.make({
+              message: "The deployment is temporarily unavailable",
+              retryAfterSeconds: 1,
+            }),
+          )
         }
         for (const answer of [
           refused(Unauthorized.make({ code: "invalid_credentials" }), 401),
@@ -270,7 +287,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
       Effect.gen(function* () {
         const edge = yield* StandInEdge
         const runtime = yield* makeRuntime
-        const target = { projectId: "p1", environment: "production" }
+        const target = { organizationId: "org1", projectId: "p1", environment: "production" }
 
         yield* edge.answer(() =>
           json({
