@@ -1,5 +1,7 @@
 # Backend support matrix
 
+**Cross-database coordination:** real Postgres evidence uses two data databases and one authority in `runtime/database/coordination.test.ts`, covering retention/workflow mutual exclusion, interruption, authority-session loss with a local data fence, Cluster ownership and release in both lock modes, singleton lease reads, fleet lock placement/release, and capped-job generation locking. PGlite remains a single-process, single-connection backend. Neki's unsharded authority placement, Cluster ownership, singleton failover and multi-shard fleet feed remain **prepared; unverified, pending #66**; this Postgres evidence does not satisfy #483's Neki gate ([ADR 0066](../decisions/0066-authoritative-coordination.md)).
+
 **Responsibility:** show real capability differences by backend.  
 **Authority:** operational evidence.  
 **Owner role:** platform/verification.

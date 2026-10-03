@@ -5,6 +5,8 @@
 **Owner role:** operations/platform.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
+For separate actor-data databases, configure `Database.postgres({ coordination: { url: Redacted.make(authorityUrl) } })` on every runner with the same unsharded authoritative primary. That pool owns resource locks, Cluster runner/shard ownership, and the fleet maintainer lock; include its connections in the server budget. Startup creates its coordination-only schema with a separate migration ledger, so its login needs DDL privileges. Never point it at a read replica. On Neki, keep its tables in the authoritative group and use an explicitly authoritative endpoint for session advisory locks, or select Cluster table leases through existing sharding wiring. This prepares lock placement; it does not certify Neki routing, singleton failover, or a multi-shard logical feed. Switching an existing deployment's authority requires stopping every runner first, or old and new runners will coordinate independently ([ADR 0066](../decisions/0066-authoritative-coordination.md)).
+
 The intended deployment has one shared relational database and one `Actors.layer` runtime per runner process; a deployment may have multiple runners. These operating shapes describe the accepted design, not currently implemented deployment support:
 
 - **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside the application.

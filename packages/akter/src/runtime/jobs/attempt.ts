@@ -55,7 +55,7 @@ export const groupRow = ({
     AND o.actor_type = ${group.actor_type} AND o.actor_id = ${group.actor_id}
     AND o.command = ${group.command} AND o.kind = 'job'`
 
-/** The advisory lock that serializes every runner's claims of one capped group. */
+/** The actor's shard-local generation row serializes claims and wakes of its capped jobs. */
 export const groupLock = ({
   sql,
   group,
@@ -63,12 +63,10 @@ export const groupLock = ({
   readonly sql: SqlClient.SqlClient
   readonly group: CappedGroup
 }) =>
-  sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
-    group.tenant_id,
-    group.actor_type,
-    group.actor_id,
-    group.command,
-  ])}, 0))`
+  sql`SELECT 1 FROM actor_generations
+    WHERE routing_key = ${BigInt(group.routing_key)} AND tenant_id = ${group.tenant_id}
+      AND actor_type = ${group.actor_type} AND actor_id = ${group.actor_id}
+    FOR UPDATE`
 
 /**
  * Makes the oldest waiting row of `group` due now, after one of its attempts
