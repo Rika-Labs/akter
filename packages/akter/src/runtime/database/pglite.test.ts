@@ -206,6 +206,8 @@ describe("PGlite migrations", () => {
             { migration_id: 24 },
             { migration_id: 25 },
             { migration_id: 26 },
+            { migration_id: 27 },
+            { migration_id: 29 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

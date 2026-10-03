@@ -1,0 +1,128 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import Container from "../components/container.astro"
+import Base from "../layouts/base.astro"
+import type { DocPage, Docs } from "./collection.ts"
+import { nextPage } from "./collection.ts"
+import DocNav from "./doc-nav.astro"
+import DocTools from "./doc-tools.astro"
+import { article, layout, mobile, outline, sidebar } from "./docs.styles.ts"
+import { claudePrompt } from "./paths.ts"
+import { siteUrl } from "../site.ts"
+
+interface Props {
+  page: DocPage
+  docs: Docs
+}
+
+const { page, docs } = Astro.props
+const next = nextPage(docs.pages, page)
+const isHome = page.slug === "quickstart"
+const askClaude = `https://claude.ai/new?q=${encodeURIComponent(claudePrompt(`${siteUrl}${page.markdownUrl}`))}`
+---
+
+<Base title={page.title} description={page.description} path={page.url} current="/docs">
+  <link slot="head" rel="alternate" type="text/markdown" href={page.markdownUrl} />
+  <Container>
+    <div
+      hidden
+      data-docs-config
+      data-mode-on={stylex.attrs(sidebar.mode, sidebar.modeOn).class}
+      data-mode-off={stylex.attrs(sidebar.mode).class}
+      data-result={stylex.attrs(sidebar.result).class}
+      data-result-title={stylex.attrs(sidebar.resultTitle).class}
+      data-result-text={stylex.attrs(sidebar.resultText).class}
+      data-result-empty={stylex.attrs(sidebar.empty).class}
+    >
+    </div>
+    <div {...stylex.attrs(layout.grid)}>
+      <aside {...stylex.attrs(sidebar.root)} aria-label="Documentation">
+        <DocTools />
+        <DocNav groups={docs.sidebar} current={page} />
+      </aside>
+
+      <article {...stylex.attrs(layout.article)} data-doc data-markdown-url={page.markdownUrl}>
+        <details {...stylex.attrs(mobile.root)}>
+          <summary {...stylex.attrs(mobile.summary)}>
+            <span>☰ {page.group} / {page.label}</span>
+            <span aria-hidden="true">+</span>
+          </summary>
+          <div {...stylex.attrs(mobile.panel)}>
+            <DocTools />
+            <DocNav groups={docs.sidebar} current={page} />
+          </div>
+        </details>
+        <span {...stylex.attrs(article.crumb)}>{page.group} / {page.label}</span>
+        <h1 {...stylex.attrs(article.title)}>{page.title}</h1>
+        {page.lead !== "" && <p {...stylex.attrs(article.lead)} set:html={page.lead} />}
+
+        <div data-view="human" {...stylex.attrs(article.content)} set:html={page.html} />
+
+        <div data-view="agent" hidden {...stylex.attrs(article.agent, article.content)}>
+          <div {...stylex.attrs(article.agentBar)}>
+            <p {...stylex.attrs(article.agentNote)}>
+              This page as plain Markdown, the form agents read. Fetch it at <code>{page.markdownUrl}</code>, or start from <a href="/llms.txt">/llms.txt</a>.
+            </p>
+            <div {...stylex.attrs(article.agentActions)}>
+              <button type="button" data-copy-markdown data-markdown-url={page.markdownUrl} {...stylex.attrs(outline.agentLink)}>Copy as Markdown</button>
+            </div>
+          </div>
+          <pre data-agent-markdown tabindex="0" {...stylex.attrs(article.agentPre)}>Loading…</pre>
+        </div>
+
+        <div {...stylex.attrs(article.next)}>
+          {
+            next !== undefined && (
+              <a href={next.url} {...stylex.attrs(article.card)}>
+                <span {...stylex.attrs(article.cardLabel)}>Next</span>
+                <span {...stylex.attrs(article.cardTitle)}>{next.label} →</span>
+              </a>
+            )
+          }
+          {
+            isHome && (
+              <a href="/examples" {...stylex.attrs(article.card)}>
+                <span {...stylex.attrs(article.cardLabel)}>Example</span>
+                <span {...stylex.attrs(article.cardTitle)}>Order and payment →</span>
+              </a>
+            )
+          }
+        </div>
+      </article>
+
+      <aside {...stylex.attrs(outline.root)} aria-label="On this page">
+        <span {...stylex.attrs(outline.title)}>On this page</span>
+        <nav {...stylex.attrs(outline.list)} data-outline>
+          {
+            page.outline.map((entry) => (
+              <a
+                href={`#${entry.id}`}
+                data-target={entry.id}
+                data-idle={stylex.attrs(outline.link, entry.level === 3 && outline.nested).class}
+                data-current={stylex.attrs(outline.link, entry.level === 3 && outline.nested, outline.current).class}
+                {...stylex.attrs(outline.link, entry.level === 3 && outline.nested)}
+              >
+                {entry.step === undefined ? entry.text : `${entry.step} · ${entry.text}`}
+              </a>
+            ))
+          }
+        </nav>
+        <div {...stylex.attrs(outline.agent)}>
+          <span {...stylex.attrs(outline.title)}>For agents</span>
+          <div {...stylex.attrs(outline.agentList)}>
+            <button type="button" data-copy-markdown data-markdown-url={page.markdownUrl} {...stylex.attrs(outline.agentLink)}>Copy as Markdown</button>
+            <a href={page.markdownUrl} {...stylex.attrs(outline.agentLink)}>View as Markdown ↗</a>
+            <a href="/llms.txt" {...stylex.attrs(outline.agentLink)}>llms.txt ↗</a>
+            <a href={askClaude} rel="noopener noreferrer" target="_blank" {...stylex.attrs(outline.agentLink)}>Open in Claude ↗</a>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </Container>
+
+  <script>
+    import { bindDocs } from "../scripts/docs.ts"
+
+    bindDocs()
+  </script>
+</Base>

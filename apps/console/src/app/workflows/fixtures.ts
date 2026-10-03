@@ -1,0 +1,96 @@
+import { hourLabels, seededSeries } from "../workspace/series.ts"
+import { WorkflowsPage } from "./model.ts"
+
+/** Fixture workflows and schedules for `storefront`. Illustrative test data. */
+export const workflows: WorkflowsPage = WorkflowsPage.make({
+  running: 1_412,
+  waitingOnEvents: 1_198,
+  timers: 26_040,
+  nextTimer: "0.4 s",
+  runs: [
+    {
+      id: "wf_01",
+      workflow: "Fulfil",
+      actorType: "Order",
+      key: "ord_8f2c",
+      step: "3 of 5 · ship",
+      waitingFor: "event Shipped",
+      started: "2h",
+      status: "Waiting",
+    },
+    {
+      id: "wf_02",
+      workflow: "Fulfil",
+      actorType: "Order",
+      key: "ord_7a91",
+      step: "5 of 5",
+      waitingFor: "—",
+      started: "1d",
+      status: "Done",
+    },
+    {
+      id: "wf_03",
+      workflow: "Deliverable",
+      actorType: "AgentSession",
+      key: "s_77k",
+      step: "2 of 4 · review",
+      waitingFor: "event Approved",
+      started: "14m",
+      status: "Waiting",
+    },
+    {
+      id: "wf_04",
+      workflow: "Deliverable",
+      actorType: "AgentSession",
+      key: "s_80c",
+      step: "4 of 4 · publish",
+      waitingFor: "—",
+      started: "3m",
+      status: "Running",
+    },
+    {
+      id: "wf_05",
+      workflow: "Abandoned",
+      actorType: "Cart",
+      key: "c_51ee",
+      step: "1 of 2 · remind",
+      waitingFor: "timer 23:00",
+      started: "6h",
+      status: "Sleeping",
+    },
+  ],
+  schedules: [
+    {
+      name: "nightly",
+      target: "NightlyReport/singleton",
+      cron: "0 2 * * *",
+      lastRun: "ok · 4 m 12 s",
+      nextRun: "in 9 h",
+    },
+    {
+      name: "reindex",
+      target: "Inventory/*",
+      cron: "*/15 * * * *",
+      lastRun: "ok · 41 s",
+      nextRun: "in 6 min",
+    },
+    {
+      name: "reap-carts",
+      target: "Cart/*",
+      cron: "0 * * * *",
+      lastRun: "ok · 12 s",
+      nextRun: "in 38 min",
+    },
+    {
+      name: "health",
+      target: "Device/*",
+      cron: "* * * * *",
+      lastRun: "ok · 2 s",
+      nextRun: "in 21 s",
+    },
+  ],
+  hours: hourLabels({ points: 48, end: 14 }),
+  timersFired: seededSeries({ length: 48, base: 310, volatility: 70, seed: 17 }).map((value) =>
+    Math.round(value),
+  ),
+})

@@ -9,9 +9,10 @@
 
 ```text
 apps/                       deployables and the CLI bin; never imported by another package
-  console/                  @akter/console    FoldKit SSR
+  console/                  @akter/console    the hosted product console: FoldKit client app on Vite (ADR 0064)
   e2e/                      @akter/e2e        Playwright browser tests against read-only console fixtures
   edge/                     @akter/edge       hosted ingress: deployment hosts → runners, credentials → signed assertions, proxied sockets, limits
+  site/                     @akter/site       the public website: Astro, static output, StyleX (ADR 0064)
   cli/                      @akter/cli        the `durable` bin: local dev, deploy checks, adoption, operator inspection and repair
 packages/
   akter/           @rikalabs/akter       the framework; published (other published packages follow ADR 0029)
@@ -19,10 +20,11 @@ packages/
   deployments/              @akter/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
   python-client/            @akter/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests
   postgres/                 @akter/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
-  ui/                       @akter/ui         console components; its own package because Babel compiles StyleX before the console imports it
+  ui/                       @akter/ui         the shared design system: StyleX tokens, FoldKit components, charts, brand geometry (ADR 0064)
 tooling/
   oxlint/                   @akter/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @akter/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
+infra/                      @akter/infra      Alchemy AWS/Cloudflare/Axiom/Neki infrastructure; separate organization and regional service stacks (ADR 0065)
 BENCHMARKS.md               consolidated performance and recovery report
 docs/  research/  .github/src/
 ```
@@ -55,6 +57,6 @@ Two checks implement this specification, each owning different rules. Per-file o
 
 A directory exists when it holds code; there are no `.gitkeep` reservations for planned work. A planned package, command or folder is named in its design document until its first real module and test land. Do not add placeholder passing tests.
 
-`apps/cli` ships the `durable` bin as a working local development, deploy-check, adoption and operator tool: `dev`, `workflows check`, `payloads`, `adopt`, `fleet`, `defects`, `inspect`, `export`, `receipts`, `dead-letters`, `subscriptions` and `tenants` ([CLI reference](../api/06-cli.md)). Hosted `login`, `deploy` and `migrate` commands are not implemented and have no reserved directories ([ADR 0063](../decisions/0063-framework-simplification.md)).
+`apps/cli` ships the `durable` bin, built with Effect's `effect/cli` module, as a working local development, deploy-check, adoption and operator tool. New commands, hosted ones included, use `effect/cli` too. Current commands: `dev`, `workflows check`, `payloads`, `adopt`, `fleet`, `defects`, `inspect`, `export`, `receipts`, `dead-letters`, `subscriptions` and `tenants` ([CLI reference](../api/06-cli.md)). Hosted `login`, `deploy` and `migrate` commands are not implemented and have no reserved directories ([ADR 0063](../decisions/0063-framework-simplification.md)).
 
 `@rikalabs/akter` is the one published package today. The workspace resolves its entries to TypeScript sources; `bun run --cwd packages/akter build` emits `dist/`, and `publishConfig` points the tarball's `exports` and `types` there. `.github/src/pack.ts` stages and checks the tarball in CI, and `.github/workflows/release.yml` publishes it on a `v<version>` tag ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md); the first publish is CR.1b, [#99](https://github.com/Rika-Labs/akter/issues/99)). `@akter/create` stays private until that release; its build resolves the scaffold's pinned versions from the workspace catalog, and `.github/src/release/quickstart.ts` installs both tarballs into each generated app.

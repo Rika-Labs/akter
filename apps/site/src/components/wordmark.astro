@@ -1,0 +1,18 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import Mark from "./mark.astro"
+import { wordmark } from "./wordmark.styles.ts"
+
+interface Props {
+  size?: "small" | "footer" | "hero"
+}
+
+const { size = "small" } = Astro.props
+---
+
+<span {...stylex.attrs(wordmark.root, wordmark[size])}>
+  <span {...stylex.attrs(size === "hero" ? wordmark.markHero : wordmark.markSmall)}>
+    <Mark size="100%" />
+  </span>
+  <span {...stylex.attrs(wordmark.word)}>akter</span>
+</span>

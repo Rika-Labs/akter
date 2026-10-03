@@ -49,6 +49,7 @@ interface Done {
 
 interface Process {
   readonly done: Array<Done>
+  readonly acked: Set<string>
   ready: boolean
   claimed: boolean
   finished: boolean
@@ -87,6 +88,7 @@ describe("runner and relay process death with Postgres", () => {
           ) {
             const process: Process = {
               done: [],
+              acked: new Set(),
               ready: false,
               claimed: false,
               finished: false,
@@ -126,6 +128,8 @@ describe("runner and relay process death with Postgres", () => {
                   ] = line.split(" ")
 
                   if (tag === "READY") process.ready = true
+
+                  if (tag === "ACKED") process.acked.add(index!)
 
                   if (tag === "CLAIMED") process.claimed = true
 
@@ -239,7 +243,7 @@ describe("runner and relay process death with Postgres", () => {
             receipts.filter((receipt) => receipt.command === command).length
 
           const lost = [first, second, third, fourth, fifth].flatMap(({ process }) =>
-            process.done.flatMap(({ ids: minted }) => minted.filter((id) => !ids.has(id))),
+            [...process.acked].filter((id) => !ids.has(id)),
           )
 
           expect(lost).toEqual([])

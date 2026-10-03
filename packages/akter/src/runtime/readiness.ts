@@ -3,6 +3,7 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { Sharding } from "effect/cluster"
 import { SqlClient } from "effect/sql"
 import type { Readiness } from "./drain.ts"
+import { RunnerReadiness } from "./runner.ts"
 
 /** How long readiness waits for the database before it reports storage unavailable. */
 const READINESS_STORAGE_TIMEOUT = "2 seconds"
@@ -12,10 +13,11 @@ const READINESS_CACHE = "1 second"
 
 /**
  * Builds the runtime's readiness answer, returned as `serving`: not ready
- * while routing is shut down or nothing is registered, otherwise ready when
- * storage answers. PGlite always answers from the layer's own lifetime, since
+ * while routing is shut down, assigned shards are not acquired, or nothing is
+ * registered, otherwise ready when storage answers. PGlite always answers from the layer's own lifetime, since
  * a single connection held by a turn would make a probe report unready;
- * Postgres answers at most once a second.
+ * Postgres storage answers are reused for at most a second; public runner
+ * registration snapshots are checked on each probe.
  */
 export const servingReadiness = Effect.fnUntraced(function* ({
   sharding,
@@ -31,6 +33,7 @@ export const servingReadiness = Effect.fnUntraced(function* ({
   readonly jobRegistrations: ReadonlyMap<string, unknown>
 }) {
   const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
+  const runner = yield* Effect.serviceOption(RunnerReadiness)
 
   const storage = embedded
     ? Effect.succeed(true)
@@ -50,9 +53,12 @@ export const servingReadiness = Effect.fnUntraced(function* ({
     if (registrations.size + queryRegistrations.size + jobRegistrations.size === 0)
       return { ready: false, reason: "unregistered" } as const
 
-    return (yield* storage)
-      ? ({ ready: true } as const)
-      : ({ ready: false, reason: "storage" } as const)
+    if (!(yield* storage)) return { ready: false, reason: "storage" } as const
+
+    if (Option.isSome(runner) && !(yield* runner.value.acquired(sharding)))
+      return { ready: false, reason: "routing" } as const
+
+    return { ready: true } as const
   }) satisfies Effect.Effect<Readiness>
 
   return { serving }
