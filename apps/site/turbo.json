@@ -1,0 +1,17 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.test.ts",
+        "$TURBO_ROOT$/BENCHMARKS.md",
+        "$TURBO_ROOT$/README.md"
+      ],
+      "env": ["NODE_ENV"]
+    }
+  }
+}

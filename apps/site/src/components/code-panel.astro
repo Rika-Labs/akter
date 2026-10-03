@@ -1,0 +1,29 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import { highlightCode } from "../syntax/highlight-code.ts"
+import { codePanel } from "./code-panel.styles.ts"
+
+interface Props {
+  code: string
+  lang?: string
+  title?: string
+  file?: string
+  bare?: boolean
+  wrap?: boolean
+}
+
+const { code, lang = "typescript", title, file, bare = false, wrap = false } = Astro.props
+const html = await highlightCode(code.replace(/\n+$/, ""), lang)
+---
+
+<figure {...stylex.attrs(codePanel.root, bare && codePanel.bare)}>
+  {
+    (title !== undefined || file !== undefined) && (
+      <figcaption {...stylex.attrs(codePanel.head)}>
+        <span {...stylex.attrs(codePanel.title)}>{title}</span>
+        <span {...stylex.attrs(codePanel.file)}>{file}</span>
+      </figcaption>
+    )
+  }
+  <pre {...stylex.attrs(codePanel.body)} tabindex="0"><code {...stylex.attrs(codePanel.code, wrap && codePanel.wrap)} set:html={html} /></pre>
+</figure>

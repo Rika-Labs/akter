@@ -54,3 +54,25 @@ ADR 0028 §2 lists `scheduled_at_ms` as an example of a column "a later migratio
 
 - Applications need a list of the actors a parent may mint, for inspection or startup checks.
 - M2.18's delivery measurements show the final-frame burst or the 100 ms close bound matter.
+
+## Amendment: child-local creating-intent proof (#485, 2026-10-03)
+
+This replaces the child-transaction outbox lookup in decision §1.1. The parent's committed creating intent remains the authority, but the relay carries its delivery proof to the child instead of having the child read the parent's shard. Parent placement and UUIDv8 derivation are unchanged.
+
+### Decision
+
+The relay's claim returns a committed `actor_outbox` row before delivery. It copies that row's target, caller, intent id (the child's command id), command, and payload into the internal `Request`, and adds `intent: { tenant, actor, id }` from the row's sender columns. It does not derive this sender from the caller's asserted `ref`. The entire request travels through the runtime's trusted runner RPC, so the provenance survives serialization and runner handoff.
+
+External admission rejects `intent` metadata before reading or replaying a receipt, just as it rejects a presented mint proof or subscription envelope. `Actor.as` and the served protocol cannot manufacture an admitted delivery. The child requires the relay provenance, checks that its tenant and sender match the minting System caller's `ref`, and re-derives the child's id from the caller's mint proof. A missing or mismatched provenance or invalid mint proof fails `Unauthorized` without a receipt. The check performs no SQL and reads neither the parent's outbox nor its placement registry.
+
+The sender metadata is not a bearer token or a cryptographic signature. The trusted runtime ingress is the same boundary used for committed intents and subscription deliveries; an attacker with arbitrary access to internal runner RPC or the database is outside this boundary. The authority is the durable row the relay claimed, not an in-memory minted-id registry, lease, or TypeScript brand. Adding a duplicate copy or MAC of the request would not strengthen that existing trusted channel, and would add key distribution or redundant encoding.
+
+The outbox row still survives until the child's outcome commits. A crash before its deletion leads to redelivery and receipt replay, including when the sender and child have different routing keys. A delayed creating intent does not depend on the parent's receipt retention. No schema migration or public API change is needed; old outbox rows acquire provenance when claimed. Runners must be upgraded together: an old relay sends no provenance and a new child refuses it, while an old child still performs the cross-shard read.
+
+### Evidence and limits
+
+`conformance/mint.ts` places the child by actor and its parent by tenant, selects routing keys in opposite halves of the signed 64-bit range, refuses a valid mint proof without relay provenance and forged external provenance, checks mismatched sender fields, commits one child, interrupts before outbox deletion, and verifies both redelivery and replay after the row is deleted leave one receipt and unchanged state. Existing rollback and delayed-creation cases remain required.
+
+`conformance/single-shard.ts` records from the actual relay claim through the child's committed outcome, excluding relay scans and source-side deletion. It requires every keyed statement to carry the child's key, rejects any parameter carrying the parent's key, and refuses outbox or placement-registry reads. `runtime/turn/relay.test.ts` checks the request fields against a real PGlite outbox claim, including a caller without a sender ref.
+
+These checks prove child-local statements and cross-routing-key behavior on PGlite and Postgres. Neki's actual shard map, trusted runner transport, and single-transaction settings remain gated by #66; different keys alone do not prove different physical shards.

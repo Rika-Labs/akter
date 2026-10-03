@@ -1015,8 +1015,9 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
             const claim = yield* sql
               .withTransaction(
                 Effect.gen(function* () {
-                  yield* sql`SELECT pg_advisory_xact_lock(hashtextextended(
-                  '["wake-order","Controlled","ordered","Serial"]', 0))`
+                  yield* sql`SELECT 1 FROM actor_generations
+                    WHERE routing_key = 8 AND tenant_id = 'wake-order'
+                      AND actor_type = 'Controlled' AND actor_id = 'ordered' FOR UPDATE`
                   yield* Deferred.succeed(locked, undefined)
                   yield* Deferred.await(release)
                 }),
@@ -1032,7 +1033,7 @@ export const effectControlClusterConformance: ReadonlyArray<ConformanceCase<Effe
                 const [blocked] = yield* sql<{ n: number }>`SELECT count(*)::int AS n
                 FROM pg_stat_activity
                 WHERE datname = current_database()
-                  AND wait_event_type = 'Lock' AND wait_event = 'advisory'`
+                  AND wait_event_type = 'Lock' AND wait_event IN ('tuple', 'transactionid')`
 
                 return blocked!.n > 0
               }).pipe(Effect.orDie),

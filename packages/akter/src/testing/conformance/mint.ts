@@ -12,9 +12,20 @@ import {
 import type { Mintable } from "../../contexts/command.ts"
 import type { ActorRef, Caller } from "../../identity/caller.ts"
 import { deriveMintId } from "../../identity/mint.ts"
+import { InternalActors } from "../../runtime/actors.ts"
+import { Outcome, type Request } from "../../runtime/request.ts"
+import { routingKey } from "../../runtime/storage/codec.ts"
+import type { TurnPoint } from "../../runtime/turn/hooks.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { enqueue, holding, transactions } from "./batches.ts"
+import { CLAIM_LEASE } from "./outbox.ts"
+
+/** Captures real relay requests and brackets their child-side statements. */
+export interface MintFixture {
+  readonly deliveries: Map<string, Request>
+  onTurn: ((point: TurnPoint, request: Request) => void) | undefined
+}
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
 
@@ -34,7 +45,11 @@ const Task = Actor.make("MintTask", {
 })
 
 const Note = Actor.make("MintNote", {
-  state: childState,
+  placement: "actor",
+  state: Actor.state({
+    title: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+    opens: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
   api: { Open, Title },
 
   createdBy: Open,
@@ -47,6 +62,8 @@ const Plan = Actor.command("Plan", { payload: Schema.Int, success: Ids })
 const PlanMixed = Actor.command("PlanMixed", { success: Ids })
 
 const PlanLater = Actor.command("PlanLater", { success: Schema.String })
+
+const PlanAcross = Actor.command("PlanAcross", { success: Schema.String })
 
 const PlanThenRefuse = Actor.command("PlanThenRefuse", { error: Refused })
 
@@ -79,6 +96,7 @@ const Planner = Actor.make("MintPlanner", {
     Plan,
     PlanMixed,
     PlanLater,
+    PlanAcross,
     PlanThenRefuse,
     PlanDelayed,
     PlanDelayedThenRefuse,
@@ -141,7 +159,8 @@ export const mintLayer = Layer.mergeAll(
   Note.toLayer(
     Effect.succeed({
       Open: Effect.fnUntraced(function* (title: string) {
-        yield* (yield* Note.Turn).state.set({ title })
+        const turn = yield* Note.Turn
+        yield* turn.state.set({ title, opens: turn.state.opens + 1 })
       }),
       Title: Effect.fnUntraced(function* () {
         return (yield* Note.Turn).state.title
@@ -166,6 +185,12 @@ export const mintLayer = Layer.mergeAll(
       PlanLater: Effect.fnUntraced(function* () {
         const id = yield* (yield* Planner.Turn).mint(Task)
         yield* (yield* Task.intents(id)).Open("later").pipe(Intent.after("1 hour"))
+
+        return id
+      }),
+      PlanAcross: Effect.fnUntraced(function* () {
+        const id = yield* (yield* Planner.Turn).mint(Note)
+        yield* (yield* Note.intents(id)).Open("across").pipe(Intent.after("1 minute"))
 
         return id
       }),
@@ -295,8 +320,121 @@ export const mintWorkload: Effect.Effect<void, never, Actors> = Effect.gen(funct
   yield* (yield* Planner.get("p-shard")).Plan(1)
 }).pipe(Effect.orDie)
 
+/** Selects a child in the opposite routing-key half from its tenant-placed parent. */
+export const planAcrossShard = Effect.fnUntraced(function* (scenario: string) {
+  const planner = yield* Planner.get(scenario)
+  const actors = yield* Actors
+  const parentKey = routingKey({ ref: planner.ref, placement: "tenant" })
+
+  for (let attempt = 0; attempt < 256; attempt++) {
+    const commandId = yield* actors.mintCommandId
+    const id = yield* expected(planner.ref, commandId, 0, "MintNote")
+    const ref = { ...planner.ref, actor: "MintNote", id }
+    const childKey = routingKey({ ref, placement: "actor" })
+
+    if (parentKey < 0n === childKey < 0n) continue
+
+    yield* planner.PlanAcross().pipe(Actor.commandId(commandId))
+
+    return { planner, ref, parentKey, childKey, commandId }
+  }
+
+  return yield* Effect.die(new Error("No minted child in the opposite routing-key half"))
+})
+
 /** Minted-id cases: ids derive from the command id and ordinal, stay stable across a rerun after a crash, and create each child once. */
-export const mintConformance: ReadonlyArray<ConformanceCase> = [
+export const mintConformance: ReadonlyArray<ConformanceCase<MintFixture>> = [
+  {
+    name: "creates a child across routing keys only from a committed relay delivery and replays it after a crash before outbox deletion",
+    run: ({ expect, environment, fixture }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const internal = yield* InternalActors
+          const { planner, ref, parentKey, childKey, commandId } =
+            yield* planAcrossShard("cross-mint")
+          const caller = proven(planner.ref, commandId)
+          const forged: Request = {
+            ref,
+            caller,
+            command: "Open",
+            commandId: yield* (yield* Actors).mintCommandId,
+            payload: yield* Schema.encodeEffect(
+              Schema.fromJsonString(Schema.Struct({ value: Schema.String })),
+            )({ value: "forged" }),
+          }
+          const denied = { reason: Unauthorized.make({ code: "access_denied" }) }
+
+          expect(parentKey < 0n).toBe(childKey >= 0n)
+          expect(yield* internal.deliver(forged).pipe(Effect.flip)).toMatchObject(denied)
+          for (const intent of [
+            { ...planner.ref, tenant: "another-tenant" },
+            { ...planner.ref, actor: "MintSoloPlanner" },
+            { ...planner.ref, id: "another-parent" },
+          ])
+            expect(yield* internal.deliver({ ...forged, intent }).pipe(Effect.flip)).toMatchObject(
+              denied,
+            )
+          expect(
+            yield* internal.execute({ ...forged, intent: planner.ref }).pipe(Effect.flip),
+          ).toMatchObject(denied)
+          expect(
+            yield* internal
+              .deliver({
+                ...forged,
+                intent: planner.ref,
+                caller: proven(planner.ref, commandId, 1),
+              })
+              .pipe(Effect.flip),
+          ).toMatchObject(denied)
+          expect(yield* created(ref.actor, ref.id)).toBe(0)
+
+          yield* test.crashNext("beforeOutboxDelete")
+          const pause = yield* test.pauseNext("beforeOutboxDelete")
+          yield* test.advance("1 minute")
+          expect(yield* created(ref.actor, ref.id)).toBe(1)
+          expect(yield* test.inspect(ref)).toMatchObject({
+            state: { title: "across", opens: 1 },
+            receipts: 1,
+          })
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ outbox: 1 })
+
+          const delivery = fixture.deliveries.get(ref.id)!
+          expect(delivery.intent).toEqual(planner.ref)
+          expect(yield* internal.execute(delivery).pipe(Effect.flip)).toMatchObject(denied)
+          expect(
+            yield* internal
+              .execute({
+                ...forged,
+                commandId: yield* (yield* Actors).mintCommandId,
+                caller: System.make({ source: "process" }),
+                intent: planner.ref,
+              })
+              .pipe(Effect.flip),
+          ).toMatchObject(denied)
+
+          const draining = yield* test.advance(CLAIM_LEASE).pipe(Effect.forkChild)
+          yield* pause.reached
+          expect(yield* created(ref.actor, ref.id)).toBe(1)
+          expect(yield* test.inspect(ref)).toMatchObject({
+            state: { title: "across", opens: 1 },
+            receipts: 1,
+          })
+          yield* pause.release
+          yield* Fiber.join(draining)
+          expect(yield* test.inspect(planner.ref)).toMatchObject({ outbox: 0 })
+
+          expect(yield* internal.deliver(delivery)).toEqual(
+            Outcome.cases.Success.make({ value: '{"value":null}' }),
+          )
+          expect(yield* created(ref.actor, ref.id)).toBe(1)
+          expect(yield* test.inspect(ref)).toMatchObject({
+            state: { title: "across", opens: 1 },
+            receipts: 1,
+          })
+        }),
+      ),
+  },
   {
     name: "mints ids from the command id and ordinal and creates each child once from its intent",
     run: ({ expect, environment }) =>
@@ -839,6 +977,12 @@ export const mintConformance: ReadonlyArray<ConformanceCase> = [
 ]
 
 /** Minted-id actors. */
-export const mintSuite: ConformanceSuite = {
+export const mintSuite: ConformanceSuite<MintFixture> = {
+  fixture: () => ({ deliveries: new Map(), onTurn: undefined }),
   layer: () => mintLayer,
+  turn: (fixture) => (point, request) =>
+    Effect.sync(() => {
+      if (point === "afterClaim") fixture.deliveries.set(request.ref.id, request)
+      fixture.onTurn?.(point, request)
+    }),
 }

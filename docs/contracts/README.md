@@ -24,5 +24,7 @@ The runtime supports embedded, served, and hosted modes. Repository placement is
 - [Workflows, schedules, and jobs](08-background-work.md)
 - [Failure and recovery](09-recovery.md)
 - [Security and tenancy](10-security.md)
+- [Control plane](11-control-plane.md)
 - [Error model](error-model.md)
 - [Wire protocol](protocol.md)
+- [Control-plane feature flags](feature-flags.md)

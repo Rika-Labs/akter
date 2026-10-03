@@ -18,8 +18,7 @@ import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
-import { compress, decompress, routingKey as routingKeyOf } from "../storage/codec.ts"
-import { recordedPlacement } from "../storage/placements.ts"
+import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
@@ -28,7 +27,7 @@ import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
-import { CallerJson, OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
+import { OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
   asSqlConnection,
   awaitReplies,
@@ -141,52 +140,30 @@ const cronTicks = Effect.fnUntraced(function* (
 
 /**
  * True when `request` is a minted actor's creating intent: its caller carries
- * the parent's mint proof for the actor's id, and the parent's committed
- * outbox still holds that exact intent with the same payload. The read names
- * the parent's routing key, which a parent-placed actor shares and any other
- * actor gets from the parent type's recorded placement, so it is one keyed
- * statement rather than a scan of every shard.
+ * the parent's mint proof for the actor's id, and its delivery carries the
+ * sender of the committed outbox row the relay claimed. The trusted relay
+ * copies the request from that row, and external admission refuses this
+ * provenance. The child's transaction needs no read on the parent's shard.
  */
 const committedMintIntent = Effect.fnUntraced(function* (
   request: Request,
   parent: string | undefined,
-  routingKey: bigint,
 ) {
-  const { caller, ref } = request
+  const { caller, ref, intent } = request
 
-  if (!isSystem(caller) || caller.ref === undefined || !(yield* provesMint(caller, ref, parent)))
+  if (
+    request.external === true ||
+    intent === undefined ||
+    !isSystem(caller) ||
+    caller.ref === undefined ||
+    intent.tenant !== ref.tenant ||
+    intent.tenant !== caller.ref.tenant ||
+    intent.actor !== caller.ref.actor ||
+    intent.id !== caller.ref.id
+  )
     return false
 
-  const sql = yield* SqlClient.SqlClient
-
-  const parentPlacement =
-    parent === undefined ? yield* recordedPlacement(caller.ref.actor) : undefined
-
-  if (parent === undefined && parentPlacement === undefined) return false
-
-  const parentKey =
-    parentPlacement === undefined
-      ? routingKey
-      : routingKeyOf({ ref: caller.ref, placement: parentPlacement })
-
-  const rows = yield* sql<{ caller: string }>`SELECT caller FROM actor_outbox
-    WHERE intent_id = ${request.commandId} AND kind = 'intent' AND tenant_id = ${ref.tenant}
-      AND actor_type = ${caller.ref.actor} AND actor_id = ${caller.ref.id}
-      AND target_type = ${ref.actor} AND target_id = ${ref.id} AND command = ${request.command}
-      AND payload::jsonb = ${request.payload}::jsonb AND routing_key = ${parentKey}`
-
-  if (rows.length === 0) return false
-
-  const committed = yield* Schema.decodeEffect(CallerJson)(rows[0]!.caller).pipe(Effect.orDie)
-
-  return (
-    isSystem(committed) &&
-    committed.ref?.tenant === caller.ref.tenant &&
-    committed.ref.actor === caller.ref.actor &&
-    committed.ref.id === caller.ref.id &&
-    committed.mint?.commandId === caller.mint?.commandId &&
-    committed.mint?.ordinal === caller.mint?.ordinal
-  )
+  return yield* provesMint(caller, ref, parent)
 })
 
 type Statement = Effect.Effect<void, SqlError.SqlError>
@@ -412,8 +389,8 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * redelivery from running after another command creates the subscriber. A
  * minted actor is created only by the relay delivering the creating intent
  * its parent's turn staged and committed: the mint proof binds the id to the
- * parent's command, and the parent's outbox row, which stays until its
- * delivery commits, proves that command committed the intent.
+ * parent's command, and the relay's claimed-row provenance proves that
+ * command committed the intent without reading another actor's shard.
  *
  * Handlers and commit. Calls of a commutative reducer already waiting right
  * behind a command merge into its turn: their inputs are combined and reduced
@@ -759,7 +736,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         return request.external === true
           ? Effect.sync(refuse)
-          : Effect.map(committedMintIntent(request, parent, routingKey), (committed) =>
+          : Effect.map(committedMintIntent(request, parent), (committed) =>
               committed ? hash : refuse(),
             )
       }

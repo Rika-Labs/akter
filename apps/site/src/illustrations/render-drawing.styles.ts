@@ -1,0 +1,142 @@
+import { colors } from "@akter/ui/tokens.stylex"
+import * as stylex from "@stylexjs/stylex"
+import { queries } from "../styles/breakpoints.stylex.ts"
+
+const glide = stylex.keyframes({
+  from: { strokeDashoffset: 0 },
+  to: { strokeDashoffset: -58 },
+})
+
+const trolleyTravel = stylex.keyframes({
+  "0%": { transform: "translateX(0)" },
+  "15%": { transform: "translateX(0)" },
+  "45%": { transform: "translateX(var(--reach))" },
+  "60%": { transform: "translateX(var(--reach))" },
+  "90%": { transform: "translateX(0)" },
+  "100%": { transform: "translateX(0)" },
+})
+
+const hoistLift = stylex.keyframes({
+  "0%": { transform: "translateY(0)" },
+  "5%": { transform: "translateY(0)" },
+  "15%": { transform: "translateY(-18px)" },
+  "45%": { transform: "translateY(-18px)" },
+  "55%": { transform: "translateY(0)" },
+  "60%": { transform: "translateY(0)" },
+  "70%": { transform: "translateY(-18px)" },
+  "90%": { transform: "translateY(-18px)" },
+  "100%": { transform: "translateY(0)" },
+})
+
+const bobbing = stylex.keyframes({
+  "0%": { transform: "translateY(0)" },
+  "50%": { transform: "translateY(-3px)" },
+  "100%": { transform: "translateY(0)" },
+})
+
+const slideIn = stylex.keyframes({
+  "0%": { transform: "translateX(-16px)", opacity: 0 },
+  "18%": { transform: "translateX(0)", opacity: 1 },
+  "72%": { transform: "translateX(0)", opacity: 1 },
+  "100%": { transform: "translateX(10px)", opacity: 0 },
+})
+
+const pulsing = stylex.keyframes({
+  "0%": { opacity: 0.1 },
+  "35%": { opacity: 1 },
+  "70%": { opacity: 0.1 },
+  "100%": { opacity: 0.1 },
+})
+
+const ticking = stylex.keyframes({
+  from: { transform: "rotate(0deg)" },
+  to: { transform: "rotate(360deg)" },
+})
+
+const blinking = stylex.keyframes({
+  "0%": { opacity: 1 },
+  "50%": { opacity: 1 },
+  "51%": { opacity: 0 },
+  "100%": { opacity: 0 },
+})
+
+/** Fill and stroke paints for each brand paint role, mapped to design tokens so themes apply. */
+export const fills = stylex.create({
+  ink: { fill: colors.foreground },
+  face: { fill: colors.illustrationFace },
+  top: { fill: colors.illustrationTop },
+  end: { fill: colors.illustrationEnd },
+  none: { fill: "none" },
+})
+
+export const strokes = stylex.create({
+  ink: { stroke: colors.foreground },
+  face: { stroke: colors.illustrationFace },
+  top: { stroke: colors.illustrationTop },
+  end: { stroke: colors.illustrationEnd },
+  none: { stroke: "none" },
+})
+
+/**
+ * Motion for the brand's animated classes. Each animation only runs when the visitor has not asked
+ * for reduced motion, so the scene is a still drawing for them.
+ */
+export const motion = stylex.create({
+  water: {
+    strokeDasharray: "16 5 3 5",
+    animationName: { default: "none", [queries.motionOk]: glide },
+    animationDuration: "10s",
+    animationTimingFunction: "linear",
+    animationIterationCount: "infinite",
+  },
+  waterReverse: {
+    animationDuration: "15s",
+    animationDirection: "reverse",
+  },
+  trolley: {
+    animationName: { default: "none", [queries.motionOk]: trolleyTravel },
+    animationDuration: "9s",
+    animationTimingFunction: "ease-in-out",
+    animationIterationCount: "infinite",
+  },
+  hoist: {
+    animationName: { default: "none", [queries.motionOk]: hoistLift },
+    animationDuration: "9s",
+    animationTimingFunction: "ease-in-out",
+    animationIterationCount: "infinite",
+  },
+  bob: {
+    animationName: { default: "none", [queries.motionOk]: bobbing },
+    animationDuration: "4.5s",
+    animationTimingFunction: "ease-in-out",
+    animationIterationCount: "infinite",
+  },
+  slide: {
+    animationName: { default: "none", [queries.motionOk]: slideIn },
+    animationDuration: "5s",
+    animationTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
+    animationIterationCount: "infinite",
+  },
+  pulse: {
+    animationName: { default: "none", [queries.motionOk]: pulsing },
+    animationDuration: "3.2s",
+    animationTimingFunction: "ease-in-out",
+    animationIterationCount: "infinite",
+  },
+  tick: {
+    animationName: { default: "none", [queries.motionOk]: ticking },
+    animationDuration: "12s",
+    animationTimingFunction: "linear",
+    animationIterationCount: "infinite",
+  },
+  blink: {
+    animationName: { default: "none", [queries.motionOk]: blinking },
+    animationDuration: "1.1s",
+    animationTimingFunction: "linear",
+    animationIterationCount: "infinite",
+  },
+})
+
+export const text = stylex.create({
+  mono: { fontFamily: '"Geist Mono", ui-monospace, monospace' },
+})

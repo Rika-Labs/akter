@@ -129,20 +129,17 @@ const commandTurn = (
 
     if (loaded.upcast) for (const key of Object.keys(fields)) dirty.add(key)
 
-    const set = (patch: StateValue) =>
-      Effect.flatMap(InsideTurn, (inside) => {
-        if (!open || inside !== turn)
-          return Effect.die(new Error("State capability escaped its turn"))
+    const set = Effect.fnUntraced(function* (patch: StateValue) {
+      if (!open || (yield* InsideTurn) !== turn)
+        return yield* Effect.die(new Error("State capability escaped its turn"))
 
-        for (const key of Object.keys(patch)) {
-          if (!(key in fields)) return Effect.die(new Error(`Undeclared state key: ${key}`))
-          dirty.add(key)
-        }
+      for (const key of Object.keys(patch)) {
+        if (!(key in fields)) return yield* Effect.die(new Error(`Undeclared state key: ${key}`))
+        dirty.add(key)
+      }
 
-        return Effect.map(descriptor.state.roundTrip({ ...current, ...patch }), (next) => {
-          current = next
-        })
-      })
+      current = yield* descriptor.state.roundTrip({ ...current, ...patch })
+    })
 
     const emit = Effect.fnUntraced(function* (event: { readonly _tag: string }) {
       if (!open || (yield* InsideTurn) !== turn)
@@ -357,40 +354,38 @@ const commandTurn = (
         }),
     }
 
-    const succeeded = (output: Decoded): Effect.Effect<BusinessResult> => {
-      if (misused !== undefined) return Effect.die(new Error(misused))
+    return yield* Effect.gen(function* () {
+      const input = yield* codecs.decodePayload(request.payload).pipe(Effect.orDie)
+      const output = yield* handle(input.value)
+
+      if (misused !== undefined) return yield* Effect.die(new Error(misused))
 
       const uncreated = outbox.uncreated()
 
       if (uncreated !== undefined)
-        return Effect.die(
+        return yield* Effect.die(
           new Error(`Minted actor ${uncreated.actor}/${uncreated.id} has no creating intent`),
         )
 
       const keyed = outbox.keyedCreation()
 
       if (keyed !== undefined)
-        return Effect.die(
+        return yield* Effect.die(
           new Error(`Minted actor ${keyed.actor}/${keyed.id} has a keyed creating intent`),
         )
 
-      return Effect.flatMap(codecs.encodeSuccess({ value: output }).pipe(Effect.orDie), (value) =>
-        Effect.map(descriptor.state.writes(current, dirty), (state): BusinessResult => ({
-          outcome: Outcome.cases.Success.make({ value }),
-          state,
-          complete: loaded.upcast,
-          events: emitted,
-          outbox: outbox.close(),
-          broadcasts,
-          writes: { tables: [...wroteTables], blobs: [...wroteBlobs] },
-        })),
-      )
-    }
+      const value = yield* codecs.encodeSuccess({ value: output }).pipe(Effect.orDie)
 
-    return yield* codecs.decodePayload(request.payload).pipe(
-      Effect.orDie,
-      Effect.flatMap((input) => handle(input.value)),
-      Effect.flatMap(succeeded),
+      return {
+        outcome: Outcome.cases.Success.make({ value }),
+        state: yield* descriptor.state.writes(current, dirty),
+        complete: loaded.upcast,
+        events: emitted,
+        outbox: outbox.close(),
+        broadcasts,
+        writes: { tables: [...wroteTables], blobs: [...wroteBlobs] },
+      } satisfies BusinessResult
+    }).pipe(
       Effect.catch((error) => declaredFailure(codecs, error)),
       Effect.ensuring(
         Effect.sync(() => {

@@ -1,3 +1,8 @@
+---
+title: "TypeScript SDK"
+description: "The browser-safe Promise client derived from your actor definitions."
+---
+
 # TypeScript SDK
 
 **Responsibility:** define the non-Effect client experience.  

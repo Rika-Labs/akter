@@ -1,306 +1,105 @@
-import * as stylex from "@stylexjs/stylex"
-import { Match, Predicate } from "effect"
-import type { HtmlBuilder } from "foldkit/html"
-import { darkTheme, tokens } from "./tokens.stylex.js"
-
-/** The FoldKit HTML builder the view helpers render with. */
-export type Builder = HtmlBuilder<never>
-
-export { tokens } from "./tokens.stylex.js"
-
-/** The console's StyleX style rules, built from `tokens`. */
-export const styles = stylex.create({
-  page: {
-    minHeight: "100vh",
-    backgroundColor: tokens.background,
-    color: tokens.foreground,
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-    fontSize: "14px",
-    lineHeight: 1.6,
-  },
-  layout: {
-    display: "grid",
-    gridTemplateColumns: { default: "240px minmax(0, 1fr)", "@media (max-width: 760px)": "1fr" },
-    minHeight: "100vh",
-  },
-  sidebar: {
-    backgroundColor: tokens.card,
-    borderRight: `1px solid ${tokens.border}`,
-    padding: "32px 22px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "30px",
-  },
-  brand: {
-    fontWeight: 750,
-    fontSize: "22px",
-    letterSpacing: "-0.8px",
-    textDecoration: "none",
-    color: tokens.foreground,
-  },
-  logo: {
-    display: "inline-grid",
-    placeItems: "center",
-    width: "32px",
-    height: "32px",
-    marginRight: "10px",
-    borderRadius: "9px",
-    backgroundColor: tokens.primary,
-    color: tokens.primaryForeground,
-    fontSize: "20px",
-  },
-  nav: { display: "grid", gap: "7px" },
-  navLink: {
-    display: "block",
-    padding: "10px 14px",
-    borderRadius: "8px",
-    textDecoration: "none",
-    color: tokens.mutedForeground,
-    fontWeight: 550,
-    backgroundColor: { default: "transparent", ":hover": tokens.muted },
-  },
-  active: { color: tokens.primary, backgroundColor: tokens.accent },
-  main: {
-    padding: { default: "30px 48px 64px", "@media (max-width: 1000px)": "24px" },
-    maxWidth: "1400px",
-    width: "100%",
-    marginInline: "auto",
-  },
-  row: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "16px",
-    flexWrap: "wrap",
-  },
-  header: {
-    paddingBottom: "24px",
-    marginBottom: "38px",
-    borderBottom: `1px solid ${tokens.border}`,
-  },
-  title: {
-    fontSize: { default: "32px", "@media (max-width: 760px)": "27px" },
-    letterSpacing: "-1px",
-    lineHeight: 1.2,
-    fontWeight: 650,
-    marginBottom: "10px",
-  },
-  subtitle: { color: tokens.mutedForeground, margin: 0 },
-  eyebrow: {
-    fontSize: "11px",
-    letterSpacing: "1.5px",
-    fontWeight: 700,
-    textTransform: "uppercase",
-    color: tokens.mutedForeground,
-    marginBottom: "12px",
-  },
-  card: {
-    backgroundColor: tokens.card,
-    border: `1px solid ${tokens.border}`,
-    borderRadius: tokens.radius,
-    padding: "26px",
-  },
-  stack: { display: "grid", gap: "22px" },
-  stats: {
-    display: "grid",
-    gridTemplateColumns: {
-      default: "repeat(3, minmax(0, 1fr))",
-      "@media (max-width: 760px)": "1fr",
-    },
-    gap: "18px",
-  },
-  value: { fontSize: "30px", fontWeight: 600, letterSpacing: "-1px", marginBlock: "14px 4px" },
-  badge: {
-    display: "inline-block",
-    color: tokens.primary,
-    backgroundColor: tokens.accent,
-    padding: "4px 10px",
-    fontSize: "12px",
-    fontWeight: 600,
-    borderRadius: "6px",
-  },
-  button: {
-    display: "inline-flex",
-    justifyContent: "center",
-    alignItems: "center",
-    minHeight: "42px",
-    padding: "10px 17px",
-    borderRadius: "7px",
-    border: "1px solid transparent",
-    backgroundColor: { default: tokens.primary, ":hover": tokens.ring },
-    color: tokens.primaryForeground,
-    fontWeight: 600,
-    fontSize: "13px",
-    textDecoration: "none",
-    cursor: "pointer",
-    ":focus-visible": { outline: `3px solid ${tokens.ring}`, outlineOffset: "3px" },
-  },
-  secondary: {
-    backgroundColor: { default: tokens.card, ":hover": tokens.muted },
-    borderColor: tokens.border,
-    color: tokens.foreground,
-  },
-  field: { display: "grid", gap: "7px", fontSize: "13px", fontWeight: 550 },
-  input: {
-    width: "100%",
-    backgroundColor: tokens.card,
-    color: tokens.foreground,
-    border: `1px solid ${tokens.border}`,
-    borderRadius: "7px",
-    padding: "12px",
-    fontSize: "14px",
-    ":focus": { outline: `2px solid ${tokens.ring}`, outlineOffset: "1px" },
-  },
-  form: { display: "grid", gap: "20px", maxWidth: "500px" },
-  danger: {
-    padding: "18px 22px",
-    borderRadius: "9px",
-    backgroundColor: tokens.destructiveBackground,
-    color: tokens.destructive,
-    border: `1px solid ${tokens.destructive}`,
-  },
-  empty: { textAlign: "center", padding: "42px 20px" },
-  table: { width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "13px" },
-  cell: { padding: "15px 10px", borderBottom: `1px solid ${tokens.border}` },
-  auth: {
-    display: "grid",
-    gridTemplateColumns: { default: "1fr 1fr", "@media (max-width: 760px)": "1fr" },
-    minHeight: "100vh",
-  },
-  authAside: {
-    padding: { default: "52px 64px", "@media (max-width: 760px)": "28px" },
-    backgroundColor: tokens.accent,
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "space-between",
-    gap: "60px",
-  },
-  authMain: { padding: "36px", display: "grid", alignContent: "center", justifyItems: "center" },
-  authContent: { width: "100%", maxWidth: "390px" },
-  hero: {
-    fontSize: { default: "48px", "@media (max-width: 1000px)": "36px" },
-    lineHeight: 1.12,
-    letterSpacing: "-2px",
-    maxWidth: "450px",
-    fontWeight: 600,
-  },
-  footer: { color: tokens.mutedForeground, fontSize: "12px", marginTop: "32px" },
-})
-
-/** Class name string for the given StyleX styles; later styles win. */
-export function classes(...values: stylex.StyleXStyles[]): string {
-  return stylex.props(...values).className ?? ""
-}
-
-/** Page class name for the theme, carrying the dark token overrides for `"dark"`. */
-export function themeClass(theme: "light" | "dark"): string {
-  return stylex.props(styles.page, theme === "dark" && darkTheme).className ?? ""
-}
-
-/** Link to the dashboard showing the product mark. */
-export function brand(h: Builder) {
-  return h.a(
-    [h.Href("/dashboard"), h.Class(classes(styles.brand))],
-    [h.span([h.Class(classes(styles.logo)), h.Attribute("aria-hidden", "true")], ["↗"]), "Forma"],
-  )
-}
-
-/**
- * A submit button, secondary-styled when `secondary` is set. Called with a
- * label alone it returns a function of the builder.
- */
-export function button(
-  label: string,
-  secondary?: boolean,
-): (h: Builder) => ReturnType<Builder["button"]>
-export function button(
-  h: Builder,
-  label: string,
-  secondary?: boolean,
-): ReturnType<Builder["button"]>
-export function button(
-  hOrLabel: Builder | string,
-  labelOrSecondary?: string | boolean,
-  secondary = false,
-) {
-  if (Predicate.isString(hOrLabel)) {
-    const label = hOrLabel
-    const isSecondary = labelOrSecondary === true
-
-    return (h: Builder) => button(h, label, isSecondary)
-  }
-
-  const h = hOrLabel
-  const label = Predicate.isString(labelOrSecondary) ? labelOrSecondary : ""
-
-  return h.button(
-    [h.Type("submit"), h.Class(classes(styles.button, secondary && styles.secondary))],
-    [label],
-  )
-}
-
-/**
- * A labelled input named `name`, of `type` (default `text`) with an initial
- * `value`. Called without the builder it returns a function of the builder.
- */
-export function field(
-  name: string,
-  label: string,
-  type?: string,
-  value?: string,
-): (h: Builder) => ReturnType<Builder["label"]>
-export function field(
-  h: Builder,
-  name: string,
-  label: string,
-  type?: string,
-  value?: string,
-): ReturnType<Builder["label"]>
-export function field(
-  hOrName: Builder | string,
-  nameOrLabel: string,
-  labelOrType?: string,
-  typeOrValue?: string,
-  value?: string,
-) {
-  if (Predicate.isString(hOrName)) {
-    const name = hOrName
-    const label = nameOrLabel
-    const type = labelOrType ?? "text"
-    const fieldValue = typeOrValue ?? ""
-
-    return (h: Builder) => field(h, name, label, type, fieldValue)
-  }
-
-  const h = hOrName
-  const name = nameOrLabel
-  const label = labelOrType ?? ""
-  const type = typeOrValue ?? "text"
-  const fieldValue = value ?? ""
-
-  return h.label(
-    [h.Class(classes(styles.field)), h.For(name)],
-    [
-      label,
-      h.input([
-        h.Id(name),
-        h.Name(name),
-        h.Type(type),
-        h.Value(fieldValue),
-        h.Required(true),
-        h.Class(classes(styles.input)),
-        h.Attribute(
-          "autocomplete",
-          Match.value(name).pipe(
-            Match.when("newPassword", () => "new-password"),
-            Match.when("password", () => "current-password"),
-            Match.when("email", () => "email"),
-            Match.when("name", () => "name"),
-            Match.orElse(() => "off"),
-          ),
-        ),
-        ...(type === "password" ? [h.Attribute("minlength", "12")] : []),
-      ]),
-    ],
-  )
-}
+export { accessibility } from "./design/accessibility.ts"
+export { styleAttributes } from "./design/attributes.ts"
+export type {
+  Children,
+  ContentAttributes,
+  LayoutStyles,
+  PartStyles,
+  SlotConfig,
+} from "./design/contracts.ts"
+export { densityAttributes, type Density } from "./design/density.ts"
+export { entranceStyles, motionStyles } from "./design/motion.ts"
+export {
+  activityFeed,
+  type ActivityEntry,
+  type ActivityFeedConfig,
+} from "./components/activity-feed.ts"
+export { avatar, initials, type AvatarConfig } from "./components/avatar.ts"
+export {
+  button,
+  buttonStyles,
+  type ButtonConfig,
+  type ButtonLook,
+  type ButtonSize,
+  type ButtonVariant,
+} from "./components/button.ts"
+export { checkbox, type CheckboxConfig } from "./components/checkbox.ts"
+export { choiceCards, type Choice, type ChoiceCardsConfig } from "./components/choice-cards.ts"
+export { codeBlock, type CodeBlockConfig } from "./components/code-block.ts"
+export {
+  commandPalette,
+  rankPalette,
+  type CommandPaletteConfig,
+  type PaletteItem,
+} from "./components/command-palette.ts"
+export {
+  dataTable,
+  type DataTableConfig,
+  type TableColumn,
+  type TableRow,
+} from "./components/data-table.ts"
+export { closeDialog, dialog, openDialog, type DialogConfig } from "./components/dialog.ts"
+export {
+  dropdownMenu,
+  type DropdownMenuConfig,
+  type MenuEntry,
+} from "./components/dropdown-menu.ts"
+export { emptyState, type EmptyStateConfig } from "./components/empty-state.ts"
+export { field, fieldDescriptionId, type FieldConfig } from "./components/field.ts"
+export { icon, type IconConfig, type IconName } from "./components/icon.ts"
+export { iconButton, type IconButtonConfig } from "./components/icon-button.ts"
+export { illustration, type IllustrationConfig } from "./components/illustration.ts"
+export { fieldChrome, input, type InputConfig } from "./components/input.ts"
+export { kbd, type KbdConfig } from "./components/kbd.ts"
+export { mark, type MarkConfig } from "./components/mark.ts"
+export {
+  navItem,
+  pinnedItem,
+  type NavItemConfig,
+  type PinnedItemConfig,
+} from "./components/nav-item.ts"
+export {
+  columns,
+  pageBody,
+  pageHeader,
+  section,
+  type ColumnsConfig,
+  type PageHeaderConfig,
+  type SectionConfig,
+} from "./components/page.ts"
+export { propertyList, type Property, type PropertyListConfig } from "./components/property-list.ts"
+export { select, type SelectConfig, type SelectOption } from "./components/select.ts"
+export {
+  settingsGroup,
+  settingsPage,
+  settingsRow,
+  type SettingsGroupConfig,
+  type SettingsPageConfig,
+  type SettingsRowConfig,
+} from "./components/settings.ts"
+export {
+  appFrame,
+  sidebar,
+  sidebarBack,
+  sidebarUser,
+  type AppFrameConfig,
+  type SidebarBackConfig,
+  type SidebarConfig,
+  type SidebarSection,
+  type SidebarUserConfig,
+} from "./components/sidebar.ts"
+export { statRow, type Stat, type StatRowConfig } from "./components/stat-row.ts"
+export { status, statusDot, type StatusConfig, type StatusTone } from "./components/status.ts"
+export { switchControl, type SwitchConfig } from "./components/switch.ts"
+export { highlight, type Language, type Token, type TokenKind } from "./components/syntax.ts"
+export { tabs, type TabItem, type TabsConfig } from "./components/tabs.ts"
+export { textarea, type TextareaConfig } from "./components/textarea.ts"
+export { toaster, type ToasterConfig, type ToastItem } from "./components/toast.ts"
+export {
+  tooltip,
+  tooltipBubble,
+  type TooltipBubbleConfig,
+  type TooltipConfig,
+  type TooltipSide,
+} from "./components/tooltip.ts"
+export { breadcrumb, topBar, type Crumb, type TopBarConfig } from "./components/top-bar.ts"

@@ -2,27 +2,30 @@
   "name": "@akter/console",
   "private": true,
   "type": "module",
-  "exports": {
-    "./server": "./src/server.ts"
-  },
   "scripts": {
-    "build": "bun src/build.ts",
-    "dev": "PORT=${CONSOLE_PORT:-3000} bun --watch src/main.ts",
-    "start": "bun dist/main.js",
+    "dev": "bun --bun vite --host 127.0.0.1 --port ${CONSOLE_PORT:-3000}",
+    "build": "bun --bun vite build",
+    "preview": "bun --bun vite preview --host 127.0.0.1 --port ${CONSOLE_PORT:-3002} --strictPort",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/src"
   },
   "dependencies": {
+    "@akter/cloud-api": "workspace:*",
     "@akter/ui": "workspace:*",
     "@effect/platform-browser": "catalog:",
+    "@stylexjs/stylex": "catalog:",
+    "better-auth": "1.7.7",
     "effect": "catalog:",
     "foldkit": "catalog:"
   },
   "devDependencies": {
-    "@effect/platform-bun": "catalog:",
+    "@foldkit/vite-plugin": "catalog:",
+    "@stylexjs/unplugin": "catalog:",
     "@types/bun": "1.4.2",
     "typescript": "catalog:",
+    "unplugin": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:"
   }
 }
