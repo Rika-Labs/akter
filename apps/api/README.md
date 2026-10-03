@@ -50,7 +50,7 @@ API keys are organization-owned, hashed by the Better Auth plugin, and shown in 
 
 Implemented: session/me, profile, organizations, members and role changes, invitations, API keys, projects and their three initial environments, environment creation/deletion, user settings, pins, notification settings, and paged organization audit logs. Project/environment changes and API-key revocations commit atomically with their audit entries. Better Auth changes write `requested` and completion entries around Better Auth's separate transaction; an uncompleted request has an unknown outcome, not a fabricated success.
 
-Deployments, runtime inspection/SSE, regions and databases, endpoints, environment variables, domains, integrations, usage and Stripe billing have final schemas but return typed HTTP 501 `NotImplemented`. The API does not manufacture metrics or provider data. Runtime routes will reach runners through the hosted edge, not with customer credentials sent directly to runners.
+Deployment creation, build results, lifecycle reads, redeploy and rollback are implemented through durable actors. Runtime command sending and actor-job reads reach runners only through the edge with a deployment-bound credential, never the caller's session or key. Runtime inspection/SSE surfaces that require unavailable telemetry, regions and databases, endpoints, environment variables, domains, integrations, usage and Stripe billing retain typed HTTP 501 `NotImplemented` responses. The API does not manufacture metrics or provider data.
 
 ## Email
 
@@ -73,3 +73,10 @@ TEST_DATABASE_URL=postgres://project:project@127.0.0.1:55430/postgres \
 ```
 
 The HTTP suite exercises actual Bun HTTP and Postgres: verification through stored email, wrong passwords, organization/invitation isolation, control-plane persistence, key hashing, scope, expiry, denied writes, audit rollback and immediate revocation. The OIDC suite runs discovery, redirects, PKCE, signed tokens and userinfo through an actual test IdP; forged/replayed state, invalid tokens, cross-domain identities, unverified providers and non-Enterprise sign-ins are refused. Real Neki, AWS, SES, GitHub/Google and SAML support remain unverified.
+
+The local deployment-stack E2E builds two example runner images, migrates isolated databases, starts actual Docker runners and a real edge process, then deploys, rolls forward, rolls back, sleeps and wakes through the public API. It requires Docker and a host Postgres port reachable by containers through `host.docker.internal`; it uses no provider credentials and removes only the exact containers and databases it creates.
+
+```sh
+TEST_DATABASE_URL=postgres://project:project@127.0.0.1:55433/project \
+  bun run --cwd apps/api test:stack
+```

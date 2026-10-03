@@ -44,6 +44,8 @@ A rollback MUST target an earlier deployment that reached live and is not curren
 
 Concurrent wakes for one release-region MUST enqueue one provisioning job. Registration and wake deletion MUST commit with the runner actor's result. Drain MUST withdraw registration before asking the platform to stop. A drain requested while provisioning MUST be retained and stop the task when it appears. Reconciliation MUST not remove a replacement because a stale observation reported that an earlier task stopped.
 
+Poller wakes MUST recheck that the deployment still serves inside the capacity turn; a stale poll result MUST NOT resurrect a retired release. A wake after a failed stop MUST finish stopping the old task before starting replacement capacity. Interrupting the orchestration process MUST leave accepted provider capacity for the durable retry. Cleanup outcomes for failed rollouts MUST remain visible on their drain step; an unresolved provider start is not evidence of completed drain.
+
 Free deployments may scale to zero after the idle bound; Pro and Enterprise retain at least one desired runner. The edge MUST commit activity before forwarding a request, and an idle withdrawal MUST serialize with that write. Due work at zero remains durable and is delivered after the next wake, subject to the framework's documented cron age rule. Runner metrics absent from measured telemetry MUST be null rather than synthesized.
 
 ## Changes made through Better Auth
