@@ -1,0 +1,193 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import ActorTurn from "../components/actor-turn.astro"
+import BenchmarkBars from "../components/benchmark-bars.astro"
+import CodePanel from "../components/code-panel.astro"
+import Container from "../components/container.astro"
+import Cutaway from "../components/cutaway.astro"
+import Faq from "../components/faq.astro"
+import InstallCommand from "../components/install-command.astro"
+import Panel from "../components/panel.astro"
+import PortScene from "../components/port-scene.astro"
+import SectionHeading from "../components/section-heading.astro"
+import Stat from "../components/stat.astro"
+import Wordmark from "../components/wordmark.astro"
+import { finalControl, headlines, hotKey } from "../benchmarks/report.ts"
+import Drawing from "../illustrations/drawing.astro"
+import { ctaStack, useCaseScene } from "../illustrations/scenes.ts"
+import Base from "../layouts/base.astro"
+import { callouts, primitives, questions, useCases as cases } from "../landing/copy.ts"
+import { orderDefinition, orderExample, withoutImports } from "../landing/readme-examples.ts"
+import { actor, code, cta, faq, hero, proof, section, useCases } from "../landing/sections.styles.ts"
+import { benchmarkReportUrl, headline } from "../site.ts"
+import { text } from "../styles/text.styles.ts"
+
+const fixed = (value: number, digits: number): string => value.toFixed(digits)
+const grouped = (value: number): string => Math.round(value).toLocaleString("en-US")
+const manifest = [
+  { label: "Actor", value: "Order/o-1" },
+  { label: "Command", value: "Place · 1 line" },
+  { label: "Result", value: "2400" },
+  { label: "Committed", value: "rows · OrderPlaced · state" },
+  { label: "After commit", value: "Charge → Charged" },
+]
+---
+
+<Base title="Akter" path="/" landing footer="full">
+  <Container width="landing">
+    <div {...stylex.attrs(hero.root)}>
+      <h1 aria-label="Akter"><Wordmark size="hero" /></h1>
+      <p {...stylex.attrs(text.display, hero.headline)}>
+        The framework for <mark {...stylex.attrs(hero.mark)}>durable, stateful backends</mark> that power realtime apps, background work, and agents.
+      </p>
+      <div {...stylex.attrs(hero.install)}><InstallCommand /></div>
+      <div {...stylex.attrs(hero.scene)}><PortScene /></div>
+    </div>
+
+    <section {...stylex.attrs(section.block)}>
+      <div {...stylex.attrs(actor.grid)}>
+        <Cutaway />
+        <div {...stylex.attrs(actor.copy)}>
+          <SectionHeading>An actor framework for TypeScript.</SectionHeading>
+          <p {...stylex.attrs(text.body, actor.lead)}>
+            An actor is a container for one thing in your app: an order, a chat room, an agent session. Everything that thing needs is packed inside.
+          </p>
+          <ol {...stylex.attrs(actor.legend)}>
+            {
+              callouts.map((callout, index) => (
+                <li {...stylex.attrs(actor.item)}>
+                  <span {...stylex.attrs(actor.badge)}>{index + 1}</span>
+                  <span><strong {...stylex.attrs(actor.strong)}>{callout.lead}</strong> {callout.text}</span>
+                </li>
+              ))
+            }
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section {...stylex.attrs(section.block, section.center)}>
+      <SectionHeading align="center">Define it, handle it, call it.</SectionHeading>
+      <div {...stylex.attrs(code.grid)}>
+        <div {...stylex.attrs(code.column)}>
+          <CodePanel wrap title="Define the actor" file={orderExample.contract.file} code={orderDefinition()} />
+          <CodePanel wrap title="Call it from anywhere" file={orderExample.call.file} code={withoutImports(orderExample.call)} />
+        </div>
+        <CodePanel wrap title="Handle a command" file={orderExample.handler.file} code={withoutImports(orderExample.handler)} />
+      </div>
+      <div {...stylex.attrs(code.result)}>
+        <Panel>
+          <div {...stylex.attrs(code.resultHead)}>
+            <h3 {...stylex.attrs(text.display, code.resultTitle)}>One command, one transaction.</h3>
+            <span {...stylex.attrs(code.stamp)}>Committed <span {...stylex.attrs(code.stampDim)}>one transaction</span></span>
+          </div>
+          <div {...stylex.attrs(code.diagram)}><ActorTurn /></div>
+          <dl {...stylex.attrs(code.manifest)}>
+            {
+              manifest.map((field) => (
+                <div {...stylex.attrs(code.field)}>
+                  <dt {...stylex.attrs(code.fieldLabel)}>{field.label}</dt>
+                  <dd {...stylex.attrs(code.fieldValue)}>{field.value}</dd>
+                </div>
+              ))
+            }
+          </dl>
+        </Panel>
+      </div>
+    </section>
+
+    <section {...stylex.attrs(section.block)}>
+      <div {...stylex.attrs(useCases.grid)}>
+        {
+          cases.map((useCase) => (
+            <div {...stylex.attrs(useCases.item)}>
+              <h3 {...stylex.attrs(text.display, useCases.title)}>{useCase.title}</h3>
+              <p {...stylex.attrs(useCases.text)}>{useCase.text}</p>
+              <Panel padding="none" clip>
+                <div {...stylex.attrs(useCases.art)}>
+                  <svg viewBox="0 0 260 200" aria-hidden="true" {...stylex.attrs(useCases.svg)}>
+                    <Drawing items={useCaseScene(useCase.kind)} />
+                  </svg>
+                </div>
+              </Panel>
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <section {...stylex.attrs(section.block)}>
+      <div {...stylex.attrs(proof.grid)}>
+        <Panel>
+          <h3 {...stylex.attrs(text.body, proof.chartTitle)}>{hotKey.title}</h3>
+          <p {...stylex.attrs(text.muted, proof.chartLead)}>
+            Successful writes per second, median of three runs on the same 4-CPU sandbox.
+          </p>
+          <BenchmarkBars data={hotKey} heading={false} />
+          <div {...stylex.attrs(proof.figures)}>
+            <Stat tone="mono" value={`${fixed(headlines.sequentialWriteP50, 2)} ms`} caption="sequential write p50" />
+            <Stat tone="mono" value={`${fixed(headlines.freshReadP50, 2)} ms`} caption="fresh read p50" />
+            <Stat tone="mono" value={`${grouped(headlines.freshKeys)} op/s`} caption="10,000 fresh keys" />
+          </div>
+          <p {...stylex.attrs(proof.note)}>
+            Same-host observations, not production SLOs. Plain Postgres and Redis were faster, and Restate was faster across 10,000 keys. Full method in BENCHMARKS.md.
+          </p>
+          <a href="/benchmarks" {...stylex.attrs(proof.link)}>Read the benchmark report →</a>
+        </Panel>
+        <div {...stylex.attrs(proof.column)}>
+          <Panel>
+            <span {...stylex.attrs(proof.crashValue, text.display)}>
+              {grouped(finalControl.acknowledged)}
+              <span {...stylex.attrs(text.body, proof.crashUnit)}>acknowledged IDs</span>
+            </span>
+            <div {...stylex.attrs(proof.figures)}>
+              <Stat tone="mono" value={String(finalControl.missing)} caption="lost" />
+              <Stat tone="mono" value={String(finalControl.repeated)} caption="duplicated" />
+              <Stat tone="mono" value={String(finalControl.unknown)} caption="unknown" />
+            </div>
+            <p {...stylex.attrs(proof.note)}>
+              Process kills and network partitions, every acknowledgement checked afterwards.
+            </p>
+          </Panel>
+          <Panel>
+            <div {...stylex.attrs(proof.api)}>
+              {
+                primitives.map((primitive) => (
+                  <div {...stylex.attrs(proof.apiRow)}>
+                    <span>{primitive.name}</span>
+                    <span {...stylex.attrs(proof.apiDoes)}>{primitive.does}</span>
+                  </div>
+                ))
+              }
+            </div>
+          </Panel>
+        </div>
+      </div>
+    </section>
+
+    <section {...stylex.attrs(section.block)}>
+      <div {...stylex.attrs(cta.grid)}>
+        <div {...stylex.attrs(cta.side)} aria-hidden="true">
+          <svg viewBox="0 0 300 170" {...stylex.attrs(cta.svg)}><Drawing items={ctaStack(41)} /></svg>
+        </div>
+        <div {...stylex.attrs(cta.middle)}>
+          <a href="/docs" {...stylex.attrs(cta.button)}>Start building <span {...stylex.attrs(cta.buttonNote)}>(quickstart)</span></a>
+          <p {...stylex.attrs(cta.text)}>Your first actor, running on your Postgres, in a few minutes.</p>
+          <a href="/docs" {...stylex.attrs(cta.docs)}>Read the docs →</a>
+        </div>
+        <div {...stylex.attrs(cta.side)} aria-hidden="true">
+          <svg viewBox="0 0 300 170" {...stylex.attrs(cta.svg, cta.flip)}><Drawing items={ctaStack(31)} /></svg>
+        </div>
+      </div>
+    </section>
+
+    <section {...stylex.attrs(section.block)}>
+      <Panel>
+        <div {...stylex.attrs(faq.root)}>
+          <Faq entries={questions} />
+          <a href="/docs" {...stylex.attrs(faq.more)}>More questions in the docs →</a>
+        </div>
+      </Panel>
+    </section>
+  </Container>
+</Base>

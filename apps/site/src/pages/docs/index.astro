@@ -1,0 +1,11 @@
+---
+import DocPage from "../../docs/doc-page.astro"
+import { loadDocs } from "../../docs/collection.ts"
+
+const docs = await loadDocs()
+const page = docs.pages.find((candidate) => candidate.slug === "quickstart")
+
+if (page === undefined) throw new Error("docs/quickstart.md is missing")
+---
+
+<DocPage page={page} docs={docs} />

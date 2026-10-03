@@ -1,0 +1,32 @@
+{
+  "name": "@akter/site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --port ${SITE_PORT:-4321}",
+    "build": "astro build",
+    "preview": "astro preview --port ${SITE_PORT:-4321}",
+    "typecheck": "astro sync && tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/site/src"
+  },
+  "dependencies": {
+    "@akter/ui": "workspace:*",
+    "@astrojs/sitemap": "3.7.4",
+    "@resvg/resvg-js": "2.6.2",
+    "@stylexjs/stylex": "catalog:",
+    "astro": "catalog:",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "shiki": "4.5.0",
+    "unified": "11.0.5",
+    "wawoff2": "2.0.1"
+  },
+  "devDependencies": {
+    "@stylexjs/unplugin": "catalog:",
+    "@types/bun": "1.4.2",
+    "@types/mdast": "4.0.4",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

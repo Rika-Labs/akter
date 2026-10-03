@@ -1,0 +1,12 @@
+---
+import type { SceneItem } from "./render-drawing.ts"
+import { renderDrawing } from "./render-drawing.ts"
+
+interface Props {
+  items: ReadonlyArray<SceneItem>
+}
+
+const { items } = Astro.props
+---
+
+<Fragment set:html={renderDrawing(items)} />
