@@ -10,6 +10,7 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/edge/src/config.test.ts"
   },
   "dependencies": {
+    "@akter/billing": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/sql-pg": "catalog:",
     "@rikalabs/akter": "workspace:*",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@akter/deployments": "workspace:*",
+    "@akter/metering": "workspace:*",
     "@akter/postgres": "workspace:*",
     "@types/pg": "8.23.1",
     "pg": "8.23.0",

@@ -28,11 +28,14 @@ services:
       API_PORT: "3001"
       API_HOST: 0.0.0.0
       EMAIL_MODE: local
+      BILLING_MODE: local
     ports:
       - "127.0.0.1:${API_HTTP_PORT:-3001}:3001"
     volumes:
       - ../../apps/api/src:/workspace/apps/api/src:ro
       - ../../packages/cloud-api/src:/workspace/packages/cloud-api/src:ro
+      - ../../packages/billing/src:/workspace/packages/billing/src:ro
+      - ../../packages/metering/src:/workspace/packages/metering/src:ro
     depends_on:
       postgres:
         condition: service_healthy

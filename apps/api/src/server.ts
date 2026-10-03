@@ -22,9 +22,13 @@ import { PendingLayers } from "./pending.ts"
 import { Repository, RepositoryLive } from "./repository.ts"
 import { ControlLayers } from "./control.ts"
 import { SqlClient } from "effect/sql"
+import { billingInfrastructure, BillingLive, billingWebhook, UsageLive } from "./billing.ts"
+import { LocalBillingOptions, localBillingRoutes } from "./local-billing.ts"
 
 export const apiRoutes = HttpApiBuilder.layer(CloudApi, { openapiPath: "/api/openapi.json" }).pipe(
-  Layer.provide(Layer.mergeAll(AccountLayers, ControlLayers, PendingLayers)),
+  Layer.provide(
+    Layer.mergeAll(AccountLayers, ControlLayers, PendingLayers, BillingLive, UsageLive),
+  ),
   Layer.provide(AccessLive),
   Layer.provide(Access.layer),
 )
@@ -196,12 +200,19 @@ export const infrastructure = (options: ApiOptions) => {
     Layer.provide(Postgres(Redacted.value(options.databaseUrl), { pool: { max: 5 } })),
     Layer.provide(processRuntimeLayer),
   )
-  return Layer.mergeAll(auth, RepositoryLive).pipe(Layer.provideMerge(sql))
+  return Layer.mergeAll(
+    auth,
+    RepositoryLive,
+    billingInfrastructure(options),
+    Layer.succeed(LocalBillingOptions, options),
+  ).pipe(Layer.provideMerge(sql))
 }
 
 export const routes = Layer.mergeAll(
   apiRoutes,
   authRoutes,
+  billingWebhook,
+  localBillingRoutes,
   HttpRouter.middleware(
     Effect.map(Auth, (auth) =>
       HttpMiddleware.cors({ allowedOrigins: auth.allowedBrowserOrigins, credentials: true }),
@@ -210,9 +221,12 @@ export const routes = Layer.mergeAll(
   ),
 )
 
-export const ApiLive = (options: ApiOptions) =>
-  HttpRouter.serve(routes, { disableLogger: true }).pipe(
-    Layer.provide(infrastructure(options)),
+export const ApiLive = (options: ApiOptions) => {
+  const services = infrastructure(options)
+  return HttpRouter.serve(routes.pipe(HttpRouter.provideRequest(services)), {
+    disableLogger: true,
+  }).pipe(
+    Layer.provide(services),
     Layer.provide(
       BunHttpServer.layer({
         port: options.port,
@@ -220,3 +234,4 @@ export const ApiLive = (options: ApiOptions) =>
       }),
     ),
   )
+}

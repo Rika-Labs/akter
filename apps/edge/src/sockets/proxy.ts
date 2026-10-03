@@ -10,7 +10,8 @@ import { actorErrorBody, closeCodeOf } from "@rikalabs/akter/runtime"
 import type { ServerWebSocket } from "bun"
 import { Data, Deferred, Effect, Option, Predicate, Queue, Result, Schema } from "effect"
 import type { Principal } from "../principals/authenticate.ts"
-import { type Edge, route, unavailable } from "../routing/forward.ts"
+import { ANONYMOUS_TENANT, type Edge, route, unavailable } from "../routing/forward.ts"
+import { type Lease, type QuotaError, QuotaUnavailable, quotaFailure } from "../quotas.ts"
 import type { Deployment } from "../routing/hosts.ts"
 import { claimsFor } from "../signing/claims.ts"
 
@@ -32,6 +33,7 @@ export interface SocketData {
   readonly session: string
   /** The principal the upgrade's own credential proved, if it carried one; `hello` carries it on. */
   readonly upgrade: Principal | undefined
+  readonly lease: Lease
   readonly inbox: Queue.Queue<Inbound>
   /** Bytes of client messages received and not yet handed to a runner. */
   pending: number
@@ -73,6 +75,11 @@ const sendable = (code: number) => (code === 1005 || code === 1006 ? 1011 : code
  * Messages wait for the runner while its socket's buffer is over
  * `socketBufferBytes`; the server closes a client whose waiting messages pass
  * that bound, so one socket holds a bounded amount of edge memory.
+ *
+ * Once the caller is known, the socket holds a connection lease for as long as
+ * the scope lives, and a caller whose organization is at its connection cap
+ * gets an `end` frame carrying the quota error. Socket frames are
+ * app-defined, so they are not metered.
  */
 export const proxySocket = Effect.fnUntraced(function* (
   edge: Edge,
@@ -82,16 +89,28 @@ export const proxySocket = Effect.fnUntraced(function* (
   const path = new URL(target, "http://edge").pathname
   let upstream: WebSocket | undefined
 
-  const end = Effect.fnUntraced(function* (reason: Reason) {
-    const error = yield* encodeJson({
-      t: "end",
-      error: yield* actorErrorBody(ActorError.make({ reason })),
-    }).pipe(Effect.orDie)
-
-    ws.send(error)
-    ws.close(closeCodeOf(reason))
+  const finish = Effect.fnUntraced(function* (error: Schema.Json, code: number) {
+    ws.send(yield* encodeJson({ t: "end", error }).pipe(Effect.orDie))
+    ws.close(code)
     upstream?.close(1000)
   })
+
+  const end = Effect.fnUntraced(function* (reason: Reason) {
+    yield* finish(yield* actorErrorBody(ActorError.make({ reason })), closeCodeOf(reason))
+  })
+
+  const endQuota = Effect.fnUntraced(function* (error: QuotaError) {
+    const failure = yield* quotaFailure(error)
+
+    yield* finish(failure.body, failure.closeCode)
+  })
+
+  const holdLease = Effect.fnUntraced(function* (lease: Lease) {
+    yield* Effect.addFinalizer(() => edge.quotas.releaseLease(lease).pipe(Effect.ignore))
+    yield* lease.lost.pipe(Effect.andThen(endQuota(QuotaUnavailable.make())), Effect.forkScoped)
+  })
+
+  yield* holdLease(ws.data.lease)
 
   const assertion = Effect.fnUntraced(function* (
     principal: Principal,
@@ -124,7 +143,16 @@ export const proxySocket = Effect.fnUntraced(function* (
     ),
   )
 
-  const first = yield* take
+  const first = yield* take.pipe(
+    Effect.timeoutOption(edge.options.helloTimeout),
+    Effect.map(Option.getOrElse(() => undefined)),
+  )
+
+  if (first === undefined) {
+    ws.close(1008, "hello timeout")
+
+    return
+  }
 
   if (Inbound.$is("Closed")(first)) return
 
@@ -141,6 +169,34 @@ export const proxySocket = Effect.fnUntraced(function* (
       return yield* end(Unauthorized.make({ code: "invalid_credentials" }))
     principal = proved.success
   }
+
+  let leased = ws.data.lease
+
+  if (leased.tenant !== (principal?.tenant ?? ANONYMOUS_TENANT)) {
+    const organization = yield* edge.quotas
+      .organization(deployment.id, principal?.tenant ?? ANONYMOUS_TENANT)
+      .pipe(Effect.result)
+
+    if (Result.isFailure(organization)) return yield* endQuota(organization.failure)
+
+    if (organization.success !== leased.organizationId) {
+      const replacement = yield* edge.quotas
+        .acquireLease({
+          deployment: deployment.id,
+          tenant: principal?.tenant ?? ANONYMOUS_TENANT,
+          kind: "socket",
+        })
+        .pipe(Effect.result)
+
+      if (Result.isFailure(replacement)) return yield* endQuota(replacement.failure)
+
+      yield* holdLease(replacement.success)
+      yield* edge.quotas.releaseLease(leased).pipe(Effect.ignore)
+      leased = replacement.success
+    }
+  }
+
+  if (yield* leased.isLost) return yield* endQuota(QuotaUnavailable.make())
 
   const chosen = yield* route(edge, deployment, principal)
 

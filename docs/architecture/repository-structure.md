@@ -18,8 +18,10 @@ apps/                       deployables and the CLI bin; never imported by anoth
 packages/
   akter/           @rikalabs/akter       the framework; published (other published packages follow ADR 0029)
   cloud-api/                @akter/cloud-api  the console API's HttpApi contract and Schema types; implemented by apps/api, consumed by the console
+  billing/                  @akter/billing    configurable provisional prices and Effect services for Distilled Stripe and local SQL billing
+  metering/                 @akter/metering   opt-in hosted cell usage journal, storage samples and sealed-hour import boundary
   react/                    @akter/react      React hooks over @rikalabs/akter/client
-  deployments/              @akter/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
+  deployments/              @akter/deployments  hosted deployment records, signing-key publication and tenant-home actors
   python-client/            @akter/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests
   postgres/                 @akter/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
   ui/                       @akter/ui         the shared design system: StyleX tokens, FoldKit components, charts, brand geometry (ADR 0064)

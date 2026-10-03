@@ -1,4 +1,6 @@
-import { Config, Effect, Option, Redacted } from "effect"
+import { Config, Effect, Option, Redacted, Schema } from "effect"
+import { defaultPricingConfig, PricingConfigSchema, type PricingConfig } from "@akter/billing"
+import type { MeterCell } from "./collector.ts"
 
 export interface ApiOptions {
   readonly databaseUrl: Redacted.Redacted<string>
@@ -14,7 +16,14 @@ export interface ApiOptions {
   readonly github?: { readonly clientId: string; readonly clientSecret: string }
   readonly google?: { readonly clientId: string; readonly clientSecret: string }
   readonly enterpriseOrganizations?: ReadonlyArray<string>
+  readonly billingMode?: "local" | "stripe"
+  readonly stripeApiKey?: Redacted.Redacted<string>
+  readonly billingWebhookSecret?: Redacted.Redacted<string>
+  readonly pricing?: PricingConfig
+  readonly meterCells?: ReadonlyArray<MeterCell>
 }
+
+export const localBillingWebhookSecret = "local-billing-signature-secret-not-for-production"
 
 /** The signing secret that ships in the local Compose file and is public in the repository. */
 const publishedDevelopmentSecret = "local-development-only-change-before-production"
@@ -54,8 +63,47 @@ export const loadOptions = Effect.gen(function* () {
     Config.withDefault("local"),
   )
   const emailFrom = yield* Config.String("EMAIL_FROM").pipe(
-    Config.withDefault("Akter <auth@localhost>"),
+    Config.withDefault(production ? "Akter <auth@akter.dev>" : "Akter <auth@localhost>"),
   )
+  const billingMode = yield* Config.Literals(["local", "stripe"], "BILLING_MODE").pipe(
+    Config.withDefault("local"),
+  )
+  const stripeApiKey = yield* Config.Redacted("STRIPE_API_KEY").pipe(Config.option)
+  const billingWebhookSecret = yield* Config.Redacted("STRIPE_WEBHOOK_SECRET").pipe(
+    Config.withDefault(Redacted.make(localBillingWebhookSecret)),
+  )
+  const meterCells = yield* Config.Redacted("METER_CELLS").pipe(Config.option)
+  const pricing = yield* Config.schema(
+    Schema.fromJsonString(PricingConfigSchema),
+    "BILLING_PRICING_CONFIG",
+  ).pipe(Config.withDefault(defaultPricingConfig))
+  const cells = Option.isNone(meterCells)
+    ? []
+    : yield* Schema.decodeEffect(
+        Schema.fromJsonString(
+          Schema.Array(
+            Schema.Struct({
+              deploymentId: Schema.NonEmptyString,
+              databaseUrl: Schema.NonEmptyString,
+            }),
+          ),
+        ),
+      )(Redacted.value(meterCells.value)).pipe(
+        Effect.catch(() =>
+          Effect.die(
+            new Error("METER_CELLS must be an array of deploymentId and databaseUrl records"),
+          ),
+        ),
+      )
+  if (production && billingMode === "local")
+    return yield* Effect.die(new Error("Production requires Stripe billing"))
+  if (billingMode === "stripe" && Option.isNone(stripeApiKey))
+    return yield* Effect.die(new Error("Stripe billing requires STRIPE_API_KEY"))
+  if (
+    billingMode === "stripe" &&
+    Redacted.value(billingWebhookSecret) === localBillingWebhookSecret
+  )
+    return yield* Effect.die(new Error("Stripe billing requires an explicit webhook secret"))
   const githubId = yield* Config.String("GITHUB_CLIENT_ID").pipe(Config.withDefault(""))
   const githubSecret = yield* Config.Redacted("GITHUB_CLIENT_SECRET").pipe(
     Config.withDefault(Redacted.make("")),
@@ -97,6 +145,14 @@ export const loadOptions = Effect.gen(function* () {
     production,
     emailMode,
     emailFrom,
+    billingMode,
+    stripeApiKey: Option.getOrUndefined(stripeApiKey),
+    billingWebhookSecret,
+    pricing,
+    meterCells: cells.map((cell) => ({
+      deploymentId: cell.deploymentId,
+      databaseUrl: Redacted.make(cell.databaseUrl),
+    })),
     enterpriseOrganizations,
     github:
       githubId === ""

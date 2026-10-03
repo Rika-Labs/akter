@@ -6,6 +6,7 @@ import {
   BillingSummary,
   HostedSession,
   Invoice,
+  PlanChange,
   SetSpendLimit,
   SpendLimit,
   StartCheckout,
@@ -37,6 +38,12 @@ export class BillingGroup extends HttpApiGroup.make("billing").add(
     params: organizationParams,
     payload: StartCheckout,
     success: HostedSession,
+    error: WriteErrors,
+  }),
+  HttpApiEndpoint.post("changePlan", "/organizations/:organizationId/billing/plan", {
+    params: organizationParams,
+    payload: StartCheckout,
+    success: PlanChange,
     error: WriteErrors,
   }),
   HttpApiEndpoint.post("openPortal", "/organizations/:organizationId/billing/portal", {

@@ -60,6 +60,17 @@ Control plane:
 
 ## Commands
 
+### `durable billing setup`
+
+Create or reconcile products, meters and prices using the configured provisional pricing. Every provider creation has a stable identity; repeating setup does not duplicate catalog objects.
+
+```text
+durable billing setup --mode local --database-url postgres://project:project@localhost:55415/project
+durable billing setup --mode stripe
+```
+
+Local mode is the default and uses only the SQL-backed Stripe implementation. Stripe mode reads `STRIPE_API_KEY` from the environment; it is not a command-line argument. API, edge and setup consume the same optional `BILLING_PRICING_CONFIG` JSON configuration. Setup does not publish the planning prices or establish live tax/provider support.
+
 ### `durable dev`
 
 Run the entry's app locally with a read-only inspector at /_durable/inspector

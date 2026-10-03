@@ -4,9 +4,10 @@ import { Crypto, Effect, Layer, Predicate, Queue, Result } from "effect"
 import { Base64Url } from "effect/encoding"
 import { HttpClient } from "effect/http"
 import type { EdgeOptions } from "./config.ts"
+import { quotas } from "./quotas.ts"
 import { authenticator } from "./principals/authenticate.ts"
 import { directory } from "./routing/directory.ts"
-import { type Edge, forward, refusal } from "./routing/forward.ts"
+import { quotaRefusal, type Edge, forward, refusal } from "./routing/forward.ts"
 import { hostOf, hosts } from "./routing/hosts.ts"
 import { runners } from "./routing/runners.ts"
 import { keyRing } from "./signing/keys.ts"
@@ -50,6 +51,7 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
     home: (yield* directory(options)).home,
     ready: pool.ready,
     coldStart: pool.coldStart,
+    quotas: yield* quotas(options),
   }
 
   const run = Effect.runPromiseWith(yield* Effect.context<never>())
@@ -76,6 +78,16 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
         upgrade = proved.success
       }
 
+      const lease = yield* edge.quotas
+        .acquireLease({
+          deployment: deployment.id,
+          tenant: upgrade?.tenant ?? "default",
+          kind: "socket",
+        })
+        .pipe(Effect.result)
+
+      if (Result.isFailure(lease)) return yield* quotaRefusal(lease.failure)
+
       const session = Base64Url.encode(yield* random.randomBytes(16).pipe(Effect.orDie))
 
       const data: SocketData = {
@@ -83,12 +95,15 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
         target: `${url.pathname}${url.search}`,
         session,
         upgrade,
+        lease: lease.success,
         inbox: yield* Queue.unbounded<Inbound>(),
         pending: 0,
       }
 
       if (server.upgrade(request, { data, headers: { "sec-websocket-protocol": SUBPROTOCOL } }))
         return undefined
+
+      if (data.lease !== undefined) yield* edge.quotas.releaseLease(data.lease).pipe(Effect.ignore)
 
       return yield* refusal(InvalidInput.make({ code: "unsupported_protocol" }))
     })
@@ -99,7 +114,16 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
     fetch: (request, served) => run(handle(request, served)),
     websocket: {
       maxPayloadLength: options.socketMessageBytes,
-      open: (ws) => void run(proxySocket(edge, ws)),
+      open: (ws) =>
+        void run(
+          Effect.scoped(proxySocket(edge, ws)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Socket proxy failed", cause).pipe(
+                Effect.andThen(Effect.sync(() => ws.close(1011))),
+              ),
+            ),
+          ),
+        ),
       message: (ws, message) => {
         const data = Predicate.isString(message) ? message : new Uint8Array(message)
         const bytes = Predicate.isString(data) ? utf8.encode(data).byteLength : data.byteLength

@@ -1,4 +1,5 @@
 import { Config, Duration, Effect, Redacted, Schema } from "effect"
+import { dual } from "effect/Function"
 
 /** One Ed25519 signing key from the edge's secret store, as a private JWK. */
 export const SigningKey = Schema.Struct({
@@ -27,6 +28,8 @@ export interface EdgeOptions {
   readonly assertionLifetime: Duration.Duration
   /** How long a session opened with a hosted API key lasts before it must reauthenticate. */
   readonly apiKeySession: Duration.Duration
+  /** How long an accepted socket may wait for its first hello before being closed. Default 30 seconds. */
+  readonly helloTimeout: Duration.Duration
   /** How often hosts, runners, keys, and the directory's highest version are reread. */
   readonly pollEvery: Duration.Duration
   /**
@@ -48,6 +51,13 @@ export interface EdgeOptions {
    * started and to answer ready before it is refused. Default 30 seconds.
    */
   readonly coldStartTimeout: Duration.Duration
+  /**
+   * How long a connection lease counts toward its organization's cap without a
+   * heartbeat, so a lost edge frees its connections. Default 30 seconds.
+   */
+  readonly leaseTtl: Duration.Duration
+  /** How often an edge extends its live leases; at most half of `leaseTtl`. Default 10 seconds. */
+  readonly leaseHeartbeat: Duration.Duration
 }
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(SigningKey)))
@@ -58,6 +68,20 @@ export const isAssertionLifetime = (lifetime: Duration.Duration) => {
 
   return ms % 1000 === 0 && ms >= 1000 && ms <= 60_000
 }
+
+/**
+ * Whether a heartbeat is positive and at most half the lease lifetime it
+ * keeps alive, so a renewal that is slow once still lands before the holder's
+ * local deadline at four fifths of the lifetime.
+ */
+export const isLeaseTiming = dual<
+  (heartbeat: Duration.Duration) => (ttl: Duration.Duration) => boolean,
+  (ttl: Duration.Duration, heartbeat: Duration.Duration) => boolean
+>(
+  2,
+  (ttl, heartbeat) =>
+    Duration.toMillis(heartbeat) > 0 && Duration.toMillis(heartbeat) * 2 <= Duration.toMillis(ttl),
+)
 
 /**
  * The edge's configuration from its environment.
@@ -78,6 +102,26 @@ export const loadOptions = Effect.gen(function* () {
 
   const keys = yield* Config.Redacted("EDGE_SIGNING_KEYS")
 
+  const helloTimeout = yield* Config.Duration("EDGE_HELLO_TIMEOUT").pipe(
+    Config.withDefault(Duration.seconds(30)),
+  )
+
+  if (Duration.toMillis(helloTimeout) <= 0)
+    return yield* Effect.die(new Error("EDGE_HELLO_TIMEOUT must be positive"))
+
+  const leaseTtl = yield* Config.Duration("EDGE_LEASE_TTL").pipe(
+    Config.withDefault(Duration.seconds(30)),
+  )
+
+  const leaseHeartbeat = yield* Config.Duration("EDGE_LEASE_HEARTBEAT").pipe(
+    Config.withDefault(Duration.seconds(10)),
+  )
+
+  if (!isLeaseTiming(leaseTtl, leaseHeartbeat))
+    return yield* Effect.die(
+      new Error("EDGE_LEASE_HEARTBEAT is positive and at most half of EDGE_LEASE_TTL"),
+    )
+
   return {
     issuer: yield* Config.String("EDGE_ISSUER"),
     controlPlaneUrl: yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL"),
@@ -88,6 +132,7 @@ export const loadOptions = Effect.gen(function* () {
     apiKeySession: yield* Config.Duration("EDGE_API_KEY_SESSION").pipe(
       Config.withDefault(Duration.minutes(5)),
     ),
+    helloTimeout,
     pollEvery: Duration.seconds(5),
     publicationLead: Duration.minutes(5),
     requestBytes: 1024 * 1024,
@@ -96,5 +141,7 @@ export const loadOptions = Effect.gen(function* () {
     coldStartTimeout: yield* Config.Duration("EDGE_COLD_START_TIMEOUT").pipe(
       Config.withDefault(Duration.seconds(30)),
     ),
+    leaseTtl,
+    leaseHeartbeat,
   } satisfies EdgeOptions
 })

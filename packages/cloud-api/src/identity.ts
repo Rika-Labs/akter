@@ -18,7 +18,7 @@ import {
   UserId,
 } from "./primitives.ts"
 
-export const PlanId = Schema.Literals(["free", "pro", "enterprise"])
+export const PlanId = Schema.Literals(["free", "pro", "team", "enterprise"])
 export type PlanId = typeof PlanId.Type
 
 export const User = Schema.Struct({

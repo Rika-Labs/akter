@@ -1,136 +1,9 @@
 import { expect, it } from "@effect/vitest"
 import * as Cloud from "@akter/cloud-api"
-import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
-import { Config, Crypto, Effect, Layer, Redacted, Schema } from "effect"
-import {
-  Cookies,
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-  HttpRouter,
-} from "effect/http"
+import { Crypto, Effect, Schema } from "effect"
+import { Cookies } from "effect/http"
 import { SqlClient } from "effect/sql"
-import { infrastructure, routes } from "./server.ts"
-import { Auth } from "./auth.ts"
-import { Repository } from "./repository.ts"
-import type { ApiOptions } from "./config.ts"
-
-const enterpriseOrganizations: Array<string> = []
-const options = (databaseUrl: Redacted.Redacted<string>): ApiOptions => ({
-  enterpriseOrganizations,
-  databaseUrl,
-  secret: Redacted.make("api-integration-test-secret-not-for-production"),
-  origin: "http://localhost:3001",
-  port: 0,
-  production: false,
-  emailMode: "local",
-  emailFrom: "auth@localhost",
-})
-const baseOrigin = "http://localhost:3001"
-const TestLive = Layer.unwrap(
-  Config.Redacted("TEST_DATABASE_URL").pipe(Effect.map(options), Effect.map(infrastructure)),
-).pipe(Layer.provideMerge(FetchHttpClient.layer), Layer.provideMerge(BunCrypto.layer))
-
-interface RequestInput {
-  readonly path: string
-  readonly method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE"
-  readonly body?: Schema.Json
-  readonly cookie?: string
-  readonly key?: string
-  readonly origin?: string
-}
-
-const testServer = Effect.gen(function* () {
-  const context = yield* Effect.context<SqlClient.SqlClient | Auth | Repository>()
-  const web = yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      HttpRouter.toWebHandler(
-        routes.pipe(
-          Layer.provide(Layer.succeedContext(context)),
-          Layer.provide(BunHttpServer.layerHttpServices),
-        ),
-        { disableLogger: true },
-      ),
-    ),
-    (web) => Effect.promise(() => web.dispose()),
-  )
-  const server = yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (request) => web.handler(request) }),
-    ),
-    (server) => Effect.promise(() => server.stop(true)),
-  )
-  const origin = `http://127.0.0.1:${server.port}`
-  const client = yield* HttpClient.HttpClient
-  const request = Effect.fn(function* (input: RequestInput) {
-    const requestHeaders = new Headers({
-      "content-type": "application/json",
-      origin: input.origin ?? baseOrigin,
-    })
-    if (input.cookie !== undefined) requestHeaders.set("cookie", input.cookie)
-    if (input.key !== undefined) requestHeaders.set("x-api-key", input.key)
-    let httpRequest = HttpClientRequest.make(input.method ?? "GET")(`${origin}${input.path}`).pipe(
-      HttpClientRequest.setHeaders(requestHeaders),
-    )
-    if (input.body !== undefined)
-      httpRequest = yield* HttpClientRequest.bodyJson(input.body)(httpRequest)
-    return yield* client
-      .execute(httpRequest)
-      .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }))
-  })
-  return { request, origin }
-})
-
-const read = <A, I>(response: HttpClientResponse.HttpClientResponse, schema: Schema.Codec<A, I>) =>
-  response.json.pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.toCodecJson(schema))),
-    Effect.orDie,
-  )
-const BasicUser = Schema.Struct({
-  user: Schema.Struct({ id: Schema.String, email: Schema.String, emailVerified: Schema.Boolean }),
-})
-
-const password = "correct-horse-battery-staple-42"
-
-type Requester = Effect.Success<typeof testServer>["request"]
-
-const signupWith = (request: Requester, sql: SqlClient.SqlClient, suffix: string) =>
-  Effect.fn(function* (name: string) {
-    const email = `${name}-${suffix}@example.com`
-    const response = yield* request({
-      path: "/auth/sign-up/email",
-      method: "POST",
-      body: { name, email, password },
-    })
-    expect(response.status).toBe(200)
-    const user = yield* read(response, BasicUser)
-    expect(user.user.emailVerified).toBe(false)
-    const denied = yield* request({
-      path: "/auth/sign-in/email",
-      method: "POST",
-      body: { email, password },
-    })
-    expect(denied.status).toBe(403)
-    const [message] = yield* sql<{
-      body: string
-      subject: string
-    }>`SELECT body, subject FROM cloud_email_outbox WHERE recipient = ${email} ORDER BY id DESC LIMIT 1`
-    expect(message?.subject).toBe("Verify your email")
-    if (message === undefined) return yield* Effect.die(new Error("Verification email missing"))
-    const verifyPath = new URL(message.body).pathname + new URL(message.body).search
-    const verified = yield* request({ path: verifyPath })
-    expect(verified.status).toBe(302)
-    const login = yield* request({
-      path: "/auth/sign-in/email",
-      method: "POST",
-      body: { email, password },
-    })
-    expect(login.status).toBe(200)
-    const cookie = Cookies.toCookieHeader(login.cookies)
-    expect(cookie).toContain("better-auth.session_token=")
-    return { email, cookie, id: user.user.id }
-  })
+import { enterpriseOrganizations, read, signupWith, TestLive, testServer } from "./fixtures.ts"
 
 it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
   it.effect(
@@ -140,7 +13,7 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         const { request, origin } = yield* testServer
         const sql = yield* SqlClient.SqlClient
         const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
-        const signup = signupWith(request, sql, suffix)
+        const signup = signupWith({ request, sql, suffix })
         const alice = yield* signup("alice")
         const bob = yield* signup("bob")
         const outsider = yield* signup("outsider")
@@ -432,12 +305,12 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
             (entry) => entry.action === "api-key.revoke" && entry.target.id === credential.key.id,
           ),
         ).toBe(true)
-        const pending = yield* request({
+        const billing = yield* request({
           path: `/api/organizations/${org}/billing`,
           cookie: alice.cookie,
         })
-        expect(pending.status).toBe(501)
-        expect((yield* read(pending, Cloud.NotImplemented)).operation).toBe("billing.get")
+        expect(billing.status).toBe(200)
+        expect((yield* read(billing, Cloud.BillingSummary)).plan.id).toBe("free")
         const blockedAuthMutation = yield* request({
           path: "/auth/organization/create",
           method: "POST",
@@ -457,7 +330,7 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         const { request } = yield* testServer
         const sql = yield* SqlClient.SqlClient
         const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
-        const signup = signupWith(request, sql, suffix)
+        const signup = signupWith({ request, sql, suffix })
         const owner = yield* signup("sso-owner")
         const outsider = yield* signup("sso-outsider")
         const created = yield* request({
@@ -507,7 +380,7 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         const { request } = yield* testServer
         const sql = yield* SqlClient.SqlClient
         const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
-        const signup = signupWith(request, sql, suffix)
+        const signup = signupWith({ request, sql, suffix })
         const owner = yield* signup("send-owner")
         const outsider = yield* signup("send-outsider")
         const created = yield* request({
