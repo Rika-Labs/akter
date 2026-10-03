@@ -65,7 +65,7 @@ import { Actors, Database, Runner } from "@rikalabs/akter/runtime"
 
 const runner = Runner.socket({
   address: { host: "runner-a.internal", port: 4400 },
-  listenAddress: { host: "0.0.0.0", port: 4400 },
+  listenAddress: { host: "10.0.0.5", port: 4400 },
   transport: Layer.merge(layerSocketServer, layerClientProtocol),
   shardsPerGroup: 256,
   shardLockExpiration: "35 seconds",
@@ -86,7 +86,7 @@ const runtime = RoomLive.pipe(
 
 Supply `BunCrypto.layer` as in the single-process example. The equivalent Effect Node TCP layers can be supplied, but only Bun is exercised by the process drills. The listener is separate from `Actors.serve` and uses NDJSON RPC over sockets, not HTTP. This is **trusted internal traffic**: use an isolated private network or an authenticated encrypted tunnel. Do not expose the port to public clients. The server does not authenticate peers or terminate TLS.
 
-`address` advertises a unique private DNS name or IP reachable directly by every peer, never a wildcard or a shared load-balancer address. `listenAddress` binds an interface and can differ. Never run two incarnations at one address; keep it reserved until the old process exits and releases its locks. Prove your network's reachability and failure behavior before deploying across hosts.
+`address` advertises a unique private DNS name or IP reachable directly by every peer, never a wildcard or a shared load-balancer address. `listenAddress` binds an interface and can differ; bind the private interface, because the listener has no authentication and a wildcard bind exposes it on every interface of the host. Never run two incarnations at one address; keep it reserved until the old process exits and releases its locks. Prove your network's reachability and failure behavior before deploying across hosts.
 
 Defaults are 256 shards per group, one-second assignment refresh, and expiring table locks with the singleton lease check. Survivors wait for the dead owner's expiration, and stale generations still fail the database fence. Advisory multi-runner locks are unsupported: the pinned storage assigns colliding lock IDs to distinct private holder groups ([ADR 0068](../decisions/0068-production-multi-runner.md)). Expiration defaults to 35 seconds and must be at least 3 seconds; Cluster caps lock refresh at a third of it. Polling, activation, and retries add time beyond expiration. `entityTerminationTimeout` defaults to 15 seconds and bounds activation shutdown during handoff.
 
