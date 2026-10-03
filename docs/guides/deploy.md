@@ -56,7 +56,7 @@ Give the app its own database: the runtime records its retry window and each act
 
 ## Several runners
 
-Every process builds the same actor layers and shares the database, but advertises its own directly reachable private address. Bootstrap a fresh database with one runner before starting peers: the initial creation of the migration bookkeeping and cluster tables is not certified for concurrent first boot. On an initialized database, runners can join concurrently. Provide `Runner.socket` to `Actors.layer`; the platform supplies the real TCP server and client. On Bun:
+Every process builds the same actor layers and shares the database, but advertises its own directly reachable private address. Runners can all start at once against an empty database: startup serializes creation of the migration bookkeeping and cluster tables. Provide `Runner.socket` to `Actors.layer`; the platform supplies the real TCP server and client. On Bun:
 
 ```ts
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"

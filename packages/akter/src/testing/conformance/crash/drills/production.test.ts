@@ -1,9 +1,10 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Config, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import { Config, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actors, Database, Runner } from "../../../../runtime/index.ts"
-import { migrate } from "../../../../runtime/database/migrations.ts"
+import { migrations } from "../../../../runtime/database/migrations.ts"
 import { decompress } from "../../../../runtime/storage/codec.ts"
 import { disposableDatabase } from "../../../database.ts"
 import { freePort, until } from "./failover.ts"
@@ -66,10 +67,6 @@ describe("public production runner topology on Postgres", () => {
           expect(String(pglite)).toContain("requires Postgres")
           yield* build(64)
           database = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
-          yield* Effect.gen(function* () {
-            const context = yield* Layer.build(Database.postgres({ url: database }))
-            yield* migrate.pipe(Effect.provideContext(context))
-          }).pipe(Effect.scoped)
           const competing = yield* Effect.all([Effect.exit(build(32)), Effect.exit(build(64))], {
             concurrency: 2,
           })
@@ -81,6 +78,76 @@ describe("public production runner topology on Postgres", () => {
         }).pipe(Effect.scoped),
       ),
     30_000,
+  )
+
+  it(
+    "starts six public socket runners together on a completely empty database",
+    () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const database = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const pool = yield* Effect.acquireRelease(
+            Effect.sync(() => new Pool({ connectionString: Redacted.value(database) })),
+            (connection) => Effect.promise(() => connection.end()),
+          )
+          const ports = new Set<number>()
+          while (ports.size < 6) ports.add(yield* freePort)
+          yield* Effect.forEach(
+            [...ports],
+            (port) =>
+              Layer.build(
+                Actors.layer().pipe(
+                  Layer.provide(
+                    Runner.socket({
+                      address: { host: "127.0.0.1", port },
+                      transport: Layer.merge(layerSocketServer, layerClientProtocol),
+                      shardsPerGroup: 16,
+                    }),
+                  ),
+                  Layer.provide(
+                    Database.postgres({
+                      url: database,
+                      offTurnConnections: 3,
+                      maxConnections: 2,
+                    }),
+                  ),
+                ),
+              ),
+            { concurrency: "unbounded", discard: true },
+          )
+          yield* until(
+            Effect.promise(() =>
+              pool
+                .query("SELECT count(DISTINCT address)::int AS runners FROM cluster_runners")
+                .then(({ rows }) => rows[0].runners === 6),
+            ),
+            "six registered runners",
+            "15 seconds",
+          )
+          const [runners, ids, deployment] = yield* Effect.promise(() =>
+            Promise.all([
+              pool.query("SELECT count(DISTINCT address)::int AS runners FROM cluster_runners"),
+              pool.query(
+                "SELECT count(*)::int AS ids, max(migration_id)::int AS latest FROM actor_migrations",
+              ),
+              pool.query(
+                "SELECT runner_shards, runner_lock_expiration_ms::int AS expiration FROM actor_deployment",
+              ),
+            ]),
+          )
+          expect(runners.rows).toEqual([{ runners: 6 }])
+          expect(ids.rows).toEqual([
+            {
+              ids: Object.keys(migrations).length,
+              latest: Math.max(...Object.keys(migrations).map((key) => Number(key.split("_")[0]))),
+            },
+          ])
+          expect(deployment.rows).toEqual([{ runner_shards: 16, expiration: 35_000 }])
+        }).pipe(Effect.scoped),
+      ),
+    60_000,
   )
 
   it(
