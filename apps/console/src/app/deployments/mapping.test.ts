@@ -144,6 +144,36 @@ describe("deployment detail", () => {
       }),
     ))
 
+  it("keeps unmeasured runner telemetry unknown while preserving measured zeroes", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(
+          DeploymentDetail,
+          detail({
+            runners: [
+              {
+                id: "unknown",
+                region: "us-east-1",
+                actorCount: null,
+                cpuPercent: null,
+                health: "healthy",
+              },
+              { id: "zero", region: "us-west-2", actorCount: 0, cpuPercent: 0, health: "healthy" },
+            ],
+          }),
+        )
+        const page = toDeploymentPage(now)({
+          detail: parsed,
+          log: yield* decode(BuildLog, { lines: [], complete: true }),
+          history: [],
+        })
+        expect(page.runners).toEqual([
+          { id: "unknown", region: "us-east-1", actors: null, cpu: "—", health: "healthy" },
+          { id: "zero", region: "us-west-2", actors: 0, cpu: "0%", health: "healthy" },
+        ])
+      }),
+    ))
+
   it("draws runners, the build log in order and no measured shift the API does not report", () =>
     Effect.runPromise(
       Effect.gen(function* () {

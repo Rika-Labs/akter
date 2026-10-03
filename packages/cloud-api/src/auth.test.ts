@@ -108,6 +108,8 @@ const DeploymentsHandlers = HttpApiBuilder.group(Api, "deployments", (handlers) 
       .handle("create", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("get", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("getBuildLog", () => Effect.fail(NotImplemented.make({ operation: "x" })))
+      .handle("recordBuild", () => Effect.fail(NotImplemented.make({ operation: "x" })))
+      .handle("failBuild", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("rollback", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("redeploy", () => Effect.fail(NotImplemented.make({ operation: "x" }))),
   ),

@@ -1,5 +1,7 @@
 # Cloud infrastructure verification
 
+The deployment/provider slice adds runner networking and task permissions, explicit Cloudflare/NLB source trust, and operator-supplied signing and cell-environment bindings. Its local and fake-HTTP evidence is documented separately in [cloud deployments](cloud-deployments.md); it does not establish real TLS, IAM, Fargate capacity or Cloudflare streaming support.
+
 **Responsibility:** distinguish local infrastructure evidence from provider deployment support.
 **Authority:** evidence requirements.
 **Owner role:** platform reliability.

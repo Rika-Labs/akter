@@ -47,8 +47,8 @@ export type RolloutStep = typeof RolloutStep.Type
 export const DeploymentRunner = Schema.Struct({
   id: Schema.String,
   region: RegionId,
-  actorCount: NonNegativeInt,
-  cpuPercent: NonNegative,
+  actorCount: Schema.NullOr(NonNegativeInt),
+  cpuPercent: Schema.NullOr(NonNegative),
   health: Schema.Literals(["healthy", "unhealthy", "starting", "draining"]),
 })
 export type DeploymentRunner = typeof DeploymentRunner.Type
@@ -94,6 +94,29 @@ export const CreateDeployment = Schema.Struct({
   regions: Schema.optional(Schema.Array(RegionId)),
 })
 export type CreateDeployment = typeof CreateDeployment.Type
+
+/** A content-addressed image makes a retry and a rollback use the same executable bytes. */
+export const ImageDigest = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^(?:[^\s@]+@)?sha256:[a-f0-9]{64}$/u)),
+)
+
+/** Records a successful external build and starts the durable rollout under the deployment id. */
+export const RecordBuild = Schema.Struct({
+  image: ImageDigest,
+  commitSha: CommitSha,
+  environmentSnapshot: Schema.Record(Schema.String, Schema.String).check(
+    Schema.makeFilter(
+      (snapshot) =>
+        Object.keys(snapshot).every((key) => /^[A-Za-z_][A-Za-z0-9_]{0,254}$/u.test(key)) ||
+        "Environment variable names must be valid identifiers",
+    ),
+  ),
+})
+export type RecordBuild = typeof RecordBuild.Type
+
+export const FailBuild = Schema.Struct({
+  reason: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+})
 
 export const BuildLogLine = Schema.Struct({
   index: NonNegativeInt,

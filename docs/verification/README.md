@@ -21,6 +21,7 @@ Startup migration protocol evidence lives in `runtime/database/neki/migrations.t
 - Control-plane feature flags: `packages/flags/src/evaluation.test.ts` rejects wrong precedence, truthiness defaults, unstable hash vectors, percentage boundary errors and unknown-key fallback. `layer.test.ts` rejects memory-store caching, invalid replacements and targeting disclosure. `postgres.test.ts` rejects lost rules across runtime restart, committed rolled-back/interrupted writes, failed replacements/deletions treated as success, and store outages treated as defaults. Real Postgres is required for the latter; Neki is unverified.
 
 - [Cloud infrastructure](cloud-infrastructure.md)
+- [Cloud deployments](cloud-deployments.md)
 
 `bun run test:node` runs the core real-Postgres conformance shards on Node 24+ and a clean packed-tarball PGlite quickstart, including two processes that observe persisted increments. Configure `TEST_DATABASE_URL` and, for replica cases, `TEST_REPLICA_DATABASE_URL`. `check:ci` runs this evidence and the Bun tarball smoke without changing the Verify workflow. Provider-specific and subprocess crash evidence remain separate; a Node core pass does not establish Node crash-drill or provider support.
 

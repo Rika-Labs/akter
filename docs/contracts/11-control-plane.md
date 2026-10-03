@@ -1,6 +1,6 @@
 # Control plane
 
-**Responsibility:** define the durable records and guarantees of the Akter Cloud control plane (`apps/api`): projects, environments, user preferences and the audit log.  
+**Responsibility:** define the durable records and guarantees of the Akter Cloud control plane (`apps/api`): projects, environments, deployment lifecycle, runner capacity, user preferences and the audit log.
 **Authority:** normative.  
 **Owner role:** cloud and security.  
 **Change policy:** security review is required for any change to organization scoping, the audit log, or how the API reaches runners; every new durable record needs a failure test ([ADR 0074](../decisions/0074-open-source-control-plane.md)).
@@ -31,6 +31,22 @@ Preferences are keyed by the user alone. A person with no organization still has
 7. **Audit cursor.** The audit log is paged by the numeric id of the last entry read, newest first, optionally filtered by action or actor. A cursor the repository did not issue fails `InvalidCursor`; a page never exceeds 100 entries.
 8. **Database failures are defects.** Typed failures are the domain errors above; any other database error ends the request as an opaque 500.
 9. **Runner access.** The control plane MUST reach customer runners only through the edge ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md), [contract 10](10-security.md)); it MUST NOT hold runner addresses or signing keys, and MUST NOT forward a caller's session or API key to a runner.
+
+## Deployment lifecycle and runner capacity
+
+Deployment reads and transitions MUST establish project access before capturing the lifecycle actor handle, and MUST scope that handle to the project's organization. One actor serializes each project environment. Only one rollout may be in progress in that environment. Recording the same image, commit and environment snapshot twice MUST not enqueue a second rollout. A changed build result conflicts.
+
+Build, migration, runner startup and previous-runner drain are separate durable steps. Provider calls MUST run as actor jobs after commit and use the durable job identity for idempotency. A failed build, migration, startup or activation MUST leave the previous deployment live. Failed startup MUST schedule cleanup of any capacity it provisioned.
+
+Activation MUST compare-and-set the environment's current deployment from the expected previous id. The pointer, project status, host routing, `deployment.live` audit entry and lifecycle statuses MUST commit in the same fenced actor transaction or none may change. `Repository.activateDeployment` owns the writes to `cloud_environment`, `cloud_project` and `cloud_audit`; it is called only inside that transaction. An audit failure MUST roll back activation.
+
+A rollback MUST target an earlier deployment that reached live and is not currently live. It creates a new deployment from that target's image and immutable environment snapshot, sets `rolledBackFrom`, and skips build and migrate. Only after that replacement is live may the replaced deployment become rolled-back. The target retains its status.
+
+Concurrent wakes for one release-region MUST enqueue one provisioning job. Registration and wake deletion MUST commit with the runner actor's result. Drain MUST withdraw registration before asking the platform to stop. A drain requested while provisioning MUST be retained and stop the task when it appears. Reconciliation MUST not remove a replacement because a stale observation reported that an earlier task stopped.
+
+Poller wakes MUST recheck that the deployment still serves inside the capacity turn; a stale poll result MUST NOT resurrect a retired release. A wake after a failed stop MUST finish stopping the old task before starting replacement capacity. Interrupting the orchestration process MUST leave accepted provider capacity for the durable retry. Cleanup outcomes for failed rollouts MUST remain visible on their drain step; an unresolved provider start is not evidence of completed drain.
+
+Free deployments may scale to zero after the idle bound; Pro and Enterprise retain at least one desired runner. The edge MUST commit activity before forwarding a request, and an idle withdrawal MUST serialize with that write. Due work at zero remains durable and is delivered after the next wake, subject to the framework's documented cron age rule. Runner metrics absent from measured telemetry MUST be null rather than synthesized.
 
 ## Changes made through Better Auth
 

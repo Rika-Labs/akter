@@ -135,7 +135,13 @@ const ALLOWED_HEADERS = [
  */
 const MIN_RETRY_WINDOW_MS = 60_000
 
-const EXPOSED_HEADERS = ["x-request-id", "durable-now", "durable-version", "retry-after"].join(", ")
+const EXPOSED_HEADERS = [
+  "x-request-id",
+  "durable-now",
+  "durable-version",
+  "durable-replayed",
+  "retry-after",
+].join(", ")
 
 const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
 
@@ -742,6 +748,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
               input.minVersion === undefined ? undefined : yield* input.minVersion,
             ),
             version: undefined,
+            replayed: undefined,
           }
 
         const fiber = yield* actors.execute(call).pipe(Effect.exit, Effect.forkIn(scope))
@@ -763,7 +770,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
           const bytes = yield* readBound(request, authenticated)
 
-          const { outcome, version } = yield* runMember({
+          const { outcome, version, replayed } = yield* runMember({
             definition,
             member,
             id,
@@ -773,7 +780,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             minVersion: minVersion(request),
           })
 
-          const response = yield* outcomeResponse(member, outcome)
+          const original = yield* outcomeResponse(member, outcome)
+          const response =
+            version === undefined
+              ? original
+              : HttpServerResponse.setHeader(
+                  original,
+                  "durable-replayed",
+                  String(replayed ?? false),
+                )
 
           return version === undefined
             ? response
