@@ -2,6 +2,7 @@ import { Crypto, Effect, Layer, ManagedRuntime, Schedule, Schema } from "effect"
 import { Actor, Actors } from "../../index.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase } from "../conformance.ts"
+import { onBun } from "./platform.ts"
 
 const Touch = Actor.command("Touch", { success: Schema.Finite })
 
@@ -29,13 +30,47 @@ const COMMANDS = 4_096
 
 const HOT_ACTORS = 32
 
+type Gc = (options: { readonly type: "major" }) => void
+
+let cachedGc: Gc | undefined
+
+/**
+ * Node's collector, made reachable once: building its vm realm allocates, so
+ * doing that for each sample would charge the realm to the heap it measures.
+ */
+const nodeGc = Effect.gen(function* () {
+  if (cachedGc !== undefined) return cachedGc
+
+  const v8 = yield* Effect.promise(() => import("node:v8"))
+  const vm = yield* Effect.promise(() => import("node:vm"))
+  v8.setFlagsFromString("--expose-gc")
+  cachedGc = vm.runInNewContext("gc") as Gc
+
+  return cachedGc
+})
+
 /**
  * Live JavaScript heap after a full collection. ArrayBuffer memory is left
  * out: an in-process database keeps its pages there, and they grow with
- * stored rows rather than with anything the runtime retains. `bun:jsc` is
- * loaded only when the case runs, so importing the testing entry needs no Bun.
+ * stored rows rather than with anything the runtime retains. Bun counts every
+ * live cell; V8 counts the objects that inherit `Object.prototype`, which is
+ * every object but a null-prototype one, so the two counts differ in scale
+ * but each rises with each object the runtime retains. The count is taken
+ * before the byte size so counting is not charged to the sample. `bun:jsc` and `node:v8`
+ * are loaded only when the case runs, so importing the testing entry needs
+ * neither runtime's helpers.
  */
 const retained = Effect.gen(function* () {
+  if (!onBun) {
+    const v8 = yield* Effect.promise(() => import("node:v8"))
+    const gc = yield* nodeGc
+    gc({ type: "major" })
+    gc({ type: "major" })
+    const objects = v8.queryObjects(Object, { format: "count" })
+
+    return { bytes: v8.getHeapStatistics().used_heap_size, objects }
+  }
+
   const { heapStats } = yield* Effect.promise(() => import("bun:jsc"))
   Bun.gc(true)
   const stats = heapStats()

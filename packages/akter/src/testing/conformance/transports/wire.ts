@@ -1,3 +1,4 @@
+import { connect, type Socket } from "node:net"
 import {
   Context,
   flow,
@@ -200,6 +201,20 @@ export const socket = Effect.fnUntraced(function* (
   ).pipe(Effect.map(({ wire }) => wire))
 })
 
+/** Opens a raw TCP connection to `hostname:port`, feeding what it receives to `data` and its end to `close`. */
+const openTcp = (
+  hostname: string,
+  port: number,
+  handlers: { readonly data: (chunk: Uint8Array) => void; readonly close: () => void },
+) =>
+  Effect.callback<Socket>((resume) => {
+    const socket = connect({ host: hostname, port }, () => resume(Effect.succeed(socket)))
+
+    socket.on("data", handlers.data)
+    socket.once("close", handlers.close)
+    socket.once("error", (error) => resume(Effect.die(error)))
+  })
+
 /** The status a raw upgrade request is answered with, for upgrades the server refuses. */
 export const upgradeStatus = (
   host: string,
@@ -212,23 +227,17 @@ export const upgradeStatus = (
     const decoder = new TextDecoder()
     let received = ""
 
-    const connection = yield* Effect.promise(() =>
-      Bun.connect({
-        hostname: hostname!,
-        port: Number(port),
-        socket: {
-          data: (_socket, chunk) => {
-            received += decoder.decode(chunk)
-            const line = /^HTTP\/1\.1 (\d{3})/.exec(received)
+    const connection = yield* openTcp(hostname!, Number(port), {
+      data: (chunk) => {
+        received += decoder.decode(chunk)
+        const line = /^HTTP\/1\.1 (\d{3})/.exec(received)
 
-            if (line !== null) Deferred.doneUnsafe(status, Effect.succeed(Number(line[1])))
-          },
-          close: () => {
-            Deferred.doneUnsafe(status, Effect.succeed(0))
-          },
-        },
-      }),
-    )
+        if (line !== null) Deferred.doneUnsafe(status, Effect.succeed(Number(line[1])))
+      },
+      close: () => {
+        Deferred.doneUnsafe(status, Effect.succeed(0))
+      },
+    })
 
     const lines = [
       `GET /api/actors/SocketRoom/${id}/Chat HTTP/1.1`,
@@ -297,18 +306,12 @@ export const headerSocket = (host: string, id: string, authorization: string) =>
     }
 
     const connection = yield* Effect.acquireRelease(
-      Effect.promise(() =>
-        Bun.connect({
-          hostname: hostname!,
-          port: Number(port),
-          socket: {
-            data: (_socket, chunk) => read(chunk),
-            close: () => {
-              Deferred.doneUnsafe(closed, Effect.succeed({ code: 1006 }))
-            },
-          },
-        }),
-      ),
+      openTcp(hostname!, Number(port), {
+        data: read,
+        close: () => {
+          Deferred.doneUnsafe(closed, Effect.succeed({ code: 1006 }))
+        },
+      }),
       (open) => Effect.sync(() => open.end()),
     )
 

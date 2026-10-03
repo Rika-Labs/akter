@@ -36,6 +36,8 @@ A runner with a key-set URL also answers `POST <basePath>/assertion-keys/refresh
 
 ## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
 
+The served mapping is the same on Bun 1.4.2+ and Node 24+. A same-origin check MUST use the actual transport scheme and the request's Host; a client-supplied `x-forwarded-proto` or absolute request target MUST NOT make a cleartext Node socket into an HTTPS origin. Explicitly listed application origins remain supported. Platform HTTP layers do not change command identity, authentication, receipt replay or stream control frames.
+
 M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; M4.2 adds `GET /ready` ([ADR 0053](../decisions/0053-served-readiness-route.md)); M3.3 serves connection members as WebSocket sessions, declared `feeds` as SSE event feeds, and `Actor.stream` members over SSE. Evidence: `conformance/http.ts` and `conformance/transports.ts`.
 
 - Each public member has one route under the server's base path: `POST /actors/{Actor}/{id}/{Member}` for commands, reducers, queries, and workflow starts; `GET …/events?event=…&after=…` for the events an actor type declares in `feeds`, over SSE; `POST …/{Stream}` for streams over SSE; `POST …/{Query}/watch` for a query declared `watch: true`, over SSE (any other query answers `400 InvalidInput { code: "not_watchable" }`); and a WebSocket upgrade at `…/{Connection}`. Singletons omit `{id}`. Internal members have no route and answer like unknown ones.

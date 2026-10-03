@@ -10,7 +10,7 @@ Define each part of your app once: its data, the commands it accepts, the work i
 bun add @rikalabs/akter@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later. Effect, its SQL drivers, and Drizzle are peer dependencies pinned to the versions the framework is tested with, so your app and the framework share one copy of each.
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. Provide `BunCrypto` / `BunHttpServer` from `@effect/platform-bun` on Bun, or `NodeCrypto` / `NodeHttpServer` from `@effect/platform-node` on Node. Effect, its SQL drivers, and Drizzle are peer dependencies pinned to the versions the framework is tested with, so your app and the framework share one copy of each.
 
 ## Example
 

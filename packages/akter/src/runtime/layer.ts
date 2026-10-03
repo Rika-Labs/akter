@@ -43,6 +43,7 @@ import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
+import { NekiTurnSessions } from "./database/neki/session.ts"
 import { ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
@@ -1409,6 +1410,7 @@ export const Database = {
   postgres: (
     options: Omit<PgClient.PgPoolConfig, "types"> & {
       readonly offTurnConnections?: number
+      readonly neki?: boolean
       readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
       /** An unsharded primary shared by every runner; owns coordination rows and Cluster and fleet locks. */
       readonly coordination?: Omit<PgClient.PgPoolConfig, "types"> | undefined
@@ -1425,10 +1427,10 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, replica, coordination, ...configured } = options
+    const { offTurnConnections, replica, neki, coordination, ...configured } = options
     const pool = withKeepalives(configured)
 
-    return Layer.mergeAll(
+    const database = Layer.mergeAll(
       PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
@@ -1436,6 +1438,9 @@ export const Database = {
         coordination === undefined ? undefined : { ...withKeepalives(coordination), types },
       ),
     )
+    return neki === undefined
+      ? database
+      : database.pipe(Layer.provideMerge(Layer.succeed(NekiTurnSessions, neki)))
   },
   pglite,
 }

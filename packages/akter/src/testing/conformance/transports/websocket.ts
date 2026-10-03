@@ -24,6 +24,51 @@ import { greet, rows, setup } from "./harness.ts"
 /** WebSocket handshake, framing, limits, reauthentication, parking, and resync. */
 export const transportWebSocketConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "finishes durable WebSocket close even when its outbound reader ends while deletion waits on a database lock",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const { host, token } = yield* setup(environment)
+          const room = yield* SocketRoom.get("ws-blocked-close")
+          const ws = yield* socket(host, "ws-blocked-close")
+          yield* ws.send({ t: "hello", authorization: token(), params: { name: "alice" } })
+          yield* opened(yield* ws.next())
+          yield* ws.next()
+          expect((yield* rows(room.ref)).connections).toBe(1)
+
+          if (environment.connect === undefined)
+            return yield* Effect.die(
+              new Error("This case needs an independent database connection"),
+            )
+          const blocker = yield* environment.connect
+          yield* blocker.query("BEGIN")
+          yield* blocker.query(
+            "SELECT connection_id FROM actor_connections WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3 FOR UPDATE",
+            [room.ref.tenant, room.ref.actor, room.ref.id],
+          )
+
+          yield* ws.close
+          yield* Effect.gen(function* () {
+            while (true) {
+              const blocked = yield* blocker.query(
+                "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%actor_connections%'",
+              )
+              if (blocked.length > 0) return
+              yield* Effect.sleep("20 millis")
+            }
+          }).pipe(Effect.timeout("3 seconds"), Effect.orDie)
+          yield* blocker.query("COMMIT")
+
+          expect((yield* ws.closed).code).toBe(1000)
+          yield* Effect.gen(function* () {
+            while ((yield* rows(room.ref)).connections > 0) yield* Effect.sleep("20 millis")
+          }).pipe(Effect.timeout("10 seconds"), Effect.orDie)
+          expect((yield* rows(room.ref)).connections).toBe(0)
+        }),
+      ),
+  },
+  {
     name: "serves a connection over WebSocket: hello, open at its baseline, then member frames both ways with event cursors",
     run: ({ expect, environment }) =>
       environment.run(

@@ -10,13 +10,21 @@ description: "Go from an empty directory to a running, tested actor app on embed
 **Owner role:** API / SDK.  
 **Change policy:** change with the public API; run every command here against a freshly packed tarball before a release.
 
-You need [Bun](https://bun.sh) 1.4.2 or later. No Docker and no database server: the app stores its data with [PGlite](https://pglite.dev), an embedded Postgres, in `./.data`.
+You need [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. No Docker and no database server: the app stores its data with [PGlite](https://pglite.dev), an embedded Postgres, in `./.data`. File-backed PGlite requires Linux or macOS on a local filesystem with either runtime.
 
 ## 1. Install
 
 ```sh
 mkdir my-app && cd my-app && bun init -y
 bun add @rikalabs/akter@alpha effect@4.0.0 @effect/platform-bun@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
+```
+
+For Node, install the Node platform instead:
+
+```sh
+mkdir my-app && cd my-app && npm init -y
+npm pkg set type=module
+npm install @rikalabs/akter@alpha effect@4.0.0 @effect/platform-node@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
 Effect, the Effect SQL drivers and Drizzle are peer dependencies pinned to the exact versions the framework is tested against.
@@ -88,6 +96,15 @@ bun src/main.ts   # visits: 1
 bun src/main.ts   # visits: 2
 ```
 
+On Node, replace the platform import with `import { NodeCrypto, NodeRuntime } from "@effect/platform-node"`, replace `BunCrypto.layer` with `NodeCrypto.layer` and `BunRuntime.runMain` with `NodeRuntime.runMain`, then run:
+
+```sh
+node src/main.ts   # visits: 1
+node src/main.ts   # visits: 2
+```
+
+Node's native TypeScript support runs this app without a build step. In a served app, provide `NodeHttpServer.layer(createServer, { port: 8080 })` from `@effect/platform-node`, with `createServer` imported from `node:http`, instead of `BunHttpServer.layer({ port: 8080 })`. `Actors.serve` uses the same Effect HTTP layer on both runtimes.
+
 Each run is a new process. The count survives because the turn that incremented it committed to the database files in `./.data` before the reply. Delete `./.data` to start again.
 
 ## 4. Test it
@@ -151,6 +168,8 @@ test("a crash before or after commit leaves exactly one increment", async () => 
 ```sh
 bun test
 ```
+
+For Node tests, install Vitest (`npm install --save-dev vitest`), import `afterAll`, `expect`, and `test` from `vitest` instead of `bun:test`, and provide `NodeCrypto.layer` instead of `BunCrypto.layer`. Run `npx vitest run`; the actor, receipt and crash assertions stay unchanged.
 
 The first test opens a new PGlite directory, which runs `initdb` inside WebAssembly and applies the framework's migrations, so it takes a few seconds. The injected `afterCommit` crash is logged as an entity defect; that log line is expected.
 

@@ -1,9 +1,10 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Config, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import { Config, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actors, Database, Runner } from "../../../../runtime/index.ts"
-import { migrate } from "../../../../runtime/database/migrations.ts"
+import { migrations } from "../../../../runtime/database/migrations.ts"
 import { decompress } from "../../../../runtime/storage/codec.ts"
 import { disposableDatabase } from "../../../database.ts"
 import { freePort, until } from "./failover.ts"
@@ -66,10 +67,6 @@ describe("public production runner topology on Postgres", () => {
           expect(String(pglite)).toContain("requires Postgres")
           yield* build(64)
           database = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
-          yield* Effect.gen(function* () {
-            const context = yield* Layer.build(Database.postgres({ url: database }))
-            yield* migrate.pipe(Effect.provideContext(context))
-          }).pipe(Effect.scoped)
           const competing = yield* Effect.all([Effect.exit(build(32)), Effect.exit(build(64))], {
             concurrency: 2,
           })
@@ -82,6 +79,100 @@ describe("public production runner topology on Postgres", () => {
       ),
     30_000,
   )
+
+  for (const authority of ["default", "same", "separate"] as const) {
+    it(
+      `starts six public socket runners together on a completely empty database with ${authority} coordination`,
+      () =>
+        runtime.runPromise(
+          Effect.gen(function* () {
+            const database = yield* disposableDatabase({
+              url: yield* Config.Redacted("TEST_DATABASE_URL"),
+            })
+            const control =
+              authority === "separate"
+                ? yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+                : database
+            const pool = yield* Effect.acquireRelease(
+              Effect.sync(() => new Pool({ connectionString: Redacted.value(database) })),
+              (connection) => Effect.promise(() => connection.end()),
+            )
+            const controlPool = yield* Effect.acquireRelease(
+              Effect.sync(() => new Pool({ connectionString: Redacted.value(control) })),
+              (connection) => Effect.promise(() => connection.end()),
+            )
+            const ports = new Set<number>()
+            while (ports.size < 6) ports.add(yield* freePort)
+            yield* Effect.forEach(
+              [...ports],
+              (port) =>
+                Layer.build(
+                  Actors.layer().pipe(
+                    Layer.provide(
+                      Runner.socket({
+                        address: { host: "127.0.0.1", port },
+                        transport: Layer.merge(layerSocketServer, layerClientProtocol),
+                        shardsPerGroup: 16,
+                      }),
+                    ),
+                    Layer.provide(
+                      Database.postgres({
+                        url: database,
+                        offTurnConnections: 3,
+                        maxConnections: 2,
+                        coordination:
+                          authority === "default" ? undefined : { url: control, maxConnections: 3 },
+                      }),
+                    ),
+                  ),
+                ),
+              { concurrency: "unbounded", discard: true },
+            )
+            yield* until(
+              Effect.promise(() =>
+                controlPool
+                  .query("SELECT count(DISTINCT address)::int AS runners FROM cluster_runners")
+                  .then(({ rows }) => rows[0].runners === 6),
+              ),
+              "six registered runners",
+              "15 seconds",
+            )
+            const [runners, ids, deployment] = yield* Effect.promise(() =>
+              Promise.all([
+                controlPool.query(
+                  "SELECT count(DISTINCT address)::int AS runners FROM cluster_runners",
+                ),
+                pool.query(
+                  "SELECT count(*)::int AS ids, max(migration_id)::int AS latest FROM actor_migrations",
+                ),
+                pool.query(
+                  "SELECT runner_shards, runner_lock_expiration_ms::int AS expiration FROM actor_deployment",
+                ),
+              ]),
+            )
+            expect(runners.rows).toEqual([{ runners: 6 }])
+            expect(ids.rows).toEqual([
+              {
+                ids: Object.keys(migrations).length,
+                latest: Math.max(
+                  ...Object.keys(migrations).map((key) => Number(key.split("_")[0])),
+                ),
+              },
+            ])
+            expect(deployment.rows).toEqual([{ runner_shards: 16, expiration: 35_000 }])
+            if (authority === "separate") {
+              const locations = yield* Effect.promise(() =>
+                pool.query(
+                  "SELECT to_regclass('cluster_runners')::text AS runners, to_regclass('cluster_locks')::text AS locks",
+                ),
+              )
+              expect(locations.rows).toEqual([{ runners: null, locks: null }])
+            }
+          }).pipe(Effect.scoped),
+        ),
+      60_000,
+    )
+  }
 
   it(
     "moves a singleton and its cron after SIGKILL, drains and rolls three socket-connected processes, and preserves every acknowledged command exactly once",
@@ -211,6 +302,13 @@ describe("public production runner topology on Postgres", () => {
               ),
             ),
             "cron ticks after both handoffs",
+            "15 seconds",
+          )
+          yield* until(
+            query<{ count: number }>(
+              "SELECT count(*)::int AS count FROM actor_outbox WHERE kind = 'intent' AND timer_key IS NULL",
+            ).pipe(Effect.map((rows) => rows[0]!.count === 0)),
+            "every command intent to settle before stopping all relays",
             "15 seconds",
           )
           for (const runner of survivors) yield* drain(runner)
