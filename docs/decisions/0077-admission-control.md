@@ -1,4 +1,4 @@
-# ADR 0069: Admission control: shed load with `ActorUnavailable` and `retry-after`
+# ADR 0077: Admission control: shed load with `ActorUnavailable` and `retry-after`
 
 **Status:** implementation decision (2026-10-03), for #494; amends ADR 0019's mailbox mapping.
 
