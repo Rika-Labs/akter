@@ -64,7 +64,10 @@ export type TopBarConfig<Message> = SlotConfig<Message> &
     actions?: Children
   }>
 
-/** Breadcrumbs as an ordered list in a labelled navigation landmark. */
+/**
+ * Breadcrumbs as an ordered list in a labelled navigation landmark. Below the narrow breakpoint only
+ * the current page shows, so the bar keeps room for its actions.
+ */
 export const breadcrumb: {
   <Message>(h: HtmlBuilder<Message>, crumbs: ReadonlyArray<Crumb>): Html
   (crumbs: ReadonlyArray<Crumb>): <Message>(h: HtmlBuilder<Message>) => Html
@@ -102,11 +105,17 @@ export const breadcrumb: {
                   [crumb.label],
                 )
           return h.li(
-            [...styleAttributes(h, styles.item, index < crumbs.length - 2 && styles.hiddenNarrow)],
+            [...styleAttributes(h, styles.item, !last && styles.hiddenNarrow)],
             [
               index === 0
                 ? h.empty
-                : h.span([h.AriaHidden(true), ...styleAttributes(h, styles.separator)], ["/"]),
+                : h.span(
+                    [
+                      h.AriaHidden(true),
+                      ...styleAttributes(h, styles.separator, last && styles.hiddenNarrow),
+                    ],
+                    ["/"],
+                  ),
               label,
             ],
           )

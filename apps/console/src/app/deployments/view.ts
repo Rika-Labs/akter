@@ -33,7 +33,7 @@ export const deploymentsScreen = ({ h, page }: ScreenInput<DeploymentsPage>): Sc
       columns: [
         { key: "commit", label: "Commit", width: "5.5rem", mono: true },
         { key: "message", label: "Message", width: "minmax(0, 1.6fr)" },
-        { key: "status", label: "Status", width: "7.5rem" },
+        { key: "status", label: "Status", width: "7.5rem", hideBelow: "compact" },
         { key: "author", label: "Author", width: "5rem", muted: true, hideBelow: "narrow" },
         {
           key: "regions",

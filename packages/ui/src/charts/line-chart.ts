@@ -32,10 +32,11 @@ export interface ChartMarker {
 
 const local = stylex.create({
   gradientStop: { stopColor: colors.chartLine },
+  markerLabelEnd: { translate: "-100% 0" },
   markerLabel: {
     position: "absolute",
     insetBlockStart: 0,
-    marginInlineStart: "0.375rem",
+    paddingInline: "0.375rem",
     color: colors.subtleForeground,
     fontFamily: typography.mono,
     fontSize: "0.65625rem",
@@ -290,6 +291,7 @@ const render = <Message>(h: HtmlBuilder<Message>, config: LineChartConfig<Messag
                 ...styleAttributes(
                   h,
                   local.markerLabel,
+                  fraction(marker.index) > 0.8 && local.markerLabelEnd,
                   placement.left(percent(fraction(marker.index))),
                 ),
               ],

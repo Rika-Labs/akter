@@ -51,7 +51,6 @@ const styles = stylex.create({
     borderBlockStartWidth: { default: 0, [conditions.narrow]: borders.hairline },
     borderStyle: "solid",
     borderColor: colors.border,
-    order: { default: 0, [conditions.narrow]: -1 },
   },
   panel: { display: "grid", gap: space.lg, minWidth: 0 },
   muted: { color: colors.mutedForeground },
@@ -109,7 +108,7 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
           { key: "id", label: "Command id", width: "7rem", mono: true },
           { key: "command", label: "Command", width: "minmax(0, 1fr)", mono: true },
           { key: "result", label: "Result", width: "minmax(0, 1fr)", mono: true },
-          { key: "at", label: "At", width: "5.5rem", align: "end" },
+          { key: "at", label: "At", width: "5.5rem", align: "end", hideBelow: "compact" },
         ],
         rows: page.receipts.map((receipt, index) => ({
           key: `${receipt.commandId}-${String(index)}`,
@@ -124,7 +123,13 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
         columns: [
           { key: "cursor", label: "Cursor", width: "5rem", mono: true },
           { key: "name", label: "Event", width: "minmax(0, 1fr)", mono: true },
-          { key: "subscribers", label: "Subscribers", width: "6.5rem", align: "end" },
+          {
+            key: "subscribers",
+            label: "Subscribers",
+            width: "6.5rem",
+            align: "end",
+            hideBelow: "compact",
+          },
           { key: "at", label: "At", width: "5.5rem", align: "end" },
         ],
         rows: page.events.map((event) => ({
@@ -139,7 +144,13 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
         columns: [
           { key: "id", label: "Job", width: "6rem", mono: true },
           { key: "name", label: "Type", width: "minmax(0, 1fr)", mono: true },
-          { key: "attempts", label: "Attempts", width: "5.5rem", align: "end" },
+          {
+            key: "attempts",
+            label: "Attempts",
+            width: "5.5rem",
+            align: "end",
+            hideBelow: "compact",
+          },
           { key: "status", label: "Status", width: "6.5rem" },
           { key: "at", label: "At", width: "5.5rem", align: "end", hideBelow: "compact" },
         ],
@@ -160,7 +171,7 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
         label: "Connections",
         columns: [
           { key: "id", label: "Connection", width: "6rem", mono: true },
-          { key: "kind", label: "Kind", width: "6.5rem" },
+          { key: "kind", label: "Kind", width: "6.5rem", hideBelow: "compact" },
           { key: "client", label: "Client", width: "minmax(0, 1fr)", mono: true },
           { key: "state", label: "State", width: "6rem" },
           { key: "since", label: "Since", width: "5.5rem", align: "end", hideBelow: "compact" },

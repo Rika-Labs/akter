@@ -10,8 +10,8 @@ import { borders, colors, conditions, radius, space, typography } from "../token
 const styles = stylex.create({
   group: {
     display: "grid",
-    gridTemplateColumns: { default: "repeat(3, minmax(0, 1fr))", [conditions.compact]: "1fr" },
-    gap: space.md,
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: { default: space.md, [conditions.compact]: space.sm },
   },
   option: {
     display: "grid",

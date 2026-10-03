@@ -84,6 +84,7 @@ const styles = stylex.create({
   shiftSvg: { position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" },
   wash: { fill: colors.chartFill, stroke: "none" },
   ticks: { position: "relative", height: "1rem" },
+  hiddenNarrow: { display: { default: "block", [conditions.narrow]: "none" } },
   lanes: { position: "relative", display: "grid" },
 })
 
@@ -242,6 +243,7 @@ const render = <Message>(h: HtmlBuilder<Message>, config: RolloutConfig<Message>
                     chartStyles.tickX,
                     index === 0 && chartStyles.tickFirst,
                     index === layout.ticks.length - 1 && chartStyles.tickLast,
+                    index % 2 === 1 && styles.hiddenNarrow,
                     placement.left(percent(tick.position)),
                   ),
                 ],
