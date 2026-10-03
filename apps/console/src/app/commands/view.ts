@@ -2,6 +2,7 @@ import { button, dataTable, pageBody, pageHeader, select, status, styleAttribute
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import type { HtmlBuilder } from "foldkit/html"
+import { fixturesEnabled } from "../api/client.ts"
 import * as Routes from "../navigation/routes.ts"
 import { ChangedTailFilter, type Message, ToggledTail } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
@@ -31,8 +32,8 @@ const result = (h: HtmlBuilder<Message>, entry: TailEntry) =>
     : status(h, { tone: entry.result === "error" ? "attention" : "idle", label: entry.detail })
 
 /**
- * The live tail of committed turns, newest first. It streams while open and pauses on request; the
- * filter narrows it to one actor type.
+ * Committed turns, newest first. Hosted reads are a snapshot until the stream's UTC codec is
+ * available; fixture mode demonstrates the pauseable tail. The filter narrows either to one type.
  */
 export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): Screen => {
   const entries =
@@ -40,6 +41,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
       ? model.tail.entries
       : model.tail.entries.filter((entry) => entry.actorType === model.tail.filter)
   const newest = model.tail.entries[0]?.sequence ?? 0
+  const fixtures = fixturesEnabled()
   return {
     title: "Commands",
     crumbs: [{ label: "Commands" }],
@@ -54,13 +56,17 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
         ],
         onChange: (filter) => ChangedTailFilter({ filter }),
       }),
-      button(h, {
-        label: model.tail.paused ? "Resume" : "Pause",
-        icon: model.tail.paused ? "play" : "pause",
-        size: "sm",
-        onClick: ToggledTail(),
-        attributes: [h.AriaPressed(String(model.tail.paused))],
-      }),
+      ...(fixtures
+        ? [
+            button(h, {
+              label: model.tail.paused ? "Resume" : "Pause",
+              icon: model.tail.paused ? "play" : "pause",
+              size: "sm",
+              onClick: ToggledTail(),
+              attributes: [h.AriaPressed(String(model.tail.paused))],
+            }),
+          ]
+        : []),
     ],
     body: pageBody(h, [
       pageHeader(h, {
@@ -70,8 +76,8 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
             [h.AriaLive("polite"), ...styleAttributes(h, styles.live)],
             [
               status(h, {
-                tone: model.tail.paused ? "idle" : "pending",
-                label: model.tail.paused ? "Paused" : "Live",
+                tone: !fixtures || model.tail.paused ? "idle" : "pending",
+                label: !fixtures ? "Snapshot" : model.tail.paused ? "Paused" : "Live",
               }),
             ],
           ),

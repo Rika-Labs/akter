@@ -1,11 +1,13 @@
+import { DeploymentRunner, RolloutStep } from "@akter/cloud-api"
 import { Schema as S } from "effect"
 
 /** A deploy's outcome, written as a status word. */
-export const DeployStatus = S.Literals(["Live", "Drained", "Rolled back", "Rolling out"])
+export const DeployStatus = S.Literals(["Live", "Drained", "Rolled back", "Rolling out", "Failed"])
 export type DeployStatus = typeof DeployStatus.Type
 
-/** One deploy in the history. */
+/** One deploy in the history; `id` is the contract's deployment id, which mutations address. */
 export const DeployRecord = S.Struct({
+  id: S.String,
   commit: S.String,
   message: S.String,
   author: S.String,
@@ -19,35 +21,46 @@ export type DeployRecord = typeof DeployRecord.Type
 
 /** The deployments list. */
 export const DeploymentsPage = S.TaggedStruct("DeploymentsPage", {
+  environment: S.String,
   deploys: S.Array(DeployRecord),
 })
 export type DeploymentsPage = typeof DeploymentsPage.Type
 
-/** A phase of the rollout, in seconds from the start of the deploy. */
+/** A phase of the rollout, in seconds from the start of the deploy. `status` is the contract's step status. */
 export const Phase = S.Struct({
   id: S.String,
   label: S.String,
   detail: S.String,
   start: S.Finite,
   end: S.Finite,
+  status: S.optional(RolloutStep.fields.status),
 })
+export type Phase = typeof Phase.Type
 
-/** A runner started by the deploy. */
+/** A runner started by the deploy; `health` is the contract's runner health. */
 export const Runner = S.Struct({
   id: S.String,
   region: S.String,
   actors: S.Finite,
   cpu: S.String,
-  healthy: S.Boolean,
+  health: DeploymentRunner.fields.health,
 })
+export type Runner = typeof Runner.Type
 
-/** One deploy in detail: its rollout, its runners and its build log. */
+/**
+ * One deploy in detail: its rollout steps, its runners and its build log. `shift` and `liveAt` draw
+ * the rollout timeline and exist only when the source measured them; without them the steps are a
+ * table. `rollbackTo` is the commit a rollback returns to, `null` when there is none, and `diffUrl`
+ * links the commit when the source knows the repository.
+ */
 export const DeploymentPage = S.TaggedStruct("DeploymentPage", {
   deploy: DeployRecord,
   phases: S.Array(Phase),
-  shift: S.Struct({ start: S.Finite, end: S.Finite, moved: S.Finite }),
-  liveAt: S.Finite,
+  shift: S.optional(S.Struct({ start: S.Finite, end: S.Finite, moved: S.Finite })),
+  liveAt: S.optional(S.Finite),
   runners: S.Array(Runner),
   log: S.String,
+  rollbackTo: S.NullOr(S.String),
+  diffUrl: S.optional(S.String),
 })
 export type DeploymentPage = typeof DeploymentPage.Type

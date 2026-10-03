@@ -1,0 +1,145 @@
+import { Overview } from "@akter/cloud-api"
+import { DateTime, Effect, Schema } from "effect"
+import { describe, expect, it } from "vitest"
+import { deployMarkers, orderedSeries, toOverviewPage } from "./mapping.ts"
+
+const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
+  Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(schema)))(JSON.stringify(input))
+
+const now = DateTime.makeUnsafe("2026-10-03T12:00:00.000Z")
+
+const point = (hour: number, value: number) => ({
+  at: `2026-10-03T${String(hour).padStart(2, "0")}:00:00.000Z`,
+  value,
+})
+
+const deployment = (id: string, commitSha: string, createdAt: string) => ({
+  id,
+  projectId: "prj_1",
+  environment: "production",
+  commitSha,
+  message: `deploy ${id}`,
+  author: { name: "maya", image: null },
+  regions: ["us-east-1"],
+  runnerCount: 3,
+  durationMs: 52_000,
+  status: "live",
+  createdAt,
+})
+
+const overview = {
+  commands: {
+    perSecond: 1284.4,
+    series24h: [point(11, 30), point(9, 10), point(10, 20)],
+    p50Ms: 3.2,
+    p99Ms: 21,
+  },
+  actors: { awake: 48_210, total: 2_100_000 },
+  jobs: { inFlight: 312, donePerHour: 4000 },
+  deadLettersByJobType: [
+    { jobName: "Charge", count: 2 },
+    { jobName: "SendEmail", count: 1 },
+  ],
+  throughput: [point(10, 300), point(8, 100), point(9, 200), point(11, 400)],
+  p99: [point(9, 18), point(8, 12)],
+  health: {
+    runners: { healthy: 5, total: 6 },
+    databaseCpuPercent: 41.4,
+    maxMailbox: { depth: 4, actor: "Cart/c_19af" },
+    parkedSockets: 12_904,
+    outboxLagP99Ms: 18,
+    lastDeployAt: "2026-10-03T10:00:00.000Z",
+  },
+  recentDeployments: [
+    deployment("a", "a3f9c21d", "2026-10-03T10:20:00.000Z"),
+    deployment("b", "77be0101", "2026-10-02T10:00:00.000Z"),
+  ],
+}
+
+describe("overview mapping", () => {
+  it("orders every series oldest first before drawing it", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, overview)
+        const page = toOverviewPage(now)({ project: "storefront", overview: parsed })
+        expect(page.project).toBe("storefront")
+        expect(page.hours).toEqual(["08:00", "09:00", "10:00", "11:00"])
+        expect(page.throughput).toEqual([100, 200, 300, 400])
+        expect(page.latency.hours).toEqual(["08:00", "09:00"])
+        expect(page.latency.p99Series).toEqual([12, 18])
+        expect(page.stats[0]).toMatchObject({
+          label: "Commands / s",
+          value: "1,284",
+          trend: [10, 20, 30],
+        })
+        expect(orderedSeries(parsed.p99).map((entry) => entry.value)).toEqual([12, 18])
+      }),
+    ))
+
+  it("sums dead letters across job types and flags the page when any wait", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, overview)
+        const page = toOverviewPage(now)({ project: "storefront", overview: parsed })
+        expect(page.stats[3]).toMatchObject({ label: "Dead letters", value: "3", stepped: true })
+        expect(page.health).toContainEqual({
+          label: "Dead letters",
+          value: "3 need a decision",
+          healthy: false,
+        })
+        const quiet = yield* decode(Overview, { ...overview, deadLettersByJobType: [] })
+        expect(toOverviewPage(now)({ project: "p", overview: quiet }).health).toContainEqual({
+          label: "Dead letters",
+          value: "none",
+          healthy: true,
+        })
+      }),
+    ))
+
+  it("reports health facts from the measured values, flagging a missing runner and a hot database", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, {
+          ...overview,
+          health: {
+            ...overview.health,
+            databaseCpuPercent: 91.2,
+            maxMailbox: { depth: 0, actor: null },
+          },
+        })
+        const { health } = toOverviewPage(now)({ project: "p", overview: parsed })
+        expect(health).toContainEqual({ label: "Runners", value: "5 of 6 healthy", healthy: false })
+        expect(health).toContainEqual({ label: "Database", value: "91% CPU", healthy: false })
+        expect(health).toContainEqual({ label: "Mailbox depth", value: "max 0", healthy: true })
+        expect(health).toContainEqual({ label: "Parked sockets", value: "12,904", healthy: true })
+        expect(health).toContainEqual({ label: "Outbox lag", value: "p99 18 ms", healthy: true })
+      }),
+    ))
+
+  it("keeps the three newest deploys and has no yesterday series to invent", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, overview)
+        const page = toOverviewPage(now)({ project: "p", overview: parsed })
+        expect(page.deploys.map((deploy) => [deploy.commit, deploy.when])).toEqual([
+          ["a3f9c21", "1h"],
+          ["77be010", "1d"],
+        ])
+        expect(page.previous).toEqual([])
+      }),
+    ))
+})
+
+describe("deploy markers", () => {
+  it("marks the nearest point of a deployment inside the window and skips ones outside it", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, overview)
+        const series = orderedSeries(parsed.throughput)
+        expect(deployMarkers(parsed.recentDeployments)(series)).toEqual([
+          { index: 2, label: "a3f9c21" },
+        ])
+        expect(deployMarkers(parsed.recentDeployments)([])).toEqual([])
+      }),
+    ))
+})

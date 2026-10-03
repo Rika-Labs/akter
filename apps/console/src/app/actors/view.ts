@@ -1,9 +1,8 @@
-import { Dialog } from "../shell/model.ts"
-import { button, dataTable, input, pageBody, pageHeader, statRow } from "@akter/ui"
-import { formatCompact, formatInteger } from "@akter/ui/geometry"
+import { dataTable, input, pageBody, pageHeader, statRow } from "@akter/ui"
+import { formatCompact, formatDuration, formatInteger } from "@akter/ui/geometry"
 import * as stylex from "@stylexjs/stylex"
 import * as Routes from "../navigation/routes.ts"
-import { ChangedField, OpenedDialog } from "../shell/message.ts"
+import { ChangedField } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { ActorsPage } from "./model.ts"
 
@@ -23,13 +22,6 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
   return {
     title: "Actors",
     crumbs: [{ label: "Actors" }],
-    actions: [
-      button(h, {
-        label: "Send command",
-        size: "sm",
-        onClick: OpenedDialog({ dialog: Dialog.SendCommand({ address: "Order/ord_8f2c" }) }),
-      }),
-    ],
     body: pageBody(h, [
       pageHeader(h, { title: "Actors" }),
       statRow(h, {
@@ -40,11 +32,14 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
           {
             label: "Awake",
             value: formatInteger(awake),
-            detail: `${((awake / instances) * 100).toFixed(1)}% of all actors`,
+            detail:
+              instances === 0
+                ? "no actors yet"
+                : `${((awake / instances) * 100).toFixed(1)}% of all actors`,
           },
           {
             label: "Commands / s",
-            value: formatInteger(page.types.reduce((sum, type) => sum + type.perSecond, 0)),
+            value: formatInteger(page.types.reduce((sum, type) => sum + type.commandsPerSecond, 0)),
           },
         ],
       }),
@@ -83,8 +78,8 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
             type.commands.join(", "),
             formatInteger(type.instances),
             formatInteger(type.awake),
-            formatInteger(type.perSecond),
-            type.p99,
+            formatInteger(type.commandsPerSecond),
+            type.commandsPerSecond === 0 ? "—" : formatDuration(type.p99Ms),
           ],
         })),
       }),

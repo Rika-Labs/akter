@@ -51,7 +51,7 @@ export const connectionsScreen = ({ h, page }: ScreenInput<ConnectionsPage>): Sc
               label: "Sockets by state",
               format: formatInteger,
               segments: [
-                { label: "Active", value: page.sockets - page.parked, tone: "ink" },
+                { label: "Active", value: Math.max(0, page.sockets - page.parked), tone: "ink" },
                 { label: "Parked", value: page.parked, tone: "muted" },
               ],
             }),
@@ -90,7 +90,7 @@ export const connectionsScreen = ({ h, page }: ScreenInput<ConnectionsPage>): Sc
               row.actorType,
               formatInteger(row.sockets),
               formatInteger(row.parked),
-              `${Math.round((row.parked / row.sockets) * 100)}%`,
+              row.sockets === 0 ? "—" : `${Math.round((row.parked / row.sockets) * 100)}%`,
               formatInteger(row.streams),
             ],
           })),

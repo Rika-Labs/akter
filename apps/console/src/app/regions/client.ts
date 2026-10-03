@@ -1,6 +1,15 @@
-import { Effect } from "effect"
-import { regions } from "./fixtures.ts"
+import { DateTime, Effect } from "effect"
+import { cloud, type ConsoleError, load, projectContext } from "../api/client.ts"
+import { toRegionsPage } from "./mapping.ts"
 import type { RegionsPage } from "./model.ts"
 
-/** Loads regions and their databases. Fixture-backed until the infrastructure API is hosted. */
-export const loadRegions: Effect.Effect<RegionsPage> = Effect.succeed(regions)
+/** Loads the environment's regions and their databases. */
+export const loadRegions: Effect.Effect<RegionsPage, ConsoleError> = load(
+  Effect.gen(function* () {
+    const api = yield* cloud
+    const { project, environment } = yield* projectContext
+    const regions = yield* api.regions.list({ params: { projectId: project.id, environment } })
+    return toRegionsPage(yield* DateTime.now)(regions)
+  }),
+  () => import("./fixtures.ts").then((fixtures) => fixtures.regions),
+)

@@ -2,6 +2,8 @@ import { Schema as S } from "effect"
 import { defineMessageUnion } from "foldkit/message"
 import { UrlRequest } from "foldkit/navigation"
 import { Url } from "foldkit/url"
+import { TailEntry } from "../commands/model.ts"
+import { Workspace } from "../workspace/model.ts"
 import { Dialog } from "./model.ts"
 import { PageData } from "./page.ts"
 import { Preference } from "./theme.ts"
@@ -12,6 +14,9 @@ export const Message = defineMessageUnion({
   RequestedUrl: { request: UrlRequest },
   RequestedHref: { href: S.String },
   LoadedPage: { page: S.Option(PageData) },
+  FailedPage: { kind: S.String, message: S.String },
+  RetriedPage: {},
+  LoadedWorkspace: { workspace: Workspace },
   ToggledDrawer: {},
   ClosedDrawer: {},
   OpenedPalette: {},
@@ -38,6 +43,20 @@ export const Message = defineMessageUnion({
   RetriedDeadLetter: { id: S.String },
   RetriedAllDeadLetters: {},
   SignedOut: {},
+  CompletedAuth: {
+    href: S.String,
+    refresh: S.Boolean,
+    title: S.optional(S.String),
+    description: S.optional(S.String),
+  },
+  FailedAction: { message: S.String },
+  Mutated: { title: S.String, description: S.optional(S.String), reload: S.Boolean },
+  FailedMutation: { message: S.String },
+  CreatedKey: { name: S.String, secret: S.String },
+  SentRecoveryEmail: {},
+  ResentVerification: {},
+  LoadedFixtureTail: { entries: S.Array(TailEntry) },
+  ReceivedTurn: { entry: TailEntry },
   CompletedEffect: {},
 })
 export type Message = typeof Message.Type
@@ -47,6 +66,9 @@ export const {
   RequestedUrl,
   RequestedHref,
   LoadedPage,
+  FailedPage,
+  RetriedPage,
+  LoadedWorkspace,
   ToggledDrawer,
   ClosedDrawer,
   OpenedPalette,
@@ -73,5 +95,14 @@ export const {
   RetriedDeadLetter,
   RetriedAllDeadLetters,
   SignedOut,
+  CompletedAuth,
+  FailedAction,
+  Mutated,
+  FailedMutation,
+  CreatedKey,
+  SentRecoveryEmail,
+  ResentVerification,
+  LoadedFixtureTail,
+  ReceivedTurn,
   CompletedEffect,
 } = Message

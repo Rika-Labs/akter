@@ -1,5 +1,6 @@
 import { hourLabels, seededSeries } from "../workspace/series.ts"
-import { type DeploySummary, OverviewPage } from "./model.ts"
+import { workspace } from "../workspace/fixtures.ts"
+import { type DeploySummary, EmptyProjectPage, OverviewPage } from "./model.ts"
 
 /** Recent deploys shared by the overview and the deployments list. Fixture data. */
 export const recentDeploys: ReadonlyArray<DeploySummary> = [
@@ -58,20 +59,24 @@ export const overview: OverviewPage = OverviewPage.make({
     { label: "Outbox lag", value: "p99 18 ms", healthy: true },
     { label: "Dead letters", value: "3 need a decision", healthy: false },
   ],
-  latency: [
-    { upper: 0.5, count: 410 },
-    { upper: 1, count: 2_980 },
-    { upper: 2, count: 8_840 },
-    { upper: 3, count: 12_420 },
-    { upper: 5, count: 9_610 },
-    { upper: 8, count: 4_120 },
-    { upper: 13, count: 1_830 },
-    { upper: 21, count: 760 },
-    { upper: 34, count: 310 },
-    { upper: 55, count: 140 },
-    { upper: 89, count: 52 },
-    { upper: 144, count: 18 },
-    { upper: 233, count: 6 },
-  ],
+  latency: {
+    p50: 3,
+    p99: 21,
+    hours: hourLabels({ points: 96, end: 14 }),
+    p99Series: seededSeries({ length: 96, base: 18, volatility: 5, seed: 4 }),
+  },
   deploys: recentDeploys.slice(0, 3),
 })
+
+/**
+ * The fixture page for a project slug: the overview when the fixture workspace has deployed it, the
+ * empty state otherwise. An unknown slug is treated as a new project in the default region.
+ */
+export const projectPage = (slug: string): OverviewPage | EmptyProjectPage => {
+  const found = workspace.projects.find((candidate) => candidate.slug === slug)
+  if (found?.deployed === true) return { ...overview, project: found.slug }
+  return EmptyProjectPage.make({
+    project: found?.slug ?? slug,
+    region: found?.region ?? "us-east-1",
+  })
+}

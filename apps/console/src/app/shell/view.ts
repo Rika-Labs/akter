@@ -17,6 +17,7 @@ import { regionsScreen } from "../regions/view.ts"
 import { settingsScreen } from "../settings/view.ts"
 import { workflowsScreen } from "../workflows/view.ts"
 import { dialogView } from "./dialogs.ts"
+import { failureScreen } from "./failure.ts"
 import {
   ChangedPaletteQuery,
   ChosePaletteItem,
@@ -64,7 +65,25 @@ const withPage = <Tag extends PageData["_tag"]>(
     onSome: input.render,
   })
 
+const projectView = (h: HtmlBuilder<Message>, model: Model): Screen =>
+  Option.match(pageOf("EmptyProjectPage")(model), {
+    onSome: (page) => emptyProjectScreen({ h, model, page }),
+    onNone: () =>
+      withPage(h, model, {
+        tag: "OverviewPage",
+        title: "Overview",
+        render: (page) => overviewScreen({ h, model, page }),
+      }),
+  })
+
 const screenFor = (h: HtmlBuilder<Message>, model: Model): Screen =>
+  Option.match(model.pageError, {
+    onNone: () => routeScreen(h, model),
+    onSome: (error) =>
+      isAuthRoute(model.route) ? routeScreen(h, model) : failureScreen({ h, error }),
+  })
+
+const routeScreen = (h: HtmlBuilder<Message>, model: Model): Screen =>
   AppRoute.match(model.route, {
     SignIn: () => authScreen({ h, model, page: undefined }),
     SignUp: () => authScreen({ h, model, page: undefined }),
@@ -73,22 +92,8 @@ const screenFor = (h: HtmlBuilder<Message>, model: Model): Screen =>
     ResetPassword: () => authScreen({ h, model, page: undefined }),
     AcceptInvitation: () => authScreen({ h, model, page: undefined }),
     Onboarding: () => authScreen({ h, model, page: undefined }),
-    Overview: () =>
-      withPage(h, model, {
-        tag: "OverviewPage",
-        title: "Overview",
-        render: (page) => overviewScreen({ h, model, page }),
-      }),
-    Project: () =>
-      Option.match(pageOf("EmptyProjectPage")(model), {
-        onSome: (page) => emptyProjectScreen({ h, model, page }),
-        onNone: () =>
-          withPage(h, model, {
-            tag: "OverviewPage",
-            title: "Overview",
-            render: (page) => overviewScreen({ h, model, page }),
-          }),
-      }),
+    Overview: () => projectView(h, model),
+    Project: () => projectView(h, model),
     Actors: () =>
       withPage(h, model, {
         tag: "ActorsPage",

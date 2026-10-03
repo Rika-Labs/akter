@@ -1,51 +1,154 @@
+import {
+  ApiKeyPermission,
+  DomainStatus,
+  EnvironmentName,
+  IntegrationKind,
+  InviteRole,
+  NotificationPreference,
+  PlanId,
+  Preferences,
+  RegionId,
+  Role,
+} from "@akter/cloud-api"
 import { Schema as S } from "effect"
 
-/** A runtime variable; secrets show only their last characters. */
+/**
+ * Timestamps are epoch milliseconds, money is whole US cents, and storage and egress are
+ * gigabytes, exactly as the control plane reports them; views format them for display.
+ */
+
+/** An environment variable as readable: its name and provenance, never its value or any part of it. */
 export const Variable = S.Struct({
   name: S.String,
-  value: S.String,
-  secret: S.Boolean,
-  usedBy: S.String,
-  updated: S.String,
-  environment: S.String,
+  usedBy: S.Array(S.String),
+  updatedAt: S.Finite,
+  updatedBy: S.NullOr(S.String),
 })
 export type Variable = typeof Variable.Type
 
-/** A custom or default domain and whether its DNS checks out. */
-export const Domain = S.Struct({
-  host: S.String,
-  status: S.Literals(["Active", "Pending DNS", "Default"]),
-  detail: S.String,
+/** The variables of one environment that exists in the project. */
+export const EnvironmentVariables = S.Struct({
+  environment: EnvironmentName,
+  variables: S.Array(Variable),
 })
+export type EnvironmentVariables = typeof EnvironmentVariables.Type
 
-/** An API key; only its prefix and last characters are ever shown. */
-export const ApiKey = S.Struct({
+/** The project the project-level settings pages act on, and the environment they open on. */
+export const ProjectSummary = S.Struct({
+  id: S.String,
   name: S.String,
-  masked: S.String,
-  scope: S.String,
-  lastUsed: S.String,
+  slug: S.String,
+  homeRegion: RegionId,
+  environment: EnvironmentName,
+})
+export type ProjectSummary = typeof ProjectSummary.Type
+
+/** The organization the organization-level settings pages act on. */
+export const OrganizationSummary = S.Struct({
+  id: S.String,
+  name: S.String,
+  slug: S.String,
+  plan: PlanId,
+  role: Role,
+})
+export type OrganizationSummary = typeof OrganizationSummary.Type
+
+/** The signed-in person, as the profile page shows them. */
+export const Profile = S.Struct({ name: S.String, email: S.String, emailVerified: S.Boolean })
+export type Profile = typeof Profile.Type
+
+/** A DNS record a domain needs before it can be verified. */
+export const DnsRecord = S.Struct({ type: S.String, name: S.String, value: S.String })
+
+/** A custom domain, the environment it serves, and the DNS records it needs. */
+export const Domain = S.Struct({
+  id: S.String,
+  hostname: S.String,
+  environment: EnvironmentName,
+  status: DomainStatus,
+  records: S.Array(DnsRecord),
+})
+export type Domain = typeof Domain.Type
+
+/** An API key; only its prefix and last four characters are ever readable. */
+export const ApiKey = S.Struct({
+  id: S.String,
+  name: S.String,
+  tail: S.String,
+  permission: ApiKeyPermission,
+  projectScoped: S.Boolean,
+  lastUsedAt: S.NullOr(S.Finite),
+  expiresAt: S.NullOr(S.Finite),
 })
 export type ApiKey = typeof ApiKey.Type
 
+/** A URL the project answers on. */
+export const Endpoint = S.Struct({ label: S.String, value: S.String })
+export type Endpoint = typeof Endpoint.Type
+
 /** A third-party integration and whether it is connected. */
 export const Integration = S.Struct({
-  id: S.String,
+  kind: IntegrationKind,
   name: S.String,
   detail: S.String,
-  connected: S.Boolean,
+  status: S.Literals(["connected", "disconnected", "error"]),
 })
+export type Integration = typeof Integration.Type
 
-/** A member of the organization, or a pending invitation when `pending`. */
-export const Member = S.Struct({
-  name: S.String,
-  email: S.String,
-  role: S.String,
-  pending: S.Boolean,
-})
+/** A member of the organization. */
+export const Member = S.Struct({ id: S.String, name: S.String, email: S.String, role: Role })
 export type Member = typeof Member.Type
 
-/** A monthly invoice from Stripe. */
-export const Invoice = S.Struct({ number: S.String, period: S.String, amount: S.Finite })
+/** An invitation that has not been accepted, declined, canceled or expired. */
+export const PendingInvitation = S.Struct({
+  id: S.String,
+  email: S.String,
+  role: InviteRole,
+  invitedBy: S.String,
+  createdAt: S.Finite,
+})
+export type PendingInvitation = typeof PendingInvitation.Type
+
+/** A region the project can run in: its home, a replica, or one it could add. */
+export const RegionChoice = S.Struct({
+  id: RegionId,
+  city: S.String,
+  role: S.Literals(["Home", "Replica", "Available"]),
+})
+export type RegionChoice = typeof RegionChoice.Type
+
+/** The Stripe subscription as the control plane reports it. */
+export const Billing = S.Struct({
+  plan: S.Struct({
+    id: PlanId,
+    name: S.String,
+    basePriceCents: S.Finite,
+    renewsAt: S.NullOr(S.Finite),
+    monthToDateCents: S.Finite,
+  }),
+  card: S.NullOr(
+    S.Struct({
+      brand: S.String,
+      lastFour: S.String,
+      expiryMonth: S.Finite,
+      expiryYear: S.Finite,
+    }),
+  ),
+  billingEmail: S.NullOr(S.String),
+  spendLimit: S.Struct({ limitCents: S.NullOr(S.Finite), currentCents: S.Finite }),
+})
+export type Billing = typeof Billing.Type
+
+/** An invoice; `pdfUrl` is null until Stripe has rendered one. */
+export const Invoice = S.Struct({
+  id: S.String,
+  number: S.String,
+  periodStart: S.Finite,
+  amountCents: S.Finite,
+  status: S.Literals(["draft", "open", "paid", "void", "uncollectible"]),
+  pdfUrl: S.NullOr(S.String),
+})
+export type Invoice = typeof Invoice.Type
 
 /** One usage meter against what the plan includes. */
 export const UsageMeter = S.Struct({
@@ -56,50 +159,74 @@ export const UsageMeter = S.Struct({
 })
 export type UsageMeter = typeof UsageMeter.Type
 
-/** Usage and estimated cost per project. */
-export const ProjectUsage = S.Struct({
-  project: S.String,
-  commands: S.String,
-  runnerHours: S.String,
-  storage: S.String,
-  estimate: S.Finite,
+/** Usage for one billing period. */
+export const Usage = S.Struct({
+  period: S.String,
+  meters: S.Array(UsageMeter),
+  commandsPerDay: S.Array(S.Struct({ day: S.String, commands: S.Finite })),
+  projects: S.Array(
+    S.Struct({ id: S.String, name: S.String, commands: S.Finite, estimatedCostCents: S.Finite }),
+  ),
 })
+export type Usage = typeof Usage.Type
 
 /** One entry in the organization's audit log. */
 export const AuditEntry = S.Struct({
-  key: S.String,
-  time: S.String,
+  id: S.String,
+  at: S.Finite,
   person: S.String,
   action: S.String,
   target: S.String,
 })
+export type AuditEntry = typeof AuditEntry.Type
 
-/** A region the project can run in. */
-export const RegionChoice = S.Struct({
-  id: S.String,
-  place: S.String,
-  role: S.Literals(["Home", "Replica", "Available"]),
-})
-
-/** Everything the settings pages read, loaded once when Settings opens. */
+/**
+ * What the settings pages read. A route loads only the slices it renders, so every other slice
+ * holds its empty value: an empty array, or null for a single record.
+ */
 export const SettingsPage = S.TaggedStruct("SettingsPage", {
-  variables: S.Array(Variable),
+  preferences: S.NullOr(Preferences),
+  notifications: S.Array(NotificationPreference),
+  profile: S.NullOr(Profile),
+  organization: S.NullOr(OrganizationSummary),
+  project: S.NullOr(ProjectSummary),
+  environments: S.Array(EnvironmentVariables),
+  regions: S.Array(RegionChoice),
   domains: S.Array(Domain),
   keys: S.Array(ApiKey),
-  endpoints: S.Array(S.Struct({ label: S.String, value: S.String })),
+  endpoints: S.Array(Endpoint),
   integrations: S.Array(Integration),
   members: S.Array(Member),
-  plan: S.Struct({ name: S.String, price: S.String, renews: S.String }),
-  monthToDate: S.Finite,
-  spendLimit: S.Finite,
-  card: S.Struct({ brand: S.String, last4: S.String, expires: S.String }),
-  billingEmail: S.String,
+  invitations: S.Array(PendingInvitation),
+  billing: S.NullOr(Billing),
   invoices: S.Array(Invoice),
-  usageMonth: S.String,
-  meters: S.Array(UsageMeter),
-  commandsPerDay: S.Array(S.Finite),
-  projects: S.Array(ProjectUsage),
+  usage: S.NullOr(Usage),
   audit: S.Array(AuditEntry),
-  regions: S.Array(RegionChoice),
+  auditTruncated: S.Boolean,
 })
 export type SettingsPage = typeof SettingsPage.Type
+
+/** The part of a settings page one endpoint group supplies. */
+export type SettingsSlice = Partial<Omit<SettingsPage, "_tag">>
+
+/** A settings page with nothing loaded. */
+export const emptySettings: SettingsPage = SettingsPage.make({
+  preferences: null,
+  notifications: [],
+  profile: null,
+  organization: null,
+  project: null,
+  environments: [],
+  regions: [],
+  domains: [],
+  keys: [],
+  endpoints: [],
+  integrations: [],
+  members: [],
+  invitations: [],
+  billing: null,
+  invoices: [],
+  usage: null,
+  audit: [],
+  auditTruncated: false,
+})

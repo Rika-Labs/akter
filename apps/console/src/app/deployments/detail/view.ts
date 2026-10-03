@@ -8,14 +8,29 @@ import {
   pageHeader,
   section,
   status,
+  type StatusTone,
 } from "@akter/ui"
 import { rolloutTimeline } from "@akter/ui/charts"
-import { formatInteger } from "@akter/ui/geometry"
+import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import { deployStatus } from "../../overview/view.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
-import type { DeploymentPage } from "../model.ts"
+import type { DeploymentPage, Runner } from "../model.ts"
+
+const healthTones: Readonly<Record<Runner["health"], StatusTone>> = {
+  healthy: "live",
+  starting: "pending",
+  draining: "idle",
+  unhealthy: "warning",
+}
+
+const healthLabels: Readonly<Record<Runner["health"], string>> = {
+  healthy: "Healthy",
+  starting: "Starting",
+  draining: "Draining",
+  unhealthy: "Unhealthy",
+}
 
 /** One deploy: how its rollout went, the runners it started, and its build log. */
 export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Screen => {
@@ -27,43 +42,68 @@ export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Scre
       { label: deploy.commit, mono: true },
     ],
     actions: [
-      button(h, {
-        label: "View diff",
-        variant: "ghost",
-        size: "sm",
-        trailingIcon: "external",
-        href: `https://github.com/acme/storefront/commit/${deploy.commit}`,
-        external: true,
-      }),
+      ...(page.diffUrl === undefined
+        ? []
+        : [
+            button(h, {
+              label: "View diff",
+              variant: "ghost",
+              size: "sm",
+              trailingIcon: "external",
+              href: page.diffUrl,
+              external: true,
+            }),
+          ]),
       button(h, {
         label: "Roll back",
         size: "sm",
-        onClick: OpenedDialog({ dialog: Dialog.RollBack({ commit: "77be010" }) }),
-        disabled: deploy.status !== "Live",
+        onClick: OpenedDialog({
+          dialog: Dialog.RollBack({ commit: page.rollbackTo ?? deploy.commit }),
+        }),
+        disabled: deploy.status !== "Live" || page.rollbackTo === null,
       }),
     ],
     body: pageBody(h, [
       pageHeader(h, {
         title: deploy.message,
-        description: `${deploy.commit} · deployed by ${deploy.author} ${deploy.when} ago · ${deploy.took}`,
+        description: `${deploy.commit} · deployed by ${deploy.author} ${deploy.when === "now" ? "just now" : `${deploy.when} ago`} · ${deploy.took}`,
         actions: [deployStatus(h)(deploy)],
       }),
       section(h, {
         title: "Rollout",
-        meta: `live at ${String(page.liveAt)} s`,
+        meta: page.liveAt === undefined ? undefined : `live at ${String(page.liveAt)} s`,
         children: [
-          rolloutTimeline(h, {
-            label: `Rollout of ${deploy.commit}`,
-            phases: page.phases,
-            shift: {
-              start: page.shift.start,
-              end: page.shift.end,
-              label: "Turns on new runners",
-              detail: `${formatInteger(page.shift.moved)} actors moved`,
-            },
-            live: { at: page.liveAt, label: `Live at ${String(page.liveAt)} s` },
-            formatSeconds: (seconds) => `${String(Math.round(seconds))} s`,
-          }),
+          page.shift === undefined || page.liveAt === undefined
+            ? dataTable(h, {
+                label: "Rollout steps",
+                columns: [
+                  { key: "step", label: "Step", width: "minmax(0, 1fr)" },
+                  { key: "status", label: "Status", width: "6rem", muted: true },
+                  { key: "took", label: "Took", width: "5rem", align: "end" },
+                  { key: "detail", label: "Detail", width: "minmax(0, 1.6fr)", muted: true },
+                ],
+                rows: page.phases.map((phase) => ({
+                  key: phase.id,
+                  cells: [
+                    phase.label,
+                    phase.status ?? "",
+                    formatDuration((phase.end - phase.start) * 1000),
+                    phase.detail,
+                  ],
+                })),
+              })
+            : rolloutTimeline(h, {
+                label: `Rollout of ${deploy.commit}`,
+                phases: page.phases,
+                shift: {
+                  start: page.shift.start,
+                  end: page.shift.end,
+                  label: "Turns on new runners",
+                  detail: `${formatInteger(page.shift.moved)} actors moved`,
+                },
+                live: { at: page.liveAt, label: `Live at ${String(page.liveAt)} s` },
+                formatSeconds: (seconds) => `${String(Math.round(seconds))} s`,
+              }),
         ],
       }),
       columns(h, {
@@ -89,8 +129,8 @@ export const deploymentScreen = ({ h, page }: ScreenInput<DeploymentPage>): Scre
                     formatInteger(runner.actors),
                     runner.cpu,
                     status(h, {
-                      tone: runner.healthy ? "live" : "warning",
-                      label: runner.healthy ? "Healthy" : "Degraded",
+                      tone: healthTones[runner.health],
+                      label: healthLabels[runner.health],
                     }),
                   ],
                 })),

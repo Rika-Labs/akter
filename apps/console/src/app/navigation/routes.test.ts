@@ -47,6 +47,14 @@ describe("console routes", () => {
     expect(parse("/onboarding")).toEqual(AppRoute.Onboarding({}))
   })
 
+  it("accepts the backend's emailed invitation link without changing canonical invitation URLs", () => {
+    expect(parse("/accept-invitation?invitationId=inv_537")).toEqual(
+      AppRoute.AcceptInvitation({ invitation: "inv_537" }),
+    )
+    expect(Routes.acceptInvitation({ invitation: "inv_537" })).toBe("/invitations/inv_537")
+    expect(parse("/accept-invitation")._tag).toBe("NotFound")
+  })
+
   it("sends deeper or unknown paths to the not-found page with the path that missed", () => {
     expect(parse("/actors/Order/ord_8f2c/history")).toEqual(
       AppRoute.NotFound({ path: "/actors/Order/ord_8f2c/history" }),

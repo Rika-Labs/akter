@@ -104,6 +104,16 @@ export const acceptInvitation = pipe(
   Route.slash(Route.string("invitation")),
   Route.mapTo(construct.AcceptInvitation),
 )
+
+/** The accounts backend's emailed invitation URL, mapped to the console's canonical route. */
+const invitationLink = pipe(
+  page("accept-invitation"),
+  Route.query(S.Struct({ invitationId: S.String.pipe(S.check(S.isMinLength(1))) })),
+  Route.mapTo({
+    make: ({ invitationId }: Readonly<{ invitationId: string }>) =>
+      AppRoute.AcceptInvitation({ invitation: invitationId }),
+  }),
+)
 export const onboarding = pipe(
   page("onboarding"),
   Route.query(S.Struct({ step: S.optional(S.String) })),
@@ -176,6 +186,7 @@ const parser = Route.oneOf(
   forgotPassword,
   resetPassword,
   acceptInvitation,
+  invitationLink,
   onboarding,
   project,
   actor,

@@ -1,8 +1,10 @@
 import { Effect, Option, Schema as S } from "effect"
+import type { ConsoleError } from "../api/client.ts"
 import { ActorPage, ActorTypePage, ActorsPage } from "../actors/model.ts"
 import { loadActor, loadActorType, loadActors } from "../actors/client.ts"
 import { loadInvitation } from "../auth/client.ts"
 import { InvitationPage } from "../auth/model.ts"
+import { guardRoute } from "../auth/session.ts"
 import { loadCommands } from "../commands/client.ts"
 import { CommandsPage } from "../commands/model.ts"
 import { loadConnections } from "../connections/client.ts"
@@ -40,16 +42,12 @@ export const PageData = S.Union([
 ])
 export type PageData = typeof PageData.Type
 
-const some = (effect: Effect.Effect<PageData | undefined>) =>
+const some = (effect: Effect.Effect<PageData | undefined, ConsoleError>) =>
   effect.pipe(Effect.map((data) => Option.fromNullishOr(data)))
 
 const none = Effect.succeed(Option.none<PageData>())
 
-/**
- * Loads the data a route renders. `none` means the route needs no data (sign-in, settings that read
- * only preferences) or names something that does not exist, which renders as not found.
- */
-export const loadPage = (route: AppRoute): Effect.Effect<Option.Option<PageData>> =>
+const pageFor = (route: AppRoute): Effect.Effect<Option.Option<PageData>, ConsoleError> =>
   AppRoute.match(route, {
     SignIn: () => none,
     SignUp: () => none,
@@ -70,19 +68,28 @@ export const loadPage = (route: AppRoute): Effect.Effect<Option.Option<PageData>
     Deployments: () => some(loadDeployments),
     Deployment: ({ commit }) => some(loadDeployment(commit)),
     Regions: () => some(loadRegions),
-    SettingsGeneral: () => some(loadSettings),
-    SettingsAppearance: () => some(loadSettings),
-    SettingsProfile: () => some(loadSettings),
-    SettingsNotifications: () => some(loadSettings),
-    SettingsEnvironment: () => some(loadSettings),
-    SettingsRegions: () => some(loadSettings),
-    SettingsDomains: () => some(loadSettings),
-    SettingsKeys: () => some(loadSettings),
-    SettingsIntegrations: () => some(loadSettings),
-    SettingsOrganization: () => some(loadSettings),
-    SettingsMembers: () => some(loadSettings),
-    SettingsBilling: () => some(loadSettings),
-    SettingsUsage: () => some(loadSettings),
-    SettingsAudit: () => some(loadSettings),
+    SettingsGeneral: () => some(loadSettings(route)),
+    SettingsAppearance: () => some(loadSettings(route)),
+    SettingsProfile: () => some(loadSettings(route)),
+    SettingsNotifications: () => some(loadSettings(route)),
+    SettingsEnvironment: () => some(loadSettings(route)),
+    SettingsRegions: () => some(loadSettings(route)),
+    SettingsDomains: () => some(loadSettings(route)),
+    SettingsKeys: () => some(loadSettings(route)),
+    SettingsIntegrations: () => some(loadSettings(route)),
+    SettingsOrganization: () => some(loadSettings(route)),
+    SettingsMembers: () => some(loadSettings(route)),
+    SettingsBilling: () => some(loadSettings(route)),
+    SettingsUsage: () => some(loadSettings(route)),
+    SettingsAudit: () => some(loadSettings(route)),
     NotFound: () => none,
   })
+
+/**
+ * Loads the data a route renders after checking the session the route needs. `none` means the route
+ * needs no data (sign-in, settings that read only preferences) or names something that does not
+ * exist, which renders as not found. A failure carries the `ConsoleError` the page shows;
+ * `Unauthorized` and `SignedIn` mean the shell should redirect instead.
+ */
+export const loadPage = (route: AppRoute): Effect.Effect<Option.Option<PageData>, ConsoleError> =>
+  guardRoute({ route }).pipe(Effect.andThen(pageFor(route)))

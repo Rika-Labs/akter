@@ -1,4 +1,5 @@
 import { Schema as S } from "effect"
+import { DeployStatus } from "../deployments/model.ts"
 
 /** A headline number on the overview, with the recent trend behind it. */
 export const OverviewStat = S.Struct({
@@ -20,15 +21,24 @@ export const HealthFact = S.Struct({
 export const DeploySummary = S.Struct({
   commit: S.String,
   message: S.String,
-  status: S.Literals(["Live", "Drained", "Rolled back", "Rolling out"]),
+  status: DeployStatus,
   when: S.String,
 })
 export type DeploySummary = typeof DeploySummary.Type
 
-/** A latency histogram bucket in milliseconds. */
-export const LatencyBucket = S.Struct({ upper: S.Finite, count: S.Finite })
+/** Turn latency over the day: the current median and 99th percentile, and the p99 line, in milliseconds. */
+export const Latency = S.Struct({
+  p50: S.Finite,
+  p99: S.Finite,
+  hours: S.Array(S.String),
+  p99Series: S.Array(S.Finite),
+})
+export type Latency = typeof Latency.Type
 
-/** Everything the project overview draws. */
+/**
+ * Everything the project overview draws. `previous` is the same window a day earlier and is empty
+ * when the source has no comparison; a stat's `trend` is empty when it has no history.
+ */
 export const OverviewPage = S.TaggedStruct("OverviewPage", {
   project: S.String,
   stats: S.Array(OverviewStat),
@@ -37,7 +47,7 @@ export const OverviewPage = S.TaggedStruct("OverviewPage", {
   previous: S.Array(S.Finite),
   markers: S.Array(S.Struct({ index: S.Finite, label: S.String })),
   health: S.Array(HealthFact),
-  latency: S.Array(LatencyBucket),
+  latency: Latency,
   deploys: S.Array(DeploySummary),
 })
 export type OverviewPage = typeof OverviewPage.Type

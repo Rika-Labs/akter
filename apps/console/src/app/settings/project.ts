@@ -1,4 +1,5 @@
 import { Dialog } from "../shell/model.ts"
+import type { EnvironmentName } from "@akter/cloud-api"
 import {
   button,
   codeBlock,
@@ -6,6 +7,7 @@ import {
   iconButton,
   type IconName,
   input,
+  select,
   settingsGroup,
   settingsPage,
   settingsRow,
@@ -24,7 +26,8 @@ import {
   SubmittedForm,
 } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
-import type { SettingsPage } from "./model.ts"
+import { formatDate, formatInstant } from "./format.ts"
+import type { Domain, Integration, SettingsPage } from "./model.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
@@ -40,76 +43,84 @@ const screen = (
   body: settingsPage(h, { title, description, children }),
 })
 
-const environments = [
-  { id: "production", label: "Production" },
-  { id: "staging", label: "Staging" },
-  { id: "development", label: "Development" },
-] as const
+const environmentLabels: Readonly<Record<EnvironmentName, string>> = {
+  production: "Production",
+  staging: "Staging",
+  dev: "Development",
+}
 
-/** Project › Environment: the variables and secrets each environment's runners start with. */
+/** Project › Environment: the variables each environment's runners start with. Values are write-only. */
 export const environmentScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
-  const selected = model.choices["environment"] ?? "production"
-  const variables = page.variables.filter((variable) => variable.environment === selected)
+  const selected =
+    page.environments.find((entry) => entry.environment === model.choices["environment"]) ??
+    page.environments.find((entry) => entry.environment === "production") ??
+    page.environments[0]
   return screen(
     h,
     "Environment",
-    [
-      h.div(
-        [...styleAttributes(h, styles.inline)],
-        [
-          tabs(h, {
-            label: "Environment",
-            variant: "segmented",
-            selected,
-            items: environments.map((environment) => ({
-              id: environment.id,
-              label: environment.label,
-              onSelect: ChoseSetting({ key: "environment", value: environment.id }),
+    selected === undefined
+      ? [h.p([...styleAttributes(h, styles.muted)], ["This project has no environments yet."])]
+      : [
+          h.div(
+            [...styleAttributes(h, styles.inline)],
+            [
+              tabs(h, {
+                label: "Environment",
+                variant: "segmented",
+                selected: selected.environment,
+                items: page.environments.map((entry) => ({
+                  id: entry.environment,
+                  label: environmentLabels[entry.environment],
+                  onSelect: ChoseSetting({ key: "environment", value: entry.environment }),
+                })),
+              }),
+              h.span([...styleAttributes(h, styles.grow)], []),
+              button(h, {
+                label: "Add variable",
+                variant: "primary",
+                size: "sm",
+                icon: "plus",
+                onClick: OpenedDialog({ dialog: Dialog.AddVariable() }),
+              }),
+            ],
+          ),
+          dataTable(h, {
+            label: `${selected.environment} variables`,
+            empty: "No variables in this environment.",
+            columns: [
+              { key: "name", label: "Name", width: "minmax(0, 1.3fr)", mono: true },
+              {
+                key: "used",
+                label: "Used by",
+                width: "minmax(0, 1fr)",
+                muted: true,
+                hideBelow: "compact",
+              },
+              {
+                key: "updated",
+                label: "Updated (UTC)",
+                width: "12rem",
+                align: "end",
+                hideBelow: "narrow",
+              },
+            ],
+            rows: selected.variables.map((variable) => ({
+              key: `${selected.environment}-${variable.name}`,
+              cells: [
+                variable.name,
+                variable.usedBy.length === 0 ? "—" : variable.usedBy.join(", "),
+                variable.updatedBy === null
+                  ? formatInstant(variable.updatedAt)
+                  : `${formatInstant(variable.updatedAt)} · ${variable.updatedBy}`,
+              ],
             })),
           }),
-          h.span([...styleAttributes(h, styles.grow)], []),
-          button(h, {
-            label: "Add variable",
-            variant: "primary",
-            size: "sm",
-            icon: "plus",
-            onClick: OpenedDialog({ dialog: Dialog.AddVariable() }),
-          }),
+          h.p(
+            [...styleAttributes(h, styles.muted)],
+            ["A new value takes effect on the next deploy."],
+          ),
         ],
-      ),
-      dataTable(h, {
-        label: `${selected} variables`,
-        columns: [
-          { key: "name", label: "Name", width: "minmax(0, 1.3fr)", mono: true },
-          {
-            key: "value",
-            label: "Value",
-            width: "minmax(0, 1fr)",
-            mono: true,
-            muted: true,
-          },
-          {
-            key: "used",
-            label: "Used by",
-            width: "minmax(0, 0.9fr)",
-            muted: true,
-            hideBelow: "compact",
-          },
-          { key: "updated", label: "Updated", width: "6.5rem", align: "end", hideBelow: "narrow" },
-        ],
-        rows: variables.map((variable) => ({
-          key: `${variable.environment}-${variable.name}`,
-          cells: [variable.name, variable.value, variable.usedBy, variable.updated],
-        })),
-      }),
-      h.p(
-        [...styleAttributes(h, styles.muted)],
-        [
-          "Changing a variable starts a new deploy. Actors move to the new runners without dropping a turn.",
-        ],
-      ),
-    ],
-    "Secrets and variables your runners start with. Secret values are never shown again.",
+    "Secrets and variables your runners start with. Values are write-only and never shown again.",
   )
 }
 
@@ -124,7 +135,7 @@ export const regionsSettingsScreen = ({ h, page }: ScreenInput<SettingsPage>): S
           settingsRow(h, {
             label: region.id,
             mono: true,
-            description: region.place,
+            description: region.city,
             control: status(h, {
               tone: "live",
               label: region.role === "Home" ? "Home region" : "Replica",
@@ -141,7 +152,7 @@ export const regionsSettingsScreen = ({ h, page }: ScreenInput<SettingsPage>): S
           settingsRow(h, {
             label: region.id,
             mono: true,
-            description: region.place,
+            description: region.city,
             control: button(h, {
               label: "Add",
               size: "sm",
@@ -153,9 +164,18 @@ export const regionsSettingsScreen = ({ h, page }: ScreenInput<SettingsPage>): S
     }),
   ])
 
-const domainTones = { Active: "live", "Pending DNS": "attention", Default: "idle" } as const
+const domainStates: Readonly<
+  Record<Domain["status"], Readonly<{ tone: "live" | "attention"; label: string }>>
+> = {
+  active: { tone: "live", label: "Active" },
+  verifying: { tone: "attention", label: "Verifying" },
+  pending: { tone: "attention", label: "Pending DNS" },
+}
 
-/** Project › Domains: the default domain, custom domains and the DNS a pending one needs. */
+const dnsText = (domain: Domain): string =>
+  domain.records.map((record) => `${record.type}  ${record.name}  ${record.value}`).join("\n")
+
+/** Project › Domains: custom domains and the DNS records each one still needs. */
 export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen =>
   screen(h, "Domains", [
     h.form(
@@ -170,34 +190,59 @@ export const domainsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           style: styles.grow,
           onInput: (value) => ChangedField({ name: "domain", value }),
         }),
+        select(h, {
+          name: "domain-environment",
+          label: "Environment",
+          value: model.choices["domain-environment"] ?? "production",
+          size: "md",
+          options: Object.entries(environmentLabels).map(([value, label]) => ({ value, label })),
+          onChange: (value) => ChoseSetting({ key: "domain-environment", value }),
+        }),
         button(h, { label: "Add domain", variant: "primary", type: "submit" }),
       ],
     ),
     settingsGroup(h, {
       rows: page.domains.map((domain) =>
         settingsRow(h, {
-          label: domain.host,
+          label: domain.hostname,
           mono: true,
-          description: domain.detail,
-          control: status(h, { tone: domainTones[domain.status], label: domain.status }),
+          description: `Serves ${environmentLabels[domain.environment].toLowerCase()}`,
+          control: h.span(
+            [...styleAttributes(h, styles.inline)],
+            [
+              status(h, domainStates[domain.status]),
+              domain.status === "active"
+                ? h.empty
+                : button(h, {
+                    label: "Verify",
+                    size: "sm",
+                    onClick: SubmittedForm({ form: `verify-domain:${domain.id}` }),
+                    attributes: [h.AriaLabel(`Verify ${domain.hostname}`)],
+                  }),
+            ],
+          ),
         }),
       ),
     }),
-    settingsGroup(h, {
-      title: "DNS for ws.acme.dev",
-      rows: [
-        h.div(
-          [...styleAttributes(h, styles.padded)],
-          [
-            codeBlock(h, {
-              code: "ws.acme.dev.   CNAME   storefront.akter.cloud.",
-              language: "text",
-              onCopy: CopiedText({ text: "storefront.akter.cloud", label: "CNAME target" }),
-            }),
+    ...page.domains
+      .filter((domain) => domain.status !== "active" && domain.records.length > 0)
+      .map((domain) =>
+        settingsGroup(h, {
+          title: `DNS for ${domain.hostname}`,
+          rows: [
+            h.div(
+              [...styleAttributes(h, styles.padded)],
+              [
+                codeBlock(h, {
+                  code: dnsText(domain),
+                  language: "text",
+                  onCopy: CopiedText({ text: dnsText(domain), label: "DNS records" }),
+                }),
+              ],
+            ),
           ],
-        ),
-      ],
-    }),
+        }),
+      ),
   ])
 
 /** Project › API keys: keys for the CLI, CI and services, and the endpoints they call. */
@@ -218,7 +263,14 @@ export const keysScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scree
           settingsRow(h, {
             label: key.name,
             mono: true,
-            description: `${key.masked} · ${key.scope} · last used ${key.lastUsed}`,
+            description: [
+              key.tail,
+              `${key.permission} access, ${key.projectScoped ? "one project" : "whole organization"}`,
+              key.lastUsedAt === null
+                ? "never used"
+                : `last used ${formatInstant(key.lastUsedAt)} UTC`,
+              ...(key.expiresAt === null ? [] : [`expires ${formatDate(key.expiresAt)}`]),
+            ].join(" · "),
             control: button(h, {
               label: "Revoke",
               variant: "ghost",
@@ -244,33 +296,15 @@ export const keysScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scree
         }),
       ),
     }),
-    settingsGroup(h, {
-      title: "Call an actor over HTTP",
-      rows: [
-        h.div(
-          [...styleAttributes(h, styles.padded)],
-          [
-            codeBlock(h, {
-              language: "shell",
-              code: `# every command is an endpoint\n$ curl -X POST https://storefront.akter.cloud/actors/Order/ord_8f2c/Place \\\n    -H "authorization: Bearer $AKTER_KEY" \\\n    -H "idempotency-key: cmd_7Hq2" \\\n    -d '{ "lines": [{ "sku": "mug", "quantity": 2 }] }'`,
-              onCopy: CopiedText({
-                text: "curl -X POST https://storefront.akter.cloud/actors/Order/ord_8f2c/Place",
-                label: "request",
-              }),
-            }),
-          ],
-        ),
-      ],
-    }),
   ])
 
-const integrationIcons = new Map<string, IconName>([
-  ["github", "github"],
-  ["slack", "slack"],
-  ["datadog", "datadog"],
-  ["opentelemetry", "telemetry"],
-  ["pagerduty", "pager"],
-])
+const integrationIcons: Readonly<Record<Integration["kind"], IconName>> = {
+  github: "github",
+  slack: "slack",
+  datadog: "datadog",
+  opentelemetry: "telemetry",
+  pagerduty: "pager",
+}
 
 /** Project › Integrations: source control, chat, observability and paging. */
 export const integrationsScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen =>
@@ -280,15 +314,24 @@ export const integrationsScreen = ({ h, page }: ScreenInput<SettingsPage>): Scre
         settingsRow(h, {
           label: integration.name,
           description: integration.detail,
-          icon: integrationIcons.get(integration.id) ?? "plug",
-          href: integration.connected ? Routes.settingsIntegrations() : undefined,
-          control: integration.connected
-            ? status(h, { tone: "live", label: "Connected" })
-            : button(h, {
-                label: "Connect",
-                size: "sm",
-                onClick: SubmittedForm({ form: `connect-${integration.id}` }),
-              }),
+          icon: integrationIcons[integration.kind],
+          href: integration.status === "connected" ? Routes.settingsIntegrations() : undefined,
+          control:
+            integration.status === "connected"
+              ? status(h, { tone: "live", label: "Connected" })
+              : h.span(
+                  [...styleAttributes(h, styles.inline)],
+                  [
+                    integration.status === "error"
+                      ? status(h, { tone: "attention", label: "Needs attention" })
+                      : h.empty,
+                    button(h, {
+                      label: integration.status === "error" ? "Reconnect" : "Connect",
+                      size: "sm",
+                      onClick: SubmittedForm({ form: `connect-${integration.kind}` }),
+                    }),
+                  ],
+                ),
         }),
       ),
     }),

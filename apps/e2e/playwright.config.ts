@@ -22,7 +22,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "bun run build && CONSOLE_PORT=3002 bun run preview",
+      command: "VITE_CONSOLE_FIXTURES=1 bun run build && CONSOLE_PORT=3002 bun run preview",
       cwd: "../console",
       url: "http://127.0.0.1:3002/",
       reuseExistingServer: !inCI,

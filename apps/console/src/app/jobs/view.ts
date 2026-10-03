@@ -46,9 +46,9 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
       statRow(h, {
         label: "Job queue",
         stats: [
-          { label: "Queued", value: formatInteger(page.queued), detail: "oldest 1.2 s" },
-          { label: "Running", value: formatInteger(page.running), detail: "across 6 runners" },
-          { label: "Retrying", value: formatInteger(page.retrying), detail: "backoff up to 5 min" },
+          { label: "Queued", value: formatInteger(page.queued) },
+          { label: "Running", value: formatInteger(page.running) },
+          { label: "Retrying", value: formatInteger(page.retrying) },
           {
             label: "Dead letters",
             value: String(open.length),
@@ -96,7 +96,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                 rows: open.map((letter) => ({
                   key: letter.id,
                   cells: [
-                    `${letter.job} · ${letter.id}`,
+                    `${letter.job} · ${letter.jobId}`,
                     h.a(
                       [h.Href(Routes.actor({ actorType: letter.actorType, key: letter.key }))],
                       [`${letter.actorType}/${letter.key}`],
@@ -113,13 +113,13 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                           onClick: OpenedDialog({
                             dialog: Dialog.DiscardDeadLetter({ id: letter.id }),
                           }),
-                          attributes: [h.AriaLabel(`Discard ${letter.id}`)],
+                          attributes: [h.AriaLabel(`Discard ${letter.jobId}`)],
                         }),
                         button(h, {
                           label: "Retry",
                           size: "sm",
                           onClick: RetriedDeadLetter({ id: letter.id }),
-                          attributes: [h.AriaLabel(`Retry ${letter.id}`)],
+                          attributes: [h.AriaLabel(`Retry ${letter.jobId}`)],
                         }),
                       ],
                     ),
@@ -133,7 +133,6 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
         children: [
           section(h, {
             title: "By type",
-            meta: "last 24 hours",
             children: [
               dataTable(h, {
                 label: "Jobs by type",
@@ -165,15 +164,15 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
           }),
           section(h, {
             title: "Throughput",
-            meta: "jobs done per minute",
+            meta: "jobs done",
             children: [
               barChart(h, {
-                label: "Jobs done per minute, last 48 minutes",
+                label: "Jobs done, recent throughput",
                 height: 150,
                 xTicks: 4,
                 data: page.throughput.map((value, index) => ({
                   key: String(index),
-                  label: page.minutes[index] ?? "",
+                  label: page.labels[index] ?? "",
                   value,
                   highlight: index === page.throughput.length - 1,
                 })),
