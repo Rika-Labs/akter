@@ -222,6 +222,15 @@ export class CatalogNotReady extends Schema.TaggedError<CatalogNotReady>()("Cata
   tierId: Schema.String,
 }) {}
 
+/**
+ * The checkout this request identity already created has expired, so it can
+ * never create a subscription. Replaying the identity would only return the
+ * provider's cached dead session; a new checkout needs a new identity.
+ */
+export class CheckoutExpired extends Schema.TaggedError<CheckoutExpired>()("CheckoutExpired", {
+  sessionId: Schema.String,
+}) {}
+
 /** The webhook body failed signature verification or is not a Stripe event. */
 export class WebhookRejected extends Schema.TaggedError<WebhookRejected>()("WebhookRejected", {
   reason: Schema.String,
@@ -244,7 +253,7 @@ export class StripeBilling extends Context.Service<
       input: CheckoutInput,
     ) => Effect.Effect<
       HostedSession,
-      BillingProviderError | UnknownTier | UnknownCustomer | CatalogNotReady
+      BillingProviderError | UnknownTier | UnknownCustomer | CatalogNotReady | CheckoutExpired
     >
     readonly openPortal: (
       input: PortalInput,

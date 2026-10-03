@@ -13,6 +13,7 @@ import {
 import {
   BillingProviderError,
   CatalogNotReady,
+  CheckoutExpired,
   StripeBilling,
   type Tier,
   UnknownCustomer,
@@ -103,6 +104,9 @@ interface StoredPrice {
   metadata: Map<string, string>
   product: string
   unit_amount: number | null
+  active: boolean
+  tax_behavior: string | null
+  meter: string | null
 }
 
 /** A Stripe test double that remembers what was created, so repeated setup calls see earlier objects. */
@@ -117,7 +121,7 @@ const makeStripe = () => {
   ]
   const subscriptionState = {
     tierId: "pro",
-    pending: false,
+    paymentDeclines: false,
     active: false,
     status: "active",
     paginated: false,
@@ -130,6 +134,8 @@ const makeStripe = () => {
     status: string
     metadata: Map<string, string> | null
   }> = []
+  const checkoutReplies = new Map<string, { id: string; url: string }>()
+  let checkoutSequence = 0
   const failures: Array<Response> = []
   const streamFailures: Array<Response> = []
   const session = { expiresAt: "2099-10-03T00:15:00.000Z" }
@@ -181,14 +187,24 @@ const makeStripe = () => {
         ),
       )
       const data = prices.flatMap((price) =>
-        price.lookup_key !== null && wanted.has(price.lookup_key)
+        price.lookup_key !== null &&
+        wanted.has(price.lookup_key) &&
+        (url.searchParams.get("active") !== "true" || price.active)
           ? [
               {
                 id: price.id,
+                active: price.active,
                 lookup_key: price.lookup_key,
                 metadata: Object.fromEntries(price.metadata),
-                tax_behavior: "exclusive",
+                tax_behavior: price.tax_behavior,
                 product: price.product,
+                recurring: {
+                  interval: "month",
+                  interval_count: 1,
+                  meter: price.meter,
+                  trial_period_days: null,
+                  usage_type: price.meter === null ? "licensed" : "metered",
+                },
               },
             ]
           : [],
@@ -206,6 +222,9 @@ const makeStripe = () => {
         metadata: entries(form, "metadata"),
         product: form.get("product")!,
         unit_amount: null,
+        active: true,
+        tax_behavior: form.get("tax_behavior"),
+        meter: form.get("recurring[meter]"),
       }
       prices.push(price)
       return json(200, { id: price.id, lookup_key: lookupKey })
@@ -239,15 +258,21 @@ const makeStripe = () => {
     if (method === "POST" && path === "/v1/checkout/sessions") {
       if (form.get("customer") === "cus_missing")
         return stripeError(400, "invalid_request_error", "resource_missing")
+      const cached =
+        request.idempotencyKey === null ? undefined : checkoutReplies.get(request.idempotencyKey)
+      if (cached !== undefined) return json(200, cached)
+      const id = `cs_test_${++checkoutSequence}`
       const session = {
-        id: "cs_test_1",
+        id,
         customer: form.get("customer")!,
-        url: "https://checkout.stripe.test/cs_test_1",
+        url: `https://checkout.stripe.test/${id}`,
         status: "open",
         metadata: entries(form, "metadata"),
       }
       checkoutSessions.push(session)
-      return json(200, { id: session.id, url: session.url })
+      const reply = { id: session.id, url: session.url }
+      if (request.idempotencyKey !== null) checkoutReplies.set(request.idempotencyKey, reply)
+      return json(200, reply)
     }
     if (method === "GET" && path === "/v1/checkout/sessions") {
       return json(200, {
@@ -386,8 +411,12 @@ const makeStripe = () => {
     }
     if (method === "POST" && found !== null) {
       const targetPrice = prices.find((price) => price.id === form.get("items[0][price]"))
-      if (!subscriptionState.pending)
-        subscriptionState.tierId = targetPrice!.metadata.get("akter_tier")!
+      const invoicedNow = form.get("proration_behavior") === "always_invoice"
+      const heldUntilPaid =
+        invoicedNow &&
+        form.get("payment_behavior") === "pending_if_incomplete" &&
+        subscriptionState.paymentDeclines
+      if (!heldUntilPaid) subscriptionState.tierId = targetPrice!.metadata.get("akter_tier")!
       return json(200, subscription(found[1]!, "cus_known", "active", subscriptionState.tierId))
     }
     return stripeError(404, "invalid_request_error", "resource_missing")
@@ -421,6 +450,8 @@ const makeStripe = () => {
     session,
     subscriptionState,
     checkoutSessions,
+    prices,
+    meters,
     layer: Layer.mergeAll(
       Layer.succeed(HttpClient.HttpClient, client),
       Stripe.credentials({ apiKey: API_KEY }),
@@ -675,6 +706,82 @@ describe("customers, checkout and portal", () => {
       }),
   )
 
+  it.live(
+    "proves an expired checkout for the same identity instead of replaying the cached session",
+    () =>
+      Effect.gen(function* () {
+        const stripe = makeStripe()
+        const checkout = (idempotencyKey: string) =>
+          StripeBilling.use((billing) =>
+            billing.startCheckout({
+              organizationId: "org_1",
+              customerId: "cus_known",
+              tierId: "pro",
+              successUrl: "https://app.test/ok",
+              cancelUrl: "https://app.test/no",
+              idempotencyKey,
+            }),
+          )
+        yield* run(
+          stripe,
+          StripeBilling.use((billing) => billing.ensureCatalog),
+        )
+        const first = yield* run(stripe, checkout("org_1:lost"))
+        stripe.checkoutSessions[0]!.status = "expired"
+        const subscriptionReads = () =>
+          stripe.requests.filter((entry) => entry.url.pathname === "/v1/subscriptions").length
+        const readsBefore = subscriptionReads()
+        expect(yield* fail(stripe, checkout("org_1:lost"))).toEqual(
+          CheckoutExpired.make({ sessionId: first.id }),
+        )
+        expect(stripe.posts("/v1/checkout/sessions")).toHaveLength(1)
+        expect(subscriptionReads()).toBe(readsBefore)
+        const next = yield* run(stripe, checkout("org_1:next"))
+        expect(next.id).not.toBe(first.id)
+        expect(stripe.posts("/v1/checkout/sessions").map((entry) => entry.idempotencyKey)).toEqual([
+          "org_1:lost",
+          "org_1:next",
+        ])
+      }),
+  )
+
+  it.live("ignores an expired session from another identity, organization or tier", () =>
+    Effect.gen(function* () {
+      const stripe = makeStripe()
+      for (const metadata of [
+        { akter_request: "org_1:other", akter_organization_id: "org_1", akter_tier: "pro" },
+        { akter_request: "org_1:mine", akter_organization_id: "org_2", akter_tier: "pro" },
+        { akter_request: "org_1:mine", akter_organization_id: "org_1", akter_tier: "team" },
+      ])
+        stripe.checkoutSessions.push({
+          id: `cs_expired_${stripe.checkoutSessions.length}`,
+          customer: "cus_known",
+          url: "https://checkout.stripe.test/expired",
+          status: "expired",
+          metadata: new Map(Object.entries(metadata)),
+        })
+      yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+      )
+      const created = yield* run(
+        stripe,
+        StripeBilling.use((billing) =>
+          billing.startCheckout({
+            organizationId: "org_1",
+            customerId: "cus_known",
+            tierId: "pro",
+            successUrl: "https://app.test/ok",
+            cancelUrl: "https://app.test/no",
+            idempotencyKey: "org_1:mine",
+          }),
+        ),
+      )
+      expect(created.id).toBe("cs_test_1")
+      expect(stripe.posts("/v1/checkout/sessions")).toHaveLength(1)
+    }),
+  )
+
   it.live("refuses a new checkout for any existing billable subscription", () =>
     Effect.gen(function* () {
       for (const status of ["incomplete", "active", "trialing", "past_due", "unpaid", "paused"]) {
@@ -855,6 +962,143 @@ describe("customers, checkout and portal", () => {
   )
 })
 
+describe("refusing catalog drift", () => {
+  const repriced = (change: (tier: Tier) => Tier) => ({ tiers: tiers.map(change) })
+  const checkout = StripeBilling.use((billing) =>
+    billing.startCheckout({
+      organizationId: "org_1",
+      customerId: "cus_known",
+      tierId: "pro",
+      idempotencyKey: "org_1:checkout_drift",
+      successUrl: "https://app.test/ok",
+      cancelUrl: "https://app.test/no",
+    }),
+  )
+  const change = StripeBilling.use((billing) =>
+    billing.changeSubscription({
+      customerId: "cus_known",
+      subscriptionId: "sub_1",
+      tierId: "pro",
+      idempotencyKey: "org_1:change_drift",
+    }),
+  )
+  const refusesWithoutMutation = (
+    stripe: ReturnType<typeof makeStripe>,
+    overrides: Partial<DistilledBillingConfig> = {},
+  ) =>
+    Effect.gen(function* () {
+      const pricesBefore = stripe.posts("/v1/prices").length
+      expect(yield* fail(stripe, checkout, overrides)).toEqual(
+        CatalogNotReady.make({ tierId: "pro" }),
+      )
+      expect(yield* fail(stripe, change, overrides)).toEqual(
+        CatalogNotReady.make({ tierId: "pro" }),
+      )
+      expect(stripe.posts("/v1/checkout/sessions")).toHaveLength(0)
+      expect(stripe.posts("/v1/subscriptions/sub_1")).toHaveLength(0)
+      expect(stripe.posts("/v1/prices")).toHaveLength(pricesBefore)
+      expect(stripe.posts("/v1/billing/meters")).toHaveLength(2)
+    })
+
+  it.live("refuses a base price set up for a different base amount than the configuration", () =>
+    Effect.gen(function* () {
+      const stripe = makeStripe()
+      yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+      )
+      yield* refusesWithoutMutation(
+        stripe,
+        repriced((tier) => ({ ...tier, basePriceCents: 2900 })),
+      )
+    }),
+  )
+
+  it.live("refuses a stale usage price even when the base price still matches", () =>
+    Effect.gen(function* () {
+      const stripe = makeStripe()
+      yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+      )
+      yield* refusesWithoutMutation(
+        stripe,
+        repriced((tier) => ({
+          ...tier,
+          usage: tier.usage.map((usage) =>
+            usage.meter === "commands" ? { ...usage, unitAmountDecimal: "0.00006" } : usage,
+          ),
+        })),
+      )
+    }),
+  )
+
+  it.live("refuses a usage price bound to a meter that is no longer the active one", () =>
+    Effect.gen(function* () {
+      const stripe = makeStripe()
+      yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+      )
+      const commands = stripe.meters.findIndex((meter) => meter.event_name === "commands")
+      stripe.meters[commands] = { id: "mtr_replacement", event_name: "commands" }
+      yield* refusesWithoutMutation(stripe)
+    }),
+  )
+
+  it.live("refuses a fingerprinted price whose tax behavior, product or meter was changed", () =>
+    Effect.gen(function* () {
+      const stripe = makeStripe()
+      yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+      )
+      const storage = stripe.prices.find((price) => price.lookup_key === "akter_pro_storageGb")!
+      storage.tax_behavior = "inclusive"
+      yield* refusesWithoutMutation(stripe)
+      storage.tax_behavior = "exclusive"
+      storage.product = "akter_team"
+      yield* refusesWithoutMutation(stripe)
+      storage.product = "akter_pro"
+      const commands = stripe.prices.find((price) => price.lookup_key === "akter_pro_commands")!
+      commands.meter = "mtr_unrelated"
+      yield* refusesWithoutMutation(stripe)
+      commands.meter = stripe.meters.find((meter) => meter.event_name === "commands")!.id
+      yield* run(stripe, checkout)
+      expect(stripe.posts("/v1/checkout/sessions")).toHaveLength(1)
+    }),
+  )
+
+  it.live("sells exactly the new prices once setup has run for the changed configuration", () =>
+    Effect.gen(function* () {
+      const stripe = makeStripe()
+      const changed = repriced((tier) => ({ ...tier, basePriceCents: 2900 }))
+      const stale = yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+      )
+      const current = yield* run(
+        stripe,
+        StripeBilling.use((billing) => billing.ensureCatalog),
+        changed,
+      )
+      expect(current.tiers[0]!.basePriceId).not.toBe(stale.tiers[0]!.basePriceId)
+      expect(current.tiers[0]!.usage).toEqual(stale.tiers[0]!.usage)
+      expect(yield* fail(stripe, checkout)).toEqual(CatalogNotReady.make({ tierId: "pro" }))
+      yield* run(stripe, checkout, changed)
+      const [form] = stripe.posts("/v1/checkout/sessions").map((entry) => entry.form)
+      expect([0, 1, 2].map((index) => form!.get(`line_items[${index}][price]`))).toEqual([
+        current.tiers[0]!.basePriceId,
+        current.tiers[0]!.usage.find((entry) => entry.meter === "commands")!.priceId,
+        current.tiers[0]!.usage.find((entry) => entry.meter === "storageGb")!.priceId,
+      ])
+      expect(form!.get("line_items[0][quantity]")).toBe("1")
+      expect(form!.get("line_items[1][quantity]")).toBeNull()
+      expect(form!.get("line_items[3][price]")).toBeNull()
+    }),
+  )
+})
+
 describe("changing an existing subscription", () => {
   const plans = [...tiers, { ...tiers[0]!, id: "team", name: "Team", basePriceCents: 24900 }]
   const change = (tierId: string, customerId = "cus_known", idempotencyKey = "org_1:change_1") =>
@@ -906,13 +1150,13 @@ describe("changing an existing subscription", () => {
         expect(request!.form.get("items[1][quantity]")).toBeNull()
         expect(request!.form.get("billing_cycle_anchor")).toBe("unchanged")
         expect(request!.form.get("payment_behavior")).toBe("pending_if_incomplete")
-        expect(request!.form.get("proration_behavior")).toBe("create_prorations")
+        expect(request!.form.get("proration_behavior")).toBe("always_invoice")
         expect(request!.form.get("automatic_tax[enabled]")).toBeNull()
         expect(stripe.posts("/v1/subscriptions")).toHaveLength(0)
       }),
   )
 
-  it.live("returns the old canonical tier if the payment leaves the update pending", () =>
+  it.live("returns the old canonical tier when the immediate change invoice is declined", () =>
     Effect.gen(function* () {
       const stripe = makeStripe()
       yield* run(
@@ -920,7 +1164,7 @@ describe("changing an existing subscription", () => {
         StripeBilling.use((billing) => billing.ensureCatalog),
         { tiers: plans },
       )
-      stripe.subscriptionState.pending = true
+      stripe.subscriptionState.paymentDeclines = true
       const canonical = yield* run(stripe, change("team"), { tiers: plans })
       expect(canonical.tierId).toBe("pro")
       expect(canonical.subscriptionId).toBe("sub_1")

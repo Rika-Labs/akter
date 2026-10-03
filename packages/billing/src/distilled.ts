@@ -18,6 +18,7 @@ import {
   type BillingDetails,
   type Catalog,
   CatalogNotReady,
+  CheckoutExpired,
   type CatalogMeter,
   type CatalogTier,
   type CheckoutInput,
@@ -70,6 +71,9 @@ interface MeterEventSession {
 const productId = (tier: Tier): string => `akter_${tier.id}`
 const baseLookupKey = (tier: Tier): string => `akter_${tier.id}_base`
 const usageLookupKey = (tier: Tier, usage: UsagePrice): string => `akter_${tier.id}_${usage.meter}`
+const baseSpecification = (tier: Tier): string => `${tier.basePriceCents}|${tier.currency}`
+const usageSpecification = (tier: Tier, usage: UsagePrice, meterId: string): string =>
+  `${meterId}|${usage.unitAmountDecimal}|${usage.includedUnits ?? 0}|${tier.currency}`
 
 const providerError = (operation: string, error: Stripe.StripeOpError): BillingProviderError =>
   BillingProviderError.make({
@@ -142,6 +146,9 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
 
       const hash = (text: string) => sha256Hex(text).pipe(Effect.provideContext(context))
 
+      const priceFingerprint = (lookupKey: string, specification: string) =>
+        hash(`v1|${lookupKey}|${specification}`)
+
       const findTier = (tierId: string): Effect.Effect<Tier, UnknownTier> => {
         const tier = config.tiers.find((candidate) => candidate.id === tierId)
         return tier === undefined ? Effect.fail(UnknownTier.make({ tierId })) : Effect.succeed(tier)
@@ -207,7 +214,7 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
         body: Stripe.Services.stripe.CreatePriceRequest,
       ) =>
         Effect.gen(function* () {
-          const fingerprint = yield* hash(`v1|${lookupKey}|${specification}`)
+          const fingerprint = yield* priceFingerprint(lookupKey, specification)
           const found = yield* request(
             stripe.GetPrices({ lookup_keys: [lookupKey], active: true, limit: 10 }),
           )
@@ -264,7 +271,7 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
             baseLookupKey(tier),
             tier,
             BASE_COMPONENT,
-            `${tier.basePriceCents}|${tier.currency}`,
+            baseSpecification(tier),
             {
               product: productId(tier),
               currency: tier.currency,
@@ -281,7 +288,7 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
               usageLookupKey(tier, component),
               tier,
               component.meter,
-              `${meterId}|${component.unitAmountDecimal}|${component.includedUnits ?? 0}|${tier.currency}`,
+              usageSpecification(tier, component, meterId),
               usagePriceBody(tier, component, meterId),
             )
             usage.push({ meter: component.meter, meterId, priceId })
@@ -293,6 +300,71 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
             usage,
           }
           return entry
+        })
+
+      /**
+       * The tier's sellable prices, in base-then-usage order, only when every
+       * active lookup-key price carries the fingerprint the current
+       * configuration and active meters produce, so a checkout or plan change
+       * never sells a price that differs from what estimates and spend limits
+       * assume. Drift is refused, never repaired here: the catalog setup
+       * command owns provider mutations.
+       */
+      const currentPrices = (operation: string, tier: Tier) =>
+        Effect.gen(function* () {
+          const meters = yield* activeMeters.pipe(
+            Effect.mapError((error) => providerError(operation, error)),
+          )
+          const wanted: Array<{
+            readonly component: string
+            readonly lookupKey: string
+            readonly meterId: string | null
+            readonly specification: string
+          }> = [
+            {
+              component: BASE_COMPONENT,
+              lookupKey: baseLookupKey(tier),
+              meterId: null,
+              specification: baseSpecification(tier),
+            },
+          ]
+          for (const usage of tier.usage) {
+            const meterId = meters.get(usage.meter)
+            if (meterId === undefined) return yield* CatalogNotReady.make({ tierId: tier.id })
+            wanted.push({
+              component: usage.meter,
+              lookupKey: usageLookupKey(tier, usage),
+              meterId,
+              specification: usageSpecification(tier, usage, meterId),
+            })
+          }
+          const found = yield* request(
+            stripe.GetPrices({
+              lookup_keys: wanted.map((entry) => entry.lookupKey),
+              active: true,
+              limit: 100,
+            }),
+          ).pipe(Effect.mapError((error) => providerError(operation, error)))
+          const prices: Array<{ readonly component: string; readonly priceId: string }> = []
+          for (const entry of wanted) {
+            const price = found.data.find((candidate) => candidate.lookup_key === entry.lookupKey)
+            const fingerprint = yield* priceFingerprint(entry.lookupKey, entry.specification)
+            if (
+              price === undefined ||
+              !price.active ||
+              price.metadata.akter_fingerprint !== fingerprint ||
+              price.metadata.akter_tier !== tier.id ||
+              price.metadata.akter_component !== entry.component ||
+              price.tax_behavior !== "exclusive" ||
+              (Predicate.isString(price.product) ? price.product : price.product.id) !==
+                productId(tier) ||
+              (price.recurring?.meter ?? null) !== entry.meterId
+            ) {
+              return yield* CatalogNotReady.make({ tierId: tier.id })
+            }
+            prices.push({ component: entry.component, priceId: price.id })
+          }
+          return prices
         })
 
       const ensureCatalog: Effect.Effect<Catalog, BillingProviderError> = Effect.gen(function* () {
@@ -372,6 +444,7 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
           const tier = yield* findTier(input.tierId)
           if (input.idempotencyKey !== undefined) {
             let after: string | undefined
+            let expired: string | undefined
             for (;;) {
               const page = yield* request(
                 stripe.GetCheckoutSessions({
@@ -380,12 +453,15 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
                   starting_after: after,
                 }),
               ).pipe(Effect.mapError(customerFailure("startCheckout", input.customerId)))
-              const previous = page.data.find(
+              const same = page.data.filter(
                 (session) =>
                   session.metadata?.akter_request === input.idempotencyKey &&
                   session.metadata?.akter_organization_id === input.organizationId &&
-                  session.metadata?.akter_tier === tier.id &&
-                  (session.status === "open" || session.status === "complete"),
+                  session.metadata?.akter_tier === tier.id,
+              )
+              expired ??= same.find((session) => session.status === "expired")?.id
+              const previous = same.find(
+                (session) => session.status === "open" || session.status === "complete",
               )
               if (previous !== undefined) {
                 const url =
@@ -405,6 +481,7 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
               if (!page.has_more || last === undefined) break
               after = last.id
             }
+            if (expired !== undefined) return yield* CheckoutExpired.make({ sessionId: expired })
           }
           let afterSubscription: string | undefined
           for (;;) {
@@ -435,20 +512,10 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
             if (!page.has_more || last === undefined) break
             afterSubscription = last.id
           }
-          const keys = [
-            baseLookupKey(tier),
-            ...tier.usage.map((usage) => usageLookupKey(tier, usage)),
-          ]
-          const prices = yield* request(
-            stripe.GetPrices({ lookup_keys: keys, active: true, limit: 100 }),
-          ).pipe(Effect.mapError((error) => providerError("startCheckout", error)))
-          const byKey = new Map(prices.data.map((price) => [price.lookup_key, price.id]))
-          const lineItems: Array<{ readonly price: string; readonly quantity?: number }> = []
-          for (const key of keys) {
-            const price = byKey.get(key)
-            if (price === undefined) return yield* CatalogNotReady.make({ tierId: tier.id })
-            lineItems.push(key === baseLookupKey(tier) ? { price, quantity: 1 } : { price })
-          }
+          const lineItems = (yield* currentPrices("startCheckout", tier)).map(
+            ({ component, priceId }) =>
+              component === BASE_COMPONENT ? { price: priceId, quantity: 1 } : { price: priceId },
+          )
           const metadata = { akter_organization_id: input.organizationId, akter_tier: tier.id }
           const created = yield* request(
             stripe.CreateCheckoutSession({
@@ -596,39 +663,13 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
               retryable: false,
             })
           }
-          const components = [BASE_COMPONENT, ...target.usage.map((entry) => entry.meter)]
-          const keys = [
-            baseLookupKey(target),
-            ...target.usage.map((entry) => usageLookupKey(target, entry)),
-          ]
-          const catalog = yield* request(
-            stripe.GetPrices({ lookup_keys: keys, active: true, limit: 100 }),
-          ).pipe(Effect.mapError((error) => providerError("changeSubscription", error)))
-          const prices = new Map(catalog.data.map((price) => [price.lookup_key, price]))
           const items: Array<Stripe.Services.stripe.UpdateSubscriptionRequestItemsItem> = []
-          for (let index = 0; index < components.length; index++) {
-            const component = components[index]!
-            const price = prices.get(keys[index]!)
-            const product =
-              price === undefined
-                ? undefined
-                : Predicate.isString(price.product)
-                  ? price.product
-                  : price.product.id
-            if (
-              price === undefined ||
-              price.metadata.akter_tier !== target.id ||
-              price.metadata.akter_component !== component ||
-              price.tax_behavior !== "exclusive" ||
-              product !== productId(target)
-            ) {
-              return yield* CatalogNotReady.make({ tierId: target.id })
-            }
+          for (const { component, priceId } of yield* currentPrices("changeSubscription", target)) {
             const id = oldItems.get(component)
             items.push(
               component === BASE_COMPONENT
-                ? { id, price: price.id, quantity: 1 }
-                : { id, price: price.id },
+                ? { id, price: priceId, quantity: 1 }
+                : { id, price: priceId },
             )
             oldItems.delete(component)
           }
@@ -638,7 +679,7 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
               subscription_exposed_id: input.subscriptionId,
               items,
               billing_cycle_anchor: "unchanged",
-              proration_behavior: "create_prorations",
+              proration_behavior: "always_invoice",
               payment_behavior: "pending_if_incomplete",
             }),
             input.idempotencyKey,

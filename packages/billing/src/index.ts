@@ -5,6 +5,7 @@ export {
   UnknownMeter,
   UnknownSubscription,
   CatalogNotReady,
+  CheckoutExpired,
   WebhookRejected,
   StripeBilling,
 } from "./contract.ts"
