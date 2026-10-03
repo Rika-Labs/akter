@@ -107,6 +107,7 @@ const FixtureLive = Layer.effect(
       databaseUrl: Redacted.make(url),
       secret: Redacted.make("a-local-test-signing-secret-long-enough"),
       origin: idp.origin,
+      consoleOrigin: "https://console.akter.test",
       port: 0,
       production: false,
       emailMode: "local",
@@ -946,21 +947,47 @@ describe("password sign-up", () => {
 })
 
 describe("outgoing mail", () => {
+  const invite = Effect.fnUntraced(function* (label: string) {
+    const user = yield* verifiedUser(label)
+    const organization = yield* createOrganization(user.browser, label)
+    const invitee = `invitee-${next()}@example.test`
+    const invited = yield* user.browser.post("/auth/organization/invite-member", {
+      email: invitee,
+      role: "member",
+      organizationId: organization.id,
+    })
+    expect(invited.status).toBe(200)
+    return { invitee, invitation: yield* decode(Identified)(invited) }
+  })
+
   it("is sent outside Better Auth's transaction store, so later sessions never read a committed transaction", () =>
     run(
       Effect.gen(function* () {
         const { mailStores } = yield* Fixture
-        const user = yield* verifiedUser("mailer")
-        const organization = yield* createOrganization(user.browser, "mail")
-        const invited = yield* user.browser.post("/auth/organization/invite-member", {
-          email: `invitee-${next()}@example.test`,
-          role: "member",
-          organizationId: organization.id,
-        })
 
-        expect(invited.status).toBe(200)
+        yield* invite("mailer")
+
         expect(mailStores.length).toBeGreaterThanOrEqual(2)
         expect(mailStores.every((store) => store === undefined)).toBe(true)
+      }),
+    ))
+
+  it("links an invitation to the console's invitation page", () =>
+    run(
+      Effect.gen(function* () {
+        const { sql } = yield* Fixture
+
+        const { invitee, invitation } = yield* invite("linker")
+
+        const [mail] = yield* sql<{
+          readonly body: string
+        }>`SELECT body FROM cloud_email_outbox WHERE recipient = ${invitee} AND subject LIKE 'Join %'`.pipe(
+          Effect.orDie,
+          Effect.filterOrFail((found) => found.length > 0),
+          Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),
+          Effect.orDie,
+        )
+        expect(mail?.body).toBe(`https://console.akter.test/invitations/${invitation.id}`)
       }),
     ))
 })
@@ -998,6 +1025,10 @@ describe("production rate limiting", () => {
             ),
           )
           const auth = Context.get(services, Auth)
+          const guess = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))({
+            email: "nobody@example.test",
+            password: "a-wrong-password-guess",
+          }).pipe(Effect.orDie)
           const statuses: Array<number> = []
           for (let attempt = 0; attempt < 8; attempt++) {
             const response = yield* Effect.promise(() =>
@@ -1009,10 +1040,7 @@ describe("production rate limiting", () => {
                     origin,
                     "x-forwarded-for": "203.0.113.7",
                   },
-                  body: JSON.stringify({
-                    email: "nobody@example.test",
-                    password: "a-wrong-password-guess",
-                  }),
+                  body: guess,
                 }),
               ),
             )

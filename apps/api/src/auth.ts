@@ -50,7 +50,7 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
       send(
         email,
         `Join ${organization.name}`,
-        `${options.origin}/accept-invitation?invitationId=${encodeURIComponent(id)}`,
+        `${options.consoleOrigin ?? options.origin}/invitations/${encodeURIComponent(id)}`,
       ),
   })
   const keyPlugin = apiKey({
