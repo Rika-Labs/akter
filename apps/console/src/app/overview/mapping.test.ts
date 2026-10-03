@@ -24,6 +24,7 @@ const deployment = (id: string, commitSha: string, createdAt: string) => ({
   runnerCount: 3,
   durationMs: 52_000,
   status: "live",
+  rolledBackFrom: null,
   createdAt,
 })
 

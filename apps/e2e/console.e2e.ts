@@ -105,6 +105,9 @@ test("keeps sample dead letters read-only and never reports a retry", async ({ p
 
 test("opens the command palette anywhere, navigates and switches the theme", async ({ page }) => {
   await page.goto("/deployments")
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Deployments", exact: true }),
+  ).toBeVisible()
 
   await page.keyboard.press("ControlOrMeta+k")
   const palette = page.getByRole("dialog", { name: "Command palette" })

@@ -26,6 +26,7 @@ const summary = (fields: Record<string, Schema.Json>) => ({
   runnerCount: 6,
   durationMs: 41_000,
   status: "live",
+  rolledBackFrom: null,
   createdAt: "2026-10-03T10:00:00.000Z",
   ...fields,
 })

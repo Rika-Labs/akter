@@ -77,7 +77,9 @@ test("an unavailable organization context fails instead of manufacturing sample 
   )
   await page.goto(`${origin}/actors`)
   await expect(page.getByRole("button", { name: "Account: Real Session User" })).toBeVisible()
-  await expect(page.getByText("This action isn’t available yet.", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("main").getByText("This action isn’t available yet.", { exact: true }),
+  ).toBeVisible()
   await expect(page.getByRole("note")).toHaveCount(0)
   await expect(page.getByRole("table")).toHaveCount(0)
 })
