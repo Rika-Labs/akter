@@ -16,10 +16,92 @@ import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { Database } from "../layer.ts"
 import { migrations, migrator } from "./migrations.ts"
+import { disposableDatabase } from "../../testing/database.ts"
+
+/** Deployment registries are not actor data and stay in one shard group. */
+const registries = [
+  "actor_adoption_writes",
+  "actor_adoptions",
+  "actor_content_types",
+  "actor_deployment",
+  "actor_fleet_views",
+  "actor_migrations",
+  "actor_payload_versions",
+  "actor_payload_writers",
+  "actor_placements",
+  "actor_routed_subscriptions",
+  "actor_tables",
+  "actor_workflow_manifests",
+]
+
+/** Includes standalone and partial unique indexes, which pg_constraint alone does not enumerate. */
+const schemaKeys = (sql: SqlClient.SqlClient) => sql<{
+  table_name: string
+  index_name: string | null
+  columns: Array<string> | null
+}>`SELECT t.relname AS table_name, i.relname AS index_name,
+    array_agg(a.attname::text ORDER BY k.ordinality) FILTER (WHERE a.attname IS NOT NULL) AS columns
+  FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
+  LEFT JOIN pg_index x ON x.indrelid = t.oid AND x.indisunique
+  LEFT JOIN pg_class i ON i.oid = x.indexrelid
+  LEFT JOIN LATERAL unnest(x.indkey) WITH ORDINALITY k(attnum, ordinality)
+    ON k.ordinality <= x.indnkeyatts
+  LEFT JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+  WHERE n.nspname = current_schema() AND t.relkind IN ('r', 'p')
+    AND (t.relname LIKE 'actor\\_%' ESCAPE '\\' OR t.relname LIKE 'tenant\\_%' ESCAPE '\\')
+  GROUP BY t.relname, i.relname ORDER BY t.relname, i.relname`
 
 describe("migrations with Postgres", () => {
   const runtime = ManagedRuntime.make(BunCrypto.layer)
   afterAll(() => runtime.dispose())
+
+  it("enumerates every framework primary and unique key and requires routing_key outside deployment registries", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const client = yield* Layer.build(Database.postgres({ url }))
+
+          yield* Effect.gen(function* () {
+            yield* migrator(migrations)
+            const sql = yield* SqlClient.SqlClient
+            const keys = yield* schemaKeys(sql)
+            const actorKeys = keys.filter((key) => !registries.includes(key.table_name))
+            const violations = (rows: typeof keys) =>
+              rows.filter(
+                (key) =>
+                  !registries.includes(key.table_name) &&
+                  key.columns?.includes("routing_key") !== true,
+              )
+
+            expect([
+              ...new Set(
+                keys
+                  .filter((key) => registries.includes(key.table_name))
+                  .map((key) => key.table_name),
+              ),
+            ]).toEqual(registries)
+            expect(new Set(actorKeys.map((key) => key.table_name)).size).toBe(18)
+            expect(actorKeys).toHaveLength(19)
+            expect(violations(keys)).toEqual([])
+            expect(
+              actorKeys.find((key) => key.index_name === "actor_outbox_timer")?.columns,
+            ).toEqual(["routing_key", "tenant_id", "actor_type", "actor_id", "timer_key"])
+
+            yield* sql`CREATE UNIQUE INDEX unkeyed_regression ON actor_outbox (intent_id)`
+            expect(violations(yield* schemaKeys(sql))).toEqual([
+              {
+                table_name: "actor_outbox",
+                index_name: "unkeyed_regression",
+                columns: ["intent_id"],
+              },
+            ])
+          }).pipe(Effect.provideContext(client))
+        }),
+      ),
+    ))
 
   it("refuses to start when a concurrent runner commits a higher id while it waits for the migration lock", () =>
     runtime.runPromise(
