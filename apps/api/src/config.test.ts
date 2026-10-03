@@ -71,18 +71,17 @@ describe("API configuration", () => {
       expect((yield* loadProduction({}))._tag).toBe("Success")
     }),
   )
-  it.effect("refuses production that leaves the console on its local default origin", () =>
+  it.effect("leaves the console origin unset so email links fall back to the API origin", () =>
     Effect.gen(function* () {
       const { CONSOLE_ORIGIN: _omitted, ...withoutConsole } = production
-      const result = yield* Effect.exit(
-        loadOptions.pipe(
-          Effect.provideService(
-            ConfigProvider.ConfigProvider,
-            ConfigProvider.fromUnknown(withoutConsole),
-          ),
+      const options = yield* loadOptions.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown(withoutConsole),
         ),
       )
-      expect(result._tag).toBe("Failure")
+      expect(options.consoleOrigin).toBeUndefined()
+      expect(options.origin).toBe("https://api.akter.example")
     }),
   )
   it.effect("refuses production origins that are not public https", () =>

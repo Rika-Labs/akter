@@ -972,6 +972,45 @@ describe("outgoing mail", () => {
       }),
     ))
 
+  it("links verification and password-reset mail to the console, keeping a callback the caller chose", () =>
+    run(
+      Effect.gen(function* () {
+        const { sql } = yield* Fixture
+        const browser = yield* newBrowser
+        const email = `linked-${next()}@example.test`
+        const chosen = `https://console.akter.test/welcome`
+        yield* browser.post("/auth/sign-up/email", { name: "linked", email, password: PASSWORD })
+        const defaulted = new URL(yield* verificationLink(email))
+        const verified = yield* browser.get(defaulted.href)
+        yield* browser.post("/auth/request-password-reset", { email })
+        const [reset] = yield* sql<{
+          readonly body: string
+        }>`SELECT body FROM cloud_email_outbox WHERE recipient = ${email} AND subject = 'Reset your password'`.pipe(
+          Effect.orDie,
+          Effect.filterOrFail((found) => found.length > 0),
+          Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),
+          Effect.orDie,
+        )
+        const resetLink = new URL(reset?.body ?? "")
+        const other = yield* newBrowser
+        const otherEmail = `chosen-${next()}@example.test`
+        yield* other.post("/auth/sign-up/email", {
+          name: "chosen",
+          email: otherEmail,
+          password: PASSWORD,
+          callbackURL: chosen,
+        })
+        const kept = new URL(yield* verificationLink(otherEmail))
+
+        expect(defaulted.searchParams.get("callbackURL")).toBe("https://console.akter.test/")
+        expect(target(verified).origin).toBe("https://console.akter.test")
+        expect(resetLink.searchParams.get("callbackURL")).toBe(
+          "https://console.akter.test/reset-password",
+        )
+        expect(kept.searchParams.get("callbackURL")).toBe(chosen)
+      }),
+    ))
+
   it("links an invitation to the console's invitation page", () =>
     run(
       Effect.gen(function* () {

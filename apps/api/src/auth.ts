@@ -28,6 +28,14 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
   const context = yield* Effect.context<never>()
   const pending = new Set<Promise<unknown>>()
   yield* Effect.addFinalizer(() => Effect.promise(() => Promise.allSettled(pending)))
+  const linkBase = options.consoleOrigin ?? options.origin
+  const withCallback = (url: string, path: string) => {
+    const link = new URL(url)
+    const target = link.searchParams.get("callbackURL")
+    if (target === null || ["", "/", "undefined"].includes(target))
+      link.searchParams.set("callbackURL", `${linkBase}${path}`)
+    return link.href
+  }
   const send = (to: string, subject: string, text: string) =>
     getCurrentDBAdapterAsyncLocalStorage().then((store) =>
       store.exit(() => Effect.runPromiseWith(context)(email.send({ to, subject, text }))),
@@ -47,11 +55,7 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     teams: { enabled: true },
     requireEmailVerificationOnInvitation: true,
     sendInvitationEmail: ({ email, id, organization }) =>
-      send(
-        email,
-        `Join ${organization.name}`,
-        `${options.consoleOrigin ?? options.origin}/invitations/${encodeURIComponent(id)}`,
-      ),
+      send(email, `Join ${organization.name}`, `${linkBase}/invitations/${encodeURIComponent(id)}`),
   })
   const keyPlugin = apiKey({
     references: "organization",
@@ -100,13 +104,13 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
       minPasswordLength: 12,
       revokeSessionsOnPasswordReset: true,
       sendResetPassword: ({ user, url }: { user: { email: string }; url: string }) =>
-        send(user.email, "Reset your password", url),
+        send(user.email, "Reset your password", withCallback(url, "/reset-password")),
     },
     emailVerification: {
       sendOnSignUp: true,
       autoSignInAfterVerification: true,
       sendVerificationEmail: ({ user, url }: { user: { email: string }; url: string }) =>
-        send(user.email, "Verify your email", url),
+        send(user.email, "Verify your email", withCallback(url, "/")),
     },
     socialProviders: { github: options.github, google: options.google },
     account: { accountLinking: { enabled: false } },

@@ -1,4 +1,4 @@
-import { Config, Effect, Redacted } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 
 export interface ApiOptions {
   readonly databaseUrl: Redacted.Redacted<string>
@@ -37,9 +37,7 @@ export const loadOptions = Effect.gen(function* () {
   const origin = yield* Config.String("API_ORIGIN").pipe(
     Config.withDefault("http://localhost:3001"),
   )
-  const consoleOrigin = yield* Config.String("CONSOLE_ORIGIN").pipe(
-    Config.withDefault("http://localhost:5173"),
-  )
+  const consoleOrigin = yield* Config.String("CONSOLE_ORIGIN").pipe(Config.option)
   const trustedIdpOrigins = yield* Config.String("AUTH_TRUSTED_IDP_ORIGINS").pipe(
     Config.withDefault(""),
     Config.map((value) =>
@@ -81,7 +79,10 @@ export const loadOptions = Effect.gen(function* () {
     return yield* Effect.die(new Error("Production requires SES email delivery"))
   if (production && Redacted.value(secret) === publishedDevelopmentSecret)
     return yield* Effect.die(new Error("Production cannot use the published development secret"))
-  if (production && ![origin, consoleOrigin, ...trustedIdpOrigins].every(isPublicHttpsOrigin))
+  if (
+    production &&
+    ![origin, ...Option.toArray(consoleOrigin), ...trustedIdpOrigins].every(isPublicHttpsOrigin)
+  )
     return yield* Effect.die(
       new Error("Production requires explicit public https API, console and IdP origins"),
     )
@@ -89,7 +90,7 @@ export const loadOptions = Effect.gen(function* () {
     databaseUrl,
     secret,
     origin,
-    consoleOrigin,
+    consoleOrigin: Option.getOrUndefined(consoleOrigin),
     trustedIdpOrigins,
     port,
     hostname,

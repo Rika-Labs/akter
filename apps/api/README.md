@@ -22,7 +22,7 @@ CONTROL_PLANE_PG_PORT=55431 API_HTTP_PORT=55432 OUTBOX_HTTP_PORT=55433 \
 
 Stop only that project with the same `-p` and file arguments. `down` preserves its database volume; adding `-v` deletes only that project's local data and should be intentional.
 
-The console runs separately with its own Vite command. `CONSOLE_ORIGIN` defaults to `http://localhost:5173`; change it to the console's exact origin. `bun run dev:apps` preserves the monorepo's former Turbo development path. A same-origin reverse proxy is recommended outside local development.
+The console runs separately with its own Vite command. Compose sets `CONSOLE_ORIGIN` to `http://localhost:5173` unless you override it; set it to the console's exact origin. It is the one credentialed browser origin besides `API_ORIGIN` and the base of every link in invitation, verification and password-reset email. When it is unset, the API serves the console itself behind one origin and those links use `API_ORIGIN`. `bun run dev:apps` preserves the monorepo's former Turbo development path. A same-origin reverse proxy is recommended outside local development.
 
 For a host Bun process instead of a container:
 
@@ -56,7 +56,7 @@ Deployments, runtime inspection/SSE, regions and databases, endpoints, environme
 
 `EMAIL_MODE=local` writes `cloud_email_outbox` rows, readable in tests and at the local mailbox. `EMAIL_MODE=ses` sends through the exact `@distilled.cloud/aws@1.0.0-rc.13` SESv2 client. Set `EMAIL_FROM`, an AWS region and credentials using the Distilled credential chain (ECS task roles in production). SES is typechecked; no actual SES sending is claimed without a verified sender and provider evidence.
 
-Production requires `API_PRODUCTION=true`, SES delivery, a securely provisioned `AUTH_SECRET` that is not the published Compose secret, the Neki control-plane database URL and explicit public https `API_ORIGIN`, `CONSOLE_ORIGIN` and `AUTH_TRUSTED_IDP_ORIGINS`; startup fails on any other value. `API_PRODUCTION=true` also enables Better Auth's in-memory rate limiter, which counts per process and per client address, so put a shared limiter at the edge and have it set a trustworthy forwarded-address header. `API_HOST` controls binding; Compose binds inside its container and publishes only loopback ports. Request-path logging is disabled so verification/reset query tokens never enter access logs.
+Production requires `API_PRODUCTION=true`, SES delivery, a securely provisioned `AUTH_SECRET` that is not the published Compose secret, the Neki control-plane database URL and explicit public https `API_ORIGIN`, `CONSOLE_ORIGIN` (when the console has its own origin) and `AUTH_TRUSTED_IDP_ORIGINS`; startup fails on any other value. `API_PRODUCTION=true` also enables Better Auth's in-memory rate limiter, which counts per process and per client address, so put a shared limiter at the edge and have it set a trustworthy forwarded-address header. `API_HOST` controls binding; Compose binds inside its container and publishes only loopback ports. Request-path logging is disabled so verification/reset query tokens never enter access logs.
 
 ## Evidence
 
