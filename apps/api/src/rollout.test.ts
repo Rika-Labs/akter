@@ -9,7 +9,7 @@ import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { runtimeEdge } from "./cloud.ts"
 import { Repository, RepositoryLive } from "./repository.ts"
-import { rolloutRouting } from "./rollout.ts"
+import { rolloutRouting, serviceCredential } from "./rollout.ts"
 import { RuntimeEdge } from "./runtime.ts"
 import type { ApiOptions } from "./config.ts"
 
@@ -60,6 +60,22 @@ const release = (projectId: string, deploymentId: string): ReleaseRecord => ({
 })
 
 describe("rollout routing authority", () => {
+  it("binds a redacted service credential to the deployment and signing secret", () => {
+    const secret = Redacted.make("review-local-hmac-test-key-not-a-secret")
+    const first = serviceCredential(secret, "deployment-one")
+    const second = serviceCredential(secret, "deployment-two")
+    expect(Redacted.value(first)).toBe(
+      "9c6ec99ca3922954b83c5c0f8e7cc3e930386f022a8704c576daeb3fb1461e47",
+    )
+    expect(Redacted.value(second)).toBe(
+      "5102a78e1e0030d95d6e4fb9b08d8a7c73cb987a8739dc214d0f7dbcda6b50aa",
+    )
+    expect(
+      Redacted.value(serviceCredential(Redacted.make("another-local-key"), "deployment-one")),
+    ).not.toBe(Redacted.value(first))
+    expect(String(first)).not.toContain(Redacted.value(first))
+  })
+
   it("moves aliases and credentials atomically and restores the earlier effective snapshot on rollback", () =>
     run(
       Effect.gen(function* () {
