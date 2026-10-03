@@ -109,7 +109,10 @@ export const network = (config: Deployment) =>
       scheme: "internet-facing",
       subnets: subnets.map(({ publicSubnetId }) => publicSubnetId),
       securityGroups: [loadBalancerGroup.groupId],
-      attributes: { "load_balancing.cross_zone.enabled": "true" },
+      attributes: {
+        "load_balancing.cross_zone.enabled": "true",
+        "deletion_protection.enabled": config.stage === "prod" ? "true" : "false",
+      },
     })
     return { vpc, subnets, loadBalancer, servicesGroup }
   })

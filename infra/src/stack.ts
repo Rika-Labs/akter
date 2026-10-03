@@ -75,6 +75,7 @@ export const resources = Effect.gen(function* () {
       },
     ],
     unshardedTables: controlTables,
+    deletionProtected: config.stage === "prod",
   }).pipe(retain(config.stage === "prod"))
   const databaseRole = yield* Neki.Role("RuntimeRole", {
     organization: config.planetscaleOrganization,

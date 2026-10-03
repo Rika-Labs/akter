@@ -62,6 +62,10 @@ export const preview = (options: {
             return yield* Effect.die(new Error(`No provider registered for ${resource.Type}`))
         }
         return {
+          deletionProtection: {
+            nlb: compiled.resources.Nlb?.Props?.attributes?.["deletion_protection.enabled"],
+            database: compiled.resources.Database?.Props?.deletionProtected,
+          },
           stage: compiled.stage,
           name: compiled.name,
           resources: Object.entries(compiled.resources).map(([id, resource]) => ({

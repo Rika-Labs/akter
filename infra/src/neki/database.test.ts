@@ -45,11 +45,13 @@ type RequestBody = {
   readonly region?: string
   readonly kind?: string
   readonly data_topology?: DataTopology
+  readonly deletion_protected?: boolean
 }
 
 type FakeState = {
   exists: boolean
   kind: string
+  protected: boolean
   profileSize: string
   profileReplicas: number
   shards: FakeShard[]
@@ -64,6 +66,7 @@ const NEW_SHARD_NAMES = ["zeta", "yankee", "xray", "whiskey", "victor"]
 const fresh = (): FakeState => ({
   exists: false,
   kind: "neki",
+  protected: false,
   profileSize: "PS_10",
   profileReplicas: 0,
   shards: [],
@@ -173,6 +176,7 @@ const database = (state: FakeState) => ({
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
   kind: state.kind,
+  deletion_protected: state.protected,
   default_branch: "main",
 })
 
@@ -221,6 +225,11 @@ const handle = (state: FakeState, request: Request) =>
       return json({})
     }
     if (!state.exists) return notFound()
+    if (route === `PATCH ${BASE}`) {
+      record(state, "updateSettings", body)
+      state.protected = body.deletion_protected ?? state.protected
+      return json(database(state))
+    }
     if (route === `GET ${BRANCH}`) return json(branch)
     if (route === `GET ${BRANCH}/configuration-profiles`) return json([profile(state)])
     if (route === `GET ${BRANCH}/configuration-profiles/default`) return json(profile(state))
@@ -527,6 +536,26 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
         cluster_size: "PS_80",
         replicas: 2,
       })
+    }))
+
+  test("turns deletion protection on and back off only when the prop differs", () =>
+    Effect.gen(function* () {
+      const olds = props({ deletionProtected: true })
+      const output = yield* reconcile(olds)
+      expect(state.protected).toBe(true)
+      expect(state.calls.filter((call) => call === "updateSettings")).toHaveLength(1)
+      state.calls = []
+      yield* reconcile(olds, { output, olds })
+      expect(state.calls).not.toContain("updateSettings")
+      yield* reconcile(props({ deletionProtected: false }), { output, olds })
+      expect(state.protected).toBe(false)
+      expect(state.calls.filter((call) => call === "updateSettings")).toHaveLength(1)
+    }))
+
+  test("leaves deletion protection alone when the prop is unset", () =>
+    Effect.gen(function* () {
+      yield* reconcile(props())
+      expect(state.calls).not.toContain("updateSettings")
     }))
 
   test("deletes the routers it created that the props no longer name", () =>

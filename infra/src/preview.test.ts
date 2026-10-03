@@ -14,6 +14,10 @@ describe("credential-free resource graph", () => {
             const graph = yield* preview({ stage, region })
             expect(graph.stage).toBe(stage)
             expect(graph.name).toBe(`akter-${region}`)
+            expect(graph.deletionProtection).toEqual({
+              nlb: stage === "prod" ? "true" : "false",
+              database: stage === "prod",
+            })
             for (const name of ["api", "edge", "console"]) {
               expect(graph.resources).toContainEqual({
                 id: `${name}/Task`,

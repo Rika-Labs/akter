@@ -81,6 +81,10 @@ export interface NekiDatabaseProps {
    * shard.
    */
   unshardedTables?: ReadonlyArray<string>
+  /**
+   * Asks PlanetScale to refuse deleting the database. Left unset, the setting is not touched.
+   */
+  deletionProtected?: boolean
 }
 
 export interface NekiDatabaseAttributes {
@@ -283,6 +287,17 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
       }))
     yield* requireNeki(created)
     const database = yield* Planetscale.waitForDatabaseReady(organization, name, session)
+    if (
+      news.deletionProtected !== undefined &&
+      database.deletion_protected !== news.deletionProtected
+    ) {
+      yield* session.note("Updating deletion protection...")
+      yield* planetscale.updateDatabaseSettings({
+        organization,
+        database: name,
+        deletion_protected: news.deletionProtected,
+      })
+    }
     const branch = database.default_branch ?? "main"
     yield* Planetscale.waitForBranchReady(organization, name, branch, session)
 
