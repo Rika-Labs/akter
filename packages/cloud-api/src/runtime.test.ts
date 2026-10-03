@@ -13,6 +13,7 @@ import {
   OwnedTableRows,
   SendCommand,
   TurnLatency,
+  Workflow,
 } from "./runtime.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
@@ -212,5 +213,25 @@ describe("runtime models", () => {
       "/api/projects/{projectId}/environments/{environment}/runtime/actor-types/{actorType}"
     expect(paths[`${base}/activity`]?.get?.parameters?.map((p) => p.name)).toContain("window")
     expect(paths[`${base}/latency`]?.get?.description).toContain("p99")
+  })
+
+  it("counts a workflow's steps from 1 and never lets the index pass the total", () => {
+    const workflow = {
+      id: "wf_1",
+      name: "Checkout",
+      actor: "Cart/c_1",
+      step: { index: 1, total: 3, name: "reserve" },
+      waitingFor: null,
+      startedAt: "2026-10-03T10:00:00.000Z",
+      status: "running",
+    }
+    const at = (step: { index: number; total: number; name: string }) => ({ ...workflow, step })
+
+    expect(decode(Workflow, workflow).step.index).toBe(1)
+    expect(decode(Workflow, at({ index: 3, total: 3, name: "ship" })).step.index).toBe(3)
+    expect(rejects(Workflow, at({ index: 0, total: 3, name: "reserve" }))).toBe(true)
+    expect(rejects(Workflow, at({ index: 4, total: 3, name: "ship" }))).toBe(true)
+    expect(rejects(Workflow, at({ index: 1, total: 0, name: "reserve" }))).toBe(true)
+    expect(rejects(Workflow, at({ index: 1.5, total: 3, name: "reserve" }))).toBe(true)
   })
 })

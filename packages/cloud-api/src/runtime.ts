@@ -252,15 +252,26 @@ export const DeadLetter = Schema.Struct({
 })
 export type DeadLetter = typeof DeadLetter.Type
 
+/**
+ * One workflow run. `step.index` counts from 1, so the first step is 1 and a
+ * run showing "step n of m" has `index` n and `total` m; `index` never exceeds
+ * `total`.
+ */
 export const Workflow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   actor: ActorAddress,
   step: Schema.Struct({
-    index: NonNegativeInt,
-    total: NonNegativeInt,
+    index: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+    total: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
     name: Schema.String,
-  }),
+  }).pipe(
+    Schema.check(
+      Schema.makeFilter(
+        (step) => step.index <= step.total || "step.index must not exceed step.total",
+      ),
+    ),
+  ),
   waitingFor: Schema.NullOr(
     Schema.Struct({ kind: Schema.Literals(["event", "timer"]), name: Schema.String }),
   ),
