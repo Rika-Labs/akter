@@ -19,7 +19,6 @@ import {
   ClusterError,
   Entity,
   EntityId,
-  MessageStorage,
   RunnerHealth,
   Runners,
   RunnerStorage,
@@ -94,6 +93,13 @@ import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
 import { servingReadiness } from "./readiness.ts"
+import {
+  acquiredShards,
+  checkRunnerConfiguration,
+  RunnerReadiness,
+  RunnerWiring,
+} from "./runner.ts"
+
 import { actorRegistration } from "./registration.ts"
 import { startSweeps } from "./sweeps.ts"
 import type { AnyFleetView } from "../tables/fleet.ts"
@@ -249,31 +255,6 @@ const CLAIM_MARGIN_MS = 5000
 
 /** The claim lease when no actor type is registered: default policies' 30 s + 2 s + margin. */
 const DEFAULT_CLAIM_LEASE_MS = 37_000
-
-/**
- * How a runtime joins a cluster of runners instead of running as the embedded
- * single runner. Package-internal: `ActorTest.cluster` provides it to each of
- * its runners.
- */
-export class RunnerWiring extends Context.Service<
-  RunnerWiring,
-  {
-    readonly config: Partial<ShardingConfig.ShardingConfig["Service"]>
-    /** Provides `Sharding` together with the runner-to-runner transport. */
-    readonly sharding: Layer.Layer<
-      Sharding.Sharding,
-      never,
-      | ShardingConfig.ShardingConfig
-      | MessageStorage.MessageStorage
-      | RunnerStorage.RunnerStorage
-      | RunnerHealth.RunnerHealth
-    >
-    /** Wraps the SQL runner storage, e.g. to withhold heartbeats or a graceful release. */
-    readonly storage: (
-      storage: RunnerStorage.RunnerStorage["Service"],
-    ) => RunnerStorage.RunnerStorage["Service"]
-  }
->()("@rikalabs/akter/runtime/layer/RunnerWiring") {}
 
 /** How long a progress send may take before it is given up as a lost frame. */
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
@@ -1306,9 +1287,26 @@ export const layer = (options: Options = {}) => {
         ? "memory"
         : "sql"
 
+      if (wiring?.production === true && runnerStorage === "memory")
+        return yield* Effect.die(
+          new Error(
+            "Runner.socket requires Postgres; PGlite cannot share ownership between processes",
+          ),
+        )
+
+      yield* checkRunnerConfiguration(wiring)
+
       const sharding = (
         wiring?.sharding ?? Sharding.layer.pipe(Layer.provide(Runners.layerNoop))
       ).pipe(
+        Layer.merge(
+          Layer.effect(
+            RunnerReadiness,
+            wiring?.production === true
+              ? acquiredShards
+              : Effect.succeed({ acquired: () => Effect.succeed(true) }),
+          ),
+        ),
         Layer.provideMerge(directMessages),
         Layer.provide([
           runnerStorage === "memory"
