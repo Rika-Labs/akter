@@ -18,11 +18,12 @@ import { Database } from "../layer.ts"
 import { migrations, migrator } from "./migrations.ts"
 import { disposableDatabase } from "../../testing/database.ts"
 
-/** Deployment registries are not actor data and stay in one shard group. */
+/** Deployment registries and coordination rows are not actor data and stay in one shard group. */
 const registries = [
   "actor_adoption_writes",
   "actor_adoptions",
   "actor_content_types",
+  "actor_coordination",
   "actor_deployment",
   "actor_fleet_views",
   "actor_migrations",

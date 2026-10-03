@@ -11,6 +11,8 @@ Use an ADR when a choice changes an interface, invariant, data model, deployment
 
 Decisions do not override newer accepted requirements. When a decision is superseded, preserve it and link the replacement.
 
+- [ADR 0066: Authoritative coordination, independent of actor-data placement](0066-authoritative-coordination.md) (implementation decision, 2026-10-03) replaces per-type advisory locks with transaction-owned authoritative rows plus local data fences, makes capped job claims lock their actor's generation row, and adds an optional coordination pool for Cluster and fleet ownership. Neki provider evidence remains pending #66.
+
 - [ADR 0001: Repository structure](0001-repository-structure.md) defines the one-package framework and role-folder layout.
 - [ADR 0002: Clarify the adopted v4 contracts](0002-v4-contract-clarifications.md) reconciles the final API, transaction, and capability decisions without claiming runtime implementation.
 - [ADR 0003: Failure rollback, automatic scoping, drain, and hosted trust](0003-failure-scoping-drain-and-hosted-trust.md) resolves the corresponding open decisions from ADR 0002 and requires context-scoped adapters, without claiming implementation or backend support.
