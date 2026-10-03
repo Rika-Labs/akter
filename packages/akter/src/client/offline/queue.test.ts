@@ -1,5 +1,5 @@
 import { Deferred, Effect, Option, Schedule, Schema } from "effect"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ActorError, InvalidInput, TransportError, Unauthorized } from "../../errors/actor.ts"
 import type { Failure } from "../transport.ts"
 import { type Delivery, type QueueOptions, type Refused, openCommandQueue } from "./queue.ts"
@@ -140,8 +140,19 @@ const gatedStore = (base: OfflineStore, gate: Deferred.Deferred<void>): OfflineS
 
 const controller = () => new AbortController()
 
+beforeEach(() => {
+  if (globalThis.reportError === undefined) vi.stubGlobal("reportError", () => undefined)
+  if (!("addEventListener" in globalThis)) {
+    const target = new EventTarget()
+    vi.stubGlobal("addEventListener", target.addEventListener.bind(target))
+    vi.stubGlobal("removeEventListener", target.removeEventListener.bind(target))
+    vi.stubGlobal("dispatchEvent", target.dispatchEvent.bind(target))
+  }
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe("offline command queue", () => {

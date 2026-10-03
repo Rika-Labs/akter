@@ -53,6 +53,7 @@ import {
 } from "./assertion/binding.ts"
 import { databaseClock } from "./clock.ts"
 import { SUBPROTOCOL } from "../protocol/frames.ts"
+import { isSameOrigin } from "./origin.ts"
 import { handleMcp, type ToolCall, type ToolResult } from "./mcp/endpoint.ts"
 import { mcpTools } from "./mcp/tools.ts"
 import { cursorErrorBody, feedStream, MAX_FEED_FILTERS, openFeed } from "./sessions/feed.ts"
@@ -195,28 +196,7 @@ type OutcomeBody =
   | { readonly ok: true; readonly status: number; readonly body: Schema.Json | undefined }
   | { readonly ok: false; readonly status: number; readonly body: Schema.Json }
 
-/** Same origin: the `Origin` names the request URL's scheme and the `Host` it was sent to. */
-export const isSameOrigin = ({
-  request,
-  origin,
-}: {
-  readonly request: HttpServerRequest.HttpServerRequest
-  readonly origin: string
-}) => {
-  const host = Headers.get(request.headers, "host")
-
-  if (Option.isNone(host)) return false
-
-  if (!URL.canParse(request.originalUrl)) return false
-
-  try {
-    const parsed = new URL(origin)
-
-    return parsed.host === host.value && parsed.protocol === new URL(request.originalUrl).protocol
-  } catch {
-    return false
-  }
-}
+export { isSameOrigin } from "./origin.ts"
 
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
 
