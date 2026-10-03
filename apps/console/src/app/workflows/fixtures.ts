@@ -6,7 +6,9 @@ export const workflows: WorkflowsPage = WorkflowsPage.make({
   running: 1_412,
   waitingOnEvents: 1_198,
   timers: 26_040,
+  truncated: false,
   nextTimer: "0.4 s",
+  nextSchedule: "health in 21 s",
   runs: [
     {
       id: "wf_01",
@@ -89,8 +91,10 @@ export const workflows: WorkflowsPage = WorkflowsPage.make({
       nextRun: "in 21 s",
     },
   ],
-  hours: hourLabels({ points: 48, end: 14 }),
-  timersFired: seededSeries({ length: 48, base: 310, volatility: 70, seed: 17 }).map((value) =>
-    Math.round(value),
-  ),
+  fired: {
+    hours: hourLabels({ points: 48, end: 14 }),
+    values: seededSeries({ length: 48, base: 310, volatility: 70, seed: 17 }).map((value) =>
+      Math.round(value),
+    ),
+  },
 })

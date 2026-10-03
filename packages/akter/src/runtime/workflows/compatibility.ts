@@ -1,5 +1,6 @@
 import { DateTime, Effect, Schema } from "effect"
 import { SqlClient } from "effect/sql"
+import { coordinated } from "../database/coordination.ts"
 import { type AnyWorkflow, isWorkflow, type VersionRange } from "../../members/workflow.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { type Declared, manifestOf, toJson } from "./manifest.ts"
@@ -385,10 +386,9 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
       return { checked: false, incompatibilities: [], retained: history!.executions }
   }
 
-  return yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`akter/workflows/${actor.name}`}))`
-
+  return yield* coordinated({
+    resource: `akter/workflows/${actor.name}`,
+    work: Effect.gen(function* () {
       const latest = yield* sql<{ workflow: string; manifest_hash: string }>`
         SELECT DISTINCT ON (workflow) workflow, manifest_hash FROM actor_workflow_manifests
         WHERE actor_type = ${actor.name}
@@ -451,7 +451,7 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
 
       return { checked: true, incompatibilities: [], retained: true }
     }),
-  )
+  })
 })
 
 /**

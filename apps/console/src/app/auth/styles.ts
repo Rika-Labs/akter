@@ -57,6 +57,11 @@ export const authStyles = stylex.create({
       borderBlockStartColor: colors.border,
     },
   },
+  error: {
+    color: colors.destructive,
+    fontSize: typography.small,
+    lineHeight: typography.leadingNormal,
+  },
   foot: {
     marginBlockStart: "0.625rem",
     color: colors.subtleForeground,

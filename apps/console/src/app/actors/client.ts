@@ -1,57 +1,51 @@
-import { Effect } from "effect"
-import {
-  actorTypes,
-  commandVolumes,
-  instancesOf,
-  order,
-  perSecondSeries,
-  typeHours,
-} from "./fixtures.ts"
+import { DateTime, Effect } from "effect"
+import { type ConsoleError, type Loaded, withProject } from "../api/client.ts"
+import { orUndefined } from "../overview/absent.ts"
+import { toActorInstance, toActorPage } from "./mapping.ts"
 import { type ActorPage, ActorTypePage, ActorsPage } from "./model.ts"
 
-/** Loads the project's actor types. Fixture-backed until the inspection API is hosted. */
-export const loadActors: Effect.Effect<ActorsPage> = Effect.succeed(
-  ActorsPage.make({
-    types: actorTypes,
-  }),
+/** Loads the project's actor types. */
+export const loadActors: Effect.Effect<Loaded<ActorsPage>, ConsoleError> = withProject(
+  (api, { project, environment }) =>
+    Effect.gen(function* () {
+      const types = yield* api.runtime.listActorTypes({
+        params: { projectId: project.id, environment },
+      })
+      return ActorsPage.make({ types })
+    }),
+  () => import("./fixtures.ts").then((fixtures) => fixtures.actorsPage),
 )
 
-/** Loads one actor type, or nothing when the project has no such type. */
-export const loadActorType = (name: string): Effect.Effect<ActorTypePage | undefined> => {
-  const summary = actorTypes.find((candidate) => candidate.name === name)
-  return Effect.sync(() =>
-    summary === undefined
-      ? undefined
-      : ActorTypePage.make({
+/** Loads one actor type and the first page of its instances, or nothing when there is no such type. */
+export const loadActorType = (
+  name: string,
+): Effect.Effect<Loaded<ActorTypePage | undefined>, ConsoleError> =>
+  withProject(
+    (api, { project, environment }) =>
+      Effect.gen(function* () {
+        const params = { projectId: project.id, environment, actorType: name }
+        const summary = yield* api.runtime.getActorType({ params })
+        const instances = yield* api.runtime.listActorInstances({ params, query: { limit: 50 } })
+        const now = yield* DateTime.now
+        return ActorTypePage.make({
           summary,
-          hours: typeHours,
-          perSecond: perSecondSeries(summary),
-          commands: commandVolumes(summary),
-          instances: instancesOf(name),
-        }),
+          instances: instances.items.map(toActorInstance(now)),
+        })
+      }).pipe(orUndefined),
+    () => import("./fixtures.ts").then((fixtures) => fixtures.actorTypePage(name)),
   )
-}
 
-/**
- * Loads one actor for the inspector. The fixture inspects `Order/ord_8f2c` in detail and answers
- * other known instances with the same shape of data under their own address.
- */
+/** Loads one actor for the inspector, or nothing when there is no such actor. */
 export const loadActor = (
   input: Readonly<{ actorType: string; key: string }>,
-): Effect.Effect<ActorPage | undefined> => {
-  const known = actorTypes.some((candidate) => candidate.name === input.actorType)
-  const instance = instancesOf(input.actorType).find((candidate) => candidate.key === input.key)
-  return Effect.sync(() =>
-    known
-      ? {
-          ...order,
-          actorType: input.actorType,
-          key: input.key,
-          awake: instance?.awake ?? order.awake,
-          generation: instance?.generation ?? order.generation,
-          runner: instance?.runner ?? order.runner,
-          mailbox: instance?.mailbox ?? order.mailbox,
-        }
-      : undefined,
+): Effect.Effect<Loaded<ActorPage | undefined>, ConsoleError> =>
+  withProject(
+    (api, { project, environment }) =>
+      Effect.gen(function* () {
+        const inspector = yield* api.runtime.inspectActor({
+          params: { projectId: project.id, environment, ...input },
+        })
+        return toActorPage(inspector)
+      }).pipe(orUndefined),
+    () => import("./fixtures.ts").then((fixtures) => fixtures.actorPage(input)),
   )
-}

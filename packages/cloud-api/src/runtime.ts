@@ -53,6 +53,47 @@ export const ActorTypeSummary = Schema.Struct({
 })
 export type ActorTypeSummary = typeof ActorTypeSummary.Type
 
+/** How far back a series reaches, ending now; the server picks the point spacing for the window. */
+export const SeriesWindow = Schema.Literals(["1h", "24h", "7d"])
+export type SeriesWindow = typeof SeriesWindow.Type
+
+/** One command's volume over a window: its total and its mean rate. */
+export const CommandVolume = Schema.Struct({
+  command: Schema.String,
+  count: NonNegativeInt,
+  perSecond: NonNegative,
+})
+export type CommandVolume = typeof CommandVolume.Type
+
+/**
+ * Commands of one actor type over a window. `series` is commands per second at
+ * evenly spaced instants, oldest first; `commands` is the volume of each
+ * command the type handled in the window, busiest first.
+ */
+export const ActorTypeActivity = Schema.Struct({
+  window: SeriesWindow,
+  series: Schema.Array(SeriesPoint),
+  commands: Schema.Array(CommandVolume),
+})
+export type ActorTypeActivity = typeof ActorTypeActivity.Type
+
+/** Turns that finished in at most `upToMs` and more than the previous bucket's bound; the last bucket has a null bound and takes every slower turn. */
+export const LatencyBucket = Schema.Struct({
+  upToMs: Schema.NullOr(NonNegative),
+  count: NonNegativeInt,
+})
+export type LatencyBucket = typeof LatencyBucket.Type
+
+/** How long the turns of one actor type took over a window: buckets in ascending bound order and the 50th, 95th and 99th percentile in milliseconds. */
+export const TurnLatency = Schema.Struct({
+  window: SeriesWindow,
+  buckets: Schema.Array(LatencyBucket),
+  p50Ms: NonNegative,
+  p95Ms: NonNegative,
+  p99Ms: NonNegative,
+})
+export type TurnLatency = typeof TurnLatency.Type
+
 export const ActorInstance = Schema.Struct({
   key: Schema.String,
   status: Schema.Literals(["awake", "idle"]),
@@ -142,6 +183,45 @@ export const CommandLogEntry = Schema.Struct({
 })
 export type CommandLogEntry = typeof CommandLogEntry.Type
 
+const commandName = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(128)))
+
+/**
+ * A command the console sends to one actor. `commandId` is the idempotency
+ * key: when omitted the server mints a new one, and when a caller resends the
+ * same id the runner answers from its stored receipt without running the
+ * command again.
+ */
+export const SendCommand = Schema.Struct({
+  address: ActorAddress,
+  command: commandName,
+  payload: Schema.Json,
+  commandId: Schema.optional(commandName),
+})
+export type SendCommand = typeof SendCommand.Type
+
+/** The actor's return value for a command; `replayed` is true when it came from the stored receipt of an earlier send of the same `commandId`. */
+export const CommandSent = Schema.Struct({
+  commandId: Schema.String,
+  result: Schema.Json,
+  replayed: Schema.Boolean,
+})
+export type CommandSent = typeof CommandSent.Type
+
+/**
+ * The actor ran the command and returned a typed error, answered 422. `errorTag`
+ * and `error` are the actor's own error; `replayed` is as in `CommandSent`.
+ */
+export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
+  "CommandFailed",
+  {
+    commandId: Schema.String,
+    errorTag: Schema.String,
+    error: Schema.Json,
+    replayed: Schema.Boolean,
+  },
+  { httpApiStatus: 422 },
+) {}
+
 export const JobTypeStats = Schema.Struct({
   jobName: Schema.String,
   done: NonNegativeInt,
@@ -172,15 +252,26 @@ export const DeadLetter = Schema.Struct({
 })
 export type DeadLetter = typeof DeadLetter.Type
 
+/**
+ * One workflow run. `step.index` counts from 1, so the first step is 1 and a
+ * run showing "step n of m" has `index` n and `total` m; `index` never exceeds
+ * `total`.
+ */
 export const Workflow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   actor: ActorAddress,
   step: Schema.Struct({
-    index: NonNegativeInt,
-    total: NonNegativeInt,
+    index: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+    total: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
     name: Schema.String,
-  }),
+  }).pipe(
+    Schema.check(
+      Schema.makeFilter(
+        (step) => step.index <= step.total || "step.index must not exceed step.total",
+      ),
+    ),
+  ),
   waitingFor: Schema.NullOr(
     Schema.Struct({ kind: Schema.Literals(["event", "timer"]), name: Schema.String }),
   ),

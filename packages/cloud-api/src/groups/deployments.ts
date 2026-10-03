@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api"
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 
 import {
   BuildLog,
@@ -53,7 +53,10 @@ export class DeploymentsGroup extends HttpApiGroup.make("deployments").add(
     params: deploymentParams,
     success: DeploymentDetail,
     error: WriteErrors,
-  }),
+  }).annotate(
+    OpenApi.Description,
+    "Rolls the environment back to the earlier deployment named by `deploymentId`. That deployment must have reached `live` before (status `live`, `drained` or `rolled-back`) and must not be the one live now; otherwise the answer is 409. The build is not repeated: a new deployment in the same environment redeploys that deployment's image and environment-variable snapshot, its `rolledBackFrom` is `deploymentId`, and its build and migrate steps are `skipped`. The new deployment starts `in-progress` and becomes `live` or `failed`. When it becomes `live`, the deployment that was live ends `rolled-back`; if it fails, that deployment stays `live`. The target keeps its own status. A second rollout in the environment while one is `in-progress` answers 409. The response is the new deployment.",
+  ),
   HttpApiEndpoint.post("redeploy", "/projects/:projectId/deployments/:deploymentId/redeploy", {
     params: deploymentParams,
     success: DeploymentDetail,

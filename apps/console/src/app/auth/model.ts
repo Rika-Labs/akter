@@ -1,3 +1,4 @@
+import type { RegionId } from "@akter/cloud-api"
 import { Schema as S } from "effect"
 
 /** An invitation to join an organization, as shown before accepting it. */
@@ -22,9 +23,17 @@ export type OnboardingStep = (typeof onboardingSteps)[number]
 export const onboardingStep = (step: string | undefined): OnboardingStep =>
   onboardingSteps.find((candidate) => candidate === step) ?? "organization"
 
-/** Regions offered as a new project's home. */
-export const homeRegions: ReadonlyArray<Readonly<{ id: string; place: string }>> = [
+/** Regions offered as a new project's home; the cloud contract's launch regions. */
+export const homeRegions: ReadonlyArray<Readonly<{ id: RegionId; place: string }>> = [
   { id: "us-east-1", place: "Virginia" },
-  { id: "eu-west-1", place: "Ireland" },
-  { id: "ap-southeast-1", place: "Singapore" },
+  { id: "us-west-2", place: "Oregon" },
 ]
+
+/** The URL slug a display name implies: lowercase letters, digits and inner hyphens. */
+export const slugify = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "")

@@ -1,8 +1,12 @@
 import { Schema as S } from "effect"
 
-/** A job that ran out of retries and waits for a person to retry or discard it. */
+/**
+ * A job that ran out of retries and waits for a person to retry or discard it. `id` is the dead
+ * letter's own id, which retry and discard address; `jobId` is the job that died.
+ */
 export const DeadLetter = S.Struct({
   id: S.String,
+  jobId: S.String,
   job: S.String,
   actorType: S.String,
   key: S.String,
@@ -21,14 +25,14 @@ export const JobTypeTotals = S.Struct({
   p99: S.String,
 })
 
-/** The jobs page: queue totals, dead letters, totals by type and recent throughput. */
+/** The jobs page: queue totals, dead letters, totals by type and recent throughput, one label per point. */
 export const JobsPage = S.TaggedStruct("JobsPage", {
   queued: S.Finite,
   running: S.Finite,
   retrying: S.Finite,
   deadLetters: S.Array(DeadLetter),
   types: S.Array(JobTypeTotals),
-  minutes: S.Array(S.String),
+  labels: S.Array(S.String),
   throughput: S.Array(S.Finite),
 })
 export type JobsPage = typeof JobsPage.Type

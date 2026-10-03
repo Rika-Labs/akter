@@ -15,6 +15,7 @@ export const Dialog = defineTaggedUnion({
   SendCommand: { address: S.String },
   RollBack: { commit: S.String },
   DeleteProject: { project: S.String },
+  KeyCreated: { name: S.String, secret: S.String },
 })
 export type Dialog = typeof Dialog.Type
 
@@ -27,6 +28,10 @@ export const Toast = S.Struct({
 })
 export type Toast = typeof Toast.Type
 
+/** Why the open route's page could not load, in words the person can act on. */
+export const PageError = S.Struct({ kind: S.String, message: S.String })
+export type PageError = typeof PageError.Type
+
 /** The ⌘K palette: whether it is open, what is typed, and which result is highlighted. */
 export const Palette = S.Struct({
   open: S.Boolean,
@@ -36,7 +41,9 @@ export const Palette = S.Struct({
 export type Palette = typeof Palette.Type
 
 /**
- * The console's whole state. Page data is whatever the current route's client returned; `fields`,
+ * The console's whole state. Page data is whatever the current route's client returned, or `pageError` when it failed;
+ * `pageSample` marks page data that came from fixtures and must stay read-only; `allowSignIn` is set when the API refused the session, so the sign-in screen opens even while
+ * Better Auth still holds one; `fields`,
  * `toggles` and `choices` hold form inputs, switches and selects by name so every settings row and
  * form shares one update path.
  */
@@ -44,6 +51,11 @@ export const Model = S.Struct({
   route: AppRoute,
   workspace: Workspace,
   page: S.Option(PageData),
+  pageError: S.Option(PageError),
+  pageSample: S.Boolean,
+  allowSignIn: S.Boolean,
+  submitting: S.Boolean,
+  formError: S.Option(S.String),
   loading: S.Boolean,
   theme: Preference,
   drawer: S.Boolean,
@@ -64,3 +76,9 @@ export type Model = typeof Model.Type
 /** What the console needs before its first render: the workspace and the stored theme. */
 export const Flags = S.Struct({ workspace: Workspace, theme: Preference })
 export type Flags = typeof Flags.Type
+
+const passwordFields = ["password", "new-password", "confirm-password"]
+
+/** The form fields without any typed password, so a secret never outlives the screen that took it. */
+export const withoutPasswords = (fields: Model["fields"]): Model["fields"] =>
+  Object.fromEntries(Object.entries(fields).filter(([name]) => !passwordFields.includes(name)))
