@@ -49,4 +49,59 @@ describe("API configuration", () => {
       expect(result._tag).toBe("Failure")
     }),
   )
+  const production = {
+    CONTROL_PLANE_DATABASE_URL: "postgres://localhost/postgres",
+    AUTH_SECRET: "a-production-signing-secret-long-enough",
+    API_PRODUCTION: "true",
+    EMAIL_MODE: "ses",
+    API_ORIGIN: "https://api.akter.example",
+    CONSOLE_ORIGIN: "https://console.akter.example",
+  }
+  const loadProduction = (overrides: Record<string, string>) =>
+    Effect.exit(
+      loadOptions.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({ ...production, ...overrides }),
+        ),
+      ),
+    )
+  it.effect("accepts production with explicit public https origins", () =>
+    Effect.gen(function* () {
+      expect((yield* loadProduction({}))._tag).toBe("Success")
+    }),
+  )
+  it.effect("refuses production that leaves the console on its local default origin", () =>
+    Effect.gen(function* () {
+      const { CONSOLE_ORIGIN: _omitted, ...withoutConsole } = production
+      const result = yield* Effect.exit(
+        loadOptions.pipe(
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown(withoutConsole),
+          ),
+        ),
+      )
+      expect(result._tag).toBe("Failure")
+    }),
+  )
+  it.effect("refuses production origins that are not public https", () =>
+    Effect.gen(function* () {
+      const refused: ReadonlyArray<Record<string, string>> = [
+        { API_ORIGIN: "http://api.akter.example" },
+        { CONSOLE_ORIGIN: "https://localhost:5173" },
+        { AUTH_TRUSTED_IDP_ORIGINS: "https://idp.example,http://idp.example" },
+      ]
+      for (const overrides of refused)
+        expect((yield* loadProduction(overrides))._tag).toBe("Failure")
+    }),
+  )
+  it.effect("refuses production with the published development secret", () =>
+    Effect.gen(function* () {
+      const result = yield* loadProduction({
+        AUTH_SECRET: "local-development-only-change-before-production",
+      })
+      expect(result._tag).toBe("Failure")
+    }),
+  )
 })

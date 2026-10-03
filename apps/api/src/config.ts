@@ -16,6 +16,21 @@ export interface ApiOptions {
   readonly enterpriseOrganizations?: ReadonlyArray<string>
 }
 
+/** The signing secret that ships in the local Compose file and is public in the repository. */
+const publishedDevelopmentSecret = "local-development-only-change-before-production"
+
+const isPublicHttpsOrigin = (value: string) => {
+  if (!URL.canParse(value)) return false
+  const url = new URL(value)
+  return (
+    url.protocol === "https:" &&
+    url.hostname !== "localhost" &&
+    !url.hostname.endsWith(".localhost") &&
+    url.hostname !== "127.0.0.1" &&
+    url.hostname !== "[::1]"
+  )
+}
+
 export const loadOptions = Effect.gen(function* () {
   const databaseUrl = yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL")
   const secret = yield* Config.Redacted("AUTH_SECRET")
@@ -64,6 +79,12 @@ export const loadOptions = Effect.gen(function* () {
     return yield* Effect.die(new Error("AUTH_SECRET must contain at least 32 characters"))
   if (production && emailMode === "local")
     return yield* Effect.die(new Error("Production requires SES email delivery"))
+  if (production && Redacted.value(secret) === publishedDevelopmentSecret)
+    return yield* Effect.die(new Error("Production cannot use the published development secret"))
+  if (production && ![origin, consoleOrigin, ...trustedIdpOrigins].every(isPublicHttpsOrigin))
+    return yield* Effect.die(
+      new Error("Production requires explicit public https API, console and IdP origins"),
+    )
   return {
     databaseUrl,
     secret,
