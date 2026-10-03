@@ -19,6 +19,7 @@ import { Actor, Intent } from "../../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import { System } from "../../identity/caller.ts"
 import { disposableDatabase } from "../../testing/database.ts"
+import { statementLog } from "../../testing/conformance/statements.ts"
 import { Database } from "../layer.ts"
 import { Outcome, type Request } from "../request.ts"
 import { CallerJson } from "../turn/outbox.ts"
@@ -217,7 +218,16 @@ describe("data shard bucket ranges with Postgres", () => {
       }),
     ))
 
-  it("delivers intents, timers, capped and uncapped jobs, and cron through the public API on both ranges", () =>
+  it.each([
+    {
+      name: "delivers intents, timers, capped and uncapped jobs, and cron through the public API on both ranges",
+      ticks: 1,
+    },
+    {
+      name: "crossing a minute before advancing delivers two distinct cron tick ids, and replay applies neither twice",
+      ticks: 2,
+    },
+  ])("$name", ({ ticks: expectedTicks }) =>
     database(
       Effect.gen(function* () {
         const postgres = yield* PgClient.PgClient
@@ -253,6 +263,8 @@ describe("data shard bucket ranges with Postgres", () => {
 
         yield* Effect.gen(function* () {
           const test = yield* ActorTest
+          const now = (yield* test.now).epochMilliseconds
+          yield* test.advance((Math.floor(now / 60_000) + 1) * 60_000 + 1000 - now)
           const handles = []
           for (const negative of [true, false]) {
             let id = 0
@@ -269,15 +281,50 @@ describe("data shard bucket ranges with Postgres", () => {
             handles.push(handle)
             yield* handle.Stage()
           }
+          const sql = yield* SqlClient.SqlClient
+          const ticks = yield* sql<{
+            routing_key: string
+            intent_id: string
+            scheduled: string
+          }>`SELECT routing_key::text, intent_id, scheduled_at_ms::text AS scheduled
+            FROM actor_outbox WHERE timer_key = '$cron:@every 60000ms'
+            ORDER BY routing_key`
+          expect(ticks).toHaveLength(2)
+          if (expectedTicks === 2)
+            yield* test.advance(
+              Math.max(...ticks.map((tick) => Number(tick.scheduled))) +
+                10 -
+                (yield* test.now).epochMilliseconds,
+            )
           yield* test.advance("1 minute")
+          yield* test.advance(0)
+          const receipts = yield* sql<{ command_id: string }>`SELECT command_id FROM actor_receipts
+            WHERE command = 'Beat' ORDER BY routing_key`
+          expect(receipts).toHaveLength(2 * expectedTicks)
+          expect(new Set(receipts.map((receipt) => receipt.command_id)).size).toBe(
+            2 * expectedTicks,
+          )
+          expect(receipts).toEqual(
+            expect.arrayContaining(ticks.map((tick) => ({ command_id: tick.intent_id }))),
+          )
+          for (const tick of ticks)
+            yield* sql`UPDATE actor_outbox SET intent_id = ${tick.intent_id},
+                due_at_ms = 0, scheduled_at_ms = ${BigInt(tick.scheduled)}
+              WHERE routing_key = ${BigInt(tick.routing_key)} AND timer_key = '$cron:@every 60000ms'`
           yield* test.advance(0)
           for (const handle of handles) {
             const state = yield* Schema.decodeUnknownEffect(
               Schema.Struct({ seen: Schema.Array(Schema.String) }),
             )((yield* test.inspect(handle.ref)).state)
-            expect([...state.seen].sort()).toEqual(["capped", "cron", "intent", "job", "timer"])
+            expect([...state.seen].sort()).toEqual([
+              "capped",
+              ...Array.from({ length: expectedTicks }, () => "cron"),
+              "intent",
+              "job",
+              "timer",
+            ])
             expect(yield* test.receiptsFor(handle.ref, "Record")).toBe(4)
-            expect(yield* test.receiptsFor(handle.ref, "Beat")).toBe(1)
+            expect(yield* test.receiptsFor(handle.ref, "Beat")).toBe(expectedTicks)
           }
           expect(probes).toContainEqual([-128, -1])
           expect(probes).toContainEqual([0, 127])
@@ -286,14 +333,14 @@ describe("data shard bucket ranges with Postgres", () => {
               ([first, last]) => (first === -128 && last === -1) || (first === 0 && last === 127),
             ),
           ).toBe(true)
-          const sql = yield* SqlClient.SqlClient
           expect(yield* sql`SELECT kind, attempts FROM actor_outbox ORDER BY routing_key`).toEqual([
             { kind: "intent", attempts: 0 },
             { kind: "intent", attempts: 0 },
           ])
         }).pipe(Effect.provideContext(context))
       }),
-    ))
+    ),
+  )
 
   it("keeps the default map at one statement and one network round trip, without session setup", () => {
     const address = new URL(Effect.runSync(Config.String("TEST_DATABASE_URL")))
@@ -324,26 +371,36 @@ describe("data shard bucket ranges with Postgres", () => {
       Effect.gen(function* () {
         yield* seed
         const sql = yield* SqlClient.SqlClient
-        yield* sql`CREATE EXTENSION pg_stat_statements`
-        const before = (yield* sql<{ calls: string }>`SELECT coalesce(sum(calls), 0)::text AS calls
-        FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())`)[0]!
+        const log = statementLog()
+        log.recording = true
+        let executions = 0
         measuring = true
-        const clients = yield* shardClients
-        expect(clients).toEqual([{ sql, range: { first: -128, last: 127 } }])
-        const rows = yield* claimIntents({
-          sql: clients[0]!.sql,
-          range: clients[0]!.range,
-          now: 1000,
-          limit: 10,
-          leaseMs: 5000,
-          maxBackoffMs: 5000,
-        })
+        const rows = yield* Effect.gen(function* () {
+          const clients = yield* shardClients
+          expect(clients).toEqual([{ sql, range: { first: -128, last: 127 } }])
+          return yield* claimIntents({
+            sql: clients[0]!.sql,
+            range: clients[0]!.range,
+            now: 1000,
+            limit: 10,
+            leaseMs: 5000,
+            maxBackoffMs: 5000,
+          })
+        }).pipe(
+          Effect.provideService(Statement.CurrentTransformer, (statement) =>
+            Effect.sync(() => {
+              log.observe(statement)
+              executions++
+              return statement
+            }),
+          ),
+        )
         measuring = false
         expect(rows.filter((row) => row.kind === "intent")).toHaveLength(6)
         expect(flights).toBe(1)
-        const after = (yield* sql<{ calls: string }>`SELECT coalesce(sum(calls), 0)::text AS calls
-        FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())`)[0]!
-        expect(Number(after.calls) - Number(before.calls)).toBe(2)
+        expect(executions).toBe(1)
+        expect(log.seen.size).toBe(1)
+        expect([...log.seen.keys()][0]).toMatch(/^WITH intent_candidates AS/)
       }),
       stream,
     )
