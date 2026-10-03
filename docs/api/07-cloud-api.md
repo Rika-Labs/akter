@@ -12,7 +12,7 @@
 - **Account:** `me`, profile, active organization, preferences (`/me/preferences`), notifications and pinned actors (`/me/pinned-actors`).
 - **Organizations, members, invitations, API keys.**
 - **Projects:** list and create under `/organizations/:organizationId/projects`, then by id; environments, endpoints, variables, domains, regions and integrations.
-- **Deployments:** list, create, detail, build log, roll back, redeploy.
+- **Deployments:** list, create, detail, build log, roll back, redeploy. A rollback names an earlier deployment that was once live and redeploys its image and environment snapshot as a new deployment whose `rolledBackFrom` is that id; the deployment it replaces ends `rolled-back` once the new one is `live`, and stays `live` if the new one fails.
 - **Runtime:** inspection of a deployment's actors, commands, jobs, workflows, connections and dead letters, served by asking runners through the edge ([contract 11](../contracts/11-control-plane.md)). `POST .../runtime/commands` sends one command (`address`, `command`, JSON `payload` and an optional `commandId`, minted when omitted) and answers with the actor's `result` and a `replayed` flag; an error the actor returns is a 422 `CommandFailed` with its `errorTag` and `error`. It needs write permission on the project and answers `NotImplemented` until the edge proxy exists.
 - **Billing, usage and the audit log** (`/organizations/:organizationId/audit-log`).
 
