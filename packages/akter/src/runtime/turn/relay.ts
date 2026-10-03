@@ -31,6 +31,7 @@ import { count as tally, Metrics } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
+import { type BucketRange, shardClients } from "../database/shards.ts"
 import type {
   Handoff,
   SubscriptionError,
@@ -147,15 +148,17 @@ export const candidates = ({
   now,
   limit,
   only = sql.literal(""),
+  range = BUCKETS,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly kind: "intent" | "job" | "feed" | "control"
   readonly now: Statement.Fragment
   readonly limit: number
   readonly only?: Statement.Fragment
+  readonly range?: BucketRange | undefined
 }) =>
   sql`SELECT o.routing_key, o.intent_id, o.actor_type, o.command
-    FROM generate_series(${BUCKETS.first}::int, ${BUCKETS.last}::int) AS b(bucket)
+    FROM generate_series(${range.first}::int, ${range.last}::int) AS b(bucket)
     CROSS JOIN LATERAL (
       SELECT routing_key, intent_id, due_at_ms, actor_type, command FROM actor_outbox
       WHERE actor_outbox.bucket = b.bucket AND actor_outbox.kind = ${kind}
@@ -207,12 +210,14 @@ const claimDue = ({
   intents,
   jobs,
   subscriptions,
+  range,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly now: Statement.Fragment
   readonly intents?: IntentClaim | undefined
   readonly jobs?: JobClaim | undefined
   readonly subscriptions?: SubscriptionClaim | undefined
+  readonly range?: BucketRange | undefined
 }) => {
   const parts: Array<Statement.Fragment> = []
   const results: Array<Statement.Fragment> = []
@@ -223,6 +228,7 @@ const claimDue = ({
     parts.push(sql`intent_candidates AS (
         ${candidates({
           sql,
+          range,
           kind: "intent",
           now,
           limit: probe,
@@ -263,6 +269,7 @@ const claimDue = ({
       job_candidates AS (
         ${candidates({
           sql,
+          range,
           kind: "job",
           now,
           limit: probe,
@@ -350,11 +357,13 @@ const cappedGroups = ({
   now,
   executors,
   limit,
+  range,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly now: Statement.Fragment
   readonly executors: ReadonlyArray<LocalExecutor>
   readonly limit: number
+  readonly range: BucketRange
 }) =>
   sql<DueGroup>`WITH mine (actor_type, command) AS (
       VALUES ${sql.csv(executors.map(({ actor, job }) => sql`(${actor}::text, ${job}::text)`))}
@@ -362,6 +371,7 @@ const cappedGroups = ({
     due AS (
       ${candidates({
         sql,
+        range,
         kind: "job",
         now,
         limit,
@@ -375,8 +385,8 @@ const cappedGroups = ({
     ORDER BY min(o.due_at_ms) LIMIT ${limit}`
 
 /**
- * Claims one capped group's jobs in its own transaction, under the group's
- * advisory lock, so claims on every runner see each other's running rows. It
+ * Claims one capped group's jobs in its own transaction, under its actor's
+ * generation row lock, so claims on every runner see each other's running rows. It
  * settles cancelled rows whose attempt ended, starts the oldest rows by
  * `(ready_at_ms, intent_id)` while fewer than `cap` attempts hold a live
  * lease, and moves the group's other due rows out of the due range as
@@ -477,10 +487,16 @@ export const outboxNow = ({
 export const claimIntents = ({
   sql,
   now,
+  range,
   ...intents
-}: IntentClaim & { readonly sql: SqlClient.SqlClient; readonly now: number }) =>
+}: IntentClaim & {
+  readonly sql: SqlClient.SqlClient
+  readonly now: number
+  readonly range?: BucketRange | undefined
+}) =>
   claimDue({
     sql,
+    range,
     now: sql`${now}::bigint`,
     intents,
   }) as Statement.Statement<ClaimedRow>
@@ -590,7 +606,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   subscriptions?: {
     /** Feed, control, and subscription-delivery slots, each; separate from intent slots. */
     readonly concurrency: number
-    readonly claim: (slots: SubscriptionSlots) => SubscriptionClaim | undefined
+    readonly claim: (slots: SubscriptionSlots, range: BucketRange) => SubscriptionClaim | undefined
     readonly decode: (work: string) => Effect.Effect<SubscriptionWork>
     readonly run: (
       work: SubscriptionWork,
@@ -600,6 +616,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
   schedules: () => ReadonlyMap<string, CronSchedule> = () => new Map(),
 ) {
   const sql = yield* SqlClient.SqlClient
+  const shards = yield* shardClients
+  let firstShard = 0
   const services = yield* Effect.context<SqlClient.SqlClient>()
   const lock = Semaphore.makeUnsafe(1)
   const signals = yield* Queue.sliding<void>(1)
@@ -789,35 +807,53 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 }
 
           const now = outboxNow({ sql, offsetMillis: clock.offsetMillis() })
+          const ordered = [...shards.slice(firstShard), ...shards.slice(0, firstShard)]
+          firstShard = shards.length === 0 ? 0 : (firstShard + 1) % shards.length
 
           const claimGroups = (limit: number) =>
             Effect.gen(function* () {
               const claimed: Array<ClaimedRow> = []
-              const groups = yield* cappedGroups({ sql, now, executors: capped, limit })
+              let backlog = false
 
-              for (const group of groups) {
-                const left = limit - claimed.length
+              for (const { sql, range } of ordered) {
+                const remaining = limit - claimed.length
 
-                if (left <= 0) break
+                if (remaining <= 0) {
+                  backlog = true
+                  break
+                }
 
-                const { registered } = capped.find(
-                  ({ actor, job }) => actor === group.actor_type && job === group.command,
-                )!
+                const groups = yield* cappedGroups({
+                  sql,
+                  range,
+                  now,
+                  executors: capped,
+                  limit: remaining,
+                })
+                backlog ||= groups.length === remaining || (groups[0]?.due_rows ?? 0) >= remaining
 
-                claimed.push(
-                  ...(yield* claimCapped({
-                    sql,
-                    now,
-                    group,
-                    cap: registered.perActor!,
-                    maxAttempts: registered.attempts,
-                    permits: left,
-                    leaseMs: settings.executorLeaseMs,
-                  })),
-                )
+                for (const group of groups) {
+                  const left = limit - claimed.length
+
+                  if (left <= 0) break
+
+                  const { registered } = capped.find(
+                    ({ actor, job }) => actor === group.actor_type && job === group.command,
+                  )!
+
+                  claimed.push(
+                    ...(yield* claimCapped({
+                      sql,
+                      now,
+                      group,
+                      cap: registered.perActor!,
+                      maxAttempts: registered.attempts,
+                      permits: left,
+                      leaseMs: settings.executorLeaseMs,
+                    })),
+                  )
+                }
               }
-
-              const backlog = groups.length === limit || (groups[0]?.due_rows ?? 0) >= limit
 
               return { claimed, backlog }
             })
@@ -833,33 +869,61 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           const uncappedPermits = permits - early.claimed.length
 
-          const rows = yield* claimDue({
-            sql,
-            now,
-            intents:
-              slots > 0
-                ? {
-                    limit: slots,
-                    leaseMs: settings.claimLeaseMs(),
-                    maxBackoffMs: settings.maxBackoffMs,
-                    probe: lanes.intents.probe(slots),
-                    cronActors: [...schedules().keys()],
-                  }
-                : undefined,
-            jobs:
-              uncappedPermits > 0 && uncapped.length > 0
-                ? {
-                    permits: uncappedPermits,
-                    leaseMs: settings.executorLeaseMs,
-                    executors: uncapped,
-                    probe: lanes.jobs.probe(uncappedPermits),
-                  }
-                : undefined,
-            subscriptions: workSlots === undefined ? undefined : subscriptions!.claim(workSlots),
-          })
+          const rows: Array<ClaimedRow> = []
+          const work: Array<SubscriptionWork> = []
+          let intentSlots = slots
+          let jobSlots = uncappedPermits
+          const remainingWork = workSlots === undefined ? undefined : { ...workSlots }
+          const found = { intent: 0, job: 0 }
 
-          const found = (kind: "intent" | "job", taken: ReadonlyArray<ClaimedRow>) =>
-            (taken[0] ?? rows.find((row) => row.kind === `skipped-${kind}`))?.candidates ?? 0
+          for (const { sql, range } of ordered) {
+            const claimed = yield* claimDue({
+              sql,
+              range,
+              now,
+              intents:
+                intentSlots > 0
+                  ? {
+                      limit: intentSlots,
+                      leaseMs: settings.claimLeaseMs(),
+                      maxBackoffMs: settings.maxBackoffMs,
+                      probe: lanes.intents.probe(intentSlots),
+                      cronActors: [...schedules().keys()],
+                    }
+                  : undefined,
+              jobs:
+                jobSlots > 0 && uncapped.length > 0
+                  ? {
+                      permits: jobSlots,
+                      leaseMs: settings.executorLeaseMs,
+                      executors: uncapped,
+                      probe: lanes.jobs.probe(jobSlots),
+                    }
+                  : undefined,
+              subscriptions:
+                remainingWork === undefined
+                  ? undefined
+                  : subscriptions!.claim(remainingWork, range),
+            })
+
+            for (const kind of ["intent", "job"] as const) {
+              found[kind] +=
+                claimed.find((row) => row.kind === kind || row.kind === `skipped-${kind}`)
+                  ?.candidates ?? 0
+            }
+
+            intentSlots -= claimed.filter((row) => row.kind === "intent").length
+            jobSlots -= claimed.filter((row) => row.kind === "job").length
+            rows.push(...claimed)
+
+            if (subscriptions !== undefined && remainingWork !== undefined) {
+              for (const row of claimed.filter((row) => row.kind === "work")) {
+                const item = yield* subscriptions.decode(row.work!)
+                remainingWork[item.kind]--
+                work.push(item)
+              }
+            }
+          }
 
           const intents = rows.filter((row) => row.kind === "intent")
           const uncappedRows = rows.filter((row) => row.kind === "job")
@@ -871,10 +935,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           const jobs = [...early.claimed, ...uncappedRows, ...late.claimed]
 
-          if (slots > 0) lanes.intents.claimed(slots, intents.length, found("intent", intents))
+          if (slots > 0) lanes.intents.claimed(slots, intents.length, found.intent)
 
           if (permits > 0 && local.length > 0) {
-            lanes.jobs.claimed(uncappedPermits, uncappedRows.length, found("job", uncappedRows))
+            lanes.jobs.claimed(uncappedPermits, uncappedRows.length, found.job)
 
             if (early.backlog || late.backlog) lanes.jobs.backlog(true)
           }
@@ -882,11 +946,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
           let claimedWork = 0
 
           if (subscriptions !== undefined && workSlots !== undefined) {
-            const work = yield* Effect.forEach(
-              rows.filter((row) => row.kind === "work"),
-              (row) => subscriptions.decode(row.work!),
-            )
-
             claimedWork = work.length
 
             for (const kind of ["feed", "control", "subscription"] as const) {

@@ -1,5 +1,7 @@
 # Failure matrix
 
+Data range claim evidence is in `runtime/database/shards.test.ts`: work immediately outside the owned range is untouched, a locked row is skipped and later claimed once, and a failed settle stays leased rather than being delivered again in the same drain. Public-API intents, timers, capped and uncapped jobs, and cron run across both range halves with receipt and resulting-state assertions; holder liveness preserves live rows across range boundaries and closes a deleted row. The default path is measured at one SQL statement and one network flight. `runtime/database/migrations.test.ts` enumerates every framework unique index and detects an injected key without `routing_key`. None of this substitutes for real Neki plan or topology evidence ([ADR 0067](../decisions/0067-due-work-shard-ranges.md)).
+
 **Responsibility:** make crash behavior testable.  
 **Authority:** evidence.  
 **Owner role:** verification/reliability.
