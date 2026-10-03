@@ -549,6 +549,25 @@ it.layer(TestLive)("cloud API over real Postgres and Bun HTTP", (it) => {
         expect([anonymous.status, stranger.status, reader.status]).toEqual([401, 403, 403])
         expect(allowed.status).toBe(501)
         expect((yield* read(allowed, Cloud.NotImplemented)).operation).toBe("runtime.sendCommand")
+        const series = (
+          suffix: string,
+          input: { readonly cookie?: string; readonly key?: string },
+        ) =>
+          request({
+            path: `/api/projects/${project.id}/environments/dev/runtime/actor-types/Counter/${suffix}`,
+            ...input,
+          })
+        const seriesStatuses = yield* Effect.forEach(["activity", "latency"], (suffix) =>
+          Effect.all([
+            series(suffix, {}),
+            series(suffix, { cookie: outsider.cookie }),
+            series(suffix, { key: readKey.secret }),
+          ]).pipe(Effect.map((all) => all.map((response) => response.status))),
+        )
+        expect(seriesStatuses).toEqual([
+          [401, 403, 501],
+          [401, 403, 501],
+        ])
       }),
     { timeout: 60000 },
   )

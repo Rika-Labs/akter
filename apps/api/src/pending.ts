@@ -72,6 +72,16 @@ export const RuntimeNotImplemented = HttpApiBuilder.group(CloudApi, "runtime", (
       .handle("search", () => notImplemented("runtime.search"))
       .handle("listActorTypes", () => notImplemented("runtime.listActorTypes"))
       .handle("getActorType", () => notImplemented("runtime.getActorType"))
+      .handle("getActorTypeActivity", ({ params }) =>
+        access
+          .project(params.projectId)
+          .pipe(Effect.andThen(notImplemented("runtime.getActorTypeActivity"))),
+      )
+      .handle("getActorTypeLatency", ({ params }) =>
+        access
+          .project(params.projectId)
+          .pipe(Effect.andThen(notImplemented("runtime.getActorTypeLatency"))),
+      )
       .handle("listActorInstances", () => notImplemented("runtime.listActorInstances"))
       .handle("inspectActor", () => notImplemented("runtime.inspectActor"))
       .handle("listActorTables", () => notImplemented("runtime.listActorTables"))

@@ -9,6 +9,7 @@ import {
   ActorInstance,
   ActorJob,
   ActorTimelineEntry,
+  ActorTypeActivity,
   ActorTypeSummary,
   CommandFailed,
   CommandLogEntry,
@@ -23,8 +24,10 @@ import {
   Schedule,
   SearchResult,
   SendCommand,
+  SeriesWindow,
   SidebarCounts,
   TimersSummary,
+  TurnLatency,
   Workflow,
 } from "../runtime.ts"
 
@@ -71,6 +74,32 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
     "getActorType",
     "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType",
     { params: actorTypeParams, success: ActorTypeSummary, error: ReadErrors },
+  ),
+  HttpApiEndpoint.get(
+    "getActorTypeActivity",
+    "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType/activity",
+    {
+      params: actorTypeParams,
+      query: { window: Schema.optional(SeriesWindow) },
+      success: ActorTypeActivity,
+      error: ReadErrors,
+    },
+  ).annotate(
+    OpenApi.Description,
+    "Commands per second over the window (default 24h) and the volume of each command, for one actor type.",
+  ),
+  HttpApiEndpoint.get(
+    "getActorTypeLatency",
+    "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType/latency",
+    {
+      params: actorTypeParams,
+      query: { window: Schema.optional(SeriesWindow) },
+      success: TurnLatency,
+      error: ReadErrors,
+    },
+  ).annotate(
+    OpenApi.Description,
+    "Turn-latency histogram over the window (default 24h) with p50, p95 and p99, for one actor type.",
   ),
   HttpApiEndpoint.get(
     "listActorInstances",

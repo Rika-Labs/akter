@@ -53,6 +53,47 @@ export const ActorTypeSummary = Schema.Struct({
 })
 export type ActorTypeSummary = typeof ActorTypeSummary.Type
 
+/** How far back a series reaches, ending now; the server picks the point spacing for the window. */
+export const SeriesWindow = Schema.Literals(["1h", "24h", "7d"])
+export type SeriesWindow = typeof SeriesWindow.Type
+
+/** One command's volume over a window: its total and its mean rate. */
+export const CommandVolume = Schema.Struct({
+  command: Schema.String,
+  count: NonNegativeInt,
+  perSecond: NonNegative,
+})
+export type CommandVolume = typeof CommandVolume.Type
+
+/**
+ * Commands of one actor type over a window. `series` is commands per second at
+ * evenly spaced instants, oldest first; `commands` is the volume of each
+ * command the type handled in the window, busiest first.
+ */
+export const ActorTypeActivity = Schema.Struct({
+  window: SeriesWindow,
+  series: Schema.Array(SeriesPoint),
+  commands: Schema.Array(CommandVolume),
+})
+export type ActorTypeActivity = typeof ActorTypeActivity.Type
+
+/** Turns that finished in at most `upToMs` and more than the previous bucket's bound; the last bucket has a null bound and takes every slower turn. */
+export const LatencyBucket = Schema.Struct({
+  upToMs: Schema.NullOr(NonNegative),
+  count: NonNegativeInt,
+})
+export type LatencyBucket = typeof LatencyBucket.Type
+
+/** How long the turns of one actor type took over a window: buckets in ascending bound order and the 50th, 95th and 99th percentile in milliseconds. */
+export const TurnLatency = Schema.Struct({
+  window: SeriesWindow,
+  buckets: Schema.Array(LatencyBucket),
+  p50Ms: NonNegative,
+  p95Ms: NonNegative,
+  p99Ms: NonNegative,
+})
+export type TurnLatency = typeof TurnLatency.Type
+
 export const ActorInstance = Schema.Struct({
   key: Schema.String,
   status: Schema.Literals(["awake", "idle"]),

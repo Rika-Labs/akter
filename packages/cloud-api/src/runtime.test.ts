@@ -6,11 +6,13 @@ import { CloudApi } from "./contract.ts"
 import { OpenApi } from "effect/http-api"
 import {
   ActorInspector,
+  ActorTypeActivity,
   CommandFailed,
   CommandLogEntry,
   CommandSent,
   OwnedTableRows,
   SendCommand,
+  TurnLatency,
 } from "./runtime.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
@@ -164,5 +166,51 @@ describe("runtime models", () => {
       CommandFailed.make({ commandId: "c", errorTag: "OutOfStock", error: null, replayed: false })
         ._tag,
     ).toBe("CommandFailed")
+  })
+
+  it("carries an actor type's commands per second and per-command volume over a window", () => {
+    const activity = {
+      window: "24h",
+      series: [
+        { at: "2026-10-03T09:00:00.000Z", value: 12.5 },
+        { at: "2026-10-03T10:00:00.000Z", value: 0 },
+      ],
+      commands: [{ command: "Increment", count: 4500, perSecond: 0.052 }],
+    }
+    expect(encode(ActorTypeActivity, decode(ActorTypeActivity, activity))).toEqual(activity)
+    expect(rejects(ActorTypeActivity, { ...activity, window: "30d" })).toBe(true)
+    expect(
+      rejects(ActorTypeActivity, {
+        ...activity,
+        commands: [{ command: "Increment", count: -1, perSecond: 0 }],
+      }),
+    ).toBe(true)
+  })
+
+  it("carries a turn-latency histogram whose last bucket has no upper bound, with p50, p95 and p99", () => {
+    const latency = {
+      window: "1h",
+      buckets: [
+        { upToMs: 1, count: 900 },
+        { upToMs: 10, count: 90 },
+        { upToMs: null, count: 10 },
+      ],
+      p50Ms: 0.8,
+      p95Ms: 7,
+      p99Ms: 42,
+    }
+    expect(encode(TurnLatency, decode(TurnLatency, latency))).toEqual(latency)
+    expect(
+      rejects(TurnLatency, { window: "1h", buckets: latency.buckets, p50Ms: 1, p99Ms: 2 }),
+    ).toBe(true)
+    expect(rejects(TurnLatency, { ...latency, buckets: [{ upToMs: -1, count: 1 }] })).toBe(true)
+  })
+
+  it("serves the series under the actor type with an optional window", () => {
+    const paths = OpenApi.fromApi(CloudApi).paths
+    const base =
+      "/api/projects/{projectId}/environments/{environment}/runtime/actor-types/{actorType}"
+    expect(paths[`${base}/activity`]?.get?.parameters?.map((p) => p.name)).toContain("window")
+    expect(paths[`${base}/latency`]?.get?.description).toContain("p99")
   })
 })
