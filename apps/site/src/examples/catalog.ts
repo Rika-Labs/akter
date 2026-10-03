@@ -1,5 +1,5 @@
 import type { Glyph } from "../illustrations/glyphs.ts"
-import { githubUrl } from "../site.ts"
+import { githubUrl, quickstartUrl } from "../site.ts"
 
 /** Where an example stands today. Only examples that exist are linked. */
 export type Availability =
@@ -29,7 +29,7 @@ export const examples: ReadonlyArray<Example> = [
     summary:
       "One actor, one number. The quickstart: state that survives a restart, and a test that crashes it.",
     topic: "Data",
-    availability: { kind: "available", where: "In the quickstart", href: "/docs" },
+    availability: { kind: "available", where: "In the quickstart", href: quickstartUrl },
   },
   {
     glyph: "order",

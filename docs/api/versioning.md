@@ -1,3 +1,9 @@
+---
+title: "API and protocol versioning"
+sidebarTitle: "Versioning"
+description: "How APIs, protocols, and stored formats stay compatible across rolling deployments."
+---
+
 # API and protocol versioning
 
 **Responsibility:** preserve compatibility across rolling deployments.  

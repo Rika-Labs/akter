@@ -1,0 +1,97 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "Akter",
+  "description": "The framework for durable, stateful backends that power realtime apps, background work, and agents.",
+  "colors": {
+    "primary": "#0b0d0b",
+    "light": "#f5f5f4",
+    "dark": "#0b0d0b"
+  },
+  "background": {
+    "color": {
+      "light": "#f5f5f4",
+      "dark": "#0b0d0b"
+    }
+  },
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
+    "href": "https://akter.dev"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": ["quickstart", "guides/concepts", "product/fit-and-non-fit"]
+      },
+      {
+        "group": "Guides",
+        "pages": ["guides/effect-into-the-commit", "guides/testing", "guides/deploy"]
+      },
+      {
+        "group": "API reference",
+        "pages": [
+          "api/01-server-api",
+          "api/02-context",
+          "api/03-typescript-sdk",
+          "api/04-drizzle",
+          "api/05-generated-clients",
+          "api/06-cli",
+          "api/generated-contracts",
+          "api/naming",
+          "api/versioning",
+          "api/post-foundation-sketches"
+        ]
+      },
+      {
+        "group": "Compare",
+        "pages": ["guides/comparison"]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [{ "label": "akter.dev", "href": "https://akter.dev" }],
+    "primary": { "type": "github", "href": "https://github.com/Rika-Labs/akter" }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/Rika-Labs/akter",
+      "website": "https://akter.dev"
+    }
+  },
+  "redirects": [
+    {
+      "source": "/contracts/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/:slug*.md"
+    },
+    {
+      "source": "/decisions/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/decisions/:slug*.md"
+    },
+    {
+      "source": "/architecture/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/architecture/:slug*.md"
+    },
+    {
+      "source": "/operations/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/operations/:slug*.md"
+    },
+    {
+      "source": "/vision/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/vision/:slug*.md"
+    },
+    {
+      "source": "/product/competitive-positioning",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/product/competitive-positioning.md"
+    },
+    {
+      "source": "/packages/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/packages/:slug*"
+    }
+  ],
+  "contextual": {
+    "options": ["copy", "view", "claude", "chatgpt"]
+  }
+}

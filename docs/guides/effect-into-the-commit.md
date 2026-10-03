@@ -1,3 +1,9 @@
+---
+title: "Effect all the way into the commit"
+sidebarTitle: "Effect into the commit"
+description: "A command handler is an ordinary Effect that runs inside the transaction that commits its turn."
+---
+
 # Effect all the way into the commit
 
 **Responsibility:** show how a command handler is an ordinary Effect that runs inside the turn's transaction, and how Effect's types keep each capability in the phase where it is safe.  

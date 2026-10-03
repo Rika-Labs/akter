@@ -1,3 +1,8 @@
+---
+title: "Concepts"
+description: "Actors, turns, receipts, and the ways work continues after a turn."
+---
+
 # Concepts
 
 **Responsibility:** explain the model a developer needs before reading the API reference: actors, turns, receipts, and the ways work continues after a turn.  

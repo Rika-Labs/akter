@@ -1,3 +1,8 @@
+---
+title: "Comparison"
+description: "How Akter compares with Durable Objects, Rivet, Restate, and Temporal."
+---
+
 # Comparison
 
 **Responsibility:** compare Akter with systems developers often consider alongside it, citing each system's own documentation.  
