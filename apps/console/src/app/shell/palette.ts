@@ -63,7 +63,7 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
         onSelect: RequestedHref({ href: item.href }),
       })),
     ),
-    ...(sender === undefined
+    ...(sender === undefined || sender.commandScope === undefined
       ? []
       : [
           {
@@ -72,7 +72,9 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
             group: "Actions",
             icon: "commands" as const,
             keywords: "call actor",
-            onSelect: OpenedDialog({ dialog: Dialog.SendCommand({ address: address(sender) }) }),
+            onSelect: OpenedDialog({
+              dialog: Dialog.SendCommand({ address: address(sender), scope: sender.commandScope }),
+            }),
           },
         ]),
     {

@@ -1,6 +1,14 @@
 import { expect, test, type Route } from "@playwright/test"
+import { Deferred, Effect, Schema } from "effect"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
+const streamingPeer = `http://127.0.0.1:${process.env.E2E_STREAM_PORT ?? "3540"}`
+const StreamStats = Schema.Struct({
+  opened: Schema.Int,
+  active: Schema.Int,
+  closed: Schema.Int,
+  maximum: Schema.Int,
+})
 const session =
   '{"user":{"id":"runtime_user","name":"Runtime Operator","email":"runtime@example.com","emailVerified":true},"session":{"id":"runtime_session"}}'
 const me =
@@ -144,6 +152,121 @@ test("decodes command SSE into the tail and refreshes the snapshot on reconnect"
   await expect.poll(() => streams).toBe(2)
   await expect(table).toContainText("Order/team/a")
   await expect(page.getByRole("note")).toHaveCount(0)
+})
+
+test("holds one live stream and cancels it on pause and client navigation", async ({ page }) => {
+  expect((await page.request.get(`${streamingPeer}/reset`)).status()).toBe(204)
+  const stats = async () =>
+    Effect.runPromise(
+      Schema.decodeUnknownEffect(StreamStats)(
+        await (await page.request.get(`${streamingPeer}/stats`)).json(),
+      ),
+    )
+  try {
+    await page.route("**/auth/get-session", (route) =>
+      route.fulfill({ contentType: "application/json", body: session }),
+    )
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (path.endsWith("/runtime/commands/stream"))
+        return route.continue({ url: `${streamingPeer}/stream` })
+      if (path.endsWith("/runtime/commands"))
+        return route.fulfill({ json: { items: [], nextCursor: null } })
+      if (path.endsWith("/runtime/actor-types")) return route.fulfill({ json: [actorType] })
+      return controlPlane(route)
+    })
+    await page.goto(`${origin}/commands`)
+    await expect(page.getByRole("main").getByText("Live", { exact: true })).toBeVisible()
+    await expect.poll(async () => (await stats()).active).toBe(1)
+    await page.getByRole("combobox", { name: "Actor type" }).selectOption("Order")
+    expect((await stats()).opened).toBe(1)
+    await page.getByRole("button", { name: "Pause", exact: true }).click()
+    await expect.poll(async () => (await stats()).closed).toBe(1)
+    await expect.poll(async () => (await stats()).active).toBe(0)
+    await page.getByRole("button", { name: "Reconnect", exact: true }).click()
+    await expect.poll(async () => (await stats()).opened).toBe(2)
+    await expect(page.getByRole("main").getByText("Live", { exact: true })).toBeVisible()
+    await page
+      .getByRole("navigation", { name: "Project" })
+      .getByRole("link", { name: "Actors", exact: true })
+      .click()
+    await expect.poll(async () => (await stats()).closed).toBe(2)
+    await expect.poll(async () => (await stats()).active).toBe(0)
+    expect((await stats()).maximum).toBe(1)
+  } finally {
+    await page.close()
+  }
+})
+
+test("a blank command ID survives an ambiguous send and blocks double submission", async ({
+  page,
+}) => {
+  const ids: Array<string> = []
+  const held = Deferred.makeUnsafe<void>()
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Order/ord-live")) return route.fulfill({ json: inspector })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      const body = route.request().postDataJSON()
+      ids.push(body.commandId)
+      if (ids.length === 1) {
+        await Effect.runPromise(Deferred.await(held))
+        return route.abort("failed")
+      }
+      return route.fulfill({
+        json: { commandId: body.commandId, result: { balance: 23 }, replayed: true },
+      })
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Order/ord-live`)
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Refund")
+  await dialog.getByLabel("Command ID (optional)").fill("")
+  const submit = dialog.getByRole("button", { name: "Send command", exact: true })
+  await submit.click()
+  await expect.poll(() => ids.length).toBe(1)
+  expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/)
+  await expect(submit).toBeDisabled()
+  await submit.dispatchEvent("click")
+  expect(ids).toHaveLength(1)
+  await Effect.runPromise(Deferred.succeed(held, undefined))
+  await expect(dialog.getByRole("alert")).toHaveText("We couldn’t reach Akter. Please try again.")
+  await expect(dialog.getByLabel("Command ID (optional)")).toHaveValue(ids[0]!)
+  await expect(dialog).toContainText(`Command ID used: ${ids[0]}`)
+  await submit.click()
+  await expect(dialog).toContainText("Replayed — returned the stored receipt.")
+  expect(ids).toEqual([ids[0], ids[0]])
+})
+
+test("navigation closes the send dialog before switching project scope", async ({ page }) => {
+  let sends = 0
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Order/ord-live")) return route.fulfill({ json: inspector })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      sends += 1
+      return route.abort()
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Order/ord-live`)
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  await expect(page.getByRole("dialog")).toContainText("production (runtime_project)")
+  await page.evaluate(() => {
+    sessionStorage.setItem("console-project", "another-project")
+    history.pushState({}, "", "/projects/another-project")
+    dispatchEvent(new PopStateEvent("popstate"))
+  })
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  expect(sends).toBe(0)
 })
 
 test("reloads activity and per-command volumes for the selected window", async ({ page }) => {

@@ -69,7 +69,15 @@ it("selects the active membership and preserves actor keys containing slashes", 
         organization: "Active",
         plan: "pro",
         projects: [{ slug: "inbox", deployed: false, region: "us-west-2" }],
-        pinned: [{ actorType: "Room", key: "team/subroom", awake: false, lastTurn: "Unknown" }],
+        pinned: [
+          {
+            commandScope: { projectId: "p_7", environment: "production" },
+            actorType: "Room",
+            key: "team/subroom",
+            awake: false,
+            lastTurn: "Unknown",
+          },
+        ],
         deadLetters: 3,
       })
     }),

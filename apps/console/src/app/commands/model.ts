@@ -1,4 +1,9 @@
 import { Schema as S } from "effect"
+import { EnvironmentName, ProjectId } from "@akter/cloud-api"
+
+/** The server-resolved scope of the actor shown when a send dialog is opened. */
+export const CommandScope = S.Struct({ projectId: ProjectId, environment: EnvironmentName })
+export type CommandScope = typeof CommandScope.Type
 
 /** How a turn ended: committed, refused with a typed error, or answered from its receipt. */
 export const TurnResult = S.Literals(["ok", "error", "replayed"])

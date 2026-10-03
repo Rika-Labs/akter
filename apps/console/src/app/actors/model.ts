@@ -4,6 +4,7 @@ import {
   SeriesWindow,
 } from "@akter/cloud-api"
 import { Schema as S } from "effect"
+import { CommandScope } from "../commands/model.ts"
 
 /** One actor type deployed in the project and how busy it is, exactly as the runtime API reports it. */
 export const ActorTypeSummary = CloudActorTypeSummary
@@ -39,6 +40,7 @@ export type TypeActivity = typeof TypeActivity.Type
 
 /** One actor type in detail: its numbers, its activity over the window, and the instances on its first page. */
 export const ActorTypePage = S.TaggedStruct("ActorTypePage", {
+  commandScope: S.optional(CommandScope),
   summary: ActorTypeSummary,
   instances: S.Array(ActorInstance),
   activity: TypeActivity,
@@ -97,6 +99,7 @@ export const OwnedTable = S.Struct({
 
 /** Everything the actor inspector shows about one instance. */
 export const ActorPage = S.TaggedStruct("ActorPage", {
+  commandScope: S.optional(CommandScope),
   actorType: S.String,
   key: S.String,
   awake: S.Boolean,

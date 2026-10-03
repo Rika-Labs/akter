@@ -73,7 +73,9 @@ export const toLatencyDistribution =
         const previous = index === 0 ? null : bounds[index - 1]
         const label =
           bound !== null
-            ? `≤ ${formatDuration(bound)}`
+            ? previous === null || previous === undefined
+              ? `≤ ${formatDuration(bound)}`
+              : `${String(previous)}–${String(bound)} ms`
             : previous === null || previous === undefined
               ? "All turns"
               : `> ${formatDuration(previous)}`

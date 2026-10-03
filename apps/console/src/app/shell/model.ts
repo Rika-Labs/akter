@@ -1,7 +1,7 @@
 import { Schema as S } from "effect"
 import { defineTaggedUnion } from "foldkit/schema"
 import { Tail } from "../commands/model.ts"
-import { CommandAnswer } from "../commands/model.ts"
+import { CommandAnswer, CommandScope } from "../commands/model.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import { Workspace } from "../workspace/model.ts"
 import { PageData } from "./page.ts"
@@ -13,7 +13,7 @@ export const Dialog = defineTaggedUnion({
   RevokeKey: { name: S.String },
   CreateKey: {},
   AddVariable: {},
-  SendCommand: { address: S.String },
+  SendCommand: { scope: CommandScope, address: S.String },
   RollBack: { id: S.String, commit: S.String },
   DeleteProject: { project: S.String },
   KeyCreated: { name: S.String, secret: S.String },
@@ -74,6 +74,7 @@ export const Model = S.Struct({
   tailError: S.Option(S.String),
   commandAnswer: S.Option(CommandAnswer),
   commandError: S.Option(S.String),
+  commandUsedId: S.Option(S.String),
   sendingCommand: S.Boolean,
   commandSession: S.Finite,
   resolved: S.Array(S.String),

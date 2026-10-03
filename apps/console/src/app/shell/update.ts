@@ -145,6 +145,7 @@ const initial = (flags: Flags, url: Url): Result => {
       tailError: Option.none(),
       commandAnswer: Option.none(),
       commandError: Option.none(),
+      commandUsedId: Option.none(),
       sendingCommand: false,
       commandSession: 0,
       resolved: [],
@@ -269,23 +270,36 @@ const confirm = (model: Model, dialog: Dialog): Result =>
           }),
         )
       },
-      SendCommand: ({ address }) => {
+      SendCommand: ({ address, scope }) => {
         if (model.pageSample || model.loading || model.sendingCommand) return { model }
         const commandId = (model.fields["command-id"] ?? "").trim()
+        if (commandId === "")
+          return {
+            model: {
+              ...model,
+              sendingCommand: true,
+              commandAnswer: Option.none(),
+              commandError: Option.none(),
+            },
+            commands: [NewCommandId({ session: model.commandSession })],
+          }
         return {
           model: {
             ...model,
             sendingCommand: true,
             commandAnswer: Option.none(),
             commandError: Option.none(),
+            commandUsedId: Option.some(commandId),
+            fields: { ...model.fields, "command-id": commandId },
           },
           commands: [
             SendActorCommand({
               session: model.commandSession,
               address,
+              scope,
               command: (model.fields["command-name"] ?? "").trim(),
               payload: model.fields["command-payload"] ?? "{}",
-              commandId: commandId === "" ? undefined : commandId,
+              commandId,
             }),
           ],
         }
@@ -476,7 +490,7 @@ const step = (model: Model, message: Message): Result =>
         model: {
           ...model,
           route,
-          dialog: Option.filter(model.dialog, (open) => !Predicate.isTagged(open, "KeyCreated")),
+          dialog: Option.none(),
           drawer: false,
           loading: true,
           tailStatus: "idle",
@@ -484,6 +498,7 @@ const step = (model: Model, message: Message): Result =>
           tailError: Option.none(),
           commandAnswer: Option.none(),
           commandError: Option.none(),
+          commandUsedId: Option.none(),
           sendingCommand: false,
           commandSession: model.commandSession + 1,
           page: Option.none(),
@@ -496,9 +511,7 @@ const step = (model: Model, message: Message): Result =>
         commands: [
           LoadPage({ route, allowSignIn: model.allowSignIn }),
           HidePopovers(),
-          ...(Option.exists(model.dialog, (open) => Predicate.isTagged(open, "KeyCreated"))
-            ? [HideDialog({ id: dialogId })]
-            : []),
+          ...(Option.isSome(model.dialog) ? [HideDialog({ id: dialogId })] : []),
         ],
       }
     },
@@ -665,6 +678,7 @@ const step = (model: Model, message: Message): Result =>
               : next.fields,
             commandAnswer: Option.none(),
             commandError: Option.none(),
+            commandUsedId: Option.none(),
             sendingCommand: false,
             commandSession: session,
           },
@@ -680,6 +694,7 @@ const step = (model: Model, message: Message): Result =>
         dialog: Option.none(),
         commandAnswer: Option.none(),
         commandError: Option.none(),
+        commandUsedId: Option.none(),
         sendingCommand: false,
         commandSession: model.commandSession + 1,
       },
@@ -747,7 +762,6 @@ const step = (model: Model, message: Message): Result =>
               sendingCommand: false,
               commandAnswer: Option.some(answer),
               commandError: Option.none(),
-              fields: { ...model.fields, "command-id": answer.commandId },
             },
           },
     FailedCommand: ({ session, kind, message }) => {
@@ -755,12 +769,18 @@ const step = (model: Model, message: Message): Result =>
       if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
       return { model: { ...model, sendingCommand: false, commandError: Option.some(message) } }
     },
-    PreparedCommandId: ({ session, id }) =>
-      session !== model.commandSession || (model.fields["command-id"] ?? "") !== ""
-        ? { model }
-        : {
-            model: { ...model, fields: { ...model.fields, "command-id": id } },
-          },
+    PreparedCommandId: ({ session, id }) => {
+      if (session !== model.commandSession || (model.fields["command-id"] ?? "").trim() !== "")
+        return { model }
+      const prepared = { ...model, fields: { ...model.fields, "command-id": id } }
+      return Option.match(model.dialog, {
+        onNone: () => ({ model }),
+        onSome: (dialog) =>
+          model.sendingCommand && Predicate.isTagged(dialog, "SendCommand")
+            ? confirm({ ...prepared, sendingCommand: false }, dialog)
+            : { model: prepared },
+      })
+    },
     ToggledTail: () =>
       model.pageSample
         ? { model }

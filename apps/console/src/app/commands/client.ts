@@ -10,7 +10,7 @@ import {
   withProject,
 } from "../api/client.ts"
 import { tailCapacity, toRecentTurns, toRejected, toSucceeded } from "./mapping.ts"
-import { type CommandAnswer, CommandsPage } from "./model.ts"
+import { type CommandAnswer, type CommandScope, CommandsPage } from "./model.ts"
 
 /** Loads the actor types the filter offers and the turns committed just before the page opened. */
 export const loadCommands: Effect.Effect<Loaded<CommandsPage>, ConsoleError> = withProject(
@@ -31,6 +31,7 @@ const sampleOnly = ConsoleError.make({ kind: "Sample", message: "Sample data is 
 
 /** What the console sends: payload is the JSON text the operator typed; no id lets the server mint one. */
 export interface SendRequest {
+  readonly scope: CommandScope
   readonly address: string
   readonly command: string
   readonly payload: string
@@ -43,7 +44,8 @@ const encodeRequest = Schema.decodeUnknownEffect(SendCommand)
 /**
  * Sends one command to one actor. Sample data never sends, and `NotImplemented` fails rather than
  * pretending the command ran. An error the actor returns is a `CommandRejected` answer; transport,
- * authorization and conflict failures are `ConsoleError`.
+ * authorization and conflict failures are `ConsoleError`. The supplied scope is the one captured
+ * from the actor page; a changed project selection never retargets the command.
  */
 export const sendCommand = (request: SendRequest): Effect.Effect<CommandAnswer, ConsoleError> =>
   Effect.suspend(() => {
@@ -66,14 +68,11 @@ export const sendCommand = (request: SendRequest): Effect.Effect<CommandAnswer, 
         ),
       )
       const api = yield* cloud
-      const { project, environment } = yield* projectContext
-      return yield* api.runtime
-        .sendCommand({ params: { projectId: project.id, environment }, payload: body })
-        .pipe(
-          Effect.map(toSucceeded),
-          Effect.catchTag("CommandFailed", (failed) => Effect.succeed(toRejected(failed))),
-          Effect.mapError(consoleError),
-        )
+      return yield* api.runtime.sendCommand({ params: request.scope, payload: body }).pipe(
+        Effect.map(toSucceeded),
+        Effect.catchTag("CommandFailed", (failed) => Effect.succeed(toRejected(failed))),
+        Effect.mapError(consoleError),
+      )
     })
   })
 

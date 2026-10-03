@@ -145,9 +145,9 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         danger: false,
         ready: true,
       }),
-      SendCommand: ({ address }) => ({
+      SendCommand: ({ address, scope }) => ({
         title: "Send a command",
-        description: `To ${address}. Reusing a command ID returns its stored receipt.`,
+        description: `To ${address} in ${scope.environment} (${scope.projectId}). Reusing a command ID returns its stored receipt.`,
         body: [
           text(h, model, {
             id: "command-name",
@@ -176,7 +176,7 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
           text(h, model, {
             id: "command-id",
             label: "Command ID (optional)",
-            placeholder: "Leave empty to let the server mint an ID",
+            placeholder: "Leave empty to generate a retry-safe ID",
             mono: true,
           }),
           model.sendingCommand
@@ -189,6 +189,10 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
             onNone: () => h.empty,
             onSome: (message) =>
               h.p([h.Role("alert"), ...styleAttributes(h, styles.note)], [message]),
+          }),
+          Option.match(model.commandUsedId, {
+            onNone: () => h.empty,
+            onSome: (id) => h.p([...styleAttributes(h, styles.mono)], [`Command ID used: ${id}`]),
           }),
           Option.match(model.commandAnswer, {
             onNone: () => h.empty,

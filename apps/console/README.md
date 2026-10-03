@@ -49,7 +49,9 @@ pages never start a stream or simulate new turns.
 
 The inspector's Send command dialog accepts JSON and an optional command ID, shows the actor's
 result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
-fresh ID so a retry after an interrupted request can retain that ID. Deployment detail offers
+fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
+response reuse the same receipt key. The dialog captures the actor's project and environment
+and closes on every URL change; navigation can never retarget an old actor address. Deployment detail offers
 earlier successful deployments in the same environment as rollback targets and displays
 `rolledBackFrom` on the newly created deployment.
 

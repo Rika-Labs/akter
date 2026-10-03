@@ -1,5 +1,6 @@
 import { CommandFailed, Conflict, Forbidden, NotImplemented } from "@akter/cloud-api"
 import { DateTime, Effect, Schema, Stream } from "effect"
+import { ProjectId } from "@akter/cloud-api"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { loadCommands, openTurns, sendCommand, streamTurns } from "./client.ts"
 import { CommandAnswer, CommandRejected, CommandsPage, CommandSucceeded } from "./model.ts"
@@ -37,6 +38,7 @@ describe("commands client in fixture mode, writes and streams", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const sent = yield* sendCommand({
+          scope: { projectId: ProjectId.make("prj_1"), environment: "production" },
           address: "Order/ord_8f2c",
           command: "Charged",
           payload: "{}",
@@ -116,6 +118,7 @@ const encoded = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
 const live = () => vi.stubEnv("VITE_CONSOLE_FIXTURES", "0")
 
 const send = {
+  scope: { projectId: ProjectId.make("prj_1"), environment: "production" as const },
   address: "Order/ord_8f2c",
   command: "Charge",
   payload: '{"amount":12.5,"tags":[null]}',
@@ -158,6 +161,22 @@ describe("sendCommand over the derived API", () => {
         )
         const [call] = commandRequests()
         expect(yield* sentBody(call)).toMatchObject({ commandId: "cmd_7" })
+      }),
+    ))
+
+  it("uses the captured project and environment without resolving current selection again", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        fetch.mockResolvedValue(json({ commandId: "scope-proof", result: null, replayed: false }))
+        yield* sendCommand({
+          ...send,
+          scope: { projectId: ProjectId.make("original_project"), environment: "staging" },
+          commandId: "scope-proof",
+        })
+        expect(fetch).toHaveBeenCalledOnce()
+        expect(callUrl(fetch.mock.calls[0]!).pathname).toBe(
+          "/api/projects/original_project/environments/staging/runtime/commands",
+        )
       }),
     ))
 

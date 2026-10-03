@@ -22,6 +22,7 @@ import * as Routes from "../navigation/routes.ts"
 import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
 import { rollBackDeployment } from "../deployments/client.ts"
 import { sendCommand } from "../commands/client.ts"
+import { CommandScope } from "../commands/model.ts"
 import * as Settings from "../settings/client.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
@@ -328,10 +329,11 @@ export const SelectSeriesWindow = Command.define("SelectSeriesWindow", {
 export const SendActorCommand = Command.define("SendActorCommand", {
   args: {
     session: S.Finite,
+    scope: CommandScope,
     address: S.String,
     command: S.String,
     payload: S.String,
-    commandId: S.optional(S.String),
+    commandId: S.String.pipe(S.check(S.isMinLength(1))),
   },
   messages: [AnsweredCommand, FailedCommand],
   execute: (request) =>

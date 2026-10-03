@@ -36,10 +36,16 @@ export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>):
             button(h, {
               label: "Send command",
               size: "sm",
-              disabled: model.pageSample,
-              onClick: OpenedDialog({
-                dialog: Dialog.SendCommand({ address: `${summary.name}/${first.key}` }),
-              }),
+              disabled: model.pageSample || page.commandScope === undefined,
+              onClick:
+                page.commandScope === undefined
+                  ? undefined
+                  : OpenedDialog({
+                      dialog: Dialog.SendCommand({
+                        address: `${summary.name}/${first.key}`,
+                        scope: page.commandScope,
+                      }),
+                    }),
             }),
           ]),
     ],

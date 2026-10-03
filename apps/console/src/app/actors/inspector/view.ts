@@ -221,8 +221,11 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
       button(h, {
         label: "Send command",
         size: "sm",
-        disabled: model.pageSample,
-        onClick: OpenedDialog({ dialog: Dialog.SendCommand({ address }) }),
+        disabled: model.pageSample || page.commandScope === undefined,
+        onClick:
+          page.commandScope === undefined
+            ? undefined
+            : OpenedDialog({ dialog: Dialog.SendCommand({ address, scope: page.commandScope }) }),
       }),
     ],
     body: h.div(

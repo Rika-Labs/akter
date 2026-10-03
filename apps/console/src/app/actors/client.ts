@@ -43,6 +43,7 @@ export const loadActorType = (
           const now = yield* DateTime.now
           return {
             data: ActorTypePage.make({
+              commandScope: { projectId: project.id, environment },
               summary,
               instances: instances.items.map(toActorInstance(now)),
               activity: activity.data,
@@ -72,7 +73,7 @@ export const loadActor = (
         const inspector = yield* api.runtime.inspectActor({
           params: { projectId: project.id, environment, ...input },
         })
-        return toActorPage(inspector)
+        return { ...toActorPage(inspector), commandScope: { projectId: project.id, environment } }
       }).pipe(orUndefined),
     () => import("./fixtures.ts").then((fixtures) => fixtures.actorPage(input)),
   )

@@ -130,7 +130,7 @@ describe("overview over the live API", () => {
           total: 42,
           bars: [
             { label: "≤ 5.0 ms", count: 30, tail: false },
-            { label: "≤ 50 ms", count: 9, tail: false },
+            { label: "5–50 ms", count: 9, tail: false },
             { label: "> 50 ms", count: 3, tail: true },
           ],
         })
