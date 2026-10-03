@@ -78,7 +78,7 @@ export class AccountGroup extends HttpApiGroup.make("account").add(
   }),
   HttpApiEndpoint.delete("unpinActor", "/me/pinned-actors", {
     query: { projectId: ProjectId, environment: EnvironmentName, address: Schema.String },
-    error: ReadErrors,
+    error: WriteErrors,
   }),
 ) {}
 
