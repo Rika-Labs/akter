@@ -1,4 +1,5 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
+import { fileURLToPath } from "node:url"
 import {
   Config,
   Effect,
@@ -106,6 +107,30 @@ const run = (url: string, effect = migrate, neki = true) =>
     }),
   )
 
+const spawn = Effect.fnUntraced(function* (command: ChildProcess.Command) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const runner = yield* spawner.spawn(command)
+  const stderr = yield* runner.stderr.pipe(Stream.decodeText(), Stream.mkString, Effect.forkChild)
+  const stderrOutput = Fiber.join(stderr)
+  return {
+    ...runner,
+    stderrOutput,
+    exitCode: runner.exitCode.pipe(
+      Effect.tap((code) =>
+        code === 0
+          ? Effect.void
+          : stderrOutput.pipe(
+              Effect.flatMap((output) =>
+                Effect.die(
+                  new Error(`Migration child exited with code ${code}; stderr:\n${output}`),
+                ),
+              ),
+            ),
+      ),
+    ),
+  }
+})
+
 /** A real child pauses after the database operation; SIGKILL cannot release its lock in a finalizer. */
 const child = Effect.fnUntraced(function* (
   url: string,
@@ -132,8 +157,7 @@ const child = Effect.fnUntraced(function* (
       console.log("RESULT " + JSON.stringify(result));
     } finally { await runtime.dispose(); }
   `
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  return yield* spawner.spawn(
+  return yield* spawn(
     ChildProcess.make("bun", ["-e", code], {
       env: {
         MIGRATION_URL: url,
@@ -142,20 +166,25 @@ const child = Effect.fnUntraced(function* (
         MIGRATION_NEKI: String(neki),
       },
       extendEnv: true,
-      stderr: "inherit",
+      cwd: fileURLToPath(new URL("../../../../../../", import.meta.url)),
+      stderr: "pipe",
     }),
   )
 })
 
-const ready = (runner: ChildProcessSpawner.ChildProcessHandle) =>
-  runner.stdout.pipe(
-    Stream.decodeText(),
-    Stream.splitLines,
-    Stream.filter((line) => line === "READY"),
-    Stream.take(1),
-    Stream.runCollect,
-    Effect.tap((lines) => Effect.sync(() => expect(lines).toEqual(["READY"]))),
-  )
+const ready = (runner: Effect.Success<ReturnType<typeof spawn>>) =>
+  Effect.gen(function* () {
+    const lines = yield* runner.stdout.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.filter((line) => line === "READY"),
+      Stream.take(1),
+      Stream.runCollect,
+    )
+    if (lines.length === 1) return
+    const stderr = yield* runner.stderrOutput
+    expect(lines, `Child migration exited before READY; stderr:\n${stderr}`).toEqual(["READY"])
+  })
 
 const crash = (url: string, point: string) =>
   Effect.scoped(
@@ -399,6 +428,30 @@ const describeMigrations = (neki: boolean) => {
 }
 
 describe("Neki migration protocol on real Postgres", () => {
+  it("includes child stderr when startup exits before READY or with a nonzero code", () =>
+    harness.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          for (const code of [0, 23]) {
+            const runner = yield* spawn(
+              ChildProcess.make("bun", [
+                "-e",
+                `console.error("startup diagnostic"); process.exit(${code})`,
+              ]),
+            )
+            const readiness = yield* Effect.exit(ready(runner))
+            expect(String(readiness)).toContain("Child migration exited before READY")
+            expect(String(readiness)).toContain("startup diagnostic")
+            if (code !== 0) {
+              const exited = yield* Effect.exit(runner.exitCode)
+              expect(String(exited)).toContain(`Migration child exited with code ${code}`)
+              expect(String(exited)).toContain("startup diagnostic")
+            }
+          }
+        }),
+      ),
+    ))
+
   describeMigrations(false)
 
   for (const neki of [false, true]) {
