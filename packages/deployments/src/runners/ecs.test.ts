@@ -2,7 +2,7 @@ import { Credentials } from "@distilled.cloud/aws/Credentials"
 import * as Endpoint from "@distilled.cloud/aws/Endpoint"
 import { BunCrypto } from "@effect/platform-bun"
 import { expect, it } from "@effect/vitest"
-import { Context, Crypto, Effect, Layer, Redacted, type Schema } from "effect"
+import { Context, Crypto, Effect, Layer, Match, Redacted, type Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { RunnerNotFound, RunnerPlatform, RunnerPlatformError, startToken } from "./contract.ts"
 import { ecsRunners, type EcsDefinition } from "./ecs.ts"
@@ -333,15 +333,17 @@ it.effect("stops and refuses a task that did not land on ARM64", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { calls, platform } = yield* fake((call) =>
-        call.operation === "RunTask"
-          ? {
-              body: {
-                tasks: [task({ attributes: [{ name: "ecs.cpu-architecture", value: "x86_64" }] })],
-              },
-            }
-          : call.operation === "DescribeTasks"
-            ? { body: { tasks: [task({ lastStatus: "STOPPED", desiredStatus: "STOPPED" })] } }
-            : { body: { task: task() } },
+        Match.value(call.operation).pipe(
+          Match.when("RunTask", () => ({
+            body: {
+              tasks: [task({ attributes: [{ name: "ecs.cpu-architecture", value: "x86_64" }] })],
+            },
+          })),
+          Match.when("DescribeTasks", () => ({
+            body: { tasks: [task({ lastStatus: "STOPPED", desiredStatus: "STOPPED" })] },
+          })),
+          Match.orElse(() => ({ body: { task: task() } })),
+        ),
       )
 
       const refused = yield* Effect.flip(platform.start(request))

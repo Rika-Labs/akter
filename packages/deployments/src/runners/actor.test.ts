@@ -388,25 +388,32 @@ describe("durable runner provisioning", () => {
       }),
     ))
 
-  it("leaves a task to its durable retry when the process interrupts startup", async () => {
-    const isolated = ManagedRuntime.make(live)
-    try {
-      await isolated.runPromise(
-        Effect.gen(function* () {
-          const runner = yield* register("interrupted-start")
-          const reached = yield* Deferred.make<void>()
-          addressLater = { reached }
-          yield* runner.Wake()
-          yield* (yield* ActorTest).advance(0).pipe(Effect.forkChild)
-          yield* Deferred.await(reached)
-          const task = [...starts.values()].at(-1)!.id
-          const report = yield* (yield* RuntimeControl).drain({ deadline: "200 millis" })
-          expect(report).toMatchObject({ outcome: "deadline-expired", interruptedJobs: 1 })
-          expect(stopped).not.toContain(task)
-        }),
-      )
-    } finally {
-      await isolated.dispose()
-    }
-  }, 60000)
+  it(
+    "leaves a task to its durable retry when the process interrupts startup",
+    () =>
+      Effect.runPromise(
+        Effect.acquireUseRelease(
+          Effect.sync(() => ManagedRuntime.make(live)),
+          (isolated) =>
+            Effect.promise(() =>
+              isolated.runPromise(
+                Effect.gen(function* () {
+                  const runner = yield* register("interrupted-start")
+                  const reached = yield* Deferred.make<void>()
+                  addressLater = { reached }
+                  yield* runner.Wake()
+                  yield* (yield* ActorTest).advance(0).pipe(Effect.forkChild)
+                  yield* Deferred.await(reached)
+                  const task = [...starts.values()].at(-1)!.id
+                  const report = yield* (yield* RuntimeControl).drain({ deadline: "200 millis" })
+                  expect(report).toMatchObject({ outcome: "deadline-expired", interruptedJobs: 1 })
+                  expect(stopped).not.toContain(task)
+                }),
+              ),
+            ),
+          (isolated) => Effect.promise(() => isolated.dispose()),
+        ),
+      ),
+    60000,
+  )
 })

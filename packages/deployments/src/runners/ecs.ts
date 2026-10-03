@@ -108,7 +108,7 @@ export const ecsRunners = (options: EcsOptions) =>
                 ? "running"
                 : "stopped"
 
-        return {
+        const observed: Runner = {
           id: task.taskArn ?? "",
           state,
           url:
@@ -116,8 +116,9 @@ export const ecsRunners = (options: EcsOptions) =>
               ? null
               : `${options.scheme ?? "https"}://${address}:${options.port}`,
           basePath,
-          ...(task.lastStatus === "STOPPED" ? { terminated: true } : {}),
         }
+
+        return task.lastStatus === "STOPPED" ? { ...observed, terminated: true } : observed
       }
 
       const locate = (id: string) => {

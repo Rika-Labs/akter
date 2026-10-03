@@ -1,5 +1,5 @@
 import type { Row, ScopedRead } from "@rikalabs/akter"
-import { DateTime, Effect, Layer, Option, Predicate, Result } from "effect"
+import { DateTime, Effect, Layer, Match, Option, Predicate, Result } from "effect"
 import {
   type DeploymentDetail,
   DeploymentExists,
@@ -446,12 +446,13 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
           .activate({
             ...releaseOf({ ...deployment, regions }),
             previousDeploymentId: Option.isSome(previous) ? previous.value.id : null,
-            initiator:
-              rows.turn.caller._tag === "System"
-                ? rows.turn.caller.onBehalfOf?.subject
-                : rows.turn.caller._tag === "User"
-                  ? rows.turn.caller.subject
-                  : undefined,
+            initiator: Match.value(rows.turn.caller).pipe(
+              Match.tagsExhaustive({
+                System: (caller) => caller.onBehalfOf?.subject,
+                User: (caller) => caller.subject,
+                Anonymous: () => undefined,
+              }),
+            ),
           })
           .pipe(Effect.result)
 

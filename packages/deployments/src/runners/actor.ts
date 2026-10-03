@@ -1,7 +1,7 @@
 import { Actor } from "@rikalabs/akter"
-import { Cause, Effect, Layer, Option, Schedule, Schema } from "effect"
+import { Cause, Effect, Function, Layer, Option, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { platformError, RunnerNotFound, RunnerPlatform } from "./contract.ts"
+import { platformError, RunnerPlatform } from "./contract.ts"
 
 const Spec = Schema.Struct({
   deploymentId: Schema.String,
@@ -85,11 +85,19 @@ export const Runners = Actor.make("CloudRunners", {
   },
 })
 
-export const runnerKey = (deploymentId: string, region: string) => `${deploymentId}/${region}`
+export const runnerKey: {
+  (deploymentId: string, region: string): string
+  (region: string): (deploymentId: string) => string
+} = Function.dual(2, (deploymentId: string, region: string) => `${deploymentId}/${region}`)
+
+const controlPlaneActor = (deploymentId: string, region: string) =>
+  Runners.get(runnerKey(deploymentId, region)).pipe(Actor.tenant("control-plane"))
 
 /** Capacity is global to a release-region; an organization's lifecycle job must not create a second tenant's capacity actor. */
-export const runnerActor = (deploymentId: string, region: string) =>
-  Runners.get(runnerKey(deploymentId, region)).pipe(Actor.tenant("control-plane"))
+export const runnerActor: {
+  (deploymentId: string, region: string): ReturnType<typeof controlPlaneActor>
+  (region: string): (deploymentId: string) => ReturnType<typeof controlPlaneActor>
+} = Function.dual(2, controlPlaneActor)
 
 /** Registration is committed with the state transition; stopping first withdraws the ingress row. */
 export const RunnerCommands = Runners.toLayer(
@@ -202,7 +210,7 @@ export const RunnerCommands = Runners.toLayer(
         }>`SELECT tier = 'free' AND scale_to_zero AND last_activity_at <= now() - ${idleSeconds} * interval '1 second' AS idle FROM deployment WHERE id = ${deploymentId} FOR UPDATE`.pipe(
           Effect.orDie,
         )
-        if (row?.idle) yield* stop()
+        if (row?.idle === true) yield* stop()
       }),
       Drain: stop,
       Reconcile: Effect.fnUntraced(function* () {
@@ -265,7 +273,7 @@ export const RunnerJobs = Runners.toJobLayer(
           environment: spec.environment,
           idempotencyKey: spec.operationId ?? executor.jobId,
         })
-        if (spec.cleanup) {
+        if (spec.cleanup === true) {
           yield* platform
             .stop(started.id)
             .pipe(Effect.catchTag("RunnerNotFound", () => Effect.void))
@@ -311,16 +319,15 @@ export const RunnerJobs = Runners.toJobLayer(
           terminated: false,
         }
       }),
-      StopRunner: ({ id }) =>
-        platform.stop(id).pipe(Effect.catchTag("RunnerNotFound", () => Effect.void)),
-      CheckRunner: ({ id }) =>
-        platform.describe(id).pipe(
+      StopRunner: Effect.fnUntraced(function* ({ id }) {
+        yield* platform.stop(id).pipe(Effect.catchTag("RunnerNotFound", () => Effect.void))
+      }),
+      CheckRunner: Effect.fnUntraced(function* ({ id }) {
+        return yield* platform.describe(id).pipe(
           Effect.map((runner) => ({ id, stopped: runner.state === "stopped" })),
-          Effect.catchIf(
-            (error) => error instanceof RunnerNotFound,
-            () => Effect.succeed({ id, stopped: true }),
-          ),
-        ),
+          Effect.catchTag("RunnerNotFound", () => Effect.succeed({ id, stopped: true })),
+        )
+      }),
     }
   }),
 )

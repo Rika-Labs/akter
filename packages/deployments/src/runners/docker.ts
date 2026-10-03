@@ -135,19 +135,19 @@ export const dockerRunners = (options: DockerOptions) =>
             ? undefined
             : container.NetworkSettings.Networks?.[options.network]?.IPAddress
 
+        const origin =
+          options.routeViaNetwork === true
+            ? privateAddress === undefined || privateAddress === ""
+              ? null
+              : `http://${privateAddress}:${options.port}`
+            : bound === undefined
+              ? null
+              : `http://${options.publishHost ?? "127.0.0.1"}:${bound.HostPort}`
+
         return {
           id: container.Id,
           state,
-          url:
-            state !== "running"
-              ? null
-              : options.routeViaNetwork
-                ? privateAddress
-                  ? `http://${privateAddress}:${options.port}`
-                  : null
-                : bound !== undefined
-                  ? `http://${options.publishHost ?? "127.0.0.1"}:${bound.HostPort}`
-                  : null,
+          url: state === "running" ? origin : null,
           basePath: options.basePath ?? "",
         } satisfies Runner
       })
@@ -171,7 +171,7 @@ export const dockerRunners = (options: DockerOptions) =>
       return RunnerPlatform.of({
         start: Effect.fnUntraced(function* (request) {
           const input = yield* decodeStart(request)
-          if (options.routeViaNetwork && options.network === undefined)
+          if (options.routeViaNetwork === true && options.network === undefined)
             return yield* platformError({ operation: "start", code: "invalid-input" })
           if (
             Object.keys(input.environment).some(

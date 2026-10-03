@@ -18,7 +18,7 @@ export class ImageMigrations extends Context.Service<
   {
     readonly run: (input: StartInput) => Effect.Effect<void, MigrationFailed>
   }
->()("@akter/deployments/runners/ImageMigrations") {}
+>()("@akter/deployments/runners/migrations/ImageMigrations") {}
 
 /** The image owns its migration command; the local provider only runs it and verifies its exit status. */
 export const dockerMigrations = (options: {
