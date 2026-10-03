@@ -4,7 +4,7 @@ import type { EdgeOptions } from "../config.ts"
 import { unavailable } from "./forward.ts"
 
 /**
- * Records that a deployment served an authenticated request, as
+ * Records that a deployment is about to serve a request or socket session, as
  * `deployment.last_activity_at` on the control-plane database's own clock, so
  * a runner provider can decide idleness from one authority.
  *

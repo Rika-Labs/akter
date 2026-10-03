@@ -338,7 +338,59 @@ const spoofed = {
   "x-real-ip": "203.0.113.10",
   "true-client-ip": "203.0.113.11",
   forwarded: "for=203.0.113.12;host=evil.example",
+  "x-forwarded-port": "8443",
+  "x-client-ip": "203.0.113.13",
+  "cf-connecting-ipv6": "2001:db8::13",
 }
+
+/** The client-supplied attribution headers a runner must never receive. */
+const attributionNames = [
+  "cf-connecting-ip",
+  "cf-connecting-ipv6",
+  "x-forwarded-proto",
+  "x-forwarded-port",
+  "x-real-ip",
+  "x-client-ip",
+  "true-client-ip",
+  "forwarded",
+]
+
+/**
+ * Opens a client WebSocket through the edge and sends one frame once open,
+ * recording the first message it receives and the close code it ends with.
+ */
+const openSession = (url: string, headers: Record<string, string> = {}) => {
+  const first = Deferred.makeUnsafe<string>()
+  const closed = Deferred.makeUnsafe<number>()
+  const socket: WebSocket = Reflect.construct(WebSocket, [
+    `${url.replace(/^http/, "ws")}/actors/A/1/Room`,
+    { protocols: [SUBPROTOCOL], headers },
+  ])
+
+  socket.onopen = () => socket.send("not-a-hello")
+  socket.onmessage = (event) => Deferred.doneUnsafe(first, Effect.succeed(String(event.data)))
+  socket.onclose = (event) => Deferred.doneUnsafe(closed, Effect.succeed(event.code))
+
+  return {
+    socket,
+    first: Deferred.await(first).pipe(Effect.timeout("5 seconds"), Effect.orDie),
+    closed: Deferred.await(closed).pipe(Effect.timeout("5 seconds"), Effect.orDie),
+  }
+}
+
+/** Marks the deployment idle for an hour, and reads whether activity was recorded since. */
+const activityOf = (edge: { readonly sql: SqlClient.SqlClient; readonly deployment: string }) => ({
+  idle: edge.sql`UPDATE deployment SET last_activity_at = now() - interval '1 hour' WHERE id = ${edge.deployment}`.pipe(
+    Effect.asVoid,
+    Effect.orDie,
+  ),
+  recent: edge.sql<{ readonly recent: boolean }>`
+    SELECT last_activity_at > now() - interval '1 minute' AS recent FROM deployment WHERE id = ${edge.deployment}
+  `.pipe(
+    Effect.map(([row]) => row?.recent),
+    Effect.orDie,
+  ),
+})
 
 type Started = Effect.Success<ReturnType<typeof startEdge>>
 
@@ -404,14 +456,7 @@ describe("Hosted edge client address", () => {
 
           expect(headers.get("x-forwarded-for")).toBe("127.0.0.1")
           expect(headers.get("x-forwarded-host")).toBe("127.0.0.1")
-          for (const name of [
-            "cf-connecting-ip",
-            "x-forwarded-proto",
-            "x-real-ip",
-            "true-client-ip",
-            "forwarded",
-            "authorization",
-          ])
+          for (const name of [...attributionNames, "authorization"])
             expect(headers.has(name)).toBe(false)
           expect(headers.has("durable-assertion")).toBe(true)
         }),
@@ -479,61 +524,59 @@ describe("Hosted edge client address", () => {
       { primaryRegion: "r1", trustedProxies: { nlbOnly: true, cloudflare: ["10.0.0.0/8"] } },
       ({ edge, runner }) =>
         Effect.gen(function* () {
-          const echoed = Deferred.makeUnsafe<string>()
+          const session = openSession(edge.url, spoofed)
+          const message = yield* session.first
 
-          const socket: WebSocket = Reflect.construct(WebSocket, [
-            `${edge.url.replace(/^http/, "ws")}/actors/A/1/Room`,
-            { protocols: [SUBPROTOCOL], headers: spoofed },
-          ])
-
-          socket.onopen = () => socket.send("not-a-hello")
-          socket.onmessage = (event) =>
-            Deferred.doneUnsafe(echoed, Effect.succeed(String(event.data)))
-
-          const message = yield* Deferred.await(echoed).pipe(
-            Effect.timeout("5 seconds"),
-            Effect.orDie,
-          )
-
-          socket.close()
+          session.socket.close()
 
           const upgrade = runner.seen.find(({ headers }) => headers.has("upgrade"))!.headers
 
           expect(message).toBe("not-a-hello")
           expect(upgrade.get("x-forwarded-for")).toBe("127.0.0.1")
           expect(upgrade.get("x-forwarded-host")).toBe("127.0.0.1")
-          expect(upgrade.has("cf-connecting-ip")).toBe(false)
+          for (const name of attributionNames) expect(upgrade.has(name)).toBe(false)
         }),
     ))
 
-  it("commits deployment activity before forwarding an authenticated request, and for nothing else", () =>
+  it("commits deployment activity before forwarding public and authenticated requests, and not for a rejected credential", () =>
     withEdge({ primaryRegion: "r1" }, ({ edge, runner, send }) =>
       Effect.gen(function* () {
-        const { sql } = edge
+        const activity = activityOf(edge)
 
-        const recent = sql<{ readonly recent: boolean }>`
-          SELECT last_activity_at > now() - interval '1 minute' AS recent FROM deployment WHERE id = ${edge.deployment}
-        `.pipe(
-          Effect.map(([row]) => row?.recent),
-          Effect.orDie,
-        )
+        yield* activity.idle
+        expect(yield* send("/ping", { authorization: "Bearer not-a-key" })).toBe(401)
+        expect(yield* activity.recent).toBe(false)
+        expect(runner.seen).toHaveLength(0)
 
-        yield* sql`UPDATE deployment SET last_activity_at = now() - interval '1 hour' WHERE id = ${edge.deployment}`.pipe(
-          Effect.orDie,
-        )
+        expect(yield* send("/ping")).toBe(200)
+        expect(yield* activity.recent).toBe(true)
 
-        yield* send("/ping")
-        expect(yield* recent).toBe(false)
-
+        yield* activity.idle
         const key = yield* edge.issueApiKey({ tenant: "t1", subject: "u1" })
 
         expect(yield* send("/ping", { authorization: `Bearer ${key}` })).toBe(200)
-        expect(yield* recent).toBe(true)
+        expect(yield* activity.recent).toBe(true)
         expect(runner.seen).toHaveLength(2)
       }),
     ))
 
-  it("refuses an authenticated request when its activity cannot be recorded, instead of forwarding it", () =>
+  it("commits deployment activity for a public socket session before opening its upstream", () =>
+    withEdge({ primaryRegion: "r1" }, ({ edge, runner }) =>
+      Effect.gen(function* () {
+        const activity = activityOf(edge)
+
+        yield* activity.idle
+
+        const session = openSession(edge.url)
+
+        expect(yield* session.first).toBe("not-a-hello")
+        session.socket.close()
+        expect(yield* activity.recent).toBe(true)
+        expect(runner.seen.filter(({ headers }) => headers.has("upgrade"))).toHaveLength(1)
+      }),
+    ))
+
+  it("refuses public and authenticated requests and socket sessions when activity cannot be recorded, instead of forwarding them", () =>
     withEdge({ primaryRegion: "r1" }, ({ edge, runner, send }) =>
       Effect.gen(function* () {
         yield* edge.sql`ALTER TABLE deployment DROP COLUMN last_activity_at`.pipe(Effect.orDie)
@@ -541,8 +584,15 @@ describe("Hosted edge client address", () => {
         const key = yield* edge.issueApiKey({ tenant: "t1", subject: "u1" })
 
         expect(yield* send("/ping", { authorization: `Bearer ${key}` })).toBe(503)
+        expect(yield* send("/ping")).toBe(503)
+
+        const session = openSession(edge.url)
+        expect(JSON.parse(yield* session.first)).toMatchObject({
+          t: "end",
+          error: { reason: { _tag: "ActorUnavailable" } },
+        })
+        expect(yield* session.closed).toBe(1013)
         expect(runner.seen).toHaveLength(0)
-        expect(yield* send("/ping")).toBe(200)
       }),
     ))
 })

@@ -34,7 +34,7 @@ export interface Edge {
     tenant: string,
   ) => Effect.Effect<{ readonly region: string; readonly state: "active" | "moving" } | undefined>
   readonly ready: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
-  /** Durably records that the deployment served an authenticated request, or fails. */
+  /** Durably records that the deployment is about to serve a request or socket session, or fails. */
   readonly touch: (deployment: string) => Effect.Effect<void, ActorUnavailable>
   /** Waits for a runner of a region with none ready; empty when none answers ready in time. */
   readonly coldStart: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
@@ -212,12 +212,9 @@ export const forward = Effect.fnUntraced(function* (
     return yield* refusal(principal.failure)
 
   const verified = principal?.success
+  const touched = yield* edge.touch(deployment.id).pipe(Effect.result)
 
-  if (verified !== undefined) {
-    const touched = yield* edge.touch(deployment.id).pipe(Effect.result)
-
-    if (Result.isFailure(touched)) return yield* refusal(touched.failure)
-  }
+  if (Result.isFailure(touched)) return yield* refusal(touched.failure)
   const chosen = yield* route(edge, deployment, verified)
 
   if (Result.isFailure(chosen)) return yield* refusal(chosen.failure)

@@ -144,16 +144,14 @@ export const proxySocket = Effect.fnUntraced(function* (
     principal = proved.success
   }
 
+  const touched = yield* edge.touch(deployment.id).pipe(Effect.result)
+
+  if (Result.isFailure(touched)) return yield* end(touched.failure)
+
   const chosen = yield* route(edge, deployment, principal)
 
   if (Result.isFailure(chosen)) return yield* end(chosen.failure)
   const routed = chosen.success
-
-  if (principal !== undefined) {
-    const touched = yield* edge.touch(deployment.id).pipe(Effect.result)
-
-    if (Result.isFailure(touched)) return yield* end(touched.failure)
-  }
 
   const connect = (url: string) =>
     Effect.gen(function* () {
