@@ -9,6 +9,7 @@
 
 ```text
 apps/                       deployables and the CLI bin; never imported by another package
+  api/                      @akter/api        control-plane HTTP API: Better Auth, access checks, and the `Repository` over the cloud_project, cloud_environment, cloud_preference and cloud_audit tables
   console/                  @akter/console    the hosted product console: FoldKit client app on Vite (ADR 0064)
   e2e/                      @akter/e2e        Playwright browser tests against read-only console fixtures
   edge/                     @akter/edge       hosted ingress: deployment hosts → runners, credentials → signed assertions, proxied sockets, limits
@@ -16,6 +17,7 @@ apps/                       deployables and the CLI bin; never imported by anoth
   cli/                      @akter/cli        the `durable` bin: local dev, deploy checks, adoption, operator inspection and repair
 packages/
   akter/           @rikalabs/akter       the framework; published (other published packages follow ADR 0029)
+  cloud-api/                @akter/cloud-api  the console API's HttpApi contract and Schema types; implemented by apps/api, consumed by the console
   react/                    @akter/react      React hooks over @rikalabs/akter/client
   deployments/              @akter/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
   python-client/            @akter/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests

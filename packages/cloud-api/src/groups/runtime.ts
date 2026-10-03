@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 
 import { ReadErrors, WriteErrors } from "../errors.ts"
 import { DeadLetterId, EnvironmentName, Page, pageQuery, ProjectId } from "../primitives.ts"
@@ -9,9 +9,12 @@ import {
   ActorInstance,
   ActorJob,
   ActorTimelineEntry,
+  ActorTypeActivity,
   ActorTypeSummary,
+  CommandFailed,
   CommandLogEntry,
   CommandOutcome,
+  CommandSent,
   ConnectionsSummary,
   DeadLetter,
   JobsSummary,
@@ -20,8 +23,11 @@ import {
   Receipt,
   Schedule,
   SearchResult,
+  SendCommand,
+  SeriesWindow,
   SidebarCounts,
   TimersSummary,
+  TurnLatency,
   Workflow,
 } from "../runtime.ts"
 
@@ -68,6 +74,32 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
     "getActorType",
     "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType",
     { params: actorTypeParams, success: ActorTypeSummary, error: ReadErrors },
+  ),
+  HttpApiEndpoint.get(
+    "getActorTypeActivity",
+    "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType/activity",
+    {
+      params: actorTypeParams,
+      query: { window: Schema.optional(SeriesWindow) },
+      success: ActorTypeActivity,
+      error: ReadErrors,
+    },
+  ).annotate(
+    OpenApi.Description,
+    "Commands per second over the window (default 24h) and the volume of each command, for one actor type.",
+  ),
+  HttpApiEndpoint.get(
+    "getActorTypeLatency",
+    "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType/latency",
+    {
+      params: actorTypeParams,
+      query: { window: Schema.optional(SeriesWindow) },
+      success: TurnLatency,
+      error: ReadErrors,
+    },
+  ).annotate(
+    OpenApi.Description,
+    "Turn-latency histogram over the window (default 24h) with p50, p95 and p99, for one actor type.",
   ),
   HttpApiEndpoint.get(
     "listActorInstances",
@@ -123,6 +155,19 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       error: ReadErrors,
     },
   ),
+  HttpApiEndpoint.post(
+    "sendCommand",
+    "/projects/:projectId/environments/:environment/runtime/commands",
+    {
+      params: environmentParams,
+      payload: SendCommand,
+      success: CommandSent,
+      error: [...WriteErrors, CommandFailed],
+    },
+  ).annotate(
+    OpenApi.Description,
+    "Runs one command on one actor through the runner that owns it and answers with the actor's result. Requires write permission on the project. `commandId` defaults to a freshly minted id; resending the same id replays the stored receipt and sets `replayed`. An error the actor itself returns is a 422 `CommandFailed` carrying its tag and payload.",
+  ),
   HttpApiEndpoint.get(
     "streamCommands",
     "/projects/:projectId/environments/:environment/runtime/commands/stream",
@@ -132,7 +177,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
         actorType: Schema.optional(Schema.String),
         outcome: Schema.optional(CommandOutcome),
       },
-      success: HttpApiSchema.StreamSse({ data: CommandLogEntry }),
+      success: HttpApiSchema.StreamSse({ data: Schema.toCodecJson(CommandLogEntry) }),
       error: ReadErrors,
     },
   ),
