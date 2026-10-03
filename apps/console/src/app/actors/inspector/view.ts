@@ -4,6 +4,7 @@ import {
   button,
   codeBlock,
   dataTable,
+  emptyState,
   pageHeader,
   propertyList,
   section,
@@ -67,39 +68,68 @@ const labels: Readonly<Record<InspectorTab, string>> = {
 }
 
 const jobTones: Readonly<Record<ActorPage["jobs"][number]["status"], StatusTone>> = {
-  Done: "idle",
-  Retrying: "pending",
-  Dead: "danger",
+  queued: "idle",
+  running: "pending",
+  retrying: "pending",
+  done: "idle",
+  dead: "danger",
 }
 
-const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Html =>
+const jobLabels: Readonly<Record<ActorPage["jobs"][number]["status"], string>> = {
+  queued: "Queued",
+  running: "Running",
+  retrying: "Retrying",
+  done: "Done",
+  dead: "Dead",
+}
+
+const panel = (
+  h: HtmlBuilder<Message>,
+  page: ActorPage,
+  tab: InspectorTab,
+  sample: boolean,
+): Html =>
   Match.value(tab).pipe(
     Match.when("state", () =>
       codeBlock(h, {
         title: `Committed state · turn ${String(page.turn)}`,
         code: page.state,
         language: "json",
-        onCopy: CopiedText({ text: page.state, label: "state" }),
+        onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
       }),
     ),
     Match.when("rows", () =>
-      section(h, {
-        title: page.table.name,
-        meta: `owned table · ${String(page.table.rows.length)} rows`,
-        children: [
-          dataTable(h, {
-            label: page.table.name,
-            columns: page.table.columns.map((name, index) => ({
-              key: name,
-              label: name,
-              width: index === 0 ? "minmax(0, 1fr)" : "7rem",
-              mono: true,
-              align: index === 0 ? "start" : "end",
-            })),
-            rows: page.table.rows.map((row, index) => ({ key: String(index), cells: row.cells })),
-          }),
-        ],
-      }),
+      page.tables.length === 0
+        ? emptyState(h, {
+            title: "No owned tables",
+            description: "This actor keeps its data in state.",
+            align: "start",
+          })
+        : h.div(
+            [...styleAttributes(h, styles.panel)],
+            page.tables.map((table) =>
+              section(h, {
+                title: table.name,
+                meta: `owned table · ${String(table.rows.length)} rows`,
+                children: [
+                  dataTable(h, {
+                    label: table.name,
+                    columns: table.columns.map((name, index) => ({
+                      key: name,
+                      label: name,
+                      width: index === 0 ? "minmax(0, 1fr)" : "7rem",
+                      mono: true,
+                      align: index === 0 ? "start" : "end",
+                    })),
+                    rows: table.rows.map((row, index) => ({
+                      key: String(index),
+                      cells: row.cells,
+                    })),
+                  }),
+                ],
+              }),
+            ),
+          ),
     ),
     Match.when("receipts", () =>
       dataTable(h, {
@@ -121,20 +151,13 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
       dataTable(h, {
         label: "Events",
         columns: [
-          { key: "cursor", label: "Cursor", width: "5rem", mono: true },
+          { key: "cursor", label: "Cursor", width: "6rem", mono: true },
           { key: "name", label: "Event", width: "minmax(0, 1fr)", mono: true },
-          {
-            key: "subscribers",
-            label: "Subscribers",
-            width: "6.5rem",
-            align: "end",
-            hideBelow: "compact",
-          },
-          { key: "at", label: "At", width: "5.5rem", align: "end" },
+          { key: "subscribers", label: "Subscribers", width: "6.5rem", align: "end" },
         ],
         rows: page.events.map((event) => ({
-          key: String(event.cursor),
-          cells: [String(event.cursor), event.name, String(event.subscribers), event.at],
+          key: `${event.name}-${event.cursor}`,
+          cells: [event.cursor, event.name, String(event.subscribers)],
         })),
       }),
     ),
@@ -152,7 +175,6 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
             hideBelow: "compact",
           },
           { key: "status", label: "Status", width: "6.5rem" },
-          { key: "at", label: "At", width: "5.5rem", align: "end", hideBelow: "compact" },
         ],
         rows: page.jobs.map((job) => ({
           key: job.id,
@@ -160,35 +182,19 @@ const panel = (h: HtmlBuilder<Message>, page: ActorPage, tab: InspectorTab): Htm
             job.id,
             job.name,
             String(job.attempts),
-            status(h, { tone: jobTones[job.status], label: job.status }),
-            job.at,
+            status(h, { tone: jobTones[job.status], label: jobLabels[job.status] }),
           ],
         })),
       }),
     ),
     Match.orElse(() =>
-      dataTable(h, {
-        label: "Connections",
-        columns: [
-          { key: "id", label: "Connection", width: "6rem", mono: true },
-          { key: "kind", label: "Kind", width: "6.5rem", hideBelow: "compact" },
-          { key: "client", label: "Client", width: "minmax(0, 1fr)", mono: true },
-          { key: "state", label: "State", width: "6rem" },
-          { key: "since", label: "Since", width: "5.5rem", align: "end", hideBelow: "compact" },
+      propertyList(h, {
+        ruled: true,
+        layout: "wide",
+        items: [
+          { label: "Sockets", value: String(page.connections.sockets) },
+          { label: "Event feed cursor", value: page.connections.feedCursor ?? "—", mono: true },
         ],
-        rows: page.connections.map((connection) => ({
-          key: connection.id,
-          cells: [
-            connection.id,
-            connection.kind,
-            connection.client,
-            status(h, {
-              tone: connection.parked ? "idle" : "live",
-              label: connection.parked ? "Parked" : "Open",
-            }),
-            connection.since,
-          ],
-        })),
       }),
     ),
   )
@@ -209,12 +215,17 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
         label: "Copy address",
         variant: "ghost",
         size: "sm",
+        disabled: model.pageSample,
         onClick: CopiedText({ text: address, label: "address" }),
       }),
       button(h, {
         label: "Send command",
         size: "sm",
-        onClick: OpenedDialog({ dialog: Dialog.SendCommand({ address }) }),
+        disabled: model.pageSample || page.commandScope === undefined,
+        onClick:
+          page.commandScope === undefined
+            ? undefined
+            : OpenedDialog({ dialog: Dialog.SendCommand({ address, scope: page.commandScope }) }),
       }),
     ],
     body: h.div(
@@ -239,7 +250,7 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
             }),
             h.div(
               [h.DataAttribute("panel", tab), ...styleAttributes(h, styles.panel)],
-              [panel(h, page, tab)],
+              [panel(h, page, tab, model.pageSample)],
             ),
             section(h, {
               title: "Activity",
@@ -280,7 +291,7 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
                 { label: "Runner", value: page.runner, mono: true },
                 { label: "Tenant", value: page.tenant },
                 { label: "Mailbox", value: String(page.mailbox) },
-                { label: "Sockets", value: String(page.connections.length) },
+                { label: "Sockets", value: String(page.connections.sockets) },
               ],
             }),
           ],

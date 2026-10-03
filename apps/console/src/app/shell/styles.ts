@@ -55,4 +55,8 @@ export const shellStyles = stylex.create({
     color: colors.subtleForeground,
     fontSize: typography.micro,
   },
+  sampleNotice: {
+    paddingInline: { default: space.xxl, [conditions.narrow]: space.lg },
+  },
+  sampleForm: { borderWidth: 0, padding: 0, margin: 0, minWidth: 0 },
 })

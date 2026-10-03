@@ -16,6 +16,4 @@ export const siteColors = stylex.defineVars({
 export const siteDimensions = stylex.defineVars({
   landingColumn: "67.5rem",
   headerHeight: "4rem",
-  docsNav: "14.5rem",
-  docsOutline: "12.5rem",
 })

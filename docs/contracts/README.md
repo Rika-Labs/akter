@@ -27,3 +27,4 @@ The runtime supports embedded, served, and hosted modes. Repository placement is
 - [Control plane](11-control-plane.md)
 - [Error model](error-model.md)
 - [Wire protocol](protocol.md)
+- [Control-plane feature flags](feature-flags.md)

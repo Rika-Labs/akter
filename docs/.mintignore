@@ -1,0 +1,19 @@
+# Only the public docs are published. Everything else under docs/ (decisions, contracts,
+# architecture, verification, operations, vision, research notes) stays in the repository.
+/*
+!/docs.json
+!/.mintignore
+!/favicon.svg
+!/style.css
+!/logo/
+!/quickstart.md
+
+!/guides/
+
+!/product/
+/product/*
+!/product/fit-and-non-fit.md
+
+!/api/
+/api/07-cloud-api.md
+/api/feature-flags.md

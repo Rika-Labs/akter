@@ -1,3 +1,8 @@
+---
+title: "Server API"
+description: "Actor declarations and server composition in @rikalabs/akter."
+---
+
 # Server API
 
 Due-work data placement is internal: relay claims and connection-holder liveness use the runtime's data shard map, whose ordinary database default is one range spanning all buckets. This does not add an `Actors.layer` or `Database.postgres` option, change retry identity, or change receiver deduplication. Optional internal Neki shard targeting has no supported topology configuration yet, and does not establish Neki support ([ADR 0067](../decisions/0067-due-work-shard-ranges.md)).

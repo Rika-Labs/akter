@@ -1,0 +1,11 @@
+/*
+ * Each page keeps its Markdown H1 so it reads well on GitHub; Mintlify already shows the
+ * frontmatter title, so the duplicate H1 and its table-of-contents entry are hidden here.
+ */
+#content > h1:first-child {
+  display: none;
+}
+
+body:has(#content > h1:first-child) #table-of-contents-content > li:first-child {
+  display: none;
+}

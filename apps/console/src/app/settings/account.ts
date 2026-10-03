@@ -9,6 +9,7 @@ import {
   status,
   styleAttributes,
 } from "@akter/ui"
+import type { NotificationEvent } from "@akter/cloud-api"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import {
   ChangedField,
@@ -20,7 +21,9 @@ import {
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { Preference } from "../shell/theme.ts"
 import type { SettingsPage } from "./model.ts"
+import { type NotificationChannel, notificationKey } from "./keys.ts"
 import { choiceRow, toggleRow } from "./rows.ts"
+import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
@@ -36,9 +39,26 @@ const screen = (
   body: settingsPage(h, { title, description, children }),
 })
 
+const environmentOptions = [
+  { value: "production", label: "Production" },
+  { value: "staging", label: "Staging" },
+  { value: "dev", label: "Development" },
+]
+
+/** UTC, this device's zone, and the stored zone when it is neither, so the saved value always shows. */
+const timeZoneOptions = (current: string | undefined) => {
+  const device = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const zones = [...new Set(["UTC", device, ...(current === undefined ? [] : [current])])]
+  return zones.map((zone) => ({
+    value: zone,
+    label: zone === device && zone !== "UTC" ? `${zone} (this device)` : zone,
+  }))
+}
+
 /** Account › General: interface defaults and the live tail's behaviour. */
-export const generalScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "General", [
+export const generalScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const disabled = isSample(page, "preferences")
+  return screen(h, "General", [
     settingsGroup(h, {
       title: "Interface",
       rows: [
@@ -47,33 +67,52 @@ export const generalScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =
           model,
           key: "defaultEnvironment",
           label: "Default environment",
-          options: [
-            { value: "production", label: "Production" },
-            { value: "staging", label: "Staging" },
-            { value: "development", label: "Development" },
-          ],
+          initial: page.preferences?.defaultEnvironment,
+          disabled,
+          options: environmentOptions,
         }),
-        toggleRow({ h, model, key: "openInNewTab", label: "Open actor links in a new tab" }),
+        toggleRow({
+          h,
+          model,
+          key: "openInNewTab",
+          label: "Open actor links in a new tab",
+          initial: page.preferences?.openActorLinksInNewTab,
+          disabled,
+        }),
         choiceRow({
           h,
           model,
           key: "timeZone",
           label: "Time zone",
-          options: [
-            { value: "local", label: "Local (UTC−6)" },
-            { value: "utc", label: "UTC" },
-          ],
+          initial: page.preferences?.timeZone,
+          disabled,
+          options: timeZoneOptions(model.choices["timeZone"] ?? page.preferences?.timeZone),
         }),
       ],
     }),
     settingsGroup(h, {
       title: "Live tail",
       rows: [
-        toggleRow({ h, model, key: "pauseOnScroll", label: "Pause when I scroll" }),
-        toggleRow({ h, model, key: "showReplayed", label: "Show replayed commands" }),
+        toggleRow({
+          h,
+          model,
+          key: "pauseOnScroll",
+          label: "Pause when I scroll",
+          initial: page.preferences?.pauseLiveTailOnScroll,
+          disabled,
+        }),
+        toggleRow({
+          h,
+          model,
+          key: "showReplayed",
+          label: "Show replayed commands",
+          initial: page.preferences?.showReplayedCommands,
+          disabled,
+        }),
       ],
     }),
   ])
+}
 
 const preview = (h: H, scheme: "light" | "dark"): Html =>
   h.span(
@@ -140,44 +179,46 @@ export const appearanceScreen = ({ h, model }: ScreenInput<SettingsPage>): Scree
         ),
       ].map((child) => h.div([...styleAttributes(h, styles.padded)], [child])),
     }),
-    settingsGroup(h, {
-      title: "Density",
-      rows: [
-        toggleRow({
-          h,
-          model,
-          key: "compactTables",
-          label: "Compact tables",
-          description: "Shorter rows in the live tail and long lists.",
-        }),
-      ],
-    }),
   ])
 
-/** Account › Profile: your name, sign-in methods and sessions. */
-export const profileScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "Profile", [
+/** Account › Profile: your name, email and how you signed in. */
+export const profileScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const profile = page.profile
+  if (profile === null) return screen(h, "Profile", [])
+  const disabled = isSample(page, "profile")
+  return screen(h, "Profile", [
     settingsGroup(h, {
       rows: [
         settingsRow(h, {
-          label: model.workspace.person.name,
-          description: model.workspace.person.email,
-          control: avatar(h, { name: model.workspace.person.name, size: "lg" }),
+          label: profile.name,
+          description: profile.email,
+          control: avatar(h, { name: profile.name, size: "lg" }),
         }),
         settingsRow(h, {
           label: "Display name",
-          control: input(h, {
-            name: "display-name",
-            label: "Display name",
-            value: model.fields["display-name"] ?? model.workspace.person.name,
-            size: "sm",
-            onInput: (value) => ChangedField({ name: "display-name", value }),
-          }),
+          control: h.form(
+            [h.OnSubmit(SubmittedForm({ form: "profile" })), ...styleAttributes(h, styles.inline)],
+            [
+              input(h, {
+                name: "display-name",
+                label: "Display name",
+                value: model.fields["display-name"] ?? profile.name,
+                size: "sm",
+                required: true,
+                disabled,
+                onInput: (value) => ChangedField({ name: "display-name", value }),
+              }),
+              button(h, { label: "Save", size: "sm", type: "submit", disabled }),
+            ],
+          ),
         }),
         settingsRow(h, {
           label: "Email",
-          description: model.workspace.person.email,
-          control: status(h, { tone: "live", label: "Verified" }),
+          description: profile.email,
+          control: status(h, {
+            tone: profile.emailVerified ? "live" : "attention",
+            label: profile.emailVerified ? "Verified" : "Not verified",
+          }),
         }),
       ],
     }),
@@ -186,43 +227,11 @@ export const profileScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =
       rows: [
         settingsRow(h, {
           label: "Password",
-          description: "Last changed 3 months ago",
           control: button(h, {
             label: "Change",
             size: "sm",
+            disabled,
             onClick: SubmittedForm({ form: "password" }),
-          }),
-        }),
-        toggleRow({
-          h,
-          model,
-          key: "twoFactor",
-          label: "Two-factor authentication",
-          description: "Ask for a code from an authenticator app.",
-        }),
-        settingsRow(h, {
-          label: "GitHub",
-          description: "Signed in as dallenpyrah",
-          control: status(h, { tone: "live", label: "Connected" }),
-        }),
-      ],
-    }),
-    settingsGroup(h, {
-      title: "Sessions",
-      rows: [
-        settingsRow(h, {
-          label: "This browser",
-          description: "macOS · Chrome · Salt Lake City",
-          control: status(h, { tone: "live", label: "Current" }),
-        }),
-        settingsRow(h, {
-          label: "akter CLI",
-          description: "macOS · last used 2h ago",
-          control: button(h, {
-            label: "Revoke",
-            variant: "ghost",
-            size: "sm",
-            onClick: SubmittedForm({ form: "session" }),
           }),
         }),
         settingsRow(h, {
@@ -233,26 +242,38 @@ export const profileScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =
       ],
     }),
   ])
+}
+
+const notificationEvents: ReadonlyArray<Readonly<{ event: NotificationEvent; label: string }>> = [
+  { event: "deploy_failed", label: "A deploy fails or rolls back" },
+  { event: "dead_letter", label: "A job lands in dead letters" },
+  { event: "spend_threshold", label: "Spend crosses a threshold" },
+]
 
 /** Account › Notifications: which events reach you by email and in Slack. */
-export const notificationsScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "Notifications", [
+export const notificationsScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const disabled = isSample(page, "notifications")
+  const rows = (channel: NotificationChannel) =>
+    notificationEvents.map(({ event, label }) =>
+      toggleRow({
+        h,
+        model,
+        key: notificationKey({ channel, event }),
+        label,
+        disabled,
+        initial: page.notifications.find((entry) => entry.event === event)?.[channel],
+      }),
+    )
+  return screen(h, "Notifications", [
     settingsGroup(h, {
       title: "Email",
       description: model.workspace.person.email,
-      rows: [
-        toggleRow({ h, model, key: "notify.deployFinished", label: "A deploy goes live" }),
-        toggleRow({ h, model, key: "notify.deployFailed", label: "A deploy fails or rolls back" }),
-        toggleRow({ h, model, key: "notify.deadLetters", label: "A job lands in dead letters" }),
-        toggleRow({ h, model, key: "notify.weeklyUsage", label: "Weekly usage summary" }),
-      ],
+      rows: rows("email"),
     }),
     settingsGroup(h, {
       title: "Slack",
       description: "Connect Slack in Integrations to send these to a channel.",
-      rows: [
-        toggleRow({ h, model, key: "notify.slackDeploys", label: "Deploys" }),
-        toggleRow({ h, model, key: "notify.slackDeadLetters", label: "Dead letters" }),
-      ],
+      rows: rows("slack"),
     }),
   ])
+}

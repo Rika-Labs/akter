@@ -1,3 +1,9 @@
+---
+title: "Drizzle integration"
+sidebarTitle: "Drizzle"
+description: "Actor-owned tables and relational queries with Drizzle."
+---
+
 # Drizzle integration
 
 **Responsibility:** define the relational query experience.  

@@ -1,5 +1,15 @@
+import type { SeriesWindow } from "@akter/cloud-api"
+import { Function } from "effect"
+import { formatDuration } from "@akter/ui/geometry"
 import { hourLabels, seededSeries } from "../workspace/series.ts"
-import { type DeploySummary, OverviewPage } from "./model.ts"
+import { workspace } from "../workspace/fixtures.ts"
+import {
+  type DeploySummary,
+  EmptyProjectPage,
+  type LatencyDistribution,
+  OverviewPage,
+} from "./model.ts"
+import { windowSeconds } from "./time.ts"
 
 /** Recent deploys shared by the overview and the deployments list. Fixture data. */
 export const recentDeploys: ReadonlyArray<DeploySummary> = [
@@ -8,6 +18,26 @@ export const recentDeploys: ReadonlyArray<DeploySummary> = [
   { commit: "5d2e7c3", message: "Bump Effect", status: "Rolled back", when: "2d" },
   { commit: "1c0d4a8", message: "SupportRoom presence", status: "Drained", when: "3d" },
 ]
+
+const latencyBounds: ReadonlyArray<number | null> = [1, 2, 5, 10, 25, 50, 100, 250, 1000, null]
+
+const latencyShares = [4, 22, 31, 18, 12, 7, 3.6, 1.8, 0.5, 0.1]
+
+/**
+ * A fixture turn-latency distribution for a window: the same shape in every window, scaled to the
+ * seconds it covers. Illustrative test data, not measurements.
+ */
+export const distribution = (window: SeriesWindow): LatencyDistribution => {
+  const bars = latencyBounds.map((bound, index) => ({
+    label:
+      bound !== null
+        ? `≤ ${formatDuration(bound)}`
+        : `> ${formatDuration(latencyBounds[index - 1] ?? 0)}`,
+    count: Math.round((latencyShares[index] ?? 0) * windowSeconds[window] * 1.2),
+    tail: bound === null,
+  }))
+  return { window, total: bars.reduce((sum, bar) => sum + bar.count, 0), bars }
+}
 
 const throughput = seededSeries({ length: 96, base: 1180, volatility: 210, seed: 21 })
 
@@ -58,20 +88,34 @@ export const overview: OverviewPage = OverviewPage.make({
     { label: "Outbox lag", value: "p99 18 ms", healthy: true },
     { label: "Dead letters", value: "3 need a decision", healthy: false },
   ],
-  latency: [
-    { upper: 0.5, count: 410 },
-    { upper: 1, count: 2_980 },
-    { upper: 2, count: 8_840 },
-    { upper: 3, count: 12_420 },
-    { upper: 5, count: 9_610 },
-    { upper: 8, count: 4_120 },
-    { upper: 13, count: 1_830 },
-    { upper: 21, count: 760 },
-    { upper: 34, count: 310 },
-    { upper: 55, count: 140 },
-    { upper: 89, count: 52 },
-    { upper: 144, count: 18 },
-    { upper: 233, count: 6 },
-  ],
+  latency: {
+    p50: 3,
+    p99: 21,
+    hours: hourLabels({ points: 96, end: 14 }),
+    p99Series: seededSeries({ length: 96, base: 18, volatility: 5, seed: 4 }),
+  },
+  distribution: distribution("24h"),
   deploys: recentDeploys.slice(0, 3),
+})
+
+/** The fixture overview with its latency distribution over the chosen window. */
+export const overviewFor = (window: SeriesWindow): OverviewPage => ({
+  ...overview,
+  distribution: distribution(window),
+})
+
+/**
+ * The fixture page for a project slug: the overview when the fixture workspace has deployed it, the
+ * empty state otherwise. An unknown slug is treated as a new project in the default region.
+ */
+export const projectPage: {
+  (window: SeriesWindow): (slug: string) => OverviewPage | EmptyProjectPage
+  (slug: string, window: SeriesWindow): OverviewPage | EmptyProjectPage
+} = Function.dual(2, (slug: string, window: SeriesWindow): OverviewPage | EmptyProjectPage => {
+  const found = workspace.projects.find((candidate) => candidate.slug === slug)
+  if (found?.deployed === true) return { ...overviewFor(window), project: found.slug }
+  return EmptyProjectPage.make({
+    project: found?.slug ?? slug,
+    region: found?.region ?? "us-east-1",
+  })
 })

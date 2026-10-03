@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@akter/console": "workspace:*",
-    "@playwright/test": "1.63.0"
+    "@playwright/test": "1.63.0",
+    "effect": "catalog:"
   }
 }

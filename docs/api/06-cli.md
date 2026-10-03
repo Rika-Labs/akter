@@ -1,3 +1,9 @@
+---
+title: "The durable CLI"
+sidebarTitle: "CLI"
+description: "The durable command-line tool: its commands, flags, output, and exit statuses."
+---
+
 # The `durable` CLI
 
 **Responsibility:** document the `durable` command-line tool: its commands, flags, output, and exit statuses.  

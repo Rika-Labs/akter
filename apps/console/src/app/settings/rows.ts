@@ -10,15 +10,17 @@ export interface PreferenceRow {
   readonly key: string
   readonly label: string
   readonly description?: string
+  readonly disabled?: boolean
 }
 
 /** A switch row bound to one named preference. */
-export const toggleRow = (row: PreferenceRow): Html =>
+export const toggleRow = (row: PreferenceRow & Readonly<{ initial?: boolean }>): Html =>
   settingsRow(row.h, {
     label: row.label,
     description: row.description,
     control: switchControl(row.h, {
-      checked: row.model.toggles[row.key] === true,
+      checked: row.model.toggles[row.key] ?? row.initial ?? false,
+      disabled: row.disabled,
       label: row.label,
       onToggle: ToggledSetting({ key: row.key }),
       attributes: [row.h.DataAttribute("setting", row.key)],
@@ -28,7 +30,10 @@ export const toggleRow = (row: PreferenceRow): Html =>
 /** A select row bound to one named choice. */
 export const choiceRow = (
   row: PreferenceRow &
-    Readonly<{ options: ReadonlyArray<Readonly<{ value: string; label: string }>> }>,
+    Readonly<{
+      options: ReadonlyArray<Readonly<{ value: string; label: string }>>
+      initial?: string
+    }>,
 ): Html =>
   settingsRow(row.h, {
     label: row.label,
@@ -36,7 +41,8 @@ export const choiceRow = (
     control: select(row.h, {
       name: row.key,
       label: row.label,
-      value: row.model.choices[row.key] ?? row.options[0]?.value ?? "",
+      disabled: row.disabled,
+      value: row.model.choices[row.key] ?? row.initial ?? row.options[0]?.value ?? "",
       options: row.options,
       onChange: (value) => ChoseSetting({ key: row.key, value }),
     }),

@@ -1,3 +1,8 @@
+---
+title: "Context capabilities"
+description: "The typed context service each handler phase receives, and what it may do."
+---
+
 # Context capabilities
 
 **Responsibility:** define `Context` phases and capabilities.  
