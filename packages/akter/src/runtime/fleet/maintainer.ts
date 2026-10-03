@@ -2,6 +2,7 @@ import { sql as fragment, type SQL } from "drizzle-orm"
 import { PgDialect } from "drizzle-orm/pg-core"
 import { Cause, Clock, Context, Effect, Schedule } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
+import { Coordination } from "../database/coordination.ts"
 import type { AggregateKind, AnyFleetView } from "../../tables/fleet.ts"
 import type { AnyOwnedTable, Filter } from "../../tables/owned.ts"
 import { tenantRoutingKey } from "../storage/codec.ts"
@@ -173,25 +174,41 @@ type GroupKey = readonly [tenant: string, ...values: Array<string>]
  */
 export const maintain = Effect.fnUntraced(function* (views: ReadonlyArray<ResolvedView>) {
   const sql = yield* SqlClient.SqlClient
+  const coordination = (yield* Coordination) ?? sql
   const hooks = yield* FleetHooks
 
   const holding = Effect.gen(function* () {
-    const connection = yield* sql.reserve
+    const connection = yield* coordination.reserve
 
-    const on = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.provideService(effect, sql.transactionService, [connection, 0])
+    const lockOn = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.provideService(effect, coordination.transactionService, [connection, 0])
 
-    const [lock] = yield* on(
-      sql<{ locked: boolean }>`SELECT pg_try_advisory_lock(hashtext(${LOCK})) AS locked`,
+    const [lock] = yield* Effect.acquireRelease(
+      lockOn(
+        coordination<{ locked: boolean }>`SELECT pg_try_advisory_lock(hashtext(${LOCK})) AS locked`,
+      ),
+      (locks) =>
+        locks[0]?.locked === true
+          ? lockOn(coordination`SELECT pg_advisory_unlock(hashtext(${LOCK})) AS unlocked`).pipe(
+              Effect.ignore,
+            )
+          : Effect.void,
     )
 
     if (lock?.locked !== true) return false
 
-    yield* Effect.addFinalizer(() =>
-      on(sql`SELECT pg_advisory_unlock(hashtext(${LOCK})) AS unlocked`).pipe(Effect.ignore),
+    const dataConnection = coordination === sql ? connection : yield* sql.reserve
+    const on = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.provideService(effect, sql.transactionService, [dataConnection, 0])
+
+    const alive = lockOn(coordination`SELECT 1`).pipe(
+      Effect.andThen(Effect.sleep(POLL_INTERVAL)),
+      Effect.forever,
     )
 
-    return yield* run(views, on, hooks.afterApply)
+    return yield* coordination === sql
+      ? run(views, on, hooks.afterApply)
+      : Effect.raceFirst(run(views, on, hooks.afterApply), alive)
   }).pipe(Effect.scoped)
 
   yield* holding.pipe(

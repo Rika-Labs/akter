@@ -1,7 +1,7 @@
 import { foldkit } from "@foldkit/vite-plugin"
 import type { UserOptions } from "@stylexjs/unplugin"
 import stylexVite from "@stylexjs/unplugin/vite"
-import { defineConfig, type Plugin } from "vite"
+import { defineConfig, loadEnv, type Plugin } from "vite"
 
 /**
  * `@stylexjs/unplugin` publishes its Vite adapter untyped; it returns one Vite plugin whose
@@ -17,26 +17,33 @@ const repository = new URL("../../", import.meta.url).pathname
  * The console ships as one application chunk (about 165 kB gzipped, mostly Effect and FoldKit), so
  * the chunk warning sits above it rather than splitting routes that every session loads anyway.
  */
-export default defineConfig(({ command }) => ({
-  build: {
-    target: "es2023",
-    cssTarget: ["chrome124", "firefox128", "safari18"],
-    chunkSizeWarningLimit: 640,
-    manifest: true,
-  },
-  server: { host: "127.0.0.1" },
-  preview: { host: "127.0.0.1" },
-  plugins: [
-    stylex({
-      dev: command === "serve",
-      devMode: "full",
-      runtimeInjection: false,
-      useCSSLayers: { before: ["reset", "base"], prefix: "stylex" },
-      unstable_moduleResolution: { type: "commonJS", rootDir: repository },
-      lightningcssOptions: {
-        targets: { chrome: 124 << 16, firefox: 128 << 16, safari: 18 << 16 },
-      },
-    }),
-    foldkit({ buildId: "console" }),
-  ],
-}))
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), "")
+  const target = env.API_PROXY_TARGET ?? `http://127.0.0.1:${env.API_PORT ?? "3001"}`
+  return {
+    build: {
+      target: "es2023",
+      cssTarget: ["chrome124", "firefox128", "safari18"],
+      chunkSizeWarningLimit: 640,
+      manifest: true,
+    },
+    server: {
+      host: "127.0.0.1",
+      proxy: { "/api": { target }, "/auth": { target } },
+    },
+    preview: { host: "127.0.0.1" },
+    plugins: [
+      stylex({
+        dev: command === "serve",
+        devMode: "full",
+        runtimeInjection: false,
+        useCSSLayers: { before: ["reset", "base"], prefix: "stylex" },
+        unstable_moduleResolution: { type: "commonJS", rootDir: repository },
+        lightningcssOptions: {
+          targets: { chrome: 124 << 16, firefox: 128 << 16, safari: 18 << 16 },
+        },
+      }),
+      foldkit({ buildId: "console" }),
+    ],
+  }
+})

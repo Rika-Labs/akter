@@ -9,6 +9,7 @@ export const jobs: JobsPage = JobsPage.make({
   deadLetters: [
     {
       id: "job_31c",
+      jobId: "job_31c",
       job: "Charge",
       actorType: "Order",
       key: "ord_7c10",
@@ -18,6 +19,7 @@ export const jobs: JobsPage = JobsPage.make({
     },
     {
       id: "job_31f",
+      jobId: "job_31f",
       job: "Charge",
       actorType: "Order",
       key: "ord_7c55",
@@ -27,6 +29,7 @@ export const jobs: JobsPage = JobsPage.make({
     },
     {
       id: "job_2aa",
+      jobId: "job_2aa",
       job: "SendEmail",
       actorType: "Customer",
       key: "cu_118",
@@ -41,7 +44,7 @@ export const jobs: JobsPage = JobsPage.make({
     { name: "CallModel", done: 9_840, retried: 210, dead: 0, p99: "6.1 s" },
     { name: "Reindex", done: 1_002, retried: 0, dead: 0, p99: "4.2 s" },
   ],
-  minutes: Array.from({ length: 48 }, (_, index) =>
+  labels: Array.from({ length: 48 }, (_, index) =>
     index === 47 ? "now" : `${String(47 - index)} min ago`,
   ),
   throughput: seededSeries({ length: 48, base: 40, volatility: 14, seed: 31 }).map((value) =>

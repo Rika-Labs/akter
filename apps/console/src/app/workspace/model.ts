@@ -1,4 +1,5 @@
 import { Schema as S } from "effect"
+import { CommandScope } from "../commands/model.ts"
 
 /** The signed-in person. */
 export const Person = S.Struct({
@@ -18,6 +19,7 @@ export type ProjectSummary = typeof ProjectSummary.Type
 
 /** An actor pinned to the sidebar, with whether it is awake and when it last ran a turn. */
 export const PinnedActor = S.Struct({
+  commandScope: S.optional(CommandScope),
   actorType: S.String,
   key: S.String,
   awake: S.Boolean,
@@ -36,6 +38,7 @@ export const Workspace = S.Struct({
   projects: S.Array(ProjectSummary),
   pinned: S.Array(PinnedActor),
   deadLetters: S.Finite,
+  error: S.optional(S.String),
 })
 export type Workspace = typeof Workspace.Type
 

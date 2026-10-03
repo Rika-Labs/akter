@@ -1,7 +1,20 @@
-import { Effect, Exit, Schema } from "effect"
+import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { ActorInspector, CommandLogEntry, OwnedTableRows } from "./runtime.ts"
+import { RuntimeGroup } from "./groups/runtime.ts"
+import { CloudApi } from "./contract.ts"
+import { OpenApi } from "effect/http-api"
+import {
+  ActorInspector,
+  ActorTypeActivity,
+  CommandFailed,
+  CommandLogEntry,
+  CommandSent,
+  OwnedTableRows,
+  SendCommand,
+  TurnLatency,
+  Workflow,
+} from "./runtime.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Effect.runSync(
@@ -92,5 +105,133 @@ describe("runtime models", () => {
     expect(decode(CommandLogEntry, entry).outcome).toBe("replayed")
     expect(rejects(CommandLogEntry, { ...entry, outcome: "retried" })).toBe(true)
     expect(rejects(CommandLogEntry, { ...entry, durationMs: -1 })).toBe(true)
+  })
+
+  it("round-trips a live-tail event through the SSE wire form with an ISO timestamp", () => {
+    const [stream] = [...RuntimeGroup.endpoints.streamCommands.success]
+    if (!Predicate.hasProperty(stream, "events") || !Schema.isSchema(stream.events))
+      throw new Error("The commands stream declares no event schema")
+    const payload = {
+      at: "2026-10-03T10:00:01.000Z",
+      durationMs: 3.2,
+      address: "Counter/room-1",
+      command: "Increment",
+      payloadPreview: "{}",
+      outcome: "ok",
+      errorTag: null,
+    }
+
+    const events = stream.events as Schema.Codec<unknown, unknown>
+
+    const decoded = Effect.runSync(
+      Schema.decodeEffect(events)({ event: "message", data: JSON.stringify(payload) }),
+    )
+    const encoded = Effect.runSync(Schema.encodeEffect(events)(decoded))
+
+    if (!Predicate.hasProperty(decoded, "data") || !Predicate.hasProperty(encoded, "data"))
+      throw new Error("The event has no data")
+    expect(decoded.data).toEqual(
+      Effect.runSync(Schema.decodeEffect(Schema.toCodecJson(CommandLogEntry))(payload)),
+    )
+    expect(JSON.parse(String(encoded.data))).toEqual(payload)
+  })
+
+  it("sends a command with a JSON payload and an optional idempotency id", () => {
+    const base = {
+      address: "Counter/room-1",
+      command: "Increment",
+      payload: { by: 2, tags: [null] },
+    }
+    expect(decode(SendCommand, base).payload).toEqual(base.payload)
+    expect(decode(SendCommand, { ...base, commandId: "cmd_7" }).commandId).toBe("cmd_7")
+    expect(decode(SendCommand, base).commandId).toBeUndefined()
+    expect(rejects(SendCommand, { ...base, address: "Counter" })).toBe(true)
+    expect(rejects(SendCommand, { ...base, command: "" })).toBe(true)
+    expect(rejects(SendCommand, { ...base, commandId: "" })).toBe(true)
+    expect(rejects(SendCommand, { address: base.address, command: base.command })).toBe(true)
+  })
+
+  it("answers a sent command with its result and replayed flag, or a typed 422 error", () => {
+    const sent = { commandId: "cmd_7", result: { count: 3 }, replayed: true }
+    expect(encode(CommandSent, decode(CommandSent, sent))).toEqual(sent)
+    expect(rejects(CommandSent, { commandId: "cmd_7", result: { count: 3 } })).toBe(true)
+    const operation =
+      OpenApi.fromApi(CloudApi).paths[
+        "/api/projects/{projectId}/environments/{environment}/runtime/commands"
+      ]?.post
+    expect(Object.keys(operation?.responses ?? {})).toEqual(
+      expect.arrayContaining(["200", "401", "403", "404", "409", "422", "501"]),
+    )
+    expect(operation?.description).toContain("commandId")
+    expect(
+      CommandFailed.make({ commandId: "c", errorTag: "OutOfStock", error: null, replayed: false })
+        ._tag,
+    ).toBe("CommandFailed")
+  })
+
+  it("carries an actor type's commands per second and per-command volume over a window", () => {
+    const activity = {
+      window: "24h",
+      series: [
+        { at: "2026-10-03T09:00:00.000Z", value: 12.5 },
+        { at: "2026-10-03T10:00:00.000Z", value: 0 },
+      ],
+      commands: [{ command: "Increment", count: 4500, perSecond: 0.052 }],
+    }
+    expect(encode(ActorTypeActivity, decode(ActorTypeActivity, activity))).toEqual(activity)
+    expect(rejects(ActorTypeActivity, { ...activity, window: "30d" })).toBe(true)
+    expect(
+      rejects(ActorTypeActivity, {
+        ...activity,
+        commands: [{ command: "Increment", count: -1, perSecond: 0 }],
+      }),
+    ).toBe(true)
+  })
+
+  it("carries a turn-latency histogram whose last bucket has no upper bound, with p50, p95 and p99", () => {
+    const latency = {
+      window: "1h",
+      buckets: [
+        { upToMs: 1, count: 900 },
+        { upToMs: 10, count: 90 },
+        { upToMs: null, count: 10 },
+      ],
+      p50Ms: 0.8,
+      p95Ms: 7,
+      p99Ms: 42,
+    }
+    expect(encode(TurnLatency, decode(TurnLatency, latency))).toEqual(latency)
+    expect(
+      rejects(TurnLatency, { window: "1h", buckets: latency.buckets, p50Ms: 1, p99Ms: 2 }),
+    ).toBe(true)
+    expect(rejects(TurnLatency, { ...latency, buckets: [{ upToMs: -1, count: 1 }] })).toBe(true)
+  })
+
+  it("serves the series under the actor type with an optional window", () => {
+    const paths = OpenApi.fromApi(CloudApi).paths
+    const base =
+      "/api/projects/{projectId}/environments/{environment}/runtime/actor-types/{actorType}"
+    expect(paths[`${base}/activity`]?.get?.parameters?.map((p) => p.name)).toContain("window")
+    expect(paths[`${base}/latency`]?.get?.description).toContain("p99")
+  })
+
+  it("counts a workflow's steps from 1 and never lets the index pass the total", () => {
+    const workflow = {
+      id: "wf_1",
+      name: "Checkout",
+      actor: "Cart/c_1",
+      step: { index: 1, total: 3, name: "reserve" },
+      waitingFor: null,
+      startedAt: "2026-10-03T10:00:00.000Z",
+      status: "running",
+    }
+    const at = (step: { index: number; total: number; name: string }) => ({ ...workflow, step })
+
+    expect(decode(Workflow, workflow).step.index).toBe(1)
+    expect(decode(Workflow, at({ index: 3, total: 3, name: "ship" })).step.index).toBe(3)
+    expect(rejects(Workflow, at({ index: 0, total: 3, name: "reserve" }))).toBe(true)
+    expect(rejects(Workflow, at({ index: 4, total: 3, name: "ship" }))).toBe(true)
+    expect(rejects(Workflow, at({ index: 1, total: 0, name: "reserve" }))).toBe(true)
+    expect(rejects(Workflow, at({ index: 1.5, total: 3, name: "reserve" }))).toBe(true)
   })
 })

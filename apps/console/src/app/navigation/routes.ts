@@ -104,6 +104,7 @@ export const acceptInvitation = pipe(
   Route.slash(Route.string("invitation")),
   Route.mapTo(construct.AcceptInvitation),
 )
+
 export const onboarding = pipe(
   page("onboarding"),
   Route.query(S.Struct({ step: S.optional(S.String) })),

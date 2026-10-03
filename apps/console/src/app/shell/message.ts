@@ -2,6 +2,9 @@ import { Schema as S } from "effect"
 import { defineMessageUnion } from "foldkit/message"
 import { UrlRequest } from "foldkit/navigation"
 import { Url } from "foldkit/url"
+import { CommandLogEntry } from "@akter/cloud-api"
+import { CommandAnswer } from "../commands/model.ts"
+import { Workspace } from "../workspace/model.ts"
 import { Dialog } from "./model.ts"
 import { PageData } from "./page.ts"
 import { Preference } from "./theme.ts"
@@ -11,7 +14,10 @@ export const Message = defineMessageUnion({
   ChangedUrl: { url: Url },
   RequestedUrl: { request: UrlRequest },
   RequestedHref: { href: S.String },
-  LoadedPage: { page: S.Option(PageData) },
+  LoadedPage: { page: S.Option(PageData), sample: S.Boolean },
+  FailedPage: { kind: S.String, message: S.String },
+  RetriedPage: {},
+  LoadedWorkspace: { workspace: Workspace },
   ToggledDrawer: {},
   ClosedDrawer: {},
   OpenedPalette: {},
@@ -32,12 +38,29 @@ export const Message = defineMessageUnion({
   ConfirmedDialog: {},
   CopiedText: { text: S.String, label: S.String },
   DismissedToast: { id: S.String },
-  TickedTail: {},
   ToggledTail: {},
   ChangedTailFilter: { filter: S.String },
   RetriedDeadLetter: { id: S.String },
   RetriedAllDeadLetters: {},
   SignedOut: {},
+  CompletedAuth: {
+    href: S.String,
+    refresh: S.Boolean,
+    title: S.optional(S.String),
+    description: S.optional(S.String),
+  },
+  FailedAction: { message: S.String },
+  Mutated: { title: S.String, description: S.optional(S.String), reload: S.Boolean },
+  FailedMutation: { message: S.String },
+  CreatedKey: { name: S.String, secret: S.String },
+  SentRecoveryEmail: {},
+  ResentVerification: {},
+  ConnectedTail: { session: S.Finite },
+  StreamedTurn: { session: S.Finite, entry: CommandLogEntry },
+  StoppedTail: { session: S.Finite, kind: S.String, message: S.String },
+  AnsweredCommand: { session: S.Finite, answer: CommandAnswer },
+  FailedCommand: { session: S.Finite, kind: S.String, message: S.String },
+  PreparedCommandId: { session: S.Finite, id: S.String },
   CompletedEffect: {},
 })
 export type Message = typeof Message.Type
@@ -47,6 +70,9 @@ export const {
   RequestedUrl,
   RequestedHref,
   LoadedPage,
+  FailedPage,
+  RetriedPage,
+  LoadedWorkspace,
   ToggledDrawer,
   ClosedDrawer,
   OpenedPalette,
@@ -67,11 +93,23 @@ export const {
   ConfirmedDialog,
   CopiedText,
   DismissedToast,
-  TickedTail,
   ToggledTail,
   ChangedTailFilter,
   RetriedDeadLetter,
   RetriedAllDeadLetters,
   SignedOut,
+  CompletedAuth,
+  FailedAction,
+  Mutated,
+  FailedMutation,
+  CreatedKey,
+  SentRecoveryEmail,
+  ResentVerification,
+  ConnectedTail,
+  StreamedTurn,
+  StoppedTail,
+  AnsweredCommand,
+  FailedCommand,
+  PreparedCommandId,
   CompletedEffect,
 } = Message

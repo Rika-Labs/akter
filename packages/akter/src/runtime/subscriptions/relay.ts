@@ -1,5 +1,6 @@
 import { DateTime, Effect, Match, Result, Schema } from "effect"
 import { SqlClient, SqlError, type Statement } from "effect/sql"
+import { type BucketRange } from "../database/shards.ts"
 import { SubscriptionFailure } from "../../errors/subscription.ts"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"
@@ -95,7 +96,7 @@ export interface SubscriptionClaim {
 /** What the outbox relay runs of a runner's subscription work. */
 export interface SubscriptionRelay {
   /** Undefined when this runner registers no subscription or has no free slot. */
-  readonly claim: (slots: SubscriptionSlots) => SubscriptionClaim | undefined
+  readonly claim: (slots: SubscriptionSlots, range: BucketRange) => SubscriptionClaim | undefined
   readonly decode: (work: string) => Effect.Effect<SubscriptionWork>
   readonly run: (
     work: SubscriptionWork,
@@ -252,14 +253,19 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     sql`${now()} + greatest(${settings.claimLeaseMs()}::bigint,
       least(1000 * power(2, least(${sql(alias)}.attempts, 31)), ${settings.maxBackoffMs}::bigint))::bigint`
 
-  const outboxClaim = (kind: "feed" | "control", now: Statement.Fragment, limit: number) => {
+  const outboxClaim = (
+    kind: "feed" | "control",
+    now: Statement.Fragment,
+    limit: number,
+    range: BucketRange,
+  ) => {
     const probe = 4 * limit
     const found = sql.literal(`${kind}_candidates`)
     const locked = sql.literal(`${kind}_locked`)
     const claimed = sql.literal(`${kind}_claimed`)
 
     return sql`${found} AS (
-        ${candidates({ sql, kind, now, limit: probe })}
+        ${candidates({ sql, kind, now, limit: probe, range })}
         ORDER BY o.due_at_ms LIMIT ${probe}
       ),
       ${locked} AS (
@@ -308,7 +314,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
    * never read, and only rows whose event tags this runner's declaration
    * knows are taken: a runner never settles past a class it can't decode.
    */
-  const claim = (slots: SubscriptionSlots): SubscriptionClaim | undefined => {
+  const claim = (slots: SubscriptionSlots, range: BucketRange): SubscriptionClaim | undefined => {
     const local = options.local()
 
     if (local.length === 0) return undefined
@@ -318,7 +324,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
     for (const kind of ["feed", "control"] as const)
       if (slots[kind] > 0) {
-        parts.push(outboxClaim(kind, now(), slots[kind]))
+        parts.push(outboxClaim(kind, now(), slots[kind], range))
         results.push(sql`SELECT work FROM ${sql.literal(`${kind}_claimed`)}`)
       }
 
@@ -327,7 +333,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
       parts.push(sql`${subscribed(local)},
           subscription_candidates AS (
-            SELECT s.* FROM generate_series(-128, 127) AS b(bucket)
+            SELECT s.* FROM generate_series(${range.first}::int, ${range.last}::int) AS b(bucket)
             CROSS JOIN (SELECT DISTINCT subscriber_type FROM subscribed) AS t
             CROSS JOIN LATERAL (
               SELECT routing_key, tenant_id, source_type, source_id, subscriber_type, subscription,

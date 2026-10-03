@@ -1,4 +1,5 @@
-import type { TailEntry, TurnResult } from "./model.ts"
+import { actorTypes } from "../actors/fixtures.ts"
+import { CommandsPage, type TailEntry, type TurnResult } from "./model.ts"
 
 /** A turn template the fixture tail cycles through. */
 interface Turn {
@@ -164,3 +165,9 @@ export const tailEntry = (sequence: number): TailEntry => {
 export const openingTail: ReadonlyArray<TailEntry> = Array.from({ length: 14 }, (_, index) =>
   tailEntry(13 - index),
 )
+
+/** The fixture commands page: its actor types and the opening tail. */
+export const commandsPage: CommandsPage = CommandsPage.make({
+  types: actorTypes.map((type) => type.name),
+  recent: openingTail,
+})

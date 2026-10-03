@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/.cache
+**/dist
+**/.turbo
+.env
+.env.*
+.local
+coverage
+test-results

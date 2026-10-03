@@ -12,6 +12,7 @@ import {
 import { letterOnContainer } from "@akter/ui/brand"
 import { Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
+import { fixturesEnabled } from "../api/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
@@ -19,9 +20,10 @@ import {
   ChoseSetting,
   CopiedText,
   type Message,
+  RetriedPage,
   SubmittedForm,
 } from "../shell/message.ts"
-import type { Model } from "../shell/model.ts"
+import type { Model, PageError } from "../shell/model.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import { homeRegions, type InvitationPage, onboardingStep, onboardingSteps } from "./model.ts"
 import { authLayout, authStyles as styles } from "./styles.ts"
@@ -63,6 +65,11 @@ const textField = (
     }),
   })
 
+const organizationSlug = (model: Model): string => {
+  const slug = model.fields["org-slug"]
+  return slug === undefined || slug === "" ? "acme" : slug
+}
+
 const column = (h: H, children: ReadonlyArray<Html>, wide = false): Html =>
   h.main(
     [h.Id("main"), ...styleAttributes(h, styles.page)],
@@ -75,26 +82,39 @@ const heading = (h: H, title: string, lead?: Html | string): ReadonlyArray<Html>
   lead === undefined ? h.empty : h.p([...styleAttributes(h, styles.lead)], [lead]),
 ]
 
-const providers = (h: H): ReadonlyArray<Html> => [
+const providers = (h: H, model: Model): ReadonlyArray<Html> => [
   button(h, {
     label: "Continue with GitHub",
     icon: "github",
     size: "lg",
-    href: Routes.overview(),
+    onClick: SubmittedForm({ form: "social-github" }),
+    disabled: model.submitting,
     style: fill,
   }),
-  button(h, { label: "Continue with Google", size: "lg", href: Routes.overview(), style: fill }),
+  button(h, {
+    label: "Continue with Google",
+    size: "lg",
+    onClick: SubmittedForm({ form: "social-google" }),
+    disabled: model.submitting,
+    style: fill,
+  }),
   h.div([h.AriaHidden(true), ...styleAttributes(h, styles.divider)], ["or"]),
 ]
 
-const form = (h: H, name: string, children: ReadonlyArray<Html>): Html =>
+const failureNote = (h: H, model: Model): Html =>
+  Option.match(model.formError, {
+    onNone: () => h.empty,
+    onSome: (message) => h.p([h.Role("alert"), ...styleAttributes(h, styles.error)], [message]),
+  })
+
+const form = (h: H, model: Model, name: string, children: ReadonlyArray<Html>): Html =>
   h.form(
     [
       h.OnSubmit(SubmittedForm({ form: name })),
       h.AriaLabel(name),
       ...styleAttributes(h, styles.form),
     ],
-    children,
+    [...children, failureNote(h, model)],
   )
 
 const foot = (h: H, text: string, link: Readonly<{ label: string; href: string }>): Html =>
@@ -103,16 +123,23 @@ const foot = (h: H, text: string, link: Readonly<{ label: string; href: string }
     [`${text} `, h.a([h.Href(link.href), ...styleAttributes(h, styles.link)], [link.label])],
   )
 
-const submit = (h: H, label: string): Html =>
-  button(h, { label, variant: "primary", size: "lg", type: "submit", style: fill })
+const submit = (h: H, model: Model, label: string): Html =>
+  button(h, {
+    label,
+    variant: "primary",
+    size: "lg",
+    type: "submit",
+    disabled: model.submitting,
+    style: fill,
+  })
 
 const signIn = (h: H, model: Model): Screen => ({
   title: "Sign in",
   crumbs: [],
   body: column(h, [
     ...heading(h, "Sign in to Akter"),
-    ...providers(h),
-    form(h, "sign-in", [
+    ...providers(h, model),
+    form(h, model, "sign-in", [
       textField(h, model, {
         name: "email",
         label: "Email",
@@ -130,7 +157,7 @@ const signIn = (h: H, model: Model): Screen => ({
           ["Forgot?"],
         ),
       }),
-      submit(h, "Continue"),
+      submit(h, model, "Continue"),
     ]),
     foot(h, "No account?", { label: "Sign up", href: Routes.signUp() }),
   ]),
@@ -141,8 +168,8 @@ const signUp = (h: H, model: Model): Screen => ({
   crumbs: [],
   body: column(h, [
     ...heading(h, "Create your account", "Your actors on our runners, your data in Postgres."),
-    ...providers(h),
-    form(h, "sign-up", [
+    ...providers(h, model),
+    form(h, model, "sign-up", [
       textField(h, model, {
         name: "name",
         label: "Name",
@@ -164,7 +191,7 @@ const signUp = (h: H, model: Model): Screen => ({
         description: "At least 12 characters.",
         minlength: 12,
       }),
-      submit(h, "Create account"),
+      submit(h, model, "Create account"),
     ]),
     foot(h, "Already have an account?", { label: "Sign in", href: Routes.signIn() }),
   ]),
@@ -191,15 +218,18 @@ const verifyEmail = (h: H, model: Model): Screen => ({
       label: "Continue",
       variant: "primary",
       size: "lg",
-      href: Routes.onboarding({}),
+      onClick: SubmittedForm({ form: "verify-continue" }),
+      disabled: model.submitting,
       style: fill,
     }),
     button(h, {
       label: "Resend email",
       size: "lg",
       onClick: SubmittedForm({ form: "verify-resend" }),
+      disabled: model.submitting,
       style: fill,
     }),
+    failureNote(h, model),
     foot(h, "Wrong address?", { label: "Use a different email", href: Routes.signUp() }),
   ]),
 })
@@ -216,18 +246,20 @@ const forgotPassword = (h: H, model: Model): Screen => ({
             "Check your inbox",
             "If that email has an account, a reset link is on its way. It works for one hour.",
           ),
-          button(h, {
-            label: "Open the reset link",
-            variant: "primary",
-            size: "lg",
-            href: Routes.resetPassword(),
-            style: fill,
-          }),
+          fixturesEnabled()
+            ? button(h, {
+                label: "Open the reset link",
+                variant: "primary",
+                size: "lg",
+                href: Routes.resetPassword(),
+                style: fill,
+              })
+            : h.empty,
           foot(h, "Remembered it?", { label: "Back to sign in", href: Routes.signIn() }),
         ]
       : [
           ...heading(h, "Reset your password", "Enter the email you signed up with."),
-          form(h, "forgot", [
+          form(h, model, "forgot", [
             textField(h, model, {
               name: "email",
               label: "Email",
@@ -235,7 +267,7 @@ const forgotPassword = (h: H, model: Model): Screen => ({
               placeholder: "you@company.com",
               autocomplete: "email",
             }),
-            submit(h, "Send reset link"),
+            submit(h, model, "Send reset link"),
           ]),
           foot(h, "Remembered it?", { label: "Back to sign in", href: Routes.signIn() }),
         ],
@@ -247,7 +279,7 @@ const resetPassword = (h: H, model: Model): Screen => ({
   crumbs: [],
   body: column(h, [
     ...heading(h, "Choose a new password", "Other sessions are signed out when you save it."),
-    form(h, "reset", [
+    form(h, model, "reset", [
       textField(h, model, {
         name: "new-password",
         label: "New password",
@@ -263,12 +295,12 @@ const resetPassword = (h: H, model: Model): Screen => ({
         autocomplete: "new-password",
         minlength: 12,
       }),
-      submit(h, "Update password"),
+      submit(h, model, "Update password"),
     ]),
   ]),
 })
 
-const invitation = (h: H, page: Option.Option<InvitationPage>): Screen => ({
+const invitation = (h: H, model: Model, page: Option.Option<InvitationPage>): Screen => ({
   title: "Accept invitation",
   crumbs: [],
   body: Option.match(page, {
@@ -306,6 +338,7 @@ const invitation = (h: H, page: Option.Option<InvitationPage>): Screen => ({
           variant: "primary",
           size: "lg",
           onClick: SubmittedForm({ form: "accept-invitation" }),
+          disabled: model.submitting,
           style: fill,
         }),
         button(h, {
@@ -313,8 +346,10 @@ const invitation = (h: H, page: Option.Option<InvitationPage>): Screen => ({
           variant: "ghost",
           size: "lg",
           onClick: SubmittedForm({ form: "decline-invitation" }),
+          disabled: model.submitting,
           style: fill,
         }),
+        failureNote(h, model),
       ]),
   }),
 })
@@ -342,7 +377,7 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
       return [
         h.h1([...styleAttributes(h, styles.title)], ["Name your organization"]),
         h.p([...styleAttributes(h, styles.lead)], ["Projects, members and billing live under it."]),
-        form(h, "onboarding-organization", [
+        form(h, model, "onboarding-organization", [
           textField(h, model, {
             name: "org-name",
             label: "Organization",
@@ -354,11 +389,19 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
             label: "URL",
             placeholder: "acme",
             autocomplete: "off",
-            description: `akter.cloud/${model.fields["org-slug"] ?? "acme"}`,
+            description: `akter.cloud/${organizationSlug(model)}`,
           }),
           h.div(
             [...styleAttributes(h, styles.row)],
-            [h.span([], []), button(h, { label: "Continue", variant: "primary", type: "submit" })],
+            [
+              h.span([], []),
+              button(h, {
+                label: "Continue",
+                variant: "primary",
+                type: "submit",
+                disabled: model.submitting,
+              }),
+            ],
           ),
         ]),
       ]
@@ -369,7 +412,7 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
           [...styleAttributes(h, styles.lead)],
           ["Your actors and their rows live in its home region. You can add regions later."],
         ),
-        form(h, "onboarding-project", [
+        form(h, model, "onboarding-project", [
           textField(h, model, {
             name: "project-name",
             label: "Project",
@@ -393,7 +436,12 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
             [...styleAttributes(h, styles.row)],
             [
               back(Routes.onboarding({ step: "organization" })),
-              button(h, { label: "Continue", variant: "primary", type: "submit" }),
+              button(h, {
+                label: "Continue",
+                variant: "primary",
+                type: "submit",
+                disabled: model.submitting,
+              }),
             ],
           ),
         ]),
@@ -449,8 +497,44 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
   }
 }
 
+const waiting = (h: H): Screen => ({
+  title: "Akter",
+  crumbs: [],
+  body: h.main(
+    [h.Id("main"), h.AriaBusy(true), ...styleAttributes(h, styles.page)],
+    [
+      h.div(
+        [...styleAttributes(h, styles.column)],
+        [h.a([h.Href(Routes.overview()), h.AriaLabel("Akter")], [mark(h, { size: 26 })])],
+      ),
+    ],
+  ),
+})
+
+const failure = (h: H, error: PageError): Screen => ({
+  title: "Couldn’t open this page",
+  crumbs: [],
+  body: column(h, [
+    ...heading(h, "This page couldn’t open", error.message),
+    button(h, {
+      label: "Try again",
+      variant: "primary",
+      size: "lg",
+      onClick: RetriedPage(),
+      style: fill,
+    }),
+    foot(h, "Or", { label: "go to sign in", href: Routes.signIn() }),
+  ]),
+})
+
 /** The signed-out screens and onboarding, drawn without the application frame. */
 export const authScreen = ({ h, model }: ScreenInput<undefined>): Screen =>
+  Option.match(model.pageError, {
+    onSome: (error) => failure(h, error),
+    onNone: () => (model.loading ? waiting(h) : authRoute(h, model)),
+  })
+
+const authRoute = (h: H, model: Model): Screen =>
   AppRoute.matchOrElse(
     model.route,
     {
@@ -462,6 +546,7 @@ export const authScreen = ({ h, model }: ScreenInput<undefined>): Screen =>
       AcceptInvitation: () =>
         invitation(
           h,
+          model,
           Option.filter(model.page, (page): page is InvitationPage =>
             Predicate.isTagged(page, "InvitationPage"),
           ),

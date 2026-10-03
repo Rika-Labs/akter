@@ -1,13 +1,20 @@
-import { Duration, Schema as S, Stream } from "effect"
+import { Effect, Schema as S, Stream } from "effect"
 import * as Subscription from "foldkit/subscription"
+import { openTurns } from "../commands/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
-import { type Message, TickedTail, ToggledPalette } from "./message.ts"
+import {
+  ConnectedTail,
+  type Message,
+  StoppedTail,
+  StreamedTurn,
+  ToggledPalette,
+} from "./message.ts"
 import type { Model } from "./model.ts"
 
 /**
  * The console's long-lived inputs: ⌘K or Ctrl+K toggles the palette anywhere, even while typing,
  * on every platform, since browsers report the platform unreliably to pick only one,
- * and the commands page's live tail ticks while it is open and not paused.
+ * and the hosted command stream runs only while live data is open and not paused.
  */
 export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   palette: entry(
@@ -26,14 +33,44 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
     },
   ),
   tail: entry(
-    { live: S.Boolean },
+    { live: S.Boolean, session: S.Finite },
     {
       modelToDependencies: (model) => ({
-        live: AppRoute.isAnyOf(["Commands"])(model.route) && !model.tail.paused,
+        live:
+          AppRoute.isAnyOf(["Commands"])(model.route) &&
+          !model.loading &&
+          !model.pageSample &&
+          !model.tail.paused &&
+          ["connecting", "live"].includes(model.tailStatus),
+        session: model.tailSession,
       }),
-      dependenciesToStream: ({ live }) =>
+      dependenciesToStream: ({ live, session }) =>
         live
-          ? Stream.tick(Duration.millis(1400)).pipe(Stream.map(() => TickedTail()))
+          ? Stream.unwrap(
+              openTurns.pipe(
+                Effect.map((turns) =>
+                  Stream.concat(
+                    Stream.succeed(ConnectedTail({ session })),
+                    turns.pipe(
+                      Stream.map((entry) => StreamedTurn({ session, entry })),
+                      Stream.concat(
+                        Stream.succeed(
+                          StoppedTail({
+                            session,
+                            kind: "Disconnected",
+                            message: "The live connection ended. Reconnect to refresh commands.",
+                          }),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ).pipe(
+              Stream.catch((error) =>
+                Stream.succeed(StoppedTail({ session, kind: error.kind, message: error.message })),
+              ),
+            )
           : Stream.empty,
     },
   ),

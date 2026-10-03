@@ -21,8 +21,19 @@ import {
   SubmittedForm,
 } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
-import { choiceRow } from "./rows.ts"
+import {
+  dollars,
+  formatDate,
+  formatDay,
+  formatExpiry,
+  formatInstant,
+  formatMonth,
+  formatPeriod,
+  titleCase,
+} from "./format.ts"
+import { memberRoleKey, parseSpendLimit, spendLimitKey, spendLimitValue } from "./keys.ts"
 import type { SettingsPage, UsageMeter } from "./model.ts"
+import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
@@ -38,16 +49,18 @@ const screen = (
   body: settingsPage(h, { title, description, children }),
 })
 
-const roles = [
-  { value: "Owner", label: "Owner" },
-  { value: "Admin", label: "Admin" },
-  { value: "Member", label: "Member" },
-  { value: "Viewer", label: "Viewer" },
+const assignableRoles = [
+  { value: "admin", label: "Admin" },
+  { value: "member", label: "Member" },
+  { value: "viewer", label: "Viewer" },
 ]
 
-/** Organization › General: its name, URL, defaults, and deletion. */
-export const organizationScreen = ({ h, model }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "Organization", [
+/** Organization › General: its name, URL, and deleting a project. */
+export const organizationScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const { organization, project } = page
+  if (organization === null) return screen(h, "Organization", [])
+  const organizationSample = isSample(page, "organization")
+  return screen(h, "Organization", [
     settingsGroup(h, {
       rows: [
         settingsRow(h, {
@@ -55,34 +68,24 @@ export const organizationScreen = ({ h, model }: ScreenInput<SettingsPage>): Scr
           control: input(h, {
             name: "org-name",
             label: "Organization name",
-            value: model.fields["org-name"] ?? model.workspace.organization,
+            value: model.fields["org-name"] ?? organization.name,
             size: "sm",
+            disabled: organizationSample,
             onInput: (value) => ChangedField({ name: "org-name", value }),
           }),
         }),
         settingsRow(h, {
           label: "URL",
-          description: `akter.cloud/${model.fields["org-slug"] ?? "acme"}`,
+          description: `akter.cloud/${model.fields["org-slug"] ?? organization.slug}`,
           control: input(h, {
             name: "org-slug",
             label: "Organization URL",
-            value: model.fields["org-slug"] ?? "acme",
+            value: model.fields["org-slug"] ?? organization.slug,
             size: "sm",
             mono: true,
+            disabled: organizationSample,
             onInput: (value) => ChangedField({ name: "org-slug", value }),
           }),
-        }),
-        choiceRow({
-          h,
-          model,
-          key: "receiptRetention",
-          label: "Receipt retention",
-          description: "How long a retried command still returns its stored result.",
-          options: [
-            { value: "7", label: "7 days" },
-            { value: "30", label: "30 days" },
-            { value: "90", label: "90 days" },
-          ],
         }),
       ],
     }),
@@ -92,87 +95,122 @@ export const organizationScreen = ({ h, model }: ScreenInput<SettingsPage>): Scr
         button(h, {
           label: "Save",
           variant: "primary",
+          disabled: organizationSample,
           onClick: SubmittedForm({ form: "organization" }),
         }),
       ],
     ),
-    settingsGroup(h, {
-      title: "Danger zone",
-      rows: [
-        settingsRow(h, {
-          label: "Delete storefront",
-          tone: "danger",
-          description: "Stops every runner and erases its database after a 7-day hold.",
-          control: button(h, {
-            label: "Delete project",
-            size: "sm",
-            onClick: OpenedDialog({ dialog: Dialog.DeleteProject({ project: "storefront" }) }),
+    ...(project === null
+      ? []
+      : [
+          settingsGroup(h, {
+            title: "Danger zone",
+            rows: [
+              settingsRow(h, {
+                label: `Delete ${project.name}`,
+                tone: "danger",
+                description: "Stops every runner and erases its database after a 7-day hold.",
+                control: button(h, {
+                  label: "Delete project",
+                  size: "sm",
+                  disabled: isSample(page, "project"),
+                  onClick: OpenedDialog({
+                    dialog: Dialog.DeleteProject({ project: project.slug }),
+                  }),
+                }),
+              }),
+            ],
           }),
-        }),
-      ],
-    }),
+        ]),
   ])
+}
 
 /** Organization › Members: who has access, in which role, and pending invitations. */
-export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "Members", [
-    h.form(
-      [
-        h.OnSubmit(SubmittedForm({ form: "invite-member" })),
-        h.AriaLabel("Invite a member"),
-        ...styleAttributes(h, styles.inline),
-      ],
-      [
-        h.span(
-          [...styleAttributes(h, styles.grow)],
-          [
-            input(h, {
-              name: "invite-email",
-              label: "Email to invite",
-              type: "email",
-              value: model.fields["invite-email"] ?? "",
-              placeholder: "Invite by email",
-              required: true,
-              onInput: (value) => ChangedField({ name: "invite-email", value }),
-            }),
-          ],
-        ),
-        select(h, {
-          name: "invite-role",
-          label: "Role",
-          value: model.choices["inviteRole"] ?? "Member",
-          size: "md",
-          options: roles.slice(1),
-          onChange: (value) => ChoseSetting({ key: "inviteRole", value }),
-        }),
-        button(h, { label: "Invite", variant: "primary", type: "submit" }),
-      ],
-    ),
+export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
+  const canManage = page.organization?.role === "owner" || page.organization?.role === "admin"
+  const inviteDisabled = isSample(page, "organization", "invitations")
+  const rolesDisabled = isSample(page, "organization", "members")
+  const resendDisabled = isSample(page, "organization", "invitations")
+  return screen(h, "Members", [
+    ...(canManage
+      ? [
+          h.form(
+            [
+              h.OnSubmit(SubmittedForm({ form: "invite-member" })),
+              h.AriaLabel("Invite a member"),
+              ...styleAttributes(h, styles.inline),
+            ],
+            [
+              h.span(
+                [...styleAttributes(h, styles.grow)],
+                [
+                  input(h, {
+                    name: "invite-email",
+                    label: "Email to invite",
+                    type: "email",
+                    value: model.fields["invite-email"] ?? "",
+                    placeholder: "Invite by email",
+                    required: true,
+                    disabled: inviteDisabled,
+                    onInput: (value) => ChangedField({ name: "invite-email", value }),
+                  }),
+                ],
+              ),
+              select(h, {
+                name: "invite-role",
+                label: "Role",
+                value: model.choices["inviteRole"] ?? "member",
+                size: "md",
+                disabled: inviteDisabled,
+                options: assignableRoles,
+                onChange: (value) => ChoseSetting({ key: "inviteRole", value }),
+              }),
+              button(h, {
+                label: "Invite",
+                variant: "primary",
+                type: "submit",
+                disabled: inviteDisabled,
+              }),
+            ],
+          ),
+        ]
+      : []),
     settingsGroup(h, {
-      rows: page.members.map((member) =>
-        settingsRow(h, {
-          label: member.pending ? member.email : member.name,
-          description: member.pending
-            ? `Invited as ${member.role} · sent 2 days ago`
-            : member.email,
-          control: member.pending
-            ? button(h, {
-                label: "Resend",
-                variant: "ghost",
-                size: "sm",
-                onClick: SubmittedForm({ form: "resend-invite" }),
-              })
-            : member.role === "Owner"
-              ? h.span([...styleAttributes(h, styles.muted)], ["Owner"])
-              : select(h, {
-                  name: `role-${member.email}`,
-                  label: `Role for ${member.name}`,
-                  value: model.choices[`role-${member.email}`] ?? member.role,
-                  options: roles.slice(1),
-                  onChange: (value) => ChoseSetting({ key: `role-${member.email}`, value }),
-                }),
-        }),
-      ),
+      rows: [
+        ...page.members.map((member) =>
+          settingsRow(h, {
+            label: member.name,
+            description: member.email,
+            control:
+              !canManage || member.role === "owner"
+                ? h.span([...styleAttributes(h, styles.muted)], [titleCase(member.role)])
+                : select(h, {
+                    name: memberRoleKey(member.id),
+                    label: `Role for ${member.name}`,
+                    value: model.choices[memberRoleKey(member.id)] ?? member.role,
+                    disabled: rolesDisabled,
+                    options: assignableRoles,
+                    onChange: (value) => ChoseSetting({ key: memberRoleKey(member.id), value }),
+                  }),
+          }),
+        ),
+        ...page.invitations.map((invitation) =>
+          settingsRow(h, {
+            label: invitation.email,
+            description: `Invited as ${invitation.role} by ${invitation.invitedBy} · ${formatDate(invitation.createdAt)}`,
+            control: canManage
+              ? button(h, {
+                  label: "Resend",
+                  variant: "ghost",
+                  size: "sm",
+                  disabled: resendDisabled,
+                  onClick: SubmittedForm({ form: `resend-invite:${invitation.id}` }),
+                  attributes: [h.AriaLabel(`Resend invitation to ${invitation.email}`)],
+                })
+              : status(h, { tone: "idle", label: "Pending" }),
+          }),
+        ),
+      ],
     }),
     settingsGroup(h, {
       title: "Roles",
@@ -184,20 +222,48 @@ export const membersScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
       ],
     }),
   ])
+}
+
+const spendLimitOptions = (limitCents: number | null) => {
+  const cents = [25_000, 50_000, 100_000]
+  const all = limitCents === null || cents.includes(limitCents) ? cents : [...cents, limitCents]
+  return [
+    ...all
+      .toSorted((a, b) => a - b)
+      .map((value) => ({
+        value: spendLimitValue(value),
+        label: formatCurrency(dollars(value)).replace(/\.00$/u, ""),
+      })),
+    { value: spendLimitValue(null), label: "No limit" },
+  ]
+}
 
 /** Organization › Billing: the Stripe subscription, payment method, spend limit and invoices. */
 export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
-  const limit = Number(model.choices["spendLimit"] ?? String(page.spendLimit))
+  const { billing } = page
+  if (billing === null) return screen(h, "Billing", [])
+  const billingSample = isSample(page, "billing")
+  const limit = parseSpendLimit(
+    model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
+  )
   return screen(h, "Billing", [
     settingsGroup(h, {
       title: "Plan",
       rows: [
         settingsRow(h, {
-          label: page.plan.name,
-          description: `${page.plan.price}. Renews ${page.plan.renews}.`,
+          label: billing.plan.name,
+          description: [
+            billing.plan.basePriceCents === 0
+              ? "Free"
+              : `${formatCurrency(dollars(billing.plan.basePriceCents))} a month plus usage`,
+            ...(billing.plan.renewsAt === null
+              ? []
+              : [`Renews ${formatDate(billing.plan.renewsAt)}`]),
+          ].join(". "),
           control: button(h, {
-            label: "Change plan",
+            label: billing.plan.id === "free" ? "Upgrade" : "Change plan",
             size: "sm",
+            disabled: billingSample,
             onClick: SubmittedForm({ form: "change-plan" }),
           }),
         }),
@@ -205,7 +271,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           label: "This month so far",
           control: h.span(
             [...styleAttributes(h, styles.value)],
-            [formatCurrency(page.monthToDate)],
+            [formatCurrency(dollars(billing.plan.monthToDateCents))],
           ),
         }),
       ],
@@ -215,13 +281,24 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
       footnote: "Payments are processed by Stripe. Card details never reach Akter.",
       rows: [
         settingsRow(h, {
-          label: `${page.card.brand} ending ${page.card.last4}`,
-          description: `Expires ${page.card.expires} · receipts to ${page.billingEmail}`,
+          label:
+            billing.card === null
+              ? "No payment method"
+              : `${billing.card.brand} ending ${billing.card.lastFour}`,
+          description: [
+            ...(billing.card === null
+              ? []
+              : [
+                  `Expires ${formatExpiry({ month: billing.card.expiryMonth, year: billing.card.expiryYear })}`,
+                ]),
+            ...(billing.billingEmail === null ? [] : [`receipts to ${billing.billingEmail}`]),
+          ].join(" · "),
           control: button(h, {
-            label: "Update",
+            label: billing.card === null ? "Add" : "Update",
             variant: "ghost",
             size: "sm",
             trailingIcon: "external",
+            disabled: billingSample,
             onClick: SubmittedForm({ form: "stripe-portal" }),
           }),
         }),
@@ -229,19 +306,15 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           label: "Monthly spend limit",
           description: "At the limit, new deploys pause; running actors keep running.",
           control: select(h, {
-            name: "spendLimit",
+            name: spendLimitKey,
             label: "Monthly spend limit",
-            value: String(limit),
-            options: [
-              { value: "250", label: "$250" },
-              { value: "500", label: "$500" },
-              { value: "1000", label: "$1,000" },
-              { value: "0", label: "No limit" },
-            ],
-            onChange: (value) => ChoseSetting({ key: "spendLimit", value }),
+            value: model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
+            disabled: billingSample,
+            options: spendLimitOptions(billing.spendLimit.limitCents),
+            onChange: (value) => ChoseSetting({ key: spendLimitKey, value }),
           }),
         }),
-        ...(limit === 0
+        ...(limit === null || limit === undefined || limit === 0
           ? []
           : [
               h.div(
@@ -249,8 +322,8 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                 [
                   meter(h, {
                     label: "Spend this month",
-                    value: page.monthToDate,
-                    limit,
+                    value: dollars(billing.spendLimit.currentCents),
+                    limit: dollars(limit),
                     format: formatCurrency,
                   }),
                 ],
@@ -262,10 +335,13 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
       title: "Invoices",
       rows: page.invoices.map((invoice) =>
         settingsRow(h, {
-          label: invoice.period,
-          description: invoice.number,
-          href: `#${invoice.number}`,
-          control: h.span([...styleAttributes(h, styles.muted)], [formatCurrency(invoice.amount)]),
+          label: formatMonth(invoice.periodStart),
+          description: `${invoice.number} · ${invoice.status}`,
+          href: isSample(page, "invoices") ? undefined : (invoice.pdfUrl ?? undefined),
+          control: h.span(
+            [...styleAttributes(h, styles.muted)],
+            [formatCurrency(dollars(invoice.amountCents))],
+          ),
         }),
       ),
     }),
@@ -281,24 +357,34 @@ const meterFormat = (unit: UsageMeter["unit"]) => (value: number) =>
         ? `${String(value / 1000)} TB`
         : `${formatInteger(value)} GB`
 
-/** Organization › Usage: this month's meters against the plan, commands per day, and cost by project. */
-export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen =>
-  screen(h, "Usage", [
+/** Organization › Usage: this period's meters against the plan, commands per day, and cost by project. */
+export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
+  const { usage } = page
+  if (usage === null) return screen(h, "Usage", [])
+  const month = formatPeriod(usage.period)
+  return screen(h, "Usage", [
     settingsGroup(h, {
-      title: page.usageMonth,
-      rows: page.meters.map((usage) =>
-        h.div(
-          [...styleAttributes(h, styles.padded)],
-          [
-            meter(h, {
-              label: usage.label,
-              value: usage.used,
-              limit: usage.included,
-              format: meterFormat(usage.unit),
-            }),
-          ],
-        ),
-      ),
+      title: month,
+      rows: usage.meters.map((entry) => {
+        const format = meterFormat(entry.unit)
+        return entry.included > 0
+          ? h.div(
+              [...styleAttributes(h, styles.padded)],
+              [
+                meter(h, {
+                  label: entry.label,
+                  value: entry.used,
+                  limit: entry.included,
+                  format,
+                }),
+              ],
+            )
+          : settingsRow(h, {
+              label: entry.label,
+              description: "Nothing included in this plan",
+              control: h.span([...styleAttributes(h, styles.value)], [format(entry.used)]),
+            })
+      }),
     }),
     settingsGroup(h, {
       title: "Commands per day",
@@ -307,14 +393,14 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen =>
           [...styleAttributes(h, styles.padded)],
           [
             barChart(h, {
-              label: `Commands per day in ${page.usageMonth}`,
+              label: `Commands per day in ${month}`,
               height: 140,
               xTicks: 5,
-              data: page.commandsPerDay.map((value, index) => ({
-                key: String(index),
-                label: `Sep ${String(index + 1)}`,
-                value,
-                highlight: index === page.commandsPerDay.length - 1,
+              data: usage.commandsPerDay.map((entry, index) => ({
+                key: entry.day,
+                label: formatDay(entry.day),
+                value: entry.commands,
+                highlight: index === usage.commandsPerDay.length - 1,
               })),
             }),
           ],
@@ -327,33 +413,25 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen =>
         dataTable(h, {
           label: "Usage by project",
           bare: true,
+          empty: "No project has run commands this period.",
           columns: [
             { key: "project", label: "Project", width: "minmax(0, 1fr)", mono: true },
-            { key: "commands", label: "Commands", width: "5.5rem", align: "end" },
-            {
-              key: "hours",
-              label: "Runner hours",
-              width: "6.5rem",
-              align: "end",
-              hideBelow: "compact",
-            },
-            { key: "storage", label: "Storage", width: "5rem", align: "end", hideBelow: "compact" },
+            { key: "commands", label: "Commands", width: "6rem", align: "end" },
             { key: "estimate", label: "Estimate", width: "5.5rem", align: "end" },
           ],
-          rows: page.projects.map((project) => ({
-            key: project.project,
+          rows: usage.projects.map((project) => ({
+            key: project.id,
             cells: [
-              project.project,
-              project.commands,
-              project.runnerHours,
-              project.storage,
-              formatCurrency(project.estimate),
+              project.name,
+              formatCompact(project.commands),
+              formatCurrency(dollars(project.estimatedCostCents)),
             ],
           })),
         }),
       ],
     }),
   ])
+}
 
 /** Organization › Audit log: who changed what, newest first. */
 export const auditScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
@@ -370,10 +448,9 @@ export const auditScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scre
           value: filter,
           options: [
             { value: "all", label: "All events" },
-            { value: "deploy", label: "Deploys" },
-            { value: "member", label: "Members" },
-            { value: "key", label: "API keys" },
-            { value: "variable", label: "Variables" },
+            ...[...new Set(page.audit.map((entry) => entry.action.split(".")[0] ?? entry.action))]
+              .toSorted()
+              .map((prefix) => ({ value: prefix, label: titleCase(prefix) })),
           ],
           onChange: (value) => ChoseSetting({ key: "auditFilter", value }),
         }),
@@ -383,7 +460,7 @@ export const auditScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scre
       label: "Audit log",
       empty: "No events of this kind.",
       columns: [
-        { key: "time", label: "Time", width: "7.5rem", muted: true },
+        { key: "time", label: "Time (UTC)", width: "8.5rem", muted: true },
         { key: "person", label: "Who", width: "minmax(0, 1fr)", hideBelow: "compact" },
         { key: "action", label: "Action", width: "minmax(0, 1fr)", mono: true },
         {
@@ -396,13 +473,17 @@ export const auditScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Scre
         },
       ],
       rows: entries.map((entry) => ({
-        key: entry.key,
-        cells: [entry.time, entry.person, entry.action, entry.target],
+        key: entry.id,
+        cells: [formatInstant(entry.at), entry.person, entry.action, entry.target],
       })),
     }),
-    h.p(
-      [...styleAttributes(h, styles.muted)],
-      [status(h, { tone: "idle", label: "Kept for 400 days" })],
-    ),
+    ...(page.auditTruncated
+      ? [
+          h.p(
+            [...styleAttributes(h, styles.muted)],
+            ["Showing the latest events; older ones are not loaded."],
+          ),
+        ]
+      : []),
   ])
 }
