@@ -1,223 +1,324 @@
 import { seededSeries } from "../workspace/series.ts"
-import { SettingsPage } from "./model.ts"
+import type { SettingsSlice } from "./model.ts"
+
+const at = (month: number, day: number, hour = 12, minute = 0): number =>
+  Date.UTC(2026, month - 1, day, hour, minute)
 
 /** Fixture settings for the Acme organization and its `storefront` project. Test data. */
-export const settings: SettingsPage = SettingsPage.make({
-  variables: [
+
+export const preferencesSlice: SettingsSlice = {
+  preferences: {
+    defaultEnvironment: "production",
+    openActorLinksInNewTab: false,
+    timeZone: "UTC",
+    pauseLiveTailOnScroll: true,
+    showReplayedCommands: false,
+    theme: "system",
+  },
+}
+
+export const notificationsSlice: SettingsSlice = {
+  notifications: [
+    { event: "deploy_failed", email: true, slack: false },
+    { event: "dead_letter", email: true, slack: false },
+    { event: "spend_threshold", email: false, slack: false },
+  ],
+}
+
+export const profileSlice: SettingsSlice = {
+  profile: { name: "Dallen Pyrah", email: "dallen@acme.dev", emailVerified: true },
+}
+
+export const organizationSlice: SettingsSlice = {
+  organization: { id: "org_acme", name: "Acme", slug: "acme", plan: "pro", role: "owner" },
+}
+
+export const projectSlice: SettingsSlice = {
+  project: {
+    id: "prj_storefront",
+    name: "storefront",
+    slug: "storefront",
+    homeRegion: "us-east-1",
+    environment: "production",
+  },
+}
+
+export const environmentsSlice: SettingsSlice = {
+  environments: [
     {
-      name: "STRIPE_SECRET_KEY",
-      value: "sk_live_••••4f2a",
-      secret: true,
-      usedBy: "Charge job",
-      updated: "3d · dallen",
       environment: "production",
+      variables: [
+        {
+          name: "STRIPE_SECRET_KEY",
+          usedBy: ["Charge job"],
+          updatedAt: at(9, 30),
+          updatedBy: "dallen",
+        },
+        {
+          name: "POSTMARK_TOKEN",
+          usedBy: ["SendEmail job"],
+          updatedAt: at(9, 27),
+          updatedBy: "maya",
+        },
+        {
+          name: "OPENAI_API_KEY",
+          usedBy: ["CallModel job"],
+          updatedAt: at(10, 2, 11, 40),
+          updatedBy: "maya",
+        },
+        { name: "LOG_LEVEL", usedBy: [], updatedAt: at(9, 27), updatedBy: "dallen" },
+        { name: "CART_IDLE_TIMEOUT", usedBy: ["Cart"], updatedAt: at(10, 2), updatedBy: null },
+      ],
     },
     {
-      name: "POSTMARK_TOKEN",
-      value: "••••••••91c0",
-      secret: true,
-      usedBy: "SendEmail job",
-      updated: "6d · maya",
-      environment: "production",
-    },
-    {
-      name: "OPENAI_API_KEY",
-      value: "sk-••••••a7e1",
-      secret: true,
-      usedBy: "CallModel job",
-      updated: "1d · dallen",
-      environment: "production",
-    },
-    {
-      name: "LOG_LEVEL",
-      value: "info",
-      secret: false,
-      usedBy: "all runners",
-      updated: "6d · dallen",
-      environment: "production",
-    },
-    {
-      name: "CART_IDLE_TIMEOUT",
-      value: "10m",
-      secret: false,
-      usedBy: "Cart",
-      updated: "1d · dallen",
-      environment: "production",
-    },
-    {
-      name: "STRIPE_SECRET_KEY",
-      value: "sk_test_••••0b19",
-      secret: true,
-      usedBy: "Charge job",
-      updated: "9d · maya",
       environment: "staging",
+      variables: [
+        {
+          name: "STRIPE_SECRET_KEY",
+          usedBy: ["Charge job"],
+          updatedAt: at(9, 24),
+          updatedBy: "maya",
+        },
+        { name: "LOG_LEVEL", usedBy: [], updatedAt: at(9, 24), updatedBy: "maya" },
+      ],
     },
     {
-      name: "LOG_LEVEL",
-      value: "debug",
-      secret: false,
-      usedBy: "all runners",
-      updated: "9d · maya",
-      environment: "staging",
-    },
-    {
-      name: "LOG_LEVEL",
-      value: "debug",
-      secret: false,
-      usedBy: "all runners",
-      updated: "2d · dallen",
-      environment: "development",
+      environment: "dev",
+      variables: [{ name: "LOG_LEVEL", usedBy: [], updatedAt: at(10, 1), updatedBy: "dallen" }],
     },
   ],
+}
+
+export const regionsSlice: SettingsSlice = {
+  regions: [
+    { id: "us-east-1", city: "Virginia", role: "Home" },
+    { id: "us-west-2", city: "Oregon", role: "Available" },
+  ],
+}
+
+export const domainsSlice: SettingsSlice = {
   domains: [
-    { host: "storefront.akter.cloud", status: "Default", detail: "Issued automatically" },
-    { host: "api.acme.dev", status: "Active", detail: "CNAME verified · certificate renews Dec 2" },
-    { host: "ws.acme.dev", status: "Pending DNS", detail: "Add a CNAME to storefront.akter.cloud" },
-  ],
-  keys: [
-    { name: "github-actions", masked: "ak_live_…3f9a", scope: "deploy", lastUsed: "2h ago" },
     {
-      name: "support-bot",
-      masked: "ak_live_…c021",
-      scope: "commands: SupportRoom",
-      lastUsed: "now",
+      id: "dom_api",
+      hostname: "api.acme.dev",
+      environment: "production",
+      status: "active",
+      records: [],
     },
-    { name: "local-dev", masked: "ak_test_…7e11", scope: "dev environment", lastUsed: "1d ago" },
+    {
+      id: "dom_ws",
+      hostname: "ws.acme.dev",
+      environment: "production",
+      status: "pending",
+      records: [{ type: "CNAME", name: "ws.acme.dev", value: "storefront.akter.cloud" }],
+    },
   ],
+}
+
+export const keysSlice: SettingsSlice = {
+  keys: [
+    {
+      id: "key_ci",
+      name: "github-actions",
+      tail: "ak_live_…3f9a",
+      permission: "write",
+      projectScoped: true,
+      lastUsedAt: at(10, 3, 9, 41),
+      expiresAt: null,
+    },
+    {
+      id: "key_bot",
+      name: "support-bot",
+      tail: "ak_live_…c021",
+      permission: "read",
+      projectScoped: true,
+      lastUsedAt: at(10, 3, 11, 58),
+      expiresAt: at(12, 31, 0, 0),
+    },
+    {
+      id: "key_dev",
+      name: "local-dev",
+      tail: "ak_test_…7e11",
+      permission: "admin",
+      projectScoped: false,
+      lastUsedAt: null,
+      expiresAt: null,
+    },
+  ],
+}
+
+export const endpointsSlice: SettingsSlice = {
   endpoints: [
     { label: "HTTP", value: "https://storefront.akter.cloud" },
     { label: "WebSocket", value: "wss://storefront.akter.cloud/ws" },
     { label: "OpenAPI", value: "https://storefront.akter.cloud/openapi.json" },
     { label: "MCP", value: "https://storefront.akter.cloud/mcp" },
   ],
+}
+
+export const integrationsSlice: SettingsSlice = {
   integrations: [
     {
-      id: "github",
+      kind: "github",
       name: "GitHub",
-      detail: "acme/storefront · deploys on push to main",
-      connected: true,
+      detail: "acme/storefront",
+      status: "connected",
     },
     {
-      id: "slack",
+      kind: "slack",
       name: "Slack",
       detail: "Deploy and dead-letter alerts in a channel",
-      connected: false,
+      status: "disconnected",
     },
-    { id: "datadog", name: "Datadog", detail: "Turn metrics and traces", connected: false },
-    { id: "opentelemetry", name: "OpenTelemetry", detail: "otlp.acme.dev:4317", connected: true },
+    { kind: "datadog", name: "Datadog", detail: "Send metrics and traces", status: "disconnected" },
     {
-      id: "pagerduty",
+      kind: "opentelemetry",
+      name: "OpenTelemetry",
+      detail: "otlp.acme.dev:4317",
+      status: "connected",
+    },
+    {
+      kind: "pagerduty",
       name: "PagerDuty",
       detail: "Page on-call when a deploy rolls back",
-      connected: false,
+      status: "disconnected",
     },
   ],
+}
+
+export const membersSlice: SettingsSlice = {
   members: [
-    { name: "Dallen Pyrah", email: "dallen@acme.dev", role: "Owner", pending: false },
-    { name: "Maya Chen", email: "maya@acme.dev", role: "Admin", pending: false },
-    { name: "Sam Okafor", email: "sam@acme.dev", role: "Member", pending: false },
-    { name: "Priya Raman", email: "priya@acme.dev", role: "Member", pending: false },
-    { name: "Lee Park", email: "lee@acme.dev", role: "Member", pending: true },
+    { id: "mem_dallen", name: "Dallen Pyrah", email: "dallen@acme.dev", role: "owner" },
+    { id: "mem_maya", name: "Maya Chen", email: "maya@acme.dev", role: "admin" },
+    { id: "mem_sam", name: "Sam Okafor", email: "sam@acme.dev", role: "member" },
+    { id: "mem_priya", name: "Priya Raman", email: "priya@acme.dev", role: "member" },
   ],
-  plan: { name: "Pro", price: "$20 a month plus usage", renews: "November 1" },
-  monthToDate: 206.7,
-  spendLimit: 500,
-  card: { brand: "Visa", last4: "4242", expires: "08 / 28" },
-  billingEmail: "billing@acme.dev",
+}
+
+export const invitationsSlice: SettingsSlice = {
+  invitations: [
+    {
+      id: "inv_lee",
+      email: "lee@acme.dev",
+      role: "member",
+      invitedBy: "Dallen Pyrah",
+      createdAt: at(9, 30, 16, 5),
+    },
+  ],
+}
+
+export const billingSlice: SettingsSlice = {
+  billing: {
+    plan: {
+      id: "pro",
+      name: "Pro",
+      basePriceCents: 2000,
+      renewsAt: at(11, 1, 0, 0),
+      monthToDateCents: 20_670,
+    },
+    card: { brand: "Visa", lastFour: "4242", expiryMonth: 8, expiryYear: 2028 },
+    billingEmail: "billing@acme.dev",
+    spendLimit: { limitCents: 50_000, currentCents: 20_670 },
+  },
+}
+
+export const invoicesSlice: SettingsSlice = {
   invoices: [
-    { number: "INV-0009", period: "September 2026", amount: 188.4 },
-    { number: "INV-0008", period: "August 2026", amount: 151.95 },
-    { number: "INV-0007", period: "July 2026", amount: 97.1 },
-    { number: "INV-0006", period: "June 2026", amount: 20 },
-  ],
-  usageMonth: "September",
-  meters: [
-    { label: "Commands", used: 41_200_000, included: 100_000_000, unit: "count" },
-    { label: "Runner hours", used: 1_488, included: 2_000, unit: "hours" },
-    { label: "Storage", used: 276, included: 100, unit: "gigabytes" },
-    { label: "Egress", used: 88, included: 1_000, unit: "gigabytes" },
-  ],
-  commandsPerDay: seededSeries({ length: 30, base: 1_380_000, volatility: 260_000, seed: 51 }).map(
-    Math.round,
-  ),
-  projects: [
     {
-      project: "storefront",
-      commands: "38.0M",
-      runnerHours: "1,320",
-      storage: "241 GB",
-      estimate: 184.2,
+      id: "inv_0009",
+      number: "INV-0009",
+      periodStart: at(9, 1, 0, 0),
+      amountCents: 18_840,
+      status: "paid",
+      pdfUrl: null,
     },
     {
-      project: "support-bot",
-      commands: "3.1M",
-      runnerHours: "160",
-      storage: "33 GB",
-      estimate: 22.1,
+      id: "inv_0008",
+      number: "INV-0008",
+      periodStart: at(8, 1, 0, 0),
+      amountCents: 15_195,
+      status: "paid",
+      pdfUrl: null,
     },
     {
-      project: "internal-tools",
-      commands: "0.1M",
-      runnerHours: "8",
-      storage: "2 GB",
-      estimate: 0.4,
+      id: "inv_0007",
+      number: "INV-0007",
+      periodStart: at(7, 1, 0, 0),
+      amountCents: 9_710,
+      status: "paid",
+      pdfUrl: null,
     },
   ],
+}
+
+export const usageSlice: SettingsSlice = {
+  usage: {
+    period: "2026-09",
+    meters: [
+      { label: "Commands", used: 41_200_000, included: 100_000_000, unit: "count" },
+      { label: "Runner hours", used: 1488, included: 2000, unit: "hours" },
+      { label: "Storage", used: 276, included: 100, unit: "gigabytes" },
+      { label: "Egress", used: 88, included: 1000, unit: "gigabytes" },
+    ],
+    commandsPerDay: seededSeries({
+      length: 30,
+      base: 1_380_000,
+      volatility: 260_000,
+      seed: 51,
+    }).map((value, index) => ({
+      day: `2026-09-${String(index + 1).padStart(2, "0")}`,
+      commands: Math.round(value),
+    })),
+    projects: [
+      {
+        id: "prj_storefront",
+        name: "storefront",
+        commands: 38_000_000,
+        estimatedCostCents: 18_420,
+      },
+      { id: "prj_bot", name: "support-bot", commands: 3_100_000, estimatedCostCents: 2210 },
+      { id: "prj_tools", name: "internal-tools", commands: 100_000, estimatedCostCents: 40 },
+    ],
+  },
+}
+
+export const auditSlice: SettingsSlice = {
   audit: [
     {
-      key: "e1",
-      time: "Oct 2, 14:02",
+      id: "e1",
+      at: at(10, 2, 14, 2),
       person: "Dallen Pyrah",
       action: "deploy.created",
       target: "storefront@a3f9c21",
     },
     {
-      key: "e2",
-      time: "Oct 2, 11:40",
+      id: "e2",
+      at: at(10, 2, 11, 40),
       person: "Maya Chen",
       action: "variable.updated",
       target: "OPENAI_API_KEY",
     },
     {
-      key: "e3",
-      time: "Oct 1, 18:12",
+      id: "e3",
+      at: at(10, 1, 18, 12),
       person: "Dallen Pyrah",
       action: "key.created",
       target: "local-dev",
     },
     {
-      key: "e4",
-      time: "Oct 1, 09:30",
+      id: "e4",
+      at: at(10, 1, 9, 30),
       person: "Maya Chen",
       action: "deploy.rolled_back",
       target: "storefront@5d2e7c3",
     },
     {
-      key: "e5",
-      time: "Sep 30, 16:05",
+      id: "e5",
+      at: at(9, 30, 16, 5),
       person: "Dallen Pyrah",
       action: "member.invited",
       target: "lee@acme.dev",
     },
-    {
-      key: "e6",
-      time: "Sep 29, 10:44",
-      person: "Sam Okafor",
-      action: "job.retried",
-      target: "Charge · job_2f1",
-    },
-    {
-      key: "e7",
-      time: "Sep 28, 08:02",
-      person: "Priya Raman",
-      action: "domain.added",
-      target: "ws.acme.dev",
-    },
   ],
-  regions: [
-    { id: "us-east-1", place: "Virginia", role: "Home" },
-    { id: "eu-west-1", place: "Ireland", role: "Replica" },
-    { id: "ap-southeast-1", place: "Singapore", role: "Available" },
-    { id: "us-west-2", place: "Oregon", role: "Available" },
-  ],
-})
+  auditTruncated: false,
+}

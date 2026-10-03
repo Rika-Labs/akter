@@ -27,9 +27,25 @@ import {
 import type { Model } from "./model.ts"
 import { shellStyles as styles } from "./styles.ts"
 
-/** The project the sidebar is scoped to: the route's project, or the default. */
-export const currentProject = (model: Model): string =>
-  AppRoute.isAnyOf(["Project"])(model.route) ? model.route.project : "storefront"
+const rememberedProject = (): string | null => {
+  try {
+    return window.sessionStorage.getItem("console-project")
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The project the sidebar is scoped to: the route's project, else the one remembered for this tab
+ * if the workspace still has it, else the workspace's first.
+ */
+export const currentProject = (model: Model): string => {
+  if (AppRoute.isAnyOf(["Project"])(model.route)) return model.route.project
+  const slugs = model.workspace.projects.map((project) => project.slug)
+  const remembered = rememberedProject()
+  if (remembered !== null && slugs.includes(remembered)) return remembered
+  return slugs[0] ?? "No project"
+}
 
 const accountMenu = (h: HtmlBuilder<Message>, model: Model): Html =>
   dropdownMenu(h, {
@@ -90,10 +106,7 @@ const projectSwitcher = (h: HtmlBuilder<Message>, model: Model): Html => {
             label: project.slug,
             detail: project.deployed ? project.region : "not deployed",
             checked: project.slug === current,
-            href:
-              project.slug === "storefront"
-                ? Routes.overview()
-                : Routes.project({ project: project.slug }),
+            href: Routes.project({ project: project.slug }),
           })),
           { kind: "separator" },
           {
@@ -197,7 +210,7 @@ const settingsSidebar = (h: HtmlBuilder<Message>, model: Model): Html =>
           sidebarBack(h, {
             href: Routes.overview(),
             label: "Settings",
-            description: "Back to storefront",
+            description: `Back to ${currentProject(model)}`,
           }),
           h.span(
             [...styleAttributes(h, styles.narrowOnly)],

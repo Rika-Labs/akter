@@ -1,14 +1,8 @@
+import { ActorTypeSummary as CloudActorTypeSummary, JobStatus } from "@akter/cloud-api"
 import { Schema as S } from "effect"
 
-/** One actor type deployed in the project and how busy it is. */
-export const ActorTypeSummary = S.Struct({
-  name: S.String,
-  commands: S.Array(S.String),
-  instances: S.Finite,
-  awake: S.Finite,
-  perSecond: S.Finite,
-  p99: S.String,
-})
+/** One actor type deployed in the project and how busy it is, exactly as the runtime API reports it. */
+export const ActorTypeSummary = CloudActorTypeSummary
 export type ActorTypeSummary = typeof ActorTypeSummary.Type
 
 /** The actor types list. */
@@ -17,27 +11,34 @@ export const ActorsPage = S.TaggedStruct("ActorsPage", {
 })
 export type ActorsPage = typeof ActorsPage.Type
 
-/** One instance of a type: its key, whether it is awake, and its last turn. */
+/** One instance of a type: its key, whether it is awake, and its last command and turn. */
 export const ActorInstance = S.Struct({
   key: S.String,
   awake: S.Boolean,
   generation: S.Finite,
+  lastCommand: S.String,
   lastTurn: S.String,
-  mailbox: S.Finite,
-  runner: S.String,
 })
 export type ActorInstance = typeof ActorInstance.Type
 
 /** A command the type accepts and how often it ran today. */
 export const CommandVolume = S.Struct({ name: S.String, today: S.Finite, p99: S.String })
 
-/** One actor type in detail: its numbers, its commands, its hottest instances. */
-export const ActorTypePage = S.TaggedStruct("ActorTypePage", {
-  summary: ActorTypeSummary,
+/** A type's day: commands per second by hour and the volume of each command. */
+export const TypeActivity = S.Struct({
   hours: S.Array(S.String),
   perSecond: S.Array(S.Finite),
   commands: S.Array(CommandVolume),
+})
+
+/**
+ * One actor type in detail: its numbers and the instances on its first page. `activity` is drawn
+ * when the source reports a per-type history.
+ */
+export const ActorTypePage = S.TaggedStruct("ActorTypePage", {
+  summary: ActorTypeSummary,
   instances: S.Array(ActorInstance),
+  activity: S.optional(TypeActivity),
 })
 export type ActorTypePage = typeof ActorTypePage.Type
 
@@ -53,30 +54,25 @@ export const Receipt = S.Struct({
   replayed: S.Boolean,
 })
 
-/** An event the actor emitted. */
+/** An event class the actor emitted, with the cursor of its newest event and its subscribers. */
 export const EmittedEvent = S.Struct({
-  cursor: S.Finite,
+  cursor: S.String,
   name: S.String,
   subscribers: S.Finite,
-  at: S.String,
 })
 
-/** Work the actor handed off after a commit. */
+/** Work the actor handed off after a commit; `status` is the contract's job status. */
 export const ActorJob = S.Struct({
   id: S.String,
   name: S.String,
   attempts: S.Finite,
-  status: S.Literals(["Done", "Retrying", "Dead"]),
-  at: S.String,
+  status: JobStatus,
 })
 
-/** A live client connected to the actor. */
-export const ActorConnection = S.Struct({
-  id: S.String,
-  kind: S.String,
-  client: S.String,
-  since: S.String,
-  parked: S.Boolean,
+/** The actor's live connections: how many sockets it holds and the cursor of its event feed. */
+export const ActorConnections = S.Struct({
+  sockets: S.Finite,
+  feedCursor: S.NullOr(S.String),
 })
 
 /** One entry in the actor's activity feed. */
@@ -87,6 +83,13 @@ export const ActorActivity = S.Struct({
   subject: S.String,
   detail: S.String,
   time: S.String,
+})
+
+/** A table the actor owns, with each cell written as text. */
+export const OwnedTable = S.Struct({
+  name: S.String,
+  columns: S.Array(S.String),
+  rows: S.Array(OwnedRow),
 })
 
 /** Everything the actor inspector shows about one instance. */
@@ -100,11 +103,11 @@ export const ActorPage = S.TaggedStruct("ActorPage", {
   tenant: S.String,
   mailbox: S.Finite,
   state: S.String,
-  table: S.Struct({ name: S.String, columns: S.Array(S.String), rows: S.Array(OwnedRow) }),
+  tables: S.Array(OwnedTable),
   receipts: S.Array(Receipt),
   events: S.Array(EmittedEvent),
   jobs: S.Array(ActorJob),
-  connections: S.Array(ActorConnection),
+  connections: ActorConnections,
   activity: S.Array(ActorActivity),
 })
 export type ActorPage = typeof ActorPage.Type

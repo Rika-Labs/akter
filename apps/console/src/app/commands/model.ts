@@ -26,8 +26,12 @@ export const Tail = S.Struct({
 })
 export type Tail = typeof Tail.Type
 
-/** The commands page: the actor types the filter offers. */
+/**
+ * The commands page: the actor types the filter offers and the committed turns already recorded,
+ * newest first, which the live tail continues from.
+ */
 export const CommandsPage = S.TaggedStruct("CommandsPage", {
   types: S.Array(S.String),
+  recent: S.Array(TailEntry),
 })
 export type CommandsPage = typeof CommandsPage.Type

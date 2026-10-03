@@ -16,8 +16,8 @@ import {
   styleAttributes,
 } from "@akter/ui"
 import { waitingQuay } from "@akter/ui/brand"
-import { histogram, lifecycleDiagram, lineChart } from "@akter/ui/charts"
-import { formatInteger } from "@akter/ui/geometry"
+import { lifecycleDiagram, lineChart } from "@akter/ui/charts"
+import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import * as stylex from "@stylexjs/stylex"
 import { colors, space } from "@akter/ui/tokens.stylex"
 import type { HtmlBuilder } from "foldkit/html"
@@ -51,6 +51,7 @@ const deployTones: Readonly<Record<DeploySummary["status"], StatusTone>> = {
   Drained: "idle",
   "Rolled back": "attention",
   "Rolling out": "pending",
+  Failed: "danger",
 }
 
 /** A deploy's status word and the dot tone it is drawn with. */
@@ -59,13 +60,21 @@ export const deployStatus =
   (deploy: Pick<DeploySummary, "status">) =>
     status(h, { label: deploy.status, tone: deployTones[deploy.status] })
 
-const healthLinks = new Map([
-  ["Database", Routes.regions()],
-  ["Dead letters", Routes.jobs()],
-  ["Runners", Routes.deployment({ commit: "a3f9c21" })],
-])
+const healthLinks = (page: OverviewPage, sample: boolean): ReadonlyMap<string, string> => {
+  const live = page.deploys.find((deploy) => deploy.status === "Live")
+  return new Map([
+    ["Database", Routes.regions()],
+    ["Dead letters", Routes.jobs()],
+    [
+      "Runners",
+      live === undefined || sample
+        ? Routes.deployments()
+        : Routes.deployment({ commit: live.commit }),
+    ],
+  ])
+}
 
-const rangeMenu = (h: HtmlBuilder<Message>) =>
+const rangeMenu = (h: HtmlBuilder<Message>, sample: boolean) =>
   dropdownMenu(h, {
     id: "range-menu",
     label: "Time range",
@@ -84,6 +93,7 @@ const rangeMenu = (h: HtmlBuilder<Message>) =>
       h.button(
         [
           h.Type("button"),
+          h.Disabled(sample),
           ...attributes,
           h.AriaLabel("Time range: last 24 hours"),
           ...styleAttributes(h, styles.trigger),
@@ -93,132 +103,145 @@ const rangeMenu = (h: HtmlBuilder<Message>) =>
   })
 
 /** The project overview: headline numbers, throughput, health, latency and recent deploys. */
-export const overviewScreen = ({ h, page }: ScreenInput<OverviewPage>): Screen => ({
-  title: "Overview",
-  crumbs: [{ label: "Overview" }],
-  actions: [
-    rangeMenu(h),
-    button(h, { label: "Deploy", variant: "primary", size: "sm", href: Routes.deployments() }),
-  ],
-  body: pageBody(h, [
-    pageHeader(h, { title: "Overview" }),
-    statRow(h, {
-      label: "Last 24 hours",
-      stats: page.stats.map((stat) => ({
-        label: stat.label,
-        value: stat.value,
-        trend: stat.trend,
-        trendVariant: stat.stepped ? "step" : "primary",
-      })),
-    }),
-    columns(h, {
-      layout: "wide-left",
-      children: [
-        section(h, {
-          title: "Throughput",
-          meta: "commands per second",
-          children: [
-            lineChart(h, {
-              id: "throughput",
-              label: "Commands per second over the last 24 hours",
-              categories: page.hours,
-              height: 210,
-              markers: page.markers,
-              series: [
-                {
-                  id: "today",
-                  label: "Today",
-                  values: page.throughput,
-                  variant: "primary",
-                  area: true,
-                },
-                {
-                  id: "yesterday",
-                  label: "Yesterday",
-                  values: page.previous,
-                  variant: "secondary",
-                },
-              ],
-              formatValue: formatInteger,
-            }),
-          ],
-        }),
-        section(h, {
-          title: "Health",
-          children: [
-            propertyList(h, {
-              ruled: true,
-              layout: "wide",
-              items: page.health.map((fact) => {
-                const word = status(h, {
-                  tone: fact.healthy ? "live" : "attention",
-                  label: fact.value,
-                })
-                const href = healthLinks.get(fact.label)
-                return {
-                  label: fact.label,
-                  value:
-                    href === undefined
-                      ? word
-                      : h.a([h.Href(href), ...styleAttributes(h, styles.link)], [word]),
-                }
+export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): Screen => {
+  const links = healthLinks(page, model.pageSample)
+  return {
+    title: "Overview",
+    crumbs: [{ label: "Overview" }],
+    actions: [
+      rangeMenu(h, model.pageSample),
+      button(h, { label: "Deploy", variant: "primary", size: "sm", href: Routes.deployments() }),
+    ],
+    body: pageBody(h, [
+      pageHeader(h, { title: "Overview" }),
+      statRow(h, {
+        label: "Last 24 hours",
+        stats: page.stats.map((stat) => ({
+          label: stat.label,
+          value: stat.value,
+          trend: stat.trend.length > 1 ? stat.trend : undefined,
+          trendVariant: stat.stepped ? "step" : "primary",
+        })),
+      }),
+      columns(h, {
+        layout: "wide-left",
+        children: [
+          section(h, {
+            title: "Throughput",
+            meta: "commands per second",
+            children: [
+              lineChart(h, {
+                id: "throughput",
+                label: "Commands per second over the last 24 hours",
+                categories: page.hours,
+                height: 210,
+                markers: page.markers,
+                series: [
+                  {
+                    id: "today",
+                    label: "Today",
+                    values: page.throughput,
+                    variant: "primary",
+                    area: true,
+                  },
+                  ...(page.previous.length === 0
+                    ? []
+                    : [
+                        {
+                          id: "yesterday",
+                          label: "Yesterday",
+                          values: page.previous,
+                          variant: "secondary" as const,
+                        },
+                      ]),
+                ],
+                formatValue: formatInteger,
               }),
-            }),
-          ],
-        }),
-      ],
-    }),
-    columns(h, {
-      layout: "even",
-      children: [
-        section(h, {
-          title: "Turn latency",
-          meta: "last hour",
-          children: [
-            histogram(h, {
-              label: "Turn latency distribution",
-              buckets: page.latency,
-              quantiles: [
-                { label: "p50", quantile: 0.5 },
-                { label: "p99", quantile: 0.99 },
-              ],
-              formatBound: (value) =>
-                value < 1 ? `${value.toFixed(1)} ms` : `${Math.round(value)} ms`,
-            }),
-          ],
-        }),
-        section(h, {
-          title: "Recent deploys",
-          actions: [
-            button(h, { label: "All deploys", variant: "link", href: Routes.deployments() }),
-          ],
-          children: [
-            dataTable(h, {
-              label: "Recent deploys",
-              columns: [
-                { key: "commit", label: "Commit", width: "5.5rem", mono: true },
-                { key: "message", label: "Message", width: "minmax(0, 1fr)" },
-                { key: "status", label: "Status", width: "7.5rem", hideBelow: "compact" },
-                { key: "when", label: "When", width: "3rem", align: "end" },
-              ],
-              rows: page.deploys.map((deploy) => ({
-                key: deploy.commit,
-                href: Routes.deployment({ commit: deploy.commit }),
-                cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
-              })),
-            }),
-          ],
-        }),
-      ],
-    }),
-  ]),
-})
+            ],
+          }),
+          section(h, {
+            title: "Health",
+            children: [
+              propertyList(h, {
+                ruled: true,
+                layout: "wide",
+                items: page.health.map((fact) => {
+                  const word = status(h, {
+                    tone: fact.healthy ? "live" : "attention",
+                    label: fact.value,
+                  })
+                  const href = links.get(fact.label)
+                  return {
+                    label: fact.label,
+                    value:
+                      href === undefined
+                        ? word
+                        : h.a([h.Href(href), ...styleAttributes(h, styles.link)], [word]),
+                  }
+                }),
+              }),
+            ],
+          }),
+        ],
+      }),
+      columns(h, {
+        layout: "even",
+        children: [
+          section(h, {
+            title: "Turn latency",
+            meta: `p50 ${formatDuration(page.latency.p50)} · p99 ${formatDuration(page.latency.p99)}`,
+            children: [
+              lineChart(h, {
+                id: "latency",
+                label: "Turn latency, 99th percentile",
+                categories: page.latency.hours,
+                height: 180,
+                series: [
+                  {
+                    id: "p99",
+                    label: "p99",
+                    values: page.latency.p99Series,
+                    variant: "primary",
+                    area: true,
+                  },
+                ],
+                formatValue: formatDuration,
+              }),
+            ],
+          }),
+          section(h, {
+            title: "Recent deploys",
+            actions: [
+              button(h, { label: "All deploys", variant: "link", href: Routes.deployments() }),
+            ],
+            children: [
+              dataTable(h, {
+                label: "Recent deploys",
+                columns: [
+                  { key: "commit", label: "Commit", width: "5.5rem", mono: true },
+                  { key: "message", label: "Message", width: "minmax(0, 1fr)" },
+                  { key: "status", label: "Status", width: "7.5rem", hideBelow: "compact" },
+                  { key: "when", label: "When", width: "3rem", align: "end" },
+                ],
+                rows: page.deploys.map((deploy) => ({
+                  key: deploy.commit,
+                  href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
+                  cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
+                })),
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]),
+  }
+}
 
 const deploySteps =
   "# 1 · sign in\n$ bunx akter login\n# 2 · link this folder to the project\n$ bunx akter link\n# 3 · deploy\n$ bunx akter deploy"
 
 /** A project with nothing deployed yet: how to ship the first actor, and what a turn will do. */
-export const emptyProjectScreen = ({ h, page }: ScreenInput<EmptyProjectPage>): Screen => ({
+export const emptyProjectScreen = ({ h, model, page }: ScreenInput<EmptyProjectPage>): Screen => ({
   title: page.project,
   crumbs: [{ label: "Overview" }],
   actions: [
@@ -247,10 +270,12 @@ export const emptyProjectScreen = ({ h, page }: ScreenInput<EmptyProjectPage>): 
                 codeBlock(h, {
                   code: deploySteps,
                   language: "shell",
-                  onCopy: CopiedText({
-                    text: "bunx akter login && bunx akter link && bunx akter deploy",
-                    label: "deploy commands",
-                  }),
+                  onCopy: model.pageSample
+                    ? undefined
+                    : CopiedText({
+                        text: "bunx akter login && bunx akter link && bunx akter deploy",
+                        label: "deploy commands",
+                      }),
                 }),
                 h.p(
                   [...styleAttributes(h, styles.quiet)],

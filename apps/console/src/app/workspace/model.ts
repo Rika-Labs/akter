@@ -36,6 +36,7 @@ export const Workspace = S.Struct({
   projects: S.Array(ProjectSummary),
   pinned: S.Array(PinnedActor),
   deadLetters: S.Finite,
+  error: S.optional(S.String),
 })
 export type Workspace = typeof Workspace.Type
 

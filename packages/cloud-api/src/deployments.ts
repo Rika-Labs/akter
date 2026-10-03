@@ -11,6 +11,14 @@ import {
   Timestamp,
 } from "./primitives.ts"
 
+/**
+ * Where a deployment is in its life.
+ *
+ * A new deployment starts `in-progress` and ends `live` or `failed`. When one
+ * becomes `live`, the deployment that was live in the same environment ends
+ * `drained` after a normal deploy, or `rolled-back` after a rollback. A failed
+ * deployment never replaces the live one.
+ */
 export const DeploymentStatus = Schema.Literals([
   "in-progress",
   "live",
@@ -51,6 +59,11 @@ export const DeploymentAuthor = Schema.Struct({
 })
 export type DeploymentAuthor = typeof DeploymentAuthor.Type
 
+/**
+ * `rolledBackFrom` is null unless the deployment was created by a rollback, in
+ * which case it is the id of the earlier deployment whose image and
+ * environment snapshot it redeploys.
+ */
 export const DeploymentSummary = Schema.Struct({
   id: DeploymentId,
   projectId: ProjectId,
@@ -62,6 +75,7 @@ export const DeploymentSummary = Schema.Struct({
   runnerCount: NonNegativeInt,
   durationMs: Schema.NullOr(NonNegativeInt),
   status: DeploymentStatus,
+  rolledBackFrom: Schema.NullOr(DeploymentId),
   createdAt: Timestamp,
 })
 export type DeploymentSummary = typeof DeploymentSummary.Type

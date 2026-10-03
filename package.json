@@ -42,7 +42,8 @@
   "type": "module",
   "scripts": {
     "prepare": "effect-tsgo patch --oxlint",
-    "dev": "bun --env-file=.env run turbo run dev",
+    "dev": "docker compose -f infra/local/compose.yaml up --build",
+    "dev:apps": "bun --env-file=.env run turbo run dev",
     "build": "turbo run build",
     "typecheck": "GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
     "test": "turbo run test --concurrency=100%",
