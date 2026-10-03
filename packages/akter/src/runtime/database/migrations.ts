@@ -1,5 +1,8 @@
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
+import { PgClient } from "@effect/sql-pg"
 import { Migrator, SqlClient } from "effect/sql"
+import { NekiTurnSessions } from "./neki/session.ts"
+import { MigrationResuming, nekiMigrator, withMigrationCoordination } from "./neki/migrations.ts"
 
 /** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {
@@ -55,6 +58,7 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient
 
     if (
+      !(yield* MigrationResuming) &&
       (yield* sql<{
         rows: number
       }>`SELECT count(*)::int AS rows FROM actor_generations`)[0]!.rows > 0
@@ -981,8 +985,8 @@ export const migrations = {
  * after the migrations because a concurrent runner with fewer migrations can
  * commit a higher id between the first check and the migration lock.
  */
-export const migrator = (
-  record: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>,
+export const migrator = <E>(
+  record: Record<string, Effect.Effect<void, E, SqlClient.SqlClient>>,
 ) => {
   const run = Migrator.make({})({
     table: "actor_migrations",
@@ -1015,10 +1019,24 @@ export const migrator = (
     }
   })
 
-  return refuseSkipped.pipe(
+  const transactional = refuseSkipped.pipe(
     Effect.andThen(run),
     Effect.tap(() => refuseSkipped),
   )
+  return Effect.gen(function* () {
+    const neki = yield* NekiTurnSessions
+    const selected = neki
+      ? nekiMigrator({
+          record: Object.fromEntries(
+            Object.entries(record).map(([key, effect]) => [key, Effect.orDie(effect)]),
+          ),
+          refuseSkipped,
+        })
+      : transactional
+    return yield* neki || Option.isSome(yield* Effect.serviceOption(PgClient.PgClient))
+      ? withMigrationCoordination(selected)
+      : selected
+  })
 }
 
 /** Applies every framework migration not yet recorded in `actor_migrations`, refusing a database that skipped one. */
