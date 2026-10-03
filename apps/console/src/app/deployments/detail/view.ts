@@ -7,6 +7,7 @@ import {
   pageBody,
   pageHeader,
   section,
+  select,
   status,
   type StatusTone,
 } from "@akter/ui"
@@ -14,7 +15,7 @@ import { rolloutTimeline } from "@akter/ui/charts"
 import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import { deployStatus } from "../../overview/view.ts"
 import * as Routes from "../../navigation/routes.ts"
-import { CopiedText, OpenedDialog } from "../../shell/message.ts"
+import { ChoseSetting, CopiedText, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
 import type { DeploymentPage, Runner } from "../model.ts"
 
@@ -32,9 +33,14 @@ const healthLabels: Readonly<Record<Runner["health"], string>> = {
   unhealthy: "Unhealthy",
 }
 
+const rollbackTargetKey = "rollbackTarget"
+
 /** One deploy: how its rollout went, the runners it started, and its build log. */
 export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>): Screen => {
-  const { deploy } = page
+  const { deploy, rolledBackFrom } = page
+  const target =
+    page.rollbackTargets.find((candidate) => candidate.id === model.choices[rollbackTargetKey]) ??
+    page.rollbackTargets[0]
   return {
     title: deploy.message,
     crumbs: [
@@ -54,19 +60,36 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
               external: true,
             }),
           ]),
+      ...(target === undefined
+        ? []
+        : [
+            select(h, {
+              name: "rollback-target",
+              label: "Roll back to",
+              value: target.id,
+              size: "sm",
+              disabled: model.pageSample,
+              options: page.rollbackTargets.map((candidate) => ({
+                value: candidate.id,
+                label: `${candidate.commit} · ${candidate.message} · ${candidate.when}`,
+              })),
+              onChange: (value) => ChoseSetting({ key: rollbackTargetKey, value }),
+            }),
+          ]),
       button(h, {
         label: "Roll back",
         size: "sm",
-        onClick: OpenedDialog({
-          dialog: Dialog.RollBack({ commit: page.rollbackTo ?? deploy.commit }),
-        }),
-        disabled: model.pageSample || deploy.status !== "Live" || page.rollbackTo === null,
+        onClick:
+          target === undefined
+            ? undefined
+            : OpenedDialog({ dialog: Dialog.RollBack({ id: target.id, commit: target.commit }) }),
+        disabled: model.pageSample || deploy.status !== "Live" || target === undefined,
       }),
     ],
     body: pageBody(h, [
       pageHeader(h, {
         title: deploy.message,
-        description: `${deploy.commit} · deployed by ${deploy.author} ${deploy.when === "now" ? "just now" : `${deploy.when} ago`} · ${deploy.took}`,
+        description: `${deploy.commit} · deployed by ${deploy.author} ${deploy.when === "now" ? "just now" : `${deploy.when} ago`} · ${deploy.took}${rolledBackFrom === null ? "" : ` · rolled back from ${rolledBackFrom.commit ?? rolledBackFrom.id}`}`,
         actions: [deployStatus(h)(deploy)],
       }),
       section(h, {

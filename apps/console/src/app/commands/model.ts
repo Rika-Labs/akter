@@ -35,3 +35,26 @@ export const CommandsPage = S.TaggedStruct("CommandsPage", {
   recent: S.Array(TailEntry),
 })
 export type CommandsPage = typeof CommandsPage.Type
+
+/**
+ * What an actor answered to a command sent from the console. A refusal the actor itself returned
+ * is an answer, not a transport failure, so it stays distinct from `ConsoleError`.
+ */
+export const CommandSucceeded = S.TaggedStruct("CommandSucceeded", {
+  commandId: S.String,
+  result: S.Json,
+  replayed: S.Boolean,
+})
+export type CommandSucceeded = typeof CommandSucceeded.Type
+
+/** The actor ran the command and returned its own typed error, with that error's payload. */
+export const CommandRejected = S.TaggedStruct("CommandRejected", {
+  commandId: S.String,
+  errorTag: S.String,
+  error: S.Json,
+  replayed: S.Boolean,
+})
+export type CommandRejected = typeof CommandRejected.Type
+
+export const CommandAnswer = S.Union([CommandSucceeded, CommandRejected])
+export type CommandAnswer = typeof CommandAnswer.Type

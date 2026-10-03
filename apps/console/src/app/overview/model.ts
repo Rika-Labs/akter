@@ -1,3 +1,4 @@
+import { SeriesWindow } from "@akter/cloud-api"
 import { Schema as S } from "effect"
 import { DeployStatus } from "../deployments/model.ts"
 
@@ -35,9 +36,28 @@ export const Latency = S.Struct({
 })
 export type Latency = typeof Latency.Type
 
+/** One latency bucket: how many turns it took, and whether it is the open-ended tail. */
+export const LatencyBar = S.Struct({
+  label: S.String,
+  count: S.Finite,
+  tail: S.Boolean,
+})
+
+/**
+ * How long turns took over a window, counted per latency bucket. It carries no percentile: buckets
+ * from several actor types add up, percentiles do not.
+ */
+export const LatencyDistribution = S.Struct({
+  window: SeriesWindow,
+  total: S.Finite,
+  bars: S.Array(LatencyBar),
+})
+export type LatencyDistribution = typeof LatencyDistribution.Type
+
 /**
  * Everything the project overview draws. `previous` is the same window a day earlier and is empty
  * when the source has no comparison; a stat's `trend` is empty when it has no history.
+ * `distribution` is absent when the actor types' latency buckets cannot be added up.
  */
 export const OverviewPage = S.TaggedStruct("OverviewPage", {
   project: S.String,
@@ -48,6 +68,7 @@ export const OverviewPage = S.TaggedStruct("OverviewPage", {
   markers: S.Array(S.Struct({ index: S.Finite, label: S.String })),
   health: S.Array(HealthFact),
   latency: Latency,
+  distribution: S.optional(LatencyDistribution),
   deploys: S.Array(DeploySummary),
 })
 export type OverviewPage = typeof OverviewPage.Type

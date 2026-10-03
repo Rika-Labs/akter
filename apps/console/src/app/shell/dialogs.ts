@@ -10,7 +10,7 @@ import {
 } from "@akter/ui"
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
-import { Match, Option } from "effect"
+import { Match, Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import {
   ChangedField,
@@ -28,6 +28,7 @@ const styles = stylex.create({
   mono: { fontFamily: typography.mono, fontSize: typography.small, color: colors.foreground },
   pair: { display: "grid", gap: space.lg },
   full: { width: "100%" },
+  inputFrame: { borderWidth: 0, padding: 0, margin: 0, minWidth: 0 },
 })
 
 /** One dialog's copy, body and confirm action. */
@@ -53,6 +54,7 @@ const text = (
       value: model.fields[config.id] ?? "",
       placeholder: config.placeholder,
       mono: config.mono === true,
+      disabled: model.sendingCommand,
       onInput: (value) => ChangedField({ name: config.id, value }),
     }),
   })
@@ -145,7 +147,7 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
       }),
       SendCommand: ({ address }) => ({
         title: "Send a command",
-        description: `To ${address}. It runs as one turn and returns its result.`,
+        description: `To ${address}. Reusing a command ID returns its stored receipt.`,
         body: [
           text(h, model, {
             id: "command-name",
@@ -157,23 +159,77 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
             id: "command-payload",
             label: "Payload",
             description: "JSON, decoded with the command's schema.",
-            control: textarea(h, {
-              name: "command-payload",
-              value: model.fields["command-payload"] ?? '{ "amount": 1200 }',
-              rows: 4,
-              mono: true,
-              describedBy: "command-payload-description",
-              onInput: (value) => ChangedField({ name: "command-payload", value }),
-            }),
+            control: h.fieldset(
+              [h.Disabled(model.sendingCommand), ...styleAttributes(h, styles.inputFrame)],
+              [
+                textarea(h, {
+                  name: "command-payload",
+                  value: model.fields["command-payload"] ?? "{}",
+                  rows: 4,
+                  mono: true,
+                  describedBy: "command-payload-description",
+                  onInput: (value) => ChangedField({ name: "command-payload", value }),
+                }),
+              ],
+            ),
+          }),
+          text(h, model, {
+            id: "command-id",
+            label: "Command ID (optional)",
+            placeholder: "Leave empty to let the server mint an ID",
+            mono: true,
+          }),
+          model.sendingCommand
+            ? h.p(
+                [h.Role("status"), ...styleAttributes(h, styles.note)],
+                ["Sending… Closing this dialog does not cancel the actor’s turn."],
+              )
+            : h.empty,
+          Option.match(model.commandError, {
+            onNone: () => h.empty,
+            onSome: (message) =>
+              h.p([h.Role("alert"), ...styleAttributes(h, styles.note)], [message]),
+          }),
+          Option.match(model.commandAnswer, {
+            onNone: () => h.empty,
+            onSome: (answer) =>
+              h.div(
+                [h.Role(Predicate.isTagged(answer, "CommandRejected") ? "alert" : "status")],
+                [
+                  h.p(
+                    [...styleAttributes(h, styles.note)],
+                    [
+                      Predicate.isTagged(answer, "CommandRejected")
+                        ? `CommandFailed · ${answer.errorTag}${answer.replayed ? " · replayed receipt" : ""}`
+                        : answer.replayed
+                          ? "Replayed — returned the stored receipt."
+                          : "Committed — returned the actor’s result.",
+                    ],
+                  ),
+                  codeBlock(h, {
+                    language: "json",
+                    code: JSON.stringify(
+                      Predicate.isTagged(answer, "CommandRejected") ? answer.error : answer.result,
+                      null,
+                      2,
+                    ),
+                  }),
+                  h.p([...styleAttributes(h, styles.mono)], [`Command ID: ${answer.commandId}`]),
+                ],
+              ),
           }),
         ],
         confirm: "Send command",
         danger: false,
-        ready: true,
+        ready:
+          !model.sendingCommand &&
+          !model.pageSample &&
+          (model.fields["command-name"] ?? "").trim() !== "",
       }),
       RollBack: ({ commit }) => ({
         title: `Roll back to ${commit}?`,
-        description: "New runners start on the previous build and actors move back as they drain.",
+        description:
+          "A new deployment uses that image and environment snapshot. The current deployment stays live until it succeeds.",
         body: [],
         confirm: "Roll back",
         danger: true,

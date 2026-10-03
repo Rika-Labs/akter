@@ -1,6 +1,6 @@
 import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
-import { ago, clock, clockMillis, hourLabel, splitAddress, until } from "./time.ts"
+import { ago, clock, clockMillis, hourLabel, seriesLabel, splitAddress, until } from "./time.ts"
 
 const now = DateTime.makeUnsafe("2026-10-03T14:02:11.998Z")
 const at = (iso: string) => DateTime.makeUnsafe(iso)
@@ -33,6 +33,15 @@ describe("clock labels", () => {
     expect(clock(now)).toBe("14:02:11")
     expect(clockMillis(now)).toBe("14:02:11.998")
     expect(hourLabel(at("2026-10-03T09:05:59.000Z"))).toBe("09:05")
+  })
+})
+
+describe("series labels", () => {
+  it("adds the date once a window spans more than a day", () => {
+    const instant = at("2026-10-03T09:05:59.000Z")
+    expect(seriesLabel("1h")(instant)).toBe("09:05")
+    expect(seriesLabel("24h")(instant)).toBe("09:05")
+    expect(seriesLabel("7d")(instant)).toBe("10-03 09:05")
   })
 })
 
