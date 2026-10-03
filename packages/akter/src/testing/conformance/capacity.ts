@@ -539,8 +539,8 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
           )
           expect(error.reason).toMatchObject({ overloaded: true })
           expect(error.isRetryable).toBe(true)
-          expect(Option.getOrThrow(error.retryAfter)).toBeGreaterThanOrEqual(125)
-          expect(Option.getOrThrow(error.retryAfter)).toBeLessThanOrEqual(375)
+          const retryAfter = Option.getOrThrow(error.retryAfter)
+          expect(retryAfter >= 125 && retryAfter <= 375).toBe(true)
 
           yield* pause.release
           yield* Fiber.join(held)

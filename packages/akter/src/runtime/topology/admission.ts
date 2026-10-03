@@ -1,4 +1,4 @@
-import { Context, Effect, Exit, Layer, Schema } from "effect"
+import { Context, Effect, Exit, Layer, Predicate, Schema } from "effect"
 import { ClusterError, EntityAddress, Reply, Sharding } from "effect/cluster"
 import { ActorError } from "../../errors/actor.ts"
 import { commandEntity } from "../entity/register.ts"
@@ -24,11 +24,14 @@ export const admissionSharding = Layer.effect(
         sharding.send(message).pipe(
           Effect.catchIf(Schema.is(ClusterError.MailboxFull), (error) =>
             Effect.gen(function* () {
-              if (message._tag === "IncomingEnvelope" || message.envelope.tag !== "Execute")
-                return yield* Effect.fail(error)
+              if (
+                !Predicate.isTagged(message, "IncomingRequest") ||
+                message.envelope.tag !== "Execute"
+              )
+                return yield* error
 
               const refusal = refusals.refuse(error.address)
-              if (refusal === undefined) return yield* Effect.fail(error)
+              if (refusal === undefined) return yield* error
 
               const reply = new Reply.WithExit({
                 id: yield* sharding.getSnowflake,
