@@ -102,6 +102,15 @@
         "effect": "catalog:",
       },
     },
+    "packages/cloud-api": {
+      "name": "@akter/cloud-api",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "vitest": "catalog:",
+      },
+    },
     "packages/deployments": {
       "name": "@akter/deployments",
       "dependencies": {
@@ -224,6 +233,8 @@
   },
   "packages": {
     "@akter/cli": ["@akter/cli@workspace:apps/cli"],
+
+    "@akter/cloud-api": ["@akter/cloud-api@workspace:packages/cloud-api"],
 
     "@akter/console": ["@akter/console@workspace:apps/console"],
 
