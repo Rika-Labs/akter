@@ -54,7 +54,7 @@ export const fenceTitle = (meta: string | null | undefined): string | undefined 
  * because they only introduce a list or a code block, and fragments that do not open a sentence.
  * Used for page descriptions.
  */
-export const firstParagraph = (source: string): string => {
+export const firstParagraph = (source: string): string | undefined => {
   for (const node of parseMarkdown(source).children) {
     if (node.type !== "paragraph") continue
 
@@ -63,5 +63,5 @@ export const firstParagraph = (source: string): string => {
     if (!text.endsWith(":") && /^[A-Z`]/.test(text) && text.length > 40) return text
   }
 
-  return ""
+  return undefined
 }

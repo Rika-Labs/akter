@@ -85,7 +85,9 @@ const build = async (): Promise<Docs> => {
         group: entry?.group ?? fallbackGroup(id),
         title: prepared.title,
         description: sentence(
-          prepared.intro === "" ? firstParagraph(prepared.body) || prepared.title : prepared.intro,
+          prepared.intro === ""
+            ? (firstParagraph(prepared.body) ?? prepared.title)
+            : prepared.intro,
         ),
         lead,
         html: body.html,

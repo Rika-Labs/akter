@@ -66,6 +66,6 @@ describe("firstParagraph", () => {
   })
 
   it("is empty when the document has no prose", () => {
-    expect(firstParagraph("## Only a heading\n")).toBe("")
+    expect(firstParagraph("## Only a heading\n")).toBeUndefined()
   })
 })
