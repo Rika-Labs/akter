@@ -1,3 +1,9 @@
+---
+title: "Product fit and non-fit"
+sidebarTitle: "Fit and non-fit"
+description: "When Akter fits a backend, and when another tool is the better choice."
+---
+
 # Product fit and non-fit
 
 **Responsibility:** prevent inappropriate adoption and architecture drift.  
