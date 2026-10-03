@@ -73,6 +73,7 @@ export const prepareRunnerStorage = Effect.gen(function* () {
       const connection = yield* sql.reserve
       const boundary = yield* MigrationBoundary
       const barrier = yield* MigrationBarrier
+      if (neki) yield* barrier(connection)
       yield* sql`CREATE TABLE IF NOT EXISTS cluster_runners (
       machine_id SERIAL PRIMARY KEY,
       address VARCHAR(255) NOT NULL,
@@ -224,6 +225,7 @@ export const nekiMigrator = ({
           "CREATE TABLE IF NOT EXISTS actor_migration_steps (migration_id integer NOT NULL, step integer NOT NULL, statement text NOT NULL, completed boolean NOT NULL DEFAULT false, PRIMARY KEY (migration_id, step))",
         ],
       ] as const) {
+        yield* barrier(connection)
         yield* direct.unsafe(ddl)
         yield* boundary(`bootstrap:${name}:ddl`)
         yield* barrier(connection)
@@ -312,6 +314,14 @@ export const nekiMigrator = ({
           Effect.provideService(SqlClient.SqlClient, client),
           Effect.provideService(MigrationResuming, progress?.started === true),
         )
+        const [removed] = yield* direct<{ exists: boolean }>`SELECT EXISTS (
+          SELECT 1 FROM actor_migration_steps WHERE migration_id = ${id} AND step > ${step}
+        ) AS exists`
+        if (removed?.exists === true)
+          return yield* new Migrator.MigrationError({
+            kind: "BadState",
+            message: `Migration ${id} removed steps after it started`,
+          })
         yield* direct`INSERT INTO actor_migrations (migration_id, name) VALUES (${id}, ${name})`
         yield* boundary(`${id}:recorded`)
         applied.push([id, name])

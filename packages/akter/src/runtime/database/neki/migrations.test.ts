@@ -107,23 +107,40 @@ const run = (url: string, effect = migrate, neki = true) =>
   )
 
 /** A real child pauses after the database operation; SIGKILL cannot release its lock in a finalizer. */
-const child = Effect.fnUntraced(function* (url: string, point?: string) {
+const child = Effect.fnUntraced(function* (
+  url: string,
+  point?: string,
+  coordinationUrl?: string,
+  neki = true,
+) {
   const code = `
-    import { Effect, ManagedRuntime, Redacted } from "effect";
+    import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
     import { Database } from "./packages/akter/src/runtime/layer.ts";
     import { migrate } from "./packages/akter/src/runtime/database/migrations.ts";
+    import { Coordination } from "./packages/akter/src/runtime/database/coordination.ts";
     import { MigrationBoundary, prepareRunnerStorage } from "./packages/akter/src/runtime/database/neki/migrations.ts";
     import { ShardingConfig } from "effect/cluster";
-    const runtime = ManagedRuntime.make(Database.postgres({url: Redacted.make(process.env.MIGRATION_URL), neki: true, offTurnConnections: 1}));
+    import { SqlClient } from "effect/sql";
+    const boundary = p => p === process.env.MIGRATION_POINT ? Effect.sync(() => console.log("READY")).pipe(Effect.andThen(Effect.never)) : Effect.void;
+    const prepare = Effect.gen(function* () {
+      const sql = (yield* Coordination) ?? (yield* SqlClient.SqlClient);
+      yield* prepareRunnerStorage.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    });
+    const runtime = ManagedRuntime.make(Database.postgres({url: Redacted.make(process.env.MIGRATION_URL), neki: process.env.MIGRATION_NEKI === "true", offTurnConnections: 1, coordination: process.env.COORDINATION_URL ? {url: Redacted.make(process.env.COORDINATION_URL), maxConnections: 1} : undefined}).pipe(Layer.provide(Layer.succeed(MigrationBoundary, boundary))));
     try {
-      const result = await runtime.runPromise(migrate.pipe(Effect.tap(() => prepareRunnerStorage), Effect.provideService(ShardingConfig.ShardingConfig, {...ShardingConfig.defaults, shardLockDisableAdvisory: true}), Effect.provideService(MigrationBoundary, p => p === process.env.MIGRATION_POINT ? Effect.sync(() => console.log("READY")).pipe(Effect.andThen(Effect.never)) : Effect.void)));
+      const result = await runtime.runPromise(migrate.pipe(Effect.tap(() => prepare), Effect.provideService(ShardingConfig.ShardingConfig, {...ShardingConfig.defaults, shardLockDisableAdvisory: true}), Effect.provideService(MigrationBoundary, boundary)));
       console.log("RESULT " + JSON.stringify(result));
     } finally { await runtime.dispose(); }
   `
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   return yield* spawner.spawn(
     ChildProcess.make("bun", ["-e", code], {
-      env: { MIGRATION_URL: url, MIGRATION_POINT: point ?? "" },
+      env: {
+        MIGRATION_URL: url,
+        MIGRATION_POINT: point ?? "",
+        COORDINATION_URL: coordinationUrl ?? "",
+        MIGRATION_NEKI: String(neki),
+      },
       extendEnv: true,
       stderr: "inherit",
     }),
@@ -384,6 +401,104 @@ const describeMigrations = (neki: boolean) => {
 describe("Neki migration protocol on real Postgres", () => {
   describeMigrations(false)
 
+  for (const neki of [false, true]) {
+    it(`serializes six fresh process starts with a separate coordination database in ${neki ? "Neki protocol" : "Postgres"} mode`, () =>
+      harness.runPromise(
+        withDatabase((url, data) =>
+          withDatabase((coordinationUrl, control) =>
+            Effect.gen(function* () {
+              const runners = yield* Effect.forEach(
+                Array.from({ length: 6 }),
+                () => child(url, undefined, coordinationUrl, neki),
+                { concurrency: "unbounded" },
+              )
+              const exits = yield* Effect.forEach(runners, (runner) => runner.exitCode, {
+                concurrency: "unbounded",
+              })
+              expect(exits).toEqual([0, 0, 0, 0, 0, 0])
+              expect(
+                (yield* query(
+                  control,
+                  "SELECT migration_id, name FROM actor_coordination_migrations ORDER BY migration_id",
+                )).rows,
+              ).toEqual([{ migration_id: 1, name: "coordination" }])
+              expect(
+                (yield* query(
+                  control,
+                  "SELECT to_regclass('cluster_runners')::text AS runners, to_regclass('cluster_locks')::text AS locks, to_regclass('actor_migrations')::text AS data",
+                )).rows,
+              ).toEqual([{ runners: "cluster_runners", locks: "cluster_locks", data: null }])
+              expect(
+                (yield* query(
+                  data,
+                  "SELECT to_regclass('cluster_runners')::text AS runners, to_regclass('actor_coordination_migrations')::text AS control",
+                )).rows,
+              ).toEqual([{ runners: null, control: null }])
+              expect(
+                (yield* query(
+                  data,
+                  "SELECT migration_id FROM actor_migrations ORDER BY migration_id",
+                )).rows.map(({ migration_id }) => migration_id),
+              ).toEqual(expectedIds)
+            }),
+          ),
+        ),
+      ))
+  }
+
+  it("replays every coordination bootstrap boundary after SIGKILL and admits a waiting owner", () =>
+    harness.runPromise(
+      withDatabase((url, data) =>
+        withDatabase((coordinationUrl, control) =>
+          Effect.gen(function* () {
+            for (const point of [
+              "coordination:history:ddl",
+              "coordination:history:propagated",
+              "coordination:resources:ddl",
+              "coordination:resources:propagated",
+              "coordination:recorded",
+            ]) {
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const owner = yield* child(url, point, coordinationUrl)
+                  yield* ready(owner)
+                  const contender = yield* child(url, undefined, coordinationUrl)
+                  const completed = yield* Effect.forkChild(contender.exitCode)
+                  yield* query(
+                    control,
+                    "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory'",
+                  ).pipe(
+                    Effect.flatMap((waiting) =>
+                      waiting.rowCount! > 0 ? Effect.void : Effect.fail("not waiting"),
+                    ),
+                    Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+                  )
+                  expect(completed.pollUnsafe()).toBeUndefined()
+                  yield* owner.kill({ killSignal: "SIGKILL" })
+                  expect(String((yield* owner.exitCode.pipe(Effect.flip)).cause)).toContain(
+                    "SIGKILL",
+                  )
+                  expect(yield* Fiber.join(completed)).toBe(0)
+                }),
+              )
+            }
+            expect(
+              (yield* query(
+                control,
+                "SELECT migration_id, name FROM actor_coordination_migrations ORDER BY migration_id",
+              )).rows,
+            ).toEqual([{ migration_id: 1, name: "coordination" }])
+            expect(
+              (yield* query(
+                data,
+                "SELECT migration_id FROM actor_migrations ORDER BY migration_id",
+              )).rows.map(({ migration_id }) => migration_id),
+            ).toEqual(expectedIds)
+          }),
+        ),
+      ),
+    ))
+
   it("replays a migration whose statements already carry their own existence guards", () =>
     harness.runPromise(
       withDatabase((url, pool) =>
@@ -416,6 +531,52 @@ describe("Neki migration protocol on real Postgres", () => {
         }),
       ),
     ))
+
+  for (const completed of [false, true]) {
+    it(`refuses a removed ${completed ? "completed" : "pending"} journaled step without recording the migration`, () =>
+      harness.runPromise(
+        withDatabase((url, pool) =>
+          Effect.gen(function* () {
+            const first = Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql`CREATE TABLE immutable_steps (id integer PRIMARY KEY)`
+            })
+            const original = migrator({
+              "0001_immutable": first.pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    const sql = yield* SqlClient.SqlClient
+                    yield* sql`ALTER TABLE immutable_steps ADD COLUMN note text`
+                  }),
+                ),
+              ),
+            }).pipe(
+              Effect.provideService(MigrationBoundary, (point) =>
+                point === `1:2:${completed ? "completed" : "pending"}`
+                  ? Effect.die(new Error("stop before recording"))
+                  : Effect.void,
+              ),
+            )
+            const stopped = yield* Effect.exit(run(url, original))
+            expect(String(stopped)).toContain("stop before recording")
+            const changed = yield* Effect.exit(run(url, migrator({ "0001_immutable": first })))
+            expect(String(changed)).toContain("removed steps after it started")
+            expect((yield* query(pool, "SELECT migration_id FROM actor_migrations")).rows).toEqual(
+              [],
+            )
+            expect(
+              (yield* query(
+                pool,
+                "SELECT step, completed FROM actor_migration_steps ORDER BY step",
+              )).rows,
+            ).toEqual([
+              { step: 1, completed: true },
+              { step: 2, completed },
+            ])
+          }),
+        ),
+      ))
+  }
 
   it("starts six Actors.layer runners together on a completely fresh Postgres database", () =>
     harness.runPromise(
