@@ -1,6 +1,7 @@
 import { BetterAuth, Database } from "@alchemy.run/better-auth"
 import { applyMigrations } from "@alchemy.run/better-auth/Migrate"
 import { RuntimeContext, unpackEnvValue } from "alchemy/RuntimeContext"
+import { getCurrentDBAdapterAsyncLocalStorage } from "@better-auth/core/context"
 import { apiKey } from "@better-auth/api-key"
 import { sso } from "@better-auth/sso"
 import { organization } from "better-auth/plugins"
@@ -16,13 +17,21 @@ import { SqlClient } from "effect/sql"
 import { Email } from "./email.ts"
 import type { ApiOptions } from "./config.ts"
 
+/**
+ * Better Auth sends mail from inside its open database transaction, and Bun
+ * keeps that transaction's async-local store attached to every task the Effect
+ * runtime schedules from there. Once the transaction commits, later sessions
+ * read the committed transaction and fail, so each send runs outside the store.
+ */
 const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
   const email = yield* Email
   const context = yield* Effect.context<never>()
   const pending = new Set<Promise<unknown>>()
   yield* Effect.addFinalizer(() => Effect.promise(() => Promise.allSettled(pending)))
   const send = (to: string, subject: string, text: string) =>
-    Effect.runPromiseWith(context)(email.send({ to, subject, text }))
+    getCurrentDBAdapterAsyncLocalStorage().then((store) =>
+      store.exit(() => Effect.runPromiseWith(context)(email.send({ to, subject, text }))),
+    )
   const ac = createAccessControl({
     ...defaultStatements,
     apiKey: ["create", "read", "update", "delete"],

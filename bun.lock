@@ -24,6 +24,7 @@
         "@akter/cloud-api": "workspace:*",
         "@alchemy.run/better-auth": "2.0.0-beta.80",
         "@better-auth/api-key": "1.7.7",
+        "@better-auth/core": "1.7.7",
         "@better-auth/sso": "1.7.7",
         "@distilled.cloud/aws": "1.0.0-rc.13",
         "@distilled.cloud/core": "1.0.0-rc.13",

@@ -1,4 +1,5 @@
 import { Postgres } from "@alchemy.run/better-auth/Postgres"
+import { getCurrentDBAdapterAsyncLocalStorage } from "@better-auth/core/context"
 import { PgClient } from "@effect/sql-pg"
 import {
   Clock,
@@ -19,7 +20,7 @@ import { Pool } from "pg"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import type * as AuthModule from "./auth.ts"
 import type { ApiOptions } from "./config.ts"
-import { localEmail } from "./email.ts"
+import { Email, localEmail } from "./email.ts"
 import { type Idp, startIdp, type TokenFault } from "./idp.ts"
 
 type Json = Schema.Json
@@ -76,6 +77,7 @@ class Fixture extends Context.Service<
     readonly auth: AuthModule.Auth["Service"]
     readonly sql: SqlClient.SqlClient
     readonly enterpriseOrganizations: Array<string>
+    readonly mailStores: Array<unknown>
   }
 >()("@akter/api/auth.test/Fixture") {}
 
@@ -111,7 +113,21 @@ const FixtureLive = Layer.effect(
       emailFrom: "Akter <auth@localhost>",
     }
     const sqlLayer = PgClient.layer({ url: Redacted.make(url), maxConnections: 4 })
-    const emailLayer = localEmail.pipe(Layer.provide(sqlLayer))
+    const mailStores: Array<unknown> = []
+    const recordingEmail = Layer.effect(
+      Email,
+      Effect.gen(function* () {
+        const inner = yield* Email
+        const store = yield* Effect.promise(getCurrentDBAdapterAsyncLocalStorage)
+        return Email.of({
+          send: (message) =>
+            Effect.sync(() => mailStores.push(store.getStore())).pipe(
+              Effect.andThen(inner.send(message)),
+            ),
+        })
+      }),
+    )
+    const emailLayer = recordingEmail.pipe(Layer.provide(localEmail.pipe(Layer.provide(sqlLayer))))
     const services = yield* Layer.build(
       Auth.layer(options).pipe(
         Layer.provideMerge(
@@ -127,6 +143,7 @@ const FixtureLive = Layer.effect(
       auth,
       sql: Context.get(services, SqlClient.SqlClient),
       enterpriseOrganizations,
+      mailStores,
     })
   }).pipe(Effect.orDie),
 )
@@ -924,6 +941,26 @@ describe("password sign-up", () => {
           readonly emailVerified: boolean
         }>`SELECT "emailVerified" FROM "user" WHERE email = ${email}`.pipe(Effect.orDie)
         expect(rows[0]?.emailVerified).toBe(false)
+      }),
+    ))
+})
+
+describe("outgoing mail", () => {
+  it("is sent outside Better Auth's transaction store, so later sessions never read a committed transaction", () =>
+    run(
+      Effect.gen(function* () {
+        const { mailStores } = yield* Fixture
+        const user = yield* verifiedUser("mailer")
+        const organization = yield* createOrganization(user.browser, "mail")
+        const invited = yield* user.browser.post("/auth/organization/invite-member", {
+          email: `invitee-${next()}@example.test`,
+          role: "member",
+          organizationId: organization.id,
+        })
+
+        expect(invited.status).toBe(200)
+        expect(mailStores.length).toBeGreaterThanOrEqual(2)
+        expect(mailStores.every((store) => store === undefined)).toBe(true)
       }),
     ))
 })
