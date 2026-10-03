@@ -47,6 +47,8 @@ Stripe is accessed only through an Effect service backed by `@distilled.cloud/st
 
 Stripe's portal cannot update usage-based subscriptions with this base-plus-meter-price shape. A controlled subscription-change job replaces the existing subscription's tier items under a stable request identity and reconciles canonical state; it never creates a second subscription or grants the requested tier before payment/provider state permits it. The managed portal configuration handles billing details, tax IDs, payment methods, invoice history and cancellation. Checkout lifecycles prevent concurrent initial sessions from creating duplicate subscriptions.
 
+An ambiguous failed checkout may be retried only with its original request identity and identical input. The retry uses the same provider idempotency key and recovers the recorded provider session before creating anything. A different checkout remains fenced until the original outcome is known. Checkout and plan changes refuse a catalog fingerprint that differs from the active pricing configuration; subscription changes invoice immediately and remain pending if payment is incomplete.
+
 Webhooks are verified against their exact raw bytes with Stripe's signature helpers before any update. Durable event identities make retries no-ops. Billing synchronization reads canonical provider subscription state rather than accepting out-of-order snapshots as current authority. Customer and subscription identities must match the recorded organization binding before entitlements change. Plan and entitlements commit together. Failed payment removes paid entitlements according to the configured policy.
 
 The local development stack uses a SQL-backed local Stripe service, creates no real provider objects and needs no real credentials. Fake-HTTP tests exercise the Distilled adapter's wire boundary. These tests are not evidence of real Stripe delivery, tax registration, Neki locality or a production benchmark.
@@ -58,6 +60,8 @@ The edge checks the organization's current entitlements and durable usage/reserv
 Paid organizations can set a nullable monthly spend limit. Admission estimates the next unit using the same configured price rules as usage reporting. Concurrent connections use organization-wide durable leases. A connection whose lease cannot be renewed is closed before it can continue after expiry. Unknown billing bindings fail closed.
 
 Quota, spend-limit and connection-limit refusals have distinct typed reasons and are not committed receipts or billable reads. The cloud API exposes plan, payment method, invoices, spend limit, used/included/overage units, daily committed commands and project usage/cost estimates, and identifies provisional paid pricing.
+
+Admission locks the billing-account projection while deciding on a plan or spend limit. Watches acquire a lease before the runner performs their first read. Hosted noncommand members reject a command identity rather than retaining an unmatchable reservation. Uncorrelatable content grants, credentialed nonmember routes and anonymous unkeyed member POSTs are explicitly unsupported until their accounting protocol exists.
 
 ## Alternatives
 

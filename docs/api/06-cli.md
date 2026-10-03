@@ -58,6 +58,7 @@ Operate a running deployment:
 
 Control plane:
   tenants    Manage the tenant directory
+  billing    Set up the billing catalog
 ```
 
 ## Operator commands
