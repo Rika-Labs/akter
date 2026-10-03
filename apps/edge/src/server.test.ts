@@ -29,7 +29,7 @@ import {
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
-import { SUBPROTOCOL } from "@rikalabs/akter"
+import { ActorUnavailable, SUBPROTOCOL } from "@rikalabs/akter"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import type { EdgeOptions } from "./config.ts"
 import { makeEdge } from "./server.ts"
@@ -343,6 +343,14 @@ const spoofed = {
   "cf-connecting-ipv6": "2001:db8::13",
 }
 
+/** A session's `end` frame, decoding only when its reason is `ActorUnavailable`. */
+const unavailableEnd = Schema.fromJsonString(
+  Schema.Struct({
+    t: Schema.Literal("end"),
+    error: Schema.Struct({ reason: Schema.toCodecJson(ActorUnavailable) }),
+  }),
+)
+
 /** The client-supplied attribution headers a runner must never receive. */
 const attributionNames = [
   "cf-connecting-ip",
@@ -587,10 +595,11 @@ describe("Hosted edge client address", () => {
         expect(yield* send("/ping")).toBe(503)
 
         const session = openSession(edge.url)
-        expect(JSON.parse(yield* session.first)).toMatchObject({
-          t: "end",
-          error: { reason: { _tag: "ActorUnavailable" } },
-        })
+        const ended = yield* Schema.decodeEffect(unavailableEnd)(yield* session.first).pipe(
+          Effect.orDie,
+        )
+
+        expect(ended.error.reason).toBeInstanceOf(ActorUnavailable)
         expect(yield* session.closed).toBe(1013)
         expect(runner.seen).toHaveLength(0)
       }),

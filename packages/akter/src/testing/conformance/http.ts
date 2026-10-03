@@ -733,16 +733,11 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             { concurrency: "unbounded" },
           )
           expect(replies.map((reply) => reply.body)).toEqual(Array.from({ length: 8 }, () => 1))
-          expect(replies.map((reply) => reply.headers.get("durable-replayed")).sort()).toEqual([
-            "false",
-            "true",
-            "true",
-            "true",
-            "true",
-            "true",
-            "true",
-            "true",
-          ])
+          expect(
+            replies
+              .map((reply) => reply.headers.get("durable-replayed"))
+              .sort((left, right) => (left ?? "").localeCompare(right ?? "")),
+          ).toEqual(["false", "true", "true", "true", "true", "true", "true", "true"])
           expect(yield* receipts(tenant, "HttpRoom", "concurrent-replay")).toBe(1)
         }),
       ),
