@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { Migrator, SqlClient } from "effect/sql"
+import { boundedPool } from "./bounded.ts"
 
 /** The deployment's unsharded authority, shared by every runner regardless of its data shard. */
 export const Coordination = Context.Reference<SqlClient.SqlClient | undefined>(
@@ -21,7 +22,7 @@ export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Coordination,
     Effect.gen(function* () {
       if (options === undefined) return undefined
-      const sql = yield* PgClient.make(options)
+      const sql = yield* boundedPool(options)
       yield* Migrator.make({})({
         table: "actor_coordination_migrations",
         loader: Migrator.fromRecord({ "0001_coordination": prepareCoordination(sql) }),
