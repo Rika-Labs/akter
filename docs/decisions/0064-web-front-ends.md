@@ -29,6 +29,7 @@ Akter needs a public website (landing, docs, examples, benchmarks, pricing) and 
 - The console's old SSR form handlers and fixture pages are replaced; `apps/e2e` follows the new console.
 - `@akter/ui` is consumed as TypeScript source by both apps' StyleX compilers, so its Babel-to-`dist` build is retired.
 - Billing screens describe Stripe (decided separately); no provider SDK enters the front ends.
+- The public docs are published on Mintlify, not rendered by `apps/site` ([ADR 0080](0080-public-docs-on-mintlify.md)).
 
 ## Alternatives
 
