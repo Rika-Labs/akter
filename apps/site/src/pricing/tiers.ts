@@ -1,4 +1,4 @@
-import { consoleUrl, contactUrl } from "../site.ts"
+import { consoleUrl, contactUrl, quickstartUrl } from "../site.ts"
 
 /** One plan card: its price, what it is for, what it includes, and where its button goes. */
 export interface Tier {
@@ -28,7 +28,7 @@ export const tiers: ReadonlyArray<Tier> = [
       "Community on GitHub",
     ],
     cta: "Read the quickstart",
-    href: "/docs",
+    href: quickstartUrl,
     boxes: 1,
   },
   {
