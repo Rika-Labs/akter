@@ -1,17 +1,10 @@
-import {
-  Clock,
-  Crypto,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Option,
-  Schema,
-  type Scope,
-} from "effect"
+import { Clock, Crypto, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Scope } from "effect"
 import { Actor, ActorError, Actors, MailboxFull, RunnerAtCapacity } from "../../index.ts"
-import { ActorTest } from "../actor-test.ts"
+import { ACTIVATION_MAILBOX } from "../../runtime/entity/register.ts"
+import type { Request } from "../../runtime/request.ts"
+import { TurnConnections } from "../../runtime/turn/pipeline.ts"
+import { TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
+import { ActorTest, type TestOptions } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 
 const Touch = Actor.command("Touch", { success: Schema.Finite })
@@ -43,6 +36,13 @@ const Sleepy = Actor.make("CapacitySleepy", {
   state: count,
   api: { Touch },
   policy: { deliveryTimeout: "20 seconds", hibernateAfter: "1 second" },
+})
+
+const Hot = Actor.make("CapacityHot", {
+  key: Schema.NonEmptyString,
+  state: count,
+  api: { Touch },
+  policy: { deliveryTimeout: "30 seconds" },
 })
 
 const WarmUp = Actor.make("CapacityWarmUp", { key: Schema.NonEmptyString, api: { Touch } })
@@ -99,6 +99,16 @@ const CapacityLive = Layer.mergeAll(
       Hold: () => Effect.suspend(() => hold),
     }),
   ),
+  Hot.toLayer(
+    Effect.succeed({
+      Touch: Effect.fnUntraced(function* () {
+        const turn = yield* Hot.Turn
+        yield* turn.state.set({ count: turn.state.count + 1 })
+
+        return turn.state.count
+      }),
+    }),
+  ),
   WarmUp.toLayer(Effect.succeed({ Touch: () => Effect.succeed(0) })),
 )
 
@@ -109,7 +119,11 @@ const CapacityLive = Layer.mergeAll(
  */
 const withCapacity = <A, E>(
   environment: ConformanceEnvironment,
-  maxResidentActors: number,
+  limits: {
+    readonly maxResidentActors: number
+    readonly admission?: TestOptions["admission"]
+    readonly at?: (point: TurnPoint, request: Request) => Effect.Effect<void>
+  },
   body: Effect.Effect<A, E, Actors | ActorTest | Scope.Scope>,
 ) =>
   environment.run(
@@ -121,7 +135,13 @@ const withCapacity = <A, E>(
         Layer.fresh(
           CapacityLive.pipe(
             Layer.provideMerge(
-              ActorTest.layer({ database, maxResidentActors: maxResidentActors + 1 }),
+              ActorTest.layer({
+                database,
+                maxResidentActors: limits.maxResidentActors + 1,
+                admission: limits.admission,
+              }).pipe(
+                Layer.provide(Layer.succeed(TurnHooks, { at: limits.at ?? (() => Effect.void) })),
+              ),
             ),
             Layer.provide(Layer.succeed(Crypto.Crypto, crypto)),
             Layer.orDie,
@@ -146,7 +166,12 @@ const reasonOf = (exit: Exit.Exit<unknown, unknown>) => {
     : "other"
 }
 
-/** Capacity cases: a caller over capacity gets `RunnerAtCapacity` after `deliveryTimeout`, while a resident bounded actor with a full mailbox reports `MailboxFull`. */
+/**
+ * Capacity cases: a caller over capacity gets `RunnerAtCapacity` after
+ * `deliveryTimeout`, a resident bounded actor with a full mailbox reports
+ * `MailboxFull`, and a full runner or default-bounded activation refuses at
+ * once with `ActorUnavailable`.
+ */
 export const capacityConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull",
@@ -154,7 +179,7 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ environment, expect }) =>
       withCapacity(
         environment,
-        8,
+        { maxResidentActors: 8 },
         Effect.gen(function* () {
           const test = yield* ActorTest
           const ids = Array.from({ length: 32 }, (_, index) => `actor-${index}`)
@@ -208,7 +233,7 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ environment, expect }) =>
       withCapacity(
         environment,
-        1,
+        { maxResidentActors: 1 },
         Effect.gen(function* () {
           expect(yield* (yield* Bounded.get("resident")).Touch()).toBe(1)
           const exit = yield* (yield* Bounded.get("waiting")).Touch().pipe(Effect.exit)
@@ -223,7 +248,7 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
     run: ({ environment, expect }) =>
       withCapacity(
         environment,
-        10,
+        { maxResidentActors: 10 },
         Effect.gen(function* () {
           const actor = yield* Bounded.get("busy")
           const reached = yield* Deferred.make<void>()
@@ -243,12 +268,189 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "a runner holding admission.concurrency commands refuses one that waits out admission.wait with ActorUnavailable, and that id runs exactly once after a slot frees",
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      withCapacity(
+        environment,
+        { maxResidentActors: 8, admission: { concurrency: 2, wait: "50 millis" } },
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const first = yield* test.pauseNext("beforeDelivery")
+          const second = yield* test.pauseNext("beforeDelivery")
+          const heldA = yield* (yield* Unbounded.get("held-a")).Touch().pipe(Effect.forkScoped)
+          const heldB = yield* (yield* Unbounded.get("held-b")).Touch().pipe(Effect.forkScoped)
+          yield* first.reached
+          yield* second.reached
+
+          const refused = yield* Unbounded.get("refused")
+          const touch = refused.Touch()
+          const exit = yield* touch.pipe(Effect.exit)
+          expect(reasonOf(exit)).toBe("ActorUnavailable")
+
+          const refusal = Exit.findErrorOption(exit).pipe(
+            Option.filter(Schema.is(ActorError)),
+            Option.getOrThrow,
+          )
+
+          expect(refusal.isRetryable).toBe(true)
+          expect(Option.isSome(refusal.retryAfter)).toBe(true)
+          expect(yield* test.inspect(refused.ref)).toMatchObject({
+            generation: undefined,
+            receipts: 0,
+          })
+
+          yield* first.release
+          yield* second.release
+          expect(yield* Fiber.join(heldA)).toBe(1)
+          expect(yield* Fiber.join(heldB)).toBe(1)
+
+          expect(yield* touch).toBe(1)
+          expect(yield* touch).toBe(1)
+          expect(yield* test.inspect(refused.ref)).toMatchObject({
+            receipts: 1,
+            state: { count: 1 },
+          })
+        }),
+      ),
+  },
+  {
+    name: "interrupting a command waiter does not free its runtime admission slot or cancel its accepted command",
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      withCapacity(
+        environment,
+        { maxResidentActors: 8, admission: { concurrency: 1, wait: "50 millis" } },
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actor = yield* Unbounded.get("interrupted")
+          const pause = yield* test.pauseNext("beforeDelivery")
+          const touch = actor.Touch()
+          const caller = yield* touch.pipe(Effect.forkScoped)
+          yield* pause.reached
+          yield* Fiber.interrupt(caller)
+          const other = yield* Unbounded.get("still-full")
+          expect(reasonOf(yield* other.Touch().pipe(Effect.exit))).toBe("ActorUnavailable")
+          expect(yield* test.inspect(other.ref)).toMatchObject({ receipts: 0 })
+          yield* pause.release
+          yield* Effect.sleep("10 millis").pipe(
+            Effect.repeat({
+              until: Effect.fnUntraced(function* () {
+                return (yield* test.inspect(actor.ref)).receipts === 1
+              }),
+            }),
+          )
+          expect(yield* touch).toBe(1)
+          expect(yield* test.inspect(actor.ref)).toMatchObject({ receipts: 1, state: { count: 1 } })
+          expect(yield* other.Touch()).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "a full turn checkout queue refuses before the handler or fence and retries the same id exactly once after capacity returns",
+    requiresIndependentConnections: true,
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      withCapacity(
+        environment,
+        { maxResidentActors: 8 },
+        Effect.gen(function* () {
+          const turns = Option.getOrThrow(yield* Effect.serviceOption(TurnConnections))
+          const test = yield* ActorTest
+          const held = yield* Scope.fork(yield* Effect.scope)
+          yield* Effect.forEach(Array.from({ length: 10 }), () =>
+            turns.lease.pipe(Scope.provide(held)),
+          )
+          const release = yield* Deferred.make<void>()
+          const queued = yield* Effect.forEach(Array.from({ length: 64 }), () =>
+            Effect.scoped(Effect.andThen(turns.lease, Deferred.await(release))).pipe(
+              Effect.forkScoped,
+            ),
+          )
+          yield* Effect.yieldNow.pipe(
+            Effect.repeat({ until: () => turns.sessions().waiting === 64 }),
+          )
+          const actor = yield* Unbounded.get("pool-refused")
+          const touch = actor.Touch()
+          const exit = yield* touch.pipe(Effect.exit)
+          expect(reasonOf(exit)).toBe("ActorUnavailable")
+          expect(yield* test.inspect(actor.ref)).toMatchObject({
+            generation: undefined,
+            receipts: 0,
+          })
+          for (const fiber of queued) yield* Fiber.interrupt(fiber)
+          yield* Scope.close(held, Exit.void)
+          expect(yield* touch).toBe(1)
+          expect(yield* touch).toBe(1)
+          expect(yield* test.inspect(actor.ref)).toMatchObject({ receipts: 1, state: { count: 1 } })
+        }),
+      ),
+  },
+  {
+    name: "an activation holding its default mailbox bound refuses the next command at once with ActorUnavailable, never MailboxFull, and that command never runs",
+    requiresIndependentConnections: true,
+    timeoutMs: 90_000,
+    run: ({ environment, expect }) => {
+      let waiting = 0
+
+      return withCapacity(
+        environment,
+        {
+          maxResidentActors: 8,
+          admission: { concurrency: ACTIVATION_MAILBOX * 2 },
+          at: (point, request) =>
+            Effect.sync(() => {
+              if (point === "queued" && request.ref.id === "hot") waiting += 1
+            }),
+        },
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const actor = yield* Hot.get("hot")
+          const paused = yield* test.pauseNext("beforeHandler")
+          const held = yield* actor.Touch().pipe(Effect.forkScoped)
+          yield* paused.reached
+
+          const queued = yield* Effect.forEach(
+            Array.from({ length: ACTIVATION_MAILBOX - 1 }),
+            (_, index) =>
+              Effect.gen(function* () {
+                const fiber = yield* actor.Touch().pipe(Effect.forkScoped)
+                yield* Effect.yieldNow.pipe(Effect.repeat({ until: () => waiting === index + 2 }))
+
+                return fiber
+              }),
+          )
+
+          const overflow = actor.Touch()
+          const exit = yield* overflow.pipe(Effect.exit)
+          expect(reasonOf(exit)).toBe("ActorUnavailable")
+          expect(waiting).toBe(ACTIVATION_MAILBOX)
+
+          yield* paused.release
+          yield* Fiber.join(held)
+          const values = yield* Effect.forEach(queued, Fiber.join)
+          expect(values.length).toBe(ACTIVATION_MAILBOX - 1)
+          expect(yield* test.inspect(actor.ref)).toMatchObject({
+            receipts: ACTIVATION_MAILBOX,
+            state: { count: ACTIVATION_MAILBOX },
+          })
+
+          expect(yield* overflow).toBe(ACTIVATION_MAILBOX + 1)
+          expect(yield* test.inspect(actor.ref)).toMatchObject({
+            receipts: ACTIVATION_MAILBOX + 1,
+            state: { count: ACTIVATION_MAILBOX + 1 },
+          })
+        }),
+      )
+    },
+  },
+  {
     name: "a caller over capacity succeeds on retry once an idle actor hibernates",
     timeoutMs: 40_000,
     run: ({ environment, expect }) =>
       withCapacity(
         environment,
-        2,
+        { maxResidentActors: 2 },
         Effect.gen(function* () {
           const test = yield* ActorTest
           expect(yield* (yield* Sleepy.get("first")).Touch()).toBe(1)

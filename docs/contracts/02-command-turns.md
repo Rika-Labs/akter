@@ -7,6 +7,8 @@
 
 External admission MUST check current authorization and command expiry under the [receipt contract](04-receipts.md). Trusted internal redelivery of accepted work remains recoverable after originating-caller revocation or external retry expiry.
 
+A runner MAY refuse overload before durable admission. Such a refusal MUST run no handler and write no receipt, MUST be retryable `ActorUnavailable` with a retry delay, and MUST preserve the caller's command identity on retry. Accepted turns retain every transaction and receipt guarantee below. A caller stopping its wait MUST NOT free the executing attempt's admission slot or cancel its turn. The runtime's bounded command queue and each storage checkout queue are transient scheduling controls, never durable authority.
+
 Every admitted command attempt MUST execute within one framework-owned transaction, in this order:
 
 1. lock and validate the generation fence;

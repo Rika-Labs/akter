@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import type { SqlClient } from "effect/sql"
+import { boundedPool } from "./bounded.ts"
 
 /**
  * The primary's WAL insert position as a decimal string. Read on a turn's
@@ -29,7 +30,7 @@ export const replicaLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Effect.gen(function* () {
       if (options === undefined) return undefined
 
-      return yield* PgClient.make(options)
+      return yield* boundedPool(options)
     }),
   ).pipe(Layer.provide(Reactivity.layer))
 

@@ -18,6 +18,7 @@ import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
+import { isPoolRefusal } from "../database/bounded.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -319,6 +320,8 @@ export interface Stopped<W extends Delivery> {
   readonly orphan: ReadonlyArray<W> | undefined
   readonly cause: Cause.Cause<unknown>
   readonly committed: boolean
+  /** The turn never leased a session, so no fence statement or handler was run. */
+  readonly poolRefused?: boolean
 }
 
 class RolledBack {
@@ -973,6 +976,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   let current: ReadonlyArray<W> = run.first
   let orphan: ReadonlyArray<W> | undefined
   let answering = false
+  let poolRefused = false
 
   const locate = (batch: ReadonlyArray<W>, following: ReadonlyArray<W> | undefined) => {
     current = batch
@@ -1070,7 +1074,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       Effect.gen(function* () {
         const scope = yield* Effect.scope
         const leasing = yield* Clock.currentTimeMillis
-        const connection = yield* turns.lease
+        const connection = yield* turns.lease.pipe(
+          Effect.tapError((error) =>
+            Effect.sync(() => {
+              poolRefused = isPoolRefusal(error)
+            }),
+          ),
+        )
         yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
         let open = false
         const deferred: Array<string> = []
@@ -1282,5 +1292,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.failCause(exit.cause)
 
-  return { batch: current, orphan, cause: exit.cause, committed: answering } satisfies Stopped<W>
+  return {
+    batch: current,
+    orphan,
+    cause: exit.cause,
+    committed: answering,
+    poolRefused,
+  } satisfies Stopped<W>
 })

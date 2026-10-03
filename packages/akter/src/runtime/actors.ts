@@ -33,6 +33,15 @@ export class InternalActors extends Context.Service<
     readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
     readonly execute: (request: Request) => Effect.Effect<Executed, ActorError>
     /**
+     * Whether `execute` would refuse a served command without waiting, before
+     * its request is read or decoded.
+     */
+    readonly overloaded: () => boolean
+    /** Bounds command request processing before authentication or body parsing starts. */
+    readonly admitRequest: <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | ActorError, R>
+    /**
      * Delivers a committed intent. The obligation was admitted by its sending
      * turn, so external access and command-id expiry are not checked again.
      */

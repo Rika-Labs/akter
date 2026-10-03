@@ -165,6 +165,8 @@ export interface ConformanceEnvironment {
   /** Builds a new runtime without installing it; warm it explicitly. */
   readonly build: (options?: {
     readonly retryWindowMs?: number
+    /** Deployment admission settings for cases that deliberately queue more than the defaults allow. */
+    readonly admission?: Options["admission"]
     readonly database?: ConformanceDatabase
     /** Queries read this streaming replica of `database` once it has caught up. */
     readonly replica?: Redacted.Redacted<string> | undefined
@@ -594,6 +596,7 @@ export const registerConformance = (options: {
             ActorTest.layer({
               database: overrides?.database ?? opened().database,
               maxConnections: 6,
+              admission: overrides?.admission,
               replica: overrides?.replica,
               as: User.make({ subject: "alice" }),
               authorize: (request) =>

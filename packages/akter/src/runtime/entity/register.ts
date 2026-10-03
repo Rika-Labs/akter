@@ -33,6 +33,7 @@ import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { activationMailbox } from "./mailbox.ts"
+import { overloaded } from "../admission.ts"
 import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
 import { activationOwner } from "../connections/owner.ts"
 import type { Authorize } from "../connections/streams.ts"
@@ -80,6 +81,14 @@ const RESTART_CAP = Duration.seconds(5)
 
 const restartDelay = (restarts: number) =>
   Duration.min(Duration.times(RESTART_BASE, 2 ** restarts), RESTART_CAP)
+
+/**
+ * The commands an activation holds, waiting and in its current batch, when its
+ * policy declares no `mailboxCapacity`. Cluster refuses the next, which
+ * dispatch answers `ActorUnavailable`: a hot actor's backlog then waits in its
+ * callers' retries, where it holds no memory or turn connection on this runner.
+ */
+export const ACTIVATION_MAILBOX = 1024
 
 /** The `outcome` attribute of `akter.turns` and of the turn span. */
 const outcomeOf = (outcome: Outcome, replayed = false) =>
@@ -793,7 +802,20 @@ export const registerActor = Effect.fnUntraced(function* (
       const recover: (
         stopped: Stopped<Waiting>,
       ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
-        Effect.fnUntraced(function* ({ batch, orphan, cause, committed }) {
+        Effect.fnUntraced(function* ({ batch, orphan, cause, committed, poolRefused }) {
+          if (poolRefused === true) {
+            mailbox.requeue(orphan ?? [])
+            yield* Effect.forEach(
+              batch,
+              (entry) => Deferred.fail(entry.reply, overloaded("runner")),
+              {
+                discard: true,
+              },
+            )
+
+            return
+          }
+
           if (committed || retryable(cause)) {
             if (!committed && batch.length > 1)
               mailbox.isolate(batch.map(({ request }) => request.commandId))
@@ -946,7 +968,10 @@ export const registerActor = Effect.fnUntraced(function* (
     {
       concurrency: 1,
       maxIdleTime: registration.policy.idleMs,
-      mailboxCapacity: registration.policy.mailboxCapacity,
+      mailboxCapacity:
+        registration.policy.mailboxCapacity === "unbounded"
+          ? ACTIVATION_MAILBOX
+          : registration.policy.mailboxCapacity,
       defectRetryPolicy: Schedule.forever,
     },
   )
