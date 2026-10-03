@@ -1,0 +1,48 @@
+# ADR 0070: Neki startup migrations use autocommit DDL and durable statement progress
+
+**Status:** accepted (2026-10-03); Neki execution remains unverified pending #66.
+
+**Responsibility:** run framework migrations under Neki's nontransactional, eventually propagated DDL semantics, and serialize first boot before the migration history table exists.
+
+**Authority:** design decision record.
+
+**Owner role:** runtime and verification.
+
+**Change policy:** supersede through a new ADR.
+
+## Context
+
+[Issue #487](https://github.com/rika-labs/akter/issues/487) requires fresh startup, upgrades and concurrent startup under Neki's DDL rules. DDL inside a transaction is not visible within that transaction and does not survive its commit. Router schema visibility is eventually consistent; `SELECT __neki.wait_for_ddl()` is the propagation barrier. [ADR 0057](0057-neki-suite-preparation.md) prepared turn sessions and the gated provider suite, but left framework migration DDL transactional.
+
+Effect's Migrator creates its history table before taking its transaction's table lock. Concurrent first boot on an empty Postgres database can therefore race on the system catalog even before framework migration execution begins. The historical migrations also drop and recreate tables, rename columns, replace constraints, and rewrite effect rows as job rows. Retrying an entire migration without statement progress would reapply a completed drop or read a table temporarily absent during reconstruction.
+
+## Decision
+
+1. `Database.postgres({ neki: true })` selects Neki turn-session configuration and the Neki startup migration runner. The existing internal `NekiTurnSessions` reference still selects both in the provider conformance backend. The default Postgres runner and PGlite continue using Effect's transactional Migrator and their existing migration ids.
+2. A Postgres-protocol runner reserves one off-turn connection and acquires startup coordination **before** creating `actor_migrations`. It keeps that session through migration completion. The default coordination is a session advisory lock with a fixed framework key; `MigrationCoordination` in `runtime/database/neki/migrations.ts` is the small scoped seam for replacement with the shard-safe lease mechanism. Postgres retains its transaction-bound `ACCESS EXCLUSIVE` history-table lock too. Before Effect Cluster storage is built, the same coordination prepares its default `cluster_runners` and, when row-lock coordination is enabled, `cluster_locks` tables. This avoids a second concurrent first-boot catalog race. Neki waits for those tables to propagate as well. When `Database.postgres({ coordination })` selects an independent authority, both Cluster preparation and subsequent storage use that pool; otherwise they use the ordinary off-turn pool. Cluster builds against the long-lived pool: it never captures a migration-scoped client, and setup does not require a third off-turn connection. PGlite keeps its existing transactional path and never requests a Postgres advisory lock.
+3. The Neki runner bootstraps `actor_migrations` and `actor_migration_steps` outside transactions and waits for each to propagate before using it. The latter is runner metadata, not a numbered migration: ordinary Postgres and PGlite do not gain this table or a new migration id. Both metadata tables and the coordination authority must be placed in one authoritative, unsharded group on Neki. Bare advisory-lock placement remains a provider gate; the seam does not claim that it has been demonstrated.
+4. Each mutating statement receives an ordered step within its migration. Compound `ALTER TABLE` actions become separate steps, splitting only outside SQL literals, quoted identifiers and parenthesized expressions. The journal records the original statement before executing it, and records completion only after the DDL propagation barrier succeeds. A migration id is recorded only after its final step completes. Journaled statements are immutable: resuming with changed text or removed trailing steps fails rather than guessing what already happened.
+5. DDL never runs inside `BEGIN`. Replay rules cover only the framework's audited DDL forms: conditional table/index/schema creation and deletion; view/function replacement; catalog-guarded policy and constraint creation; conditional column addition and constraint deletion; row-level-security enabling; and source/target-guarded column renames. Before an unfinished DDL step is inspected or replayed, the runner waits for earlier DDL to propagate. A completed step is skipped even when a later step has deliberately removed or replaced its object. An unknown DDL form fails closed.
+6. The foundation's empty-database preflight is not rerun after durable steps have started replacing its tables. Other startup and skipped-id checks remain. Data steps are limited to migration 0026's audited, idempotent assignments; they do not increment values or depend on recording a checkpoint atomically across shards. A crash after applying an assignment but before its completion marker safely replays it. Adding another data migration requires an explicit replay policy, not automatic acceptance of arbitrary DML.
+7. Startup failures leave unfinished journal rows available to the next owner. No actor registration proceeds until all pending migrations have completed. A process crash releases session coordination through the database connection's loss, and a second runner waits instead of racing on DDL or the history table.
+
+### Composition with authoritative coordination (#539)
+
+The optional coordination pool initializes `actor_coordination_migrations` and `actor_coordination` under the same reserved-session bootstrap mutex before its history table can be created. Postgres keeps its transactional Migrator; Neki uses fixed, existence-guarded autocommit DDL, waits before replay and after each change, and records coordination migration 1 only after both tables propagate. Replaying these two bootstrap creates cannot remove data, so they need no statement journal. Coordination startup releases its mutex before framework migration startup, avoiding a self-deadlock when both pools reach one physical database. Cluster preparation likewise releases its scoped mutex before storage retains a long-lived lock session. The migration mutex is not the transaction-owned row fence for retention or workflows: that fence requires its own coordination table to exist first.
+
+## Evidence and limits
+
+`runtime/database/neki/migrations.test.ts` runs the protocol on real Postgres with an explicit local stand-in for the propagation function. That stand-in fails if propagation is requested after a transaction has acquired a write id; its calls are counted. The tests kill real Bun subprocesses with SIGKILL after every exposed bootstrap, pending, applied, propagated, completed and migration-recorded boundary, then restart on the same durable database. They separately upgrade migration 0025 to 0026 with existing effect/job data, kill the coordination owner while a contender waits, and start six `Actors.layer` builds, and separately six public `Runner.socket` runners, together on an empty Postgres database. Public-runner first boot is exercised with the default pool, a separate client to the same database, and an independent coordination database. Separate-process protocol cases also kill the coordination initializer after every DDL, propagation and recorded-id boundary while a contender waits. These are local Postgres protocol tests, including the Neki propagation stand-in, not provider evidence.
+
+The same fresh-start, SIGKILL recovery, concurrent-start and previous-level-upgrade scenarios are registered for `TEST_NEKI_DATABASE_URL`. Without it they are skipped by name and are not provider passes. The provider migration scenarios require a dedicated empty database, refuse an existing framework schema, and clean up the framework objects they create. Run them separately from the general Neki conformance workload so they do not compete for the same database. Actual router propagation, catalog queries, supported DDL forms and advisory-lock placement remain unknown until those cases pass on Neki. This change does not make Neki supported or prove multi-shard transaction atomicity.
+
+## Alternatives rejected
+
+- **Keep the transaction and wait after COMMIT.** Neki does not preserve that DDL at COMMIT, so a later barrier cannot repair it.
+- **Autocommit an entire migration and retry it from the start.** Drop/recreate and rename steps are not safely repeatable after later steps have run, and data rewrites must not lose identity or apply twice.
+- **Use an in-memory progress counter as authority.** A killed process loses it precisely when schema state is partially changed.
+- **Replace historical migrations with a fresh-schema snapshot.** That would not provide the previous-level upgrade or recovery of a database already partway through its migration history.
+
+## Consequences
+
+Postgres first boot is serialized before its history-table creation while its all-or-nothing migration behavior remains unchanged. Neki gains a durable, resumable DDL protocol and a public opt-in, but not a provider support claim. New framework migration DDL must have an audited replay form, and new data rewrites need an explicit idempotence policy and crash evidence. Migration metadata must remain in the control group's authority when advisory coordination is replaced with leases.

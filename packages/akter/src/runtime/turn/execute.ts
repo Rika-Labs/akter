@@ -339,7 +339,11 @@ export interface Stopped<W extends Delivery> {
 }
 
 class RolledBack {
-  constructor(readonly plan: Plan) {}
+  readonly plan: Plan
+
+  constructor(plan: Plan) {
+    this.plan = plan
+  }
 }
 
 const HANDLER_SAVEPOINT = "durable_handler"

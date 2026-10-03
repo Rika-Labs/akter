@@ -228,8 +228,9 @@ const DrawerReads = (fixture: BlobsFixture) =>
       }),
       QueryWrite: Effect.fnUntraced(function* () {
         const blob = (yield* Drawer.Read).blob(files) as BlobWrite
+        const attempted = blob.set("from-query", bytes("from-query"))
 
-        yield* blob.set("from-query", bytes("from-query"))
+        yield* attempted
       }),
       CaptureRead: Effect.fnUntraced(function* () {
         fixture.escaped = (yield* Drawer.Read).blob(files).get("captured")

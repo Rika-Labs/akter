@@ -1,5 +1,6 @@
 import { Data, Effect, Exit, Option, Predicate, Result, Schema } from "effect"
 import type { OptimisticReducer, StateValue } from "../actor/served.ts"
+import { reportError } from "./report.ts"
 
 /** A reducer input applied ahead of its receipt. */
 export interface PendingInput {
@@ -87,7 +88,11 @@ export class Optimistic {
   private queue: Promise<void> = Promise.resolve()
 
   /** `reducer` is any of the actor's reducers; its state schema copies what goes in and out. */
-  constructor(private readonly reducer: OptimisticReducer | undefined) {}
+  private readonly reducer: OptimisticReducer | undefined
+
+  constructor(reducer: OptimisticReducer | undefined) {
+    this.reducer = reducer
+  }
 
   /** Committed state with pending inputs applied; undefined until committed state is known. */
   get state(): StateValue | undefined {

@@ -1,11 +1,11 @@
-import { BunCrypto } from "@effect/platform-bun"
 import { Config, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect"
 import type { TestProject } from "vitest/node"
 import { migrate } from "../../../runtime/database/migrations.ts"
 import { Database } from "../../../runtime/layer.ts"
 import { disposableDatabase, sweepStaleDatabases } from "../../database.ts"
+import { cryptoLayer } from "../platform.ts"
 
-const harness = ManagedRuntime.make(BunCrypto.layer)
+const harness = ManagedRuntime.make(cryptoLayer)
 
 /**
  * Vitest global setup: migrates one database for the whole run so each worker

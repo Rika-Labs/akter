@@ -1,8 +1,8 @@
-import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { Config, Console, Effect, Layer, Redacted } from "effect"
 import { Actors, Database } from "../../../../runtime/index.ts"
 import { FleetHooks } from "../../../../runtime/fleet/maintainer.ts"
 import { FleetOrderLive, OrdersByRegion, OrdersByStatus } from "../../fleet.ts"
+import { cryptoLayer, onBun } from "../../platform.ts"
 
 /**
  * A runner that maintains the fleet cases' views in its own process. With
@@ -31,10 +31,10 @@ const live = Layer.unwrap(
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database), maxConnections: 4 })),
     )
   }),
-).pipe(Layer.provide(BunCrypto.layer))
+).pipe(Layer.provide(cryptoLayer))
 
-Layer.effectDiscard(Console.log("STARTED")).pipe(
-  Layer.provide(live),
-  Layer.launch,
-  BunRuntime.runMain,
-)
+const { runMain } = onBun
+  ? await import("@effect/platform-bun/BunRuntime")
+  : await import("@effect/platform-node/NodeRuntime")
+
+Layer.effectDiscard(Console.log("STARTED")).pipe(Layer.provide(live), Layer.launch, runMain)

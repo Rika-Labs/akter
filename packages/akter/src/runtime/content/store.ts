@@ -1,4 +1,5 @@
 import { Cause, Crypto, Effect, Option, Stream } from "effect"
+import { sha256Bytes, sha256Hasher } from "../../identity/digest.ts"
 import { SqlClient } from "effect/sql"
 import { ContentTooLarge } from "../../errors/content.ts"
 import type { ContentRef } from "../../identity/content.ts"
@@ -142,7 +143,7 @@ export const tenantContent = (settings: ContentSettings) => {
     if (bytes.byteLength > MAX_CONTENT_BYTES)
       return yield* ContentTooLarge.make({ maxBytes: MAX_CONTENT_BYTES })
 
-    const hash = hex(new Bun.CryptoHasher("sha256").update(bytes).digest())
+    const hash = hex(sha256Bytes(bytes))
     const size = bytes.byteLength
 
     const stored = yield* sql.withTransaction(
@@ -192,7 +193,7 @@ export const tenantContent = (settings: ContentSettings) => {
       }
 
       const pending = `pending:${yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)}`
-      const hasher = new Bun.CryptoHasher("sha256")
+      const hasher = sha256Hasher()
 
       const stored = yield* sql.withTransaction(
         Effect.gen(function* () {

@@ -1,5 +1,5 @@
 import { BunServices } from "@effect/platform-bun"
-import { Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
+import { Config, Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
 
 const args = process.argv.slice(2)
 
@@ -45,7 +45,10 @@ const consumerTsconfig = {
   include: ["main.ts"],
 }
 
-const consumerMain = `import { BunCrypto } from "@effect/platform-bun"
+const consumerMain = (
+  engine: "bun" | "node",
+) => `import { ${engine === "bun" ? "BunCrypto" : "NodeCrypto"} as PlatformCrypto } from "@effect/platform-${engine}"
+const cryptoLayer = PlatformCrypto.layer
 import { Actor, User } from "@rikalabs/akter"
 import { Actors, Database } from "@rikalabs/akter/runtime"
 import { Effect, Layer, Schema } from "effect"
@@ -70,7 +73,7 @@ const CounterLive = Counter.toLayer({
 const live = CounterLive.pipe(
   Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
   Layer.provide(Database.pglite()),
-  Layer.provide(BunCrypto.layer),
+  Layer.provide(cryptoLayer),
 )
 
 const program = Effect.gen(function* () {
@@ -93,6 +96,11 @@ await Effect.runPromise(Effect.scoped(Layer.build(live).pipe(Effect.flatMap((con
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
+  const engine = yield* Config.String("SMOKE_RUNTIME").pipe(Config.withDefault("bun"))
+
+  if (engine !== "bun" && engine !== "node")
+    return yield* Effect.die(new Error("SMOKE_RUNTIME must be bun or node"))
+  const main = consumerMain(engine)
   const root = path.resolve(import.meta.dirname, "../../..")
   const work = yield* fs.makeTempDirectoryScoped({ prefix: "akter-smoke-" })
 
@@ -146,8 +154,12 @@ const program = Effect.gen(function* () {
     type: "module",
     dependencies: {
       [staged.name]: `file:${path.join(tarballs, tarball)}`,
-      ...staged.peerDependencies,
-      "@effect/platform-bun": pinned("@effect/platform-bun"),
+      ...Object.fromEntries(
+        Object.entries(staged.peerDependencies ?? {}).filter(
+          ([name]) => name !== "@effect/platform-bun" && name !== "@effect/platform-node",
+        ),
+      ),
+      [`@effect/platform-${engine}`]: pinned(`@effect/platform-${engine}`),
       "@effect/platform-node-shared": pinned("@effect/platform-node-shared"),
     },
     devDependencies: {
@@ -165,7 +177,7 @@ const program = Effect.gen(function* () {
     path.join(consumer, "tsconfig.json"),
     `${yield* encode(consumerTsconfig)}\n`,
   )
-  yield* fs.writeFileString(path.join(consumer, "main.ts"), consumerMain)
+  yield* fs.writeFileString(path.join(consumer, "main.ts"), main)
 
   yield* run(["bun", "install", "--ignore-scripts"], consumer)
 
@@ -176,12 +188,61 @@ const program = Effect.gen(function* () {
 
   yield* run(["bunx", "--bun", "tsc", "-p", "tsconfig.json"], consumer)
 
-  const output = (yield* run(["bun", "main.ts"], consumer)).trim()
+  const output = (yield* run([engine, "main.ts"], consumer)).trim()
 
   if (output !== "[2,5]") return yield* Effect.die(new Error(`Expected [2,5], got ${output}`))
 
+  yield* fs.writeFileString(
+    path.join(consumer, "main.ts"),
+    main.replace("Database.pglite()", 'Database.pglite({ dataDir: "./.data" })'),
+  )
+  const first = (yield* run([engine, "main.ts"], consumer)).trim()
+  const restarted = (yield* run([engine, "main.ts"], consumer)).trim()
+
+  if (first !== "[2,5]" || restarted !== "[7,10]")
+    return yield* Effect.die(
+      new Error(`Quickstart restart expected [2,5] then [7,10], got ${first} then ${restarted}`),
+    )
+
+  yield* fs.writeFileString(
+    path.join(consumer, "test.ts"),
+    `${main.slice(0, main.indexOf("const live ="))}
+import assert from "node:assert/strict"
+import { ActorTest } from "@rikalabs/akter/testing"
+import { ManagedRuntime } from "effect"
+
+const runtime = ManagedRuntime.make(CounterLive.pipe(
+  Layer.provideMerge(ActorTest.layer()),
+  Layer.provide(cryptoLayer),
+))
+
+try {
+  await runtime.runPromise(Effect.gen(function* () {
+    const test = yield* ActorTest
+    const counter = yield* Counter.get("retry")
+    const call = counter.Increment(2)
+    assert.equal(yield* call, 2)
+    assert.equal(yield* call, 2)
+    yield* test.crashNext("beforeCommit")
+    assert.equal(yield* counter.Increment(7), 9)
+    yield* test.crashNext("afterCommit")
+    const after = counter.Increment(3)
+    assert.equal(yield* after, 12)
+    assert.equal(yield* after, 12)
+    const stored = yield* test.inspect(counter.ref)
+    assert.deepEqual(stored.state, { count: 12 })
+    assert.equal(stored.receipts, 3)
+  }))
+} finally {
+  await runtime.dispose()
+}
+console.log("quickstart retry and rollback passed")
+`,
+  )
+  yield* run([engine, "test.ts"], consumer)
+
   yield* Console.log(
-    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and ran a command on PGlite (${output})`,
+    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and runs on ${engine}: memory ${output}, quickstart restart ${first} -> ${restarted}`,
   )
 }).pipe(Effect.scoped)
 

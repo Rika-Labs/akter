@@ -13,6 +13,8 @@ The cross-database coordination regression suite is `packages/akter/src/runtime/
 
 The v4 evidence surface is `ActorTest` from `@rikalabs/akter/testing`, with `describeConformance` running the same guarantees against PGlite, real Postgres, and Neki. Fast tests MAY use PGlite; database locks, pooling, runner movement, and Neki behavior require their real targets.
 
+Startup migration protocol evidence lives in `runtime/database/neki/migrations.test.ts`: real-Postgres SIGKILL at each durable DDL/progress boundary, migration 0025-to-0026 upgrades with existing data, a waiting startup contender after owner death, and six concurrent `Actors.layer` builds on a fresh database. Its local propagation stand-in is not router evidence. The same three protocol scenarios are gated by `TEST_NEKI_DATABASE_URL`, require a dedicated empty database, and are skipped without the variable; run that file separately from other Neki workloads. [ADR 0070](../decisions/0070-neki-startup-migrations.md) records the remaining provider gates.
+
 - [Failure matrix](02-failure-matrix.md)
 - [Performance and capacity](../../BENCHMARKS.md)
 - [Named invariants](invariants.md)
@@ -20,5 +22,7 @@ The v4 evidence surface is `ActorTest` from `@rikalabs/akter/testing`, with `des
 - Control-plane feature flags: `packages/flags/src/evaluation.test.ts` rejects wrong precedence, truthiness defaults, unstable hash vectors, percentage boundary errors and unknown-key fallback. `layer.test.ts` rejects memory-store caching, invalid replacements and targeting disclosure. `postgres.test.ts` rejects lost rules across runtime restart, committed rolled-back/interrupted writes, failed replacements/deletions treated as success, and store outages treated as defaults. Real Postgres is required for the latter; Neki is unverified.
 
 - [Cloud infrastructure](cloud-infrastructure.md)
+
+`bun run test:node` runs the core real-Postgres conformance shards on Node 24+ and a clean packed-tarball PGlite quickstart, including two processes that observe persisted increments. Configure `TEST_DATABASE_URL` and, for replica cases, `TEST_REPLICA_DATABASE_URL`. `check:ci` runs this evidence and the Bun tarball smoke without changing the Verify workflow. Provider-specific and subprocess crash evidence remain separate; a Node core pass does not establish Node crash-drill or provider support.
 
 A capability MUST NOT be called supported until its contract invariant, failure rows, relevant §4 gate, and backend cases pass or the documentation marks it unsupported.

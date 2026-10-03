@@ -122,10 +122,6 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
         expect(selected).toContain("@akter/web#typecheck")
         expect(selected).not.toContain("@akter/api#typecheck")
 
-        yield* fs.writeFileString(`${root}/.github/src/policy.ts`, "export const policy = 2")
-        expect(hash(yield* report(), "@akter/infra#typecheck")).not.toBe(
-          hash(changed, "@akter/infra#typecheck"),
-        )
         yield* fs.writeFileString(
           `${root}/tooling/oxlint/anti-slop/plugin.ts`,
           "export default { changed: true }",

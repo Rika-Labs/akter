@@ -9,6 +9,7 @@ import {
 import { retryDeadline } from "../clock.ts"
 import type { Failure } from "../transport.ts"
 import { OfflineStoreError, type OfflineStore, type QueuedCommand } from "./store.ts"
+import { reportError } from "../report.ts"
 
 /** A queued command as an application sees it. */
 export interface PendingCommand {
