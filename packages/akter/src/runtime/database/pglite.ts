@@ -1,8 +1,8 @@
-import { dlopen, FFIType } from "bun:ffi"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
 import { Effect } from "effect"
 import { DataDirLocked, DataDirVersion } from "../../errors/database.ts"
+import { flockExclusive } from "./flock.ts"
 
 /**
  * The Postgres major the pinned PGlite embeds. Postgres cannot open a data
@@ -14,33 +14,6 @@ export const POSTGRES_MAJOR = "18"
 /** The lock file inside a data directory; the kernel drops its lock when the holder dies. */
 export const LOCK_FILE = ".akter.lock"
 
-const LOCK_EX = 2
-
-const LOCK_NB = 4
-
-const O_RDWR = 2
-
-/** Keeps a child process from inheriting the lock descriptor, which would outlive this process. */
-const O_CLOEXEC = process.platform === "darwin" ? 0x1000000 : 0o2000000
-
-const openLibc = () =>
-  dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
-    open: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.i32 },
-    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-    close: { args: [FFIType.i32], returns: FFIType.i32 },
-  }).symbols
-
-let libc: ReturnType<typeof openLibc> | undefined
-
-/**
- * PGlite takes no lock of its own, and two instances on one directory both
- * open it and write. An exclusive flock is released by the kernel when the
- * holder dies, even by SIGKILL, so a crash leaves nothing to clean up.
- */
-const loadLibc = () => (libc ??= openLibc())
-
-const cString = (value: string) => new TextEncoder().encode(`${value}\0`)
-
 /** A filesystem data directory, or undefined for an in-memory database. */
 const directoryOf = (dataDir: string | undefined) => {
   if (dataDir === undefined || dataDir.startsWith("memory://")) return undefined
@@ -48,47 +21,30 @@ const directoryOf = (dataDir: string | undefined) => {
   return dataDir.startsWith("file://") ? dataDir.slice("file://".length) : dataDir
 }
 
-/** Holds an exclusive lock on the directory's lock file for the scope; `Bun.write` also creates the directory, and the lock is on the open file, not its bytes. */
+/** Holds an exclusive lock on the directory's lock file for the scope, so a second instance, in this process or another, never opens PGlite. */
 const lockDataDir = (directory: string) =>
-  Effect.acquireRelease(
-    Effect.gen(function* () {
-      if (process.platform !== "linux" && process.platform !== "darwin")
-        return yield* Effect.die(
-          new Error(`A file-backed PGlite database needs flock, which ${process.platform} lacks`),
-        )
-
-      const path = `${directory}/${LOCK_FILE}`
-      const lock = Bun.file(path)
-
-      if (!(yield* Effect.promise(() => lock.exists())))
-        yield* Effect.promise(() => Bun.write(path, ""))
-
-      const { open, flock, close } = loadLibc()
-      const fd = open(cString(path), O_RDWR | O_CLOEXEC)
-
-      if (fd < 0) return yield* Effect.die(new Error(`Cannot open the lock file ${path}`))
-
-      if (flock(fd, LOCK_EX | LOCK_NB) !== 0) {
-        close(fd)
-
-        return yield* DataDirLocked.make({ dataDir: directory })
-      }
-
-      return { fd, close }
-    }),
-    ({ fd, close }) => Effect.sync(() => close(fd)),
-  )
+  Effect.gen(function* () {
+    if (!(yield* flockExclusive(`${directory}/${LOCK_FILE}`)))
+      return yield* DataDirLocked.make({ dataDir: directory })
+  })
 
 /** Refuses a directory another Postgres major wrote before PGlite fails on it opaquely. */
 const checkVersion = (directory: string) =>
   Effect.gen(function* () {
-    const file = Bun.file(`${directory}/PG_VERSION`)
+    const found = yield* Effect.promise(() =>
+      import("node:fs/promises").then(({ readFile }) =>
+        readFile(`${directory}/PG_VERSION`, "utf8").then(
+          (text) => text.trim(),
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined
 
-    if (!(yield* Effect.promise(() => file.exists()))) return
+            throw error
+          },
+        ),
+      ),
+    )
 
-    const found = (yield* Effect.promise(() => file.text())).trim()
-
-    if (found !== POSTGRES_MAJOR)
+    if (found !== undefined && found !== POSTGRES_MAJOR)
       return yield* DataDirVersion.make({ dataDir: directory, found, expected: POSTGRES_MAJOR })
   })
 
