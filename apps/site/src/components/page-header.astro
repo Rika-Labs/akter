@@ -1,0 +1,18 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import SectionHeading from "./section-heading.astro"
+import { pageHeader } from "./page-header.styles.ts"
+
+interface Props {
+  title: string
+  lead?: string
+  align?: "start" | "center"
+}
+
+const { title, lead, align = "start" } = Astro.props
+---
+
+<header {...stylex.attrs(pageHeader.root, align === "center" && pageHeader.center)}>
+  <SectionHeading level={1} size="page" align={align} lead={lead}>{title}</SectionHeading>
+  <div {...stylex.attrs(pageHeader.extra)}><slot /></div>
+</header>

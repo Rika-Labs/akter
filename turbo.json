@@ -39,12 +39,6 @@
       "outputs": [],
       "env": ["CI"]
     },
-    "@akter/ui#test": {
-      "dependsOn": ["build", "transit"],
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
-      "outputs": [],
-      "env": ["CI"]
-    },
     "test:integration": {
       "dependsOn": ["^build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],

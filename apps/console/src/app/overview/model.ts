@@ -1,0 +1,81 @@
+import { SeriesWindow } from "@akter/cloud-api"
+import { Schema as S } from "effect"
+import { DeployStatus } from "../deployments/model.ts"
+
+/** A headline number on the overview, with the recent trend behind it. */
+export const OverviewStat = S.Struct({
+  label: S.String,
+  value: S.String,
+  unit: S.optional(S.String),
+  trend: S.Array(S.Finite),
+  stepped: S.Boolean,
+})
+
+/** One fact in the health summary and whether it needs a look. */
+export const HealthFact = S.Struct({
+  label: S.String,
+  value: S.String,
+  healthy: S.Boolean,
+})
+
+/** A deploy in a short history list. */
+export const DeploySummary = S.Struct({
+  commit: S.String,
+  message: S.String,
+  status: DeployStatus,
+  when: S.String,
+})
+export type DeploySummary = typeof DeploySummary.Type
+
+/** Turn latency over the day: the current median and 99th percentile, and the p99 line, in milliseconds. */
+export const Latency = S.Struct({
+  p50: S.Finite,
+  p99: S.Finite,
+  hours: S.Array(S.String),
+  p99Series: S.Array(S.Finite),
+})
+export type Latency = typeof Latency.Type
+
+/** One latency bucket: how many turns it took, and whether it is the open-ended tail. */
+export const LatencyBar = S.Struct({
+  label: S.String,
+  count: S.Finite,
+  tail: S.Boolean,
+})
+
+/**
+ * How long turns took over a window, counted per latency bucket. It carries no percentile: buckets
+ * from several actor types add up, percentiles do not.
+ */
+export const LatencyDistribution = S.Struct({
+  window: SeriesWindow,
+  total: S.Finite,
+  bars: S.Array(LatencyBar),
+})
+export type LatencyDistribution = typeof LatencyDistribution.Type
+
+/**
+ * Everything the project overview draws. `previous` is the same window a day earlier and is empty
+ * when the source has no comparison; a stat's `trend` is empty when it has no history.
+ * `distribution` is absent when the actor types' latency buckets cannot be added up.
+ */
+export const OverviewPage = S.TaggedStruct("OverviewPage", {
+  project: S.String,
+  stats: S.Array(OverviewStat),
+  hours: S.Array(S.String),
+  throughput: S.Array(S.Finite),
+  previous: S.Array(S.Finite),
+  markers: S.Array(S.Struct({ index: S.Finite, label: S.String })),
+  health: S.Array(HealthFact),
+  latency: Latency,
+  distribution: S.optional(LatencyDistribution),
+  deploys: S.Array(DeploySummary),
+})
+export type OverviewPage = typeof OverviewPage.Type
+
+/** A project that has never been deployed. */
+export const EmptyProjectPage = S.TaggedStruct("EmptyProjectPage", {
+  project: S.String,
+  region: S.String,
+})
+export type EmptyProjectPage = typeof EmptyProjectPage.Type

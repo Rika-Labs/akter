@@ -1,3 +1,8 @@
+---
+title: "Quickstart"
+description: "Go from an empty directory to a running, tested actor app on embedded Postgres."
+---
+
 # Quickstart
 
 **Responsibility:** take a developer from an empty directory to a running, tested actor app.  

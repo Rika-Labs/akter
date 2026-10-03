@@ -29,6 +29,10 @@ export { actorErrorBody, closeCodeOf, statusOf } from "../protocol/wire.ts"
 
 export { Database } from "./layer.ts"
 
+export { Runner } from "./runner.ts"
+
+export type { SocketRunnerOptions } from "./runner.ts"
+
 export { DataDirLocked, DataDirVersion } from "../errors/database.ts"
 
 export type { Options } from "./layer.ts"

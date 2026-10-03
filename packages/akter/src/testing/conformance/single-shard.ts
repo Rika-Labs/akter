@@ -7,7 +7,7 @@ import type {
   ConformanceServices,
 } from "../conformance.ts"
 import { touchesOneShard } from "./neki/plan.ts"
-import { mintWorkload } from "./mint.ts"
+import { mintSuite, mintWorkload, planAcrossShard } from "./mint.ts"
 import { placementWorkload } from "./placement.ts"
 import { type RecordedStatement, scopeOf, statementLog, type StatementScope } from "./statements.ts"
 
@@ -103,6 +103,67 @@ const scatteredOf = (
   )
 
 export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "single-shard: a minted child's first turn touches only its own routing key, not its parent's outbox",
+    run: ({ expect, environment, fixtureOf }) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const log = statementLog()
+          const fixture = fixtureOf(mintSuite)
+          let child: Effect.Success<ReturnType<typeof planAcrossShard>> | undefined
+
+          yield* environment.stop
+          yield* Effect.acquireUseRelease(
+            Effect.sync(() => environment.build({ observe: log.observe })),
+            (runtime) =>
+              Effect.promise(() =>
+                runtime.runPromise(
+                  Effect.gen(function* () {
+                    child = yield* planAcrossShard("child-statements")
+                    fixture.onTurn = (point, request) => {
+                      if (request.ref.id !== child!.ref.id) return
+                      if (point === "afterClaim") log.recording = true
+                      if (point === "beforeOutboxDelete") log.recording = false
+                    }
+                    yield* (yield* ActorTest).advance("1 minute")
+                  }),
+                ),
+              ),
+            (runtime) =>
+              Effect.promise(() => runtime.dispose()).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    fixture.onTurn = undefined
+                    log.recording = false
+                  }),
+                ),
+              ),
+          ).pipe(Effect.ensuring(environment.restart))
+
+          const statements = Array.from(log.seen.values())
+          const scopes = byScope(statements)
+          expect(scopes.keyed.length > 0).toBe(true)
+          expect(scopes.unkeyed).toEqual([])
+          expect(scopes.scan).toEqual([])
+          expect(scopes.registry).toEqual([])
+          expect(
+            scopes.keyed
+              .filter(
+                ({ params }) => !params.some((value) => String(value) === String(child!.childKey)),
+              )
+              .map(({ sql }) => sql),
+          ).toEqual([])
+          expect(
+            statements
+              .filter(({ params }) =>
+                params.some((value) => String(value) === String(child!.parentKey)),
+              )
+              .map(({ sql }) => sql),
+          ).toEqual([])
+          expect(statements.filter(({ sql }) => /\bactor_outbox\b/.test(sql))).toEqual([])
+        }),
+      ),
+  },
   {
     name: "single-shard: every framework statement of a turn, a wake, and a due-work scan names its routing key or its bucket range",
     run: ({ expect, environment }) =>

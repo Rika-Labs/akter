@@ -972,6 +972,21 @@ export const migrations = {
         ('operator_audit', 1)
       ) AS v(view_name, version)`
   }),
+  "0027_coordination": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE IF NOT EXISTS actor_coordination (resource text PRIMARY KEY)`
+  }),
+  "0029_runner_configuration": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_deployment ADD COLUMN runner_shards integer,
+      ADD COLUMN runner_lock_expiration_ms bigint,
+      ADD CONSTRAINT actor_deployment_runner_configuration CHECK (
+        (runner_shards IS NULL AND runner_lock_expiration_ms IS NULL) OR
+        (runner_shards IS NOT NULL AND
+          runner_lock_expiration_ms IS NOT NULL AND runner_lock_expiration_ms >= 3000 AND
+          runner_shards BETWEEN 1 AND 65536)
+      )`
+  }),
 }
 
 /**

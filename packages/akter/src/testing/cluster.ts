@@ -21,7 +21,8 @@ import { Socket, SocketServer } from "effect/socket"
 import { SqlClient } from "effect/sql"
 import { InternalActors } from "../runtime/actors.ts"
 import type { ActorRef } from "../identity/caller.ts"
-import { Database, RunnerWiring } from "../runtime/layer.ts"
+import { Database } from "../runtime/layer.ts"
+import { RunnerWiring } from "../runtime/runner.ts"
 import { ActorTest, ClusterMember, type TestOptions } from "./actor-test.ts"
 
 /** Enough shards that every runner of a small cluster owns several, so actors spread and a killed runner's actors move. */

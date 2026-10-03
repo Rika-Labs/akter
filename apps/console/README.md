@@ -1,89 +1,108 @@
-# Server-rendered web
+# Akter console
 
-`@akter/console` is a Bun HTTP boundary around FoldKit's official
-`foldkit/experimental/server` renderer. Rendering explicitly uses
-`isHydratable: false`. There is no browser entrypoint, React, hydration, inline
-JavaScript, or client-rendered application. Every interaction is an HTML form or
-ordinary link. `@akter/ui` owns the compiled StyleX components and light/dark
-semantic tokens.
+`@akter/console` is the hosted product console: a FoldKit client application built with Vite,
+`@foldkit/vite-plugin` and `@stylexjs/unplugin`. Data comes from the shared `@akter/cloud-api`
+contract; auth uses Better Auth's `/auth` routes. Components, charts and tokens come from `@akter/ui`, compiled from source in
+the same StyleX pass.
 
-## Build and run
+## Run it
 
-From `apps/console`, run `bun run build`, then `bun run start`. Build compiles
-`@akter/ui` first, bundles the server to `dist/main.js`, and copies the CSS to
-`dist/styles.css`. **Start requires both generated files**; it does not build.
-The production artifact is the entire `apps/console/dist` directory.
+From `apps/console`:
 
-- `PORT`: defaults to `3000`.
-- `API_ORIGIN`: defaults to `http://localhost:3001`; must be an HTTP(S) origin.
-- `APP_ORIGIN`: defaults to `http://localhost:3000`; set the exact public origin
-  in production or when using an orb portal. Forwarded host/protocol headers are
-  deliberately not trusted.
-- `GET /health`: web-process liveness only, not database/API health.
+- `bun run dev` serves on `127.0.0.1:${CONSOLE_PORT:-3000}` with live reload.
+- `bun run build` writes the static application to `dist/`.
+- `bun run preview` serves `dist/` on `${CONSOLE_PORT:-3002}`, falling back to `index.html` for
+  client routes. Any static host with the same fallback can serve the build; there is no console
+  server.
 
-`bun run dev` builds and starts a watched source server. Run the UI package's
-`bun run dev` to watch StyleX sources. Re-run the web build after CSS changes to
-refresh its copied stylesheet. Root orchestration can build UI before web.
+## API and fixture mode
 
-## Own-API contract
+The console uses `HttpApiClient.make(CloudApi)` with session credentials included. Set
+`VITE_API_BASE_URL` to the API mount (default `/api`); the contract's `/api` prefix is applied
+exactly once. Better Auth uses the same origin's `/auth` mount. A cross-origin deployment needs
+credentialed CORS and cookie configuration on the API server.
 
-- `GET /api/dashboard`: `{ user: { name, email }, organization: { id, name,
-slug, role } | null, members: [{ id, name, email, role }], projects: [{ id,
-name, status }], billing: { plan, status, renewalDate? } }`. All scalar fields
-  are strings. HTTP 401 redirects to sign-in; missing/malformed data renders an
-  explicit unavailable state. No fixture values enter production.
-- `GET /api/session`: missing or unverified sessions return 401; session lookup
-  failures return 503 rather than treating valid credentials as invalid.
-- `POST /api/organization`: `{ name, slug }`, creates/activates the first org.
-  A duplicate slug returns 409; other creation or activation failures return 503. An activation failure can occur after the organization was created.
-- `POST /api/billing/checkout`: `{ plan: "pro" }`; `POST /api/billing/portal`:
-  `{}`. Both return `{ url }`. Only HTTPS `polar.sh` and `sandbox.polar.sh`
-  origins are accepted. Billing authorization remains the API's responsibility.
-- Standard BetterAuth `POST /auth/sign-in/email`, `/sign-up/email`, `/sign-out`,
-  `/request-password-reset`, `/reset-password`, `/send-verification-email`.
-  Signup requires verification and does not assume a session was created.
-- Standard BetterAuth organization routes: `GET /auth/organization/list` and
-  `POST /auth/organization/set-active`, `/invite-member`, `/accept-invitation`.
-  Only Settings loads the additional organization list. Invite role is `member`.
-- Email landing routes: `/reset-password?token=...`,
-  `/accept-invitation?invitationId=...`. Verification callbacks go to dashboard.
+For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
+proxy `/api` and `/auth` through Vite (the default target is `http://127.0.0.1:3001`). The
+accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
+Set `API_PROXY_TARGET` to its API port and `CONSOLE_ORIGIN` to the console origin. A same-origin
+development proxy can also use the console origin as `API_ORIGIN`.
 
-The schemas in `src/http.ts` decode every consumed JSON boundary. They can be
-replaced with matching exports from the parent's `@akter/contracts/http` when
-integrated. Settings displays existing organization details read-only; no update
-API was agreed.
+Set `VITE_CONSOLE_FIXTURES=1` before starting/building, or visit `/?fixtures=1`, to run without a
+backend. The query flag and its tab storage are honoured only in Vite development mode;
+production builds ignore them. `VITE_CONSOLE_FIXTURES=1` is an explicit build-time preview switch.
+Sample pages carry a quiet notice and sample-backed controls and record links are read-only.
+In real mode, route fixtures are imported lazily
+only when an endpoint returns the typed `NotImplemented` error; transport, permission and
+conflict errors are rendered rather than silently replaced with sample data. Missing organization
+or project context never substitutes a sample identity. Mixed settings pages retain source per
+slice, so sample endpoints do not disable real API-key controls. Mutations are never simulated
+or reported as successful merely because a backend is unimplemented.
 
-## Request safety
+Environment-variable reads expose only names and provenance. Values are write-only inputs;
+neither secret values nor masked tails are displayed.
 
-HTML forms require matching Origin and a constant-time checked CSRF token tied
-to a host-only, HttpOnly, SameSite=Lax cookie. Theme cookies are also host-only
-and HttpOnly; HTTPS origins add Secure. Theme redirects stay on known local
-pages and preserve recovery/invitation query parameters. Passwords are never
-reflected after errors.
+The commands page loads a snapshot and then receives UTC-decoded command events over SSE. Pause
+closes the stream; reconnect refreshes the snapshot before opening another stream. A stream that
+is unavailable or interrupted leaves the snapshot visible with an inline explanation. Sample
+pages never start a stream or simulate new turns.
 
-`/api/*` and `/auth/*` proxy only to the configured API origin, use manual
-redirects, allowlist request/response headers, retain status/raw body and
-individual Set-Cookie headers, and rewrite API-origin redirects to the public
-origin. They do not forward Host or X-Forwarded-\* authority headers. Browser
-mutation requests require the exact Origin. Local theme/CSRF cookies are not
-forwarded to the API. Requests are bounded to 8 seconds and a 1 MiB input body.
+The inspector's Send command dialog accepts JSON and an optional command ID, shows the actor's
+result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
+fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
+response reuse the same receipt key. The dialog captures the actor's project and environment
+and closes on every URL change; navigation can never retarget an old actor address. Deployment detail offers
+earlier successful deployments in the same environment as rollback targets and displays
+`rolledBackFrom` on the newly created deployment.
+
+Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
+requests each actor type's `/latency` histogram at the chosen window and sums counts only when
+windows and bucket boundaries match. Its unbounded tail remains explicit and it computes no
+combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
+histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
+Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
+times are UTC. The local API currently answers runtime and deployment endpoints with typed 501s;
+protocol/browser tests exercise their declared responses, not a live runner implementation.
+
+## Layout
+
+```text
+src/
+  entry.ts               boots the FoldKit runtime with the workspace and stored theme as flags
+  app/
+    shell/               Model, Message, update, view, commands, subscriptions, palette, dialogs
+    navigation/          typed routes and the sidebar and settings destinations
+    <page>/              model.ts (schemas), client.ts (Effect loader), fixtures.ts, view.ts
+```
+
+Each page reads its data through its own `client.ts`, an `Effect` that maps the cloud contract to
+the page's presentation schema. `app/api/client.ts` owns the shared cookie-bearing client,
+organization/project/environment resolution, typed error presentation and explicit fallback.
+
+## Pages
+
+Signed out: `/sign-in`, `/sign-up`, `/verify-email`, `/forgot-password`, `/reset-password`,
+`/invitations/:id`, `/onboarding?step=organization|project|deploy`.
+
+Emailed invitation links use `/invitations/:id`; the earlier compatibility URL is no longer routed.
+
+Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
+`/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,
+`/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:commit`,
+`/regions`.
+
+Settings: `/settings`, `/settings/appearance`, `/settings/profile`, `/settings/notifications`,
+`/settings/environment`, `/settings/regions`, `/settings/domains`, `/settings/api-keys`,
+`/settings/integrations`, `/settings/organization`, `/settings/members`, `/settings/billing`,
+`/settings/usage`, `/settings/audit-log`. Any other path renders the not-found page.
+
+⌘K or Ctrl+K opens the command palette on every page. Below 860px the sidebar becomes a drawer.
 
 ## Verification
 
-Package commands: `bun run typecheck`, `bun run test`. Tests cover SSR/XSS,
-invalid API payloads, absent API, auth cookies, proxy header authority,
-CSRF/Origin failures, theme/query preservation, signup verification, recovery
-failure and Polar redirect allowlisting. `bun run test` compiles UI first.
+`bun run typecheck`, `bun run lint` and `bun run test` here; browser flows live in `apps/e2e`
+(`bun run --cwd apps/e2e test:e2e`), which builds and previews this app.
 
-For isolated visual review only, build UI then run `bun src/preview.ts` as a
-managed service on port 3002. This read-only fixture uses production rendering
-with labeled test data. All mutations deliberately fail. `?empty=1` renders
-no-organization state. It is outside the production import graph. Screenshots
-are visual coverage, not evidence of real authentication or provider billing.
-
-Pins: FoldKit `0.163.0`, Effect and platform-browser `4.0.0`, StyleX
-`0.19.1`, TypeScript `7.0.2`, Vitest `4.1.11`. The published FoldKit package
-declares exact rc116 peers and its `foldkit/http` module still imports
-`effect/unstable/http`, which Effect 4.0.0 removed. The console imports only
-`foldkit/html` and `foldkit/experimental/server`, which typecheck, test and build
-on 4.0.0, but the published peer-version mismatch must remain visible.
+FoldKit 0.163 exposes route constructors through a Proxy whose `.make` Effect 4.0 caches with
+`defineProperty`, so a second read throws; `navigation/routes.ts` hands `Route.mapTo` plain
+`{ make }` wrappers instead.

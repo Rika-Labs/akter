@@ -1,3 +1,9 @@
+---
+title: "Generating clients"
+sidebarTitle: "Generated clients"
+description: "Call a served actor from a client generated in any language from its OpenAPI document."
+---
+
 # Generating clients
 
 **Responsibility:** explain how to call a served actor from a client generated in any language.  
