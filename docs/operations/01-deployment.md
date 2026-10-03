@@ -7,7 +7,7 @@
 
 For separate actor-data databases, configure `Database.postgres({ coordination: { url: Redacted.make(authorityUrl) } })` on every runner with the same unsharded authoritative primary. That pool owns resource locks, Cluster runner/shard ownership, and the fleet maintainer lock; include its connections in the server budget. Startup creates its coordination-only schema with a separate migration ledger, so its login needs DDL privileges. Never point it at a read replica. On Neki, keep its tables in the authoritative group and use an explicitly authoritative endpoint for session advisory locks, or select Cluster table leases through existing sharding wiring. This prepares lock placement; it does not certify Neki routing, singleton failover, or a multi-shard logical feed. Switching an existing deployment's authority requires stopping every runner first, or old and new runners will coordinate independently ([ADR 0066](../decisions/0066-authoritative-coordination.md)).
 
-The intended deployment has one shared relational database and one `Actors.layer` runtime per runner process; a deployment may have multiple runners. These operating shapes describe the accepted design, not currently implemented deployment support:
+The intended deployment has one shared relational database and one `Actors.layer` runtime per runner process; a deployment may have multiple runners. Embedded and served processes are implemented; `Runner.socket` is the public multi-process Postgres configuration ([deploy guide](../guides/deploy.md#several-runners)). Its evidence is three Bun processes on loopback, not hosted or separate-host certification. The operating shapes are:
 
 - **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside the application.
 - **Served:** add `Actors.serve` for HTTP, WebSocket, SSE, and OpenAPI access.
@@ -26,12 +26,12 @@ Intended deployment order: provision database and secrets; run framework and act
 Each runner opens its own pool through `Database.postgres`, up to `maxConnections` (default 50). A command holds one connection for its whole turn, so under load a runner uses its whole pool, and idle connections close after 10 seconds. Size the pools against the server:
 
 ```text
-runners × maxConnections + reserved ≤ max_connections
+runners × (maxConnections + offTurnConnections) + reserved ≤ max_connections
 ```
 
 `reserved` covers `superuser_reserved_connections` (3 by default), migrations, backups, monitoring, and operator sessions. Postgres's default `max_connections` of 100 fits one runner at the default pool with that headroom, not two. For more runners either lower `maxConnections` per runner, for example 20 each for four runners, or raise `max_connections` with the memory the server has. A pooler in front of Postgres is unverified: turns rely on transaction-scoped `set_config`, row locks, and Cluster's SQL shard locks, and no pooler mode has been tested with them.
 
-Measured on one machine (see [performance](../../BENCHMARKS.md)): under 64 callers each runner reached its pool size and no more, so peak connections were the sum of the runners' pools plus one connection outside them. With one runner and 64 callers over 10,000 actors, 50 connections lowered steady-state p99 against 25 in both runs (96 against 179 ms, and 130 against 166 ms). Those runners shared one process and CPU, so the runs show how connections add up across runners, not what latency separate runner processes would see; multi-runner operation is not yet supported (see the [support matrix](support-matrix.md)).
+Measured on one machine (see [performance](../../BENCHMARKS.md)): under 64 callers each runner reached its pool size and no more, so peak connections were the sum of the runners' pools plus one connection outside them. With one runner and 64 callers over 10,000 actors, 50 connections lowered steady-state p99 against 25 in both runs (96 against 179 ms, and 130 against 166 ms). Those runners shared one process and CPU, so the runs show how connections add up across runners, not what latency separate runner processes would see; separate-process functional support is scoped by the [support matrix](support-matrix.md), and this benchmark is not its performance evidence.
 
 Memory bounds the other runner limit. A resident activation holds about 20 KiB of JavaScript heap, so the default `maxResidentActors` of 10,000 is about 200 MiB per runner before the rest of the process. Raise it only with the memory you give the process.
 

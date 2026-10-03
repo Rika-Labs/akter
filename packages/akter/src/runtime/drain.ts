@@ -5,7 +5,8 @@ import { ActorError, ActorUnavailable } from "../errors/actor.ts"
  * Whether this runner should receive traffic. A runner is ready once its
  * storage answers, its schemas are migrated and compatible (checked when the
  * layer builds), it registers at least one actor, job, or query layer, its
- * routing is up, and it is not draining. Readiness never waits for actors to
+ * routing is up, a public runner has its currently assigned shards, and it
+ * is not draining. Readiness never waits for actors to
  * wake or workflows to finish.
  */
 export type Readiness =
@@ -14,7 +15,8 @@ export type Readiness =
       readonly ready: false
       /**
        * `draining` or `drained` after `drain`; `storage` when the database does
-       * not answer; `routing` once sharding has shut down; `unregistered` before
+       * not answer; `routing` while acquiring shards or once sharding has
+       * shut down; `unregistered` before
        * any actor, job, or query layer registers.
        */
       readonly reason: "draining" | "drained" | "storage" | "routing" | "unregistered"
