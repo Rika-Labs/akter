@@ -1,0 +1,16 @@
+---
+import DocPage from "../../docs/doc-page.astro"
+import { loadDocs } from "../../docs/collection.ts"
+
+export async function getStaticPaths() {
+  const docs = await loadDocs()
+
+  return docs.pages
+    .filter((page) => page.slug !== "quickstart")
+    .map((page) => ({ params: { slug: page.slug }, props: { page, docs } }))
+}
+
+const { page, docs } = Astro.props
+---
+
+<DocPage page={page} docs={docs} />

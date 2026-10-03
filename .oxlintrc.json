@@ -69,6 +69,15 @@
       }
     },
     {
+      "files": ["apps/site/**/*.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/global-fetch": "off",
+        "effecttsgo/missing-pipeable-signature": "off",
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["apps/e2e/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",
@@ -76,5 +85,11 @@
       }
     }
   ],
-  "ignorePatterns": ["**/dist/**", ".local/**", "tooling/oxlint/anti-slop/**", "**/templates/**"]
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/.astro/**",
+    ".local/**",
+    "tooling/oxlint/anti-slop/**",
+    "**/templates/**"
+  ]
 }

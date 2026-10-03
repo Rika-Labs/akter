@@ -668,6 +668,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           command: row.command,
           commandId: row.intent_id,
           payload: row.payload,
+          intent: { tenant: row.tenant_id, actor: row.actor_type, id: row.actor_id },
         }),
       ),
     )
