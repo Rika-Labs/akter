@@ -3,7 +3,17 @@ import { ActivationRefused, RolloutRouting, type ReleaseRecord } from "@akter/de
 import { migrate } from "@akter/postgres/migrate"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
-import { Config, Context, Crypto, Effect, Exit, Layer, ManagedRuntime, Redacted } from "effect"
+import {
+  Config,
+  Context,
+  Crypto,
+  Effect,
+  Exit,
+  Inspectable,
+  Layer,
+  ManagedRuntime,
+  Redacted,
+} from "effect"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -73,7 +83,7 @@ describe("rollout routing authority", () => {
     expect(
       Redacted.value(serviceCredential(Redacted.make("another-local-key"), "deployment-one")),
     ).not.toBe(Redacted.value(first))
-    expect(String(first)).not.toContain(Redacted.value(first))
+    expect(Inspectable.toStringUnknown(first)).not.toContain(Redacted.value(first))
   })
 
   it("moves aliases and credentials atomically and restores the earlier effective snapshot on rollback", () =>
