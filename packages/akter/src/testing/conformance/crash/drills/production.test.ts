@@ -304,6 +304,13 @@ describe("public production runner topology on Postgres", () => {
             "cron ticks after both handoffs",
             "15 seconds",
           )
+          yield* until(
+            query<{ count: number }>(
+              "SELECT count(*)::int AS count FROM actor_outbox WHERE kind = 'intent' AND timer_key IS NULL",
+            ).pipe(Effect.map((rows) => rows[0]!.count === 0)),
+            "every command intent to settle before stopping all relays",
+            "15 seconds",
+          )
           for (const runner of survivors) yield* drain(runner)
           const receipts = yield* query<{ command_id: string; command: string }>(
             "SELECT command_id, command FROM actor_receipts",
