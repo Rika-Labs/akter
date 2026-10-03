@@ -127,11 +127,13 @@ describe("admissionLimit", () => {
       const started: Array<string> = []
       const held = yield* holder(admission, started, "held")
       yield* TestClock.adjust(0)
+      expect(admission.full()).toBe(true)
       const excess = yield* holder(admission, started, "excess")
       expect(refusal(yield* Fiber.await(excess.fiber))).toEqual(Option.some(true))
       expect(started).toEqual(["held"])
       yield* held.release
       yield* Fiber.await(held.fiber)
+      expect(admission.full()).toBe(false)
     }),
   )
 

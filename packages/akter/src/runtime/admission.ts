@@ -96,7 +96,7 @@ export const admissionLimit = ({
 
   return {
     /** Whether the next caller would be refused without waiting. */
-    full: () => free === 0 && waiters.size >= limit,
+    full: () => free === 0 && (Duration.isZero(wait) || waiters.size >= limit),
     /** Holds a slot until its scope closes, including after the acquiring fiber stops waiting. */
     take: Effect.uninterruptibleMask((restore) =>
       Effect.andThen(
