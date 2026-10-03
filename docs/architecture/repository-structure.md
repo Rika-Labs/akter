@@ -20,7 +20,7 @@ packages/
   deployments/              @akter/deployments  Deployment, Runners (singleton), UsageMeter actors — written on the framework
   python-client/            @akter/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests
   postgres/                 @akter/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
-  flags/                    @akter/flags      control-plane flag declarations, evaluation and override stores; browser entry excludes SQL (ADR 0069)
+  flags/                    @akter/flags      control-plane flag declarations, evaluation and override stores; browser entry excludes SQL (ADR 0073)
   ui/                       @akter/ui         the shared design system: StyleX tokens, FoldKit components, charts, brand geometry (ADR 0064)
 tooling/
   oxlint/                   @akter/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules

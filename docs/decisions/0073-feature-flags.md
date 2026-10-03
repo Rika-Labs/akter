@@ -1,4 +1,4 @@
-# ADR 0069: Small control-plane feature flags
+# ADR 0073: Small control-plane feature flags
 
 **Status:** implementation decision (2026-10-03), implements #514 and the requested no-vendor package.
 **Responsibility:** package placement, browser boundary and persistence for feature flags.
