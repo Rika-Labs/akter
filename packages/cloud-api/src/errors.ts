@@ -87,6 +87,13 @@ export class Unavailable extends Schema.TaggedError<Unavailable>()(
   { httpApiStatus: 503 },
 ) {}
 
+/** The request body is larger than the endpoint accepts; answered 413 before the excess is read. */
+export class PayloadTooLarge extends Schema.TaggedError<PayloadTooLarge>()(
+  "PayloadTooLarge",
+  { limitBytes: Schema.Int },
+  { httpApiStatus: 413 },
+) {}
+
 /** Errors every authenticated read can raise besides `Unauthorized`, which the middleware owns. */
 export const ReadErrors = [Forbidden, NotFound, NotImplemented, Unavailable] as const
 

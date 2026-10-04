@@ -71,7 +71,7 @@ export const create = (options: CreateOptions) =>
     }),
   )
 
-/** `durable tenants create <tenant>`: records the tenant's home region in the control plane's directory. */
+/** `akter tenants create <tenant>`: records the tenant's home region in the control plane's directory. */
 export const createCommand = Command.make("create", flags, (options) =>
   Effect.gen(function* () {
     const services = yield* Layer.build(controlPlane(options.databaseUrl))
@@ -84,7 +84,7 @@ export const createCommand = Command.make("create", flags, (options) =>
       ActorError: (error) =>
         fail({
           reason: error._tag,
-          message: `durable tenants create failed: ${error.reason._tag}`,
+          message: `akter tenants create failed: ${error.reason._tag}`,
         }),
     }),
   ),

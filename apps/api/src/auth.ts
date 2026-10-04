@@ -16,9 +16,7 @@ import { Context, Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
 import { Email } from "./email.ts"
 import type { ApiOptions } from "./config.ts"
-
-/** The one client the device authorization grant accepts: the `durable` CLI. */
-export const CLI_CLIENT_ID = "akter-cli"
+import { CLI_CLIENT_ID, devicePolicy } from "./device.ts"
 
 /**
  * Better Auth sends mail from inside its open database transaction, and Bun
@@ -131,12 +129,23 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     },
     socialProviders: { github: options.github, google: options.google },
     account: { accountLinking: { enabled: false } },
-    rateLimit: { enabled: options.production },
-    plugins: [organizationPlugin, keyPlugin, ssoPlugin, devicePlugin, bearerPlugin] satisfies [
+    rateLimit: {
+      enabled: options.production,
+      customRules: { "/device": { window: 600, max: 20 } },
+    },
+    plugins: [
+      organizationPlugin,
+      keyPlugin,
+      ssoPlugin,
+      devicePlugin,
+      devicePolicy,
+      bearerPlugin,
+    ] satisfies [
       typeof organizationPlugin,
       typeof keyPlugin,
       typeof ssoPlugin,
       typeof devicePlugin,
+      typeof devicePolicy,
       typeof bearerPlugin,
     ],
     advanced: {

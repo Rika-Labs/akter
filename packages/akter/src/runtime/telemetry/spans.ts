@@ -3,7 +3,7 @@ import type { Request } from "../request.ts"
 import { System } from "../../identity/caller.ts"
 
 /**
- * Span names are public: dashboards, alerts, and `durable defects list` match
+ * Span names are public: dashboards, alerts, and `akter defects list` match
  * on them, so a rename is a breaking change. Every name is bounded by the
  * deployment's declarations, never by an actor id or command id; those are
  * attributes.

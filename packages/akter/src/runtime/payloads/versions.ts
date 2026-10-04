@@ -37,7 +37,7 @@ interface RecordedVersion {
  * Compares declared chains with the versions the database may hold. A
  * version recorded above a chain's current version is a rollback past a
  * schema change. A chain that starts above version `v` can't read values of
- * `v`: an event version counts as stored until `durable payloads clear` marks
+ * `v`: an event version counts as stored until `akter payloads clear` marks
  * it cleared. Every stored event has a recorded version, because a runtime
  * records what it writes before it takes a shard and the migration refused
  * databases that held rows before it. Job versions are read from the
@@ -103,7 +103,7 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
       for (const row of versions)
         if (row.version < first && !row.cleared)
           problem(
-            `version ${row.version} may still be stored below this chain's first version ${first}; run durable payloads clear once its events are gone`,
+            `version ${row.version} may still be stored below this chain's first version ${first}; run akter payloads clear once its events are gone`,
           )
     } else {
       const [stored] = yield* sql<{ version: number | null; rows: number }>`
@@ -230,7 +230,7 @@ const definitionsOf = (actors: ReadonlyArray<object>) =>
     return payloads === undefined ? [] : [payloads]
   })
 
-/** `durable payloads check`: the startup check for `actors`, read-only. */
+/** `akter payloads check`: the startup check for `actors`, read-only. */
 export const checkPayloads = (actors: ReadonlyArray<object>) =>
   Effect.suspend(() => {
     const definitions = definitionsOf(actors)
@@ -256,7 +256,7 @@ export const checkPayloads = (actors: ReadonlyArray<object>) =>
     )
   })
 
-/** What `durable payloads clear` found for one superseded event version. */
+/** What `akter payloads clear` found for one superseded event version. */
 export interface ClearResult {
   readonly actorType: string
   readonly tag: string
@@ -270,7 +270,7 @@ export interface ClearResult {
 }
 
 /**
- * `durable payloads clear`: marks each superseded event version of `actors`
+ * `akter payloads clear`: marks each superseded event version of `actors`
  * cleared once its retention horizon has passed, no runtime can still write
  * it, and no event of it remains. The version row is locked first, the
  * writer rows are read again after the scan, and each statement of the

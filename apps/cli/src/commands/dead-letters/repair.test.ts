@@ -54,7 +54,7 @@ const operators = OperatorAuth.tokens([
   },
 ])
 
-describe("durable dead-letters", () => {
+describe("akter dead-letters", () => {
   it("parses retry and discard, and refuses a missing reason or actor", () =>
     Effect.gen(function* () {
       const runner = recordingFetch({ jobId: "e1" })

@@ -8,7 +8,7 @@ import { Clock, Config, Console, Duration, Effect, Option, Schema, Stream } from
 import { Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { fail } from "../../failure.ts"
-import { packContext } from "./archive.ts"
+import { contextPath, packContext } from "./archive.ts"
 import { reportFailures, signedIn } from "./client.ts"
 
 /** The rollout ended `failed`; `step` is the step that failed and `detail` why. */
@@ -40,6 +40,7 @@ const flags = {
   ),
   dockerfile: Flag.String("dockerfile").pipe(
     Flag.withDefault("Dockerfile"),
+    Flag.filterMap(contextPath, () => "a path inside the context, without .. or a leading /"),
     Flag.withDescription("The Dockerfile's path inside the context (default Dockerfile)"),
   ),
   commit: Flag.String("commit").pipe(
@@ -157,7 +158,7 @@ const follow = Effect.fnUntraced(function* (input: {
 })
 
 /**
- * `durable deploy`: uploads the build context to the control plane's
+ * `akter deploy`: uploads the build context to the control plane's
  * builder, creates a deployment from it, and follows the rollout until it is
  * live or failed.
  */

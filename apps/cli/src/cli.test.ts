@@ -4,13 +4,13 @@ import { describe, expect, it } from "vitest"
 import { version } from "../package.json" with { type: "json" }
 import { runCli } from "./testing.ts"
 
-describe("durable", () => {
+describe("akter", () => {
   it("prints every command group in --help, and each command's flags with their descriptions", () =>
     Effect.gen(function* () {
       const root = yield* runCli(["--help"])
 
       expect(root.exitCode).toBe(0)
-      expect(root.stdout).toContain("USAGE\n  durable <subcommand> [flags]")
+      expect(root.stdout).toContain("USAGE\n  akter <subcommand> [flags]")
 
       for (const command of [
         "dev",
@@ -33,7 +33,7 @@ describe("durable", () => {
       const retry = yield* runCli(["dead-letters", "retry", "--help"])
 
       expect(retry.exitCode).toBe(0)
-      expect(retry.stdout).toContain("durable dead-letters retry [flags] <jobId>")
+      expect(retry.stdout).toContain("akter dead-letters retry [flags] <jobId>")
 
       for (const flag of [
         "--actor",
@@ -56,7 +56,7 @@ describe("durable", () => {
   it("prints its version and shell completions", () =>
     Effect.gen(function* () {
       expect(yield* runCli(["--version"])).toEqual({
-        stdout: `durable v${version}\n`,
+        stdout: `akter v${version}\n`,
         stderr: "",
         exitCode: 0,
         reason: "",
@@ -65,7 +65,7 @@ describe("durable", () => {
       const completions = yield* runCli(["--completions", "bash"])
 
       expect(completions.exitCode).toBe(0)
-      expect(completions.stdout).toContain("durable")
+      expect(completions.stdout).toContain("akter")
       expect(completions.stdout).toContain("dead-letters")
     }).pipe(Effect.runPromise))
 

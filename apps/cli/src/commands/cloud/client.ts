@@ -14,9 +14,6 @@ import {
 /** The control plane `login` signs in to when neither `--api-url` nor `AKTER_API_URL` names one: the local stack. */
 export const DEFAULT_API_URL = "http://localhost:3001"
 
-/** A base URL without its trailing slashes. */
-export const trimUrl = (url: string) => url.replace(/\/+$/u, "")
-
 /** The `CloudApi` client for the control plane `credentials` name, sending their session token as a bearer token. */
 export const cloudClient = (credentials: Credentials) =>
   HttpApiClient.make(Cloud.CloudApi, {
@@ -41,6 +38,7 @@ export type HostedFailure =
   | Cloud.NotFound
   | Cloud.Conflict
   | Cloud.NotImplemented
+  | Cloud.PayloadTooLarge
   | Cloud.Unavailable
   | HttpClientError.HttpClientError
   | Schema.SchemaError
@@ -59,22 +57,22 @@ const describe = Match.type<HostedFailure>().pipe(
   Match.tagsExhaustive({
     NotLoggedIn: () => ({
       reason: "NotLoggedIn",
-      message: "Not logged in. Run `durable login` first.",
+      message: "Not logged in. Run `akter login` first.",
       exitCode: 2,
     }),
     CredentialsExposed: (error) => ({
       reason: "CredentialsExposed",
-      message: `${error.path} can be read by other users (mode ${octal(error.mode)}). Run \`chmod 600\` on it or \`durable login\` again.`,
+      message: `${error.path} can be read by other users (mode ${octal(error.mode)}). Run \`chmod 600\` on it or \`akter login\` again.`,
       exitCode: 2,
     }),
     CredentialsUnreadable: (error) => ({
       reason: "CredentialsUnreadable",
-      message: `${error.path} does not hold durable credentials. Run \`durable login\` again.`,
+      message: `${error.path} does not hold akter credentials. Run \`akter login\` again.`,
       exitCode: 2,
     }),
     Unauthorized: () => ({
       reason: "Unauthorized",
-      message: "Your session has expired or was revoked. Run `durable login` to sign in again.",
+      message: "Your session has expired or was revoked. Run `akter login` to sign in again.",
       exitCode: 1,
     }),
     Forbidden: (error) => ({
@@ -95,6 +93,11 @@ const describe = Match.type<HostedFailure>().pipe(
     NotImplemented: (error) => ({
       reason: "NotImplemented",
       message: `This control plane does not support ${error.operation}.`,
+      exitCode: 1,
+    }),
+    PayloadTooLarge: (error) => ({
+      reason: "PayloadTooLarge",
+      message: `The control plane accepts at most ${error.limitBytes} bytes; exclude more files in .dockerignore.`,
       exitCode: 1,
     }),
     Unavailable: () => ({

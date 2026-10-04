@@ -1,7 +1,23 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { Effect, FileSystem } from "effect"
-import { ContextInvalid, ignoreRules, isIgnored, packContext } from "./archive.ts"
+import { Effect, FileSystem, Option, Stream } from "effect"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ContextInvalid, contextPath, ignoreRules, isIgnored, packContext } from "./archive.ts"
+
+/** Runs the system `tar` on `args` with `archive` on stdin, independently of the packer under test. */
+const systemTar = (archive: Uint8Array, args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const handle = yield* spawner.spawn(
+      ChildProcess.make("tar", [...args], { stdin: Stream.make(archive) }),
+    )
+    const [out] = yield* Effect.all(
+      [handle.stdout.pipe(Stream.decodeText, Stream.mkString), handle.stderr.pipe(Stream.runDrain)],
+      { concurrency: 2 },
+    )
+
+    return { code: Number(yield* handle.exitCode), out }
+  }).pipe(Effect.scoped, Effect.orDie)
 
 /** A temporary directory holding `files` (path to contents), removed with the scope. */
 const context = (files: Record<string, string>) =>
@@ -145,6 +161,81 @@ layer(BunServices.layer)("build context packing", (it) => {
         expect(refused).toEqual(
           ContextInvalid.make({ message: `No Dockerfile at ${root}/deploy/Dockerfile` }),
         )
+      }),
+  )
+
+  it("accepts a Dockerfile path inside the context, cleaned, and nothing that leaves it", () => {
+    expect(contextPath("Dockerfile")).toEqual(Option.some("Dockerfile"))
+    expect(contextPath("./infra//runner/./Dockerfile")).toEqual(
+      Option.some("infra/runner/Dockerfile"),
+    )
+    for (const path of [
+      "",
+      ".",
+      "/etc/Dockerfile",
+      "../Dockerfile",
+      "infra/../../Dockerfile",
+      "a/..",
+    ])
+      expect(contextPath(path), path).toEqual(Option.none())
+  })
+
+  it.effect(
+    "sends symbolic links as links without reading what they point at, so neither a secret outside the context nor a loop is followed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const outside = yield* fs.makeTempDirectoryScoped()
+        const root = yield* context({
+          Dockerfile: "FROM scratch\n",
+          "app/run.sh": "#!/bin/sh\necho run\n",
+        })
+
+        yield* fs.writeFileString(`${outside}/id_ed25519`, "PRIVATE KEY MATERIAL")
+        yield* fs.symlink(`${outside}/id_ed25519`, `${root}/deploy-key`)
+        yield* fs.symlink(".", `${root}/app/loop`)
+        yield* fs.symlink("run.sh", `${root}/app/start.sh`)
+        yield* fs.chmod(`${root}/app/run.sh`, 0o755)
+
+        const packed = yield* packContext({ context: root, dockerfile: "Dockerfile" })
+        const listing = yield* systemTar(packed.archive, ["-tvzf", "-"])
+        const extracted = yield* fs.makeTempDirectoryScoped()
+
+        expect(listing.code).toBe(0)
+        expect(packed.files).toEqual([
+          "Dockerfile",
+          "app/loop",
+          "app/run.sh",
+          "app/start.sh",
+          "deploy-key",
+        ])
+        expect(new TextDecoder().decode(Bun.gunzipSync(packed.archive))).not.toContain(
+          "PRIVATE KEY MATERIAL",
+        )
+        expect((yield* systemTar(packed.archive, ["-xzf", "-", "-C", extracted])).code).toBe(0)
+        expect(yield* fs.readLink(`${extracted}/deploy-key`)).toBe(`${outside}/id_ed25519`)
+        expect(yield* fs.readLink(`${extracted}/app/loop`)).toBe(".")
+        expect(yield* fs.readLink(`${extracted}/app/start.sh`)).toBe("run.sh")
+        expect((yield* fs.stat(`${extracted}/app/run.sh`)).mode & 0o777).toBe(0o755)
+        expect((yield* fs.stat(`${extracted}/Dockerfile`)).mode & 0o111).toBe(0)
+      }),
+  )
+
+  it.effect(
+    "packs a path longer than a tar name field so a standard tar reads it back whole, and packs the same files to the same bytes",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const deep = `${"nested-directory-name/".repeat(6)}file-with-a-long-name-ünïcode.txt`
+        const root = yield* context({ Dockerfile: "FROM scratch\n", [deep]: "deep contents" })
+        const first = yield* packContext({ context: root, dockerfile: "Dockerfile" })
+        const second = yield* packContext({ context: root, dockerfile: "Dockerfile" })
+        const extracted = yield* fs.makeTempDirectoryScoped()
+
+        expect(deep.length).toBeGreaterThan(100)
+        expect(Array.from(second.archive)).toEqual(Array.from(first.archive))
+        expect((yield* systemTar(first.archive, ["-xzf", "-", "-C", extracted])).code).toBe(0)
+        expect(yield* fs.readFileString(`${extracted}/${deep}`)).toBe("deep contents")
       }),
   )
 })

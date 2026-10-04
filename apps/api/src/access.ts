@@ -86,19 +86,44 @@ export const AccessLive = Layer.effect(
           identity,
         ),
       )
-    const cookieSession = resolveSession((request) => new Headers(request.headers))
+    /**
+     * Refuses a scheme when the request also carries `Authorization`. Every
+     * scheme runs on every request, and Better Auth would otherwise read a
+     * valid bearer token, or fall back to the cookie beside an invalid one,
+     * inside the cookie schemes, so only the bearer scheme may answer a
+     * request that sends one.
+     */
+    const withoutBearer = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest
+      if (request.headers.authorization !== undefined)
+        return yield* Unauthorized.make({
+          code: "invalid_credentials",
+          message: "A bearer token is the request's only credential",
+        })
+    })
+    const cookieSession = withoutBearer.pipe(
+      Effect.andThen(resolveSession((request) => new Headers(request.headers))),
+    )
     return Authentication.of({
       session: (effect) => asPerson(cookieSession, effect),
       secureSession: (effect) => asPerson(cookieSession, effect),
       bearer: (effect, { credential }) =>
-        asPerson(
-          resolveSession(
-            () => new Headers({ authorization: `Bearer ${Redacted.value(credential)}` }),
-          ),
-          effect,
-        ),
+        Redacted.value(credential) === ""
+          ? Effect.fail(
+              Unauthorized.make({
+                code: "missing_credentials",
+                message: "A verified session is required",
+              }),
+            )
+          : asPerson(
+              resolveSession(
+                () => new Headers({ authorization: `Bearer ${Redacted.value(credential)}` }),
+              ),
+              effect,
+            ),
       apiKey: (effect, { credential }) =>
         Effect.gen(function* () {
+          yield* withoutBearer
           yield* checkOrigin
           const result = yield* Effect.tryPromise({
             try: () => auth.api.verifyApiKey({ body: { key: Redacted.value(credential) } }),

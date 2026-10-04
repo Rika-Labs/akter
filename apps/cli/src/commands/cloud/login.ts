@@ -2,8 +2,8 @@ import { Clock, Config, Console, Data, Duration, Effect, Schema } from "effect"
 import { Command, Flag } from "effect/cli"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { fail } from "../../failure.ts"
-import { cloudClient, DEFAULT_API_URL, reportFailures, trimUrl } from "./client.ts"
-import { saveCredentials } from "./credentials.ts"
+import { cloudClient, DEFAULT_API_URL, reportFailures } from "./client.ts"
+import { controlPlaneUrl, saveCredentials } from "./credentials.ts"
 
 /** The client id the control plane's device authorization grant accepts from this CLI. */
 export const CLIENT_ID = "akter-cli"
@@ -14,7 +14,6 @@ const DeviceCode = Schema.Struct({
   device_code: Schema.String,
   user_code: Schema.String,
   verification_uri: Schema.String,
-  verification_uri_complete: Schema.String,
   expires_in: Schema.Finite,
   interval: Schema.Finite,
 })
@@ -22,6 +21,10 @@ const DeviceCode = Schema.Struct({
 const DeviceToken = Schema.Struct({ access_token: Schema.String })
 
 const DeviceError = Schema.Struct({ error: Schema.String })
+
+/** A user code as people read and type it: an eight-character code split `XXXX-XXXX`. */
+const displayCode = (code: string) =>
+  code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
 
 /** The browser approval was denied. */
 export class LoginDenied extends Schema.TaggedError<LoginDenied>()("LoginDenied", {}) {}
@@ -48,7 +51,7 @@ const flags = {
   apiUrl: Flag.String("api-url").pipe(
     Flag.withFallbackConfig(Config.String("AKTER_API_URL")),
     Flag.withDefault(DEFAULT_API_URL),
-    Flag.map(trimUrl),
+    Flag.filterMap(controlPlaneUrl, () => "an https URL, or http on a loopback host"),
     Flag.withDescription(
       `The control plane to sign in to (default AKTER_API_URL, then ${DEFAULT_API_URL})`,
     ),
@@ -84,7 +87,7 @@ const deviceLogin = (apiUrl: string) =>
     const code = yield* HttpClientResponse.schemaBodyJson(DeviceCode)(started)
 
     yield* Console.log(
-      `To sign in, open ${code.verification_uri_complete}\nand confirm the code ${code.user_code}. Waiting for approval…`,
+      `To sign in, open ${code.verification_uri}\nand enter the code ${displayCode(code.user_code)}. Waiting for approval…`,
     )
 
     const poll = Effect.gen(function* () {
@@ -124,12 +127,29 @@ const deviceLogin = (apiUrl: string) =>
     return yield* LoginExpired.make({})
   })
 
-/** `durable login`: signs in to a control plane and stores the session for later hosted commands. */
+/**
+ * Signs `token` out at its control plane, best effort: a session the CLI
+ * could not finish setting up is not left valid behind it.
+ */
+const revoke = (apiUrl: string, token: string) =>
+  HttpClient.HttpClient.pipe(
+    Effect.flatMap((client) =>
+      client.execute(
+        HttpClientRequest.post(`${apiUrl}/auth/sign-out`).pipe(
+          HttpClientRequest.bearerToken(token),
+          HttpClientRequest.bodyJsonUnsafe({}),
+        ),
+      ),
+    ),
+    Effect.ignore,
+  )
+
+/** `akter login`: signs in to a control plane and stores the session for later hosted commands. */
 export const loginCommand = Command.make("login", flags, ({ apiUrl }) =>
   Effect.gen(function* () {
     const token = yield* deviceLogin(apiUrl)
     const client = yield* cloudClient({ apiUrl, token, email: "" })
-    const me = yield* client.account.me()
+    const me = yield* client.account.me().pipe(Effect.tapError(() => revoke(apiUrl, token)))
     const email = me.user?.email ?? ""
     const file = yield* saveCredentials({ apiUrl, token, email })
 
@@ -145,7 +165,7 @@ export const loginCommand = Command.make("login", flags, ({ apiUrl }) =>
       LoginExpired: () =>
         fail({
           reason: "LoginExpired",
-          message: "The sign-in code expired before it was approved. Run `durable login` again.",
+          message: "The sign-in code expired before it was approved. Run `akter login` again.",
           exitCode: 1,
         }),
       LoginRefused: (error) =>

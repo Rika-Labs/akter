@@ -3,28 +3,35 @@ import { expect, layer } from "@effect/vitest"
 import { Effect, FileSystem } from "effect"
 import { configDirectory, runCliWith, scriptedFetch } from "../../testing.ts"
 
-const credentials = { apiUrl: "http://cloud.test", token: "stored-token", email: "ada@example.dev" }
+const credentials = {
+  apiUrl: "https://cloud.test",
+  token: "stored-token",
+  email: "ada@example.dev",
+}
 
-const logout = (fetch: typeof globalThis.fetch, stored = true) =>
+const logout = (fetch: typeof globalThis.fetch, stored = true, mode = 0o600) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const directory = yield* configDirectory(stored ? credentials : undefined)
+
+    if (stored) yield* fs.chmod(`${directory}/credentials.json`, mode)
+
     const run = yield* runCliWith({ fetch, env: { AKTER_CONFIG_DIR: directory } })(["logout"])
 
     return { run, left: yield* fs.exists(`${directory}/credentials.json`) }
   })
 
-layer(BunServices.layer)("durable logout", (it) => {
+layer(BunServices.layer)("akter logout", (it) => {
   it.effect("revokes the session at its control plane with the stored token, then deletes it", () =>
     Effect.gen(function* () {
       const server = scriptedFetch(() => Response.json({ success: true }))
       const { run, left } = yield* logout(server.fetch)
 
-      expect(run).toMatchObject({ exitCode: 0, stdout: "Logged out of http://cloud.test.\n" })
+      expect(run).toMatchObject({ exitCode: 0, stdout: "Logged out of https://cloud.test.\n" })
       expect(left).toBe(false)
       expect(
         server.requests.map((request) => [request.method, request.url, request.authorization]),
-      ).toEqual([["POST", "http://cloud.test/auth/sign-out", "Bearer stored-token"]])
+      ).toEqual([["POST", "https://cloud.test/auth/sign-out", "Bearer stored-token"]])
     }),
   )
 
@@ -40,6 +47,21 @@ layer(BunServices.layer)("durable logout", (it) => {
         expect(run.exitCode).toBe(0)
         expect(run.stdout).toContain("could not revoke the session")
         expect(left).toBe(false)
+      }),
+  )
+
+  it.effect.skipIf(process.platform === "win32")(
+    "still revokes a session whose file other users could read, since its token may have leaked",
+    () =>
+      Effect.gen(function* () {
+        const server = scriptedFetch(() => Response.json({ success: true }))
+        const { run, left } = yield* logout(server.fetch, true, 0o644)
+
+        expect(run).toMatchObject({ exitCode: 0, stdout: "Logged out of https://cloud.test.\n" })
+        expect(left).toBe(false)
+        expect(server.requests.map((request) => request.authorization)).toEqual([
+          "Bearer stored-token",
+        ])
       }),
   )
 

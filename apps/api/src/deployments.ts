@@ -7,15 +7,51 @@ import {
   type DeploymentDetail,
 } from "@akter/deployments/lifecycle"
 import { Actor, Actors, System } from "@rikalabs/akter"
-import { Crypto, Effect, Option, Predicate, Schema } from "effect"
+import { Crypto, Effect, Option, Predicate, Schema, Stream } from "effect"
 import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
+import type { HttpServerRequest } from "effect/http"
 import { Access, attributedSubject } from "./access.ts"
 import { Sources } from "./sources.ts"
 
 const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String }))
 
 const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
+
+/**
+ * Reads a request body of at most `limit` bytes. A declared `content-length`
+ * over the limit is refused before a byte is read, and a streamed body is
+ * cancelled as soon as it passes the limit, so a client can make the API hold
+ * at most one limit of body, however long it stalls.
+ */
+const boundedBody = (request: HttpServerRequest.HttpServerRequest, limit: number) =>
+  Effect.gen(function* () {
+    const tooLarge = Cloud.PayloadTooLarge.make({ limitBytes: limit })
+    const declared = request.headers["content-length"]
+    if (declared !== undefined && /^\d+$/u.test(declared) && Number(declared) > limit)
+      return yield* tooLarge
+    const read = yield* request.stream.pipe(
+      Stream.runFoldEffect(
+        () => ({ size: 0, chunks: new Array<Uint8Array>() }),
+        (acc, chunk) => {
+          const size = acc.size + chunk.byteLength
+          if (size > limit) return Effect.fail(tooLarge)
+          acc.chunks.push(chunk)
+          return Effect.succeed({ size, chunks: acc.chunks })
+        },
+      ),
+      Effect.catchTag("HttpServerError", () =>
+        Effect.fail(Cloud.Conflict.make({ message: "The upload ended before it was complete" })),
+      ),
+    )
+    const bytes = new Uint8Array(read.size)
+    let offset = 0
+    for (const chunk of read.chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return bytes
+  })
 
 /** Names a commit by its short SHA and message, as rollback and redeploy labels show it. */
 const commitLabel = (commitSha: string, message: string) =>
@@ -140,18 +176,13 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
       )
 
     return handlers
-      .handle("uploadSource", ({ params, payload }) =>
+      .handleRaw("uploadSource", ({ params, request }) =>
         Effect.gen(function* () {
           const organizationId = yield* access.project(params.projectId, "write")
           if (!sources.builds)
             return yield* Cloud.NotImplemented.make({ operation: "deployments.uploadSource" })
-          if (payload.byteLength > Cloud.MAX_SOURCE_BYTES)
-            return yield* Cloud.Conflict.make({ message: "A source archive holds at most 64 MiB" })
-          return yield* sources.store({
-            organizationId,
-            projectId: params.projectId,
-            archive: payload,
-          })
+          const archive = yield* boundedBody(request, Cloud.MAX_SOURCE_BYTES)
+          return yield* sources.store({ organizationId, projectId: params.projectId, archive })
         }),
       )
       .handle("create", ({ params, payload }) =>

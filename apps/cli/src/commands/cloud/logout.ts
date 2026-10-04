@@ -2,21 +2,19 @@ import { Console, Effect, Option } from "effect"
 import { Command } from "effect/cli"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { reportFailures } from "./client.ts"
-import { loadCredentials, removeCredentials } from "./credentials.ts"
+import { loadCredentialsToRevoke, removeCredentials } from "./credentials.ts"
 
 /**
  * Revokes the stored session at its control plane, then deletes the stored
  * credentials whatever the control plane answered, so a logout never leaves a
- * usable token on disk. Credentials the CLI refuses to read are deleted
+ * usable token on disk. A file other users could read is still revoked, since
+ * its token may have leaked; one that holds no credentials is deleted
  * without a revocation.
  */
 export const logout = Effect.gen(function* () {
-  const credentials = yield* loadCredentials.pipe(
+  const credentials = yield* loadCredentialsToRevoke.pipe(
     Effect.asSome,
-    Effect.catchTags({
-      CredentialsExposed: () => Effect.succeedNone,
-      CredentialsUnreadable: () => Effect.succeedNone,
-    }),
+    Effect.catchTag("CredentialsUnreadable", () => Effect.succeedNone),
     Effect.map(Option.getOrUndefined),
   )
   const revoked =
@@ -40,7 +38,7 @@ export const logout = Effect.gen(function* () {
   return { credentials, revoked }
 })
 
-/** `durable logout`: signs out of the control plane and deletes the stored credentials. */
+/** `akter logout`: signs out of the control plane and deletes the stored credentials. */
 export const logoutCommand = Command.make("logout", {}, () =>
   Effect.gen(function* () {
     const { credentials, revoked } = yield* logout

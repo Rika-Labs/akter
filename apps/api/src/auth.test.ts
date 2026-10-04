@@ -1272,3 +1272,51 @@ describe("organization API keys", () => {
       }),
     ))
 })
+
+describe("device authorization rate limits", () => {
+  it(
+    "lets one address look up twenty device codes in ten minutes, more than the plugin's five, and refuses the twenty-first",
+    () =>
+      Effect.gen(function* () {
+        const url = yield* createDatabase
+        const sqlLayer = PgClient.layer({ url: Redacted.make(url), maxConnections: 2 })
+        const services = yield* Layer.build(
+          Auth.layer({
+            databaseUrl: Redacted.make(url),
+            secret: Redacted.make("a-local-test-signing-secret-long-enough"),
+            origin: "https://api.akter.test",
+            port: 0,
+            production: true,
+            emailMode: "local",
+            emailFrom: "Akter <auth@localhost>",
+          }).pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                localEmail.pipe(Layer.provide(sqlLayer)),
+                Postgres(url),
+                sqlLayer,
+                processRuntimeLayer,
+              ),
+            ),
+          ),
+        )
+        const auth = Context.get(services, Auth)
+        const statuses: Array<number> = []
+
+        for (let attempt = 0; attempt < 21; attempt++)
+          statuses.push(
+            (yield* Effect.promise(() =>
+              auth.handler(
+                new Request("https://api.akter.test/auth/device?user_code=NOPE2345", {
+                  headers: { "x-forwarded-for": "203.0.113.7" },
+                }),
+              ),
+            )).status,
+          )
+
+        expect(statuses.slice(0, 20)).toEqual(Array.from({ length: 20 }, () => 400))
+        expect(statuses[20]).toBe(429)
+      }).pipe(Effect.scoped, Effect.runPromise),
+    60_000,
+  )
+})

@@ -1,13 +1,41 @@
 import { homedir } from "node:os"
-import { Config, Effect, FileSystem, Option, Schema } from "effect"
+import { Config, Crypto, Effect, FileSystem, Option, Schema } from "effect"
+
+/** Hosts a session token may travel to over plain HTTP: this machine alone. */
+const isLoopback = (hostname: string) =>
+  hostname === "localhost" ||
+  hostname.endsWith(".localhost") ||
+  hostname === "[::1]" ||
+  /^127(?:\.\d{1,3}){3}$/u.test(hostname)
+
+/**
+ * A control plane's base URL, without trailing slashes, when a session token
+ * may be sent to it: over `https`, or over `http` to a loopback host only, so
+ * a token never crosses a network in the clear.
+ */
+export const controlPlaneUrl = (input: string) => {
+  const url = URL.parse(input)
+
+  if (url === null || url.username !== "" || url.password !== "" || url.search !== "")
+    return Option.none()
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopback(url.hostname)))
+    return Option.none()
+
+  return Option.some(`${url.origin}${url.pathname}`.replace(/\/+$/u, ""))
+}
 
 /**
  * What `login` keeps: the control plane it signed in to, the session token
  * Better Auth's device authorization grant issued, and who it belongs to.
- * The token is a credential; it is only ever sent to `apiUrl`.
+ * The token is a credential; it is only ever sent to `apiUrl`, which
+ * `controlPlaneUrl` must accept.
  */
 export const Credentials = Schema.Struct({
-  apiUrl: Schema.String,
+  apiUrl: Schema.String.check(
+    Schema.makeFilter(
+      (url) => Option.isSome(controlPlaneUrl(url)) || "An https URL, or http on a loopback host",
+    ),
+  ),
   token: Schema.String,
   email: Schema.String,
 })
@@ -76,47 +104,67 @@ const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Credentials))
 
 /**
  * Writes `credentials` readable by the current user alone: the directory is
- * `0700` and the file `0600`. The file is written beside its final name and
- * renamed over it, so a reader never sees half a file and an older file with
- * wider permissions is replaced rather than rewritten in place.
+ * `0700` and the file `0600`. The file is first created beside its final
+ * name under a random suffix, refusing one that already exists, so nothing
+ * planted there is written through, then renamed over the old file; a reader
+ * never sees half a file, an older file with wider permissions is replaced
+ * rather than rewritten in place, and a failed write leaves no copy behind.
  */
 export const saveCredentials = (credentials: Credentials) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const { directory, file } = yield* credentialsPath
-    const pending = `${file}.${process.pid}.tmp`
+    const suffix = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+    const pending = `${file}.${suffix}.tmp`
 
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 })
     yield* fs.chmod(directory, 0o700)
-    yield* fs.writeFileString(pending, yield* encode(credentials).pipe(Effect.orDie), {
-      mode: 0o600,
-    })
-    yield* fs.chmod(pending, 0o600)
-    yield* fs.rename(pending, file)
+    yield* Effect.gen(function* () {
+      yield* fs.writeFileString(pending, yield* encode(credentials).pipe(Effect.orDie), {
+        flag: "wx",
+        mode: 0o600,
+      })
+      yield* fs.chmod(pending, 0o600)
+      yield* fs.rename(pending, file)
+    }).pipe(Effect.onError(() => fs.remove(pending, { force: true }).pipe(Effect.ignore)))
 
     return file
   })
 
-/**
- * Reads the stored credentials. A file group or others can read is refused
- * on systems with POSIX permissions, the way `ssh` refuses a private key.
- */
-export const loadCredentials = Effect.gen(function* () {
+/** The stored credentials, read whatever the file's permissions. */
+const readCredentials = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const { file } = yield* credentialsPath
 
   if (!(yield* fs.exists(file))) return yield* NotLoggedIn.make({ path: file })
 
   const mode = (yield* fs.stat(file)).mode & 0o777
+  const credentials = yield* fs.readFileString(file).pipe(
+    Effect.flatMap(decode),
+    Effect.mapError(() => CredentialsUnreadable.make({ path: file })),
+  )
+
+  return { credentials, file, mode }
+})
+
+/**
+ * Reads the stored credentials. A file group or others can read is refused
+ * on systems with POSIX permissions, the way `ssh` refuses a private key.
+ */
+export const loadCredentials = Effect.gen(function* () {
+  const { credentials, file, mode } = yield* readCredentials
 
   if (process.platform !== "win32" && (mode & 0o077) !== 0)
     return yield* CredentialsExposed.make({ path: file, mode })
 
-  return yield* fs.readFileString(file).pipe(
-    Effect.flatMap(decode),
-    Effect.mapError(() => CredentialsUnreadable.make({ path: file })),
-  )
+  return credentials
 })
+
+/**
+ * Reads the stored credentials even when other users could read them, for
+ * `logout` alone: a token that may have leaked is exactly the one to revoke.
+ */
+export const loadCredentialsToRevoke = Effect.map(readCredentials, (read) => read.credentials)
 
 /** Deletes the stored credentials, answering whether there were any. */
 export const removeCredentials = Effect.gen(function* () {

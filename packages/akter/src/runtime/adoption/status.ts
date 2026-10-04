@@ -1,7 +1,7 @@
 import { DateTime, Effect } from "effect"
 import { SqlClient } from "effect/sql"
 
-/** One adopted table as `durable adopt status` reports it. */
+/** One adopted table as `akter adopt status` reports it. */
 export interface AdoptionStatus {
   readonly table: string
   readonly actor: string

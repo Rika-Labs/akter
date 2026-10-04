@@ -32,4 +32,4 @@ Self-hosting must not require the hosted control plane. Operators need standard 
 - parked connections and replay gaps;
 - drain, restore, and reconciliation progress.
 
-Repository ownership follows this model: `apps/{api,console,edge,cli}`, a `durable` CLI, the framework in `packages/akter`, control-plane actors in `packages/deployments`, and runnable examples under `examples/`. See [repository structure](../architecture/repository-structure.md).
+Repository ownership follows this model: `apps/{api,console,edge,cli}`, a `akter` CLI, the framework in `packages/akter`, control-plane actors in `packages/deployments`, and runnable examples under `examples/`. See [repository structure](../architecture/repository-structure.md).

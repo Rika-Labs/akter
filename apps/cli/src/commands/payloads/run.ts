@@ -64,7 +64,7 @@ export const payloads = ({
     ? checkPayloads(actors).pipe(Effect.map((problems) => checkReport({ problems, json })))
     : clearPayloads(actors).pipe(Effect.map((results) => clearReport({ results, json })))
 
-/** `durable payloads check`: exits 1 when a stored payload version would stop decoding. */
+/** `akter payloads check`: exits 1 when a stored payload version would stop decoding. */
 export const checkCommand = Command.make("check", entryFlags, (options) =>
   entryCommand({
     options,
@@ -77,7 +77,7 @@ export const checkCommand = Command.make("check", entryFlags, (options) =>
   ),
 )
 
-/** `durable payloads clear`: marks superseded event versions past retention cleared; exits 1 when one stays. */
+/** `akter payloads clear`: marks superseded event versions past retention cleared; exits 1 when one stays. */
 export const clearCommand = Command.make("clear", entryFlags, (options) =>
   entryCommand({
     options,

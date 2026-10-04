@@ -28,7 +28,7 @@ import { packContext } from "./commands/cloud/archive.ts"
 import { runCliWith, startCliWith } from "./testing.ts"
 
 /**
- * `durable login`, `whoami`, `deploy` and `logout` against the documented
+ * `akter login`, `whoami`, `deploy` and `logout` against the documented
  * Docker Compose stack, `infra/local/compose.yaml` under its own project name
  * and free ports, whose API builds deployments itself.
  *
@@ -173,7 +173,7 @@ const composeStack = Effect.gen(function* () {
 const services = Layer.mergeAll(BunServices.layer, BunCrypto.layer, FetchHttpClient.layer)
 
 layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
-  "durable login and deploy on the documented Compose stack",
+  "akter login and deploy on the documented Compose stack",
   (it) => {
     it.effect(
       "logs in through the device grant, deploys an uploaded context to live, and sends a command as the person who logged in",

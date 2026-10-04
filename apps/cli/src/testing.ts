@@ -18,7 +18,7 @@ import { run } from "./cli.ts"
 import { type Credentials, saveCredentials } from "./commands/cloud/credentials.ts"
 import { CommandFailed } from "./failure.ts"
 
-/** What one `durable` invocation printed, and the exit status the bin would end with. */
+/** What one `akter` invocation printed, and the exit status the bin would end with. */
 export interface CliRun {
   readonly stdout: string
   readonly stderr: string
@@ -27,7 +27,7 @@ export interface CliRun {
   readonly reason: string
 }
 
-/** How a test runs `durable`: `fetch` answers its HTTP requests and `env` replaces the environment it reads. */
+/** How a test runs `akter`: `fetch` answers its HTTP requests and `env` replaces the environment it reads. */
 export interface CliOptions {
   readonly fetch?: typeof fetch
   readonly env?: Record<string, string>
@@ -77,7 +77,7 @@ const start = (args: ReadonlyArray<string>, options: CliOptions) =>
   })
 
 /**
- * Starts `durable` on `args` through `Command.runWith` in a scoped fiber, the
+ * Starts `akter` on `args` through `Command.runWith` in a scoped fiber, the
  * way the bin runs it. `printed` fills as the command prints, so a test can
  * watch a command that runs until interrupted, such as `dev`.
  */
@@ -88,7 +88,7 @@ export const startCliWith = (options: CliOptions) => (args: ReadonlyArray<string
   start(args, options)
 
 /**
- * Runs `durable` to completion with `options` and returns what it printed and
+ * Runs `akter` to completion with `options` and returns what it printed and
  * the exit status the bin would end with. A failure the bin would log
  * unreported is appended to `stderr`.
  */
@@ -121,7 +121,7 @@ export const runCliWith = (options: CliOptions) => (args: ReadonlyArray<string>)
     } satisfies CliRun
   }).pipe(Effect.scoped)
 
-/** Runs `durable` on `args` to completion with the real environment; see {@link runCliWith}. */
+/** Runs `akter` on `args` to completion with the real environment; see {@link runCliWith}. */
 export const runCli = runCliWith({})
 
 /** One request a command sent through {@link recordingFetch}. */
@@ -191,7 +191,7 @@ export const scriptedFetch = (answer: (request: ScriptedRequest) => Response) =>
 
 /**
  * A configuration directory, removed with the scope, holding `credentials`
- * as `durable login` stores them, or nothing; run commands with
+ * as `akter login` stores them, or nothing; run commands with
  * `AKTER_CONFIG_DIR` set to it.
  */
 export const configDirectory = (credentials?: Credentials) =>

@@ -107,7 +107,7 @@ export const OrdersByRegion = Fleet.view("OrdersByRegion", {
   select: { orders: Fleet.count(), total: Fleet.sum("amountCents") },
 })
 
-/** The views an entry module exports for `durable fleet setup`. */
+/** The views an entry module exports for `akter fleet setup`. */
 export const fleet = [OrdersByStatus, OrdersByRegion]
 
 /** `OrdersByStatus` with its filter dropped: the same table, another definition. */
@@ -362,7 +362,7 @@ const dropSlot = (sql: SqlClient.SqlClient) =>
 
 /**
  * A fresh database with the fleet tables and their indexes, set up with
- * `durable fleet setup` unless `setup` is false, and an administrative client
+ * `akter fleet setup` unless `setup` is false, and an administrative client
  * to it. The slot is dropped when the scope closes, before the backend drops
  * the database, which a logical slot would block.
  */
@@ -1205,7 +1205,7 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
           ).pipe(Effect.exit)
 
           expect(refusal(runtime)).toContain(
-            "public.fleet_orders is not in publication durable_fleet; run durable fleet setup",
+            "public.fleet_orders is not in publication durable_fleet; run akter fleet setup",
           )
 
           yield* admin`CREATE PUBLICATION durable_fleet FOR TABLE fleet_orders`.pipe(Effect.orDie)

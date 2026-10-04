@@ -4,7 +4,7 @@ import { expect, layer } from "@effect/vitest"
 import { Effect, FileSystem, Schema } from "effect"
 import { configDirectory, runCliWith, scriptedFetch } from "../../testing.ts"
 
-const API = "http://cloud.test"
+const API = "https://cloud.test"
 
 const credentials = { apiUrl: API, token: "stored-token", email: "ada@example.dev" }
 
@@ -92,7 +92,7 @@ const controlPlane = (polls: ReadonlyArray<ReturnType<typeof detail>>) =>
 
 type Server = Effect.Success<ReturnType<typeof controlPlane>>
 
-/** Runs `durable deploy` of a small context to `project` (default `prj_1`), with `stored` as the stored session (default `credentials`, none for null). */
+/** Runs `akter deploy` of a small context to `project` (default `prj_1`), with `stored` as the stored session (default `credentials`, none for null). */
 const deploy = (
   server: Server,
   options: {
@@ -132,7 +132,7 @@ const deploy = (
 const routes = (server: Server) =>
   server.requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)
 
-layer(BunServices.layer, { excludeTestServices: true })("durable deploy", (it) => {
+layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => {
   it.effect(
     "uploads the context, creates the deployment from its digest, and follows each step until it is live",
     () =>
@@ -256,5 +256,29 @@ layer(BunServices.layer, { excludeTestServices: true })("durable deploy", (it) =
       expect(run).toMatchObject({ exitCode: 2, reason: "NotLoggedIn" })
       expect(server.requests).toEqual([])
     }),
+  )
+
+  it.effect(
+    "sends the Dockerfile path it packed, cleaned, and refuses one outside the context before contacting anyone",
+    () =>
+      Effect.gen(function* () {
+        const cleaned = yield* controlPlane([
+          detail("live", ["succeeded", "succeeded", "succeeded", "skipped"]),
+        ])
+        const run = yield* deploy(cleaned, { args: ["--dockerfile", "./Dockerfile"] })
+
+        expect(run.exitCode).toBe(0)
+        expect(yield* parse(cleaned.requests[1]!.body)).toMatchObject({
+          source: { dockerfile: "Dockerfile" },
+        })
+
+        for (const dockerfile of ["../Dockerfile", "/etc/Dockerfile"]) {
+          const refused = yield* controlPlane([])
+          const outside = yield* deploy(refused, { args: ["--dockerfile", dockerfile] })
+
+          expect(outside, dockerfile).toMatchObject({ exitCode: 2, reason: "InvalidValue" })
+          expect(refused.requests).toEqual([])
+        }
+      }),
   )
 })

@@ -185,3 +185,47 @@ export const signupWith = ({
     expect(cookie).toContain("better-auth.session_token=")
     return { email, cookie, id: user.user.id }
   })
+
+/**
+ * Sends `head`, an HTTP/1.1 request line and headers, then `body` to the
+ * server at `origin` over a raw socket that then stays open without sending
+ * anything more, and answers the response's status and how many
+ * milliseconds it took to arrive. A server that waits for the rest of the
+ * body never answers, so the caller bounds the wait.
+ */
+export const stalledRequest = (request: {
+  readonly origin: string
+  readonly head: string
+  readonly body: Uint8Array
+}) =>
+  Effect.callback<{ readonly status: number; readonly elapsedMs: number }>((resume, signal) => {
+    const url = new URL(request.origin)
+    const started = performance.now()
+    const head = new TextEncoder().encode(request.head)
+    const pending = { bytes: new Uint8Array(head.byteLength + request.body.byteLength) }
+    pending.bytes.set(head)
+    pending.bytes.set(request.body, head.byteLength)
+    let received = ""
+    const flush = (socket: Bun.Socket) => {
+      const written = socket.write(pending.bytes)
+      pending.bytes = pending.bytes.subarray(Math.max(written, 0))
+    }
+
+    void Bun.connect({
+      hostname: url.hostname,
+      port: Number(url.port),
+      socket: {
+        open: flush,
+        drain: flush,
+        data: (socket, data) => {
+          received += new TextDecoder().decode(data)
+          const status = /^HTTP\/1\.1 (\d{3})/u.exec(received)
+          if (status === null || !received.includes("\r\n\r\n")) return
+          resume(
+            Effect.succeed({ status: Number(status[1]), elapsedMs: performance.now() - started }),
+          )
+          socket.end()
+        },
+      },
+    }).then((socket) => signal.addEventListener("abort", () => socket.end()))
+  })

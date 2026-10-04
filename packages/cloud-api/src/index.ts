@@ -4,6 +4,7 @@ export {
   NotFound,
   NotFoundResource,
   NotImplemented,
+  PayloadTooLarge,
   Unavailable,
   UnavailableReason,
   ReadErrors,

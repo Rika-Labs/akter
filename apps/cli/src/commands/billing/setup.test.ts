@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest"
 import { runCli } from "../../testing.ts"
 import { setupCatalog } from "./setup.ts"
 
-describe("durable billing setup", () => {
+describe("akter billing setup", () => {
   it("defaults to local mode and refuses to open a provider without its local database", () =>
     Effect.gen(function* () {
       const help = yield* runCli(["billing", "setup", "--help"])

@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { Context, Crypto, Effect, FileSystem, Layer, Stream } from "effect"
+import { Context, Crypto, type Duration, Effect, FileSystem, Layer, Stream } from "effect"
 import { BunCrypto } from "@effect/platform-bun"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { BuildFailed, dockerBuilds, ImageBuilds } from "./build.ts"
@@ -40,7 +40,7 @@ const context = Effect.gen(function* () {
   return directory
 }).pipe(Effect.orDie)
 
-layer(services)("docker image builds", (it) => {
+layer(services, { excludeTestServices: true })("docker image builds", (it) => {
   it.effect(
     "builds a tagged image with its build arguments, points the tag at the latest build, and refuses a broken build without retrying it",
     () =>
@@ -161,5 +161,141 @@ layer(services)("docker image builds", (it) => {
         expect((yield* docker("image", "inspect", missing)).code).not.toBe(0)
       }),
     120_000,
+  )
+
+  it.effect(
+    "refuses an uploaded context that is not a gzip-compressed tar, or unpacks past its byte or entry limit, before Docker runs",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        const marker = `${directory}/docker-ran`
+        const binary = `${directory}/docker`
+
+        yield* fs.writeFileString(binary, `#!/bin/sh\ntouch ${marker}\nexit 1\n`, { mode: 0o755 })
+
+        const builds = Context.get(
+          yield* Layer.build(
+            dockerBuilds({
+              context: directory,
+              dockerfile: "Dockerfile",
+              binary,
+              maxContextBytes: 64 * 1024,
+              maxContextEntries: 3,
+            }).pipe(Layer.provide(services)),
+          ),
+          ImageBuilds,
+        )
+        const archive = (files: Record<string, string | Uint8Array>) =>
+          Effect.promise(() => new Bun.Archive(files, { compress: "gzip" }).bytes())
+        const refusal = (bytes: Uint8Array) =>
+          builds
+            .build({
+              tag: "akter-build-test:refused",
+              buildArgs: {},
+              source: { archive: bytes, dockerfile: "Dockerfile" },
+            })
+            .pipe(Effect.flip)
+
+        for (const [bytes, reason] of [
+          [new TextEncoder().encode("not gzip at all"), "not a gzip-compressed tar archive"],
+          [Bun.gzipSync(new Uint8Array(2048).fill(7)), "not a tar archive"],
+          [
+            yield* archive({ Dockerfile: "FROM scratch\n", a: "1", b: "2", c: "3" }),
+            "holds more than 3 entries",
+          ],
+          [
+            yield* archive({ Dockerfile: "FROM scratch\n", big: new Uint8Array(80 * 1024) }),
+            "unpacks to more than 65536 bytes",
+          ],
+          [Bun.gzipSync(new Uint8Array(10 * 1024 * 1024)), "unpacks to more than 65536 bytes"],
+        ] as const) {
+          const refused = yield* refusal(bytes)
+
+          expect(refused).toBeInstanceOf(BuildFailed)
+          expect(refused.retryable).toBe(false)
+          expect(refused.reason).toContain(reason)
+        }
+
+        expect(yield* fs.exists(marker), "Docker never ran on a refused context").toBe(false)
+
+        const fits = yield* refusal(yield* archive({ Dockerfile: "FROM scratch\n", a: "1" }))
+
+        expect(fits.reason).toMatch(/^docker build exited with 1/u)
+        expect(yield* fs.exists(marker)).toBe(true)
+      }),
+  )
+
+  it.effect(
+    "keeps only the last 400 lines of a build's output as it streams, and stops a build at its timeout",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        const noisy = `${directory}/noisy`
+        const built = `${directory}/built`
+        const slow = `${directory}/slow`
+        const pidFile = `${directory}/pid`
+
+        yield* fs.writeFileString(
+          noisy,
+          '#!/bin/sh\ni=0\nwhile [ $i -lt 5000 ]; do echo "line $i"; i=$((i+1)); done\necho "the last error" >&2\nexit 3\n',
+          { mode: 0o755 },
+        )
+        yield* fs.writeFileString(
+          built,
+          `#!/bin/sh\nif [ "$1" = image ]; then echo sha256:${"e".repeat(64)}; exit 0; fi\ni=0\nwhile [ $i -lt 5000 ]; do echo "line $i"; i=$((i+1)); done\n`,
+          { mode: 0o755 },
+        )
+        yield* fs.writeFileString(slow, `#!/bin/sh\necho $$ > ${pidFile}\nexec sleep 30\n`, {
+          mode: 0o755,
+        })
+
+        const builder = (binary: string, timeout: Duration.Input) =>
+          Effect.map(
+            Layer.build(
+              dockerBuilds({ context: directory, dockerfile: "Dockerfile", binary, timeout }).pipe(
+                Layer.provide(services),
+              ),
+            ),
+            (built) => Context.get(built, ImageBuilds),
+          )
+
+        const failed = yield* (yield* builder(noisy, "1 minute"))
+          .build({ tag: "akter-build-test:noisy", buildArgs: {} })
+          .pipe(Effect.flip)
+
+        expect(failed.reason).toBe("docker build exited with 3: the last error")
+
+        const image = yield* (yield* builder(built, "1 minute")).build({
+          tag: "akter-build-test:built",
+          buildArgs: {},
+        })
+
+        expect(image.imageId).toBe(`sha256:${"e".repeat(64)}`)
+        expect(image.log).toHaveLength(400)
+        expect(image.log[0]).toEqual({ stream: "stdout", text: "line 4600" })
+        expect(image.log.at(-1)).toEqual({ stream: "stdout", text: "line 4999" })
+
+        const started = performance.now()
+        const stopped = yield* (yield* builder(slow, "1 second"))
+          .build({ tag: "akter-build-test:slow", buildArgs: {} })
+          .pipe(Effect.flip)
+
+        expect(stopped).toMatchObject({
+          reason: "The build did not finish within 1s",
+          retryable: false,
+        })
+        expect(performance.now() - started).toBeLessThan(10_000)
+
+        const pid = Number((yield* fs.readFileString(pidFile)).trim())
+        const alive = Effect.try(() => process.kill(pid, 0)).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        )
+
+        expect(yield* alive, "the stopped build's process was killed").toBe(false)
+      }),
+    30_000,
   )
 })

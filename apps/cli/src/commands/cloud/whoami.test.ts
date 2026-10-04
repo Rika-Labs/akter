@@ -4,7 +4,11 @@ import { expect, layer } from "@effect/vitest"
 import { DateTime, Effect, FileSystem, type PlatformError, Schema } from "effect"
 import { configDirectory, runCliWith, scriptedFetch } from "../../testing.ts"
 
-const credentials = { apiUrl: "http://cloud.test", token: "stored-token", email: "ada@example.dev" }
+const credentials = {
+  apiUrl: "https://cloud.test",
+  token: "stored-token",
+  email: "ada@example.dev",
+}
 
 /** The answers `/api/me` gives, encoded as the API encodes them. */
 const answers = Effect.all({
@@ -39,7 +43,7 @@ const answers = Effect.all({
   }),
 }).pipe(Effect.orDie)
 
-/** Runs `durable whoami` against `fetch`, with the session stored unless `stored` is false; `prepare` runs on the configuration directory first. */
+/** Runs `akter whoami` against `fetch`, with the session stored unless `stored` is false; `prepare` runs on the configuration directory first. */
 const whoami = (
   fetch: typeof globalThis.fetch,
   options: {
@@ -57,7 +61,7 @@ const whoami = (
     return yield* runCliWith({ fetch, env: { AKTER_CONFIG_DIR: directory } })(["whoami"])
   })
 
-layer(BunServices.layer)("durable whoami", (it) => {
+layer(BunServices.layer)("akter whoami", (it) => {
   it.effect(
     "names the signed-in person, the control plane, and their organizations, sending the stored token",
     () =>
@@ -67,9 +71,9 @@ layer(BunServices.layer)("durable whoami", (it) => {
         const run = yield* whoami(server.fetch)
 
         expect(run).toMatchObject({ exitCode: 0, reason: "" })
-        expect(run.stdout).toBe("ada@example.dev at http://cloud.test\n  acme  owner  org_acme\n")
+        expect(run.stdout).toBe("ada@example.dev at https://cloud.test\n  acme  owner  org_acme\n")
         expect(server.requests.map((request) => [request.url, request.authorization])).toEqual([
-          ["http://cloud.test/api/me", "Bearer stored-token"],
+          ["https://cloud.test/api/me", "Bearer stored-token"],
         ])
       }),
   )
@@ -82,7 +86,7 @@ layer(BunServices.layer)("durable whoami", (it) => {
       )
 
       expect(run).toMatchObject({ exitCode: 1, reason: "Unauthorized" })
-      expect(run.stderr).toContain("expired or was revoked. Run `durable login`")
+      expect(run.stderr).toContain("expired or was revoked. Run `akter login`")
     }),
   )
 

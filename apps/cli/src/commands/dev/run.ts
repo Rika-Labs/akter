@@ -41,13 +41,13 @@ const flags = {
   ),
 }
 
-/** What `durable dev` provides to an entry's `app`: the database, crypto, and the router. */
+/** What `akter dev` provides to an entry's `app`: the database, crypto, and the router. */
 export type DevServices = SqlClient.SqlClient | Crypto.Crypto | HttpRouter.HttpRouter
 
 /**
  * An entry's `app` export: the application's routes, usually `Actors.serve`,
  * with its actor layers and `Actors.layer` provided, leaving the database to
- * `durable dev`. Its startup failures, such as a migration error, are tagged errors.
+ * `akter dev`. Its startup failures, such as a migration error, are tagged errors.
  */
 export type DevApp = Layer.Layer<never, Cause.YieldableError, DevServices>
 
@@ -68,11 +68,11 @@ export const appOf = ({ module, entry }: { readonly module: object; readonly ent
     ),
   )
 
-/** Where `durable dev` serves the inspector page; its API is under `/api`. */
+/** Where `akter dev` serves the inspector page; its API is under `/api`. */
 export const INSPECTOR_PATH = "/_durable/inspector"
 
 /**
- * The inspector's principal in `durable dev`: the developer who started it,
+ * The inspector's principal in `akter dev`: the developer who started it,
  * reading one tenant. The server listens on loopback unless told otherwise.
  */
 export const localOperator = (tenant: string) =>
@@ -87,7 +87,7 @@ export const devRoutes = ({ app, tenant }: { readonly app: DevApp; readonly tena
   )
 
 /**
- * `durable dev`: runs until interrupted, the entry's app and the inspector on
+ * `akter dev`: runs until interrupted, the entry's app and the inspector on
  * one server. The banner prints once the server listens, so `--port 0`
  * reports the port the server was given.
  */
@@ -117,7 +117,7 @@ export const devCommand = Command.make("dev", flags, (options) =>
       HttpServer.addressFormattedWith((origin) =>
         Console.log(
           [
-            `durable dev: ${options.entry} on ${storage}`,
+            `akter dev: ${options.entry} on ${storage}`,
             `  app        ${origin}`,
             `  inspector  ${origin}${INSPECTOR_PATH} (tenant ${options.tenant})`,
           ].join("\n"),

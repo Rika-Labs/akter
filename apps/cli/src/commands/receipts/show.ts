@@ -34,7 +34,7 @@ export const showReceipt = ({
     token,
   })
 
-/** `durable receipts show <Type>/<id> <commandId>`: one stored outcome, as JSON. */
+/** `akter receipts show <Type>/<id> <commandId>`: one stored outcome, as JSON. */
 export const showCommand = Command.make("show", flags, (options) =>
   operatorCommand({ options, request: showReceipt, format: encodeJson }),
 ).pipe(

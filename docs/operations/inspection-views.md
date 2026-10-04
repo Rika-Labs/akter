@@ -85,10 +85,10 @@ The reader still holds no grant on any `actor_*` table, and the columns and vers
 
 ## The local inspector
 
-`durable dev --entry <module>` runs an application locally and serves a read-only inspector over these views (CR.5). The entry module exports `app`: its routes, usually `Actors.serve`, with the actor layers and `Actors.layer` provided, leaving the database to the command (see `examples/chat/src/app.ts`).
+`akter dev --entry <module>` runs an application locally and serves a read-only inspector over these views (CR.5). The entry module exports `app`: its routes, usually `Actors.serve`, with the actor layers and `Actors.layer` provided, leaving the database to the command (see `examples/chat/src/app.ts`).
 
 ```sh
-durable dev --entry src/app.ts [--database-url <url> | --data-dir <dir>] [--port 3000] [--hostname 127.0.0.1] [--tenant default]
+akter dev --entry src/app.ts [--database-url <url> | --data-dir <dir>] [--port 3000] [--hostname 127.0.0.1] [--tenant default]
 ```
 
 Without `--database-url` the app runs on PGlite, in memory unless `--data-dir` names a directory. The app's routes and the inspector share one server: the inspector page is `/_durable/inspector` and its JSON API is under `/_durable/inspector/api`. The page shows the tenant's counts, actors by type, one actor's state, receipts (each linking the events it committed), event timeline, outbox and timers, jobs, dead letters, and workflow executions with their step history, plus tenant-wide outbox, job, dead-letter, and workflow lists. It re-reads on **Refresh**, or every two seconds with **live** on, and renders every stored value as text, never as markup. The server listens on loopback unless `--hostname` says otherwise, and every inspector request reads the one tenant `--tenant` names.
@@ -119,7 +119,7 @@ The inspector adds no access of its own:
 - **Read-only.** It reads only the `durable` views, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and Postgres refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
 - **Step history.** Steps are shown while an execution is open; the engine deletes a finished execution's steps, so a finished execution shows its result and no steps.
 
-Connections are not shown: no inspection view covers `actor_connections` yet. `durable export Room/r1 --output r1.seed` writes an actor's current state and pending intents and jobs as a seed that `test.actor(Room, "r1", { seed })` starts from; it needs the `export` capability, is audited, and carries no history ([M6.4](../milestones/M6.md)). Retrying or discarding a dead letter is an operator repair: `durable dead-letters retry|discard` through `Operators.serve` ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)).
+Connections are not shown: no inspection view covers `actor_connections` yet. `akter export Room/r1 --output r1.seed` writes an actor's current state and pending intents and jobs as a seed that `test.actor(Room, "r1", { seed })` starts from; it needs the `export` capability, is audited, and carries no history ([M6.4](../milestones/M6.md)). Retrying or discarding a dead letter is an operator repair: `akter dead-letters retry|discard` through `Operators.serve` ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)).
 
 ## Example queries
 

@@ -64,7 +64,7 @@ export const skip = ({
     },
   })
 
-/** `durable subscriptions skip`: skips a stuck row's events, printing the runner's JSON answer. */
+/** `akter subscriptions skip`: skips a stuck row's events, printing the runner's JSON answer. */
 export const skipCommand = Command.make("skip", flags, (options) =>
   operatorCommand({ options, request: skip, format: encodeJson }),
 ).pipe(

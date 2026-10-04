@@ -60,8 +60,8 @@ const sleeping = Effect.gen(function* () {
   )
 })
 
-describe("durable workflows check", () => {
-  it("durable workflows check exits 1 with the blocking groups and 0 when compatible", () =>
+describe("akter workflows check", () => {
+  it("akter workflows check exits 1 with the blocking groups and 0 when compatible", () =>
     Effect.gen(function* () {
       yield* sleeping
 

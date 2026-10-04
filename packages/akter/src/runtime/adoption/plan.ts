@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import { adoptionTargets, qualifiedName, type AdoptionTarget } from "./target.ts"
 
-/** What `durable adopt plan` reports for one table; it changes nothing. */
+/** What `akter adopt plan` reports for one table; it changes nothing. */
 export interface AdoptionPlan {
   readonly table: string
   readonly actor: string

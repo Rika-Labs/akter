@@ -1,4 +1,4 @@
-import { Effect, FileSystem, Schema } from "effect"
+import { Effect, FileSystem, Option, Schema } from "effect"
 
 /** One `.dockerignore` line: a compiled pattern, its segments, and whether `!` makes it an exception. */
 interface Rule {
@@ -23,6 +23,21 @@ const clean = (path: string) => {
   }
 
   return segments.join("/")
+}
+
+/**
+ * A path inside the build context as the control plane accepts it:
+ * relative, `/`-separated, with `.` and empty segments dropped. A path that
+ * starts at `/` or climbs out with `..` names nothing inside the context.
+ */
+export const contextPath = (path: string) => {
+  const segments = path.replaceAll("\\", "/").split("/")
+
+  if (path.startsWith("/") || segments.includes("..")) return Option.none()
+
+  const kept = segments.filter((segment) => segment !== "" && segment !== ".").join("/")
+
+  return kept === "" ? Option.none() : Option.some(kept)
 }
 
 /**
@@ -100,19 +115,150 @@ const reaches = (rule: Rule, segments: ReadonlyArray<string>) => {
   return true
 }
 
+/** One tar entry: a regular file with its permission bits, or a symbolic link with its target. */
+type Entry =
+  | { readonly path: string; readonly mode: number; readonly bytes: Uint8Array }
+  | { readonly path: string; readonly target: string }
+
+const BLOCK = 512
+
+const encoder = new TextEncoder()
+
+/** `value` as a zero-padded octal field of `width` bytes, its last byte NUL. */
+const octal = (value: number, width: number) => `${value.toString(8).padStart(width - 1, "0")}\0`
+
+/**
+ * One ustar header. A path or link target too long for its field, or not
+ * ASCII, is carried by a PAX extended header in front of it, which every
+ * tar reader Docker uses understands.
+ */
+const headers = (entry: {
+  readonly path: string
+  readonly mode: number
+  readonly size: number
+  readonly type: "0" | "2" | "x"
+  readonly target: string
+}): ReadonlyArray<Uint8Array> => {
+  const fits = (value: string) =>
+    encoder.encode(value).byteLength <= 100 && /^[\x20-\x7e]*$/u.test(value)
+  const extended =
+    entry.type !== "x" && (!fits(entry.path) || !fits(entry.target))
+      ? pax(
+          [
+            ["path", entry.path],
+            ["linkpath", entry.target],
+          ].filter(([, value]) => value !== ""),
+        )
+      : []
+  const header = new Uint8Array(BLOCK)
+  const put = (offset: number, value: string) =>
+    header.set(encoder.encode(value).subarray(0, value.length), offset)
+
+  put(0, extended.length > 0 ? entry.path.slice(0, 99).replace(/[^\x20-\x7e]/gu, "_") : entry.path)
+  put(100, octal(entry.mode, 8))
+  put(108, octal(0, 8))
+  put(116, octal(0, 8))
+  put(124, octal(entry.size, 12))
+  put(136, octal(0, 12))
+  put(148, "        ")
+  put(156, entry.type)
+  put(157, extended.length > 0 ? "" : entry.target)
+  put(257, "ustar\0")
+  put(263, "00")
+  put(
+    148,
+    `${header
+      .reduce((sum, byte) => sum + byte, 0)
+      .toString(8)
+      .padStart(6, "0")}\0 `,
+  )
+
+  return [...extended, header]
+}
+
+/** A PAX extended header and its padded records: each `<length> <key>=<value>\n`, the length counting itself. */
+const pax = (records: ReadonlyArray<ReadonlyArray<string>>): ReadonlyArray<Uint8Array> => {
+  const body = encoder.encode(
+    records
+      .map(([key, value]) => {
+        const line = ` ${key}=${value}\n`
+        const size = encoder.encode(line).byteLength
+        let digits = 1
+
+        while (String(size + digits).length !== digits) digits += 1
+
+        return `${size + digits}${line}`
+      })
+      .join(""),
+  )
+
+  return [
+    ...headers({
+      path: "././@PaxHeader",
+      mode: 0o644,
+      size: body.byteLength,
+      type: "x",
+      target: "",
+    }),
+    padded(body),
+  ]
+}
+
+const padded = (bytes: Uint8Array) => {
+  const block = new Uint8Array(Math.ceil(bytes.byteLength / BLOCK) * BLOCK)
+
+  block.set(bytes)
+
+  return block
+}
+
+/**
+ * A gzip-compressed tar of `entries`, in order. Owners and times are zeroed,
+ * so the same files always pack to the same bytes and the same digest.
+ */
+const tar = (entries: ReadonlyArray<Entry>) => {
+  const blocks = entries.flatMap((entry) =>
+    "target" in entry
+      ? headers({ path: entry.path, mode: 0o777, size: 0, type: "2", target: entry.target })
+      : [
+          ...headers({
+            path: entry.path,
+            mode: entry.mode,
+            size: entry.bytes.byteLength,
+            type: "0",
+            target: "",
+          }),
+          padded(entry.bytes),
+        ],
+  )
+  const bytes = new Uint8Array(
+    blocks.reduce((size, block) => size + block.byteLength, 0) + 2 * BLOCK,
+  )
+  let offset = 0
+
+  for (const block of blocks) {
+    bytes.set(block, offset)
+    offset += block.byteLength
+  }
+
+  return Bun.gzipSync(bytes)
+}
+
 /**
  * Packs a build context the way `docker build` would send it: every file
  * under `context` that its ignore file keeps, as a gzip-compressed tar with
  * `/`-separated paths in sorted order. The ignore file is `<dockerfile>.dockerignore`
  * when it exists, as BuildKit reads it, otherwise `.dockerignore`. The
- * Dockerfile is always included. Symbolic links are followed, and file
- * modes are not kept.
+ * Dockerfile, a path `contextPath` accepted, is always included and must be
+ * a regular file. A symbolic link is sent as a link, never followed, so
+ * nothing it points at outside the context is read and a link loop cannot
+ * recurse. Files keep their permission bits; owners and times are zeroed.
  */
 export const packContext = (input: { readonly context: string; readonly dockerfile: string }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = input.context.replace(/[\\/]+$/u, "")
-    const dockerfile = clean(input.dockerfile)
+    const dockerfile = input.dockerfile
     const ignoreFile = [`${dockerfile}.dockerignore`, ".dockerignore"]
     let rules: ReadonlyArray<Rule> = []
 
@@ -123,7 +269,7 @@ export const packContext = (input: { readonly context: string; readonly dockerfi
       }
 
     const exceptions = rules.filter((rule) => rule.exception)
-    const files: Record<string, Uint8Array> = {}
+    const entries: Array<Entry> = []
 
     const walk = (directory: string): Effect.Effect<void, ContextInvalid, never> =>
       Effect.gen(function* () {
@@ -133,21 +279,31 @@ export const packContext = (input: { readonly context: string; readonly dockerfi
 
         for (const name of names) {
           const path = directory === "" ? name : `${directory}/${name}`
+          const kept = path === dockerfile || !isIgnored(rules)(path)
+          const link = yield* Effect.option(fs.readLink(`${root}/${path}`))
+
+          if (Option.isSome(link)) {
+            if (kept) entries.push({ path, target: link.value })
+            continue
+          }
+
           const info = yield* fs.stat(`${root}/${path}`)
 
           if (info.type === "Directory") {
-            const segments = path.split("/")
-
             if (
-              isIgnored(rules)(path) &&
+              !kept &&
               !dockerfile.startsWith(`${path}/`) &&
-              !exceptions.some((rule) => reaches(rule, segments))
+              !exceptions.some((rule) => reaches(rule, path.split("/")))
             )
               continue
 
             yield* walk(path)
-          } else if (info.type === "File" && (path === dockerfile || !isIgnored(rules)(path)))
-            files[path] = yield* fs.readFile(`${root}/${path}`)
+          } else if (info.type === "File" && kept)
+            entries.push({
+              path,
+              mode: info.mode & 0o777,
+              bytes: yield* fs.readFile(`${root}/${path}`),
+            })
         }
       }).pipe(
         Effect.catchTag("PlatformError", (error) =>
@@ -159,12 +315,8 @@ export const packContext = (input: { readonly context: string; readonly dockerfi
 
     yield* walk("")
 
-    if (files[dockerfile] === undefined)
+    if (!entries.some((entry) => entry.path === dockerfile && !("target" in entry)))
       return yield* ContextInvalid.make({ message: `No Dockerfile at ${root}/${dockerfile}` })
 
-    const archive = yield* Effect.promise(() =>
-      new Bun.Archive(files, { compress: "gzip" }).bytes(),
-    )
-
-    return { archive, files: Object.keys(files) }
+    return { archive: tar(entries), files: entries.map((entry) => entry.path) }
   })

@@ -39,8 +39,8 @@ const group = <const Subcommands extends ReadonlyArray<Command.Command.Subcomman
     Command.withSubcommands(subcommands),
   )
 
-/** The `durable` command tree. */
-export const durable = Command.make("durable").pipe(
+/** The `akter` command tree. */
+export const akter = Command.make("akter").pipe(
   Command.withDescription(
     "Run actors locally, check a deploy against stored data, adopt existing tables, inspect and repair a running deployment, and deploy to Akter Cloud",
   ),
@@ -108,13 +108,13 @@ export const durable = Command.make("durable").pipe(
 const isShowHelp = Schema.is(CliError.ShowHelp)
 
 /**
- * Runs `durable` on `args`, the arguments after the program name. Invalid
+ * Runs `akter` on `args`, the arguments after the program name. Invalid
  * arguments print help and the error, and end with exit status 2, the status
  * of every usage error; a command
  * group named alone prints its help and exits 0.
  */
 export const run = (args: ReadonlyArray<string>) =>
-  Command.runWith(durable, { version })(args).pipe(
+  Command.runWith(akter, { version })(args).pipe(
     Effect.catchIf(
       (error): error is CliError.CliError =>
         CliError.isCliError(error) && Runtime.getErrorExitCode(error) !== 0,

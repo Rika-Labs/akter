@@ -15,7 +15,7 @@ The intended deployment has one shared relational database and one `Actors.layer
 
 The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, routes each tenant to its home region from the tenant directory, signs a per-request assertion, enforces limits, and proxies client sockets to the runners that hold them ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). Infrastructure is Alchemy plus Railway.
 
-The `durable` CLI in `apps/cli` runs an app locally (`durable dev`), checks a deploy against stored workflows and payloads, adopts existing tables, and inspects and repairs a running deployment through its operator routes ([CLI reference](../api/06-cli.md)). It has no hosted `login` or `deploy` command. Customer-served deployments do not require the hosted control plane.
+The `akter` CLI in `apps/cli` runs an app locally (`akter dev`), checks a deploy against stored workflows and payloads, adopts existing tables, and inspects and repairs a running deployment through its operator routes ([CLI reference](../api/06-cli.md)). It has no hosted `login` or `deploy` command. Customer-served deployments do not require the hosted control plane.
 
 Before enabling multiple Railway replicas, prove that every replica advertises a private `railnet0` address reachable by every other replica. A one-service-per-runner alternative requires its own reachability and failover evidence; `Topology.k8s` is not part of the current API. Also verify singleton failover and Neki conformance before claiming those capabilities.
 
@@ -91,7 +91,7 @@ Fleet views ([ADR 0056](../decisions/0056-fleet-views.md)) are maintained from P
 
 - `wal_level = logical` on the primary (`ALTER SYSTEM SET wal_level = logical`, then a restart). `compose.yaml` sets it for development.
 - A runtime login with the `REPLICATION` attribute, which the slot functions need.
-- `durable fleet setup --entry <module> --database-url <url>`, run as a role that may alter the source tables and create publications: it gives each source `REPLICA IDENTITY FULL` (an update then names the group a row left), sets publication `durable_fleet` to the sources, and creates the logical slot `durable_fleet`, or recreates it when it was lost. The entry module exports `fleet`, an array of the views. One slot serves one database of a server; slot names are server-wide. Creating the slot waits until every transaction open on the server when it starts has ended, so a long transaction delays setup.
+- `akter fleet setup --entry <module> --database-url <url>`, run as a role that may alter the source tables and create publications: it gives each source `REPLICA IDENTITY FULL` (an update then names the group a row left), sets publication `durable_fleet` to the sources, and creates the logical slot `durable_fleet`, or recreates it when it was lost. The entry module exports `fleet`, an array of the views. One slot serves one database of a server; slot names are server-wide. Creating the slot waits until every transaction open on the server when it starts has ended, so a long transaction delays setup.
 - The recompute index of each view and its derived table, from the application's migrations.
 
 The runtime refuses to start, naming the fix, when `wal_level` is below logical, the login lacks `REPLICATION`, a source is outside the publication or lacks full replica identity, the slot is missing or lost, a source's actor type is not tenant-placed, the index or the derived table is missing, or the row-level-security tenant role owns a derived table.
@@ -117,11 +117,11 @@ Only the `TenantHome` actor in `packages/deployments`, keyed by `<deployment>/<t
 The operator command runs the control-plane actors embedded against the control-plane database:
 
 ```sh
-durable tenants create acme --deployment dep-1 --region us-east \
+akter tenants create acme --deployment dep-1 --region us-east \
   --database-url "$CONTROL_PLANE_DATABASE_URL" --operator ops@example.com
 ```
 
-It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `durable tenants move` arrives with L.1.
+It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `akter tenants move` arrives with L.1.
 
 ## The hosted edge
 

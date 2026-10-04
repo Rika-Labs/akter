@@ -2,7 +2,7 @@ import { Console, Effect } from "effect"
 import { Command } from "effect/cli"
 import { reportFailures, signedIn } from "./client.ts"
 
-/** `durable whoami`: who the stored session signs in as, where, and the organizations it belongs to. */
+/** `akter whoami`: who the stored session signs in as, where, and the organizations it belongs to. */
 export const whoamiCommand = Command.make("whoami", {}, () =>
   Effect.gen(function* () {
     const { credentials, client } = yield* signedIn

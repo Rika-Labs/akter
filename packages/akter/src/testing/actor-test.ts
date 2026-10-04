@@ -215,7 +215,7 @@ export const ProgressRecord = Data.taggedEnum<ProgressRecord>()
 /** Options of `ActorTest.actor`. */
 export interface TestActorOptions {
   /**
-   * Path of a seed file `durable export` wrote. The actor starts from its
+   * Path of a seed file `akter export` wrote. The actor starts from its
    * state and pending work, staged as the caller the test runs as; the seed
    * carries no tenant, caller, or credential. Reading it needs a `FileSystem`.
    * An actor that already exists, a seed of another actor type, and a seed
