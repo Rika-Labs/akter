@@ -146,12 +146,18 @@ Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview la
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when
 windows and bucket boundaries match. Its unbounded tail remains explicit and it computes no
 combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
-histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
-Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
+histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based, and a
+finished run whose stored result does not decode has an unknown status (`—`), never Waiting.
+Paged inspectors currently load a first page; workflow and audit truncation is labelled. When a
+page cursor goes stale (a cursor the server no longer recognises or cannot read), paging starts
+again from the first page, and a second stale cursor ends with what was read; it is never reported
+as the API being unreachable. Display
 times are UTC. The API serves deployments, rollback, redeploy, command sending and actor
-inspection from real runners, and the overview, sidebar counts, actor search (by address prefix,
-offered in the palette), actor types and instances, the command log, jobs, dead letters, workflows
-and timers from the runners' durable views. The overview takes its recent deploys from the
+inspection from real runners, and the overview, sidebar counts, search (actor types and actor
+addresses by prefix, offered in the palette with types first, each linking to its page), actor
+types and instances, the command log, jobs, dead letters, workflows and timers from the runners'
+durable views. An actor type the deployment does not serve opens the not-found page, without Send
+first command. The overview takes its recent deploys from the
 deployments list when it reports none. Type activity, latency histograms, the command stream,
 connections, schedules and owned-table listing still answer typed 501s and fall back as described
 above. Dead letters can't be retried or discarded yet, so both stay disabled with one quiet reason.
