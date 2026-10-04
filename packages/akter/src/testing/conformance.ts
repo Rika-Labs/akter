@@ -66,6 +66,7 @@ import { crossShardOutboxConformance, crossShardSuite } from "./conformance/outb
 import { outboxConformance, outboxSuite } from "./conformance/outbox.ts"
 import { payloadMigrationsConformance } from "./conformance/payload-migrations.ts"
 import { pipelineConformance } from "./conformance/pipeline.ts"
+import { groupsConformance } from "./conformance/groups.ts"
 import { placementConformance, placementSuite } from "./conformance/placement.ts"
 import {
   progressConformance,
@@ -395,6 +396,7 @@ export const conformanceGroups = {
   drain: group(drainSuite, drainConformance),
   pipeline: group(standalone, pipelineConformance, freshDatabases),
   batches: group(batchesSuite, batchesConformance),
+  groups: group(standalone, groupsConformance, freshDatabases),
   relay: group(relaySuite, relayConformance),
   relayCluster: group(relaySuite, relayClusterConformance, freshDatabases),
   effectControl: group(effectControlSuite, effectControlConformance),

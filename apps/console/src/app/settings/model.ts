@@ -1,5 +1,6 @@
 import {
   ApiKeyPermission,
+  CapState,
   DomainStatus,
   EnvironmentName,
   IntegrationKind,
@@ -155,8 +156,38 @@ export const Billing = S.Struct({
   ),
   billingEmail: S.NullOr(S.String),
   spendLimit: S.Struct({ limitCents: S.NullOr(S.Finite), currentCents: S.Finite }),
+  caps: S.Array(CapState),
 })
 export type Billing = typeof Billing.Type
+
+/**
+ * One plan of the control plane's catalog. `commandCap` is the hard stop in commands, null when
+ * overage is billed instead; `storageCap` says whether the included storage is a hard stop.
+ * `checkout` is the plan Checkout and plan changes take, null for a plan that is not bought.
+ */
+export const PlanOffer = S.Struct({
+  id: PlanId,
+  name: S.String,
+  basePriceCents: S.Finite,
+  includedCommands: S.Finite,
+  commandCap: S.NullOr(S.Finite),
+  commandCentsPerMillion: S.Finite,
+  storageGb: S.Finite,
+  storageCap: S.Boolean,
+  storageCentsPerGbMonth: S.Finite,
+  connections: S.Finite,
+  checkout: S.NullOr(PaidPlan),
+  provisional: S.Boolean,
+})
+export type PlanOffer = typeof PlanOffer.Type
+
+/** The plan catalog, cheapest first; `provisional` is true while any plan's prices are. */
+export const Plans = S.Struct({
+  plans: S.Array(PlanOffer),
+  readCommandWeight: S.Finite,
+  provisional: S.Boolean,
+})
+export type Plans = typeof Plans.Type
 
 /** An invoice; `pdfUrl` is null until Stripe has rendered one. */
 export const Invoice = S.Struct({
@@ -194,10 +225,16 @@ export const UsagePricing = S.Struct({
 })
 export type UsagePricing = typeof UsagePricing.Type
 
-/** Usage for one billing period; a project's `reads` is null when the control plane omits it. */
+/**
+ * Usage for one billing period; a project's `reads` is null when the control plane omits it.
+ * `latestStorageSample` (bytes, summed over serving deployments' tenants) and `caps` describe now,
+ * whatever the period; the sample is null before any tenant was sampled.
+ */
 export const Usage = S.Struct({
   period: S.String,
   meters: S.Array(UsageMeter),
+  latestStorageSample: S.NullOr(S.Struct({ bytes: S.Finite, sampledAt: S.Finite })),
+  caps: S.Array(CapState),
   commandsPerDay: S.Array(S.Struct({ day: S.String, commands: S.Finite })),
   projects: S.Array(
     S.Struct({
@@ -238,6 +275,7 @@ export const SettingsSection = S.Literals([
   "members",
   "invitations",
   "billing",
+  "plans",
   "invoices",
   "usage",
   "audit",
@@ -265,6 +303,7 @@ export const SettingsPage = S.TaggedStruct("SettingsPage", {
   members: S.Array(Member),
   invitations: S.Array(PendingInvitation),
   billing: S.NullOr(Billing),
+  plans: S.NullOr(Plans),
   invoices: S.Array(Invoice),
   usage: S.NullOr(Usage),
   audit: S.Array(AuditEntry),
@@ -292,6 +331,7 @@ export const emptySettings: SettingsPage = SettingsPage.make({
   members: [],
   invitations: [],
   billing: null,
+  plans: null,
   invoices: [],
   usage: null,
   audit: [],

@@ -1,4 +1,15 @@
-import { Cause, Clock, Crypto, Effect, Exit, Option, Result, Schema, Scope } from "effect"
+import {
+  Cause,
+  Clock,
+  Crypto,
+  Effect,
+  Exit,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+  Scope,
+} from "effect"
 import type { PgConnection } from "@effect/sql-pg"
 import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
@@ -20,6 +31,7 @@ import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
 import { isPoolRefusal } from "../database/bounded.ts"
+import { NekiTurnSessions } from "../database/neki/session.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -29,6 +41,7 @@ import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
 import { checkIdentity, databaseTime, FrameworkClock } from "./admission.ts"
+import { abortedBefore, errorOf, type Member, Shared, TurnGroups, Unseated } from "./group.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
@@ -498,19 +511,31 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       DO UPDATE SET applied = greatest(actor_subscription_cursors.applied, EXCLUDED.applied)
       WHERE actor_subscription_cursors.epoch = 0`)
 
+  const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
+      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
+      set_config('durable.turn', 'on', true)
+      ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
+
+  /**
+   * Turns that set the same transaction settings, which a group sets once for
+   * all of them. Each part is encoded so no two settings share a key.
+   */
+  const groupKey = [
+    policy.lockWaitMs,
+    policy.executionMs,
+    role === undefined ? "-" : `+${encodeURIComponent(role)}`,
+    role === undefined ? "-" : `+${encodeURIComponent(tenant)}`,
+  ].join(":")
+
   const admit = (
     batch: ReadonlyArray<Delivery>,
     canonicals: ReadonlyArray<string>,
     view: View,
     session: Session,
     begin: ReadonlyArray<Statement>,
+    grouped = false,
   ) => {
     const cold = view.generation === undefined
-
-    const timeouts = sql`set_config('lock_timeout', ${`${policy.lockWaitMs}ms`}, true),
-      set_config('statement_timeout', ${`${policy.executionMs}ms`}, true),
-      set_config('durable.turn', 'on', true)
-      ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
     const readsState = cold || view.state === undefined
     let admissions: ReadonlyArray<Admission> = []
@@ -546,12 +571,16 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     const group: ReadonlyArray<Statement> = [
       ...begin,
-      cold
-        ? Effect.asVoid(sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-            SELECT ${routingKey}, ${tenant}, ${actor}, ${id}
-            FROM (SELECT ${timeouts}) AS timeouts
-            ON CONFLICT DO NOTHING`)
-        : Effect.asVoid(sql`SELECT ${timeouts}`),
+      ...(grouped
+        ? []
+        : [
+            cold
+              ? Effect.asVoid(sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+                  SELECT ${routingKey}, ${tenant}, ${actor}, ${id}
+                  FROM (SELECT ${timeouts}) AS timeouts
+                  ON CONFLICT DO NOTHING`)
+              : Effect.asVoid(sql`SELECT ${timeouts}`),
+          ]),
       Effect.map(
         sql<Admission>`
           WITH locked AS MATERIALIZED (
@@ -559,7 +588,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               g.generation, g.created, g.event_sequence
             FROM actor_generations g
             WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
-            FOR UPDATE OF g
+            FOR UPDATE OF g ${grouped ? sql.literal("SKIP LOCKED") : sql.literal("")}
           )
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
@@ -604,6 +633,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
     const resume = Effect.fnUntraced(function* () {
       const first = admissions[0]
+
+      if (first === undefined && grouped) return yield* Effect.die(new Unseated())
 
       if (first === undefined || (!cold && view.generation !== first.generation)) {
         forget(cache)
@@ -1247,6 +1278,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         interface Admitting {
           readonly admission: ReturnType<typeof admit>
           readonly admitted: Effect.Success<ReturnType<typeof queueStatements>>
+          /** The batch's place in a turn group, whose session carries its admission. */
+          readonly member?: Member
         }
 
         const queue = (batch: ReadonlyArray<W>, view: View, ahead: ReadonlyArray<Statement>) =>
@@ -1330,11 +1363,17 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           })
         }
 
-        const transact = (batch: ReadonlyArray<W>, { admission, admitted }: Admitting) =>
+        const alone = (
+          batch: ReadonlyArray<W>,
+          { admission, admitted }: Admitting,
+          taken?: ReadonlyArray<W>,
+        ) =>
           awaitReplies(admitted).pipe(
             Effect.andThen(() => admission.resume()),
             Effect.flatMap((plan) =>
-              Effect.flatMap(run.next, (following) => commitPlan(batch, plan, following)),
+              Effect.flatMap(taken === undefined ? run.next : Effect.succeed(taken), (following) =>
+                commitPlan(batch, plan, following),
+              ),
             ),
             inTurn,
             bounded,
@@ -1345,14 +1384,187 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             Effect.tap((stepped) => (stepped.chained === undefined ? release : Effect.void)),
           )
 
-        return yield* drive(
-          (batch) =>
-            leased.pipe(
-              Effect.andThen(queue(batch, view(), []).pipe(inTurn)),
-              Effect.map(({ admission, flight }): Admitting => ({ admission, admitted: flight })),
+        const openAlone = (batch: ReadonlyArray<W>) =>
+          leased.pipe(
+            Effect.andThen(queue(batch, view(), []).pipe(inTurn)),
+            Effect.map(({ admission, flight }): Admitting => ({ admission, admitted: flight })),
+          )
+
+        const onMember =
+          (member: Member) =>
+          <A, E, R2>(effect: Effect.Effect<A, E, R2>) =>
+            Effect.suspend(() =>
+              Effect.provideService(effect, sql.transactionService, [
+                asSqlConnection({ connection: member.connection(), send: member.send }),
+                0,
+              ]),
+            )
+
+        /**
+         * Joins the forming group for this batch's settings with its fenced
+         * admission read alone; the group opens the transaction.
+         */
+        const openGrouped = (batch: ReadonlyArray<W>, joining: TurnGroups["Service"]) =>
+          Effect.flatMap(canonicalsOf(batch), (canonicals) => {
+            const admission = admit(batch, canonicals, view(), pipeline, [], true)
+
+            return joining
+              .join({
+                key: groupKey,
+                settings: (connection) =>
+                  Effect.provideService(
+                    Effect.asVoid(sql`SELECT ${timeouts}`),
+                    sql.transactionService,
+                    [asSqlConnection({ connection, send: (statement) => statement }), 0],
+                  ),
+                cancel: (connection) =>
+                  Effect.ignore(sql`SELECT pg_cancel_backend(${connection.processId})`),
+                admission: (member) => admission.group.map(onMember(member)),
+              })
+              .pipe(
+                Effect.tapError((error) =>
+                  Effect.sync(() => {
+                    poolRefused = isPoolRefusal(error)
+                  }),
+                ),
+                Effect.map((member): Admitting => ({ admission, admitted: [], member })),
+              )
+          })
+
+        /**
+         * A grouped batch: its own admission replies, its handlers, and its
+         * writes handed to the group, answered once the group commits. When
+         * the actor's next batch is already waiting and this one leaves the
+         * cache warm, that batch's admission rides behind the group's
+         * `COMMIT` and the batch takes the group's session, as a batch on its
+         * own session would. `ended` is undefined when the batch must run again
+         * alone: the group ended without it, aborted on a neighbour's
+         * statement, skipped its locked generation row, or the batch tried to
+         * send another statement.
+         */
+        const grouped = (
+          batch: ReadonlyArray<W>,
+          admission: ReturnType<typeof admit>,
+          member: Member,
+        ) => {
+          let following: ReadonlyArray<W> | undefined
+
+          return Effect.gen(function* () {
+            const replies = yield* Effect.exit(awaitReplies(member.replies()))
+
+            if (Exit.isFailure(replies)) {
+              yield* member.leave(true)
+              const error = errorOf(replies)
+
+              if (error !== undefined && abortedBefore(error)) return undefined
+
+              return yield* Effect.failCause(replies.cause)
+            }
+
+            if (!(yield* member.handling)) return undefined
+
+            const plan = yield* onMember(member)(admission.resume())
+            following = yield* run.next
+            locate(batch, following)
+
+            const after: View =
+              plan.writes === undefined
+                ? view()
+                : { generation: plan.generation, state: plan.state }
+
+            let next: ReturnType<typeof admit> | undefined
+
+            const handoff =
+              following !== undefined &&
+              after.generation !== undefined &&
+              after.state !== undefined &&
+              !run.publishesUnderLock(batch)
+                ? yield* Effect.map(canonicalsOf(following), (canonicals) => ({
+                    chain: (connection: PgConnection.PgConnection) => {
+                      const on = <A, E, R2>(effect: Effect.Effect<A, E, R2>) =>
+                        Effect.provideService(effect, sql.transactionService, [
+                          asSqlConnection({ connection, send }),
+                          0,
+                        ])
+                      next = admit(following!, canonicals, after, pipeline, [
+                        Effect.asVoid(connection.query("BEGIN", [], true)),
+                      ])
+
+                      return next.group.map(on)
+                    },
+                    adopt: (connection: PgConnection.PgConnection, held: Scope.Closeable) =>
+                      Effect.suspend(() => {
+                        if (Predicate.isTagged(scope.state, "Closed")) return Effect.succeed(false)
+
+                        lease = { connection, scope: held }
+                        open = true
+
+                        return Effect.as(
+                          Scope.addFinalizer(scope, Scope.close(held, Exit.void)),
+                          true,
+                        )
+                      }),
+                  }))
+                : undefined
+
+            const writes = (plan.writes ?? []).map(onMember(member))
+            const waiting = member.commit(writes, handoff)
+            const shared = yield* writes.length > 0
+              ? waiting.pipe(Effect.withSpan(SpanNames.commit))
+              : waiting
+
+            if (Shared.$is("Alone")(shared)) return undefined
+
+            return {
+              plan,
+              version: shared.version,
+              endedAtMs: shared.endedAtMs,
+              following,
+              chained:
+                shared.chained === undefined || next === undefined
+                  ? undefined
+                  : { admission: next, admitted: [...shared.chained] },
+            } satisfies Ended<W, Admitting>
+          }).pipe(
+            Effect.catchDefect((defect) =>
+              defect instanceof Unseated ? Effect.undefined : Effect.die(defect),
             ),
-          transact,
-        ).pipe(
+            Effect.onExit(() => member.leave(false)),
+            bounded,
+            Effect.map((ended) => ({ ended, following })),
+          )
+        }
+
+        const transact = (batch: ReadonlyArray<W>, admitting: Admitting) =>
+          admitting.member === undefined
+            ? alone(batch, admitting)
+            : Effect.flatMap(
+                grouped(batch, admitting.admission, admitting.member),
+                (
+                  outcome,
+                ): Effect.Effect<
+                  Ended<W, Admitting>,
+                  SqlError.SqlError,
+                  Effect.Services<ReturnType<typeof alone>>
+                > =>
+                  outcome.ended !== undefined
+                    ? Effect.succeed(outcome.ended)
+                    : Effect.flatMap(openAlone(batch), (opened) =>
+                        alone(batch, opened, outcome.following),
+                      ),
+              )
+
+        let first = true
+
+        return yield* drive((batch) => {
+          const joining =
+            first && view().generation !== undefined && view().state !== undefined
+              ? groups
+              : undefined
+          first = false
+
+          return joining === undefined ? openAlone(batch) : openGrouped(batch, joining)
+        }, transact).pipe(
           Effect.onExit((exit) => {
             if (Exit.isSuccess(exit) || !open) return Effect.void
 
@@ -1423,6 +1635,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   )
 
   const turns = yield* Effect.serviceOption(TurnConnections)
+
+  const groups =
+    statements || waited.size > 0 || (yield* NekiTurnSessions)
+      ? undefined
+      : Option.getOrUndefined(yield* Effect.serviceOption(TurnGroups))
 
   const exit = yield* (Option.isSome(turns) ? pipelined(turns.value) : sequential).pipe(
     Effect.onError(() =>

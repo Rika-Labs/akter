@@ -24,9 +24,7 @@ import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts
 import { sendCommand } from "../commands/client.ts"
 import { CommandScope } from "../commands/model.ts"
 import * as Settings from "../settings/client.ts"
-import { titleCase } from "../settings/format.ts"
 import { spendLimitKey } from "../settings/keys.ts"
-import type { PaidPlan } from "../settings/model.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
 import {
@@ -403,10 +401,9 @@ const leaveInNewTab = (
   })
 
 const planChanged = (
-  plan: PaidPlan,
+  name: string,
   status: Effect.Success<ReturnType<typeof Settings.changePlan>>,
 ): Effect.Effect<Settled, ConsoleError> => {
-  const name = titleCase(plan)
   if (status === "completed") return done(`You’re on ${name} now`)
   if (status === "pending")
     return done(`Changing to ${name}`, `${name} applies once the payment goes through.`)
@@ -471,8 +468,8 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         ),
       StartCheckout: ({ plan }) =>
         Settings.startCheckout(plan).pipe(Effect.flatMap(({ url }) => leave(url))),
-      ChangePlan: ({ plan }) =>
-        Settings.changePlan(plan).pipe(Effect.flatMap((status) => planChanged(plan, status))),
+      ChangePlan: ({ plan, name }) =>
+        Settings.changePlan(plan).pipe(Effect.flatMap((status) => planChanged(name, status))),
       OpenBillingPortal: () => leaveInNewTab(Settings.openBillingPortal),
       SetVariable: ({ environment, name, value }) =>
         choose(EnvironmentName, environment, "Choose an environment.").pipe(

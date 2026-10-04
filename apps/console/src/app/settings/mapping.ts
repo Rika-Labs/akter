@@ -13,6 +13,7 @@ import type {
   Invoice as CloudInvoice,
   Member as CloudMember,
   Organization,
+  PlanCatalog,
   Project,
   ProjectEndpoints,
   Region,
@@ -20,24 +21,26 @@ import type {
   Usage as CloudUsage,
   UsageMeterName,
 } from "@akter/cloud-api"
-import { DateTime, Option } from "effect"
-import type {
-  ApiKey,
-  AuditEntry,
-  Billing,
-  Domain,
-  Endpoint,
-  EnvironmentVariables,
-  Integration,
-  Invoice,
-  Member,
-  OrganizationSummary,
-  PendingInvitation,
-  ProjectSummary,
-  RegionChoice,
-  Usage,
-  UsageMeter,
-  Variable,
+import { DateTime, Option, Schema } from "effect"
+import {
+  type ApiKey,
+  type AuditEntry,
+  type Billing,
+  type Domain,
+  type Endpoint,
+  type EnvironmentVariables,
+  type Integration,
+  type Invoice,
+  type Member,
+  type OrganizationSummary,
+  PaidPlan,
+  type PendingInvitation,
+  type Plans,
+  type ProjectSummary,
+  type RegionChoice,
+  type Usage,
+  type UsageMeter,
+  type Variable,
 } from "./model.ts"
 import { browserContext, hostedPageUrl } from "./stripe.ts"
 
@@ -222,6 +225,32 @@ export const toBilling = (billing: BillingSummary & { readonly plan: Plan }): Bi
     limitCents: billing.spendLimit.limitCents,
     currentCents: billing.spendLimit.currentSpendCents,
   },
+  caps: billing.caps ?? [],
+})
+
+const isPaidPlan = Schema.is(PaidPlan)
+
+/**
+ * The catalog as the Billing page offers it. Only a plan the catalog sells through Checkout, and
+ * which Checkout and plan changes accept, can be chosen.
+ */
+export const toPlans = (catalog: PlanCatalog): Plans => ({
+  plans: catalog.plans.map((plan) => ({
+    id: plan.id,
+    name: plan.name,
+    basePriceCents: plan.basePriceCents,
+    includedCommands: plan.allowances.commands,
+    commandCap: plan.features.includes("command-cap") ? plan.allowances.commandCap : null,
+    commandCentsPerMillion: plan.overage.commandCentsPerMillion,
+    storageGb: plan.allowances.storageGb,
+    storageCap: plan.features.includes("storage-cap"),
+    storageCentsPerGbMonth: plan.overage.storageCentsPerGbMonth,
+    connections: plan.allowances.concurrentConnections,
+    checkout: plan.features.includes("checkout") && isPaidPlan(plan.id) ? plan.id : null,
+    provisional: plan.provisional,
+  })),
+  readCommandWeight: catalog.readCommandWeight,
+  provisional: catalog.provisional,
 })
 
 /** Newest first, by the start of the period each invoice covers; a PDF off Stripe is dropped. */
@@ -261,6 +290,14 @@ export const toUsage = (usage: CloudUsage): Usage => ({
     overage: meter.overage,
     overageCostCents: meter.overageCostCents,
   })),
+  latestStorageSample:
+    usage.latestStorageSample == null
+      ? null
+      : {
+          bytes: usage.latestStorageSample.bytes,
+          sampledAt: millis(usage.latestStorageSample.sampledAt),
+        },
+  caps: usage.caps ?? [],
   commandsPerDay: usage.commandsPerDay.map((day) => ({ day: day.day, commands: day.commands })),
   projects: usage.byProject.map((project) => ({
     id: project.projectId,
