@@ -108,19 +108,26 @@ export const AccessLive = Layer.effect(
       session: (effect) => asPerson(cookieSession, effect),
       secureSession: (effect) => asPerson(cookieSession, effect),
       bearer: (effect, { credential }) =>
-        Redacted.value(credential) === ""
-          ? Effect.fail(
-              Unauthorized.make({
-                code: "missing_credentials",
-                message: "A verified session is required",
-              }),
-            )
-          : asPerson(
+        checkOrigin.pipe(
+          Effect.andThen(
+            Redacted.value(credential) === ""
+              ? Effect.fail(
+                  Unauthorized.make({
+                    code: "missing_credentials",
+                    message: "A verified session is required",
+                  }),
+                )
+              : Effect.void,
+          ),
+          Effect.andThen(
+            asPerson(
               resolveSession(
                 () => new Headers({ authorization: `Bearer ${Redacted.value(credential)}` }),
               ),
               effect,
             ),
+          ),
+        ),
       apiKey: (effect, { credential }) =>
         Effect.gen(function* () {
           yield* withoutBearer

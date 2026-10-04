@@ -289,11 +289,12 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             "the CLI to print its sign-in code",
             30,
             Effect.sync(() => login.printed.stdout),
-            (stdout) => stdout.includes("confirm the code "),
+            (stdout) => stdout.includes("enter the code "),
           )
-          const userCode = /confirm the code (\S+)\./u.exec(printed)?.[1] ?? ""
+          const userCode = /enter the code ([A-Z0-9]{4}-[A-Z0-9]{4})\./u.exec(printed)?.[1] ?? ""
 
-          expect(printed).toContain(`/device?user_code=${userCode}`)
+          expect(printed).toMatch(/open http:\/\/localhost:\d+\/device\n/u)
+          expect(printed).not.toContain("user_code=")
           expect(
             (yield* call(`/auth/device?user_code=${encodeURIComponent(userCode)}`, { cookie }))
               .status,
