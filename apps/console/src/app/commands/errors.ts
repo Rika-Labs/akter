@@ -53,7 +53,7 @@ export const sendFailure =
       })
       return ConsoleError.make({
         kind: "CommandRefused",
-        message: `${sent.address} refused ${sent.command} before running it (${cause.reasonTag}${code}). Nothing was committed, so you can change the command or payload and send it again.`,
+        message: `${sent.address} refused ${sent.command} before running it (${cause.reasonTag}${code}), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.`,
       })
     }
     if (Schema.is(Unavailable)(cause))

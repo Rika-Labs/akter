@@ -24,7 +24,7 @@ import { isQuotaKind } from "../quota/errors.ts"
 import { billingLink } from "../quota/view.ts"
 import { canSendCommand } from "./action.ts"
 import type { Dialog, Model } from "./model.ts"
-import { dialogId, resendRefused } from "./update.ts"
+import { dialogId, nextCommandId, resendRefused } from "./update.ts"
 
 const styles = stylex.create({
   note: { color: colors.mutedForeground, fontSize: typography.small },
@@ -182,6 +182,12 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
             placeholder: "Generated when you send",
             mono: true,
           }),
+          (model.fields["command-id"] ?? "").trim() !== "" && Option.isNone(nextCommandId(model))
+            ? h.p(
+                [...styleAttributes(h, styles.note)],
+                ["The command or payload changed, so sending it uses a new command ID."],
+              )
+            : h.empty,
           model.sendingCommand
             ? h.p(
                 [h.Role("status"), ...styleAttributes(h, styles.note)],

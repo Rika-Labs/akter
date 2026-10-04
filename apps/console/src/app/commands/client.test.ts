@@ -319,7 +319,7 @@ describe("sendCommand over the derived API", () => {
         ).toMatchObject({
           kind: "CommandRefused",
           message:
-            "Order/ord_8f2c refused Charge before running it (InvalidInput: bad_payload). Nothing was committed, so you can change the command or payload and send it again.",
+            "Order/ord_8f2c refused Charge before running it (InvalidInput: bad_payload), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
         })
         expect(
           yield* failure(
@@ -333,7 +333,7 @@ describe("sendCommand over the derived API", () => {
           ),
         ).toMatchObject({
           message:
-            "Order/ord_8f2c refused Charge before running it (NotAdmitted). Nothing was committed, so you can change the command or payload and send it again.",
+            "Order/ord_8f2c refused Charge before running it (NotAdmitted), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
         })
         expect(
           yield* failure(NotFound, NotFound.make({ resource: "actor", id: "Order/ord_8f2c" }), 404),
