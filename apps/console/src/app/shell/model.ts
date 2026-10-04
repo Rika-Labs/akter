@@ -48,8 +48,9 @@ export type Palette = typeof Palette.Type
  * Better Auth still holds one; `fields`,
  * `toggles` and `choices` hold form inputs, switches and selects by name so every settings row and
  * form shares one update path. `changingDeployment` holds the deployment page a rollback or redeploy
- * started from while it is in flight; it outlives navigation so a second one cannot start, and the
- * console opens the new deployment only if that page is still open when the change lands.
+ * started from while it is in flight; it outlives navigation within the project so a second one
+ * cannot start, the console opens the new deployment only if that page is still open when the
+ * change lands, and signing out or switching project releases it.
  */
 export const Model = S.Struct({
   route: AppRoute,

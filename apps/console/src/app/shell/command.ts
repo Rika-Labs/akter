@@ -1,5 +1,5 @@
 import { closeDialog, openDialog } from "@akter/ui"
-import { Duration, Effect, Match, Predicate, Schema as S } from "effect"
+import { Cause, Duration, Effect, Match, Option, Predicate, Schema as S } from "effect"
 import * as Command from "foldkit/command"
 import * as Navigation from "foldkit/navigation"
 import {
@@ -542,8 +542,9 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
 
 /**
  * Runs one change through the cloud API; a refusal becomes a message the shell shows, never a silent
- * success. A refused rollback or redeploy has its own message so the shell can release the
- * deployment change it was holding.
+ * success. Every other ending, a defect or an interruption inside the change included, is reported
+ * too, and a rollback or redeploy that did not succeed has its own message, so the shell always
+ * releases the deployment change it was holding.
  */
 export const Mutate = Command.define("Mutate", {
   args: { action: Action },
@@ -562,12 +563,16 @@ export const Mutate = Command.define("Mutate", {
         ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data is read-only." }))
         : perform(action),
     ).pipe(
-      Effect.catch((error) =>
-        Effect.succeed(
+      Effect.catchCause((cause) => {
+        const message = Option.match(Cause.findErrorOption(cause), {
+          onNone: () => "The change didn’t finish. Reload to see where it stands.",
+          onSome: (error) => error.message,
+        })
+        return Effect.succeed(
           Predicate.isTagged(action, "RollBack") || Predicate.isTagged(action, "Redeploy")
-            ? FailedDeploymentChange({ message: error.message })
-            : FailedMutation({ message: error.message }),
-        ),
-      ),
+            ? FailedDeploymentChange({ message })
+            : FailedMutation({ message }),
+        )
+      }),
     ),
 })

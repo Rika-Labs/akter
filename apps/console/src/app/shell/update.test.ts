@@ -20,10 +20,11 @@ import {
   type Message,
   OpenedDialog,
   PreparedCommandId,
+  SignedOut,
   SubmittedForm,
 } from "./message.ts"
 import { Dialog, type Model } from "./model.ts"
-import { init, resendRefused, update } from "./update.ts"
+import { init, nextCommandId, resendRefused, update } from "./update.ts"
 
 const billing: Billing = {
   plan: {
@@ -129,29 +130,55 @@ describe("send command keys", () => {
     expect(sentIds(step(unavailable, ConfirmedDialog()))).toEqual(["minted-1"])
   })
 
-  it("gives a changed command or payload a fresh key, even after a replayed success", () => {
-    const first = sendMinted(dialogOpen(), "minted-1")
-    const answered = step(
-      first.model,
+  const answered = (model: Model, id: string) =>
+    step(
+      model,
       AnsweredCommand({
-        session: first.model.commandSession,
-        answer: CommandSucceeded.make({
-          commandId: "minted-1",
-          result: { balance: 1 },
-          replayed: false,
-        }),
+        session: model.commandSession,
+        answer: CommandSucceeded.make({ commandId: id, result: { balance: 1 }, replayed: false }),
       }),
     ).model
-    expect(sentIds(step(answered, ConfirmedDialog()))).toEqual(["minted-1"])
-    const edited = step(
-      answered,
-      ChangedField({ name: "command-payload", value: '{"amount":2}' }),
-    ).model
-    expect(edited.fields["command-id"]).toBe("")
+
+  const edit = (model: Model, name: string, value: string) =>
+    step(model, ChangedField({ name, value })).model
+
+  it("gives a changed command or payload a fresh key when it is sent, not when it is typed", () => {
+    const sent = answered(sendMinted(dialogOpen(), "minted-1").model, "minted-1")
+    expect(sentIds(step(sent, ConfirmedDialog()))).toEqual(["minted-1"])
+    const edited = edit(sent, "command-payload", '{"amount":2}')
+    expect(edited.fields["command-id"]).toBe("minted-1")
+    expect(nextCommandId(edited)).toEqual(Option.none())
     const second = sendMinted(edited, "minted-2")
     expect(sentIds(second)).toEqual(["minted-2"])
-    const renamed = step(second.model, ChangedField({ name: "command-name", value: "Charge" }))
-    expect(renamed.model.fields["command-id"]).toBe("")
+    const renamed = edit(answered(second.model, "minted-2"), "command-name", "Charge")
+    expect(sentIds(sendMinted(renamed, "minted-3"))).toEqual(["minted-3"])
+  })
+
+  it("reuses the key for a payload that was only reformatted or had its keys reordered", () => {
+    const lost = failWith(
+      sendMinted(
+        {
+          ...dialogOpen(),
+          fields: { ...dialogOpen().fields, "command-payload": '{"a":1,"b":[2]}' },
+        },
+        "minted-1",
+      ).model,
+      new TypeError("Failed to fetch"),
+    )
+    const reformatted = edit(lost, "command-payload", '{\n  "b": [ 2 ],\n  "a": 1.0\n}')
+    expect(sentIds(step(reformatted, ConfirmedDialog()))).toEqual(["minted-1"])
+  })
+
+  it("reuses the key for a payload that was changed and then changed back", () => {
+    const lost = failWith(sendMinted(dialogOpen(), "minted-1").model, new TypeError("Failed"))
+    const reverted = edit(
+      edit(lost, "command-payload", '{"amount":99}'),
+      "command-payload",
+      '{ "amount": 1 }',
+    )
+    expect(sentIds(step(reverted, ConfirmedDialog()))).toEqual(["minted-1"])
+    const renamedBack = edit(edit(lost, "command-name", "Charge"), "command-name", "Refund")
+    expect(sentIds(step(renamedBack, ConfirmedDialog()))).toEqual(["minted-1"])
   })
 
   it("keeps a key the operator typed, so an edited payload reuses it deliberately", () => {
@@ -170,6 +197,7 @@ describe("send command keys", () => {
     ]) {
       const failed = failWith(sendMinted(dialogOpen(), "minted-1").model, cause)
       expect(resendRefused(failed)).toBe(true)
+      expect(resendRefused(edit(failed, "command-payload", '{ "amount" : 1 }'))).toBe(true)
       expect(step(failed, ConfirmedDialog()).commands ?? []).toEqual([])
       const cleared = step(failed, ChangedField({ name: "command-id", value: "" })).model
       expect(resendRefused(cleared)).toBe(false)
@@ -255,11 +283,32 @@ describe("rollback and redeploy", () => {
     expect(stayed.model.toasts.at(-1)?.title).toBe("Rollback to bbbbbbb: Previous release")
     expect(stayed.model.changingDeployment).toEqual(Option.none())
 
+    const listed = step(step(started, ChangedUrl({ url: at("/deployments") })).model, landed)
+    expect(named(listed, "PushUrl")).toHaveLength(0)
+    expect(named(listed, "LoadPage").map((command) => command.args?.["route"])).toEqual([
+      listed.model.route,
+    ])
+    expect(
+      named(step(step(started, ChangedUrl({ url: at("/") })).model, landed), "LoadPage"),
+    ).toHaveLength(1)
+
     const moved = step(started, ChangedUrl({ url: at("/actors") })).model
     expect(moved.changingDeployment).toEqual(Option.some("dep_live"))
     const elsewhere = step(moved, landed)
     expect(named(elsewhere, "PushUrl")).toHaveLength(0)
+    expect(named(elsewhere, "LoadPage")).toHaveLength(0)
     expect(elsewhere.model.toasts.at(-1)?.title).toBe("Rollback to bbbbbbb: Previous release")
     expect(elsewhere.model.changingDeployment).toEqual(Option.none())
+  })
+
+  it("releases a change that never answers when the session ends or the project changes", () => {
+    const started = step(
+      onDeployment(Dialog.RollBack({ id: "dep_old", commit: "bbbbbbb" })),
+      ConfirmedDialog(),
+    ).model
+    expect(started.changingDeployment).toEqual(Option.some("dep_live"))
+    expect(step(started, SignedOut()).model.changingDeployment).toEqual(Option.none())
+    const switched = step(started, ChangedUrl({ url: at("/projects/another-project") })).model
+    expect(switched.changingDeployment).toEqual(Option.none())
   })
 })

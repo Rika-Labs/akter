@@ -4,8 +4,8 @@ import type { Return } from "foldkit/update"
 import { type Url, toString } from "foldkit/url"
 import { selectedWindow } from "../api/client.ts"
 import { retryable } from "../commands/errors.ts"
-import type { CommandScope } from "../commands/model.ts"
-import { toOpeningTail, toTailEntry } from "../commands/mapping.ts"
+import type { CommandScope, CommandSubmission } from "../commands/model.ts"
+import { canonicalPayload, toOpeningTail, toTailEntry } from "../commands/mapping.ts"
 import { settingsSeed } from "../settings/keys.ts"
 import {
   choiceFields,
@@ -55,6 +55,7 @@ import { Action, canMutate, canSendCommand } from "./action.ts"
 import { Message } from "./message.ts"
 import { Dialog, type Flags, type Model, type Toast, withoutPasswords } from "./model.ts"
 import { paletteResults } from "./palette.ts"
+import { currentProject } from "./sidebar.ts"
 
 type Result = Return<Model, Message>
 
@@ -246,32 +247,52 @@ const savesChoice = (key: string): boolean =>
   key === spendLimitKey ||
   parseMemberRoleKey(key) !== undefined
 
-/** The command and payload the send dialog holds, as they would be sent. */
+/** The command the send dialog holds, with its payload in the form the control plane compares. */
 const commandInput = (model: Model) => ({
   command: (model.fields["command-name"] ?? "").trim(),
-  payload: model.fields["command-payload"] ?? "{}",
+  payload: canonicalPayload(model.fields["command-payload"] ?? "{}"),
 })
 
+const sameInput = (
+  sent: CommandSubmission,
+  input: Readonly<{ command: string; payload: string }>,
+): boolean => sent.command === input.command && sent.payload === input.payload
+
 /**
- * Whether the send dialog holds exactly the submission that last failed in a way a retry with the
- * same command ID cannot fix, so sending it again is not offered. Changing the input or clearing the
+ * The command ID the dialog's next send uses, or none when it mints a fresh one. A typed ID is
+ * always used as typed, and a cleared field always mints. The ID the console generated for the last
+ * send is reused only while the command and payload equal what was sent, compared the way the
+ * control plane compares them, so a retry runs at most once and changed input is a new command.
+ */
+export const nextCommandId = (model: Model): Option.Option<string> => {
+  const shown = (model.fields["command-id"] ?? "").trim()
+  if (shown === "") return Option.none()
+  const generated = Option.filter(
+    model.commandSubmission,
+    (sent) => sent.generated && sent.id === shown,
+  )
+  if (Option.isNone(generated) || sameInput(generated.value, commandInput(model)))
+    return Option.some(shown)
+  return Option.none()
+}
+
+/**
+ * Whether the dialog's next send would repeat the submission that last failed in a way a retry
+ * with the same command ID cannot fix, so sending it is not offered. Changed input or a cleared
  * command ID makes it a new submission.
  */
 export const resendRefused = (model: Model): boolean =>
   Option.exists(model.commandError, ({ kind }) => !retryable(kind)) &&
-  Option.exists(model.commandSubmission, (sent) => {
-    const input = commandInput(model)
-    return (
-      sent.id === (model.fields["command-id"] ?? "").trim() &&
-      sent.command === input.command &&
-      sent.payload === input.payload
-    )
-  })
+  Option.exists(
+    model.commandSubmission,
+    (sent) =>
+      Option.exists(nextCommandId(model), (id) => id === sent.id) &&
+      sameInput(sent, commandInput(model)),
+  )
 
 /**
- * Sends the dialog's command. An empty command ID asks for a fresh one first, and the send resumes
- * when it arrives; `minted` marks that ID as the console's own. Sending the same input again reuses
- * the ID of the last submission, so a retry after a lost response runs at most once.
+ * Sends the dialog's command with the ID `nextCommandId` chooses. Without one it asks for a fresh
+ * ID first and the send resumes when it arrives; `minted` marks that ID as the console's own.
  */
 const send = (
   model: Model,
@@ -285,18 +306,21 @@ const send = (
     resendRefused(model)
   )
     return { model }
-  const commandId = (model.fields["command-id"] ?? "").trim()
-  if (commandId === "")
+  const chosen = minted
+    ? Option.some((model.fields["command-id"] ?? "").trim())
+    : nextCommandId(model)
+  if (Option.isNone(chosen))
     return {
       model: {
         ...model,
         sendingCommand: true,
         commandAnswer: Option.none(),
         commandError: Option.none(),
+        fields: { ...model.fields, "command-id": "" },
       },
       commands: [NewCommandId({ session: model.commandSession })],
     }
-  const input = commandInput(model)
+  const commandId = chosen.value
   const generated =
     minted ||
     Option.exists(model.commandSubmission, (sent) => sent.generated && sent.id === commandId)
@@ -306,7 +330,7 @@ const send = (
       sendingCommand: true,
       commandAnswer: Option.none(),
       commandError: Option.none(),
-      commandSubmission: Option.some({ id: commandId, ...input, generated }),
+      commandSubmission: Option.some({ id: commandId, ...commandInput(model), generated }),
       fields: { ...model.fields, "command-id": commandId },
     },
     commands: [
@@ -314,7 +338,8 @@ const send = (
         session: model.commandSession,
         address: target.address,
         scope: target.scope,
-        ...input,
+        command: (model.fields["command-name"] ?? "").trim(),
+        payload: model.fields["command-payload"] ?? "{}",
         commandId,
       }),
     ],
@@ -583,10 +608,13 @@ const step = (model: Model, message: Message): Result =>
   Message.match(message, {
     ChangedUrl: ({ url }) => {
       const route = Routes.parseUrl(url)
+      const switchedProject =
+        AppRoute.isAnyOf(["Project"])(route) && route.project !== currentProject(model)
       return {
         model: {
           ...model,
           route,
+          changingDeployment: switchedProject ? Option.none() : model.changingDeployment,
           dialog: Option.none(),
           drawer: false,
           loading: true,
@@ -716,15 +744,6 @@ const step = (model: Model, message: Message): Result =>
       })),
     ChangedField: ({ name, value }) => {
       const fields = { ...model.fields, [name]: value }
-      if (
-        (name === "command-name" || name === "command-payload") &&
-        value !== model.fields[name] &&
-        Option.exists(
-          model.commandSubmission,
-          (sent) => sent.generated && sent.id === (model.fields["command-id"] ?? "").trim(),
-        )
-      )
-        fields["command-id"] = ""
       if (name === "org-name" && model.fields["org-slug-edited"] !== "yes")
         fields["org-slug"] = slugify(value)
       if (name === "org-slug") fields["org-slug-edited"] = "yes"
@@ -933,10 +952,14 @@ const step = (model: Model, message: Message): Result =>
         model.changingDeployment,
         (from) => deploymentReference(model.route) === from,
       )
+      const lists = AppRoute.isAnyOf(["Deployments", "Overview", "Project"])(model.route)
       return then(stayed ? go(settled, href) : { model: settled }, (moved) =>
         then(toast(moved, { title, description, tone: "live" }), (next) => ({
           model: next,
-          commands: [LoadWorkspace()],
+          commands: [
+            LoadWorkspace(),
+            ...(!stayed && lists ? [LoadPage({ route: next.route })] : []),
+          ],
         })),
       )
     },
@@ -953,7 +976,11 @@ const step = (model: Model, message: Message): Result =>
           commands: [LoadPage({ route: next.route })],
         }),
       ),
-    SignedOut: () => then(closePalette(model), (next) => ({ model: next, commands: [SignOut()] })),
+    SignedOut: () =>
+      then(closePalette({ ...model, changingDeployment: Option.none() }), (next) => ({
+        model: next,
+        commands: [SignOut()],
+      })),
     CompletedAuth: ({ href, refresh, title, description }) =>
       then(
         {
