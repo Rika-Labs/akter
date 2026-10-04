@@ -1,4 +1,4 @@
-import { Effect, Fiber, Schema } from "effect"
+import { Effect, Fiber, Schedule, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import {
   Actor,
@@ -70,6 +70,49 @@ const writeReceipt = Effect.fnUntraced(function* (ref: ActorRef, commandId: stri
 
 /** Receipt admission cases: replay by canonical payload hash, admission fenced inside the turn, and terminal rejection of malformed or expired identities. */
 export const admissionConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "rejects first admission that expires while waiting for the generation fence without running its handler",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const adder = yield* Adder.get("expires-waiting-for-fence")
+          expect(yield* adder.Echo("warm")).toBe("warm")
+          const before = executions.count
+          const locker = yield* environment.connect!
+          yield* locker.query("BEGIN")
+          yield* Effect.addFinalizer(() => locker.query("ROLLBACK"))
+          yield* locker.query(
+            "SELECT generation FROM actor_generations WHERE tenant_id = $1 AND actor_type = $2 AND actor_id = $3 FOR UPDATE",
+            [adder.ref.tenant, adder.ref.actor, adder.ref.id],
+          )
+          const now = yield* databaseTime
+          const id = `v1.${now - 59_000}.${now + 1_000}.2a32b8db-49b3-4e4c-8a7c-1c1630540c67`
+          const call = yield* adder
+            .Echo("late")
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+          const waiting = yield* locker.query("SELECT pg_stat_clear_snapshot()").pipe(
+            Effect.andThen(() =>
+              locker.query(
+                "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%actor_generations%' AND pid <> pg_backend_pid()",
+              ),
+            ),
+            Effect.repeat({
+              until: (rows) => (rows[0] as { waiting: number }).waiting === 1,
+              schedule: Schedule.spaced("20 millis"),
+            }),
+            Effect.timeout("500 millis"),
+          )
+          expect(waiting).toEqual([{ waiting: 1 }])
+          yield* Effect.sleep("1 second")
+          yield* locker.query("ROLLBACK")
+          expect((yield* Fiber.join(call)).reason).toEqual(CommandExpired.make({ commandId: id }))
+          expect(executions.count).toBe(before)
+          expect(yield* test.receiptsFor(adder.ref, "Echo")).toBe(1)
+        }),
+      ),
+  },
   {
     name: "refuses an external caller's redelivery flag before any handler or receipt",
     run: ({ expect, environment }) =>

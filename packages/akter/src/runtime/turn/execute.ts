@@ -389,8 +389,11 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * nothing runs, the activation drops its cache, and the retry reloads under a
  * new generation.
  *
- * Admission checks. External ids are validated against the fenced read's
- * clock before their receipt is released or handler runs. An owner reports
+ * Admission checks. The generation row is locked in a materialized input
+ * before the read evaluates its clock, so time spent waiting for the fence
+ * cannot admit an identity that expired meanwhile. External ids are validated
+ * against the fenced read's clock before their receipt is released or a handler
+ * runs. An owner reports
  * that admission on a retryable failure, so only a previously admitted
  * redelivery can run past expiry, and not once retention could have pruned
  * its receipt. No pre-delivery receipt read is needed. Only the relay's subscription
@@ -545,19 +548,24 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         : Effect.asVoid(sql`SELECT ${timeouts}`),
       Effect.map(
         sql<Admission>`
+          WITH locked AS MATERIALIZED (
+            SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id,
+              g.generation, g.created, g.event_sequence
+            FROM actor_generations g
+            WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
+            FOR UPDATE OF g
+          )
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
             c.payload::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
             ${cursorColumns}
-          FROM actor_generations g
+          FROM locked g
           CROSS JOIN ${values}
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
           ${cursorJoin}
-          WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
-          ORDER BY c.ordinal
-          FOR UPDATE OF g`,
+          ORDER BY c.ordinal`,
         (rows) => {
           admissions = rows
         },
