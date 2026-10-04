@@ -1,6 +1,6 @@
 import { ConfigProvider, Duration, Effect, Exit } from "effect"
 import { describe, expect, it } from "vitest"
-import { isAssertionLifetime, loadOptions } from "./config.ts"
+import { isAssertionLifetime, isLeaseTiming, loadOptions } from "./config.ts"
 
 const required = {
   EDGE_ISSUER: "http://edge.test",
@@ -55,5 +55,18 @@ describe("EDGE_PUBLICATION_LEAD", () => {
 
   it("refuses a lead that is not a duration", () => {
     expect(Exit.isFailure(load({ EDGE_PUBLICATION_LEAD: "soon" }))).toBe(true)
+  })
+})
+
+describe("EDGE_LEASE_HEARTBEAT", () => {
+  it("must be positive and at most half the lease lifetime, or a live edge's local deadline would pass between beats", () => {
+    const ttl = Duration.seconds(30)
+
+    expect(isLeaseTiming(ttl, Duration.seconds(10))).toBe(true)
+    expect(isLeaseTiming(ttl, Duration.seconds(15))).toBe(true)
+    expect(isLeaseTiming(ttl, Duration.millis(15_001))).toBe(false)
+    expect(isLeaseTiming(ttl, Duration.seconds(30))).toBe(false)
+    expect(isLeaseTiming(ttl, Duration.zero)).toBe(false)
+    expect(ttl.pipe(isLeaseTiming(Duration.seconds(10)))).toBe(true)
   })
 })

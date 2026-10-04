@@ -193,6 +193,7 @@ interface MemberCall {
   readonly id: string
   readonly authenticated: Authenticated
   readonly commandId: string
+  readonly usageToken?: string
   readonly body: Schema.Json | undefined
   readonly minVersion?: Effect.Effect<string | undefined, ActorError>
 }
@@ -406,6 +407,48 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       const contentStore = yield* Effect.serviceOption(ContentStore)
       const withCookies = readsCookies(options.auth)
       const withAssertion = options.auth.credentials.some(Credential.$is("Assertion"))
+
+      /**
+       * A runner that accepts edge assertions is hosted, and its edge reserves
+       * capacity for any keyed request as a command. A query, watch or stream
+       * never commits a receipt that could settle that reservation, so a hosted
+       * runner refuses a command identity on them whether or not the request
+       * carries an assertion, and the edge releases the reservation on that
+       * refusal.
+       */
+      const queryIdentity = Effect.fnUntraced(function* (
+        request: HttpServerRequest.HttpServerRequest,
+      ) {
+        if (!withAssertion || !Headers.has(request.headers, "idempotency-key")) return
+        return yield* ActorError.make({
+          reason: InvalidInput.make({
+            code: "decode",
+            issues: [
+              {
+                path: "idempotency-key",
+                message: "Hosted queries, watches and streams do not accept command identities",
+              },
+            ],
+          }),
+        })
+      })
+
+      const usageToken = (
+        request: HttpServerRequest.HttpServerRequest,
+        authenticated: Authenticated,
+      ) => {
+        if (
+          !withAssertion ||
+          authenticated.binding === undefined ||
+          !Headers.has(request.headers, ASSERTION_HEADER)
+        )
+          return undefined
+        const token = new URL(request.url, "http://runner").searchParams.get("__akter_usage")
+        return token !== null &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(token)
+          ? token
+          : undefined
+      }
 
       const api = buildServedApi({
         definitions,
@@ -733,13 +776,15 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           .payload(input.body)
           .pipe(Effect.mapError((error) => undecodable(error)))
 
-        const call = Request.make({
+        let call = Request.make({
           ref: refOf(definition, input.id, authenticated),
           caller: authenticated.caller,
           command: member.tag,
           commandId: input.commandId,
           payload,
         })
+        if (input.usageToken !== undefined)
+          call = Request.make({ ...call, usageToken: input.usageToken })
 
         if (member.kind === "query")
           return {
@@ -764,6 +809,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const id = yield* pathId(definition)
 
           const authenticated = yield* authenticate(request)
+
+          if (member.kind === "query") yield* queryIdentity(request)
+
           const key = member.kind === "query" ? "" : commandId(request)
 
           if (key === undefined) return yield* invalidInput("missing_command_id")
@@ -776,6 +824,7 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             id,
             authenticated,
             commandId: key,
+            usageToken: usageToken(request, authenticated),
             body: yield* decodeJsonBody(request, bytes),
             minVersion: minVersion(request),
           })
@@ -834,6 +883,9 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
           const id = yield* pathId(definition)
           const authenticated = yield* authenticate(request)
+
+          yield* queryIdentity(request)
+
           const bytes = yield* readBound(request, authenticated)
           const body = yield* decodeJsonBody(request, bytes)
 
@@ -859,6 +911,8 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           const id = yield* pathId(definition)
           const authenticated = yield* authenticate(request)
 
+          yield* queryIdentity(request)
+
           if (!member.watch) return yield* invalidInput("not_watchable")
 
           const bytes = yield* readBound(request, authenticated)
@@ -868,22 +922,22 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             .payload(body)
             .pipe(Effect.mapError((error) => undecodable(error)))
 
-          const results = yield* actors.watch(
-            Request.make({
-              ref: refOf(definition, id, authenticated),
-              caller: authenticated.caller,
-              command: member.tag,
-              commandId: "",
-              payload,
-            }),
-            {
-              minVersion: yield* minVersion(request),
-              expiresAt:
-                authenticated.expiresAt === undefined
-                  ? undefined
-                  : DateTime.toEpochMillis(authenticated.expiresAt),
-            },
-          )
+          const token = usageToken(request, authenticated)
+          let call = Request.make({
+            ref: refOf(definition, id, authenticated),
+            caller: authenticated.caller,
+            command: member.tag,
+            commandId: "",
+            payload,
+          })
+          if (token !== undefined) call = Request.make({ ...call, usageToken: token })
+          const results = yield* actors.watch(call, {
+            minVersion: yield* minVersion(request),
+            expiresAt:
+              authenticated.expiresAt === undefined
+                ? undefined
+                : DateTime.toEpochMillis(authenticated.expiresAt),
+          })
 
           return results.pipe(watchResponse, eventStream)
         })

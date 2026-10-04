@@ -28,6 +28,7 @@ services:
       API_PORT: "3001"
       API_HOST: 0.0.0.0
       EMAIL_MODE: local
+      BILLING_MODE: local
       EDGE_ORIGIN: http://edge:3002
       DEPLOYMENT_DOMAIN: localhost
       RUNNER_PORT: "8080"
@@ -40,6 +41,8 @@ services:
     volumes:
       - ../../apps/api/src:/workspace/apps/api/src:ro
       - ../../packages/cloud-api/src:/workspace/packages/cloud-api/src:ro
+      - ../../packages/billing/src:/workspace/packages/billing/src:ro
+      - ../../packages/metering/src:/workspace/packages/metering/src:ro
       - ../../packages/deployments/src:/workspace/packages/deployments/src:ro
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

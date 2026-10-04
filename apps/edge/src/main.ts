@@ -1,6 +1,7 @@
+import { defaultPricingConfig, PricingConfigSchema, PricingLive } from "@akter/billing"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
-import { Effect, Layer } from "effect"
+import { Config, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { loadOptions } from "./config.ts"
 import { EdgeLive } from "./server.ts"
@@ -11,6 +12,10 @@ import { EdgeLive } from "./server.ts"
  */
 const program = Effect.gen(function* () {
   const options = yield* loadOptions
+  const pricing = yield* Config.schema(
+    Schema.fromJsonString(PricingConfigSchema),
+    "BILLING_PRICING_CONFIG",
+  ).pipe(Config.withDefault(defaultPricingConfig))
 
   return yield* Layer.launch(
     EdgeLive(options).pipe(
@@ -19,6 +24,7 @@ const program = Effect.gen(function* () {
           PgClient.layer({ url: options.controlPlaneUrl, maxConnections: 10 }),
           FetchHttpClient.layer,
           BunCrypto.layer,
+          PricingLive(pricing),
         ),
       ),
     ),

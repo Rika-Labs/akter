@@ -106,6 +106,12 @@ export const Request = Schema.Struct({
    * the command's identity.
    */
   queuedAtMs: Schema.optionalKey(Schema.Finite),
+  /**
+   * Names one read attempt for the host's usage accounting; a watch reuses it
+   * for every rerun. A host that supplies it must have bound it to an
+   * authenticated assertion. Not part of the request's identity.
+   */
+  usageToken: Schema.optionalKey(Schema.NonEmptyString),
 })
 
 /** One command or query addressed to an actor. */

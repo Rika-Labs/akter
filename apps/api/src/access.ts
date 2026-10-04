@@ -13,6 +13,7 @@ import {
 import { Context, Effect, Layer, Predicate, Redacted, Schema } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
+import { Actor, System } from "@rikalabs/akter"
 import { Auth } from "./auth.ts"
 
 export const AccessLive = Layer.effect(
@@ -65,11 +66,27 @@ export const AccessLive = Layer.effect(
     return Authentication.of({
       session: (effect) =>
         Effect.flatMap(resolveSession, (identity) =>
-          Effect.provideService(effect, CurrentIdentity, identity),
+          Effect.provideService(
+            effect.pipe(
+              Actor.as(
+                System.make({ source: "process", onBehalfOf: { subject: identity.userId } }),
+              ),
+            ),
+            CurrentIdentity,
+            identity,
+          ),
         ),
       secureSession: (effect) =>
         Effect.flatMap(resolveSession, (identity) =>
-          Effect.provideService(effect, CurrentIdentity, identity),
+          Effect.provideService(
+            effect.pipe(
+              Actor.as(
+                System.make({ source: "process", onBehalfOf: { subject: identity.userId } }),
+              ),
+            ),
+            CurrentIdentity,
+            identity,
+          ),
         ),
       apiKey: (effect, { credential }) =>
         Effect.gen(function* () {
@@ -105,7 +122,13 @@ export const AccessLive = Layer.effect(
               binding.permission,
             ).pipe(Effect.orDie),
           })
-          return yield* Effect.provideService(effect, CurrentIdentity, identity)
+          return yield* Effect.provideService(
+            effect.pipe(
+              Actor.as(System.make({ source: "process", onBehalfOf: { subject: identity.keyId } })),
+            ),
+            CurrentIdentity,
+            identity,
+          )
         }),
     })
   }),

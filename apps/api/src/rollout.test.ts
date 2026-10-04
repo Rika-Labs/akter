@@ -88,7 +88,11 @@ const publicApi = Effect.gen(function* () {
   )
   const server = yield* Effect.acquireRelease(
     Effect.sync(() =>
-      Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (request) => web.handler(request) }),
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (request) => web.handler(request, context),
+      }),
     ),
     (server) => Effect.promise(() => server.stop(true)),
   )

@@ -162,7 +162,8 @@ const run = <A, E>(effect: Effect.Effect<A, E, Fixture | HttpClient.HttpClient>)
   harness.runPromise(effect)
 
 beforeAll(() => harness.runPromise(Effect.asVoid(Effect.service(Fixture))), 60_000)
-afterAll(() => harness.dispose().then(() => vi.unstubAllEnvs()))
+/** Dropping the isolated database waits for cluster-wide checkpoints from concurrent integration suites. */
+afterAll(() => harness.dispose().then(() => vi.unstubAllEnvs()), 60_000)
 
 const sequence = { value: 0 }
 const next = () => {

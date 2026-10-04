@@ -6,6 +6,7 @@ import { SqlClient } from "effect/sql"
 import { Access } from "./access.ts"
 import { Auth } from "./auth.ts"
 import { Repository } from "./repository.ts"
+import { BillingActor } from "./billing-actor.ts"
 
 const timestamp = (date: Date | string) => DateTime.makeUnsafe(date)
 const headers = Effect.map(
@@ -60,11 +61,17 @@ interface KeyRow {
 }
 
 const organization = (row: OrganizationRow) =>
-  Schema.decodeUnknownEffect(Schema.toType(Cloud.Organization))({
-    ...row,
-    plan: "free",
-    createdAt: timestamp(row.createdAt),
-  }).pipe(Effect.orDie)
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const [billing] = yield* sql<{ readonly plan: string }>`
+    SELECT plan FROM cloud_billing_account WHERE organization_id = ${row.id}
+  `.pipe(Effect.orDie)
+    return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.Organization))({
+      ...row,
+      plan: billing?.plan ?? "free",
+      createdAt: timestamp(row.createdAt),
+    }).pipe(Effect.orDie)
+  })
 const member = (row: MemberRow) =>
   Schema.decodeUnknownEffect(Schema.toType(Cloud.Member))({
     id: row.id,
@@ -221,6 +228,22 @@ export const OrganizationsLive = HttpApiBuilder.group(Cloud.CloudApi, "organizat
           if (result === null)
             return yield* Cloud.Conflict.make({ message: "Organization was not created" })
           yield* audit(result.id, "organization.create", result.id)
+          const caller = yield* Cloud.CurrentIdentity
+          if (Predicate.isTagged(caller, "session")) {
+            const [user] = yield* sql<{
+              readonly email: string
+            }>`SELECT email FROM "user" WHERE id = ${caller.userId}`.pipe(Effect.orDie)
+            if (user !== undefined) {
+              const billing = yield* BillingActor.get(result.id)
+              yield* billing
+                .InitializeAccount({ email: user.email, name: result.name })
+                .pipe(
+                  Effect.mapError(() =>
+                    Cloud.Conflict.make({ message: "Billing initialization is pending" }),
+                  ),
+                )
+            }
+          }
           return yield* getOrganization(result.id)
         }),
       )

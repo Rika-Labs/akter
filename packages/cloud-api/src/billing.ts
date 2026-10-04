@@ -20,6 +20,11 @@ export const Plan = Schema.Struct({
   currency: Schema.Literal("usd"),
   renewsAt: Schema.NullOr(Timestamp),
   monthToDateEstimateCents: NonNegativeInt,
+  provisional: Schema.optionalKey(Schema.Boolean),
+  subscribedId: Schema.optionalKey(PlanId),
+  paymentStatus: Schema.optionalKey(
+    Schema.Literals(["free", "active", "past_due", "unpaid", "canceled", "incomplete"]),
+  ),
 })
 export type Plan = typeof Plan.Type
 
@@ -61,8 +66,15 @@ export const Invoice = Schema.Struct({
 export type Invoice = typeof Invoice.Type
 
 /** The paid plan to move to; the server builds the checkout and return URLs. */
-export const StartCheckout = Schema.Struct({ plan: Schema.Literals(["pro", "enterprise"]) })
+export const StartCheckout = Schema.Struct({ plan: Schema.Literals(["pro", "team", "enterprise"]) })
 export type StartCheckout = typeof StartCheckout.Type
+
+/** A plan change on the existing subscription; payment confirmation can leave it pending. */
+export const PlanChange = Schema.Struct({
+  requestId: Schema.String,
+  status: Schema.Literals(["pending", "completed", "failed"]),
+})
+export type PlanChange = typeof PlanChange.Type
 
 /** A hosted Stripe page the browser should navigate to. */
 export const HostedSession = Schema.Struct({ url: Schema.String })
@@ -91,6 +103,7 @@ export const UsagePricing = Schema.Struct({
   freeCommands: NonNegativeInt,
   readCommandWeight: NonNegative,
   storagePerGbCents: NonNegative,
+  provisional: Schema.optionalKey(Schema.Boolean),
 })
 export type UsagePricing = typeof UsagePricing.Type
 
@@ -103,6 +116,8 @@ export const Usage = Schema.Struct({
       projectId: ProjectId,
       name: Schema.String,
       commands: NonNegativeInt,
+      reads: Schema.optionalKey(NonNegativeInt),
+      storageGbMonths: Schema.optionalKey(NonNegative),
       estimatedCostCents: NonNegative,
     }),
   ),

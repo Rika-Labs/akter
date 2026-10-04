@@ -94,6 +94,7 @@ jobs:
           path: |
             evidence/
             .turbo/runs/*.json
+            apps/api/.cache/integration-results.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
