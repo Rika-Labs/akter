@@ -1,5 +1,7 @@
 import { type BetterFetchOption, createAuthClient } from "better-auth/client"
+import { deviceAuthorizationClient } from "better-auth/client/plugins"
 import { Effect, Option, Schema } from "effect"
+import type { DeviceFailure } from "../device/model.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import {
   apiBaseUrl,
@@ -27,13 +29,17 @@ export interface AuthClientOptions {
   readonly fetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>
 }
 
-/** A Better Auth browser client for cookie sessions under `/auth`. */
+/**
+ * A Better Auth browser client for cookie sessions under `/auth`, with the device authorization
+ * routes the `/device` page looks up, approves and denies codes through.
+ */
 export const makeAuthClient = (options: AuthClientOptions = {}) => {
   const fetchOptions: BetterFetchOption = { credentials: "include" }
   if (options.fetch !== undefined) fetchOptions.customFetchImpl = options.fetch
   return createAuthClient({
     baseURL: `${apiOrigin(apiBaseUrl, options.origin ?? location.origin)}${authBasePath}`,
     fetchOptions,
+    plugins: [deviceAuthorizationClient()],
   })
 }
 
@@ -99,6 +105,14 @@ const SignedUpAnswer = Schema.Struct({ user: Schema.Struct({ emailVerified: Sche
 const SocialAnswer = Schema.Struct({ url: Schema.String })
 const StatusAnswer = Schema.Struct({ status: Schema.Literal(true) })
 const SuccessAnswer = Schema.Struct({ success: Schema.Literal(true) })
+const DeviceAnswer = Schema.Struct({
+  status: Schema.Literals(["pending", "approved", "denied"]),
+  client_id: Schema.optional(Schema.String),
+})
+const DeviceError = Schema.Struct({ error: Schema.String })
+
+/** A device route answer the client could not read, or that never arrived. */
+const lostDevice: DeviceFailure = { status: 0 }
 
 /**
  * The Better Auth calls the console makes, as Effects that fail with `ConsoleError`. The client is
@@ -120,6 +134,28 @@ export const makeAuth = (input: Readonly<{ client: () => AuthClient; origin?: ()
       ),
       Effect.flatMap((data) =>
         Schema.decodeUnknownEffect(answer)(data).pipe(Effect.mapError(() => unreachable)),
+      ),
+    )
+  const device = <A, I>(
+    answer: Schema.Codec<A, I>,
+    run: (client: AuthClient) => Answer<unknown>,
+  ): Effect.Effect<A, DeviceFailure> =>
+    Effect.tryPromise({ try: () => run(client()), catch: () => lostDevice }).pipe(
+      Effect.flatMap((answer) =>
+        answer.error === null
+          ? Effect.succeed(answer.data)
+          : Effect.fail({
+              status: answer.error.status,
+              error: Option.getOrUndefined(
+                Option.map(
+                  Schema.decodeUnknownOption(DeviceError)(answer.error),
+                  ({ error }) => error,
+                ),
+              ),
+            }),
+      ),
+      Effect.flatMap((data) =>
+        Schema.decodeUnknownEffect(answer)(data).pipe(Effect.mapError(() => lostDevice)),
       ),
     )
 
@@ -162,6 +198,12 @@ export const makeAuth = (input: Readonly<{ client: () => AuthClient; origin?: ()
       ),
     resetPassword: (input: Readonly<{ newPassword: string; token: string }>) =>
       answered(StatusAnswer, (auth) => auth.resetPassword(input)),
+    lookUpDevice: (userCode: string) =>
+      device(DeviceAnswer, (auth) => auth.device({ query: { user_code: userCode } })),
+    approveDevice: (userCode: string) =>
+      device(SuccessAnswer, (auth) => auth.device.approve({ userCode })),
+    denyDevice: (userCode: string) =>
+      device(SuccessAnswer, (auth) => auth.device.deny({ userCode })),
   }
 }
 

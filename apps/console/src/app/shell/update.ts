@@ -1,4 +1,4 @@
-import { Function, Match, Option, Predicate } from "effect"
+import { Function, Match, Option, Predicate, Schema as S } from "effect"
 import * as Navigation from "foldkit/navigation"
 import type { Return } from "foldkit/update"
 import { type Url, toString } from "foldkit/url"
@@ -19,6 +19,13 @@ import {
   toggleFields,
 } from "../settings/keys.ts"
 import { slugify } from "../auth/model.ts"
+import {
+  DeviceEntry,
+  DevicePage,
+  DeviceRefused,
+  DeviceReview,
+  normalizeUserCode,
+} from "../device/model.ts"
 import { billedPlan } from "../settings/model.ts"
 import { spendLimitReached } from "../quota/model.ts"
 import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
@@ -29,11 +36,13 @@ import {
   ContinueVerified,
   CreateOrganization,
   CreateProject,
+  DecideDevice,
   DeclineInvitation,
   ExpireToast,
   HideDialog,
   HidePopovers,
   LoadExternal,
+  LookUpDevice,
   LoadPage,
   LoadWorkspace,
   Mutate,
@@ -447,6 +456,67 @@ const reject = (model: Model, message: string): Result => ({
 const invitationId = (model: Model): string =>
   AppRoute.isAnyOf(["AcceptInvitation"])(model.route) ? model.route.invitation : ""
 
+const deviceStep = (model: Model) =>
+  Option.flatMap(model.page, (page) =>
+    Predicate.isTagged(page, "DevicePage") ? Option.some(page.step) : Option.none(),
+  )
+
+/**
+ * The device page's forms. A code is looked up only once it has the shape the CLI prints, and
+ * Approve and Deny act only on a code a lookup confirmed, so a code that was never looked up, or
+ * that the lookup refused, can't be approved even by a message that bypassed the view.
+ */
+const deviceForm = (model: Model, form: string): Result | undefined => {
+  const step = deviceStep(model)
+  const awaiting = (code: string, command: NonNullable<Result["commands"]>[number]): Result =>
+    pending(
+      {
+        ...model,
+        page: Option.some(
+          DevicePage.make({
+            step: Option.getOrElse(step, () => DeviceEntry.make({})),
+            pending: code,
+          }),
+        ),
+      },
+      [command],
+    )
+  return Match.value(form).pipe(
+    Match.when("device-code", () => {
+      const linked = AppRoute.isAnyOf(["Device"])(model.route) ? model.route.user_code : undefined
+      return Option.match(normalizeUserCode(model.fields["device-code"] ?? linked ?? ""), {
+        onNone: () => reject(model, "Enter the code from your terminal. It looks like ABCD-EFGH."),
+        onSome: (code) => awaiting(code, LookUpDevice({ code })),
+      })
+    }),
+    Match.when("device-retry", () =>
+      Option.match(Option.filter(step, S.is(DeviceRefused)), {
+        onNone: () => ({ model }),
+        onSome: ({ code }) => awaiting(code, LookUpDevice({ code })),
+      }),
+    ),
+    Match.when("device-restart", () => ({
+      model: {
+        ...model,
+        page: Option.some(DevicePage.make({ step: DeviceEntry.make({}) })),
+        formError: Option.none(),
+        fields: { ...model.fields, "device-code": "" },
+      },
+    })),
+    Match.whenOr("device-approve", "device-deny", () =>
+      Option.match(Option.filter(step, S.is(DeviceReview)), {
+        onNone: () => ({ model }),
+        onSome: ({ code }) =>
+          awaiting(
+            code,
+            DecideDevice({ code, decision: form === "device-approve" ? "approved" : "denied" }),
+          ),
+      }),
+    ),
+    Match.orElse(() => undefined),
+  )
+}
+
 const authForm = (model: Model, form: string): Result | undefined =>
   Match.value(form).pipe(
     Match.when("sign-in", () =>
@@ -527,7 +597,7 @@ const submit = (model: Model, form: string): Result => {
   if (model.submitting) return { model }
   if (isAuthRoute(model.route) && model.pageSample)
     return reject(model, "Sample data is read-only.")
-  const handled = authForm(model, form)
+  const handled = authForm(model, form) ?? deviceForm(model, form)
   if (handled !== undefined) return handled
   return Match.value(form).pipe(
     Match.when("profile", () =>
@@ -646,7 +716,11 @@ const step = (model: Model, message: Message): Result =>
           pageSample: false,
           formError: Option.none(),
           submitting: false,
-          fields: withoutPasswords(model.fields),
+          fields: Object.fromEntries(
+            Object.entries(withoutPasswords(model.fields)).filter(
+              ([name]) => name !== "device-code",
+            ),
+          ),
         },
         commands: [
           LoadPage({ route, allowSignIn: model.allowSignIn }),
@@ -1060,6 +1134,21 @@ const step = (model: Model, message: Message): Result =>
           tone: "live",
         },
       ),
+    AnsweredDevice: ({ code, page }) =>
+      AppRoute.isAnyOf(["Device"])(model.route) &&
+      Option.exists(
+        model.page,
+        (open) => Predicate.isTagged(open, "DevicePage") && open.pending === code,
+      )
+        ? {
+            model: {
+              ...model,
+              page: Option.some(page),
+              submitting: false,
+              formError: Option.none(),
+            },
+          }
+        : { model },
     CompletedEffect: () => ({ model }),
   })
 
