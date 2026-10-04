@@ -1,7 +1,10 @@
 import {
   Cause,
+  Clock,
   Crypto,
+  Deferred,
   Duration,
+  Option,
   Effect,
   Exit,
   Fiber,
@@ -391,6 +394,138 @@ export const groupsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* committedIn(ids[1]!, b!)).not.toBe(yield* committedIn(ids[2]!, c!))
           expect(yield* stateOf(ids[0]!)).toEqual({ count: 1 })
           expect(yield* stateOf(ids[1]!)).toEqual({ count: 21 })
+        }),
+      ),
+  },
+  {
+    name: "group commit: a member whose next batch rides behind the COMMIT, interrupted while that COMMIT runs, never gets the session back with its chained transaction open",
+    requiresIndependentConnections: true,
+    requiresFreshDatabase: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withGroups(
+        environment,
+        "30 seconds",
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const [a1, a2, b1] = yield* mintAll(3)
+          const ids = ["group-handoff", "group-neighbour"]
+
+          for (const id of ids) expect(yield* (yield* Tally.get(id)).Add(1)).toBe(1)
+
+          yield* sql.unsafe(`CREATE FUNCTION group_slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN PERFORM pg_sleep(1.4); RETURN NULL; END $$`)
+          yield* sql.unsafe(`CREATE CONSTRAINT TRIGGER group_slow_commit AFTER INSERT ON actor_receipts
+            DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.command_id = '${a1!}')
+            EXECUTE FUNCTION group_slow_commit()`)
+
+          const a1Held = yield* test.pauseNext("beforeHandler", { commandId: a1! })
+          const b1Held = yield* test.pauseNext("beforeHandler", { commandId: b1! })
+          const handoff = yield* Tally.get(ids[0]!)
+          const first = yield* Effect.forkChild(
+            handoff.Add(10).pipe(Actor.commandId(a1!), Effect.exit),
+          )
+          yield* a1Held.reached
+          const second = yield* Effect.forkChild(
+            handoff.Add(100).pipe(Actor.commandId(a2!), Effect.exit),
+          )
+          yield* Effect.sleep("900 millis")
+          const neighbour = yield* Effect.forkChild(
+            (yield* Tally.get(ids[1]!)).Add(20).pipe(Actor.commandId(b1!), Effect.exit),
+          )
+          yield* b1Held.reached
+          yield* a1Held.release
+          yield* b1Held.release
+
+          expect(yield* Fiber.join(neighbour)).toEqual(Exit.succeed(21))
+
+          const seen: Array<string> = []
+          const deadline = (yield* Clock.currentTimeMillis) + 4_000
+
+          while ((yield* Clock.currentTimeMillis) < deadline) {
+            const rows = yield* sql<{ pid: number; state: string; waiting: string | null }>`
+              SELECT pid, state, wait_event_type AS waiting FROM pg_stat_activity
+              WHERE datname = current_database() AND pid <> pg_backend_pid()
+                AND clock_timestamp() - state_change > interval '300 milliseconds'
+                AND (state = 'idle in transaction' OR wait_event_type = 'Lock')`
+            for (const row of rows) seen.push(`${row.pid}:${row.state}:${row.waiting}`)
+            yield* Effect.sleep("25 millis")
+          }
+
+          expect([...new Set(seen)]).toEqual([])
+          expect(yield* Fiber.join(first)).toEqual(Exit.succeed(11))
+          expect(yield* Fiber.join(second)).toEqual(Exit.succeed(111))
+          expect(yield* stateOf(ids[0]!)).toEqual({ count: 111 })
+          expect(yield* test.receiptsFor(handoff.ref, "Add")).toBe(3)
+        }),
+      ),
+  },
+  {
+    name: "group commit: a member whose generation row another transaction holds is skipped, and its neighbours commit together without waiting for that lock",
+    requiresIndependentConnections: true,
+    requiresFreshDatabase: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withGroups(
+        environment,
+        "10 seconds",
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const [l, x, y] = yield* mintAll(3)
+          const ids = ["group-locked", "group-x", "group-y"]
+
+          for (const id of ids) expect(yield* (yield* Tally.get(id)).Add(1)).toBe(1)
+
+          const locked = Deferred.makeUnsafe<void>()
+          const unlock = Deferred.makeUnsafe<void>()
+          const holder = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT 1 FROM actor_generations
+                  WHERE actor_type = 'GroupTally' AND actor_id = ${ids[0]!} FOR UPDATE`
+                yield* Deferred.succeed(locked, undefined)
+                yield* Deferred.await(unlock)
+              }),
+            ),
+          )
+          yield* Deferred.await(locked)
+
+          const pauses = yield* Effect.forEach([x!, y!], (commandId) =>
+            test.pauseNext("beforeHandler", { commandId }),
+          )
+          runs.clear()
+          const lockedCall = yield* Effect.forkChild(
+            (yield* Tally.get(ids[0]!)).Add(5).pipe(Actor.commandId(l!), Effect.exit),
+          )
+          yield* Effect.sleep("20 millis")
+          const others = yield* Effect.forEach(
+            [
+              [ids[1]!, x!],
+              [ids[2]!, y!],
+            ] as const,
+            ([id, commandId]) =>
+              Effect.flatMap(Tally.get(id), (tally) =>
+                Effect.forkChild(tally.Add(5).pipe(Actor.commandId(commandId), Effect.exit)),
+              ),
+          )
+          const reached = yield* Effect.forEach(pauses, ({ reached }) => reached, {
+            concurrency: "unbounded",
+          }).pipe(Effect.timeoutOption("1500 millis"))
+          expect(reached._tag).toBe("Some")
+          yield* Effect.forEach(pauses, ({ release }) => release, { discard: true })
+
+          const answered = yield* Effect.forEach(others, Fiber.join).pipe(
+            Effect.timeoutOption("1500 millis"),
+          )
+          expect(answered).toEqual(Option.some([Exit.succeed(6), Exit.succeed(6)]))
+          expect(yield* committedIn(ids[1]!, x!)).toBe(yield* committedIn(ids[2]!, y!))
+
+          yield* Deferred.succeed(unlock, undefined)
+          yield* Fiber.join(holder)
+          expect(yield* Fiber.join(lockedCall)).toEqual(Exit.succeed(6))
+          expect(yield* committedIn(ids[0]!, l!)).not.toBe(yield* committedIn(ids[1]!, x!))
         }),
       ),
   },

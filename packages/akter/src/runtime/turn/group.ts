@@ -44,14 +44,15 @@ export const Shared = Data.taggedEnum<Shared>()
  * A member whose actor already has its next batch waiting asks to take the
  * group's session after the commit, with that batch's `BEGIN` and admission
  * sent right behind the group's `COMMIT`. `adopt` receives the session and
- * the scope that returns it to the pool.
+ * the scope that returns it to the pool, and answers false when the member
+ * can no longer take it, so the group discards the session instead.
  */
 export interface Handoff {
   readonly chain: (connection: PgConnection.PgConnection) => ReadonlyArray<Statement>
   readonly adopt: (
     connection: PgConnection.PgConnection,
     scope: Scope.Closeable,
-  ) => Effect.Effect<void>
+  ) => Effect.Effect<boolean>
 }
 
 const alone = Shared.Alone()
@@ -85,7 +86,7 @@ export const TurnGroupSettings = Context.Reference<{ readonly wait: Duration.Dur
 )
 
 interface Seat {
-  phase: "admitting" | "handling" | "deposited" | "committing" | "left"
+  phase: "admitting" | "handling" | "deposited" | "committing" | "left" | "ended"
   admission: ReadonlyArray<Statement>
   sent: boolean
   readonly queued: Deferred.Deferred<Replies, SqlError.SqlError>
@@ -194,7 +195,8 @@ export const turnGroups = Layer.effect(
 
     const leave = (group: Group, seat: Seat, aborted: boolean) =>
       Effect.suspend(() => {
-        if (seat.phase === "left" || seat.phase === "committing") return Effect.void
+        if (seat.phase === "left" || seat.phase === "committing" || seat.phase === "ended")
+          return Effect.void
 
         seat.phase = "left"
         seat.writes = []
@@ -241,8 +243,12 @@ export const turnGroups = Layer.effect(
       group.seats.every(({ phase }) => phase === "deposited" || phase === "left")
 
     /**
-     * Ends the group's transaction and answers every member that handed over
-     * writes; true when one of them took the session with its next batch.
+     * Ends the group's transaction, then returns or hands over the session,
+     * and only then answers every member that handed over writes, so no
+     * member publishes while the session is still out. A member whose turn
+     * ended moves to a terminal phase, so its connection refuses any later
+     * statement. The hand-off goes only to a member still waiting; an
+     * interrupted one's session is discarded with its chained transaction.
      */
     const commit = Effect.fnUntraced(function* (group: Group) {
       group.sent = true
@@ -254,13 +260,14 @@ export const turnGroups = Layer.effect(
       const writes = group.aborted ? [] : members.flatMap(({ writes }) => writes)
       const ending = writes.length > 0 ? "COMMIT" : "ROLLBACK"
       const connection = group.connection!
+      const held = group.scope!
       const handoff = group.aborted ? undefined : members.find((seat) => seat.handoff !== undefined)
       let tag: string | undefined
       let version = ""
       let endedAtMs = 0
 
       const replies = yield* queueStatements({
-        scope: group.scope!,
+        scope: held,
         group: [
           ...writes,
           Effect.map(connection.query(ending, [], true), (result) => {
@@ -279,62 +286,69 @@ export const turnGroups = Layer.effect(
       const exits = yield* Effect.forEach(replies.slice(0, writes.length + 2), Fiber.await)
       group.done = true
 
-      if (group.cancelled) yield* turns.invalidate(connection)
       const errors = exits.map(errorOf)
       const lost = errors.find(
         (error) => error !== undefined && Predicate.isTagged(error.reason, "ConnectionError"),
       )
-
-      if (lost !== undefined) {
-        yield* turns.invalidate(connection)
-
-        for (const seat of members) yield* Deferred.fail(seat.result, lost)
-
-        return false
-      }
-
       const ended = exits[writes.length]!
       const read = errors[writes.length + 1]
       const committed = Exit.isSuccess(ended) && tag === "COMMIT"
+      const outcomes: Array<readonly [Seat, Exit.Exit<Shared, SqlError.SqlError>]> = []
       let offset = 0
-      let handed = false
 
       for (const seat of members) {
         const own = group.aborted ? [] : errors.slice(offset, offset + seat.writes.length)
         offset += own.length
 
+        if (lost !== undefined) {
+          outcomes.push([seat, Exit.fail(lost)])
+          continue
+        }
+
         if (seat.writes.length === 0 ? !Exit.isSuccess(ended) : !committed) {
           const error = own.find((failure) => failure !== undefined && !abortedBefore(failure))
-
-          yield* error === undefined
-            ? Deferred.succeed(seat.result, alone)
-            : Deferred.fail(seat.result, error)
+          outcomes.push([seat, error === undefined ? Exit.succeed(alone) : Exit.fail(error)])
           continue
         }
 
-        if (read !== undefined) {
-          yield* Deferred.fail(seat.result, read)
-          continue
-        }
-
-        if (seat === handoff && !group.cancelled) {
-          handed = true
-          yield* seat.handoff!.adopt(connection, group.scope!)
-        }
-
-        yield* Deferred.succeed(
-          seat.result,
-          Shared.Committed({
-            version,
-            endedAtMs,
-            chained: handed && seat === handoff ? chained : undefined,
-          }),
-        )
+        const unknown = own.find((failure) => failure !== undefined) ?? read
+        outcomes.push([
+          seat,
+          unknown === undefined
+            ? Exit.succeed(Shared.Committed({ version, endedAtMs, chained: undefined }))
+            : Exit.fail(unknown),
+        ])
       }
 
-      if (handoff !== undefined && !handed && !group.cancelled) yield* turns.invalidate(connection)
+      const taking = outcomes.some(
+        ([seat, outcome]) =>
+          seat === handoff &&
+          !seat.interrupted &&
+          !group.cancelled &&
+          lost === undefined &&
+          Exit.isSuccess(outcome) &&
+          Shared.$is("Committed")(outcome.value),
+      )
+      const handed = taking && (yield* handoff!.handoff!.adopt(connection, held))
 
-      return handed
+      if (lost !== undefined || group.cancelled || (handoff !== undefined && !handed))
+        yield* turns.invalidate(connection)
+
+      if (!handed) yield* Scope.close(held, Exit.void)
+
+      for (const [seat, outcome] of outcomes) {
+        seat.phase = "ended"
+
+        yield* Deferred.done(
+          seat.result,
+          handed &&
+            seat === handoff &&
+            Exit.isSuccess(outcome) &&
+            Shared.$is("Committed")(outcome.value)
+            ? Exit.succeed(Shared.Committed({ ...outcome.value, chained }))
+            : outcome,
+        )
+      }
     })
 
     /**
@@ -367,13 +381,13 @@ export const turnGroups = Layer.effect(
       group.connection = leased.value
       group.scope = held
 
-      const handed = yield* Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         while (!group.seats.some(({ phase }) => phase === "admitting") && group.open)
           yield* changed(group)
 
         if (!group.seats.some(({ phase }) => phase === "admitting")) {
           yield* close(group)
-          return false
+          return yield* Scope.close(held, Exit.void)
         }
 
         yield* Effect.uninterruptible(
@@ -403,7 +417,7 @@ export const turnGroups = Layer.effect(
           if (left <= 0 || !(yield* changed(group, left))) {
             for (const seat of group.seats)
               if (seat.phase === "admitting" || seat.phase === "handling") {
-                seat.phase = "left"
+                seat.phase = "ended"
                 yield* Deferred.succeed(seat.result, alone)
               }
 
@@ -411,7 +425,7 @@ export const turnGroups = Layer.effect(
           }
         }
 
-        return yield* Effect.uninterruptible(commit(group))
+        yield* Effect.uninterruptible(commit(group))
       }).pipe(
         Effect.onInterrupt(() =>
           Effect.gen(function* () {
@@ -429,8 +443,6 @@ export const turnGroups = Layer.effect(
           }),
         ),
       )
-
-      if (!handed) yield* Scope.close(held, Exit.void)
     })
 
     const join = (options: {

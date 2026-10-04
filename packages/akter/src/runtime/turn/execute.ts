@@ -1,4 +1,15 @@
-import { Cause, Clock, Crypto, Effect, Exit, Option, Result, Schema, Scope } from "effect"
+import {
+  Cause,
+  Clock,
+  Crypto,
+  Effect,
+  Exit,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+  Scope,
+} from "effect"
 import type { PgConnection } from "@effect/sql-pg"
 import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
@@ -20,6 +31,7 @@ import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
 import { isPoolRefusal } from "../database/bounded.ts"
+import { NekiTurnSessions } from "../database/neki/session.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -504,8 +516,16 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       set_config('durable.turn', 'on', true)
       ${role === undefined ? sql.literal("") : sql`, ${tenantSettings({ sql, role, tenant })}`}`
 
-  /** Turns that set the same transaction settings, which a group sets once for all of them. */
-  const groupKey = `${policy.lockWaitMs}:${policy.executionMs}:${role ?? ""}:${role === undefined ? "" : tenant}`
+  /**
+   * Turns that set the same transaction settings, which a group sets once for
+   * all of them. Each part is encoded so no two settings share a key.
+   */
+  const groupKey = [
+    policy.lockWaitMs,
+    policy.executionMs,
+    role === undefined ? "-" : `+${encodeURIComponent(role)}`,
+    role === undefined ? "-" : `+${encodeURIComponent(tenant)}`,
+  ].join(":")
 
   const admit = (
     batch: ReadonlyArray<Delivery>,
@@ -1473,13 +1493,17 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                       return next.group.map(on)
                     },
                     adopt: (connection: PgConnection.PgConnection, held: Scope.Closeable) =>
-                      Effect.andThen(
-                        Scope.addFinalizer(scope, Scope.close(held, Exit.void)),
-                        Effect.sync(() => {
-                          lease = { connection, scope: held }
-                          open = true
-                        }),
-                      ),
+                      Effect.suspend(() => {
+                        if (Predicate.isTagged(scope.state, "Closed")) return Effect.succeed(false)
+
+                        lease = { connection, scope: held }
+                        open = true
+
+                        return Effect.as(
+                          Scope.addFinalizer(scope, Scope.close(held, Exit.void)),
+                          true,
+                        )
+                      }),
                   }))
                 : undefined
 
@@ -1613,7 +1637,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const turns = yield* Effect.serviceOption(TurnConnections)
 
   const groups =
-    statements || waited.size > 0
+    statements || waited.size > 0 || (yield* NekiTurnSessions)
       ? undefined
       : Option.getOrUndefined(yield* Effect.serviceOption(TurnGroups))
 

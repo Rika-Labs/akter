@@ -1552,11 +1552,13 @@ export const Database = {
 
     const database = Layer.mergeAll(
       boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
-      turnGroups.pipe(
-        Layer.provideMerge(
-          turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
-        ),
-      ),
+      neki === true
+        ? turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types })
+        : turnGroups.pipe(
+            Layer.provideMerge(
+              turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+            ),
+          ),
       queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
       coordinationLayer(
