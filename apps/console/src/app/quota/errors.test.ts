@@ -57,7 +57,7 @@ describe("quota refusals", () => {
     expect(consoleError(refusals.command)).toMatchObject({
       kind: "QuotaExceeded",
       message:
-        "This organization has used all the commands its plan includes for October 2026, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance.",
+        "This organization has used the 1M commands its plan includes for October 2026, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance.",
     })
     expect(consoleError(refusals.spend)).toMatchObject({
       kind: "SpendLimitExceeded",
@@ -74,6 +74,21 @@ describe("quota refusals", () => {
       message:
         "This tenant stores 0.51 GB of the 0.5 GB its plan allows, so new commands are paused. Reads keep working; delete data or upgrade to resume.",
     })
+  })
+
+  it("quotes the command allowance in whole commands, rounded down", () => {
+    const uneven = QuotaExceeded.make({
+      organizationId: "org_1",
+      period: "2026-10",
+      limitUnits: 7_001,
+      usedUnits: 6_999,
+      requestedUnits: 3,
+      unitsPerCommand: 3,
+      retryAfterMs: 86_400_000,
+    })
+    expect(quotaMessage(uneven)).toBe(
+      "This organization has used the 2,333 commands its plan includes for October 2026, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance.",
+    )
   })
 
   it("reads a CommandRefused whose typed reason is a plan refusal as that refusal", () => {

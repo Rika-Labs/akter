@@ -122,7 +122,8 @@ Any other `503` from billing or usage is worded as billing being temporarily unr
 lost connection. Plan refusals (`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`,
 `StorageQuotaExceeded`) are read from the cloud API's own typed errors, or from a `CommandRefused`
 whose typed `reason` is one, and explained in place with a link to Billing; the console reads only
-errors the client decoded, never a payload by its shape. A `402 QuotaUnbound` (the edge has no
+errors the client decoded, never a payload by its shape. A `QuotaExceeded` names the allowance in whole commands,
+its `limitUnits` divided by its `unitsPerCommand` and rounded down, as the command cap notice does. A `402 QuotaUnbound` (the edge has no
 organization, billing account or known plan to bill a command to) is worded by its `reason`, is
 never resent with the same command ID, and links to Billing only for a missing billing account;
 the other reasons say to contact support. In the send dialog every other
