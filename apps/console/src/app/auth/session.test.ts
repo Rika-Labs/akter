@@ -315,6 +315,63 @@ describe("Better Auth wire contract", () => {
   })
 })
 
+describe("device authorization wire contract", () => {
+  it("looks a code up with GET /auth/device and reads the status and client it answers", () => {
+    const api = backend(() =>
+      json({ user_code: "WDJBMJHT", status: "pending", client_id: "akter-cli" }),
+    )
+    return run(
+      Effect.gen(function* () {
+        expect(yield* api.auth.lookUpDevice("WDJBMJHT")).toEqual({
+          status: "pending",
+          client_id: "akter-cli",
+        })
+        expect(api.seen[0]?.method).toBe("GET")
+        expect(path(api.seen[0])).toBe("/auth/device")
+        expect(new URL(api.seen[0]?.url ?? origin).searchParams.get("user_code")).toBe("WDJBMJHT")
+      }),
+    )
+  })
+
+  it("approves and denies with the code in the body of POST /auth/device/approve and /deny", () => {
+    const api = backend(() => json({ success: true }))
+    return run(
+      Effect.gen(function* () {
+        yield* api.auth.approveDevice("WDJBMJHT")
+        yield* api.auth.denyDevice("KPLQ7RST")
+        expect(api.seen.map((seen) => [seen.method, path(seen), seen.body])).toEqual([
+          ["POST", "/auth/device/approve", { userCode: "WDJBMJHT" }],
+          ["POST", "/auth/device/deny", { userCode: "KPLQ7RST" }],
+        ])
+      }),
+    )
+  })
+
+  it("keeps a refusal's status and OAuth error, and reads a lost or unreadable answer as status 0", () => {
+    const expired = backend(() =>
+      json({ error: "expired_token", error_description: "User code has expired" }, 400),
+    )
+    const html = backend(
+      () => new Response("<!doctype html>", { headers: { "content-type": "text/html" } }),
+    )
+    const lost = makeAuth({
+      client: () =>
+        makeAuthClient({ origin, fetch: () => Promise.reject(new TypeError("offline")) }),
+      origin: () => origin,
+    })
+    return run(
+      Effect.gen(function* () {
+        expect(yield* Effect.flip(expired.auth.lookUpDevice("WDJBMJHT"))).toEqual({
+          status: 400,
+          error: "expired_token",
+        })
+        expect(yield* Effect.flip(html.auth.approveDevice("WDJBMJHT"))).toEqual({ status: 0 })
+        expect(yield* Effect.flip(lost.lookUpDevice("WDJBMJHT"))).toEqual({ status: 0 })
+      }),
+    )
+  })
+})
+
 describe("return path after sign-in", () => {
   it("keeps the remembered page when sign-up or social sign-in fails, and uses it in the callback", () => {
     const items = rememberReturn("/invitations/inv_9?ref=mail")
