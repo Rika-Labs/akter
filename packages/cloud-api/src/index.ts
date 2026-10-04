@@ -137,6 +137,7 @@ export {
   ActorTypeActivity,
   ActorTypeSummary,
   CommandFailed,
+  CommandRefused,
   CommandLogEntry,
   CommandOutcome,
   CommandSent,

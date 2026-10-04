@@ -33,6 +33,8 @@ export interface EdgeOptions {
   /**
    * How long a key must have been published before the edge signs with it:
    * at least the runners' key-set refresh interval, so every runner knows it.
+   * Default 5 minutes, the runners' default refresh; a shorter lead suits only
+   * local development, where a runner rereads its key set on an unknown kid.
    */
   readonly publicationLead: Duration.Duration
   /** The largest request body the edge forwards. Default 1 MiB. */
@@ -122,7 +124,9 @@ export const loadOptions = Effect.gen(function* () {
       Config.withDefault(Duration.minutes(5)),
     ),
     pollEvery: Duration.seconds(5),
-    publicationLead: Duration.minutes(5),
+    publicationLead: yield* Config.Duration("EDGE_PUBLICATION_LEAD").pipe(
+      Config.withDefault(Duration.minutes(5)),
+    ),
     requestBytes: 1024 * 1024,
     socketMessageBytes: 64 * 1024,
     socketBufferBytes: 1024 * 1024,

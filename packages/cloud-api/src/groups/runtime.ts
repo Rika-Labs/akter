@@ -12,6 +12,7 @@ import {
   ActorTypeActivity,
   ActorTypeSummary,
   CommandFailed,
+  CommandRefused,
   CommandLogEntry,
   CommandOutcome,
   CommandSent,
@@ -162,11 +163,11 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       params: environmentParams,
       payload: SendCommand,
       success: CommandSent,
-      error: [...WriteErrors, CommandFailed],
+      error: [...WriteErrors, CommandFailed, CommandRefused],
     },
   ).annotate(
     OpenApi.Description,
-    "Runs one command on one actor through the runner that owns it and answers with the actor's result. Requires write permission on the project. `commandId` defaults to a freshly minted id; resending the same id replays the stored receipt and sets `replayed`. An error the actor itself returns is a 422 `CommandFailed` carrying its tag and payload.",
+    "Sends to an actor address, including one not yet created, without requiring an inspector read. Requires project write permission. `commandId` is an optional client idempotency key, not a runner command id. Its scope is organization/project/environment/actor address/command, independent of deployment. The control plane durably assigns a runner-minted id; the same key and JSON input reuse it and replay the receipt with `replayed: true` within the runner's retry window. Different input returns 409 Conflict. Access and expiry are rechecked on retry; an expired key is never reminted. Declared actor errors are 422 CommandFailed; admission refusals are typed 4xx, including 422 CommandRefused. Outages remain 503 Unavailable.",
   ),
   HttpApiEndpoint.get(
     "streamCommands",

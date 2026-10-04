@@ -1,5 +1,5 @@
 FROM oven/bun:1.4.2
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends docker-cli && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 COPY . .
 RUN bun install --frozen-lockfile

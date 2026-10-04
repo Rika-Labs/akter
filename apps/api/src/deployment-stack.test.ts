@@ -3,7 +3,6 @@ import { edgeKey } from "@rikalabs/akter/testing"
 import { BunCrypto, BunHttpServer, BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
 import {
-  Clock,
   Config,
   Context,
   Crypto,
@@ -426,6 +425,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
               HOST: "127.0.0.1",
               PORT: String(edgePort),
               EDGE_COLD_START_TIMEOUT: "90 seconds",
+              EDGE_PUBLICATION_LEAD: "0 seconds",
             },
           }),
         )
@@ -463,9 +463,6 @@ layer(Layer.provideMerge(ImagesLive, services), {
           30,
           sql("SELECT 1 FROM edge_key WHERE kid = 'edge-local-1'"),
           (rows) => rows.length === 1,
-        )
-        yield* sql(
-          "UPDATE edge_key SET published_at = now() - interval '1 hour' WHERE kid = 'edge-local-1'",
         )
 
         const client = yield* HttpClient.HttpClient
@@ -648,16 +645,60 @@ layer(Layer.provideMerge(ImagesLive, services), {
           first,
         )
 
-        const counted = yield* send(3)
+        expect(
+          (yield* call(
+            `/api/projects/${project.id}/environments/production/runtime/actors/Counter/hits/jobs`,
+            { cookie: alice },
+          )).status,
+        ).toBe(404)
+
+        const clientKey = yield* (yield* Crypto.Crypto).randomUUIDv4
+        const counted = yield* send(3, clientKey)
         expect(counted).toMatchObject({
           replayed: false,
           result: { count: 3, version: "v1", caller: "akter-control-plane" },
         })
-        expect(yield* send(3, counted.commandId)).toMatchObject({
+        expect(counted.commandId).not.toBe(clientKey)
+        expect(counted.commandId).toMatch(/^v1\./u)
+        expect(yield* send(3, clientKey)).toMatchObject({
           commandId: counted.commandId,
           replayed: true,
           result: { count: 3, version: "v1" },
         })
+        const conflict = yield* sendAs(alice, 13, clientKey)
+        expect(conflict.status).toBe(409)
+        expect(yield* read(conflict, Cloud.Conflict)).toMatchObject({
+          message: "The idempotency key was already used for another payload",
+        })
+
+        const duplicateKey = yield* (yield* Crypto.Crypto).randomUUIDv4
+        const duplicates = yield* Effect.forEach(
+          [0, 1],
+          () =>
+            call(`/api/projects/${project.id}/environments/production/runtime/commands`, {
+              method: "POST",
+              cookie: alice,
+              body: {
+                address: "Counter/concurrent",
+                command: "Increment",
+                payload: 7,
+                commandId: duplicateKey,
+              },
+            }).pipe(Effect.flatMap((response) => read(response, Cloud.CommandSent))),
+          { concurrency: 2 },
+        )
+        expect(duplicates[0]?.commandId).toBe(duplicates[1]?.commandId)
+        expect(
+          duplicates
+            .map((value) => value.replayed)
+            .sort((left, right) => Number(left) - Number(right)),
+        ).toEqual([false, true])
+        const firstRunners = yield* running(first)
+        expect(firstRunners).toHaveLength(1)
+        expect(duplicates.map((value) => value.result)).toEqual([
+          { count: 7, version: "v1", runner: firstRunners[0], caller: "akter-control-plane" },
+          { count: 7, version: "v1", runner: firstRunners[0], caller: "akter-control-plane" },
+        ])
 
         expect((yield* sendAs(undefined, 1)).status).toBe(401)
         expect((yield* sendAs(mallory, 1)).status).toBe(403)
@@ -716,13 +757,12 @@ layer(Layer.provideMerge(ImagesLive, services), {
         expect(yield* statusOf(second)).toBe("rolled-back")
         expect(yield* statusOf(first)).toBe("drained")
         expect((yield* send(2)).result).toMatchObject({ count: 10, version: "v1" })
-        expect(yield* send(3, counted.commandId)).toMatchObject({
+        expect(yield* send(3, clientKey)).toMatchObject({
           replayed: true,
           result: { count: 3, version: "v1" },
         })
 
-        const issued = yield* Clock.currentTimeMillis
-        const wakeId = `v1.${issued}.${issued + 86_400_000}.${yield* (yield* Crypto.Crypto).randomUUIDv4}`
+        const wakeId = yield* (yield* Crypto.Crypto).randomUUIDv4
         const awake = yield* running(rolledBack.id)
         expect(awake).toHaveLength(1)
 
@@ -744,7 +784,6 @@ layer(Layer.provideMerge(ImagesLive, services), {
 
         const woke = yield* sendEventually(5, wakeId)
         expect(woke.sent).toMatchObject({
-          commandId: wakeId,
           replayed: false,
           result: { count: 15, version: "v1" },
         })
@@ -756,7 +795,8 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const woken = yield* running(rolledBack.id)
         expect(woken).toHaveLength(1)
         expect(woken[0]).not.toBe(awake[0])
-        expect(yield* send(3, counted.commandId)).toMatchObject({
+        expect(woke.sent.commandId).not.toBe(wakeId)
+        expect(yield* send(3, clientKey)).toMatchObject({
           replayed: true,
           result: { count: 3, version: "v1" },
         })

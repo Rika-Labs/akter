@@ -16,6 +16,12 @@ const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Sche
 
 const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
 
+/** Names a source deployment by its short commit and message, as rollback and redeploy labels show it. */
+const sourceLabel = (source: DeploymentDetail) =>
+  source.message === ""
+    ? source.commitSha.slice(0, 7)
+    : `${source.commitSha.slice(0, 7)}: ${source.message}`
+
 /** Every actor handle is captured under the organization established by access, never by a request payload. */
 export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments", (handlers) =>
   Effect.gen(function* () {
@@ -199,11 +205,13 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             params.projectId,
             params.deploymentId,
           )
-          return yield* (yield* actorOf(organizationId, params.projectId, environment))
+          const actor = yield* actorOf(organizationId, params.projectId, environment)
+          const target = yield* actor.Get({ deploymentId: params.deploymentId }).pipe(expected)
+          return yield* actor
             .Rollback({
               deploymentId: yield* id,
               target: params.deploymentId,
-              message: `Rollback to ${params.deploymentId}`,
+              message: `Rollback to ${sourceLabel(target)}`,
               author: yield* author,
             })
             .pipe(expected, Effect.flatMap(detail))
@@ -236,7 +244,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             .Redeploy({
               deploymentId: yield* id,
               source: params.deploymentId,
-              message: `Redeploy ${params.deploymentId}`,
+              message: `Redeploy ${sourceLabel(source)}`,
               author: yield* author,
               regions: source.regions,
               envSnapshot: "{}",

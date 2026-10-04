@@ -4,18 +4,26 @@
 
 ## Local stack
 
-From the repository root:
+The edge refuses to start without `EDGE_SIGNING_KEYS`, a JSON array of Ed25519 private JWKs `{ kid, x, d }`. Generate a local-only key into your shell, never into a committed file, and don't print or paste it into issues or logs:
+
+```sh
+export EDGE_SIGNING_KEYS="$(bun -e 'const k = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign"]); const { x, d } = await crypto.subtle.exportKey("jwk", k.privateKey); console.log(JSON.stringify([{ kid: `local-${crypto.randomUUID()}`, x, d }]))')"
+```
+
+Then, from the repository root and in the same shell:
 
 ```sh
 bun run dev
 ```
 
-This runs the three services in `infra/local/compose.yaml`: Postgres 18.6 on `127.0.0.1:55431`, the API on `http://localhost:3001`, and the readable email outbox on `http://localhost:3002`. Docker must be running. The API applies Better Auth and control-plane migrations before `/ready` succeeds; the mailbox starts after the API is ready. Source mounts reload the API and mailbox after an edit. Postgres uses a named volume, so accounts survive restarts. The default signing secret and database password are deliberately local-only credentials, never production settings.
+This runs `infra/local/compose.yaml`: Postgres 18.6 on `127.0.0.1:55431`, a one-shot `application-database` job that creates the `local_app` database runners migrate into, the API on `http://localhost:3001`, the readable email outbox on `http://localhost:3003`, and the edge on `http://localhost:3002`. Docker must be running. The API applies Better Auth and control-plane migrations before `/ready` succeeds; the mailbox and the edge start after the API is ready. Source mounts reload the API and mailbox after an edit. Postgres uses a named volume, so accounts and published edge keys survive restarts. The default signing secret, database password and generated edge key are deliberately local-only credentials, never production settings.
+
+The edge publishes each key's public half at startup and signs only with a key published for `EDGE_PUBLICATION_LEAD`, default `5 minutes`, the runners' default key-set refresh interval. Until then the edge refuses authenticated requests with `ActorUnavailable` ("No signing key is usable"), so a fresh key leaves the stack unable to serve deployments for five minutes. Reuse the same `EDGE_SIGNING_KEYS` value across restarts: its `kid` stays published in the volume and keeps its age, while a new key restarts the wait. A `kid` names one key for good, so never put a different key under a published `kid`; the edge refuses to start. For local development only, you may shorten the lead, for example `EDGE_PUBLICATION_LEAD="0 seconds" bun run dev`; a local runner rereads its key set when it sees an unknown `kid`. Keep the default anywhere a runner could hold a key set older than the lead.
 
 If those ports are already in use, choose free ones first. On a shared Docker daemon use a unique Compose project and never remove somebody else's containers or volumes:
 
 ```sh
-CONTROL_PLANE_PG_PORT=55431 API_HTTP_PORT=55432 OUTBOX_HTTP_PORT=55433 \
+CONTROL_PLANE_PG_PORT=55431 API_HTTP_PORT=55432 EDGE_HTTP_PORT=55434 OUTBOX_HTTP_PORT=55433 \
   API_ORIGIN=http://localhost:55432 \
   docker compose -p akter-cp-local -f infra/local/compose.yaml up --build
 ```

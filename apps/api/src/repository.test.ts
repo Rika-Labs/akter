@@ -755,3 +755,138 @@ describe("preferences", () => {
       }),
     ))
 })
+
+describe("command assignments", () => {
+  const key = (organizationId: string) => ({
+    organizationId,
+    projectId: "p1",
+    environment: "production",
+    address: "Order/o/1",
+    command: "Cancel",
+    commandId: "client-key",
+  })
+
+  it("let exactly one of several concurrent first sends win, and every racer gets the winner", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const minted = yield* Effect.all(Array.from({ length: 8 }, () => unique))
+
+        const assigned = yield* Effect.forEach(
+          minted,
+          (mintedCommandId) =>
+            repository.assignCommand({
+              ...key(organizationId),
+              payload: { reason: "late" },
+              mintedCommandId,
+            }),
+          { concurrency: "unbounded" },
+        )
+
+        const winner = assigned[0]!
+        expect(minted).toContain(winner.commandId)
+        for (const row of assigned)
+          expect(row).toEqual({ commandId: winner.commandId, payload: { reason: "late" } })
+        expect(yield* repository.findCommand(key(organizationId))).toEqual(winner)
+      }),
+    ))
+
+  it("keep the first payload when a later assignment under the same key carries another", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const [first, second] = [yield* unique, yield* unique]
+
+        expect(yield* repository.findCommand(key(organizationId))).toBeUndefined()
+
+        const stored = yield* repository.assignCommand({
+          ...key(organizationId),
+          payload: { reason: "late", detail: { by: "ops" } },
+          mintedCommandId: first,
+        })
+        const again = yield* repository.assignCommand({
+          ...key(organizationId),
+          payload: { reason: "early" },
+          mintedCommandId: second,
+        })
+
+        expect(stored).toEqual({
+          commandId: first,
+          payload: { reason: "late", detail: { by: "ops" } },
+        })
+        expect(again).toEqual(stored)
+        expect(yield* repository.findCommand(key(organizationId))).toEqual(stored)
+      }),
+    ))
+
+  it("survive a restart: a newly built repository on the same database reads the same assignment", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const url = yield* Effect.service(DatabaseUrl)
+        const minted = yield* unique
+
+        const stored = yield* repository.assignCommand({
+          ...key(organizationId),
+          payload: { reason: "late" },
+          mintedCommandId: minted,
+        })
+
+        const restarted = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const context = yield* Layer.build(RepositoryLive.pipe(Layer.provide(client(url, 2))))
+            const fresh = Context.get(context, Repository)
+
+            return {
+              found: yield* fresh.findCommand(key(organizationId)),
+              assigned: yield* fresh.assignCommand({
+                ...key(organizationId),
+                payload: { reason: "late" },
+                mintedCommandId: yield* unique,
+              }),
+            }
+          }),
+        )
+
+        expect(restarted).toEqual({ found: stored, assigned: stored })
+        expect(stored.commandId).toBe(minted)
+      }),
+    ))
+
+  it("keep every scope field independent, so a key reused under another scope gets its own command", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const base = key(organizationId)
+        const scopes = [
+          base,
+          { ...base, organizationId: yield* unique },
+          { ...base, projectId: "p2" },
+          { ...base, environment: "staging" },
+          { ...base, address: "Order/o/2" },
+          { ...base, command: "Ship" },
+          { ...base, commandId: "client-other" },
+        ]
+
+        const assigned = []
+        for (const scope of scopes) {
+          const mintedCommandId = yield* unique
+          const row = yield* repository.assignCommand({
+            ...scope,
+            payload: { scope: mintedCommandId },
+            mintedCommandId,
+          })
+
+          expect(row).toEqual({ commandId: mintedCommandId, payload: { scope: mintedCommandId } })
+          assigned.push(row)
+        }
+
+        for (const [index, scope] of scopes.entries())
+          expect(yield* repository.findCommand(scope)).toEqual(assigned[index])
+      }),
+    ))
+})

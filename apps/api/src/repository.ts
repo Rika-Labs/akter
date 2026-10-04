@@ -136,6 +136,22 @@ export class InvalidCursor extends Schema.TaggedError<InvalidCursor>()("InvalidC
   cursor: Schema.String,
 }) {}
 
+/** Client keys name one command within an environment, independently of a deployment. */
+export interface CommandKey {
+  readonly organizationId: string
+  readonly projectId: string
+  readonly environment: string
+  readonly address: string
+  readonly command: string
+  readonly commandId: string
+}
+
+/** The runner-minted id and the original input are immutable once assigned to a client key. */
+export interface CommandAssignment {
+  readonly commandId: string
+  readonly payload: Schema.Json
+}
+
 /**
  * The control plane's own durable records: projects, environments, per-user
  * preferences and the audit log. Every operation names the organization (and
@@ -147,6 +163,10 @@ export class InvalidCursor extends Schema.TaggedError<InvalidCursor>()("InvalidC
 export class Repository extends Context.Service<
   Repository,
   {
+    readonly findCommand: (input: CommandKey) => Effect.Effect<CommandAssignment | undefined>
+    readonly assignCommand: (
+      input: CommandKey & { readonly payload: Schema.Json; readonly mintedCommandId: string },
+    ) => Effect.Effect<CommandAssignment>
     /** The organization's projects, oldest first. */
     readonly listProjects: (input: {
       readonly organizationId: string
@@ -312,7 +332,22 @@ const migrations: ReadonlyArray<string> = [
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS cloud_audit_organization_idx ON cloud_audit (organization_id, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS cloud_command_idempotency (
+    organization_id text NOT NULL CHECK (organization_id <> ''),
+    project_id text NOT NULL CHECK (project_id <> ''),
+    environment text NOT NULL CHECK (environment <> ''),
+    address text NOT NULL CHECK (address <> ''),
+    command text NOT NULL CHECK (command <> ''),
+    idempotency_key text NOT NULL CHECK (idempotency_key <> ''),
+    command_id text NOT NULL CHECK (command_id <> ''),
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (organization_id, project_id, environment, address, command, idempotency_key),
+    UNIQUE (command_id)
+  )`,
 ]
+
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
 const DEFAULT_PREFERENCES: Preferences = {
   defaultEnvironment: "production",
@@ -472,6 +507,36 @@ export const RepositoryLive = Layer.effect(
       }))
 
     return {
+      findCommand: (input) =>
+        sql<CommandAssignment>`
+          SELECT command_id AS "commandId", payload FROM cloud_command_idempotency
+          WHERE organization_id = ${input.organizationId} AND project_id = ${input.projectId}
+            AND environment = ${input.environment} AND address = ${input.address}
+            AND command = ${input.command} AND idempotency_key = ${input.commandId}
+        `.pipe(
+          Effect.map(([row]) => row),
+          Effect.orDie,
+        ),
+      assignCommand: (input) =>
+        Effect.gen(function* () {
+          const payload = yield* encodeJson(input.payload).pipe(Effect.orDie)
+          const [row] = yield* sql<CommandAssignment>`
+            INSERT INTO cloud_command_idempotency (
+              organization_id, project_id, environment, address, command,
+              idempotency_key, command_id, payload
+            ) VALUES (
+              ${input.organizationId}, ${input.projectId}, ${input.environment},
+              ${input.address}, ${input.command}, ${input.commandId},
+              ${input.mintedCommandId}, ${payload}::jsonb
+            )
+            ON CONFLICT (organization_id, project_id, environment, address, command, idempotency_key)
+            DO UPDATE SET idempotency_key = cloud_command_idempotency.idempotency_key
+            RETURNING command_id AS "commandId", payload
+          `
+          if (row === undefined)
+            return yield* Effect.die(new Error("Command assignment is missing"))
+          return row
+        }).pipe(Effect.orDie),
       activateDeployment: (input) =>
         Effect.gen(function* () {
           if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))

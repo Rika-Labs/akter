@@ -2,6 +2,7 @@ import {
   type ActorJob,
   CloudApi,
   CommandFailed,
+  CommandRefused,
   Conflict,
   Forbidden,
   NotFound,
@@ -22,6 +23,7 @@ import {
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Access } from "./access.ts"
+import { Repository } from "./repository.ts"
 
 /**
  * Where and as whom the control plane reaches one environment's runners: the
@@ -70,6 +72,9 @@ const Reason = Schema.Union([
 ])
 
 const ActorErrorBody = Schema.TaggedStruct("ActorError", { reason: Reason })
+const GenericActorErrorBody = Schema.TaggedStruct("ActorError", {
+  reason: Schema.Struct({ _tag: Schema.String }),
+})
 
 const DefectBody = Schema.TaggedStruct("Defect", {})
 
@@ -80,6 +85,7 @@ const Job = Schema.Struct({ job: Schema.String, jobId: Schema.String, attempts: 
 const ActorJobs = Schema.Struct({ jobs: Schema.Array(Job), deadLetters: Schema.Array(Job) })
 
 const decodeActorError = Schema.decodeUnknownOption(ActorErrorBody)
+const decodeGenericActorError = Schema.decodeUnknownOption(GenericActorErrorBody)
 const decodeCommandId = Schema.decodeUnknownEffect(CommandId)
 const decodeJobs = Schema.decodeUnknownEffect(ActorJobs)
 
@@ -92,6 +98,8 @@ const split = (address: string) => {
   return { type: address.slice(0, slash), id: address.slice(slash + 1) }
 }
 
+const samePayload = Schema.toEquivalence(Schema.Json)
+
 /**
  * The requests the control plane makes of a runner, all through the edge.
  * Each carries only the target's own credential, so a caller's credentials
@@ -100,6 +108,7 @@ const split = (address: string) => {
 export const makeRuntime = Effect.gen(function* () {
   const edge = yield* RuntimeEdge
   const client = yield* HttpClient.HttpClient
+  const repository = yield* Repository
 
   const call = Effect.fn("Runtime.call")(function* (
     target: RuntimeTarget,
@@ -171,18 +180,41 @@ export const makeRuntime = Effect.gen(function* () {
     const target = yield* edge.resolve(input)
     const { type, id } = split(input.address)
 
-    const minted =
-      input.commandId === undefined
-        ? yield* call(target, HttpClientRequest.post(url(target, "/command-ids"))).pipe(
-            Effect.flatMap(({ status, body }) =>
-              status === 200
-                ? decodeCommandId(body).pipe(Effect.orDie)
-                : unavailable(`command id mint answered ${status}`),
-            ),
-          )
-        : undefined
+    const mint = call(target, HttpClientRequest.post(url(target, "/command-ids"))).pipe(
+      Effect.flatMap(({ status, body }) =>
+        status === 200
+          ? decodeCommandId(body).pipe(Effect.orDie)
+          : unavailable(`command id mint answered ${status}`),
+      ),
+    )
 
-    const commandId = input.commandId ?? minted?.commandId ?? ""
+    const clientKey = input.commandId
+    let commandId: string
+    if (clientKey === undefined) commandId = (yield* mint).commandId
+    else {
+      const key = {
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        environment: input.environment,
+        address: input.address,
+        command: input.command,
+        commandId: clientKey,
+      }
+      let assigned = yield* repository.findCommand(key)
+      if (assigned === undefined) {
+        const minted = yield* mint
+        assigned = yield* repository.assignCommand({
+          ...key,
+          payload: input.payload,
+          mintedCommandId: minted.commandId,
+        })
+      }
+      if (!samePayload(assigned.payload, input.payload))
+        return yield* Conflict.make({
+          message: "The idempotency key was already used for another payload",
+        })
+      commandId = assigned.commandId
+    }
 
     const {
       status,
@@ -209,8 +241,17 @@ export const makeRuntime = Effect.gen(function* () {
     const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
 
     if (refusal === undefined) {
+      if (Schema.is(DefectBody)(body)) return yield* unavailable(`command answered ${status}`)
+
+      const generic = Option.getOrUndefined(decodeGenericActorError(body))
+      if (generic !== undefined && status >= 400 && status < 500)
+        return yield* CommandRefused.make({
+          commandId,
+          reasonTag: generic.reason._tag,
+          reason: body,
+        })
+
       if (
-        Schema.is(DefectBody)(body) ||
         Predicate.isTagged(body, "ActorError") ||
         !Predicate.hasProperty(body, "_tag") ||
         !Predicate.isString(body._tag)
@@ -235,14 +276,11 @@ export const makeRuntime = Effect.gen(function* () {
           Conflict.make({
             message: `The command id ${commandId} was already used for another command`,
           }),
-        Unauthorized: ({ code }) =>
-          code === "access_denied"
-            ? Forbidden.make({ message: "The actor refused the command" })
-            : unavailable("the edge refused the control plane's credential"),
+        Unauthorized: () => Forbidden.make({ message: "The actor refused the command" }),
         InvalidInput: ({ code }) =>
           code === "unknown_route"
             ? NotFound.make({ resource: "command", id: `${input.address}/${input.command}` })
-            : CommandFailed.make({ commandId, errorTag: "InvalidInput", error: body, replayed }),
+            : CommandRefused.make({ commandId, reasonTag: "InvalidInput", reason: body }),
       }),
     )
   })
