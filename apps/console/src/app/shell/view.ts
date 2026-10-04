@@ -99,6 +99,7 @@ const routeScreen = (h: HtmlBuilder<Message>, model: Model): Screen =>
     ForgotPassword: () => authScreen({ h, model, page: undefined }),
     ResetPassword: () => authScreen({ h, model, page: undefined }),
     AcceptInvitation: () => authScreen({ h, model, page: undefined }),
+    Device: () => authScreen({ h, model, page: undefined }),
     Onboarding: () => authScreen({ h, model, page: undefined }),
     Overview: () => projectView(h, model),
     Project: () => projectView(h, model),

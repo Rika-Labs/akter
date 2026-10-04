@@ -17,18 +17,21 @@ import {
   newCommandId,
 } from "../api/client.ts"
 import * as Auth from "../auth/client.ts"
+import { decideDevice, lookUpDevice } from "../device/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
 import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts"
 import { sendCommand } from "../commands/client.ts"
 import { CommandScope } from "../commands/model.ts"
+import type { DevicePage } from "../device/model.ts"
 import { searchActors } from "../actors/client.ts"
 import * as Settings from "../settings/client.ts"
 import { spendLimitKey } from "../settings/keys.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
 import {
+  AnsweredDevice,
   CompletedAuth,
   CompletedEffect,
   CreatedKey,
@@ -304,6 +307,34 @@ export const DeclineInvitation = Command.define("DeclineInvitation", {
       Effect.andThen(completed(Routes.overview(), true)),
       Effect.catch(failed),
     ),
+})
+
+/**
+ * Answers a device page step, or sends the person to sign in when their session ended, remembering
+ * this page so they come back to it.
+ */
+const answerDevice = (step: Effect.Effect<DevicePage, ConsoleError>) =>
+  step.pipe(
+    Effect.map((page) => AnsweredDevice({ page })),
+    Effect.catch((error) =>
+      Effect.sync(rememberAuthReturn).pipe(
+        Effect.as(FailedPage({ kind: error.kind, message: error.message })),
+      ),
+    ),
+  )
+
+/** Looks a typed or linked device code up before anything about it is offered. */
+export const LookUpDevice = Command.define("LookUpDevice", {
+  args: { code: S.String },
+  messages: [AnsweredDevice, FailedPage],
+  execute: ({ code }) => answerDevice(lookUpDevice(code)),
+})
+
+/** Approves or denies a device code the person reviewed. */
+export const DecideDevice = Command.define("DecideDevice", {
+  args: { code: S.String, decision: S.Literals(["approved", "denied"]) },
+  messages: [AnsweredDevice, FailedPage],
+  execute: ({ code, decision }) => answerDevice(decideDevice({ code, decision })),
 })
 
 /**

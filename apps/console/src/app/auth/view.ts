@@ -10,7 +10,7 @@ import {
   styleAttributes,
 } from "@akter/ui"
 import { letterOnContainer } from "@akter/ui/brand"
-import { Option, Predicate } from "effect"
+import { Match, Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { fixturesEnabled } from "../api/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
@@ -25,9 +25,11 @@ import {
 } from "../shell/message.ts"
 import type { Model, PageError } from "../shell/model.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
+import { displayUserCode, type DeviceProblem, type DeviceReview } from "../device/model.ts"
+import { pageOf } from "../shell/screen.ts"
 import { homeRegions, type InvitationPage, onboardingStep, onboardingSteps } from "./model.ts"
 import { planLabel } from "../workspace/model.ts"
-import { authLayout, authStyles as styles } from "./styles.ts"
+import { authLayout, authStyles as styles, deviceStyles } from "./styles.ts"
 
 const fill = authLayout.fill
 
@@ -498,6 +500,189 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
   }
 }
 
+const deviceAction = (
+  h: H,
+  model: Model,
+  config: Readonly<{ label: string; form: string; quiet?: boolean }>,
+): Html =>
+  button(h, {
+    label: config.label,
+    variant: config.quiet === true ? "ghost" : "primary",
+    size: "lg",
+    onClick: SubmittedForm({ form: config.form }),
+    disabled: model.submitting,
+    style: fill,
+  })
+
+const deviceColumn = (h: H, body: ReadonlyArray<Html>): Screen => ({
+  title: "Connect a device",
+  crumbs: [],
+  body: column(h, body),
+})
+
+/** The code field, filled from the link's `user_code` until the person types. */
+const deviceEntry = (h: H, model: Model): Screen => {
+  const linked = AppRoute.isAnyOf(["Device"])(model.route) ? model.route.user_code : undefined
+  return deviceColumn(h, [
+    ...heading(h, "Connect a device", "Enter the code shown in your terminal."),
+    h.form(
+      [
+        h.OnSubmit(SubmittedForm({ form: "device-code" })),
+        h.AriaLabel("device-code"),
+        ...styleAttributes(h, styles.form),
+      ],
+      [
+        field(h, {
+          id: "device-code",
+          label: "Code",
+          control: input(h, {
+            name: "device-code",
+            value: model.fields["device-code"] ?? linked ?? "",
+            placeholder: "ABCD-EFGH",
+            autocomplete: "off",
+            size: "lg",
+            required: true,
+            mono: true,
+            attributes: [h.Autocapitalize("characters")],
+            onInput: (value) => ChangedField({ name: "device-code", value }),
+          }),
+        }),
+        button(h, {
+          label: "Continue",
+          variant: "primary",
+          size: "lg",
+          type: "submit",
+          disabled: model.submitting,
+          style: fill,
+        }),
+        failureNote(h, model),
+      ],
+    ),
+  ])
+}
+
+const deviceRow = (
+  h: H,
+  term: string,
+  detail: ReadonlyArray<Html | string>,
+): ReadonlyArray<Html> => [
+  h.dt([...styleAttributes(h, deviceStyles.term)], [term]),
+  h.dd([...styleAttributes(h, deviceStyles.detail)], detail),
+]
+
+/**
+ * A looked-up code: who is asking, the code itself to compare with the terminal, and the account
+ * and organization approving it signs in. Approve and Deny appear only here.
+ */
+const deviceReview = (h: H, model: Model, step: DeviceReview): Screen =>
+  deviceColumn(h, [
+    ...heading(h, `Authorize ${step.client}`, step.clientDetail),
+    h.p(
+      [...styleAttributes(h, deviceStyles.prompt)],
+      ["Check this code matches the one in your terminal."],
+    ),
+    h.p(
+      [h.Id("device-user-code"), ...styleAttributes(h, deviceStyles.code)],
+      [displayUserCode(step.code)],
+    ),
+    h.dl(
+      [h.AriaLabel("Signs in as"), ...styleAttributes(h, deviceStyles.details)],
+      [
+        ...deviceRow(h, "Account", [
+          step.name === "" ? step.email : step.name,
+          step.name === ""
+            ? h.empty
+            : h.span([...styleAttributes(h, deviceStyles.email)], [step.email]),
+        ]),
+        ...(step.organization === undefined
+          ? []
+          : deviceRow(h, "Organization", [step.organization])),
+      ],
+    ),
+    deviceAction(h, model, { label: "Approve", form: "device-approve" }),
+    deviceAction(h, model, { label: "Deny", form: "device-deny", quiet: true }),
+    failureNote(h, model),
+  ])
+
+const deviceProblems: Readonly<
+  Record<DeviceProblem, Readonly<{ title: string; lead: string; retry: boolean }>>
+> = {
+  invalid: {
+    title: "We don’t recognise this code",
+    lead: "Check it against the code in your terminal and enter it again.",
+    retry: false,
+  },
+  expired: {
+    title: "This code has expired",
+    lead: "Start the sign-in again in your terminal to get a new code.",
+    retry: false,
+  },
+  used: {
+    title: "This code has already been used",
+    lead: "Each code works once. Start the sign-in again in your terminal if you still need to.",
+    retry: false,
+  },
+  elsewhere: {
+    title: "This code belongs to another account",
+    lead: "Another account opened it first. Start the sign-in again in your terminal to get a new code.",
+    retry: false,
+  },
+  slowDown: {
+    title: "Too many attempts",
+    lead: "Wait a minute, then try again.",
+    retry: true,
+  },
+  unreachable: {
+    title: "We couldn’t reach Akter",
+    lead: "Check your connection, then try again.",
+    retry: true,
+  },
+}
+
+const deviceRefused = (h: H, model: Model, problem: DeviceProblem): Screen => {
+  const words = deviceProblems[problem]
+  return deviceColumn(h, [
+    ...heading(h, words.title, words.lead),
+    words.retry
+      ? deviceAction(h, model, { label: "Try again", form: "device-retry" })
+      : deviceAction(h, model, { label: "Enter another code", form: "device-restart" }),
+    failureNote(h, model),
+  ])
+}
+
+const deviceDecided = (h: H, decision: "approved" | "denied"): Screen =>
+  decision === "approved"
+    ? deviceColumn(h, [
+        ...heading(
+          h,
+          "You can return to your terminal",
+          "The sign-in was approved. Your terminal finishes on its own in a few seconds.",
+        ),
+        foot(h, "Done here?", { label: "Go to the console", href: Routes.overview() }),
+      ])
+    : deviceColumn(h, [
+        ...heading(h, "Request denied", "Nothing was signed in. Your terminal will say so."),
+        foot(h, "Done here?", { label: "Go to the console", href: Routes.overview() }),
+      ])
+
+/**
+ * `/device`, where a signed-in person approves the code the CLI printed. It asks for the code,
+ * looks it up, and only then shows the code, the account and Approve or Deny.
+ */
+const device = (h: H, model: Model): Screen =>
+  Option.match(pageOf("DevicePage")(model), {
+    onNone: () => deviceEntry(h, model),
+    onSome: ({ step }) =>
+      Match.value(step).pipe(
+        Match.tagsExhaustive({
+          DeviceEntry: () => deviceEntry(h, model),
+          DeviceReview: (found) => deviceReview(h, model, found),
+          DeviceRefused: ({ problem }) => deviceRefused(h, model, problem),
+          DeviceDecided: ({ decision }) => deviceDecided(h, decision),
+        }),
+      ),
+  })
+
 const waiting = (h: H): Screen => ({
   title: "Akter",
   crumbs: [],
@@ -552,6 +737,7 @@ const authRoute = (h: H, model: Model): Screen =>
             Predicate.isTagged(page, "InvitationPage"),
           ),
         ),
+      Device: () => device(h, model),
       Onboarding: ({ step }) => onboarding(h, model, step),
     },
     () => signIn(h, model),

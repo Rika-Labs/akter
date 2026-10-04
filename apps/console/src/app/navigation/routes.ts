@@ -9,6 +9,7 @@ export const AppRoute = Route.defineRouteUnion({
   ForgotPassword: {},
   ResetPassword: {},
   AcceptInvitation: { invitation: S.String },
+  Device: { user_code: S.optional(S.String) },
   Onboarding: { step: S.optional(S.String) },
   Overview: {},
   Project: { project: S.String },
@@ -60,6 +61,7 @@ const construct = {
   ForgotPassword: using(AppRoute.ForgotPassword),
   ResetPassword: using(AppRoute.ResetPassword),
   AcceptInvitation: using(AppRoute.AcceptInvitation),
+  Device: using(AppRoute.Device),
   Onboarding: using(AppRoute.Onboarding),
   Overview: using(AppRoute.Overview),
   Project: using(AppRoute.Project),
@@ -103,6 +105,12 @@ export const acceptInvitation = pipe(
   page("invitations"),
   Route.slash(Route.string("invitation")),
   Route.mapTo(construct.AcceptInvitation),
+)
+
+export const device = pipe(
+  page("device"),
+  Route.query(S.Struct({ user_code: S.optional(S.String) })),
+  Route.mapTo(construct.Device),
 )
 
 export const onboarding = pipe(
@@ -177,6 +185,7 @@ const parser = Route.oneOf(
   forgotPassword,
   resetPassword,
   acceptInvitation,
+  device,
   onboarding,
   project,
   actor,
@@ -209,7 +218,10 @@ const parser = Route.oneOf(
 /** Parses a URL into a route; anything unknown is the not-found page. */
 export const parseUrl = Route.parseUrlWithFallback(parser, construct.NotFound)
 
-/** Routes drawn without the application frame: sign-in, recovery, invitations and onboarding. */
+/**
+ * Routes drawn without the application frame: sign-in, recovery, invitations, device sign-in and
+ * onboarding.
+ */
 export const isAuthRoute = AppRoute.isAnyOf([
   "SignIn",
   "SignUp",
@@ -217,6 +229,7 @@ export const isAuthRoute = AppRoute.isAnyOf([
   "ForgotPassword",
   "ResetPassword",
   "AcceptInvitation",
+  "Device",
   "Onboarding",
 ])
 

@@ -10,6 +10,8 @@ import { CommandsPage } from "../commands/model.ts"
 import { loadConnections } from "../connections/client.ts"
 import { ConnectionsPage } from "../connections/model.ts"
 import { loadDeployment, loadDeployments } from "../deployments/client.ts"
+import { loadDevice } from "../device/client.ts"
+import { DevicePage } from "../device/model.ts"
 import { DeploymentPage, DeploymentsPage } from "../deployments/model.ts"
 import { loadJobs } from "../jobs/client.ts"
 import { JobsPage } from "../jobs/model.ts"
@@ -40,6 +42,7 @@ export const PageData = S.Union([
   RegionsPage,
   SettingsPage,
   InvitationPage,
+  DevicePage,
 ])
 export type PageData = typeof PageData.Type
 
@@ -64,6 +67,7 @@ const pageFor = (route: AppRoute): Effect.Effect<LoadedPage, ConsoleError> =>
     ForgotPassword: () => none,
     ResetPassword: () => none,
     AcceptInvitation: ({ invitation }) => some(loadInvitation(invitation)),
+    Device: () => some(loadDevice),
     Onboarding: () => none,
     Overview: () => some(loadOverview),
     Project: ({ project }) => some(loadProject(project)),

@@ -72,6 +72,7 @@ describe("session access", () => {
       AppRoute.SettingsBilling(),
       AppRoute.Onboarding({ step: "project" }),
       AppRoute.AcceptInvitation({ invitation: "inv_1" }),
+      AppRoute.Device({ user_code: "WDJBMJHT" }),
     ]
     expect(protectedRoutes.map((route) => accessFor({ route, session: signedOut }))).toEqual(
       protectedRoutes.map(() => "sign-in"),
