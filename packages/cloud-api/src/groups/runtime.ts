@@ -118,7 +118,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
   HttpApiEndpoint.get(
     "inspectActor",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key",
-    { params: actorParams, success: ActorInspector, error: ReadErrors },
+    { params: actorParams, success: ActorInspector, error: [...ReadErrors, RunnerDefect] },
   ),
   HttpApiEndpoint.get(
     "listActorTables",

@@ -83,6 +83,30 @@ describe("runtime models", () => {
     expect(encode(ActorInspector, decoded)).toEqual(inspector)
   })
 
+  it("carries what a runner does not report as null, and refuses a negative count", () => {
+    const unreported = {
+      ...inspector,
+      turn: null,
+      tables: null,
+      receipts: [{ ...inspector.receipts[0], result: null, at: null }],
+      events: [{ name: "Incremented", cursor: "17", subscribers: null }],
+      connections: { sockets: null, feedCursor: "17" },
+      properties: {
+        ...inspector.properties,
+        status: null,
+        runner: null,
+        region: null,
+        mailboxDepth: null,
+      },
+      timeline: null,
+    }
+    expect(encode(ActorInspector, decode(ActorInspector, unreported))).toEqual(unreported)
+    expect(rejects(ActorInspector, { ...unreported, turn: -1 })).toBe(true)
+    expect(
+      rejects(ActorInspector, { ...unreported, connections: { sockets: -1, feedCursor: null } }),
+    ).toBe(true)
+  })
+
   it("rejects an inspector whose address has no key or whose status is not awake or idle", () => {
     expect(rejects(ActorInspector, { ...inspector, address: "Counter" })).toBe(true)
     expect(

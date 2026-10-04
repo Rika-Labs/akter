@@ -17,6 +17,7 @@ import {
 } from "effect"
 import type { Scope } from "effect"
 import { SqlClient } from "effect/sql"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 import { Actor, ActorError, ActorUnavailable, Actors, Intent } from "../../index.ts"
 import { Database } from "../../runtime/layer.ts"
 import { RetryTurn, TurnHooks, type TurnPoint } from "../../runtime/turn/hooks.ts"
@@ -109,9 +110,11 @@ const actorsLive = (probe: Probe) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* sql.unsafe(`CREATE TABLE IF NOT EXISTS pipeline_marks (
+      yield* retryPoolRefusal(
+        sql.unsafe(`CREATE TABLE IF NOT EXISTS pipeline_marks (
         routing_key bigint, tenant_id text, actor_id text, id text,
-        PRIMARY KEY (routing_key, tenant_id, actor_id, id))`)
+        PRIMARY KEY (routing_key, tenant_id, actor_id, id))`),
+      )
 
       return Layer.mergeAll(
         Meter.toLayer(
@@ -306,6 +309,8 @@ const withProbe = <A, E>(
     readonly hooks?: TestHooks
     /** The runner's tracer, so a case can read the spans turns open. */
     readonly tracer?: Tracer.Tracer
+    /** The turn pool's size, when a case needs sessions to be scarce. */
+    readonly turnSessions?: number
   },
   body: (
     probe: Probe,
@@ -342,7 +347,16 @@ const withProbe = <A, E>(
               Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
               Layer.provide(
                 Layer.mergeAll(
-                  Layer.succeed(TurnPoolSettings, { stream, prepare: options.prepare !== false }),
+                  Layer.succeed(
+                    TurnPoolSettings,
+                    options.turnSessions === undefined
+                      ? { stream, prepare: options.prepare !== false }
+                      : {
+                          stream,
+                          prepare: options.prepare !== false,
+                          maxConnections: options.turnSessions,
+                        },
+                  ),
                   Layer.succeed(NekiTurnSessions, neki),
                   options.everyPool === true
                     ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
@@ -803,6 +817,54 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             expect(yield* test.inspect(meter.ref)).toMatchObject({
               state: { count: 10 },
               receipts: 4,
+            })
+          }),
+      )
+    },
+  },
+  {
+    name: "pipeline: a turn that chains no batch returns its session before its callers are answered",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const publishing = { commandId: undefined as string | undefined }
+      const reached = Deferred.makeUnsafe<void>()
+      const resume = Deferred.makeUnsafe<void>()
+
+      return withProbe(
+        environment,
+        {
+          turnSessions: 1,
+          hooks: {
+            at: (point, request) =>
+              point === "afterCommit" && request.commandId === publishing.commandId
+                ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(resume)))
+                : Effect.void,
+          },
+        },
+        () =>
+          Effect.gen(function* () {
+            const test = yield* ActorTest
+            const held = yield* Plain.get("publishing")
+            const other = yield* Plain.get("waiting-for-a-session")
+            expect(yield* held.Add(1)).toBe(1)
+            expect(yield* other.Add(1)).toBe(1)
+
+            publishing.commandId = yield* (yield* Actors).mintCommandId
+            const first = yield* Effect.forkChild(
+              held.Add(2).pipe(Actor.commandId(publishing.commandId!)),
+            )
+            yield* Deferred.await(reached)
+
+            expect(yield* other.Add(5).pipe(Effect.timeoutOption("5 seconds"))).toEqual(
+              Option.some(6),
+            )
+
+            yield* Deferred.succeed(resume, undefined)
+            expect(yield* Fiber.join(first)).toBe(3)
+            expect(yield* test.inspect(held.ref)).toMatchObject({
+              state: { count: 3 },
+              receipts: 2,
             })
           }),
       )

@@ -1,6 +1,8 @@
 import {
+  type ActorInspector,
   type ActorJob,
   CloudApi,
+  CurrentIdentity,
   CommandFailed,
   CommandExpired,
   CommandRefused,
@@ -29,7 +31,8 @@ import {
 } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
-import { Access } from "./access.ts"
+import { Inspection } from "@rikalabs/akter/client"
+import { Access, attributedSubject } from "./access.ts"
 import { commandPayloadHash, Repository } from "./repository.ts"
 
 /**
@@ -45,6 +48,8 @@ export interface RuntimeTarget {
   readonly origin: string
   readonly host: string
   readonly credential: Redacted.Redacted<string>
+  /** The tenant the credential acts in, which is the tenant whose actors it inspects. */
+  readonly tenant: string
   /** Where the runners serve `Inspector.serve`. Default `/inspector`. */
   readonly inspectorPath?: string
   readonly requestTimeout?: Duration.Input
@@ -104,11 +109,107 @@ const ActorJobs = Schema.Struct({ jobs: Schema.Array(Job), deadLetters: Schema.A
 
 const decodeActorError = Schema.decodeUnknownOption(ActorErrorBody)
 const decodeFrameworkActorError = Schema.decodeUnknownOption(FrameworkActorErrorBody)
+const decodeDetail = Schema.decodeUnknownEffect(Inspection.ActorDetail)
 const decodeCommandId = Schema.decodeUnknownEffect(CommandId)
 const decodeJobs = Schema.decodeUnknownEffect(ActorJobs)
 
 /** The most rows the runners' inspector returns for one list. */
 const INSPECTOR_ROWS = 500
+
+/**
+ * The header naming whom a control-plane command acts for. The edge honors it
+ * only on the control plane's own service credential and strips it from
+ * every request, so a tenant can never choose the caller a runner sees.
+ */
+export const ON_BEHALF_OF_HEADER = "akter-on-behalf-of"
+
+/** The state entry the runtime keeps for the state schema's migration version, which is not part of the actor's state. */
+const STATE_VERSION_KEY = "$version"
+
+/** Pending jobs as queued or retrying by their attempts, then dead letters as dead. */
+const jobsOf = (detail: typeof ActorJobs.Type): Array<ActorJob> => [
+  ...detail.jobs.map((job): ActorJob => ({
+    name: job.job,
+    id: job.jobId,
+    attempts: job.attempts,
+    status: job.attempts === 0 ? "queued" : "retrying",
+  })),
+  ...detail.deadLetters.map((job): ActorJob => ({
+    name: job.job,
+    id: job.jobId,
+    attempts: job.attempts,
+    status: "dead",
+  })),
+]
+
+/**
+ * The committed state as one object of its stored entries, or null when any
+ * entry does not decode, since a partial object would misstate the state.
+ */
+const stateOf = (entries: Inspection.ActorDetail["state"]): Schema.Json => {
+  const state: Record<string, Schema.Json> = {}
+
+  for (const { key, value } of entries) {
+    if (key === STATE_VERSION_KEY) continue
+    if (value === null || !("json" in value)) return null
+    state[key] = value.json
+  }
+
+  return state
+}
+
+/**
+ * One actor's inspector page as the console contract states it. The runner's
+ * inspector reads only the durable views, which hold no turn count, owned
+ * rows, subscriber or socket counts, activation, placement on a runner or
+ * mailbox, and keep no commit time on a receipt, so those are null. Each
+ * event name keeps its newest retained cursor, and the event feed's cursor is
+ * the actor's last event sequence.
+ */
+const toInspector = (
+  address: string,
+  tenant: string,
+  detail: Inspection.ActorDetail,
+): ActorInspector => {
+  const events = new Map<string, Inspection.EventRow>()
+
+  for (const event of detail.events) if (!events.has(event.event)) events.set(event.event, event)
+
+  return {
+    address,
+    state: stateOf(detail.state),
+    turn: null,
+    tables: null,
+    receipts: detail.receipts.map((receipt) => ({
+      commandId: receipt.commandId,
+      command: receipt.command,
+      result: receipt.outcomeTag,
+      at: null,
+      replayed: false,
+    })),
+    events: [...events.values()].map((event) => ({
+      name: event.event,
+      cursor: String(event.sequence),
+      subscribers: null,
+    })),
+    jobs: jobsOf(detail),
+    connections: {
+      sockets: null,
+      feedCursor:
+        detail.actor.lastEventSequence > 0 ? String(detail.actor.lastEventSequence) : null,
+    },
+    properties: {
+      status: null,
+      type: detail.actor.actorType,
+      generation: detail.actor.generation,
+      runner: null,
+      region: null,
+      tenant,
+      mailboxDepth: null,
+    },
+    timeline: null,
+  }
+}
 
 const split = (address: string) => {
   const slash = address.indexOf("/")
@@ -194,6 +295,8 @@ export const makeRuntime = Effect.gen(function* () {
     readonly command: string
     readonly payload: Schema.Json
     readonly commandId?: string | undefined
+    /** The control-plane identity the command is attributed to, such as `user:<id>`. */
+    readonly onBehalfOf: string
   }) {
     const target = yield* edge.resolve(input)
     const { type, id } = split(input.address)
@@ -259,7 +362,7 @@ export const makeRuntime = Effect.gen(function* () {
           target,
           `/actors/${encodeURIComponent(type)}/${encodeURIComponent(id)}/${encodeURIComponent(input.command)}`,
         ),
-        { headers: { "idempotency-key": commandId } },
+        { headers: { "idempotency-key": commandId, [ON_BEHALF_OF_HEADER]: input.onBehalfOf } },
       ).pipe(HttpClientRequest.bodyJsonUnsafe(input.payload)),
     )
 
@@ -342,36 +445,37 @@ export const makeRuntime = Effect.gen(function* () {
 
     if (found === undefined) return yield* NotFound.make({ resource: "actor", id: input.address })
 
-    const detail = yield* decodeJobs(found).pipe(Effect.orDie)
-
-    return [
-      ...detail.jobs.map((job): ActorJob => ({
-        name: job.job,
-        id: job.jobId,
-        attempts: job.attempts,
-        status: job.attempts === 0 ? "queued" : "retrying",
-      })),
-      ...detail.deadLetters.map((job): ActorJob => ({
-        name: job.job,
-        id: job.jobId,
-        attempts: job.attempts,
-        status: "dead",
-      })),
-    ]
+    return jobsOf(yield* decodeJobs(found).pipe(Effect.orDie))
   })
 
-  return { sendCommand, actorJobs }
+  const inspectActor = Effect.fn("Runtime.inspectActor")(function* (input: {
+    readonly organizationId: string
+    readonly projectId: string
+    readonly environment: string
+    readonly address: string
+  }) {
+    const target = yield* edge.resolve(input)
+    const found = yield* inspect(target, input.address)
+
+    if (found === undefined) return yield* NotFound.make({ resource: "actor", id: input.address })
+
+    return toInspector(input.address, target.tenant, yield* decodeDetail(found).pipe(Effect.orDie))
+  })
+
+  return { sendCommand, actorJobs, inspectActor }
 })
 
 const notImplemented = (operation: string) => Effect.fail(NotImplemented.make({ operation }))
 
 /**
  * The console's runtime endpoints, answered by asking runners through the
- * edge. `sendCommand` and `listActorJobs` are the ones a runner's inspection
- * surface can answer completely: the rest of the contract needs rates,
+ * edge. `sendCommand`, `inspectActor` and `listActorJobs` are the ones a
+ * runner's inspection surface can answer, `inspectActor` with null for what
+ * the runner does not report: the rest of the contract needs rates,
  * latencies, awake state, mailbox depth, connection counts or a command log
  * that the runners do not report, so they stay `NotImplemented` rather than
- * answer with invented numbers.
+ * answer with invented numbers. A command is attributed to the signed-in user
+ * or API key that sent it, after the control plane has authorized it.
  */
 export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) =>
   Effect.gen(function* () {
@@ -395,7 +499,18 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           .pipe(Effect.andThen(notImplemented("runtime.getActorTypeLatency"))),
       )
       .handle("listActorInstances", () => notImplemented("runtime.listActorInstances"))
-      .handle("inspectActor", () => notImplemented("runtime.inspectActor"))
+      .handle("inspectActor", ({ params }) =>
+        access.project(params.projectId).pipe(
+          Effect.flatMap((organizationId) =>
+            runtime.inspectActor({
+              organizationId,
+              projectId: params.projectId,
+              environment: params.environment,
+              address: `${params.actorType}/${params.key}`,
+            }),
+          ),
+        ),
+      )
       .handle("listActorTables", () => notImplemented("runtime.listActorTables"))
       .handle("listActorReceipts", () => notImplemented("runtime.listActorReceipts"))
       .handle("listActorEvents", () => notImplemented("runtime.listActorEvents"))
@@ -423,16 +538,17 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("listSchedules", () => notImplemented("runtime.listSchedules"))
       .handle("getConnections", () => notImplemented("runtime.getConnections"))
       .handle("sendCommand", ({ params, payload }) =>
-        access.project(params.projectId, "write").pipe(
-          Effect.flatMap((organizationId) =>
-            runtime.sendCommand({
-              ...payload,
-              organizationId,
-              projectId: params.projectId,
-              environment: params.environment,
-            }),
-          ),
-        ),
+        Effect.gen(function* () {
+          const organizationId = yield* access.project(params.projectId, "write")
+
+          return yield* runtime.sendCommand({
+            ...payload,
+            organizationId,
+            projectId: params.projectId,
+            environment: params.environment,
+            onBehalfOf: attributedSubject(yield* CurrentIdentity),
+          })
+        }),
       )
   }),
 )

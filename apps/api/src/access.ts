@@ -134,6 +134,14 @@ export const AccessLive = Layer.effect(
   }),
 )
 
+/**
+ * The control plane's name for a verified caller, `user:<id>` or
+ * `api-key:<id>`: what deployment audit entries name as the initiator and what
+ * a runner sees as the caller of a command sent through the console.
+ */
+export const attributedSubject = (identity: CurrentIdentity["Service"]) =>
+  Predicate.isTagged(identity, "session") ? `user:${identity.userId}` : `api-key:${identity.keyId}`
+
 /** @effect-expect-leaking CurrentIdentity */
 export class Access extends Context.Service<
   Access,

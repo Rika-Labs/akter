@@ -33,6 +33,12 @@ export interface ApiOptions {
   readonly runnerIdleSeconds?: number
   readonly runnerEcs?: EcsOptions
   readonly runtimeRequestTimeoutSeconds?: number
+  /**
+   * Builds each new deployment's image locally from `dockerfile` in the
+   * `context` directory, so the local stack needs no external build system.
+   * Development only.
+   */
+  readonly localBuild?: { readonly context: string; readonly dockerfile: string }
 }
 
 export const localBillingWebhookSecret = "local-billing-signature-secret-not-for-production"
@@ -188,6 +194,14 @@ export const loadOptions = Effect.gen(function* () {
       Effect.die(new Error("RUNNER_MIGRATION_COMMAND must be a nonempty JSON array")),
     ),
   )
+  const buildContext = yield* Config.String("RUNNER_BUILD_CONTEXT").pipe(Config.option)
+  const buildDockerfile = yield* Config.String("RUNNER_BUILD_DOCKERFILE").pipe(
+    Config.withDefault("Dockerfile"),
+  )
+  if (production && Option.isSome(buildContext))
+    return yield* Effect.die(
+      new Error("Production images are built by CI, not RUNNER_BUILD_CONTEXT"),
+    )
   if (Redacted.value(secret).length < 32)
     return yield* Effect.die(new Error("AUTH_SECRET must contain at least 32 characters"))
   if (production && emailMode === "local")
@@ -227,6 +241,10 @@ export const loadOptions = Effect.gen(function* () {
     runnerEnvironment,
     runnerEcs,
     migrationCommand: parsedMigrationCommand,
+    localBuild: Option.match(buildContext, {
+      onNone: () => undefined,
+      onSome: (context) => ({ context, dockerfile: buildDockerfile }),
+    }),
     edgeOrigin: yield* Config.String("EDGE_ORIGIN").pipe(
       Config.withDefault("http://127.0.0.1:3002"),
     ),

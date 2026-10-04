@@ -243,6 +243,12 @@ export const rolloutBuildLog = Actor.table(
   ),
 )
 
+/** One line of build output. */
+const LogLine = Schema.Struct({
+  stream: Schema.Literals(["stdout", "stderr"]),
+  text: Schema.String,
+})
+
 /**
  * The commands below take caller-minted deployment ids, so a retry with the
  * same command id is also answered by the receipt.
@@ -255,7 +261,11 @@ const create = {
   envSnapshot: Schema.String,
 }
 
-/** Starts a rollout of `commitSha`; the build is the caller's, reported with `RecordBuild` or `FailBuild`. */
+/**
+ * Starts a rollout of `commitSha`. A control plane with a builder builds it in
+ * a `build` job; otherwise the build is the caller's, reported with
+ * `RecordBuild` or `FailBuild`.
+ */
 export const Create = Actor.command("Create", {
   payload: { ...create, commitSha: Schema.String },
   success: DeploymentDetail,
@@ -276,11 +286,7 @@ export const RecordBuild = Actor.command("RecordBuild", {
     imageDigest: Schema.String,
     commitSha: Schema.String,
     envSnapshot: Schema.optional(Schema.String),
-    log: Schema.optional(
-      Schema.Array(
-        Schema.Struct({ stream: Schema.Literals(["stdout", "stderr"]), text: Schema.String }),
-      ),
-    ),
+    log: Schema.optional(Schema.Array(LogLine)),
   },
   success: DeploymentDetail,
   error: Schema.Union([DeploymentNotFound, NotBuilding]),
@@ -335,15 +341,22 @@ export const GetBuildLog = Actor.query("GetBuildLog", {
   error: DeploymentNotFound,
 })
 
-const JobStep = Schema.Literals(["migrate", "start-runners", "drain-previous"])
+const JobStep = Schema.Literals(["build", "migrate", "start-runners", "drain-previous"])
 
 /**
  * What a rollout step's job reports; a deterministic failure is a value, so
- * the job is not retried, while a retryable one fails the executor.
+ * the job is not retried, while a retryable one fails the executor. A build
+ * reports the image it built and its output.
  */
 export const StepResult = Schema.Union([
+  Schema.TaggedStruct("BuildSucceeded", {
+    step: Schema.Literal("build"),
+    deploymentId: Schema.String,
+    imageDigest: Schema.String,
+    log: Schema.Array(LogLine),
+  }),
   Schema.TaggedStruct("StepSucceeded", {
-    step: JobStep,
+    step: Schema.Literals(["migrate", "start-runners", "drain-previous"]),
     deploymentId: Schema.String,
     runners: Schema.Array(RolloutRunner),
   }),
@@ -354,11 +367,16 @@ export const StepResult = Schema.Union([
   }),
 ])
 
-/** One provider call of a rollout: `migrate`, `start-runners`,  `drain-previous`. */
+/**
+ * One provider call of a rollout: `build`, `migrate`, `start-runners`,
+ * `drain-previous`. `commitSha` is the commit a build builds; jobs enqueued
+ * before builds existed carry none.
+ */
 export const RolloutStepJob = Actor.job("RolloutStepJob", {
   payload: {
     step: JobStep,
     deploymentId: Schema.String,
+    commitSha: Schema.optional(Schema.String),
     imageDigest: Schema.String,
     envSnapshot: Schema.String,
     regions: Schema.Array(Region),

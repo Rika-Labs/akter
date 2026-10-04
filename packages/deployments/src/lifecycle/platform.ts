@@ -27,14 +27,34 @@ export interface Release {
   readonly regions: ReadonlyArray<string>
 }
 
+/** What a build is asked to build: a deployment's commit. `jobId` is stable across attempts. */
+export interface BuildRequest {
+  readonly jobId: string
+  readonly organizationId: string
+  readonly projectId: string
+  readonly environment: Environment
+  readonly deploymentId: string
+  readonly commitSha: string
+}
+
+/** A built image: its content-addressed digest or local image id, and the build's output. */
+export interface Build {
+  readonly imageDigest: string
+  readonly log: ReadonlyArray<{ readonly stream: "stdout" | "stderr"; readonly text: string }>
+}
+
 /**
  * Provider calls of a rollout. Each runs in a job, may be retried and so must
  * be idempotent under `jobId`, and has no database capability in the
- * actor's executor context.
+ * actor's executor context. `build` is present only on a control plane that
+ * builds images itself; without it the build is the caller's, recorded with
+ * `RecordBuild`.
  */
 export class RolloutPlatform extends Context.Service<
   RolloutPlatform,
   {
+    /** Builds a deployment's commit into an image. Skipped by a rollback. */
+    readonly build?: (request: BuildRequest) => Effect.Effect<Build, PlatformFailure>
     /** Applies the release's migrations. Skipped by a rollback. */
     readonly migrate: (release: Release) => Effect.Effect<void, PlatformFailure>
     /** Starts the release's runners and resolves once each answers ready; on failure nothing it started may serve. */

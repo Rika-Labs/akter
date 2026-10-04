@@ -43,6 +43,7 @@ export default defineConfig({
             "packages/akter/src/runtime/database/migrations.test.ts",
             "packages/akter/src/runtime/database/shards.test.ts",
             "packages/akter/src/runtime/database/keepalive.test.ts",
+            "packages/akter/src/runtime/database/bounded.test.ts",
             "packages/akter/src/runtime/storage/generation.test.ts",
             "packages/akter/src/runtime/events/append.test.ts",
             "packages/akter/src/runtime/subscriptions/storage.test.ts",

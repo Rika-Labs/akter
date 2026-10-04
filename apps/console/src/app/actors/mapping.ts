@@ -3,6 +3,7 @@ import type {
   ActorTypeActivity,
   ActorInstance as CloudActorInstance,
   ActorTimelineEntry,
+  OwnedTableRows,
 } from "@akter/cloud-api"
 import { type DateTime, Predicate } from "effect"
 import { orderedSeries } from "../overview/mapping.ts"
@@ -25,8 +26,19 @@ export const toTypeActivity = (activity: ActorTypeActivity): TypeActivity => {
 }
 
 /** An owned-table cell as text: strings as written, everything else as its JSON form. */
-export const cellText = (cell: ActorInspector["tables"][number]["rows"][number][number]): string =>
+export const cellText = (cell: OwnedTableRows["rows"][number][number]): string =>
   Predicate.isString(cell) ? cell : JSON.stringify(cell)
+
+const runnerCommandId =
+  /^v1\.\d+\.\d+\.([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+
+/**
+ * A receipt's command id as the Receipts table shows it. A runner-minted id
+ * (`v1.<ms>.<ms>.<uuid>`) is only told apart by its uuid, so it reads as the
+ * uuid's first 8 characters; any other id reads unchanged.
+ */
+export const shortCommandId = (commandId: string): string =>
+  runnerCommandId.exec(commandId)?.[1] ?? commandId
 
 const timelineTitles: Readonly<Record<ActorTimelineEntry["kind"], string>> = {
   command: "committed",
@@ -45,42 +57,45 @@ export const toActorInstance =
     lastTurn: instance.lastActivityAt === null ? "—" : ago(now)(instance.lastActivityAt),
   })
 
-/** The inspector's view of one actor, read from the runner that owns it. */
+/** The inspector's view of one actor, read from the runner that owns it; what the runner does not report stays unknown. */
 export const toActorPage = (inspector: ActorInspector): ActorPage => {
   const { actorType, key } = splitAddress(inspector.address)
   const { properties } = inspector
   return ActorPage.make({
     actorType,
     key,
-    awake: properties.status === "awake",
+    awake: properties.status === null ? null : properties.status === "awake",
     generation: properties.generation,
     turn: inspector.turn,
     runner: properties.runner ?? "—",
+    region: properties.region ?? "—",
     tenant: properties.tenant,
     mailbox: properties.mailboxDepth,
-    state: JSON.stringify(inspector.state, null, 2),
-    tables: inspector.tables.map((table) => ({
-      name: table.table,
-      columns: table.columns,
-      rows: table.rows.map((row) => ({ cells: row.map(cellText) })),
-    })),
+    state: inspector.state === null ? null : JSON.stringify(inspector.state, null, 2),
+    tables:
+      inspector.tables?.map((table) => ({
+        name: table.table,
+        columns: table.columns,
+        rows: table.rows.map((row) => ({ cells: row.map(cellText) })),
+      })) ?? null,
     receipts: inspector.receipts.map((receipt) => ({
       commandId: receipt.commandId,
       command: receipt.command,
-      result: receipt.result,
-      at: clock(receipt.at),
+      result: receipt.result ?? "—",
+      at: receipt.at === null ? "—" : clock(receipt.at),
       replayed: receipt.replayed,
     })),
     events: inspector.events,
     jobs: inspector.jobs,
     connections: inspector.connections,
-    activity: inspector.timeline.map((entry, index) => ({
-      key: `${String(index)}-${entry.kind}-${entry.label}`,
-      committed: entry.kind === "command",
-      title: timelineTitles[entry.kind],
-      subject: entry.label,
-      detail: entry.detail ?? "",
-      time: clock(entry.at),
-    })),
+    activity:
+      inspector.timeline?.map((entry, index) => ({
+        key: `${String(index)}-${entry.kind}-${entry.label}`,
+        committed: entry.kind === "command",
+        title: timelineTitles[entry.kind],
+        subject: entry.label,
+        detail: entry.detail ?? "",
+        time: clock(entry.at),
+      })) ?? null,
   })
 }

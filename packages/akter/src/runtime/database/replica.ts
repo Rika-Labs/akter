@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import type { SqlClient } from "effect/sql"
+import { boundedPool } from "./bounded.ts"
 
 /**
  * The primary's WAL insert position as a decimal string, and the database
@@ -33,9 +34,25 @@ export const replicaLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Effect.gen(function* () {
       if (options === undefined) return undefined
 
-      return yield* PgClient.make(options)
+      return yield* boundedPool(options)
     }),
   ).pipe(Layer.provide(Reactivity.layer))
+
+/**
+ * The primary's pool for queries, apart from the off-turn pool. Command
+ * admission and the receipt replay it serves then never queue behind a burst
+ * of readers, nor readers behind admission. Queries of types with owned
+ * tables or blobs stay on the off-turn pool, because the owned-rows binding
+ * is built on that client.
+ */
+export const QueryPool = Context.Reference<SqlClient.SqlClient | undefined>(
+  "@rikalabs/akter/runtime/database/replica/QueryPool",
+  { defaultValue: () => undefined },
+)
+
+/** Provides `QueryPool` as a bounded, first-come, first-served pool for `options`. */
+export const queryPoolLayer = (options: PgClient.PgPoolConfig) =>
+  Layer.effect(QueryPool, boundedPool(options)).pipe(Layer.provide(Reactivity.layer))
 
 /**
  * Whether the replica has replayed WAL through `version`. A server not in

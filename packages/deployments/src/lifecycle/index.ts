@@ -51,6 +51,8 @@ export {
 
 export {
   ActivationRefused,
+  type Build,
+  type BuildRequest,
   PlatformFailure,
   type Release,
   type ReleaseRecord,

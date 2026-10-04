@@ -1,3 +1,4 @@
+import { order } from "../actors/fixtures.ts"
 import { CommandExpired, Conflict, ProjectId, RunnerDefect, Unavailable } from "@akter/cloud-api"
 import { Option } from "effect"
 import type { Return } from "foldkit/update"
@@ -14,6 +15,7 @@ import {
   ChangedField,
   ChangedUrl,
   ChoseSetting,
+  ClosedDialog,
   ConfirmedDialog,
   FailedCommand,
   FailedDeploymentChange,
@@ -212,6 +214,36 @@ describe("send command keys", () => {
     )
     expect(reopened.model.fields["command-id"]).toBe("")
     expect(named(reopened, "NewCommandId")).toHaveLength(0)
+  })
+})
+
+describe("inspector after a command", () => {
+  const answered = (model: Model) =>
+    step(
+      sendMinted(model, "cmd_1").model,
+      AnsweredCommand({
+        session: model.commandSession,
+        answer: CommandSucceeded.make({
+          commandId: "cmd_1",
+          result: { count: 6 },
+          replayed: false,
+        }),
+      }),
+    ).model
+
+  it("reloads a live inspector when the dialog closes on a committed command", () => {
+    const live = answered({ ...dialogOpen(), page: Option.some(order), pageSample: false })
+    expect(named(step(live, ClosedDialog()), "LoadPage")).toHaveLength(1)
+  })
+
+  it("leaves a sample inspector and an unanswered dialog alone", () => {
+    const sample = {
+      ...answered({ ...dialogOpen(), page: Option.some(order), pageSample: false }),
+      pageSample: true,
+    }
+    expect(named(step(sample, ClosedDialog()), "LoadPage")).toHaveLength(0)
+    const unanswered = { ...dialogOpen(), page: Option.some(order), pageSample: false }
+    expect(named(step(unanswered, ClosedDialog()), "LoadPage")).toHaveLength(0)
   })
 })
 

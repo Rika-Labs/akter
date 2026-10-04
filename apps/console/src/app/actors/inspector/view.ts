@@ -22,6 +22,7 @@ import { AppRoute } from "../../navigation/routes.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, type Message, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
+import { shortCommandId } from "../mapping.ts"
 import {
   type ActorPage,
   type InspectorTab,
@@ -90,6 +91,9 @@ const jobLabels: Readonly<Record<ActorPage["jobs"][number]["status"], string>> =
   dead: "Dead",
 }
 
+/** A count or flag the runner does not report reads as unknown, never as zero. */
+const known = (value: number | null) => (value === null ? "—" : String(value))
+
 const panel = (
   h: HtmlBuilder<Message>,
   page: ActorPage,
@@ -98,49 +102,66 @@ const panel = (
 ): Html =>
   Match.value(tab).pipe(
     Match.when("state", () =>
-      codeBlock(h, {
-        title: `Committed state · turn ${String(page.turn)}`,
-        code: page.state,
-        language: "json",
-        onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
-      }),
-    ),
-    Match.when("rows", () =>
-      page.tables.length === 0
+      page.state === null
         ? emptyState(h, {
-            title: "No owned tables",
-            description: "This actor keeps its data in state.",
+            title: "Committed state isn’t readable",
+            description: "An entry of this actor’s state doesn’t decode, so none of it is shown.",
             align: "start",
           })
-        : h.div(
-            [...styleAttributes(h, styles.panel)],
-            page.tables.map((table) =>
-              section(h, {
-                title: table.name,
-                meta: `owned table · ${String(table.rows.length)} rows`,
-                children: [
-                  dataTable(h, {
-                    label: table.name,
-                    columns: table.columns.map((name, index) => ({
-                      key: name,
-                      label: name,
-                      width: index === 0 ? "minmax(0, 1fr)" : "7rem",
-                      mono: true,
-                      align: index === 0 ? "start" : "end",
-                    })),
-                    rows: table.rows.map((row, index) => ({
-                      key: String(index),
-                      cells: row.cells,
-                    })),
-                  }),
-                ],
-              }),
+        : codeBlock(h, {
+            title:
+              page.turn === null
+                ? "Committed state"
+                : `Committed state · turn ${String(page.turn)}`,
+            code: page.state,
+            language: "json",
+            onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
+          }),
+    ),
+    Match.when("rows", () =>
+      page.tables === null
+        ? emptyState(h, {
+            title: "Owned rows aren’t reported",
+            description:
+              "The runner’s inspector reads state, receipts, events and jobs, not owned tables.",
+            align: "start",
+          })
+        : page.tables.length === 0
+          ? emptyState(h, {
+              title: "No owned tables",
+              description: "This actor keeps its data in state.",
+              align: "start",
+            })
+          : h.div(
+              [...styleAttributes(h, styles.panel)],
+              page.tables.map((table) =>
+                section(h, {
+                  title: table.name,
+                  meta: `owned table · ${String(table.rows.length)} rows`,
+                  children: [
+                    dataTable(h, {
+                      label: table.name,
+                      columns: table.columns.map((name, index) => ({
+                        key: name,
+                        label: name,
+                        width: index === 0 ? "minmax(0, 1fr)" : "7rem",
+                        mono: true,
+                        align: index === 0 ? "start" : "end",
+                      })),
+                      rows: table.rows.map((row, index) => ({
+                        key: String(index),
+                        cells: row.cells,
+                      })),
+                    }),
+                  ],
+                }),
+              ),
             ),
-          ),
     ),
     Match.when("receipts", () =>
       dataTable(h, {
         label: "Receipts",
+        empty: "No receipts held",
         columns: [
           { key: "id", label: "Command id", width: "7rem", mono: true },
           { key: "command", label: "Command", width: "minmax(0, 1fr)", mono: true },
@@ -150,13 +171,19 @@ const panel = (
         rows: page.receipts.map((receipt, index) => ({
           key: `${receipt.commandId}-${String(index)}`,
           tone: receipt.replayed ? "muted" : "default",
-          cells: [receipt.commandId, receipt.command, receipt.result, receipt.at],
+          cells: [
+            h.span([h.Title(receipt.commandId)], [shortCommandId(receipt.commandId)]),
+            receipt.command,
+            receipt.result,
+            receipt.at,
+          ],
         })),
       }),
     ),
     Match.when("events", () =>
       dataTable(h, {
         label: "Events",
+        empty: "No events emitted",
         columns: [
           { key: "cursor", label: "Cursor", width: "6rem", mono: true },
           { key: "name", label: "Event", width: "minmax(0, 1fr)", mono: true },
@@ -164,13 +191,14 @@ const panel = (
         ],
         rows: page.events.map((event) => ({
           key: `${event.name}-${event.cursor}`,
-          cells: [event.cursor, event.name, String(event.subscribers)],
+          cells: [event.cursor, event.name, known(event.subscribers)],
         })),
       }),
     ),
     Match.when("jobs", () =>
       dataTable(h, {
         label: "Jobs",
+        empty: "No pending or dead jobs",
         columns: [
           { key: "id", label: "Job", width: "6rem", mono: true },
           { key: "name", label: "Type", width: "minmax(0, 1fr)", mono: true },
@@ -199,7 +227,7 @@ const panel = (
         ruled: true,
         layout: "wide",
         items: [
-          { label: "Sockets", value: String(page.connections.sockets) },
+          { label: "Sockets", value: known(page.connections.sockets) },
           { label: "Event feed cursor", value: page.connections.feedCursor ?? "—", mono: true },
         ],
       }),
@@ -263,19 +291,25 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
               title: "Activity",
               meta: "this turn and its follow-ups",
               children: [
-                activityFeed(h, {
-                  label: `${address} activity`,
-                  entries: page.activity.map((entry) => ({
-                    key: entry.key,
-                    tone: entry.committed ? "live" : "idle",
-                    title: [
-                      h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
-                      ` ${entry.title}`,
-                    ],
-                    detail: entry.detail,
-                    time: entry.time,
-                  })),
-                }),
+                page.activity === null
+                  ? emptyState(h, {
+                      title: "Activity isn’t reported",
+                      description: "The runner doesn’t keep a timeline for this actor.",
+                      align: "start",
+                    })
+                  : activityFeed(h, {
+                      label: `${address} activity`,
+                      entries: page.activity.map((entry) => ({
+                        key: entry.key,
+                        tone: entry.committed ? "live" : "idle",
+                        title: [
+                          h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
+                          ` ${entry.title}`,
+                        ],
+                        detail: entry.detail,
+                        time: entry.time,
+                      })),
+                    }),
               ],
             }),
           ],
@@ -287,18 +321,22 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
               items: [
                 {
                   label: "Status",
-                  value: status(h, {
-                    tone: page.awake ? "live" : "idle",
-                    label: page.awake ? "Awake" : "Asleep",
-                  }),
+                  value:
+                    page.awake === null
+                      ? "—"
+                      : status(h, {
+                          tone: page.awake ? "live" : "idle",
+                          label: page.awake ? "Awake" : "Asleep",
+                        }),
                 },
                 { label: "Type", value: page.actorType },
                 { label: "Generation", value: String(page.generation) },
-                { label: "Turn", value: String(page.turn) },
+                { label: "Turn", value: known(page.turn) },
                 { label: "Runner", value: page.runner, mono: true },
+                { label: "Region", value: page.region },
                 { label: "Tenant", value: page.tenant },
-                { label: "Mailbox", value: String(page.mailbox) },
-                { label: "Sockets", value: String(page.connections.sockets) },
+                { label: "Mailbox", value: known(page.mailbox) },
+                { label: "Sockets", value: known(page.connections.sockets) },
               ],
             }),
           ],

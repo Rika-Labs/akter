@@ -13,6 +13,7 @@ import type { Authorize } from "./connections/streams.ts"
 import type { Transport } from "./connections/transport.ts"
 import type { tenantContent } from "./content/store.ts"
 import type { TurnGate } from "./drain.ts"
+import { retryPoolRefusal } from "./database/bounded.ts"
 import { registerActor } from "./entity/register.ts"
 import {
   findPayloadProblems,
@@ -100,6 +101,10 @@ export const actorRegistration = ({
   readonly defectLog: DefectLog["Service"]
   readonly outbox: (typeof OutboxRuntime)["Service"]
 }): Pick<InternalActors["Service"], "register" | "registerQueries" | "registerJobs"> => {
+  /** Concurrent layers can exceed checkout capacity; only a refused checkout is safe to retry here. */
+  const startupSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    retryPoolRefusal(effect).pipe(Effect.orDie)
+
   /**
    * Refuses a layer that can't read every payload version the database
    * may hold, as a placement or workflow mismatch is refused. `writes`
@@ -113,7 +118,7 @@ export const actorRegistration = ({
     const problems = yield* findPayloadProblems(
       declarations,
       writes === undefined ? [] : [writes],
-    ).pipe(Effect.provideContext(services), Effect.orDie)
+    ).pipe(Effect.provideContext(services), startupSql)
 
     if (problems.length > 0)
       return yield* Effect.die(
@@ -201,17 +206,17 @@ export const actorRegistration = ({
     register: Effect.fnUntraced(function* (registration: Registration) {
       if (registrations.has(registration.name))
         return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
-      yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+      yield* checkPlacement(registration).pipe(Effect.provideContext(services), startupSql)
 
       if (declaresContent(registration)) {
         yield* requireContent(registration.name)
-        yield* recordContentTurn(registration).pipe(Effect.provideContext(services), Effect.orDie)
+        yield* recordContentTurn(registration).pipe(Effect.provideContext(services), startupSql)
       }
 
       const enforces = yield* checkTables(registration.name, registration.tables, tableRole, {
         role: adoptionRole,
         writes: true,
-      }).pipe(Effect.provideContext(services), Effect.orDie)
+      }).pipe(Effect.provideContext(services), startupSql)
 
       if (enforces) enforcedTypes.add(registration.name)
 
@@ -233,7 +238,7 @@ export const actorRegistration = ({
       const { incompatibilities, retained } = yield* acceptWorkflows({
         name: registration.name,
         workflows: Array.from(registration.workflows.values(), ({ member }) => member),
-      }).pipe(Effect.provideContext(services), Effect.orDie)
+      }).pipe(Effect.provideContext(services), startupSql)
 
       if (incompatibilities.length > 0)
         return yield* Effect.die(
@@ -255,24 +260,24 @@ export const actorRegistration = ({
       yield* recordPayloadVersions(registration.payloads).pipe(
         Effect.provideContext(services),
         Effect.provideService(FrameworkClock, frameworkClock),
-        Effect.orDie,
+        startupSql,
       )
 
       for (const declared of registration.payloads)
         if (declared.writes) writerDeclarations.push(declared)
-      yield* refreshPayloadWriters.pipe(Effect.orDie)
+      yield* refreshPayloadWriters.pipe(startupSql)
 
-      yield* recordRouted(registration).pipe(Effect.provideContext(services), Effect.orDie)
+      yield* recordRouted(registration).pipe(Effect.provideContext(services), startupSql)
       yield* requireRoutedSubscribers(registration.name).pipe(
         Effect.provideContext(services),
-        Effect.orDie,
+        startupSql,
       )
 
       for (const declared of registration.subscriptions)
         if (declared.routed === undefined)
           yield* subscriptions
             .widen(registration.name, declared)
-            .pipe(Effect.provideContext(services), Effect.orDie)
+            .pipe(Effect.provideContext(services), startupSql)
 
       registrations.set(registration.name, registration)
 
@@ -315,14 +320,14 @@ export const actorRegistration = ({
     registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {
       if (queryRegistrations.has(registration.name))
         return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
-      yield* checkPlacement(registration).pipe(Effect.provideContext(services), Effect.orDie)
+      yield* checkPlacement(registration).pipe(Effect.provideContext(services), startupSql)
 
       if (declaresContent(registration)) yield* requireContent(registration.name)
 
       yield* checkTables(registration.name, registration.tables, tableRole, {
         role: adoptionRole,
         writes: false,
-      }).pipe(Effect.provideContext(services), Effect.orDie)
+      }).pipe(Effect.provideContext(services), startupSql)
 
       for (const table of registration.tables) checked.add(table)
       yield* checkPayloadVersions(registration.name, registration.payloads)

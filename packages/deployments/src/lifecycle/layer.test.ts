@@ -34,7 +34,7 @@ import {
 } from "./platform.ts"
 
 interface Call {
-  readonly step: "migrate" | "start" | "drain"
+  readonly step: "build" | "migrate" | "start" | "drain"
   readonly deploymentId: string
   readonly imageDigest: string
   readonly envSnapshot: string
@@ -88,17 +88,37 @@ const step = <A>(
     return value
   })
 
-const platform = Layer.succeed(
+const calls = {
+  migrate: (release: Release) => step("migrate", release, release, undefined),
+  start: (release: Release) => step("start", release, release, [runner(release)]),
+  drain: (input: Parameters<RolloutPlatform["Service"]["drain"]>[0]) =>
+    step(
+      "drain",
+      { ...input, jobId: input.jobId },
+      { other: input.replacedBy, regions: input.regions },
+      undefined,
+    ),
+}
+
+const platform = Layer.succeed(RolloutPlatform, RolloutPlatform.of(calls))
+
+/** The same provider with a builder: it builds `sha256:<deployment>` and records the commit it was asked for. */
+const buildingPlatform = Layer.succeed(
   RolloutPlatform,
   RolloutPlatform.of({
-    migrate: (release) => step("migrate", release, release, undefined),
-    start: (release) => step("start", release, release, [runner(release)]),
-    drain: (input) =>
+    ...calls,
+    build: (request) =>
       step(
-        "drain",
-        { ...input, jobId: input.jobId },
-        { other: input.replacedBy, regions: input.regions },
-        undefined,
+        "build",
+        request,
+        { other: request.commitSha },
+        {
+          imageDigest: `sha256:${request.deploymentId}`,
+          log: [
+            { stream: "stdout" as const, text: `building ${request.commitSha}` },
+            { stream: "stderr" as const, text: "cache miss" },
+          ],
+        },
       ),
   }),
 )
@@ -166,23 +186,28 @@ class Url extends Context.Service<Url, Redacted.Redacted<string>>()(
   "@akter/deployments/lifecycle/layer.test/Url",
 ) {}
 
-const live = Layer.unwrap(
-  Effect.gen(function* () {
-    const url = yield* database
+const liveWith = (provided: typeof platform) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const url = yield* database
 
-    const test = ActorTest.layer({ database: url })
+      const test = ActorTest.layer({ database: url })
 
-    return DeploymentLifecycleLive.pipe(
-      Layer.provide(Layer.merge(platform, routing.pipe(Layer.provide(test)))),
-      Layer.provideMerge(test),
-      Layer.provideMerge(Layer.succeed(Url, url)),
-    )
-  }),
-).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)
+      return DeploymentLifecycleLive.pipe(
+        Layer.provide(Layer.merge(provided, routing.pipe(Layer.provide(test)))),
+        Layer.provideMerge(test),
+        Layer.provideMerge(Layer.succeed(Url, url)),
+      )
+    }),
+  ).pipe(Layer.provide(BunCrypto.layer), Layer.orDie)
+
+const live = liveWith(platform)
 
 const runtime = ManagedRuntime.make(live)
 
-afterAll(() => runtime.dispose())
+const buildingRuntime = ManagedRuntime.make(liveWith(buildingPlatform))
+
+afterAll(() => Promise.all([runtime.dispose(), buildingRuntime.dispose()]))
 
 const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof live>>) =>
   runtime.runPromise(effect)
@@ -779,6 +804,171 @@ describe("DeploymentLifecycle", () => {
             ({ step, deploymentId }) => step === "drain" && deploymentId === "cleanup-live",
           ),
         ).toEqual([])
+      }),
+    ))
+})
+
+describe("DeploymentLifecycle with a builder", () => {
+  it("builds a created and a redeployed commit in a job, rolls each out, fails a broken build without touching the live one, and never builds a rollback", () =>
+    buildingRuntime.runPromise(
+      Effect.gen(function* () {
+        const { lifecycle, settle, statuses, pointer } = yield* environment("p-build")
+        const built = (id: string) =>
+          provider.calls.filter((call) => call.step === "build" && call.deploymentId === id)
+
+        const created = yield* lifecycle.Create({
+          deploymentId: "b1",
+          commitSha: "c0ffee1",
+          message: "first",
+          author,
+          regions: [],
+          envSnapshot: "env-b1",
+        })
+
+        expect(created).toMatchObject({ phase: "building", imageDigest: null })
+        expect(created.steps[0]).toMatchObject({ name: "build", status: "running" })
+
+        yield* settle
+
+        expect(yield* lifecycle.Get({ deploymentId: "b1" })).toMatchObject({
+          status: "live",
+          commitSha: "c0ffee1",
+          imageDigest: "sha256:b1",
+          steps: [
+            { name: "build", status: "succeeded" },
+            { name: "migrate", status: "succeeded" },
+            { name: "start-runners", status: "succeeded" },
+            { name: "drain-previous", status: "skipped" },
+          ],
+        })
+        expect(built("b1").map((call) => call.other)).toEqual(["c0ffee1"])
+        expect(
+          provider.calls.find((call) => call.step === "migrate" && call.deploymentId === "b1"),
+        ).toMatchObject({ imageDigest: "sha256:b1", envSnapshot: "env-b1" })
+
+        const log = yield* lifecycle.GetBuildLog({ deploymentId: "b1" })
+
+        expect(log.complete).toBe(true)
+        expect(log.lines.map(({ stream, text }) => `${stream}:${text}`)).toEqual([
+          "stdout:building c0ffee1",
+          "stderr:cache miss",
+        ])
+
+        yield* lifecycle.Redeploy({
+          deploymentId: "b2",
+          source: "b1",
+          message: "again",
+          author,
+          regions: [],
+          envSnapshot: "env-b2",
+        })
+        yield* settle
+
+        expect(yield* lifecycle.Get({ deploymentId: "b2" })).toMatchObject({
+          status: "live",
+          commitSha: "c0ffee1",
+          imageDigest: "sha256:b2",
+        })
+        expect(built("b2").map((call) => call.other)).toEqual(["c0ffee1"])
+        expect(yield* pointer).toBe("b2")
+
+        provider.failures.set(
+          "build:b3",
+          PlatformFailure.make({ reason: "Dockerfile not found", retryable: false }),
+        )
+        yield* lifecycle.Create({
+          deploymentId: "b3",
+          commitSha: "badbad1",
+          message: "broken",
+          author,
+          regions: [],
+          envSnapshot: "env-b3",
+        })
+        yield* settle
+
+        const broken = yield* lifecycle.Get({ deploymentId: "b3" })
+
+        expect(broken).toMatchObject({
+          status: "failed",
+          failure: "Dockerfile not found",
+          imageDigest: null,
+        })
+        expect(broken.steps.map(({ name, status }) => `${name}:${status}`)).toEqual([
+          "build:failed",
+          "migrate:skipped",
+          "start-runners:skipped",
+          "drain-previous:skipped",
+        ])
+        expect(built("b3")).toHaveLength(1)
+        expect(
+          (yield* lifecycle.GetBuildLog({ deploymentId: "b3" })).lines.map(({ text }) => text),
+        ).toEqual(["Dockerfile not found"])
+        expect(
+          provider.calls.some((call) => call.deploymentId === "b3" && call.step !== "build"),
+        ).toBe(false)
+        expect(yield* pointer).toBe("b2")
+
+        yield* lifecycle.Rollback({ deploymentId: "b4", target: "b1", message: "back", author })
+        yield* settle
+
+        expect(yield* lifecycle.Get({ deploymentId: "b4" })).toMatchObject({
+          status: "live",
+          imageDigest: "sha256:b1",
+          rolledBackFrom: "b1",
+        })
+        expect(built("b4")).toEqual([])
+        expect(yield* statuses).toMatchObject({
+          b1: "drained",
+          b2: "rolled-back",
+          b3: "failed",
+          b4: "live",
+        })
+      }),
+    ))
+
+  it("lets an external build result settle a deployment first, so a later build job changes nothing", () =>
+    buildingRuntime.runPromise(
+      Effect.gen(function* () {
+        const { lifecycle, settle } = yield* environment("p-build-race")
+        const gate = yield* Deferred.make<void>()
+
+        provider.gates.set("build:r1", gate)
+        yield* lifecycle.Create({
+          deploymentId: "r1",
+          commitSha: "feed001",
+          message: "raced",
+          author,
+          regions: [],
+          envSnapshot: "env-r1",
+        })
+
+        const building = yield* Effect.forkChild(settle)
+
+        while (!provider.calls.some((call) => call.step === "build" && call.deploymentId === "r1"))
+          yield* Effect.sleep("20 millis")
+
+        yield* lifecycle.RecordBuild({
+          deploymentId: "r1",
+          imageDigest: "sha256:external",
+          commitSha: "feed001",
+        })
+        yield* Deferred.succeed(gate, undefined)
+        yield* Fiber.join(building)
+        yield* settle
+
+        expect(yield* lifecycle.Get({ deploymentId: "r1" })).toMatchObject({
+          status: "live",
+          imageDigest: "sha256:external",
+          steps: [
+            { name: "build", status: "succeeded" },
+            { name: "migrate", status: "succeeded" },
+            { name: "start-runners", status: "succeeded" },
+            { name: "drain-previous", status: "skipped" },
+          ],
+        })
+        expect(
+          provider.calls.filter((call) => call.step === "migrate" && call.deploymentId === "r1"),
+        ).toEqual([expect.objectContaining({ imageDigest: "sha256:external" })])
       }),
     ))
 })

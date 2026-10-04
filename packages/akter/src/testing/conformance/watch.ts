@@ -17,6 +17,7 @@ import {
 } from "effect"
 import { FetchHttpClient, Headers as HttpHeaders, HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 import { Actor, Tenant, User } from "../../index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import {
@@ -298,10 +299,11 @@ export const watchLayer = (fixture: WatchFixture) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
 
-      const existing = yield* sql<{ relname: string }>`
-        SELECT relname FROM pg_class WHERE relname = 'conformance_watch_rows'`
+      const existing = yield* retryPoolRefusal(sql<{ relname: string }>`
+        SELECT relname FROM pg_class WHERE relname = 'conformance_watch_rows'`)
 
-      if (existing.length === 0) for (const statement of watchDdl) yield* sql.unsafe(statement)
+      if (existing.length === 0)
+        for (const statement of watchDdl) yield* retryPoolRefusal(sql.unsafe(statement))
 
       return Layer.mergeAll(GaugeLive, GaugeReads(fixture), mirrorLayer, cappedLayer, unsafeLayer)
     }).pipe(Effect.orDie),

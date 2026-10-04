@@ -50,7 +50,7 @@ export type ActorTypePage = typeof ActorTypePage.Type
 /** A row in the actor's owned table. */
 export const OwnedRow = S.Struct({ cells: S.Array(S.String) })
 
-/** A stored command result that a retry returns. */
+/** A stored command receipt; `result` and `at` read `—` when the runner does not report them. */
 export const Receipt = S.Struct({
   commandId: S.String,
   command: S.String,
@@ -59,11 +59,11 @@ export const Receipt = S.Struct({
   replayed: S.Boolean,
 })
 
-/** An event class the actor emitted, with the cursor of its newest event and its subscribers. */
+/** An event class the actor emitted, with the cursor of its newest event and its subscribers, null when unreported. */
 export const EmittedEvent = S.Struct({
   cursor: S.String,
   name: S.String,
-  subscribers: S.Finite,
+  subscribers: S.NullOr(S.Finite),
 })
 
 /** Work the actor handed off after a commit; `status` is the contract's job status. */
@@ -74,9 +74,9 @@ export const ActorJob = S.Struct({
   status: JobStatus,
 })
 
-/** The actor's live connections: how many sockets it holds and the cursor of its event feed. */
+/** The actor's live connections: how many sockets it holds, null when unreported, and the cursor of its event feed. */
 export const ActorConnections = S.Struct({
-  sockets: S.Finite,
+  sockets: S.NullOr(S.Finite),
   feedCursor: S.NullOr(S.String),
 })
 
@@ -97,24 +97,31 @@ export const OwnedTable = S.Struct({
   rows: S.Array(OwnedRow),
 })
 
-/** Everything the actor inspector shows about one instance. */
+/**
+ * Everything the actor inspector shows about one instance. A null is a fact
+ * the runner does not report, shown as unknown rather than as zero or empty;
+ * `runner` and `region` already read `—` when unreported. `state` is null when
+ * an entry of the committed state does not decode, since part of it would
+ * misstate the whole.
+ */
 export const ActorPage = S.TaggedStruct("ActorPage", {
   commandScope: S.optional(CommandScope),
   actorType: S.String,
   key: S.String,
-  awake: S.Boolean,
+  awake: S.NullOr(S.Boolean),
   generation: S.Finite,
-  turn: S.Finite,
+  turn: S.NullOr(S.Finite),
   runner: S.String,
+  region: S.String,
   tenant: S.String,
-  mailbox: S.Finite,
-  state: S.String,
-  tables: S.Array(OwnedTable),
+  mailbox: S.NullOr(S.Finite),
+  state: S.NullOr(S.String),
+  tables: S.NullOr(S.Array(OwnedTable)),
   receipts: S.Array(Receipt),
   events: S.Array(EmittedEvent),
   jobs: S.Array(ActorJob),
   connections: ActorConnections,
-  activity: S.Array(ActorActivity),
+  activity: S.NullOr(S.Array(ActorActivity)),
 })
 export type ActorPage = typeof ActorPage.Type
 
