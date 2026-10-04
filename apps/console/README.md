@@ -49,11 +49,12 @@ pages never start a stream or simulate new turns.
 
 The inspector's Send command dialog accepts JSON and an optional command ID (the contract's
 `commandId`, the client idempotency key), shows the actor's result or typed `CommandFailed`
-payload, and notes a replayed receipt quietly. Each submission gets one key: a blank field is
-filled with a fresh ID when it is sent, sending the same command and payload again reuses it (so a
-retry after a lost response or a `503 Unavailable` runs at most once and answers `replayed`), and
-changing the command or payload discards a generated ID so the next send mints a new one. An ID the
-operator typed is kept. Each refusal has its own wording: `409` (the key is bound to other input),
+payload, and notes a replayed receipt quietly. Each submission gets one key, chosen when it is
+sent: a blank field gets a fresh ID, and a generated ID is reused only while the command and the
+payload match what was sent, comparing the parsed JSON with sorted keys the way the control plane
+hashes it. So a retry after a lost response or a `503 Unavailable`, even with the payload
+reformatted or edited and changed back, runs at most once and answers `replayed`, while changed
+input is sent as a new command. An ID the operator typed is always used as typed. Each refusal has its own wording: `409` (the key is bound to other input),
 `410 CommandExpired` (the key's retry window closed), `CommandRefused` with the runner's reason,
 `503 Unavailable` (send again with the same key) and `502 RunnerDefect`. After a `409`, `410` or
 `RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
@@ -69,9 +70,11 @@ targets and displays `rolledBackFrom` on the newly created deployment. Redeploy 
 deployment of the viewed commit, which is built again. Both ask for confirmation, stay disabled
 while either is in flight, and show the API's refusal otherwise. On success they open the new
 deployment, titled as the API names it (`Rollback to <short sha>: <message>`), only if its page is
-still open; after navigating away the console just reports it. Rollbacks and redeploys reuse earlier
+still open; after navigating away the console just reports it and refreshes a deployments list or
+overview that is open. Signing out or switching project releases the in-flight hold. Rollbacks and redeploys reuse earlier
 commits, so the console (overview included) links deployments by id. A deployment URL is read as an
-id first; an unknown id is not found, and only a commit-shaped reference opens its newest deployment.
+id first; an unknown id is not found, and only a commit-shaped reference (in either case) opens its
+newest deployment.
 Runner actor counts and CPU the runtime does not measure show `—`, never `0`.
 
 Billing and Usage read the control plane's Stripe-backed records. Prices, allowances and the read

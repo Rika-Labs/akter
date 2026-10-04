@@ -692,14 +692,21 @@ test("retries a submission with its own command ID, shows the replay quietly and
   await submit.click()
   await expect(dialog.getByText("Replayed — returned the stored receipt.")).toBeVisible()
   await expect(dialog.getByRole("alert")).toHaveCount(0)
+  await dialog.getByLabel("Payload", { exact: true }).fill('{ "amount": 17 }')
+  await expect(
+    dialog.getByText("The command or payload changed, so sending it uses a new command ID."),
+  ).toHaveCount(0)
   await dialog.getByLabel("Payload", { exact: true }).fill('{"amount":18}')
-  await expect(dialog.getByLabel("Command ID (optional)")).toHaveValue("")
+  await expect(
+    dialog.getByText("The command or payload changed, so sending it uses a new command ID."),
+  ).toBeVisible()
   await submit.click()
   await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
   expect(ids).toHaveLength(3)
   expect(ids[1]).toBe(ids[0])
   expect(ids[2]).toMatch(/^[0-9a-f-]{36}$/)
   expect(ids[2]).not.toBe(ids[0])
+  await expect(dialog.getByLabel("Command ID (optional)")).toHaveValue(ids[2]!)
 })
 
 test("explains an expired command ID and only sends again as a new command", async ({ page }) => {

@@ -1,12 +1,11 @@
 import { CommandRefused, Forbidden, Unavailable } from "@akter/cloud-api"
 import {
   ConnectionLimitExceeded,
-  MailboxFull,
   QuotaExceeded,
   SpendLimitExceeded,
   StorageQuotaExceeded,
 } from "@rikalabs/akter/client"
-import { Effect, Option, Schema } from "effect"
+import { Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { consoleError } from "../api/client.ts"
 import { isQuotaKind, quotaMessage, quotaRefusal } from "./errors.ts"
@@ -78,28 +77,28 @@ describe("quota refusals", () => {
     expect(Option.map(decoded, quotaMessage)).toEqual(Option.some(quotaMessage(refusals.spend)))
   })
 
-  it("reads a runner's refusal forwarded as CommandRefused as the plan refusal inside it", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const forwarded = (reason: Schema.Json) =>
-          CommandRefused.make({
-            commandId: "runner-id",
-            reasonTag: "QuotaExceeded",
-            reason: ActorError.make({ reason, isRetryable: false }),
-          })
-        const command = yield* Schema.encodeEffect(Schema.toCodecJson(QuotaExceeded))(
-          refusals.command,
-        )
-        expect(consoleError(forwarded(command))).toMatchObject({
-          kind: "QuotaExceeded",
-          message: quotaMessage(refusals.command),
-        })
-        const full = yield* Schema.encodeEffect(Schema.toCodecJson(MailboxFull))(
-          MailboxFull.make({}),
-        )
-        expect(quotaRefusal(forwarded(full))).toEqual(Option.none())
-      }),
-    ))
+  it("reads a runner's refusal forwarded as CommandRefused as the plan refusal inside it", () => {
+    const forwarded = (reason: Schema.Json) =>
+      CommandRefused.make({
+        commandId: "runner-id",
+        reasonTag: "QuotaExceeded",
+        reason: ActorError.make({ reason, isRetryable: false }),
+      })
+    const command = Schema.TaggedStruct("QuotaExceeded", QuotaExceeded.fields).make({
+      organizationId: "org_1",
+      period: "2026-10",
+      limitUnits: 5_000_000,
+      usedUnits: 4_999_999,
+      requestedUnits: 5,
+      retryAfterMs: 86_400_000,
+    })
+    expect(consoleError(forwarded(command))).toMatchObject({
+      kind: "QuotaExceeded",
+      message: quotaMessage(refusals.command),
+    })
+    const full = Schema.TaggedStruct("MailboxFull", {}).make({})
+    expect(quotaRefusal(forwarded(full))).toEqual(Option.none())
+  })
 
   it("never mistakes another error, or a quota tag without its payload, for a refusal", () => {
     expect(quotaRefusal(Forbidden.make({ message: "Owners only." }))).toEqual(Option.none())
