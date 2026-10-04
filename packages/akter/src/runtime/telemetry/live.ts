@@ -98,7 +98,8 @@ export type StreamMessage = Data.TaggedEnum<{
 
 export const StreamMessage = Data.taggedEnum<StreamMessage>()
 
-interface StreamFilter {
+/** Which committed commands a stream sends: one actor type, failures or successes, or all. */
+export interface StreamFilter {
   readonly actorType?: string | undefined
   readonly failed?: boolean | undefined
 }

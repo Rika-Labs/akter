@@ -553,11 +553,18 @@ it.layer(TestLive, { excludeTestServices: true })(
               series(suffix, {}),
               series(suffix, { cookie: outsider.cookie }),
               series(suffix, { key: readKey.secret }),
-            ]).pipe(Effect.map((all) => all.map((response) => response.status))),
+            ]).pipe(
+              Effect.flatMap((all) =>
+                Effect.map(read(all[2]!, Cloud.NotFound), (missing) => [
+                  ...all.map((response) => response.status),
+                  missing.resource,
+                ]),
+              ),
+            ),
           )
           expect(seriesStatuses).toEqual([
-            [401, 403, 501],
-            [401, 403, 501],
+            [401, 403, 404, "live deployment"],
+            [401, 403, 404, "live deployment"],
           ])
         }),
       { timeout: 60000 },
