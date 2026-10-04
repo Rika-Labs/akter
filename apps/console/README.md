@@ -51,9 +51,14 @@ The inspector's Send command dialog accepts JSON and an optional command ID, sho
 result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
 fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
 response reuse the same receipt key. The dialog captures the actor's project and environment
-and closes on every URL change; navigation can never retarget an old actor address. Deployment detail offers
-earlier successful deployments in the same environment as rollback targets and displays
-`rolledBackFrom` on the newly created deployment.
+and closes on every URL change; navigation can never retarget an old actor address.
+
+Deployment detail offers earlier successful deployments in the same environment as rollback
+targets and displays `rolledBackFrom` on the newly created deployment. Redeploy starts a new
+deployment of the viewed commit, which is built again. Both ask for confirmation, open the new
+deployment on success and show the API's refusal otherwise. Rollbacks and redeploys reuse earlier
+commits, so the console links deployments by id; a commit in the URL opens its newest deployment.
+Runner actor counts and CPU the runtime does not measure show `—`, never `0`.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when
@@ -61,8 +66,10 @@ windows and bucket boundaries match. Its unbounded tail remains explicit and it 
 combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
 histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
 Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
-times are UTC. The local API currently answers runtime and deployment endpoints with typed 501s;
-protocol/browser tests exercise their declared responses, not a live runner implementation.
+times are UTC. The API serves deployments, rollback, redeploy, command sending and actor jobs
+from real runners; the other runtime reads (overview, actor types and instances, inspection,
+command log and stream, jobs, workflows, connections) still answer typed 501s and fall back to
+sample data.
 
 ## Layout
 
@@ -88,7 +95,7 @@ Emailed invitation links use `/invitations/:id`; the earlier compatibility URL i
 
 Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
 `/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,
-`/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:commit`,
+`/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:deployment` (an id or a commit),
 `/regions`.
 
 Settings: `/settings`, `/settings/appearance`, `/settings/profile`, `/settings/notifications`,

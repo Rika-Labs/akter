@@ -14,7 +14,7 @@ describe("console routes", () => {
       Routes.project({ project: "support-bot" }),
       Routes.actorType({ actorType: "Order" }),
       Routes.actor({ actorType: "Order", key: "ord_8f2c", tab: "receipts" }),
-      Routes.deployment({ commit: "a3f9c21" }),
+      Routes.deployment({ deployment: "a3f9c21" }),
       Routes.acceptInvitation({ invitation: "inv_42" }),
       Routes.onboarding({ step: "deploy" }),
       Routes.settingsGeneral(),

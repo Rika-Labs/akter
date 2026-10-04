@@ -239,6 +239,15 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         danger: true,
         ready: true,
       }),
+      Redeploy: ({ commit }) => ({
+        title: `Redeploy ${commit}?`,
+        description:
+          "A new deployment builds this commit again and rolls it out. The live deployment keeps serving until the new one is live.",
+        body: [],
+        confirm: "Redeploy",
+        danger: false,
+        ready: true,
+      }),
       KeyCreated: ({ name, secret }) => ({
         title: `Copy ${name}`,
         description: "This is the only time the key is shown. Store it somewhere safe.",

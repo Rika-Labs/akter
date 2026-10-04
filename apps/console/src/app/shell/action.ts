@@ -28,6 +28,7 @@ export const Action = defineTaggedUnion({
   RetryDeadLetters: { ids: S.Array(S.String) },
   DiscardDeadLetter: { id: S.String },
   RollBack: { id: S.String, commit: S.String },
+  Redeploy: { id: S.String, commit: S.String },
 })
 export type Action = typeof Action.Type
 

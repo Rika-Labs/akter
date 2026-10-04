@@ -45,12 +45,12 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
       onSelect: RequestedHref({ href: Routes.actorType({ actorType: type.name }) }),
     })),
     ...deploys.slice(0, 3).map((deploy) => ({
-      id: `deploy-${deploy.commit}`,
+      id: `deploy-${deploy.id}`,
       label: deploy.message,
       group: "Deployments",
       icon: "deployments" as const,
       detail: deploy.commit,
-      onSelect: RequestedHref({ href: Routes.deployment({ commit: deploy.commit }) }),
+      onSelect: RequestedHref({ href: Routes.deployment({ deployment: deploy.id }) }),
     })),
     ...settingsGroups.flatMap((group) =>
       group.items.map((item) => ({

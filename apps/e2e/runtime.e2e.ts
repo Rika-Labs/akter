@@ -1,4 +1,4 @@
-import { expect, test, type Route } from "@playwright/test"
+import { expect, type Page, test, type Route } from "@playwright/test"
 import { Deferred, Effect, Schema } from "effect"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
@@ -382,10 +382,166 @@ test("rolls back to the previous successful deployment and shows the returned pr
   await expect(page.getByRole("option")).toHaveCount(1)
   await page.getByRole("button", { name: "Roll back", exact: true }).click()
   await page.getByRole("dialog").getByRole("button", { name: "Roll back", exact: true }).click()
-  await expect(page).toHaveURL(`${origin}/deployments/bbbbbbb`)
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_rollback`)
   await expect(page.getByRole("heading", { name: "Restoring previous release" })).toBeVisible()
   await expect(page.getByRole("main")).toContainText("rolled back from bbbbbbb")
   expect(posted).toBe(true)
+})
+
+interface RunnerRow {
+  readonly id: string
+  readonly region: string
+  readonly actorCount: number | null
+  readonly cpuPercent: number | null
+  readonly health: string
+}
+
+const liveDeployment = {
+  id: "deploy_live",
+  projectId: "runtime_project",
+  environment: "production",
+  commitSha: "aaaaaaa",
+  message: "Current release",
+  author: { name: "Operator", image: null },
+  regions: ["us-west-2"],
+  runnerCount: 2,
+  durationMs: 40 as number | null,
+  status: "live",
+  rolledBackFrom: null,
+  createdAt: "2026-10-03T10:00:00Z",
+}
+const drainedDeployment = {
+  ...liveDeployment,
+  id: "deploy_drained",
+  commitSha: "bbbbbbb",
+  message: "Previous release",
+  status: "drained",
+  createdAt: "2026-10-03T08:00:00Z",
+}
+
+const serveDeployments = (
+  page: Page,
+  options: Readonly<{
+    history?: () => ReadonlyArray<typeof liveDeployment>
+    runners?: ReadonlyArray<RunnerRow>
+    onPost: (path: string, route: Route) => Promise<void>
+  }>,
+) =>
+  page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (route.request().method() === "POST") return options.onPost(path, route)
+    const history = options.history?.() ?? [liveDeployment, drainedDeployment]
+    if (path === "/api/projects/runtime_project/deployments")
+      return route.fulfill({ json: { items: history, nextCursor: null } })
+    if (path.endsWith("/build-log")) return route.fulfill({ json: { lines: [], complete: true } })
+    const detail = history.find((deployment) => path.endsWith(`/deployments/${deployment.id}`))
+    if (detail !== undefined)
+      return route.fulfill({ json: { ...detail, steps: [], runners: options.runners ?? [] } })
+    return controlPlane(route)
+  })
+
+test("shows unmeasured runner telemetry as unknown and measured zeroes as zero", async ({
+  page,
+}) => {
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await serveDeployments(page, {
+    runners: [
+      {
+        id: "runner-unmeasured",
+        region: "us-west-2",
+        actorCount: null,
+        cpuPercent: null,
+        health: "healthy",
+      },
+      { id: "runner-idle", region: "us-west-2", actorCount: 0, cpuPercent: 0, health: "starting" },
+    ],
+    onPost: () => Promise.reject(new Error("viewing a deployment must not change it")),
+  })
+  await page.goto(`${origin}/deployments/deploy_live`)
+  const runners = page.getByRole("table", { name: "Runners" })
+  await expect(runners.getByRole("row").filter({ hasText: "runner-unmeasured" })).toContainText(
+    /us-west-2\s*—\s*—\s*Healthy/,
+  )
+  await expect(runners.getByRole("row").filter({ hasText: "runner-idle" })).toContainText(
+    /us-west-2\s*0\s*0%\s*Starting/,
+  )
+  await expect(page.getByRole("note")).toHaveCount(0)
+})
+
+test("asks before rolling back and shows a refused rollback instead of a success", async ({
+  page,
+}) => {
+  const posts: Array<string> = []
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await serveDeployments(page, {
+    onPost: (path, route) => {
+      posts.push(path)
+      return route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: '{"_tag":"Conflict","message":"A rollout is already in progress"}',
+      })
+    },
+  })
+  await page.goto(`${origin}/deployments/deploy_live`)
+  await expect(page.getByRole("heading", { name: "Current release" })).toBeVisible()
+  await page.getByRole("button", { name: "Roll back", exact: true }).click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog).toContainText("Roll back to bbbbbbb?")
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  await expect(dialog).toBeHidden()
+  expect(posts).toEqual([])
+  await page.getByRole("button", { name: "Roll back", exact: true }).click()
+  await dialog.getByRole("button", { name: "Roll back", exact: true }).click()
+  await expect(
+    page.getByRole("status").filter({ hasText: "A rollout is already in progress" }),
+  ).toBeVisible()
+  await expect(page.getByRole("status").filter({ hasText: "Rolling back" })).toHaveCount(0)
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_live`)
+  expect(posts).toEqual(["/api/projects/runtime_project/deployments/deploy_drained/rollback"])
+})
+
+test("asks before redeploying and opens the new deployment the server started", async ({
+  page,
+}) => {
+  const posts: Array<string> = []
+  const started = {
+    ...liveDeployment,
+    id: "deploy_again",
+    message: "Redeploy deploy_live",
+    status: "in-progress",
+    durationMs: null,
+    createdAt: "2026-10-03T11:00:00Z",
+  }
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await serveDeployments(page, {
+    history: () =>
+      posts.length === 0
+        ? [liveDeployment, drainedDeployment]
+        : [started, liveDeployment, drainedDeployment],
+    onPost: (path, route) => {
+      posts.push(path)
+      return route.fulfill({ json: { ...started, steps: [], runners: [] } })
+    },
+  })
+  await page.goto(`${origin}/deployments/deploy_live`)
+  await page.getByRole("button", { name: "Redeploy", exact: true }).click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog).toContainText("Redeploy aaaaaaa?")
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  expect(posts).toEqual([])
+  await page.getByRole("button", { name: "Redeploy", exact: true }).click()
+  await dialog.getByRole("button", { name: "Redeploy", exact: true }).click()
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_again`)
+  await expect(page.getByRole("heading", { name: "Redeploy deploy_live" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Redeploy", exact: true })).toBeDisabled()
+  expect(posts).toEqual(["/api/projects/runtime_project/deployments/deploy_live/redeploy"])
 })
 
 test("reloads the overview latency histogram window and preserves its unbounded tail", async ({

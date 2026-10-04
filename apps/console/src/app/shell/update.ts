@@ -305,6 +305,7 @@ const confirm = (model: Model, dialog: Dialog): Result =>
         }
       },
       RollBack: ({ id, commit }) => mutate(model, Action.RollBack({ id, commit })),
+      Redeploy: ({ id, commit }) => mutate(model, Action.Redeploy({ id, commit })),
       DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
       KeyCreated: () => ({ model }),
     }),
