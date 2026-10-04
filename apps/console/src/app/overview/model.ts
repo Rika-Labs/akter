@@ -1,6 +1,7 @@
 import { SeriesWindow } from "@akter/cloud-api"
 import { Schema as S } from "effect"
 import { DeployStatus } from "../deployments/model.ts"
+import { CapNotice } from "../quota/model.ts"
 
 /** A headline number on the overview, with the recent trend behind it. */
 export const OverviewStat = S.Struct({
@@ -57,7 +58,8 @@ export type LatencyDistribution = typeof LatencyDistribution.Type
 /**
  * Everything the project overview draws. `previous` is the same window a day earlier and is empty
  * when the source has no comparison; a stat's `trend` is empty when it has no history.
- * `distribution` is absent when the actor types' latency buckets cannot be added up.
+ * `distribution` is absent when the actor types' latency buckets cannot be added up, and `cap` when
+ * the organization has reached no cap that refuses new commands.
  */
 export const OverviewPage = S.TaggedStruct("OverviewPage", {
   project: S.String,
@@ -70,6 +72,7 @@ export const OverviewPage = S.TaggedStruct("OverviewPage", {
   latency: Latency,
   distribution: S.optional(LatencyDistribution),
   deploys: S.Array(DeploySummary),
+  cap: S.optional(CapNotice),
 })
 export type OverviewPage = typeof OverviewPage.Type
 
@@ -77,5 +80,6 @@ export type OverviewPage = typeof OverviewPage.Type
 export const EmptyProjectPage = S.TaggedStruct("EmptyProjectPage", {
   project: S.String,
   region: S.String,
+  cap: S.optional(CapNotice),
 })
 export type EmptyProjectPage = typeof EmptyProjectPage.Type

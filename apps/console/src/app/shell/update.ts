@@ -9,10 +9,14 @@ import {
   choiceFields,
   parseMemberRoleKey,
   parseNotificationKey,
+  parseSpendLimit,
+  planChoiceKey,
+  planChoices,
   spendLimitKey,
   toggleFields,
 } from "../settings/keys.ts"
 import { slugify } from "../auth/model.ts"
+import { spendLimitReached } from "../quota/model.ts"
 import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
@@ -206,6 +210,22 @@ const settingsPage = (model: Model) =>
   Option.flatMap(model.page, (page) =>
     Predicate.isTagged(page, "SettingsPage") ? Option.some(page) : Option.none(),
   )
+
+/**
+ * Whether a spend limit the views chose would refuse new commands as soon as it is saved, because
+ * the month's estimate has already reached it. Such a limit waits for an explicit save.
+ */
+const refusesRightAway = (model: Model, value: string): boolean => {
+  const limitCents = parseSpendLimit(value)
+  return Option.exists(
+    Option.flatMap(settingsPage(model), (page) => Option.fromNullishOr(page.billing)),
+    (billing) =>
+      limitCents !== null &&
+      limitCents !== undefined &&
+      limitCents !== billing.spendLimit.limitCents &&
+      spendLimitReached({ limitCents, billing }),
+  )
+}
 
 const mutate = (model: Model, action: Action): Result =>
   canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
@@ -457,14 +477,28 @@ const submit = (model: Model, form: string): Result => {
       )
     }),
     Match.when("change-plan", () => {
-      const current = Option.flatMap(settingsPage(model), (page) =>
+      const billing = Option.flatMap(settingsPage(model), (page) =>
         Option.fromNullishOr(page.billing),
-      ).pipe(Option.map((billing) => billing.plan.id))
-      if (Option.contains(current, "enterprise")) return mutate(model, Action.OpenBillingPortal())
-      const plan = Option.contains(current, "pro") ? "enterprise" : "pro"
-      return mutate(model, Action.StartCheckout({ plan }))
+      )
+      const subscribed = Option.match(billing, {
+        onNone: () => "free" as const,
+        onSome: (found) => found.plan.subscribed,
+      })
+      const choices = planChoices(subscribed)
+      const plan = choices.find((choice) => choice === model.choices[planChoiceKey]) ?? choices[0]
+      if (plan === undefined) return unavailable(model, "Another plan")
+      return mutate(
+        model,
+        subscribed === "free" ? Action.StartCheckout({ plan }) : Action.ChangePlan({ plan }),
+      )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),
+    Match.when("spend-limit", () =>
+      mutate(
+        model,
+        Action.SaveChoice({ key: spendLimitKey, value: model.choices[spendLimitKey] ?? "" }),
+      ),
+    ),
     Match.orElse((name) => {
       const [prefix, id] = name.split(":")
       if (prefix === "resend-invite" && id !== undefined)
@@ -643,6 +677,7 @@ const step = (model: Model, message: Message): Result =>
     },
     ChoseSetting: ({ key, value }) => {
       const next = { ...model, choices: { ...model.choices, [key]: value } }
+      if (key === spendLimitKey && refusesRightAway(model, value)) return { model: next }
       if (key === "seriesWindow" && ["1h", "24h", "7d"].includes(value))
         return model.pageSample
           ? { model }
@@ -773,7 +808,9 @@ const step = (model: Model, message: Message): Result =>
     FailedCommand: ({ session, kind, message }) => {
       if (session !== model.commandSession) return { model }
       if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
-      return { model: { ...model, sendingCommand: false, commandError: Option.some(message) } }
+      return {
+        model: { ...model, sendingCommand: false, commandError: Option.some({ kind, message }) },
+      }
     },
     PreparedCommandId: ({ session, id }) => {
       if (session !== model.commandSession || (model.fields["command-id"] ?? "").trim() !== "")

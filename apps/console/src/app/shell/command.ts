@@ -24,6 +24,9 @@ import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts
 import { sendCommand } from "../commands/client.ts"
 import { CommandScope } from "../commands/model.ts"
 import * as Settings from "../settings/client.ts"
+import { titleCase } from "../settings/format.ts"
+import { spendLimitKey } from "../settings/keys.ts"
+import type { PaidPlan } from "../settings/model.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
 import {
@@ -377,13 +380,52 @@ const done = (title: string, description?: string, reload = true): Effect.Effect
 const leave = (url: string): Effect.Effect<Settled> =>
   Navigation.load(url).pipe(Effect.as(CompletedEffect()))
 
+/**
+ * Opens a hosted page in a new tab. The tab opens before its URL is fetched, while the click still
+ * counts as user activation, so the browser does not block it as a popup; it closes again when no
+ * URL comes back. A browser that refuses the tab gets the page in this one instead.
+ */
+const leaveInNewTab = (
+  hosted: Effect.Effect<{ readonly url: string }, ConsoleError>,
+): Effect.Effect<Settled, ConsoleError> =>
+  Effect.suspend(() => {
+    const tab = window.open("", "_blank")
+    if (tab === null) return hosted.pipe(Effect.flatMap(({ url }) => leave(url)))
+    tab.opener = null
+    return hosted.pipe(
+      Effect.tap(({ url }) => Effect.sync(() => tab.location.replace(url))),
+      Effect.as(CompletedEffect()),
+      Effect.tapError(() => Effect.sync(() => tab.close())),
+    )
+  })
+
+const planChanged = (
+  plan: PaidPlan,
+  status: Effect.Success<ReturnType<typeof Settings.changePlan>>,
+): Effect.Effect<Settled, ConsoleError> => {
+  const name = titleCase(plan)
+  if (status === "completed") return done(`You’re on ${name} now`)
+  if (status === "pending")
+    return done(`Changing to ${name}`, `${name} applies once the payment goes through.`)
+  return Effect.fail(
+    ConsoleError.make({
+      kind: "Conflict",
+      message: `The change to ${name} didn’t go through; your plan is unchanged.`,
+    }),
+  )
+}
+
 const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
   Match.value(action).pipe(
     Match.tagsExhaustive({
       SaveToggle: ({ key, enabled }) =>
         Settings.saveToggle({ key, enabled }).pipe(Effect.as(CompletedEffect())),
       SaveChoice: ({ key, value }) =>
-        Settings.saveChoice({ key, value }).pipe(Effect.as(CompletedEffect())),
+        Settings.saveChoice({ key, value }).pipe(
+          Effect.andThen(
+            key === spendLimitKey ? done("Spend limit saved") : Effect.succeed(CompletedEffect()),
+          ),
+        ),
       UpdateProfile: ({ name }) =>
         Settings.updateProfile({ name: name.trim() }).pipe(Effect.andThen(done("Profile saved"))),
       SendPasswordReset: ({ email }) =>
@@ -426,8 +468,9 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         ),
       StartCheckout: ({ plan }) =>
         Settings.startCheckout(plan).pipe(Effect.flatMap(({ url }) => leave(url))),
-      OpenBillingPortal: () =>
-        Settings.openBillingPortal.pipe(Effect.flatMap(({ url }) => leave(url))),
+      ChangePlan: ({ plan }) =>
+        Settings.changePlan(plan).pipe(Effect.flatMap((status) => planChanged(plan, status))),
+      OpenBillingPortal: () => leaveInNewTab(Settings.openBillingPortal),
       SetVariable: ({ environment, name, value }) =>
         choose(EnvironmentName, environment, "Choose an environment.").pipe(
           Effect.flatMap((chosen) =>

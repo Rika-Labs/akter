@@ -74,7 +74,7 @@ export const Model = S.Struct({
   tailSession: S.Finite,
   tailError: S.Option(S.String),
   commandAnswer: S.Option(CommandAnswer),
-  commandError: S.Option(S.String),
+  commandError: S.Option(S.Struct({ kind: S.String, message: S.String })),
   commandUsedId: S.Option(S.String),
   sendingCommand: S.Boolean,
   commandSession: S.Finite,

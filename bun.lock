@@ -78,6 +78,7 @@
         "@akter/cloud-api": "workspace:*",
         "@akter/ui": "workspace:*",
         "@effect/platform-browser": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "@stylexjs/stylex": "catalog:",
         "better-auth": "1.7.7",
         "effect": "catalog:",

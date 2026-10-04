@@ -20,6 +20,8 @@ import {
   CopiedText,
   type Message,
 } from "./message.ts"
+import { isQuotaKind } from "../quota/errors.ts"
+import { billingLink } from "../quota/view.ts"
 import { canSendCommand } from "./action.ts"
 import type { Dialog, Model } from "./model.ts"
 import { dialogId } from "./update.ts"
@@ -188,8 +190,11 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
             : h.empty,
           Option.match(model.commandError, {
             onNone: () => h.empty,
-            onSome: (message) =>
-              h.p([h.Role("alert"), ...styleAttributes(h, styles.note)], [message]),
+            onSome: ({ kind, message }) =>
+              h.p(
+                [h.Role("alert"), ...styleAttributes(h, styles.note)],
+                isQuotaKind(kind) ? [`${message} `, billingLink(h, "Open Billing")] : [message],
+              ),
           }),
           Option.match(model.commandUsedId, {
             onNone: () => h.empty,
