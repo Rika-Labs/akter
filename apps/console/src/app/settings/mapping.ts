@@ -84,7 +84,7 @@ export const toOrganizationSummary = (input: {
   id: input.organization.id,
   name: input.organization.name,
   slug: input.organization.slug,
-  plan: "id" in input.organization.plan ? input.organization.plan.id : "unbound",
+  plan: input.organization.plan,
   role: input.role,
 })
 

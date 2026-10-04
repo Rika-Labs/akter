@@ -1,3 +1,4 @@
+import { KnownPlan } from "@akter/cloud-api"
 import type { Workspace } from "./model.ts"
 
 /**
@@ -7,7 +8,7 @@ import type { Workspace } from "./model.ts"
 export const workspace: Workspace = {
   person: { name: "Dallen Pyrah", email: "dallen@acme.dev", role: "Owner" },
   organization: "Acme",
-  plan: "Pro",
+  plan: KnownPlan.make({ id: "pro" }),
   projects: [
     { slug: "storefront", deployed: true, region: "us-east-1" },
     { slug: "support-bot", deployed: false, region: "eu-west-1" },

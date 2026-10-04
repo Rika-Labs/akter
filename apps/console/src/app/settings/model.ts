@@ -6,6 +6,7 @@ import {
   IntegrationKind,
   InviteRole,
   NotificationPreference,
+  OrganizationPlan,
   Plan,
   PlanId,
   Preferences,
@@ -47,12 +48,12 @@ export const ProjectSummary = S.Struct({
 })
 export type ProjectSummary = typeof ProjectSummary.Type
 
-/** The organization the organization-level settings pages act on. */
+/** The organization the organization-level settings pages act on, and the plan it is on. */
 export const OrganizationSummary = S.Struct({
   id: S.String,
   name: S.String,
   slug: S.String,
-  plan: S.String,
+  plan: OrganizationPlan,
   role: Role,
 })
 export type OrganizationSummary = typeof OrganizationSummary.Type

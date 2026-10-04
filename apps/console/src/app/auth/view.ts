@@ -26,6 +26,7 @@ import {
 import type { Model, PageError } from "../shell/model.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import { homeRegions, type InvitationPage, onboardingStep, onboardingSteps } from "./model.ts"
+import { planLabel } from "../workspace/model.ts"
 import { authLayout, authStyles as styles } from "./styles.ts"
 
 const fill = authLayout.fill
@@ -317,7 +318,7 @@ const invitation = (h: H, model: Model, page: Option.Option<InvitationPage>): Sc
                 h.p([...styleAttributes(h, styles.strong)], [invite.organization]),
                 h.p(
                   [...styleAttributes(h, styles.note)],
-                  [`${String(invite.members)} members · ${invite.plan}`],
+                  [`${String(invite.members)} members · ${planLabel(invite.plan, invite.catalog)}`],
                 ),
               ],
             ),

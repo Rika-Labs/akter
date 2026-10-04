@@ -67,7 +67,7 @@ it("selects the active membership and preserves actor keys containing slashes", 
       expect(result).toEqual({
         person: { name: "Lee", email: "lee@example.com", role: "viewer" },
         organization: "Active",
-        plan: "pro",
+        plan: KnownPlan.make({ id: "pro" }),
         projects: [{ slug: "inbox", deployed: false, region: "us-west-2" }],
         pinned: [
           {
