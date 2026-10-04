@@ -405,7 +405,8 @@ describe("runtime models", () => {
       p99Ms: null,
     }
     expect(encode(TurnLatency, decode(TurnLatency, empty))).toEqual(empty)
-    expect(rejects(TurnLatency, { ...latency, since: undefined })).toBe(true)
+    const { since: _since, ...sinceless } = latency
+    expect(rejects(TurnLatency, sinceless)).toBe(true)
     expect(rejects(TurnLatency, { ...latency, buckets: [{ upToMs: -1, count: 1 }] })).toBe(true)
   })
 
