@@ -23,13 +23,7 @@ import { Effect, FileSystem, Layer, Option, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import type { ApiOptions } from "./config.ts"
-import {
-  environmentHost,
-  rolloutPlatform,
-  rolloutRouting,
-  SERVICE_TENANT,
-  serviceCredential,
-} from "./rollout.ts"
+import { rolloutPlatform, rolloutRouting, SERVICE_TENANT, serviceCredential } from "./rollout.ts"
 import { RuntimeEdge } from "./runtime.ts"
 import { MeteringRepositoryLive } from "./metering-repository.ts"
 import { RepositoryLive } from "./repository.ts"
@@ -69,7 +63,15 @@ export const localAuthority = (directory: string | undefined) =>
     })
   }).pipe(Effect.orDie)
 
-/** A caller's environment is resolved to an edge host; runner addresses and signing keys never reach API handlers. */
+/**
+ * A caller's environment is resolved to its live deployment's own edge host;
+ * runner addresses and signing keys never reach API handlers. The service
+ * credential is bound to that deployment, and the edge rereads a host's
+ * mapping only once a poll interval, so the environment host can still route
+ * to the replaced deployment for a few seconds after an activation and the
+ * edge would refuse the new credential there. A deployment's own host never
+ * moves, so credential and route always name the same deployment.
+ */
 export const runtimeEdge = (options: ApiOptions) =>
   Layer.effect(
     RuntimeEdge,
@@ -81,7 +83,7 @@ export const runtimeEdge = (options: ApiOptions) =>
             const [row] = yield* sql<{
               id: string
               host: string
-            }>`SELECT e.current_deployment_id AS id, h.host FROM cloud_environment e JOIN deployment_host h ON h.deployment_id = e.current_deployment_id WHERE e.organization_id = ${organizationId} AND e.project_id = ${projectId} AND e.name = ${environment} AND h.host = ${environmentHost(options, projectId, environment)}`.pipe(
+            }>`SELECT e.current_deployment_id AS id, h.host FROM cloud_environment e JOIN deployment_host h ON h.deployment_id = e.current_deployment_id WHERE e.organization_id = ${organizationId} AND e.project_id = ${projectId} AND e.name = ${environment} AND h.host = e.current_deployment_id || ${`.${options.deploymentDomain ?? "localhost"}`}`.pipe(
               Effect.orDie,
             )
             if (row === undefined)

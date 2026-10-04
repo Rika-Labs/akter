@@ -1,4 +1,4 @@
-import { colors, radius, shadows, space, typography } from "@akter/ui/tokens.stylex"
+import { colors, radius, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 
 export const base = stylex.create({
@@ -9,25 +9,18 @@ export const base = stylex.create({
   },
   body: {
     minHeight: "100vh",
-    backgroundColor: colors.frame,
+    backgroundColor: colors.stone,
     color: colors.foreground,
     fontFamily: typography.sans,
     fontSize: typography.lead,
     fontWeight: typography.weightRegular,
     lineHeight: 1.5,
-    padding: `clamp(0.55rem, 1.25vw, 1rem)`,
     WebkitFontSmoothing: "antialiased",
     MozOsxFontSmoothing: "grayscale",
     textRendering: "optimizeLegibility",
   },
   shell: {
-    minHeight: "calc(100vh - 2rem)",
-    backgroundColor: colors.stone,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: colors.border,
-    borderRadius: "8.8px",
-    boxShadow: shadows.frame,
+    minHeight: "100vh",
     overflow: "clip",
     display: "flex",
     flexDirection: "column",
