@@ -175,9 +175,28 @@ const get = (url: string) =>
   })
 
 /**
+ * `docker run` arguments carrying a fresh key and peer certificate for the
+ * image-level deployment, as the local platform issues them to every runner
+ * and migration container.
+ */
+const peerArguments = Effect.gen(function* () {
+  const peer = yield* (yield* RunnerAuthority.make()).issue({ deployment: "image-level" })
+
+  return [
+    "-e",
+    "RUNNER_PEER_DEPLOYMENT=image-level",
+    "-e",
+    `RUNNER_PEER_CA=${peer.ca}`,
+    "-e",
+    `RUNNER_PEER_CERTIFICATE=${peer.certificate}`,
+    "-e",
+    `RUNNER_PEER_KEY=${Redacted.value(peer.key)}`,
+  ]
+})
+
+/**
  * A runner container started directly from an image, removed with the scope,
- * with peer credentials for its own deployment as the local platform would
- * issue them.
+ * with peer credentials for its own deployment.
  */
 const startRunner = (options: {
   readonly image: string
@@ -186,7 +205,7 @@ const startRunner = (options: {
 }) =>
   Effect.gen(function* () {
     const name = yield* unique("akter-e2e-runner")
-    const peer = yield* (yield* RunnerAuthority.make()).issue({ deployment: "image-level" })
+    const peer = yield* peerArguments
 
     yield* Effect.acquireRelease(
       docker(
@@ -206,14 +225,7 @@ const startRunner = (options: {
         `ASSERTION_REGION=${region}`,
         "-e",
         `ASSERTION_KEYS=${options.keys}`,
-        "-e",
-        "RUNNER_PEER_DEPLOYMENT=image-level",
-        "-e",
-        `RUNNER_PEER_CA=${peer.ca}`,
-        "-e",
-        `RUNNER_PEER_CERTIFICATE=${peer.certificate}`,
-        "-e",
-        `RUNNER_PEER_KEY=${Redacted.value(peer.key)}`,
+        ...peer,
         options.image,
       ).pipe(Effect.tap((started) => Effect.sync(() => expect(started.code, started.err).toBe(0)))),
       () => docker("rm", "-f", name),
@@ -634,6 +646,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const migrate = (url: string) =>
           Effect.gen(function* () {
             const name = yield* unique("akter-e2e-migrate")
+            const peer = yield* peerArguments
 
             return yield* Effect.acquireUseRelease(
               Effect.void,
@@ -644,6 +657,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
                   name,
                   "-e",
                   `DATABASE_URL=${url}`,
+                  ...peer,
                   images.v1,
                   ...migrateCommand,
                 ),
