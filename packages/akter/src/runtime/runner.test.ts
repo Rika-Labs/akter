@@ -47,6 +47,27 @@ describe("production runner configuration", () => {
     ).toThrow("shardLockRefreshInterval")
   })
 
+  it("refuses an entity termination timeout that outlasts the lock expiration minus its effective refresh", () => {
+    const socket =
+      (options: Omit<Parameters<typeof Runner.socket>[0], "address" | "transport">) => () =>
+        Runner.socket({ address, transport, ...options })
+    expect(socket({ entityTerminationTimeout: "25 seconds" })).not.toThrow()
+    expect(socket({ entityTerminationTimeout: "25001 millis" })).toThrow("entityTerminationTimeout")
+    expect(
+      socket({ shardLockRefreshInterval: "5 seconds", entityTerminationTimeout: "30 seconds" }),
+    ).not.toThrow()
+    expect(
+      socket({ shardLockRefreshInterval: "5 seconds", entityTerminationTimeout: "30001 millis" }),
+    ).toThrow("entityTerminationTimeout")
+    expect(
+      socket({ shardLockExpiration: "3 seconds", entityTerminationTimeout: "2 seconds" }),
+    ).not.toThrow()
+    expect(
+      socket({ shardLockExpiration: "3 seconds", entityTerminationTimeout: "2001 millis" }),
+    ).toThrow("entityTerminationTimeout")
+    expect(socket({ shardLockExpiration: "3 seconds" })).toThrow("entityTerminationTimeout")
+  })
+
   it("is unready until every currently assigned shard is acquired, including a runner's private holder group", () =>
     Effect.runPromise(
       Effect.gen(function* () {

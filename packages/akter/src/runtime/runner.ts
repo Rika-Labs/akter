@@ -13,6 +13,8 @@ import {
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SocketServer } from "effect/socket"
 import { SqlClient } from "effect/sql"
+import { identity } from "./peering/credentials.ts"
+import { mtls } from "./peering/transport.ts"
 import { admissionSharding, MailboxRefusals } from "./topology/admission.ts"
 
 /**
@@ -109,7 +111,11 @@ export interface SocketRunnerOptions<E> {
   readonly address: { readonly host: string; readonly port: number }
   /** Bind address, defaulting to the advertised address. Use a private interface or an isolated network. */
   readonly listenAddress?: { readonly host: string; readonly port: number }
-  /** Platform TCP server and client layers, such as BunClusterSocket's layerSocketServer and layerClientProtocol. */
+  /**
+   * Runner-to-runner TCP. `Runner.mtls` authenticates and encrypts it; the
+   * platform's plaintext layers, such as BunClusterSocket's layerSocketServer
+   * and layerClientProtocol, are for an isolated private network only.
+   */
   readonly transport: Layer.Layer<
     SocketServer.SocketServer | Runners.RpcClientProtocol,
     E,
@@ -123,7 +129,12 @@ export interface SocketRunnerOptions<E> {
   readonly shardLockRefreshInterval?: Duration.Input
   /** Default 1 second. */
   readonly refreshAssignmentsInterval?: Duration.Input
-  /** Default 15 seconds, bounding activation shutdown during a shard handoff. */
+  /**
+   * Default 15 seconds, bounding activation shutdown during a shard handoff.
+   * At most the lock expiration minus the effective refresh interval, so a
+   * runner that loses its lock storage stops its activations before another
+   * runner may take their shards.
+   */
   readonly entityTerminationTimeout?: Duration.Input
 }
 
@@ -152,10 +163,11 @@ const duration = (value: Duration.Input, name: string, minimum = 1) => {
 }
 
 /**
- * Joins separate processes over platform TCP sockets. Provide this layer to
+ * Joins separate processes over TCP sockets. Provide this layer to
  * `Actors.layer`; the framework keeps direct commands, SQL ownership, receipts,
  * and outbox recovery, rather than enabling Cluster's persisted message store.
- * Socket transport is trusted infrastructure: isolate it from public clients.
+ * A peer can deliver any runner message, so use `Runner.mtls` as the
+ * transport unless the network is isolated to this deployment's runners.
  */
 export const socket = <E>(options: SocketRunnerOptions<E>) => {
   const shardsPerGroup = options.shardsPerGroup ?? 256
@@ -163,29 +175,45 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
   if (!Number.isSafeInteger(shardsPerGroup) || shardsPerGroup < 1 || shardsPerGroup > 65536)
     throw new Error("shardsPerGroup must be an integer between 1 and 65536")
 
+  const shardLockExpiration = duration(
+    options.shardLockExpiration ?? "35 seconds",
+    "shardLockExpiration",
+    3000,
+  )
+  const shardLockRefreshInterval = duration(
+    options.shardLockRefreshInterval ?? "10 seconds",
+    "shardLockRefreshInterval",
+  )
+  const entityTerminationTimeout = duration(
+    options.entityTerminationTimeout ?? "15 seconds",
+    "entityTerminationTimeout",
+  )
+
+  if (
+    Duration.toMillis(entityTerminationTimeout) >
+    Duration.toMillis(shardLockExpiration) -
+      Math.min(
+        Duration.toMillis(shardLockRefreshInterval),
+        Duration.toMillis(shardLockExpiration) / 3,
+      )
+  )
+    throw new Error(
+      "entityTerminationTimeout must not exceed shardLockExpiration minus the effective shardLockRefreshInterval",
+    )
+
   const config: Partial<ShardingConfig.ShardingConfig["Service"]> = {
     runnerAddress: Option.some(address(options.address, true)),
     runnerListenAddress: Option.some(address(options.listenAddress ?? options.address, false)),
     shardsPerGroup,
     shardLockDisableAdvisory: true,
-    shardLockExpiration: duration(
-      options.shardLockExpiration ?? "35 seconds",
-      "shardLockExpiration",
-      3000,
-    ),
-    shardLockRefreshInterval: duration(
-      options.shardLockRefreshInterval ?? "10 seconds",
-      "shardLockRefreshInterval",
-    ),
+    shardLockExpiration,
+    shardLockRefreshInterval,
     refreshAssignmentsInterval: duration(
       options.refreshAssignmentsInterval ?? "1 second",
       "refreshAssignmentsInterval",
     ),
     entityMessagePollInterval: "1 second",
-    entityTerminationTimeout: duration(
-      options.entityTerminationTimeout ?? "15 seconds",
-      "entityTerminationTimeout",
-    ),
+    entityTerminationTimeout,
   }
 
   const sharding = RunnerServer.layer.pipe(
@@ -205,8 +233,13 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
   })
 }
 
-/** Runner-to-runner transport and ownership configuration, provided to `Actors.layer`. */
-export const Runner = { socket }
+/**
+ * Runner-to-runner transport and ownership configuration, provided to
+ * `Actors.layer`: `socket` wires a runner, `mtls` is its authenticated
+ * transport, and `identity` is the URI subject alternative name a
+ * deployment's runner certificates carry.
+ */
+export const Runner = { socket, mtls, identity }
 
 /** Refuses a routing layout mismatch before any runner registers or takes shards. */
 export const checkRunnerConfiguration = Effect.fnUntraced(function* (

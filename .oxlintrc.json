@@ -62,6 +62,12 @@
       }
     },
     {
+      "files": ["packages/akter/src/runtime/peering/*.ts"],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["packages/react/src/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

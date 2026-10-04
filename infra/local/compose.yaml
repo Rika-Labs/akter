@@ -38,6 +38,7 @@ services:
       RUNNER_ENVIRONMENT: '{"DATABASE_URL":"postgres://project:project@postgres:5432/local_app","ASSERTION_ISSUER":"http://edge:3002","ASSERTION_KEYS_URL":"http://api:3001/edge/keys"}'
       RUNNER_BUILD_CONTEXT: /source
       RUNNER_BUILD_DOCKERFILE: infra/local/runner/Dockerfile
+      RUNNER_PEER_AUTHORITY_DIR: /var/lib/akter/runner-authority
     ports:
       - "127.0.0.1:${API_HTTP_PORT:-3001}:3001"
     volumes:
@@ -48,6 +49,7 @@ services:
       - ../../packages/deployments/src:/workspace/packages/deployments/src:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ../..:/source:ro
+      - runner-authority:/var/lib/akter/runner-authority
     depends_on:
       postgres:
         condition: service_healthy
@@ -121,5 +123,6 @@ services:
       dockerfile: infra/local/runner/Dockerfile
 volumes:
   control-plane:
+  runner-authority:
 
 name: ${COMPOSE_PROJECT_NAME:-akter-local}

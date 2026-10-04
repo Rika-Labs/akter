@@ -1,4 +1,5 @@
 import * as Cloud from "@akter/cloud-api"
+import { RunnerAuthority } from "@rikalabs/akter/runtime"
 import { edgeKey } from "@rikalabs/akter/testing"
 import { BunCrypto, BunHttpServer, BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
@@ -173,7 +174,11 @@ const get = (url: string) =>
     return yield* (yield* HttpClient.HttpClient).get(url)
   })
 
-/** A runner container started directly from an image, removed with the scope. */
+/**
+ * A runner container started directly from an image, removed with the scope,
+ * with peer credentials for its own deployment as the local platform would
+ * issue them.
+ */
 const startRunner = (options: {
   readonly image: string
   readonly database: string
@@ -181,6 +186,7 @@ const startRunner = (options: {
 }) =>
   Effect.gen(function* () {
     const name = yield* unique("akter-e2e-runner")
+    const peer = yield* (yield* RunnerAuthority.make()).issue({ deployment: "image-level" })
 
     yield* Effect.acquireRelease(
       docker(
@@ -200,6 +206,14 @@ const startRunner = (options: {
         `ASSERTION_REGION=${region}`,
         "-e",
         `ASSERTION_KEYS=${options.keys}`,
+        "-e",
+        "RUNNER_PEER_DEPLOYMENT=image-level",
+        "-e",
+        `RUNNER_PEER_CA=${peer.ca}`,
+        "-e",
+        `RUNNER_PEER_CERTIFICATE=${peer.certificate}`,
+        "-e",
+        `RUNNER_PEER_KEY=${Redacted.value(peer.key)}`,
         options.image,
       ).pipe(Effect.tap((started) => Effect.sync(() => expect(started.code, started.err).toBe(0)))),
       () => docker("rm", "-f", name),

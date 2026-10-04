@@ -1,7 +1,17 @@
 import { stdin } from "node:process"
-import { BunCrypto, BunRuntime } from "@effect/platform-bun"
+import { BunCrypto, BunFileSystem, BunRuntime } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Clock, Config, Console, Effect, Layer, Redacted, Schedule, Schema } from "effect"
+import {
+  Clock,
+  Config,
+  Console,
+  Effect,
+  FileSystem,
+  Layer,
+  Redacted,
+  Schedule,
+  Schema,
+} from "effect"
 import { InternalActors } from "../../../../runtime/actors.ts"
 import { Actor, Actors as ActorClient } from "../../../../index.ts"
 import { Actors, Database, Runner, RuntimeControl } from "../../../../runtime/index.ts"
@@ -110,10 +120,25 @@ const runtime = Layer.unwrap(
             : Effect.void,
     })
 
+    const peering = yield* Config.String("DRILL_TLS_DIR").pipe(Config.withDefault(""))
+    const fs = yield* FileSystem.FileSystem
+    const read = (name: string) => fs.readFileString(`${peering}/${name}`)
+
     const wiring = Runner.socket({
       address: { host: "127.0.0.1", port },
       listenAddress: { host: "0.0.0.0", port },
-      transport: Layer.merge(layerSocketServer, layerClientProtocol),
+      transport:
+        peering === ""
+          ? Layer.merge(layerSocketServer, layerClientProtocol)
+          : Runner.mtls({
+              deployment: "drill",
+              credentials: Effect.all({
+                ca: read("ca.pem"),
+                certificate: read("certificate.pem"),
+                key: Effect.map(read("key.pem"), Redacted.make),
+              }),
+              refreshEvery: "250 millis",
+            }),
       shardsPerGroup: shards,
       shardLockExpiration: SHARD_LOCK,
       refreshAssignmentsInterval: "250 millis",
@@ -129,7 +154,7 @@ const runtime = Layer.unwrap(
       Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
     )
   }),
-).pipe(Layer.provideMerge(BunCrypto.layer))
+).pipe(Layer.provideMerge(BunCrypto.layer), Layer.provide(BunFileSystem.layer))
 
 const received = new Set<string>()
 

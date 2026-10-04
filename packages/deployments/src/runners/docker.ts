@@ -1,4 +1,5 @@
-import { Crypto, Effect, Layer, Schema, Stream } from "effect"
+import type { RunnerAuthority } from "@rikalabs/akter/runtime"
+import { Crypto, Effect, Layer, Redacted, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import {
   decodeStart,
@@ -21,7 +22,8 @@ import {
  * its routes. `command` replaces the image's command when given.
  * `drainTimeout` is how many seconds a stopped runner has to finish after
  * SIGTERM before Docker kills it. `platform` defaults to `linux/arm64`, the
- * architecture hosted runners run on.
+ * architecture hosted runners run on. `peering` issues each new container its
+ * own runner certificate for its deployment (see `peerEnvironment`).
  */
 export interface DockerOptions {
   readonly port: number
@@ -33,7 +35,25 @@ export interface DockerOptions {
   readonly platform?: string
   readonly command?: ReadonlyArray<string>
   readonly drainTimeout?: number
+  readonly peering?: RunnerAuthority
 }
+
+/**
+ * The variables a local runner reads its mutual TLS credentials from: a fresh
+ * key and a certificate that names only `deploymentId`, so runners of other
+ * deployments on the same Docker network cannot exchange runner messages with
+ * it. They travel like the rest of the environment, never in arguments.
+ */
+export const peerEnvironment = (options: {
+  readonly authority: RunnerAuthority
+  readonly deploymentId: string
+}) =>
+  Effect.map(options.authority.issue({ deployment: options.deploymentId }), (credentials) => ({
+    RUNNER_PEER_DEPLOYMENT: options.deploymentId,
+    RUNNER_PEER_CA: credentials.ca,
+    RUNNER_PEER_CERTIFICATE: credentials.certificate,
+    RUNNER_PEER_KEY: Redacted.value(credentials.key),
+  }))
 
 const Inspected = Schema.Array(
   Schema.Struct({
@@ -187,6 +207,17 @@ export const dockerRunners = (options: DockerOptions) =>
 
           if (found !== null) return found
 
+          const environment =
+            options.peering === undefined
+              ? input.environment
+              : {
+                  ...input.environment,
+                  ...(yield* peerEnvironment({
+                    authority: options.peering,
+                    deploymentId: input.deploymentId,
+                  })),
+                }
+
           const result = yield* docker(
             "start",
             [
@@ -205,11 +236,11 @@ export const dockerRunners = (options: DockerOptions) =>
               `akter.deployment=${input.deploymentId}`,
               "--label",
               `akter.region=${input.region}`,
-              ...Object.keys(input.environment).flatMap((key) => ["--env", key]),
+              ...Object.keys(environment).flatMap((key) => ["--env", key]),
               input.image,
               ...(options.command ?? []),
             ],
-            input.environment,
+            environment,
           )
 
           if (result.code !== 0 && !/already in use/iu.test(result.stderr))

@@ -1,8 +1,23 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { Context, Crypto, Effect, Exit, FileSystem, Layer, Schedule, Scope, Stream } from "effect"
+import {
+  Context,
+  Crypto,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Redacted,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect"
+import { RunnerAddress, ShardingConfig } from "effect/cluster"
+import { RpcSerialization } from "effect/rpc"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { Runner, RunnerAuthority } from "@rikalabs/akter/runtime"
 import { RunnerNotFound, RunnerPlatform, RunnerPlatformError } from "./contract.ts"
 import { dockerRunners } from "./docker.ts"
 
@@ -172,6 +187,72 @@ layer(runners, { excludeTestServices: true })("docker runners", (it) => {
         yield* second.stop(started.id)
 
         expect(yield* container(started.id, "{{.State.Status}}")).toBe("exited")
+      }).pipe(Effect.scoped),
+    180_000,
+  )
+
+  it.effect(
+    "issues each new container its own runner certificate for its deployment through the environment",
+    () =>
+      Effect.gen(function* () {
+        const authority = yield* RunnerAuthority.make()
+        const platform = Context.get(
+          yield* Layer.build(
+            dockerRunners({
+              port: 8000,
+              platform: process.arch === "arm64" ? "linux/arm64" : "linux/amd64",
+              command: ["python", "-c", server],
+              drainTimeout: 1,
+              peering: authority,
+            }).pipe(Layer.provide(services)),
+          ),
+          RunnerPlatform,
+        )
+        const key = `${yield* unique}.01HZX.peering`
+        const first = yield* platform.start(input(key, "peered"))
+        yield* Effect.addFinalizer(() => remove(first.id))
+        const second = yield* platform.start(input(`${key}.second`, "peered"))
+        yield* Effect.addFinalizer(() => remove(second.id))
+        const environment = (id: string) =>
+          Effect.map(container(id, "{{json .Config.Env}}"), (json) =>
+            Object.fromEntries(
+              (JSON.parse(json) as Array<string>).map((entry) => [
+                entry.slice(0, entry.indexOf("=")),
+                entry.slice(entry.indexOf("=") + 1),
+              ]),
+            ),
+          )
+        const [one, two] = [yield* environment(first.id), yield* environment(second.id)]
+        const peering = (deployment: string) =>
+          Layer.build(
+            Runner.mtls({
+              deployment,
+              credentials: Effect.succeed({
+                ca: one.RUNNER_PEER_CA!,
+                certificate: one.RUNNER_PEER_CERTIFICATE!,
+                key: Redacted.make(one.RUNNER_PEER_KEY!),
+              }),
+            }).pipe(
+              Layer.provide(
+                ShardingConfig.layer({
+                  runnerAddress: Option.some(
+                    RunnerAddress.RunnerAddress.make({ host: "127.0.0.1", port: 0 }),
+                  ),
+                }),
+              ),
+              Layer.provide(RpcSerialization.layerNdjson),
+            ),
+          ).pipe(Effect.scoped, Effect.exit)
+
+        expect(one.RUNNER_PEER_DEPLOYMENT).toBe("runners-test")
+        expect(one.RUNNER_PEER_CA).toBe(authority.certificate)
+        expect((yield* peering("runners-test"))._tag).toBe("Success")
+        expect(String(yield* peering("another-deployment"))).toContain(
+          Runner.identity("another-deployment"),
+        )
+        expect(two.RUNNER_PEER_KEY).not.toBe(one.RUNNER_PEER_KEY)
+        expect(one.SNAPSHOT).toBe("peered")
+        expect(yield* container(first.id, "{{json .Args}}")).not.toContain("PRIVATE KEY")
       }).pipe(Effect.scoped),
     180_000,
   )
