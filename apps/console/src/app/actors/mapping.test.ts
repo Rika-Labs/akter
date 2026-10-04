@@ -99,8 +99,9 @@ describe("actor inspector mapping", () => {
       Effect.gen(function* () {
         const page = toActorPage(yield* decode(ActorInspector, inspector))
         expect(page.receipts[0]).toMatchObject({ at: "14:02:11", replayed: true })
+        const activity = page.activity ?? []
         expect(
-          page.activity.map((entry) => [
+          activity.map((entry) => [
             entry.committed,
             entry.title,
             entry.subject,
@@ -112,7 +113,35 @@ describe("actor inspector mapping", () => {
           [false, "emitted", "OrderPlaced", "", "14:02:12"],
           [false, "ran", "Charge", "attempt 1", "14:02:13"],
         ])
-        expect(new Set(page.activity.map((entry) => entry.key)).size).toBe(3)
+        expect(new Set(activity.map((entry) => entry.key)).size).toBe(3)
+      }),
+    ))
+
+  it("keeps what the runner does not report unknown instead of zero, empty or asleep", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const page = toActorPage(
+          yield* decode(ActorInspector, {
+            ...inspector,
+            turn: null,
+            tables: null,
+            receipts: [{ ...inspector.receipts[0], result: null, at: null, replayed: false }],
+            events: [{ name: "OrderPlaced", cursor: "1184", subscribers: null }],
+            connections: { sockets: null, feedCursor: "1184" },
+            properties: { ...inspector.properties, status: null, mailboxDepth: null, region: null },
+            timeline: null,
+          }),
+        )
+        expect(page).toMatchObject({
+          awake: null,
+          turn: null,
+          mailbox: null,
+          tables: null,
+          activity: null,
+          connections: { sockets: null, feedCursor: "1184" },
+          events: [{ name: "OrderPlaced", cursor: "1184", subscribers: null }],
+          receipts: [{ commandId: "cmd_7Hq2", command: "Place", result: "—", at: "—" }],
+        })
       }),
     ))
 })

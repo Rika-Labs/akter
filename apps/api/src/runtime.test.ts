@@ -223,6 +223,7 @@ const live = Layer.effect(
           origin,
           host: "orders.akter.test",
           credential: Redacted.make(SECRET),
+          tenant: "default",
         }),
     }),
   ),
@@ -239,6 +240,7 @@ const command = {
   address: "Order/o/1",
   command: "Cancel",
   payload: { reason: "late" },
+  onBehalfOf: "user:u-1",
 } as const
 
 const scope = (commandId: string): Scope => ({
@@ -299,6 +301,8 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         expect(request.headers.get("idempotency-key")).toBe(mintedId(1))
         expect(request.headers.get("host")).toBe("orders.akter.test")
         expect(request.headers.get("authorization")).toBe(`Bearer ${SECRET}`)
+        expect(request.headers.get("akter-on-behalf-of")).toBe("user:u-1")
+        expect(edge.seen[0]!.headers.has("akter-on-behalf-of")).toBe(false)
         expect(request.headers.get("content-type")).toContain("application/json")
         expect(
           yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(request.body),
@@ -766,6 +770,153 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           .pipe(Effect.flip)
 
         expect(Schema.is(NotFound)(missing)).toBe(true)
+      }),
+  )
+
+  it.effect(
+    "inspects an actor from its inspector page, reporting only what the runner holds and null for the rest",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+        const target = { organizationId: "org1", projectId: "p1", environment: "production" }
+        const actor = {
+          actorType: "Order",
+          actorId: "o/1",
+          placement: "tenant",
+          generation: 3,
+          created: true,
+          lastEventSequence: 7,
+        }
+        const detail = {
+          actor,
+          state: [
+            { key: "$version", bytes: 1, value: { json: 2 } },
+            { key: "lines", bytes: 9, value: { json: [{ sku: "mug" }] } },
+            { key: "total", bytes: 4, value: { json: 4200 } },
+          ],
+          receipts: [
+            {
+              commandId: "v1.c2",
+              command: "Refund",
+              callerKey: { json: ["User", "ada"] },
+              outcomeTag: "Failure",
+              outcome: { json: "the refund window closed" },
+              expiresAtMs: 1_900_000_000_000,
+              events: [],
+            },
+            {
+              commandId: "v1.c1",
+              command: "Place",
+              callerKey: { json: ["User", "ada"] },
+              outcomeTag: "Success",
+              outcome: { json: "card ending 4242" },
+              expiresAtMs: 1_800_000_000_000,
+              events: [6, 7],
+            },
+          ],
+          events: [
+            {
+              sequence: 7,
+              event: "Charged",
+              commandId: "v1.c1",
+              value: null,
+              bytes: 0,
+              emittedAtMs: 2,
+            },
+            {
+              sequence: 6,
+              event: "Placed",
+              commandId: "v1.c1",
+              value: null,
+              bytes: 0,
+              emittedAtMs: 1,
+            },
+            {
+              sequence: 4,
+              event: "Charged",
+              commandId: "v1.c0",
+              value: null,
+              bytes: 0,
+              emittedAtMs: 0,
+            },
+          ],
+          outbox: [],
+          jobs: [
+            {
+              actorType: "Order",
+              actorId: "o/1",
+              jobId: "j1",
+              job: "Email",
+              payload: null,
+              caller: null,
+              attempts: 0,
+              lastError: null,
+              ambiguous: false,
+              dueAtMs: 5,
+            },
+          ],
+          deadLetters: [],
+          workflows: [],
+          totals: { receipts: 2, events: 3, outbox: 0, jobs: 1, deadLetters: 0, workflows: 0 },
+        }
+
+        yield* edge.answer(() => json(detail))
+
+        const inspected = yield* runtime.inspectActor({ ...target, address: "Order/o/1" })
+
+        expect(inspected).toEqual({
+          address: "Order/o/1",
+          state: { lines: [{ sku: "mug" }], total: 4200 },
+          turn: null,
+          tables: null,
+          receipts: [
+            { commandId: "v1.c2", command: "Refund", result: "Failure", at: null, replayed: false },
+            { commandId: "v1.c1", command: "Place", result: "Success", at: null, replayed: false },
+          ],
+          events: [
+            { name: "Charged", cursor: "7", subscribers: null },
+            { name: "Placed", cursor: "6", subscribers: null },
+          ],
+          jobs: [{ name: "Email", id: "j1", attempts: 0, status: "queued" }],
+          connections: { sockets: null, feedCursor: "7" },
+          properties: {
+            status: null,
+            type: "Order",
+            generation: 3,
+            runner: null,
+            region: null,
+            tenant: "default",
+            mailboxDepth: null,
+          },
+          timeline: null,
+        })
+        expect(edge.seen.map(({ method, path }) => `${method} ${path}`)).toEqual([
+          "GET /inspector/actor?type=Order&id=o%2F1&limit=500",
+        ])
+        expect(edge.seen[0]!.headers.get("authorization")).toBe(`Bearer ${SECRET}`)
+        expect(edge.seen[0]!.headers.has("akter-on-behalf-of")).toBe(false)
+
+        yield* edge.answer(() =>
+          json({
+            ...detail,
+            actor: { ...actor, lastEventSequence: 0 },
+            state: [{ key: "total", bytes: 4, value: { undecodable: "not zstd" } }],
+            events: [],
+          }),
+        )
+
+        expect(yield* runtime.inspectActor({ ...target, address: "Order/o/1" })).toMatchObject({
+          state: null,
+          events: [],
+          connections: { sockets: null, feedCursor: null },
+        })
+
+        yield* edge.answer(() => json(NotFoundBody.make({}), 404))
+
+        expect(
+          yield* runtime.inspectActor({ ...target, address: "Order/nope" }).pipe(Effect.flip),
+        ).toEqual(NotFound.make({ resource: "actor", id: "Order/nope" }))
       }),
   )
 })

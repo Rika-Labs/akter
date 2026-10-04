@@ -226,6 +226,19 @@ Required by [contract 11](../contracts/11-control-plane.md); they run against re
 | Concurrent pins by one user                                     | Every pin is kept; a repeated pin changes nothing.                            |
 | Migrations run from several processes                           | No error, and existing rows are unchanged.                                    |
 
+## Control-plane runtime and builds
+
+Required by [contract 11](../contracts/11-control-plane.md). The edge rows run through the real `apps/edge` on Postgres in `apps/edge/src/quotas.test.ts`; the stack rows run real runners, a real edge process and the API in `apps/api/src/deployment-stack.test.ts`; the build rows run the lifecycle actor on Postgres in `packages/deployments/src/lifecycle/layer.test.ts` and a real Docker build in `packages/deployments/src/runners/build.test.ts`.
+
+| Fault point                                                              | Required result                                                                                             |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| A tenant API key or JWT sends `akter-on-behalf-of` naming a console user | The runner sees the credential's own caller; the header never reaches a runner.                             |
+| The service credential names a malformed or non-control-plane identity   | The edge refuses it with `InvalidInput` before metering or forwarding.                                      |
+| An actor is inspected that the runner does not hold                      | `NotFound` with resource `actor`; fields the runner does not report are `null`, never zero.                 |
+| A local build fails                                                      | The deployment fails at `build`, the error line is in its build log, and the live deployment keeps serving. |
+| A build result is recorded while the local build job still runs          | The recorded result wins and the job's later result changes nothing: one migration, of the recorded image.  |
+| A rollback or redeploy is redeployed                                     | Its title names the commit's short SHA and first-deployed message, never an earlier title.                  |
+
 ## Control-plane authentication
 
 These scenarios use real Postgres and HTTP in `apps/api/src/server.test.ts` and a loopback OIDC IdP in `apps/api/src/auth.test.ts`; they do not establish real Neki, SES, external OAuth, DNS verification or SAML support.

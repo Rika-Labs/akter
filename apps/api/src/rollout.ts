@@ -25,6 +25,9 @@ import type { ApiOptions } from "./config.ts"
 import { MeteringRepository } from "./metering-repository.ts"
 import { Repository } from "./repository.ts"
 
+/** The tenant the control-plane service credential acts in, so the tenant of every actor it sends to or inspects. */
+export const SERVICE_TENANT = "default"
+
 /** The control-plane service credential is deployment-bound and only its hash is stored at the edge. */
 export const serviceCredential: {
   (secret: Redacted.Redacted<string>, deploymentId: string): Redacted.Redacted<string>
@@ -103,7 +106,7 @@ export const rolloutRouting = (options: ApiOptions) =>
           const hash = new Bun.CryptoHasher("sha256")
             .update(Redacted.value(serviceCredential(options.secret, release.deploymentId)))
             .digest("hex")
-          yield* sql`INSERT INTO hosted_api_key (key_hash, deployment_id, tenant, subject) VALUES (${hash}, ${release.deploymentId}, 'default', 'akter-control-plane') ON CONFLICT (key_hash) DO NOTHING`.pipe(
+          yield* sql`INSERT INTO hosted_api_key (key_hash, deployment_id, tenant, subject) VALUES (${hash}, ${release.deploymentId}, ${SERVICE_TENANT}, 'akter-control-plane') ON CONFLICT (key_hash) DO NOTHING`.pipe(
             Effect.orDie,
           )
           yield* sql`INSERT INTO deployment_host (host, deployment_id) VALUES (${`${release.deploymentId}.${options.deploymentDomain ?? "localhost"}`}, ${release.deploymentId}) ON CONFLICT (host) DO NOTHING`.pipe(
@@ -155,8 +158,15 @@ export const rolloutRouting = (options: ApiOptions) =>
     }),
   )
 
-/** Rollout jobs request durable runner capacity, then wait for the same readiness route the edge uses. */
-const makeRolloutPlatform = (options: ApiOptions, migrate: RolloutPlatform["Service"]["migrate"]) =>
+/**
+ * Rollout jobs request durable runner capacity, then wait for the same
+ * readiness route the edge uses. `build` is present only when the control
+ * plane builds images itself.
+ */
+const makeRolloutPlatform = (
+  options: ApiOptions,
+  steps: Pick<RolloutPlatform["Service"], "migrate" | "build">,
+) =>
   Layer.effect(
     RolloutPlatform,
     Effect.gen(function* () {
@@ -185,7 +195,7 @@ const makeRolloutPlatform = (options: ApiOptions, migrate: RolloutPlatform["Serv
           }),
         ).pipe(Effect.provideContext(runtime), Effect.asVoid)
       return {
-        migrate,
+        ...steps,
         start: (release) =>
           Effect.forEach(release.regions, (region) =>
             Effect.gen(function* () {
@@ -265,13 +275,13 @@ const makeRolloutPlatform = (options: ApiOptions, migrate: RolloutPlatform["Serv
     }),
   )
 
-/** `makeRolloutPlatform` with a pipeable form taking the migration step first. */
+/** `makeRolloutPlatform` with a pipeable form taking the migration and build steps first. */
 export const rolloutPlatform: {
   (
     options: ApiOptions,
-    migrate: RolloutPlatform["Service"]["migrate"],
+    steps: Pick<RolloutPlatform["Service"], "migrate" | "build">,
   ): ReturnType<typeof makeRolloutPlatform>
   (
-    migrate: RolloutPlatform["Service"]["migrate"],
+    steps: Pick<RolloutPlatform["Service"], "migrate" | "build">,
   ): (options: ApiOptions) => ReturnType<typeof makeRolloutPlatform>
 } = Function.dual(2, makeRolloutPlatform)

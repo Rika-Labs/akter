@@ -36,6 +36,8 @@ services:
       RUNNER_ROUTE_VIA_NETWORK: "true"
       RUNNER_MIGRATION_COMMAND: '["bun","infra/local/runner/migrate.ts"]'
       RUNNER_ENVIRONMENT: '{"DATABASE_URL":"postgres://project:project@postgres:5432/local_app","ASSERTION_ISSUER":"http://edge:3002","ASSERTION_KEYS_URL":"http://api:3001/edge/keys"}'
+      RUNNER_BUILD_CONTEXT: /source
+      RUNNER_BUILD_DOCKERFILE: infra/local/runner/Dockerfile
     ports:
       - "127.0.0.1:${API_HTTP_PORT:-3001}:3001"
     volumes:
@@ -45,6 +47,7 @@ services:
       - ../../packages/metering/src:/workspace/packages/metering/src:ro
       - ../../packages/deployments/src:/workspace/packages/deployments/src:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - ../..:/source:ro
     depends_on:
       postgres:
         condition: service_healthy

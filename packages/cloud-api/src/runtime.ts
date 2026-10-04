@@ -110,19 +110,28 @@ export const OwnedTableRows = Schema.Struct({
 })
 export type OwnedTableRows = typeof OwnedTableRows.Type
 
+/**
+ * A command receipt the runner still holds. `result` is the outcome's tag
+ * (`Success` or `Failure`), never the stored value, so reading a receipt
+ * reveals that a command ran but not what it returned. `at` is when it
+ * committed and is null when the runner did not record that time. A receipt
+ * is the committed turn itself, so `replayed` is false unless the entry
+ * describes an answer served again from the receipt.
+ */
 export const Receipt = Schema.Struct({
   commandId: Schema.String,
   command: Schema.String,
-  result: Schema.String,
-  at: Timestamp,
+  result: Schema.NullOr(Schema.String),
+  at: Schema.NullOr(Timestamp),
   replayed: Schema.Boolean,
 })
 export type Receipt = typeof Receipt.Type
 
+/** An event the actor emitted: the cursor of its newest retained one, and its subscribers, null when the runner does not report them. */
 export const ActorEvent = Schema.Struct({
   name: Schema.String,
   cursor: Schema.String,
-  subscribers: NonNegativeInt,
+  subscribers: Schema.NullOr(NonNegativeInt),
 })
 export type ActorEvent = typeof ActorEvent.Type
 
@@ -145,26 +154,37 @@ export const ActorTimelineEntry = Schema.Struct({
 })
 export type ActorTimelineEntry = typeof ActorTimelineEntry.Type
 
-/** One actor as the inspector shows it, read from the runner that owns it. */
+/**
+ * One actor as the inspector shows it, read from the runner that owns it.
+ * `state` is the committed state, one field per stored entry, and null when
+ * an entry does not decode. Every other nullable field is null when the
+ * runner does not report it: the turn count, owned-table rows, subscriber
+ * and socket counts, whether the actor is awake, the runner and region that
+ * hold it, its mailbox depth and its timeline. A null is unknown, never zero
+ * or empty.
+ */
 export const ActorInspector = Schema.Struct({
   address: ActorAddress,
   state: Schema.Json,
-  turn: NonNegativeInt,
-  tables: Schema.Array(OwnedTableRows),
+  turn: Schema.NullOr(NonNegativeInt),
+  tables: Schema.NullOr(Schema.Array(OwnedTableRows)),
   receipts: Schema.Array(Receipt),
   events: Schema.Array(ActorEvent),
   jobs: Schema.Array(ActorJob),
-  connections: Schema.Struct({ sockets: NonNegativeInt, feedCursor: Schema.NullOr(Schema.String) }),
+  connections: Schema.Struct({
+    sockets: Schema.NullOr(NonNegativeInt),
+    feedCursor: Schema.NullOr(Schema.String),
+  }),
   properties: Schema.Struct({
-    status: Schema.Literals(["awake", "idle"]),
+    status: Schema.NullOr(Schema.Literals(["awake", "idle"])),
     type: Schema.String,
     generation: NonNegativeInt,
     runner: Schema.NullOr(Schema.String),
-    region: Schema.String,
+    region: Schema.NullOr(Schema.String),
     tenant: Schema.String,
-    mailboxDepth: NonNegativeInt,
+    mailboxDepth: Schema.NullOr(NonNegativeInt),
   }),
-  timeline: Schema.Array(ActorTimelineEntry),
+  timeline: Schema.NullOr(Schema.Array(ActorTimelineEntry)),
 })
 export type ActorInspector = typeof ActorInspector.Type
 

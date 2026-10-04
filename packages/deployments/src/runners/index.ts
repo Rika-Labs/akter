@@ -10,3 +10,12 @@ export { RunnerPoller } from "./poller.ts"
 export { dockerRunners, type DockerOptions } from "./docker.ts"
 export { ecsRunners, type EcsOptions } from "./ecs.ts"
 export { ImageMigrations, MigrationFailed, dockerMigrations, ecsMigrations } from "./migrations.ts"
+export {
+  BuildFailed,
+  type BuildInput,
+  type BuildLine,
+  type BuiltImage,
+  dockerBuilds,
+  type DockerBuildOptions,
+  ImageBuilds,
+} from "./build.ts"
