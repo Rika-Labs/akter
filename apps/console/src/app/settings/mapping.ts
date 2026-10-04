@@ -19,7 +19,7 @@ import type {
   Usage as CloudUsage,
   UsageMeterName,
 } from "@akter/cloud-api"
-import { DateTime } from "effect"
+import { DateTime, Option } from "effect"
 import type {
   ApiKey,
   AuditEntry,
@@ -38,6 +38,7 @@ import type {
   UsageMeter,
   Variable,
 } from "./model.ts"
+import { browserContext, hostedPageUrl } from "./stripe.ts"
 
 const millis = (instant: DateTime.Utc): number => DateTime.toEpochMillis(instant)
 
@@ -222,7 +223,7 @@ export const toBilling = (billing: BillingSummary): Billing => ({
   },
 })
 
-/** Newest first, by the start of the period each invoice covers. */
+/** Newest first, by the start of the period each invoice covers; a PDF off Stripe is dropped. */
 export const toInvoices = (invoices: ReadonlyArray<CloudInvoice>): ReadonlyArray<Invoice> =>
   invoices
     .map((invoice) => ({
@@ -231,7 +232,10 @@ export const toInvoices = (invoices: ReadonlyArray<CloudInvoice>): ReadonlyArray
       periodStart: millis(invoice.periodStart),
       amountCents: invoice.amountCents,
       status: invoice.status,
-      pdfUrl: invoice.pdfUrl,
+      pdfUrl:
+        invoice.pdfUrl === null
+          ? null
+          : Option.getOrNull(hostedPageUrl(invoice.pdfUrl, browserContext())),
     }))
     .toSorted((a, b) => b.periodStart - a.periodStart)
 

@@ -65,13 +65,13 @@ describe("capReached", () => {
     )
   })
 
-  it("reports a spend limit only once the estimate is past it", () => {
+  it("reports a spend limit from the moment the estimate reaches it", () => {
     const meters = usage([commands(10, 25_000_000)])
+    const below = billing({ plan: "pro", limitCents: 2_500, currentCents: 2_499 })
     const at = billing({ plan: "pro", limitCents: 2_500, currentCents: 2_500 })
-    const past = billing({ plan: "pro", limitCents: 2_500, currentCents: 2_501 })
     const unlimited = billing({ plan: "pro", limitCents: null, currentCents: 900_000 })
-    expect(capReached({ billing: at, usage: meters })).toBe(undefined)
-    expect(capReached({ billing: past, usage: meters })).toEqual({
+    expect(capReached({ billing: below, usage: meters })).toBe(undefined)
+    expect(capReached({ billing: at, usage: meters })).toEqual({
       cap: "spend",
       period: "2026-10",
       limit: 2_500,

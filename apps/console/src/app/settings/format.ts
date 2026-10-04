@@ -1,3 +1,4 @@
+import { formatCurrency } from "@akter/ui/geometry"
 import { DateTime } from "effect"
 
 const months = [
@@ -71,3 +72,10 @@ const gigabytes = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 })
 /** Decimal gigabytes to two places at most: `0.5 GB`, `12.25 GB`; a trace above zero reads `<0.01 GB`. */
 export const formatGigabytes = (value: number): string =>
   value > 0 && value < 0.01 ? "<0.01 GB" : `${gigabytes.format(value)} GB`
+
+/**
+ * Cents as dollars. Usage costs can be fractions of a cent, so a cost above zero that rounds to
+ * nothing reads `<$0.01` rather than a misleading `$0.00`.
+ */
+export const formatCents = (cents: number): string =>
+  cents > 0 && cents < 1 ? "<$0.01" : formatCurrency(dollars(cents))

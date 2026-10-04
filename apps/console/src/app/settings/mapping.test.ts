@@ -361,6 +361,33 @@ describe("billing", () => {
         expect(toInvoices(listed).map((entry) => entry.number)).toEqual(["INV-9", "INV-8", "INV-7"])
       }),
     ))
+
+  it("links only invoice PDFs on Stripe's hosts", () =>
+    run(
+      Effect.gen(function* () {
+        const invoice = (number: string, pdfUrl: string) =>
+          decode(Invoice)({
+            id: number,
+            number,
+            periodStart: "2026-09-01T00:00:00.000Z",
+            periodEnd: "2026-10-01T00:00:00.000Z",
+            amountCents: 100,
+            currency: "usd",
+            status: "paid",
+            pdfUrl,
+          })
+        const listed = yield* Effect.all([
+          invoice("INV-1", "https://pay.stripe.com/invoice/acct_1/in_1/pdf"),
+          invoice("INV-2", "javascript:alert(1)"),
+          invoice("INV-3", "https://pay.stripe.com.evil.dev/in_3.pdf"),
+        ])
+        expect(toInvoices(listed).map((entry) => entry.pdfUrl)).toEqual([
+          "https://pay.stripe.com/invoice/acct_1/in_1/pdf",
+          null,
+          null,
+        ])
+      }),
+    ))
 })
 
 describe("usage", () => {
@@ -538,6 +565,9 @@ describe("setting keys", () => {
     expect(parseSpendLimit(spendLimitValue(50_000))).toBe(50_000)
     expect(parseSpendLimit("12.5")).toBeUndefined()
     expect(parseSpendLimit("-1")).toBeUndefined()
+    expect(parseSpendLimit("")).toBeUndefined()
+    expect(parseSpendLimit(" ")).toBeUndefined()
+    expect(parseSpendLimit("1e5")).toBeUndefined()
   })
 
   it("seeds switches and selects from what the control plane reports, not from unset", () => {

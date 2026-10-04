@@ -9,12 +9,14 @@ import {
   choiceFields,
   parseMemberRoleKey,
   parseNotificationKey,
+  parseSpendLimit,
   planChoiceKey,
   planChoices,
   spendLimitKey,
   toggleFields,
 } from "../settings/keys.ts"
 import { slugify } from "../auth/model.ts"
+import { spendLimitReached } from "../quota/model.ts"
 import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
@@ -208,6 +210,22 @@ const settingsPage = (model: Model) =>
   Option.flatMap(model.page, (page) =>
     Predicate.isTagged(page, "SettingsPage") ? Option.some(page) : Option.none(),
   )
+
+/**
+ * Whether a spend limit the views chose would refuse new commands as soon as it is saved, because
+ * the month's estimate has already reached it. Such a limit waits for an explicit save.
+ */
+const refusesRightAway = (model: Model, value: string): boolean => {
+  const limitCents = parseSpendLimit(value)
+  return Option.exists(
+    Option.flatMap(settingsPage(model), (page) => Option.fromNullishOr(page.billing)),
+    (billing) =>
+      limitCents !== null &&
+      limitCents !== undefined &&
+      limitCents !== billing.spendLimit.limitCents &&
+      spendLimitReached({ limitCents, billing }),
+  )
+}
 
 const mutate = (model: Model, action: Action): Result =>
   canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
@@ -475,6 +493,12 @@ const submit = (model: Model, form: string): Result => {
       )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),
+    Match.when("spend-limit", () =>
+      mutate(
+        model,
+        Action.SaveChoice({ key: spendLimitKey, value: model.choices[spendLimitKey] ?? "" }),
+      ),
+    ),
     Match.orElse((name) => {
       const [prefix, id] = name.split(":")
       if (prefix === "resend-invite" && id !== undefined)
@@ -653,6 +677,7 @@ const step = (model: Model, message: Message): Result =>
     },
     ChoseSetting: ({ key, value }) => {
       const next = { ...model, choices: { ...model.choices, [key]: value } }
+      if (key === spendLimitKey && refusesRightAway(model, value)) return { model: next }
       if (key === "seriesWindow" && ["1h", "24h", "7d"].includes(value))
         return model.pageSample
           ? { model }

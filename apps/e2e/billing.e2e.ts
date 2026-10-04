@@ -92,7 +92,7 @@ const invoices = [
     amountCents: 2_731,
     currency: "usd",
     status: "paid",
-    pdfUrl: `${origin}/invoices/AKT-0001.pdf`,
+    pdfUrl: "https://pay.stripe.com/invoice/acct_562/in_1/pdf",
   },
 ]
 
@@ -139,7 +139,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
 }) => {
   const checkouts: Array<unknown> = []
   await signIn(page)
-  await page.route(`${origin}/checkout/cs_local_1`, (route) =>
+  await page.route("https://checkout.stripe.com/c/pay/cs_test_562", (route) =>
     route.fulfill({ contentType: "text/html", body: "<h1>Checkout stand-in</h1>" }),
   )
   await page.route(
@@ -151,7 +151,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
       extra: (route, path) => {
         if (path !== "/api/organizations/org_bill/billing/checkout") return undefined
         checkouts.push(route.request().postDataJSON())
-        return route.fulfill({ json: { url: `${origin}/checkout/cs_local_1` } })
+        return route.fulfill({ json: { url: "https://checkout.stripe.com/c/pay/cs_test_562" } })
       },
     }),
   )
@@ -167,7 +167,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   await expect(page.getByRole("note")).toHaveCount(0)
   await page.getByRole("combobox", { name: "Plan to upgrade to" }).selectOption("team")
   await page.getByRole("button", { name: "Continue to checkout" }).click()
-  await expect(page).toHaveURL(`${origin}/checkout/cs_local_1`)
+  await expect(page).toHaveURL("https://checkout.stripe.com/c/pay/cs_test_562")
   await expect(page.getByRole("heading", { name: "Checkout stand-in" })).toBeVisible()
   expect(checkouts).toEqual([{ plan: "team" }])
 })
@@ -175,7 +175,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
 test("opens the billing portal in a new tab and links invoice PDFs", async ({ page, context }) => {
   let portals = 0
   await signIn(page)
-  await context.route(`${origin}/portal/bps_local_1`, (route) =>
+  await context.route("https://billing.stripe.com/p/session/test_562", (route) =>
     route.fulfill({ contentType: "text/html", body: "<h1>Portal stand-in</h1>" }),
   )
   await page.route(
@@ -187,7 +187,7 @@ test("opens the billing portal in a new tab and links invoice PDFs", async ({ pa
       extra: (route, path) => {
         if (path !== "/api/organizations/org_bill/billing/portal") return undefined
         portals += 1
-        return route.fulfill({ json: { url: `${origin}/portal/bps_local_1` } })
+        return route.fulfill({ json: { url: "https://billing.stripe.com/p/session/test_562" } })
       },
     }),
   )
@@ -195,12 +195,12 @@ test("opens the billing portal in a new tab and links invoice PDFs", async ({ pa
   await expect(page.getByText("Visa ending 4242")).toBeVisible()
   await expect(page.getByText("$27.31 a month plus usage (provisional price)")).toBeVisible()
   const pdf = page.getByRole("link", { name: "Invoice AKT-0001 PDF, opens in a new tab" })
-  await expect(pdf).toHaveAttribute("href", `${origin}/invoices/AKT-0001.pdf`)
+  await expect(pdf).toHaveAttribute("href", "https://pay.stripe.com/invoice/acct_562/in_1/pdf")
   await expect(pdf).toHaveAttribute("target", "_blank")
   const opened = context.waitForEvent("page")
   await page.getByRole("button", { name: "Update" }).click()
   const portal = await opened
-  await expect(portal).toHaveURL(`${origin}/portal/bps_local_1`)
+  await expect(portal).toHaveURL("https://billing.stripe.com/p/session/test_562")
   await expect(portal.getByRole("heading", { name: "Portal stand-in" })).toBeVisible()
   expect(await portal.evaluate(() => window.opener)).toBeNull()
   await expect(page).toHaveURL(`${origin}/settings/billing`)
@@ -282,4 +282,32 @@ test("shows live usage and one quiet notice at Free's command cap", async ({ pag
   await page.goto(`${origin}/`)
   await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
   await expect(page.getByRole("note")).toContainText("1M commands Free includes")
+})
+
+test("refuses a billing link off Stripe and closes the tab it opened", async ({
+  page,
+  context,
+}) => {
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "pro",
+      billing: () => proBilling(null),
+      usage: usage({ commands: 120_000, included: 25_000_000 }),
+      extra: (route, path) =>
+        path === "/api/organizations/org_bill/billing/portal"
+          ? route.fulfill({ json: { url: "https://billing.stripe.com.evil.dev/p/session/x" } })
+          : undefined,
+    }),
+  )
+  await page.goto(`${origin}/settings/billing`)
+  const opened = context.waitForEvent("page")
+  await page.getByRole("button", { name: "Update" }).click()
+  const tab = await opened
+  await expect(
+    page.getByText("Billing returned a link the console doesn’t recognise, so it wasn’t opened."),
+  ).toBeVisible()
+  await expect.poll(() => tab.isClosed()).toBe(true)
+  await expect(page).toHaveURL(`${origin}/settings/billing`)
 })

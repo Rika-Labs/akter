@@ -44,7 +44,7 @@ export const capNoticeView: {
           billingLink(h, "Upgrade"),
         ]
       : [
-          `${formatPeriod(notice.period)}’s spend is past the ${formatCurrency(dollars(notice.limit))} limit, so new commands are refused; reads keep working. `,
+          `${formatPeriod(notice.period)}’s spend has reached the ${formatCurrency(dollars(notice.limit))} limit, so new commands are refused; reads keep working. `,
           billingLink(h, "Change the limit"),
         ],
   ),

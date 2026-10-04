@@ -65,8 +65,9 @@ export const spendLimitValue = (limitCents: number | null): string =>
 /** Whole cents, `null` for no limit, or undefined when the value is neither. */
 export const parseSpendLimit = (value: string): number | null | undefined => {
   if (value === "none") return null
+  if (!/^\d+$/u.test(value)) return undefined
   const cents = Number(value)
-  return Number.isInteger(cents) && cents >= 0 ? cents : undefined
+  return Number.isSafeInteger(cents) ? cents : undefined
 }
 
 export interface SettingsSeed {

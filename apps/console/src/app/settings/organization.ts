@@ -24,6 +24,7 @@ import {
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import {
   dollars,
+  formatCents,
   formatDate,
   formatDay,
   formatExpiry,
@@ -33,7 +34,7 @@ import {
   formatPeriod,
   titleCase,
 } from "./format.ts"
-import { capReached } from "../quota/model.ts"
+import { capReached, spendLimitReached } from "../quota/model.ts"
 import { capNoticeView } from "../quota/view.ts"
 import {
   memberRoleKey,
@@ -344,10 +345,12 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
             ]),
         settingsRow(h, {
           label: "This month so far",
-          description: "Estimated: the plan’s price plus usage beyond what it includes",
+          description: billing.plan.provisional
+            ? "Estimated from provisional prices: the plan’s price plus usage beyond what it includes"
+            : "Estimated: the plan’s price plus usage beyond what it includes",
           control: h.span(
             [...styleAttributes(h, styles.value)],
-            [formatCurrency(dollars(billing.plan.monthToDateCents))],
+            [formatCents(billing.plan.monthToDateCents)],
           ),
         }),
       ],
@@ -393,6 +396,23 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
             onChange: (value) => ChoseSetting({ key: spendLimitKey, value }),
           }),
         }),
+        ...(limit === null ||
+        limit === undefined ||
+        limit === billing.spendLimit.limitCents ||
+        !spendLimitReached({ limitCents: limit, billing })
+          ? []
+          : [
+              settingsRow(h, {
+                label: "New commands will be refused right away",
+                tone: "danger",
+                control: button(h, {
+                  label: "Save limit",
+                  size: "sm",
+                  disabled: billingSample,
+                  onClick: SubmittedForm({ form: "spend-limit" }),
+                }),
+              }),
+            ]),
         ...(limit === null || limit === undefined || limit === 0
           ? []
           : [
@@ -451,7 +471,7 @@ const meterFormat = (unit: UsageMeter["unit"]): ((value: number) => string) =>
 const meterDetail = (entry: UsageMeter, usage: Usage, free: boolean): string | undefined => {
   const overage =
     entry.overageCostCents > 0
-      ? `${formatCurrency(dollars(entry.overageCostCents))} over the allowance so far`
+      ? `${formatCents(entry.overageCostCents)} over the allowance so far`
       : undefined
   if (entry.meter === "commands")
     return [
@@ -464,7 +484,7 @@ const meterDetail = (entry: UsageMeter, usage: Usage, free: boolean): string | u
       "Average stored this month",
       free
         ? "Free pauses new commands while a tenant’s latest sample is at the cap; reads keep working"
-        : `${formatCurrency(dollars(usage.pricing.storagePerGbCents))} per GB-month beyond the allowance`,
+        : `${formatCents(usage.pricing.storagePerGbCents)} per GB-month beyond the allowance`,
       ...(overage === undefined ? [] : [overage]),
     ].join(". ")
   return overage
@@ -545,7 +565,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
     }),
     settingsGroup(h, {
       title: "By project",
-      footnote: "Estimates share out usage beyond the allowance; the plan’s price is not split.",
+      footnote: `Estimates share out usage beyond the allowance; the plan’s price is not split.${usage.pricing.provisional ? " They use provisional prices." : ""}`,
       rows: [
         dataTable(h, {
           label: "Usage by project",
@@ -563,7 +583,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
               project.name,
               formatCompact(project.commands),
               project.reads === null ? "—" : formatCompact(project.reads),
-              formatCurrency(dollars(project.estimatedCostCents)),
+              formatCents(project.estimatedCostCents),
             ],
           })),
         }),

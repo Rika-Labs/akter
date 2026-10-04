@@ -15,9 +15,17 @@ export const CapNotice = S.Struct({
 export type CapNotice = typeof CapNotice.Type
 
 /**
+ * Whether a spend limit is already reached by the month's estimate. Each command whose estimate would
+ * pass the limit is refused, so once the estimate has reached it any command that costs something is.
+ */
+export const spendLimitReached = (input: {
+  readonly limitCents: number
+  readonly billing: Billing
+}): boolean => input.billing.spendLimit.currentCents >= input.limitCents
+
+/**
  * The cap new commands are refused at, if one is reached. Free's allowance is a hard cap reached at
- * the allowance; a spend limit refuses the commands whose estimate would pass it, so it is reached
- * only once the estimate is already past the limit.
+ * the allowance; a spend limit is reached as `spendLimitReached` describes.
  */
 export const capReached = (input: {
   readonly billing: Billing
@@ -33,7 +41,7 @@ export const capReached = (input: {
   )
     return { cap: "commands", period: usage.period, limit: commands.included }
   const limit = billing.spendLimit.limitCents
-  if (limit !== null && billing.spendLimit.currentCents > limit)
+  if (limit !== null && spendLimitReached({ limitCents: limit, billing }))
     return { cap: "spend", period: usage.period, limit }
   return undefined
 }

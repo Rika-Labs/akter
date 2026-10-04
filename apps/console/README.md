@@ -66,7 +66,11 @@ Billing and Usage read the control plane's Stripe-backed records. Prices, allowa
 weight come from the API (paid prices are flagged provisional); the console hardcodes none. A Free
 organization upgrades through Stripe Checkout in the same tab; a paid one changes plan through the
 plan endpoint, which may stay pending until payment succeeds. The billing portal opens in a new tab
-and invoice PDFs open in their own. Free's included commands and storage are shown as the hard caps
+and invoice PDFs open in their own. Only `https:` links on Stripe's Checkout, billing, invoice and
+pay hosts are opened or linked; the local stand-in's same-origin `/billing` pages are accepted only
+by the Vite development server, and any other link is refused with a message. A spend limit the
+month's estimate has already reached waits for an explicit save, because it refuses new commands
+right away. Free's included commands and storage are shown as the hard caps
 they are. When Free's commands are used up, or the month's estimate is past the spend limit, Usage
 and Overview show one quiet notice linking to Billing; storage has no such notice because usage
 reports a monthly average rather than the latest sample the cap is checked against. Plan refusals

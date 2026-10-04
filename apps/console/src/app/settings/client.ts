@@ -21,7 +21,7 @@ import {
   UpdateOrganization,
   UpdateProfile,
 } from "@akter/cloud-api"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import {
   cloud,
   ConsoleError,
@@ -67,6 +67,7 @@ import {
   type SettingsSlice,
 } from "./model.ts"
 import type * as Fixtures from "./fixtures.ts"
+import { browserContext, hostedPageUrl } from "./stripe.ts"
 
 type Api = Effect.Success<typeof cloud>
 
@@ -557,13 +558,26 @@ export const setSpendLimit = (limitCents: number | null): Effect.Effect<void, Co
     api.billing.setSpendLimit({ params: { organizationId }, payload: { limitCents } }),
   ).pipe(Effect.asVoid)
 
+/** A hosted billing page the console may open, or a calm refusal of one it does not recognise. */
+const trusted = (session: { readonly url: string }) =>
+  Option.match(hostedPageUrl(session.url, browserContext()), {
+    onNone: () =>
+      Effect.fail(
+        ConsoleError.make({
+          kind: "Untrusted",
+          message: "Billing returned a link the console doesn’t recognise, so it wasn’t opened.",
+        }),
+      ),
+    onSome: (url) => Effect.succeed({ url }),
+  })
+
 /** The Stripe Checkout page that starts a paid subscription; the server builds its return URLs. */
 export const startCheckout = (
   plan: PaidPlan,
 ): Effect.Effect<{ readonly url: string }, ConsoleError> =>
   inOrganization((api, organizationId) =>
     api.billing.startCheckout({ params: { organizationId }, payload: { plan } }),
-  )
+  ).pipe(Effect.flatMap(trusted))
 
 /**
  * Moves the existing subscription to another paid plan. Stripe's portal cannot change these
@@ -577,7 +591,9 @@ export const changePlan = (plan: PaidPlan): Effect.Effect<PlanChange["status"], 
 
 /** The Stripe billing portal to send the browser to, where the card and receipts are managed. */
 export const openBillingPortal: Effect.Effect<{ readonly url: string }, ConsoleError> =
-  inOrganization((api, organizationId) => api.billing.openPortal({ params: { organizationId } }))
+  inOrganization((api, organizationId) =>
+    api.billing.openPortal({ params: { organizationId } }),
+  ).pipe(Effect.flatMap(trusted))
 
 const toggleField = (key: string) =>
   Object.entries(toggleFields).find(([name]) => name === key)?.[1]

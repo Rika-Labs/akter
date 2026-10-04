@@ -5,6 +5,7 @@ import {
   IntegrationKind,
   InviteRole,
   NotificationPreference,
+  Plan,
   PlanId,
   Preferences,
   RegionId,
@@ -124,14 +125,7 @@ export const PaidPlan = StartCheckout.fields.plan
 export type PaidPlan = typeof PaidPlan.Type
 
 /** Where the subscription's payments stand; `free` means there is no paid subscription. */
-export const PaymentStatus = S.Literals([
-  "free",
-  "active",
-  "past_due",
-  "unpaid",
-  "canceled",
-  "incomplete",
-])
+export const PaymentStatus = Plan.fields.paymentStatus.schema
 export type PaymentStatus = typeof PaymentStatus.Type
 
 /**

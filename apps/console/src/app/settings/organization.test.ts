@@ -169,3 +169,91 @@ describe("usage", () => {
       Scene.expect(Scene.text("Paid prices are provisional.")).toExist(),
     ))
 })
+
+describe("costs", () => {
+  const pro: Billing = {
+    ...free,
+    plan: {
+      ...free.plan,
+      id: "pro",
+      name: "Pro",
+      subscribed: "pro",
+      paymentStatus: "active",
+      basePriceCents: 2_500,
+      provisional: true,
+      monthToDateCents: 2_500.3,
+    },
+    spendLimit: { limitCents: null, currentCents: 30_000 },
+  }
+
+  it("shows a fraction of a cent as under a cent and marks provisional estimates", () =>
+    scene(
+      usageScreen,
+      {
+        ...emptySettings,
+        billing: pro,
+        usage: {
+          ...usage(25_000_001.5),
+          meters: [
+            {
+              meter: "commands",
+              label: "Commands",
+              used: 25_000_001.5,
+              included: 25_000_000,
+              overage: 1.5,
+              overageCostCents: 0.3,
+              unit: "count",
+            },
+          ],
+          projects: [
+            { id: "prj_1", name: "storefront", commands: 2, reads: 0, estimatedCostCents: 0.3 },
+          ],
+        },
+      },
+      Scene.expect(Scene.role("meter", { name: "Commands" })).toExist(),
+      Scene.expect(
+        Scene.text(
+          "Commands plus reads, a read counting as 0.2 of a command. <$0.01 over the allowance so far",
+        ),
+      ).toExist(),
+      Scene.expect(
+        Scene.text(
+          "Estimates share out usage beyond the allowance; the plan’s price is not split. They use provisional prices.",
+        ),
+      ).toExist(),
+      Scene.expect(Scene.role("table", { name: "Usage by project" })).toContainText("<$0.01"),
+    ))
+
+  it("estimates the month from provisional prices when the plan's are", () =>
+    scene(
+      billingScreen,
+      { ...emptySettings, billing: pro },
+      Scene.expect(
+        Scene.text(
+          "Estimated from provisional prices: the plan’s price plus usage beyond what it includes",
+        ),
+      ).toExist(),
+    ))
+
+  it("asks before saving a spend limit the month's estimate has already reached", () =>
+    Scene.scene(
+      {
+        update: (model: Model) => ({ model }),
+        view: render(billingScreen, { ...emptySettings, billing: pro }),
+      },
+      Scene.given({ ...shell(), choices: { ...shell().choices, spendLimit: "25000" } }),
+      Scene.expect(Scene.text("New commands will be refused right away")).toExist(),
+      Scene.expect(Scene.role("button", { name: "Save limit" })).toBeEnabled(),
+    ))
+
+  it("saves a limit above the estimate without asking", () =>
+    Scene.scene(
+      {
+        update: (model: Model) => ({ model }),
+        view: render(billingScreen, { ...emptySettings, billing: pro }),
+      },
+      Scene.given({ ...shell(), choices: { ...shell().choices, spendLimit: "50000" } }),
+      Scene.expect(Scene.text("New commands will be refused right away")).toBeAbsent(),
+      Scene.expect(Scene.role("meter", { name: "Spend this month" })).toExist(),
+    ))
+})

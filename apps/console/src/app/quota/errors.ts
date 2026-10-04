@@ -21,12 +21,9 @@ const QuotaRefusal = Schema.Union([
 ])
 export type QuotaRefusal = typeof QuotaRefusal.Type
 
-const quotaKinds: ReadonlyArray<string> = [
-  "QuotaExceeded",
-  "SpendLimitExceeded",
-  "ConnectionLimitExceeded",
-  "StorageQuotaExceeded",
-]
+const quotaKinds: ReadonlyArray<string> = QuotaRefusal.members.map(
+  (member) => member.fields._tag.schema.literal,
+)
 
 /** Whether an error kind is a plan refusal, which a plan or spend-limit change in Billing lifts. */
 export const isQuotaKind = (kind: string): boolean => quotaKinds.includes(kind)
