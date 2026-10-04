@@ -185,9 +185,10 @@ describe("runtime models", () => {
       value: T,
       status: number,
     ) => {
-      const wire = encode(framework, value) as Schema.Json
+      const wire = encode(framework, value) as { readonly [key: string]: Schema.Json }
       expect(schema.ast.annotations?.["httpApiStatus"]).toBe(status)
       expect(encode(schema, decode(schema, wire))).toEqual(wire)
+      expect(rejects(schema, { ...wire, organizationId: null })).toBe(true)
       expect(JSON.stringify(responses[status])).toContain(value._tag)
     }
 
@@ -237,9 +238,6 @@ describe("runtime models", () => {
         usedBytes: 500_000_000,
       }),
       429,
-    )
-    expect(rejects(StorageQuotaExceeded, { _tag: "StorageQuotaExceeded", tenant: "acme" })).toBe(
-      true,
     )
   })
 
