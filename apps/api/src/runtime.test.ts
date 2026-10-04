@@ -1,11 +1,14 @@
 import {
+  type CommandLogEntry,
   CommandFailed,
   CommandExpired as ExpiredKey,
+  CommandStreamGap,
   CommandRefused,
   Conflict,
   ConnectionLimitExceeded,
   Forbidden,
   NotFound,
+  NotImplemented,
   QuotaExceeded,
   QuotaUnbound,
   SpendLimitExceeded,
@@ -1229,7 +1232,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
 
 it.layer(live)("command stream through the edge", (it) => {
   it.effect(
-    "relays the runner's commands, resumes after the last id when a stream ends, and ends at a gap without skipping",
+    "relays the runner's commands, resumes after the last id when a stream ends, and fails with CommandStreamGap at a gap rather than skip",
     () =>
       Effect.gen(function* () {
         const edge = yield* StandInEdge
@@ -1267,9 +1270,13 @@ it.layer(live)("command stream through the edge", (it) => {
           return new Response(body, { headers: { "content-type": "text/event-stream" } })
         })
 
-        const relayed = yield* Stream.runCollect(
+        const relayed: Array<CommandLogEntry> = []
+        const ended = yield* Stream.runForEach(
           runtime.commandStream(target, { type: "Order", outcome: undefined }),
-        )
+          (entry) => Effect.sync(() => relayed.push(entry)),
+        ).pipe(Effect.flip)
+
+        expect(ended).toEqual(CommandStreamGap.make({}))
 
         expect(relayed.map((entry) => [entry.commandId, entry.outcome, entry.errorTag])).toEqual([
           ["v1.c1", "ok", null],
@@ -1294,6 +1301,62 @@ it.layer(live)("command stream through the edge", (it) => {
         expect(
           edge.seen.every(({ headers }) => headers.get("authorization") === `Bearer ${SECRET}`),
         ).toBe(true)
+      }),
+  )
+})
+
+it.layer(live)("live reads through the edge", (it) => {
+  it.effect(
+    "answers a wholly live read only while the cluster lists no runner but the one that answered",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+        const target = yield* (yield* RuntimeEdge).resolve({
+          organizationId: "org1",
+          projectId: "p1",
+          environment: "production",
+        })
+        const connections = (peers: number | null) => ({
+          scope: { runner: "r1", region: "us-east-1", startedAtMs: 1, peers },
+          sockets: 1,
+          feeds: 2,
+          streams: 0,
+          watches: 0,
+          byActorType: [],
+        })
+        const read = (peers: number | null) =>
+          edge
+            .answer(() => json(connections(peers)))
+            .pipe(
+              Effect.andThen(
+                runtime.liveRead(
+                  target,
+                  "/live/connections",
+                  {},
+                  Framework.Inspection.LiveConnections,
+                  "runtime.getConnections",
+                ),
+              ),
+              Effect.exit,
+            )
+
+        expect(yield* read(0)).toEqual(Exit.succeed(connections(0)))
+        expect(yield* read(1)).toEqual(
+          Exit.fail(NotImplemented.make({ operation: "runtime.getConnections" })),
+        )
+        expect(yield* read(null)).toEqual(
+          Exit.fail(NotImplemented.make({ operation: "runtime.getConnections" })),
+        )
+        expect(edge.seen.map(({ path }) => path)).toEqual(["/inspector/live/connections"])
+
+        yield* edge.answer(() =>
+          json({
+            scope: { runner: "r1", region: "us-east-1", startedAtMs: 1, peers: 1 },
+            actors: [{ actorId: "o-1", awake: true, mailbox: 2, sockets: 1, feeds: [] }],
+          }),
+        )
+        expect(yield* runtime.liveActors(target, "Order", ["o-1"])).toBeUndefined()
       }),
   )
 })

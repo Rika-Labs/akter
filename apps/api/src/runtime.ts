@@ -13,6 +13,7 @@ import {
   CommandFailed,
   CommandExpired,
   CommandRefused,
+  CommandStreamGap,
   Conflict,
   ConnectionLimitExceeded,
   Forbidden,
@@ -852,12 +853,13 @@ export const makeRuntime = Effect.gen(function* () {
   const commandStream = (
     target: RuntimeTarget,
     filter: { readonly type?: string | undefined; readonly outcome?: "Success" | "Failure" },
-  ): Stream.Stream<CommandLogEntry> => {
-    const segment = (after: string | undefined): Stream.Stream<CommandLogEntry> =>
+  ): Stream.Stream<CommandLogEntry, CommandStreamGap> => {
+    const segment = (after: string | undefined): Stream.Stream<CommandLogEntry, CommandStreamGap> =>
       Stream.unwrap(
         Effect.gen(function* () {
           let last = after
           let resumable = false
+          let gapped = false
 
           const response = yield* client
             .execute(
@@ -895,6 +897,11 @@ export const makeRuntime = Effect.gen(function* () {
           return response.value.stream.pipe(
             Stream.decodeText,
             Stream.pipeThroughChannel(Sse.decode()),
+            Stream.tap((event) =>
+              Effect.sync(() => {
+                if (event.event === "gap") gapped = true
+              }),
+            ),
             Stream.takeWhile((event) => event.event !== "gap"),
             Stream.tap((event) =>
               Effect.sync(() => {
@@ -913,7 +920,15 @@ export const makeRuntime = Effect.gen(function* () {
               ),
             ),
             Stream.catchCause(() => Stream.empty),
-            Stream.concat(Stream.suspend(() => (resumable ? segment(last) : Stream.empty))),
+            Stream.concat(
+              Stream.suspend(() =>
+                gapped
+                  ? Stream.fail(CommandStreamGap.make({}))
+                  : resumable
+                    ? segment(last)
+                    : Stream.empty,
+              ),
+            ),
           )
         }),
       )
@@ -921,12 +936,32 @@ export const makeRuntime = Effect.gen(function* () {
     return segment(undefined)
   }
 
+  /**
+   * A wholly live read of the serving runner, or `NotImplemented` unless the
+   * cluster lists no other runner, since no request reaches the others' memory
+   * and a sample of runners would misstate the environment.
+   */
+  const liveRead = <A extends { readonly scope: Inspection.LiveScope }, I>(
+    target: RuntimeTarget,
+    path: string,
+    params: Readonly<Record<string, string | undefined>>,
+    schema: Schema.Codec<A, I>,
+    operation: string,
+  ) =>
+    readAll(target, path, params, schema).pipe(
+      Effect.filterOrElse(
+        (found) => covers(found.scope),
+        () => NotImplemented.make({ operation }),
+      ),
+    )
+
   return {
     sendCommand,
     actorJobs,
     inspectActor,
     latestEvents,
     liveActors,
+    liveRead,
     commandStream,
     read,
     readAll,
@@ -1009,24 +1044,6 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
         .readAll(target, "/live/overview", {}, Inspection.LiveOverview)
         .pipe(Effect.map((found) => (covers(found.scope) ? found : undefined)))
 
-    /**
-     * A wholly live read of the serving runner, or `NotImplemented` while the
-     * cluster lists other runners, whose memory no request reaches.
-     */
-    const wholly = <A extends { readonly scope: Inspection.LiveScope }, I>(
-      target: RuntimeTarget,
-      path: string,
-      params: Readonly<Record<string, string | undefined>>,
-      schema: Schema.Codec<A, I>,
-      operation: string,
-    ) =>
-      runtime.readAll(target, path, params, schema).pipe(
-        Effect.filterOrElse(
-          (found) => covers(found.scope),
-          () => notImplemented(operation),
-        ),
-      )
-
     const summaryOf = (row: Inspection.ActorTypeRow, live: Inspection.LiveOverview | undefined) => {
       const found = live?.actorTypes.find((type) => type.actorType === row.actorType)
 
@@ -1035,7 +1052,14 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
         commands: null,
         instances: row.actors,
         awake: live === undefined ? null : (found?.awake ?? 0),
-        commandsPerSecond: live === undefined ? null : (found?.perSecond ?? 0),
+        commandsPerSecond:
+          live === undefined
+            ? null
+            : found === undefined
+              ? live.total.perSecond === null
+                ? null
+                : 0
+              : found.perSecond,
         p99Ms: found?.p99Ms ?? null,
         maxMailbox: live === undefined ? null : (found?.maxMailbox?.depth ?? 0),
       }
@@ -1195,7 +1219,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("getActorTypeActivity", ({ params, query }) =>
         Effect.gen(function* () {
           const window = query.window ?? "24h"
-          const { activity } = yield* wholly(
+          const { activity } = yield* runtime.liveRead(
             yield* environment(params),
             "/live/activity",
             { type: params.actorType, window },
@@ -1219,7 +1243,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("getActorTypeLatency", ({ params, query }) =>
         Effect.gen(function* () {
           const window = query.window ?? "24h"
-          const { latency } = yield* wholly(
+          const { latency } = yield* runtime.liveRead(
             yield* environment(params),
             "/live/latency",
             { type: params.actorType, window },
@@ -1408,15 +1432,16 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
         Effect.gen(function* () {
           const target = yield* environment(params)
 
-          yield* wholly(
+          if (query.outcome === "replayed")
+            return yield* notImplemented("runtime.streamCommands.replayed")
+
+          yield* runtime.liveRead(
             target,
             "/live/connections",
             {},
             Inspection.LiveConnections,
             "runtime.streamCommands",
           )
-
-          if (query.outcome === "replayed") return Stream.empty
 
           return runtime.commandStream(target, {
             type: query.actorType,
@@ -1553,7 +1578,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       )
       .handle("getConnections", ({ params }) =>
         Effect.gen(function* () {
-          const found = yield* wholly(
+          const found = yield* runtime.liveRead(
             yield* environment(params),
             "/live/connections",
             {},

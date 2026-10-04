@@ -337,7 +337,8 @@ export const registerActor = Effect.fnUntraced(function* (
   gate: TurnGate,
   /** Fails while this runtime may not start turns, e.g. its payload writer rows are stale. */
   writable: Effect.Effect<void, ActorError>,
-  recorder: LiveRecorder,
+  /** The live recorder, once the inspector enabled one. */
+  recorder: () => LiveRecorder | undefined,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -449,7 +450,12 @@ export const registerActor = Effect.fnUntraced(function* (
    * acknowledged delivery wrote none. The turn's time is its transaction's on
    * the database clock, from the fenced read to the clock read after `COMMIT`.
    */
-  const recordLive = (batch: ReadonlyArray<Waiting>, done: Done, nowMs: number) => {
+  const recordLive = (
+    live: LiveRecorder,
+    batch: ReadonlyArray<Waiting>,
+    done: Done,
+    nowMs: number,
+  ) => {
     const durationMs = Math.max(0, done.endedAtMs - done.startedAtMs)
 
     for (const [index, settled] of done.settled.entries()) {
@@ -463,15 +469,8 @@ export const registerActor = Effect.fnUntraced(function* (
       const { request } = batch[index]!
       const failed = failure !== undefined
 
-      recorder.record(
-        request.ref.tenant,
-        registration.name,
-        request.command,
-        failed,
-        durationMs,
-        nowMs,
-      )
-      recorder.publish(request.ref.tenant, nowMs, () => ({
+      live.record(request.ref.tenant, registration.name, request.command, durationMs, nowMs)
+      live.publish(request.ref.tenant, nowMs, () => ({
         commandId: request.commandId,
         atMs: done.endedAtMs,
         durationMs,
@@ -760,7 +759,10 @@ export const registerActor = Effect.fnUntraced(function* (
           })
 
         yield* countWritten(done)
-        if (done.written.receipts > 0) recordLive(batch, done, yield* Clock.currentTimeMillis)
+        const live = recorder()
+
+        if (live !== undefined && done.written.receipts > 0)
+          recordLive(live, batch, done, yield* Clock.currentTimeMillis)
 
         if (owner.hasProgress) {
           for (const [index, settled] of done.settled.entries())

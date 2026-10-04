@@ -102,7 +102,8 @@ export const actorRegistration = ({
   readonly writable: Effect.Effect<void, ActorError>
   readonly defectLog: DefectLog["Service"]
   readonly outbox: (typeof OutboxRuntime)["Service"]
-  readonly recorder: LiveRecorder
+  /** The live recorder, once the inspector enabled one. */
+  readonly recorder: () => LiveRecorder | undefined
 }): Pick<InternalActors["Service"], "register" | "registerQueries" | "registerJobs"> => {
   /** Concurrent layers can exceed checkout capacity; only a refused checkout is safe to retry here. */
   const startupSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>

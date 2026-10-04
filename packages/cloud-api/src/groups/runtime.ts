@@ -14,6 +14,7 @@ import {
   CommandFailed,
   CommandExpired,
   CommandRefused,
+  CommandStreamGap,
   RunnerDefect,
   CommandLogEntry,
   CommandOutcome,
@@ -196,12 +197,15 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
         actorType: Schema.optional(Schema.String),
         outcome: Schema.optional(CommandOutcome),
       },
-      success: HttpApiSchema.StreamSse({ data: Schema.toCodecJson(CommandLogEntry) }),
+      success: HttpApiSchema.StreamSse({
+        data: Schema.toCodecJson(CommandLogEntry),
+        error: CommandStreamGap,
+      }),
       error: InspectErrors,
     },
   ).annotate(
     OpenApi.Description,
-    "Each command the serving runner commits from now on, filtered by actor type and outcome (`replayed` is always empty, since a replay commits no turn), with a payload preview of at most 256 characters that the runner cut and redacted. The control plane resumes across the runner's credential expiry; the stream ends when the runner can no longer resume it without a gap, or the runner goes away, and a client reconnects. `NotImplemented` while more than one runner serves the environment.",
+    "Each command the serving runner commits from now on, filtered by actor type and outcome (`replayed` is always empty, since a replay commits no turn), with a payload preview of at most 256 characters that the runner cut and redacted. The control plane resumes across the runner's credential expiry; the stream fails with `CommandStreamGap` when the runner can no longer resume it without missing commands, and ends when the runner goes away; a client reconnects. `NotImplemented` while more than one runner serves the environment.",
   ),
   HttpApiEndpoint.get("getJobs", "/projects/:projectId/environments/:environment/runtime/jobs", {
     params: environmentParams,

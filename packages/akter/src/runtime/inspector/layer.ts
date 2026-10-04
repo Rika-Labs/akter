@@ -357,7 +357,7 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
        * runtime itself; mounted only where the inspector runs inside one.
        */
       const mountLive = Effect.fnUntraced(function* (actors: InternalActors["Service"]) {
-        const { recorder } = actors.live
+        const recorder = yield* actors.live.enable
 
         const scope = Effect.gen(function* () {
           const peers = yield* actors.live.peers
@@ -567,18 +567,17 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
 
               const nowMs = yield* Clock.currentTimeMillis
 
-              const opened = yield* recorder.subscribe(
+              if (recorder.full(tenant))
+                return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
+
+              const opened = recorder.subscribe(
                 tenant,
                 {
                   actorType: type,
                   failed: outcome === undefined ? undefined : outcome === "Failure",
                 },
                 after,
-                nowMs,
               )
-
-              if (opened === undefined)
-                return yield* ActorError.make({ reason: RunnerAtCapacity.make({}) })
 
               const until =
                 expiresAt === undefined

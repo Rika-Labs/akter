@@ -40,6 +40,9 @@ const Tally = Actor.make("GroupTally", {
   policy: { executionTimeout: "2 seconds" },
 })
 
+/** How long a case holds grouped turns before their handlers, so each recorded duration must cover it. */
+const HELD_MS = 200
+
 /** Handler runs per actor id. */
 const runs = new Map<string, number>()
 
@@ -195,6 +198,7 @@ export const groupsConformance: ReadonlyArray<ConformanceCase> = [
           ])
 
           runs.clear()
+          yield* Effect.sleep(HELD_MS)
           yield* release
           const [one, two, refusal, defect, five] = yield* Effect.forEach(fibers, Fiber.join)
 
@@ -212,6 +216,15 @@ export const groupsConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* stateOf(ids[2]!)).toEqual({ count: 1 })
           expect(yield* stateOf(ids[3]!)).toEqual({ count: 1 })
           expect(ids.map((id) => runs.get(id))).toEqual([1, 1, 1, 1, 1])
+
+          const sql = yield* SqlClient.SqlClient
+          const timing = yield* sql<{ command_id: string; started: number; committed: number }>`
+            SELECT command_id, started_at_ms::float8 AS started, committed_at_ms::float8 AS committed
+            FROM actor_receipts WHERE command_id IN ${sql.in([a!, b!, refused!, e!])}`
+          expect(timing.map((row) => row.command_id).toSorted()).toEqual(
+            [a!, b!, refused!, e!].toSorted(),
+          )
+          for (const row of timing) expect(row.committed - row.started >= HELD_MS).toBe(true)
         }),
       ),
   },

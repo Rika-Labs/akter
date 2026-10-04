@@ -50,8 +50,8 @@ export type ActorRow = typeof ActorRow.Type
 
 /**
  * An actor as a list shows it, with its last command: the command and commit
- * time of its receipt with the newest recorded commit time, null when no
- * retained receipt records one.
+ * time of its receipt with the newest recorded commit time among its 256
+ * greatest command ids, null when none of them records one.
  */
 export const ActorListRow = Schema.Struct({
   ...ActorRow.fields,

@@ -4,6 +4,7 @@ import {
   Data,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   Schedule,
@@ -12,7 +13,7 @@ import {
 } from "effect"
 import { FetchHttpClient, Headers, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
 import { SqlClient } from "effect/sql"
-import { Actor, Intent, Unauthorized, User } from "../../index.ts"
+import { Actor, Actors, Intent, Unauthorized, User } from "../../index.ts"
 import { Inspector } from "../../runtime/index.ts"
 import { InternalActors } from "../../runtime/actors.ts"
 import * as Queries from "../../runtime/inspector/queries.ts"
@@ -42,6 +43,7 @@ const Nudge = Actor.command("Nudge")
 
 const Sign = Actor.command("Sign", {
   payload: {
+    profile: Schema.Struct({ nick: Schema.String, secretAnswer: Schema.String }),
     user: Schema.String,
     password: Schema.String,
     note: Schema.String,
@@ -147,6 +149,9 @@ const operators = Auth.make((request) =>
     },
   ),
 )
+
+/** How long a case holds a turn before its handler, so its recorded duration must cover it. */
+const HELD_MS = 200
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
 
@@ -1001,7 +1006,13 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           const tenant = `${test.tenant}-timed`
           const before = yield* clock
           const timed = yield* Inspected.get("timed").pipe(Actor.tenant(tenant))
-          yield* timed.Write("one")
+          const slow = yield* (yield* Actors).mintCommandId
+          const held = yield* test.pauseNext("beforeHandler", { commandId: slow })
+          const writing = yield* timed.Write("one").pipe(Actor.commandId(slow), Effect.forkChild)
+          yield* held.reached
+          yield* Effect.sleep(HELD_MS)
+          yield* held.release
+          yield* Fiber.join(writing)
           const between = yield* clock
           yield* timed.WriteThenReject("two").pipe(Effect.exit)
           yield* (yield* Inspected.get("other").pipe(Actor.tenant(tenant))).Write("three")
@@ -1031,6 +1042,8 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           }
 
           expect(stored[0]!.committed_at_ms <= between).toBe(true)
+          expect(stored[0]!.command_id).toBe(slow)
+          expect(stored[0]!.committed_at_ms - stored[0]!.started_at_ms >= HELD_MS).toBe(true)
           expect(stored[1]!.started_at_ms >= between).toBe(true)
 
           const [view] = yield* sql<{ duration_ms: number; committed_at: Date }>`
@@ -1105,6 +1118,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           yield* a.WriteThenReject("4").pipe(Effect.exit)
           yield* a.WriteThenDie("5").pipe(Effect.exit)
           yield* b.Sign({
+            profile: { nick: "ada", secretAnswer: "blue-moon" },
             user: "ada",
             password: "hunter2-is-secret",
             note: "x".repeat(40),
@@ -1217,6 +1231,8 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           const preview = text(field(signed.data, "payloadPreview"))
           expect(preview).toContain('"password":"[redacted]"')
           expect(preview).not.toContain("hunter2")
+          expect(preview).toContain('"profile":{"nick":"ada","secretAnswer":"[redacted]"}')
+          expect(preview).not.toContain("blue-moon")
           expect(preview).toContain(`"note":"${"x".repeat(32)}…"`)
           expect(preview).toContain('"t8",…]')
           expect(preview.length <= 256).toBe(true)
@@ -1258,7 +1274,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             resumed.received
               .filter((m) => m.event === "command")
               .map((m) => field(m.data, "payloadPreview")),
-          ).toEqual(['"6"'])
+          ).toEqual(['"[redacted]"'])
 
           const stale = yield* get.stream("?after=elsewhere-1.3", home)
           yield* eventually(

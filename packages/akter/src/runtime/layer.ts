@@ -65,7 +65,12 @@ import { recordedPlacement } from "./storage/placements.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
-import { liveRecorder, LiveRuntime, type OpenConnection } from "./telemetry/live.ts"
+import {
+  type LiveRecorder,
+  liveRecorder,
+  LiveRuntime,
+  type OpenConnection,
+} from "./telemetry/live.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { seedRuntime } from "./operators/seed.ts"
 import { TelemetrySampler } from "./telemetry/sampler.ts"
@@ -472,9 +477,12 @@ export const layer = (options: Options = {}) => {
       >()
 
       const defectLog = boundedDefectLog(defectCapacity)
-      const recorder = liveRecorder({
-        startedAtMs: yield* Clock.currentTimeMillis,
-        epoch: runtimeId.slice(0, 8),
+      let recorder: LiveRecorder | undefined
+      const currentRecorder = () => recorder
+      const enableRecorder = Effect.map(Clock.currentTimeMillis, (startedAtMs) => {
+        recorder ??= liveRecorder({ startedAtMs, epoch: runtimeId.slice(0, 8) })
+
+        return recorder
       })
       const servedStreams = new Map<
         string,
@@ -1161,7 +1169,8 @@ export const layer = (options: Options = {}) => {
       })
 
       const live = LiveRuntime.of({
-        recorder,
+        recorder: currentRecorder,
+        enable: enableRecorder,
         resident: (tenant) =>
           [...diagnostics].flatMap(([actorType, { resident }]) =>
             resident().flatMap((activation) =>
@@ -1277,7 +1286,7 @@ export const layer = (options: Options = {}) => {
           writable,
           defectLog,
           outbox,
-          recorder,
+          recorder: currentRecorder,
         }),
         ...committedReads({
           registrations,

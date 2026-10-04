@@ -326,6 +326,17 @@ export class CommandExpired extends Schema.TaggedError<CommandExpired>()(
   { httpApiStatus: 410 },
 ) {}
 
+/**
+ * The command stream missed commands: the serving runner no longer held what
+ * came after the last one it sent, or this stream fell too far behind. It ends
+ * the stream, so a client that reconnects knows it has a gap rather than
+ * skipping entries unseen.
+ */
+export class CommandStreamGap extends Schema.TaggedError<CommandStreamGap>()(
+  "CommandStreamGap",
+  {},
+) {}
+
 /** A remote runner defect is opaque and must never cause an automatic retry; answered 502. */
 export class RunnerDefect extends Schema.TaggedError<RunnerDefect>()(
   "RunnerDefect",

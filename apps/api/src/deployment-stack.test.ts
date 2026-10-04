@@ -1873,7 +1873,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         expect(streamed.find((entry) => entry.commandId === refused.commandId)).toMatchObject({
           outcome: "error",
           errorTag: "Refused",
-          payloadPreview: '"no"',
+          payloadPreview: '"[redacted]"',
         })
         expect(streamed.find((entry) => entry.commandId === five.commandId)?.payloadPreview).toBe(
           "5",

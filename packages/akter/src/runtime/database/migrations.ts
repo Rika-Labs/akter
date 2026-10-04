@@ -1,8 +1,50 @@
-import { Effect, Option } from "effect"
+import { Effect, Option, Schedule, Schema } from "effect"
 import { PgClient } from "@effect/sql-pg"
-import { Migrator, SqlClient } from "effect/sql"
+import { Migrator, SqlClient, SqlError } from "effect/sql"
 import { NekiTurnSessions } from "./neki/session.ts"
 import { MigrationResuming, nekiMigrator, withMigrationCoordination } from "./neki/migrations.ts"
+
+/** How long a migration's table DDL waits for its lock before giving way. */
+const LOCK_TIMEOUT = "2s"
+
+/** How many times a migration's table DDL that gave way is tried again. */
+const LOCK_ATTEMPTS = 30
+
+const isLockBusy = Schema.is(Schema.Struct({ code: Schema.Literal("55P03") }))
+
+/**
+ * Runs `ddl`, whose table lock would otherwise wait behind any long
+ * transaction on the table and hold every turn queued behind it, waiting at
+ * most `LOCK_TIMEOUT` for the lock. On Postgres each attempt runs in a
+ * savepoint of the migration's transaction, so one that gave way is rolled
+ * back and tried again. Neki's protocol runs DDL without a transaction and
+ * journals each statement, so there the attempt is not repeated here: a lock
+ * that gives way fails the migration, and the next start resumes it from its
+ * journal. The previous `lock_timeout` is restored either way.
+ */
+const briefLocks = <E>(ddl: Effect.Effect<void, E, SqlClient.SqlClient>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const neki = yield* NekiTurnSessions
+    const [previous] = yield* sql<{
+      readonly value: string
+    }>`SELECT current_setting('lock_timeout') AS value`
+    const limit = sql`SELECT set_config('lock_timeout', ${LOCK_TIMEOUT}, ${!neki})`
+    const restore = sql`SELECT set_config('lock_timeout', ${previous!.value}, ${!neki})`.pipe(
+      Effect.ignore,
+    )
+
+    if (neki) return yield* Effect.andThen(limit, ddl).pipe(Effect.ensuring(restore))
+
+    return yield* sql.withTransaction(Effect.andThen(limit, ddl)).pipe(
+      Effect.retry({
+        while: (error) => SqlError.isSqlError(error) && isLockBusy(error.reason.cause),
+        times: LOCK_ATTEMPTS,
+        schedule: Schedule.spaced("500 millis"),
+      }),
+      Effect.ensuring(restore),
+    )
+  })
 
 /** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {
@@ -999,10 +1041,14 @@ export const migrations = {
    */
   "0030_receipt_timing": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    yield* sql`ALTER TABLE actor_receipts ADD COLUMN started_at_ms bigint,
-      ADD COLUMN committed_at_ms bigint`
-    yield* sql`ALTER TABLE actor_receipts ALTER COLUMN committed_at_ms
-      SET DEFAULT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint`
+    yield* briefLocks(
+      Effect.gen(function* () {
+        yield* sql`ALTER TABLE actor_receipts ADD COLUMN started_at_ms bigint,
+          ADD COLUMN committed_at_ms bigint`
+        yield* sql`ALTER TABLE actor_receipts ALTER COLUMN committed_at_ms
+          SET DEFAULT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint`
+      }),
+    )
     yield* sql`CREATE OR REPLACE VIEW durable.receipts AS
       SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
         r.command_id, r.command, r.caller_key,

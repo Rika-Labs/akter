@@ -106,7 +106,17 @@ interface ActorsPage extends Page {
 }
 
 /**
- * The tenant's actors in `(actor_type, actor_id)` order, one page after `after`. The cursor
+ * The receipts an actor's last command is looked for among: its greatest
+ * command ids, which the receipts' primary key reads in order and which for a
+ * minted id are the newest issued, so the read is bounded however many
+ * receipts the actor retains.
+ */
+export const LAST_COMMAND_RECEIPTS = 256
+
+/**
+ * The tenant's actors in `(actor_type, actor_id)` order, one page after `after`,
+ * each with its last command: the receipt with the newest recorded commit
+ * time among its `LAST_COMMAND_RECEIPTS` greatest command ids. The cursor
  * comparison uses the same `C` collation as the ORDER BY, or a cursor could skip or repeat actors.
  * A prefix that names a whole type, `type/` and more, matches that type's ids by their own prefix,
  * so it reads one type rather than every actor of the tenant.
@@ -142,11 +152,14 @@ export const actors = (page: ActorsPage) =>
         l.command AS "lastCommand", l.committed_at_ms::float8 AS "lastCommittedAtMs"
       FROM durable.actors a
       LEFT JOIN LATERAL (
-        SELECT r.command, r.committed_at_ms FROM durable.receipts r
-        WHERE r.routing_key = a.routing_key AND r.tenant_id = a.tenant_id
-          AND r.actor_type = a.actor_type AND r.actor_id = a.actor_id
-          AND r.committed_at_ms IS NOT NULL
-        ORDER BY r.committed_at_ms DESC, r.command_id COLLATE "C" DESC
+        SELECT n.command, n.committed_at_ms FROM (
+          SELECT r.command, r.command_id, r.committed_at_ms FROM durable.receipts r
+          WHERE r.routing_key = a.routing_key AND r.tenant_id = a.tenant_id
+            AND r.actor_type = a.actor_type AND r.actor_id = a.actor_id
+          ORDER BY r.command_id DESC
+          LIMIT ${LAST_COMMAND_RECEIPTS}) n
+        WHERE n.committed_at_ms IS NOT NULL
+        ORDER BY n.committed_at_ms DESC, n.command_id COLLATE "C" DESC
         LIMIT 1) l ON TRUE
       WHERE a.tenant_id = ${page.tenant} AND ${byType} AND ${byPrefix} AND ${after}
       ORDER BY a.actor_type COLLATE "C", a.actor_id COLLATE "C"
