@@ -1,5 +1,5 @@
 import { DeploymentId } from "@akter/cloud-api"
-import type { DeploymentSummary } from "@akter/cloud-api"
+import type { DeploymentSummary, ProjectId } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import {
   cloud,
@@ -11,8 +11,14 @@ import {
   withProject,
 } from "../api/client.ts"
 import { orUndefined } from "../overview/absent.ts"
-import { rollbackCandidates, toDeploymentPage, toDeploymentsPage, toRolledBack } from "./mapping.ts"
-import type { DeploymentPage, DeploymentsPage, RolledBack } from "./model.ts"
+import {
+  rollbackCandidates,
+  toDeployRecord,
+  toDeploymentPage,
+  toDeploymentsPage,
+  toRolledBack,
+} from "./mapping.ts"
+import type { DeployRecord, DeploymentPage, DeploymentsPage, RolledBack } from "./model.ts"
 
 interface Page {
   readonly items: ReadonlyArray<DeploymentSummary>
@@ -35,15 +41,16 @@ export const loadDeployments: Effect.Effect<Loaded<DeploymentsPage>, ConsoleErro
 )
 
 /**
- * Loads one deploy by its abbreviated or full commit, or nothing for a commit that was never
- * deployed. The history is paged newest first, so the search stops at the page that holds the
- * commit. A live deploy keeps paging until an earlier deployment it could roll back to turns up or
+ * Loads one deploy by its deployment id or by its abbreviated or full commit, or nothing for a
+ * reference that names no deployment. A rollback or redeploy creates another deployment of an
+ * earlier commit, so a commit names its newest deployment and the console's own links use the id.
+ * The history is paged newest first, so the search stops at the page that holds the deployment. A live deploy keeps paging until an earlier deployment it could roll back to turns up or
  * the history ends, so its page lists them; that extra paging stops quietly at `maxDetailPages`.
  * A cursor the server repeats, or a history longer than `maxDetailPages` pages that never holds the
  * commit, fails with an `InvalidResponse` `ConsoleError` instead of looping.
  */
 export const loadDeployment = (
-  commit: string,
+  reference: string,
 ): Effect.Effect<Loaded<DeploymentPage | undefined>, ConsoleError> =>
   withProject(
     (api, { project, environment }) =>
@@ -60,7 +67,10 @@ export const loadDeployment = (
           })
           history.push(...page.items)
           hit ??= page.items.find(
-            (item) => item.commitSha.startsWith(commit) || commit.startsWith(item.commitSha),
+            (item) =>
+              item.id === reference ||
+              item.commitSha.startsWith(reference) ||
+              reference.startsWith(item.commitSha),
           )
           if (
             hit !== undefined &&
@@ -92,7 +102,29 @@ export const loadDeployment = (
         })
         return toDeploymentPage(yield* DateTime.now)({ detail, log, history })
       }).pipe(orUndefined),
-    () => import("./fixtures.ts").then((fixtures) => fixtures.deploymentPage(commit)),
+    () => import("./fixtures.ts").then((fixtures) => fixtures.deploymentPage(reference)),
+  )
+
+/**
+ * Runs one change against the deployment with `id` in the current project. Fixture mode attempts
+ * nothing, so a sample page can never report a change as made.
+ */
+const changeDeployment = <A, E>(
+  run: (
+    api: Effect.Success<typeof cloud>,
+    params: Readonly<{ projectId: ProjectId; deploymentId: DeploymentId }>,
+  ) => Effect.Effect<A, E>,
+  id: string,
+): Effect.Effect<A, ConsoleError> =>
+  Effect.suspend(() =>
+    fixturesEnabled()
+      ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data can’t be changed." }))
+      : Effect.gen(function* () {
+          const api = yield* cloud
+          const { project } = yield* projectContext
+          const deploymentId = yield* Schema.decodeEffect(DeploymentId)(id)
+          return yield* run(api, { projectId: project.id, deploymentId })
+        }).pipe(Effect.mapError(consoleError)),
   )
 
 /**
@@ -103,16 +135,24 @@ export const loadDeployment = (
  * an endpoint that is not implemented) surfaces as a `ConsoleError` instead of a fake success.
  */
 export const rollBackDeployment = (id: string): Effect.Effect<RolledBack, ConsoleError> =>
-  Effect.suspend(() =>
-    fixturesEnabled()
-      ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data can’t be changed." }))
-      : Effect.gen(function* () {
-          const api = yield* cloud
-          const { project } = yield* projectContext
-          const deploymentId = yield* Schema.decodeEffect(DeploymentId)(id)
-          const created = yield* api.deployments.rollback({
-            params: { projectId: project.id, deploymentId },
-          })
-          return toRolledBack(yield* DateTime.now)(created)
-        }).pipe(Effect.mapError(consoleError)),
+  changeDeployment(
+    (api, params) =>
+      Effect.flatMap(api.deployments.rollback({ params }), (created) =>
+        Effect.map(DateTime.now, (now) => toRolledBack(now)(created)),
+      ),
+    id,
+  )
+
+/**
+ * Starts a new deployment of the commit of the deployment with `id`, which is built again before it
+ * rolls out, and returns the new deployment. Like a rollback it never pretends to succeed: fixture
+ * mode attempts nothing and a refusal, such as a rollout already in progress, is a `ConsoleError`.
+ */
+export const redeployDeployment = (id: string): Effect.Effect<DeployRecord, ConsoleError> =>
+  changeDeployment(
+    (api, params) =>
+      Effect.flatMap(api.deployments.redeploy({ params }), (created) =>
+        Effect.map(DateTime.now, (now) => toDeployRecord(now)(created)),
+      ),
+    id,
   )

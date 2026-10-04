@@ -45,7 +45,7 @@ import {
   SignUp,
   WriteClipboard,
 } from "./command.ts"
-import { Action, canMutate } from "./action.ts"
+import { Action, canMutate, canSendCommand } from "./action.ts"
 import { Message } from "./message.ts"
 import { Dialog, type Flags, type Model, type Toast, withoutPasswords } from "./model.ts"
 import { paletteResults } from "./palette.ts"
@@ -271,7 +271,12 @@ const confirm = (model: Model, dialog: Dialog): Result =>
         )
       },
       SendCommand: ({ address, scope }) => {
-        if (model.pageSample || model.loading || model.sendingCommand) return { model }
+        if (
+          !canSendCommand({ page: model.page, sample: model.pageSample }) ||
+          model.loading ||
+          model.sendingCommand
+        )
+          return { model }
         const commandId = (model.fields["command-id"] ?? "").trim()
         if (commandId === "")
           return {
@@ -305,6 +310,7 @@ const confirm = (model: Model, dialog: Dialog): Result =>
         }
       },
       RollBack: ({ id, commit }) => mutate(model, Action.RollBack({ id, commit })),
+      Redeploy: ({ id, commit }) => mutate(model, Action.Redeploy({ id, commit })),
       DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
       KeyCreated: () => ({ model }),
     }),

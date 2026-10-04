@@ -1,11 +1,11 @@
 import { BunFileSystem } from "@effect/platform-bun"
-import { Config, Effect, FileSystem, Layer } from "effect"
+import { Config, Effect, FileSystem, Function, Layer, Predicate } from "effect"
 import { Pool, type PoolClient } from "pg"
 
 const query = (client: PoolClient, text: string, values: Array<unknown> = []) =>
   Effect.tryPromise(() => client.query(text, values))
 
-const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
+const migrateEffect = Effect.fn("Database.migrate")(function* (url: string, startAt?: string) {
   const fs = yield* FileSystem.FileSystem
 
   const pool = yield* Effect.acquireRelease(
@@ -28,7 +28,7 @@ const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
     const directory = new URL("../migrations/", import.meta.url)
 
     const names = (yield* fs.readDirectory(directory.pathname))
-      .filter((name) => name.endsWith(".sql"))
+      .filter((name) => name.endsWith(".sql") && (startAt === undefined || name >= startAt))
       .sort()
 
     for (const name of names) {
@@ -55,15 +55,24 @@ const migrateEffect = Effect.fn("Database.migrate")(function* (url: string) {
  * order and one transaction each, under a session advisory lock so concurrent
  * callers apply each file once. A failing file is rolled back and rejects.
  */
-export const migrate = (url: string): Promise<void> =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const context = yield* Layer.build(BunFileSystem.layer)
-        yield* migrateEffect(url).pipe(Effect.provideContext(context), Effect.orDie)
-      }),
+export const migrate: {
+  (url: string, options?: { readonly startAt: string }): Promise<void>
+  (options?: { readonly startAt: string }): (url: string) => Promise<void>
+} = Function.dual(
+  (args) => Predicate.isString(args[0]),
+  (url: string, options?: { readonly startAt: string }): Promise<void> =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(BunFileSystem.layer)
+          yield* migrateEffect(url, options?.startAt).pipe(
+            Effect.provideContext(context),
+            Effect.orDie,
+          )
+        }),
+      ),
     ),
-  )
+)
 
 if (import.meta.main) {
   void Effect.runPromise(

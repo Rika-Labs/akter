@@ -46,8 +46,8 @@ export const deploymentsScreen = ({ h, model, page }: ScreenInput<DeploymentsPag
           { key: "when", label: "When", width: "3rem", align: "end" },
         ],
         rows: page.deploys.map((deploy) => ({
-          key: deploy.commit,
-          href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
+          key: deploy.id,
+          href: model.pageSample ? undefined : Routes.deployment({ deployment: deploy.id }),
           cells: [
             deploy.commit,
             deploy.message,

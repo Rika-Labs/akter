@@ -4,6 +4,7 @@ import {
   codeBlock,
   columns,
   dataTable,
+  emptyState,
   pageBody,
   pageHeader,
   section,
@@ -85,6 +86,15 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
             : OpenedDialog({ dialog: Dialog.RollBack({ id: target.id, commit: target.commit }) }),
         disabled: model.pageSample || deploy.status !== "Live" || target === undefined,
       }),
+      button(h, {
+        label: "Redeploy",
+        variant: "ghost",
+        size: "sm",
+        onClick: OpenedDialog({
+          dialog: Dialog.Redeploy({ id: deploy.id, commit: deploy.commit }),
+        }),
+        disabled: model.pageSample || deploy.status === "Rolling out",
+      }),
     ],
     body: pageBody(h, [
       pageHeader(h, {
@@ -149,7 +159,7 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
                   cells: [
                     runner.id,
                     runner.region,
-                    formatInteger(runner.actors),
+                    runner.actors === null ? "—" : formatInteger(runner.actors),
                     runner.cpu,
                     status(h, {
                       tone: healthTones[runner.health],
@@ -163,14 +173,20 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
           section(h, {
             title: "Build log",
             children: [
-              codeBlock(h, {
-                code: page.log,
-                language: "log",
-                size: "small",
-                onCopy: model.pageSample
-                  ? undefined
-                  : CopiedText({ text: page.log, label: "build log" }),
-              }),
+              page.log === ""
+                ? emptyState(h, {
+                    title: "No build output",
+                    description: "The build recorded no log lines.",
+                    align: "start",
+                  })
+                : codeBlock(h, {
+                    code: page.log,
+                    language: "log",
+                    size: "small",
+                    onCopy: model.pageSample
+                      ? undefined
+                      : CopiedText({ text: page.log, label: "build log" }),
+                  }),
             ],
           }),
         ],

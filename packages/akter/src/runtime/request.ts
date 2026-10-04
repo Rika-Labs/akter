@@ -33,6 +33,7 @@ export const Executed = Schema.Struct({
   outcome: Outcome,
   version: Schema.optionalKey(Schema.String),
   endedAtMs: Schema.optionalKey(Schema.Finite),
+  replayed: Schema.optionalKey(Schema.Boolean),
 })
 
 /** A command's outcome and the commit version its caller's later queries wait for. */

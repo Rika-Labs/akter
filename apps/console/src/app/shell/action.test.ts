@@ -1,8 +1,10 @@
+import { ProjectId } from "@akter/cloud-api"
 import { Option } from "effect"
 import { expect, it } from "vitest"
 import { CommandsPage } from "../commands/model.ts"
 import { emptySettings } from "../settings/model.ts"
-import { Action, canMutate } from "./action.ts"
+import { sampleActor } from "../actors/fixtures.ts"
+import { Action, canMutate, canSendCommand } from "./action.ts"
 
 it("blocks sample actions at dispatch while preserving live actions on mixed-source settings pages", () => {
   const page = Option.some({ ...emptySettings, sampleSections: ["endpoints"] as const })
@@ -38,4 +40,20 @@ it("blocks sample actions at dispatch while preserving live actions on mixed-sou
       action: Action.DeleteProject({ slug: "project" }),
     }),
   ).toBe(false)
+})
+
+it("sends commands from a sample page only when an inspector holds a real command scope", () => {
+  const actor = sampleActor({ actorType: "Counter", key: "hits" })
+  const scope = { projectId: ProjectId.make("prj_1"), environment: "production" } as const
+  expect(
+    canSendCommand({ page: Option.some({ ...actor, commandScope: scope }), sample: true }),
+  ).toBe(true)
+  expect(canSendCommand({ page: Option.some(actor), sample: true })).toBe(false)
+  expect(
+    canSendCommand({
+      page: Option.some(CommandsPage.make({ types: [], recent: [] })),
+      sample: true,
+    }),
+  ).toBe(false)
+  expect(canSendCommand({ page: Option.none(), sample: false })).toBe(true)
 })

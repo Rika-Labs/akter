@@ -54,8 +54,8 @@ describe("API configuration", () => {
     AUTH_SECRET: "a-production-signing-secret-long-enough",
     API_PRODUCTION: "true",
     EMAIL_MODE: "ses",
-    API_ORIGIN: "https://api.akter.example",
-    CONSOLE_ORIGIN: "https://console.akter.example",
+    API_ORIGIN: "https://api.akter.dev",
+    CONSOLE_ORIGIN: "https://app.akter.dev",
   }
   const loadProduction = (overrides: Record<string, string>) =>
     Effect.exit(
@@ -81,13 +81,13 @@ describe("API configuration", () => {
         ),
       )
       expect(options.consoleOrigin).toBeUndefined()
-      expect(options.origin).toBe("https://api.akter.example")
+      expect(options.origin).toBe("https://api.akter.dev")
     }),
   )
   it.effect("refuses production origins that are not public https", () =>
     Effect.gen(function* () {
       const refused: ReadonlyArray<Record<string, string>> = [
-        { API_ORIGIN: "http://api.akter.example" },
+        { API_ORIGIN: "http://api.akter.dev" },
         { CONSOLE_ORIGIN: "https://localhost:5173" },
         { AUTH_TRUSTED_IDP_ORIGINS: "https://idp.example,http://idp.example" },
       ]
@@ -99,6 +99,14 @@ describe("API configuration", () => {
     Effect.gen(function* () {
       const result = yield* loadProduction({
         AUTH_SECRET: "local-development-only-change-before-production",
+      })
+      expect(result._tag).toBe("Failure")
+    }),
+  )
+  it.effect("refuses a shared runner environment in production", () =>
+    Effect.gen(function* () {
+      const result = yield* loadProduction({
+        RUNNER_ENVIRONMENT: '{"DATABASE_URL":"postgres://shared"}',
       })
       expect(result._tag).toBe("Failure")
     }),

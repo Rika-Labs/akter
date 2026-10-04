@@ -215,13 +215,13 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
         label: "Copy address",
         variant: "ghost",
         size: "sm",
-        disabled: model.pageSample,
+        disabled: model.pageSample && page.commandScope === undefined,
         onClick: CopiedText({ text: address, label: "address" }),
       }),
       button(h, {
         label: "Send command",
         size: "sm",
-        disabled: model.pageSample || page.commandScope === undefined,
+        disabled: page.commandScope === undefined,
         onClick:
           page.commandScope === undefined
             ? undefined
