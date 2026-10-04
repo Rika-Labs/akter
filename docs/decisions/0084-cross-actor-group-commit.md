@@ -45,7 +45,9 @@ A member's cost is its admission read plus its writes: three statements for a on
 
 ## Evidence
 
-Conformance on real Postgres and the Daytona measurement are recorded in [BENCHMARKS.md](../../BENCHMARKS.md#cross-actor-group-commit-495).
+On the #529 Daytona harness (three ordered repeats against `main` `b8aa892d7`), 64 callers over 10,000 keys served 1,453 commands/s against 1,075 (median), with p99 108 ms against 124 ms; 256 callers admitted 1,222/s against 956/s with a smaller refused share (36.6% against 39.1%) and admitted p99 145 ms against 162 ms. App CPU per command fell from 1.15 to 0.87 ms and Postgres CPU from 0.47 to 0.21 ms; shared commits averaged about 24 commands. Sequential commands form groups of one and stayed within noise.
+
+The `groups` conformance cases, two pipeline cases and two crash drills reject an implementation that commits a failed, fenced, interrupted or evicted member's writes, aborts a neighbour on a declared failure or defect, fails an innocent member on a neighbour's statement error, answers before the shared commit, or leaves any member partly committed after a crash before or during `COMMIT`. Details, ranges and the single WAL-segment stall outlier are in [BENCHMARKS.md](../../BENCHMARKS.md#cross-actor-group-commit-495).
 
 ## Revisit when
 
