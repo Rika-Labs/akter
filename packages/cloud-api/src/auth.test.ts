@@ -64,6 +64,18 @@ const AuthenticationLive = Layer.succeed(
             }),
           )
         : reject("missing_credentials"),
+    bearer: (httpEffect, { credential }) =>
+      Redacted.value(credential) === "device-token"
+        ? Effect.provideService(
+            httpEffect,
+            CurrentIdentity,
+            SessionIdentity.make({
+              userId: UserId.make("usr_3"),
+              sessionId: "ses_3",
+              activeOrganizationId: null,
+            }),
+          )
+        : reject("invalid_credentials"),
   }),
 )
 
@@ -106,6 +118,7 @@ const DeploymentsHandlers = HttpApiBuilder.group(Api, "deployments", (handlers) 
     handlers
       .handle("list", () => Effect.fail(NotImplemented.make({ operation: "deployments.list" })))
       .handle("create", () => Effect.fail(NotImplemented.make({ operation: "x" })))
+      .handle("uploadSource", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("get", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("getBuildLog", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("recordBuild", () => Effect.fail(NotImplemented.make({ operation: "x" })))
@@ -182,12 +195,22 @@ describe("Authentication over HTTP", () => {
       }),
     ))
 
-  it("refuses a wrong cookie and a wrong key instead of falling back to anonymous", () =>
+  it("resolves a person from a CLI's bearer session token", () =>
+    run(
+      Effect.gen(function* () {
+        const response = yield* send("/api/me", { authorization: "Bearer device-token" })
+        expect(response.status).toBe(200)
+        expect(response.body).toMatchObject({ identityKind: "session", user: { id: "usr_3" } })
+      }),
+    ))
+
+  it("refuses a wrong cookie, a wrong key and a wrong bearer token instead of falling back to anonymous", () =>
     run(
       Effect.gen(function* () {
         const wrongCookie = yield* send("/api/me", { cookie: `${sessionCookieName}=forged` })
         const wrongKey = yield* send("/api/me", { [apiKeyHeaderName]: "guess" })
-        expect([wrongCookie.status, wrongKey.status]).toEqual([401, 401])
+        const wrongBearer = yield* send("/api/me", { authorization: "Bearer guess" })
+        expect([wrongCookie.status, wrongKey.status, wrongBearer.status]).toEqual([401, 401, 401])
       }),
     ))
 

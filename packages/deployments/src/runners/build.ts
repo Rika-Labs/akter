@@ -7,10 +7,19 @@ export interface BuildLine {
   readonly text: string
 }
 
-/** What to build: the tag the image gets and the build arguments it is built with. */
+/**
+ * What to build: the tag the image gets, the build arguments it is built
+ * with, and, for a deployment whose context was uploaded, that context as a
+ * gzip-compressed tar with the path of its Dockerfile inside it. Without
+ * `source` the builder builds its own configured context.
+ */
 export interface BuildInput {
   readonly tag: string
   readonly buildArgs: Readonly<Record<string, string>>
+  readonly source?: {
+    readonly archive: Uint8Array
+    readonly dockerfile: string
+  }
 }
 
 /** A built image: the local image id a runner starts from, and the build's last lines of output. */
@@ -56,10 +65,11 @@ export interface DockerBuildOptions {
 
 /**
  * `ImageBuilds` over the local Docker CLI with BuildKit, for the development
- * stack and tests; hosted images are built and pushed by CI. A retried build
- * reuses the Docker build cache, and the image id, not the mutable tag, is
- * what a runner starts, so a later build under the same tag cannot change a
- * recorded deployment.
+ * stack and tests; hosted images are built and pushed by CI. An uploaded
+ * context is piped to `docker build -` as its tar, where `--file` names a
+ * path inside it. A retried build reuses the Docker build cache, and the
+ * image id, not the mutable tag, is what a runner starts, so a later build
+ * under the same tag cannot change a recorded deployment.
  */
 export const dockerBuilds = (options: DockerBuildOptions) =>
   Layer.effect(
@@ -74,13 +84,16 @@ export const dockerBuilds = (options: DockerBuildOptions) =>
           .filter((line) => line.trim() !== "")
           .map((line): BuildLine => ({ stream, text: line }))
 
-      const docker = (args: ReadonlyArray<string>) =>
+      const docker = (args: ReadonlyArray<string>, stdin?: Uint8Array) =>
         Effect.gen(function* () {
+          const environment = {
+            env: { DOCKER_BUILDKIT: "1", BUILDKIT_PROGRESS: "plain" },
+            extendEnv: true,
+          }
           const handle = yield* spawner.spawn(
-            ChildProcess.make(binary, [...args], {
-              env: { DOCKER_BUILDKIT: "1", BUILDKIT_PROGRESS: "plain" },
-              extendEnv: true,
-            }),
+            stdin === undefined
+              ? ChildProcess.make(binary, [...args], environment)
+              : ChildProcess.make(binary, [...args], { ...environment, stdin: Stream.make(stdin) }),
           )
           const [stdout, stderr] = yield* Effect.all(
             [
@@ -100,20 +113,25 @@ export const dockerBuilds = (options: DockerBuildOptions) =>
 
       return ImageBuilds.of({
         build: Effect.fnUntraced(function* (input) {
-          const built = yield* docker([
-            "build",
-            "--file",
-            `${options.context.replace(/\/+$/u, "")}/${options.dockerfile}`,
-            "--platform",
-            options.platform ?? "linux/arm64",
-            "--tag",
-            input.tag,
-            ...Object.entries(input.buildArgs).flatMap(([key, value]) => [
-              "--build-arg",
-              `${key}=${value}`,
-            ]),
-            options.context,
-          ])
+          const built = yield* docker(
+            [
+              "build",
+              "--file",
+              input.source === undefined
+                ? `${options.context.replace(/\/+$/u, "")}/${options.dockerfile}`
+                : input.source.dockerfile,
+              "--platform",
+              options.platform ?? "linux/arm64",
+              "--tag",
+              input.tag,
+              ...Object.entries(input.buildArgs).flatMap(([key, value]) => [
+                "--build-arg",
+                `${key}=${value}`,
+              ]),
+              input.source === undefined ? options.context : "-",
+            ],
+            input.source?.archive,
+          )
           const log = [...lines("stdout", built.stdout), ...lines("stderr", built.stderr)].slice(
             -LOG_LINES,
           )

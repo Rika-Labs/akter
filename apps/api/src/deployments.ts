@@ -11,6 +11,7 @@ import { Crypto, Effect, Option, Predicate, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
 import { Access, attributedSubject } from "./access.ts"
+import { Sources } from "./sources.ts"
 
 const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String }))
 
@@ -24,6 +25,7 @@ const commitLabel = (commitSha: string, message: string) =>
 export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments", (handlers) =>
   Effect.gen(function* () {
     const access = yield* Access
+    const sources = yield* Sources
     const sql = yield* SqlClient.SqlClient
     const detail = Effect.fnUntraced(function* (value: DeploymentDetail) {
       if (value.status !== "live")
@@ -138,6 +140,20 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
       )
 
     return handlers
+      .handle("uploadSource", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const organizationId = yield* access.project(params.projectId, "write")
+          if (!sources.builds)
+            return yield* Cloud.NotImplemented.make({ operation: "deployments.uploadSource" })
+          if (payload.byteLength > Cloud.MAX_SOURCE_BYTES)
+            return yield* Cloud.Conflict.make({ message: "A source archive holds at most 64 MiB" })
+          return yield* sources.store({
+            organizationId,
+            projectId: params.projectId,
+            archive: payload,
+          })
+        }),
+      )
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
           const organizationId = yield* access.project(params.projectId, "write")
@@ -146,6 +162,24 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             return yield* Cloud.Conflict.make({
               message: "A deployment must name exactly one home region",
             })
+          const deploymentId = yield* id
+          if (payload.source !== undefined) {
+            if (!sources.builds)
+              return yield* Cloud.NotImplemented.make({ operation: "deployments.create.source" })
+            yield* sources
+              .attach({
+                organizationId,
+                projectId: params.projectId,
+                deploymentId,
+                digest: payload.source.digest,
+                dockerfile: payload.source.dockerfile,
+              })
+              .pipe(
+                Effect.catchTag("SourceNotFound", (missing) =>
+                  Cloud.NotFound.make({ resource: "source", id: missing.digest }),
+                ),
+              )
+          }
           const actor = yield* actorOf(organizationId, params.projectId, payload.environment)
           const [project] = yield* sql<{
             homeRegion: "us-east-1" | "us-west-2"
@@ -154,7 +188,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
           )
           return yield* actor
             .Create({
-              deploymentId: yield* id,
+              deploymentId,
               commitSha: payload.commitSha,
               message: payload.message ?? "",
               author: yield* author,
@@ -250,9 +284,11 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
           )
           const actor = yield* actorOf(organizationId, params.projectId, environment)
           const source = yield* actor.Get({ deploymentId: params.deploymentId }).pipe(expected)
+          const deploymentId = yield* id
+          yield* sources.copy({ from: params.deploymentId, to: deploymentId })
           return yield* actor
             .Redeploy({
-              deploymentId: yield* id,
+              deploymentId,
               source: params.deploymentId,
               message: `Redeploy ${yield* sourceLabel(source)}`,
               author: yield* author,

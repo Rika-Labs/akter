@@ -15,11 +15,11 @@ description: "The durable command-line tool: its commands, flags, output, and ex
 
 ## Exit statuses
 
-| Status | Meaning                                                                                                                                                                                                                                                                                                                |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                                   |
-| 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, `adopt plan` found a table problem or an `adopt` step was refused, or a runner refused an operator request (`Refused (<status>): <body>`).              |
-| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner, a database `workflows check`, `payloads`, or `adopt` cannot read, or a refused `tenants create`. An invalid invocation prints the command's help on stdout and the error on stderr. |
+| Status | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, `adopt plan` found a table problem or an `adopt` step was refused, a runner refused an operator request (`Refused (<status>): <body>`), the control plane refused a hosted command or no longer accepts the stored session, a `login` was denied or expired, or a `deploy` failed or outlasted `--timeout`. |
+| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner or control plane, a database `workflows check`, `payloads`, or `adopt` cannot read, a refused `tenants create`, a hosted command run before `login`, or stored credentials other users can read. An invalid invocation prints the command's help on stdout and the error on stderr.                                                      |
 
 ## Global flags
 
@@ -29,7 +29,7 @@ Every command takes `--help` (`-h`), `--version` (`-v`), `--completions <bash|zs
 
 ```text
 DESCRIPTION
-  Run actors locally, check a deploy against stored data, adopt existing tables, and inspect and repair a running deployment
+  Run actors locally, check a deploy against stored data, adopt existing tables, inspect and repair a running deployment, and deploy to Akter Cloud
 
 USAGE
   durable <subcommand> [flags]
@@ -56,6 +56,12 @@ Operate a running deployment:
   dead-letters     Repair dead-lettered jobs; the runner audits each repair
   subscriptions    List and skip stuck subscription rows
 
+Akter Cloud:
+  login     Sign in to Akter Cloud through the browser and store the session for deploy
+  logout    Sign out of Akter Cloud and delete the stored session
+  whoami    Show who the stored Akter Cloud session signs in as
+  deploy    Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+
 Control plane:
   tenants    Manage the tenant directory
   billing    Set up the billing catalog
@@ -65,7 +71,67 @@ Control plane:
 
 `defects list`, `inspect`, `export`, `receipts show`, `dead-letters`, and `subscriptions` call a runner's `Operators.serve` routes. Each reads its bearer token from `DURABLE_OPERATOR_TOKEN`, or from the environment variable `--token-env` names. `--url` repeats; `defects list` reads every runner named, and the single-actor commands use the first. See [ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md) for the grants each command needs and the [runbooks](../operations/runbooks.md) for when to use them.
 
+## Akter Cloud commands
+
+`login`, `logout`, `whoami` and `deploy` talk to a control plane (`apps/api`) through its `CloudApi` client ([ADR 0085](../decisions/0085-cli-login-and-source-deploys.md)). `login` signs in through Better Auth's device authorization grant and stores the session in `credentials.json` in the CLI's configuration directory: `AKTER_CONFIG_DIR` when set, else `~/Library/Application Support/akter` on macOS, `%APPDATA%\akter` on Windows and `$XDG_CONFIG_HOME/akter` (default `~/.config/akter`) elsewhere. The file is `0600` in a `0700` directory, and a file the group or others can read is refused until it is fixed or replaced by another `login`. The other commands send the stored session as a bearer token to the control plane it came from.
+
 ## Commands
+
+### `durable login`
+
+Sign in to Akter Cloud through the browser and store the session for deploy
+
+```text
+USAGE
+  durable login [flags]
+
+FLAGS
+  --api-url string    The control plane to sign in to (default AKTER_API_URL, then http://localhost:3001)
+```
+
+It prints a verification URL and a code, then polls at the interval the control plane names, five seconds slower after each `slow_down`. Approving the code saves the session and prints who it signs in as; a denied or expired code exits 1 and saves nothing.
+
+### `durable logout`
+
+Sign out of Akter Cloud and delete the stored session
+
+```text
+USAGE
+  durable logout
+```
+
+It revokes the session at its control plane, then deletes the stored credentials even when the control plane could not be reached, and says so.
+
+### `durable whoami`
+
+Show who the stored Akter Cloud session signs in as
+
+```text
+USAGE
+  durable whoami
+```
+
+It prints the email address and control plane, then one line per organization: its slug, the role and its id. An expired or revoked session exits 1 and asks for `durable login`.
+
+### `durable deploy`
+
+Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+
+```text
+USAGE
+  durable deploy [flags]
+
+FLAGS
+  --project string       The project to deploy to (default AKTER_PROJECT)
+  --env choice           The environment to deploy to (default production) (choices: production, staging, dev)
+  --context directory    The build context to upload (default the current directory)
+  --dockerfile string    The Dockerfile's path inside the context (default Dockerfile)
+  --commit string        The commit SHA the deployment is labeled with (default the context's git HEAD)
+  --message string       The deployment's message (default the commit's subject)
+  --timeout integer      Seconds to follow the rollout before giving up on it (default 900)
+```
+
+It packs the context as `docker build` would send it (`<Dockerfile>.dockerignore`, else `.dockerignore`; the Dockerfile always included), uploads it to `POST /api/projects/:projectId/sources`, creates the deployment from the returned digest, and prints each rollout step as it starts and ends. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`.
 
 ### `durable billing setup`
 

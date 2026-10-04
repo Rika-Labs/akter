@@ -96,4 +96,70 @@ layer(services)("docker image builds", (it) => {
       }),
     120_000,
   )
+
+  it.effect(
+    "builds an uploaded context from its archive instead of the configured context, and refuses an archive without its Dockerfile",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* context
+        const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)
+        const tag = `akter-build-test:${suffix}-uploaded`
+        const missing = `akter-build-test:${suffix}-missing`
+
+        yield* Effect.addFinalizer(() => docker("image", "rm", "--force", tag, missing))
+
+        const archive = yield* Effect.promise(() =>
+          new Bun.Archive(
+            {
+              "app/Uploaded.Dockerfile":
+                "FROM scratch\nARG RUNNER_VERSION\nLABEL source=archive version=$RUNNER_VERSION\nCOPY uploaded /uploaded\n",
+              uploaded: `uploaded ${suffix}`,
+            },
+            { compress: "gzip" },
+          ).bytes(),
+        )
+        const builds = Context.get(
+          yield* Layer.build(
+            dockerBuilds({ context: directory, dockerfile: "Runner.Dockerfile" }).pipe(
+              Layer.provide(services),
+            ),
+          ),
+          ImageBuilds,
+        )
+
+        const built = yield* builds.build({
+          tag,
+          buildArgs: { RUNNER_VERSION: "a1b2c3d" },
+          source: { archive, dockerfile: "app/Uploaded.Dockerfile" },
+        })
+
+        expect(built.imageId).toMatch(/^sha256:[0-9a-f]{64}$/u)
+        expect(built.log.some((line) => line.text.includes("COPY uploaded"))).toBe(true)
+        expect((yield* docker("image", "inspect", "--format", "{{.Id}}", tag)).out).toBe(
+          built.imageId,
+        )
+        expect(
+          (yield* docker(
+            "image",
+            "inspect",
+            "--format",
+            '{{index .Config.Labels "source"}} {{index .Config.Labels "version"}}',
+            tag,
+          )).out,
+        ).toBe("archive a1b2c3d")
+
+        const refused = yield* builds
+          .build({
+            tag: missing,
+            buildArgs: {},
+            source: { archive, dockerfile: "Runner.Dockerfile" },
+          })
+          .pipe(Effect.flip)
+
+        expect(refused).toBeInstanceOf(BuildFailed)
+        expect(refused).toMatchObject({ retryable: false })
+        expect((yield* docker("image", "inspect", missing)).code).not.toBe(0)
+      }),
+    120_000,
+  )
 })

@@ -4,7 +4,7 @@ import { RuntimeContext, unpackEnvValue } from "alchemy/RuntimeContext"
 import { getCurrentDBAdapterAsyncLocalStorage } from "@better-auth/core/context"
 import { apiKey } from "@better-auth/api-key"
 import { sso } from "@better-auth/sso"
-import { organization } from "better-auth/plugins"
+import { bearer, deviceAuthorization, organization } from "better-auth/plugins"
 import { createAccessControl } from "better-auth/plugins/access"
 import {
   defaultStatements,
@@ -17,11 +17,21 @@ import { SqlClient } from "effect/sql"
 import { Email } from "./email.ts"
 import type { ApiOptions } from "./config.ts"
 
+/** The one client the device authorization grant accepts: the `durable` CLI. */
+export const CLI_CLIENT_ID = "akter-cli"
+
 /**
  * Better Auth sends mail from inside its open database transaction, and Bun
  * keeps that transaction's async-local store attached to every task the Effect
  * runtime schedules from there. Once the transaction commits, later sessions
  * read the committed transaction and fail, so each send runs outside the store.
+ *
+ * The bearer plugin keeps only its request hook, so the session token a CLI
+ * receives from the device authorization grant authenticates as
+ * `Authorization: Bearer`. Its response hook would copy every new session
+ * token, browser sign-ins included, into a script-readable `set-auth-token`
+ * header, so it is left out and browser sessions stay in their HTTP-only
+ * cookie.
  */
 const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
   const email = yield* Email
@@ -63,6 +73,13 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     enableMetadata: true,
     rateLimit: { enabled: false },
   })
+  const devicePlugin = deviceAuthorization({
+    expiresIn: "10m",
+    interval: "5s",
+    verificationUri: `${linkBase}/device`,
+    validateClient: (clientId) => clientId === CLI_CLIENT_ID,
+  })
+  const bearerPlugin = { ...bearer(), hooks: { before: bearer().hooks.before } }
   const enterpriseOrganizations = options.enterpriseOrganizations ?? []
   const ssoPlugin = sso({
     domainVerification: { enabled: true },
@@ -115,10 +132,12 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     socialProviders: { github: options.github, google: options.google },
     account: { accountLinking: { enabled: false } },
     rateLimit: { enabled: options.production },
-    plugins: [organizationPlugin, keyPlugin, ssoPlugin] satisfies [
+    plugins: [organizationPlugin, keyPlugin, ssoPlugin, devicePlugin, bearerPlugin] satisfies [
       typeof organizationPlugin,
       typeof keyPlugin,
       typeof ssoPlugin,
+      typeof devicePlugin,
+      typeof bearerPlugin,
     ],
     advanced: {
       useSecureCookies: options.production,

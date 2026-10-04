@@ -24,6 +24,10 @@ import { createCommand } from "./commands/tenants/create.ts"
 import { checkCommand as workflowsCheckCommand } from "./commands/workflows/check.ts"
 import { CommandFailed } from "./failure.ts"
 import { billingSetupCommand } from "./commands/billing/setup.ts"
+import { deployCommand } from "./commands/cloud/deploy.ts"
+import { loginCommand } from "./commands/cloud/login.ts"
+import { logoutCommand } from "./commands/cloud/logout.ts"
+import { whoamiCommand } from "./commands/cloud/whoami.ts"
 
 const group = <const Subcommands extends ReadonlyArray<Command.Command.SubcommandEntry>>(
   name: string,
@@ -38,7 +42,7 @@ const group = <const Subcommands extends ReadonlyArray<Command.Command.Subcomman
 /** The `durable` command tree. */
 export const durable = Command.make("durable").pipe(
   Command.withDescription(
-    "Run actors locally, check a deploy against stored data, adopt existing tables, and inspect and repair a running deployment",
+    "Run actors locally, check a deploy against stored data, adopt existing tables, inspect and repair a running deployment, and deploy to Akter Cloud",
   ),
   Command.withSubcommands([
     {
@@ -86,6 +90,10 @@ export const durable = Command.make("durable").pipe(
           skipCommand,
         ]),
       ],
+    },
+    {
+      group: "Akter Cloud",
+      commands: [loginCommand, logoutCommand, whoamiCommand, deployCommand],
     },
     {
       group: "Control plane",

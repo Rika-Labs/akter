@@ -106,6 +106,7 @@ const missing: Readonly<Record<NotFoundResource, string>> = {
   member: "This person is no longer a member.",
   organization: "This organization doesn’t exist or you’re no longer a member.",
   project: "This project doesn’t exist or you no longer have access to it.",
+  source: "This project was never sent that source archive.",
 }
 
 /** Preserves contract error categories while keeping transport details out of the UI. */

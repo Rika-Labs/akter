@@ -9,11 +9,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "CLI_BACKEND=none bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src",
-    "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/tenants apps/cli/src/commands/adopt apps/cli/src/commands/fleet"
+    "test": "CLI_BACKEND=none bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src --exclude apps/cli/src/hosted-stack.test.ts",
+    "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/tenants apps/cli/src/commands/adopt apps/cli/src/commands/fleet",
+    "test:stack": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/hosted-stack.test.ts"
   },
   "dependencies": {
     "@akter/billing": "workspace:*",
+    "@akter/cloud-api": "workspace:*",
     "@akter/deployments": "workspace:*",
     "@distilled.cloud/stripe": "catalog:",
     "@effect/platform-bun": "catalog:",
@@ -24,6 +26,7 @@
   "devDependencies": {
     "@akter/postgres": "workspace:*",
     "@effect/sql-pglite": "catalog:",
+    "@effect/vitest": "catalog:",
     "@types/pg": "8.23.1",
     "drizzle-orm": "catalog:",
     "pg": "8.23.0",

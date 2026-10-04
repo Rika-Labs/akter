@@ -33,60 +33,69 @@ export const AccessLive = Layer.effect(
       )
         return yield* Forbidden.make({ message: "Untrusted browser origin" })
     })
-    const resolveSession = Effect.gen(function* () {
-      yield* checkOrigin
-      const request = yield* HttpServerRequest.HttpServerRequest
-      if (request.headers["x-api-key"] !== undefined)
-        return yield* Unauthorized.make({
-          code: "invalid_credentials",
-          message: "An explicit API key takes precedence over a session",
-        })
-      const found = yield* Effect.tryPromise({
-        try: () => auth.api.getSession({ headers: new Headers(request.headers) }),
-        catch: () =>
-          Unauthorized.make({
+    /**
+     * Resolves the Better Auth session that `headers` carry: the request's
+     * cookies, or, for a bearer token, only that token, so a cookie sent
+     * beside it can never stand in for it.
+     */
+    const resolveSession = (headers: (request: HttpServerRequest.HttpServerRequest) => Headers) =>
+      Effect.gen(function* () {
+        yield* checkOrigin
+        const request = yield* HttpServerRequest.HttpServerRequest
+        if (request.headers["x-api-key"] !== undefined)
+          return yield* Unauthorized.make({
             code: "invalid_credentials",
-            message: "Session could not be verified",
-          }),
-      })
-      if (found === null || !found.user.emailVerified)
-        return yield* Unauthorized.make({
-          code: "missing_credentials",
-          message: "A verified session is required",
+            message: "An explicit API key takes precedence over a session",
+          })
+        const found = yield* Effect.tryPromise({
+          try: () => auth.api.getSession({ headers: headers(request) }),
+          catch: () =>
+            Unauthorized.make({
+              code: "invalid_credentials",
+              message: "Session could not be verified",
+            }),
         })
-      return SessionIdentity.make({
-        userId: UserId.make(found.user.id),
-        sessionId: found.session.id,
-        activeOrganizationId:
-          found.session.activeOrganizationId == null
-            ? null
-            : OrganizationId.make(found.session.activeOrganizationId),
+        if (found === null || !found.user.emailVerified)
+          return yield* Unauthorized.make({
+            code: "missing_credentials",
+            message: "A verified session is required",
+          })
+        return SessionIdentity.make({
+          userId: UserId.make(found.user.id),
+          sessionId: found.session.id,
+          activeOrganizationId:
+            found.session.activeOrganizationId == null
+              ? null
+              : OrganizationId.make(found.session.activeOrganizationId),
+        })
       })
-    })
-    return Authentication.of({
-      session: (effect) =>
-        Effect.flatMap(resolveSession, (identity) =>
-          Effect.provideService(
-            effect.pipe(
-              Actor.as(
-                System.make({ source: "process", onBehalfOf: { subject: identity.userId } }),
-              ),
-            ),
-            CurrentIdentity,
-            identity,
+    const asPerson = <A, E, R>(
+      resolved: Effect.Effect<
+        typeof SessionIdentity.Type,
+        Unauthorized | Forbidden,
+        HttpServerRequest.HttpServerRequest
+      >,
+      effect: Effect.Effect<A, E, R>,
+    ) =>
+      Effect.flatMap(resolved, (identity) =>
+        Effect.provideService(
+          effect.pipe(
+            Actor.as(System.make({ source: "process", onBehalfOf: { subject: identity.userId } })),
           ),
+          CurrentIdentity,
+          identity,
         ),
-      secureSession: (effect) =>
-        Effect.flatMap(resolveSession, (identity) =>
-          Effect.provideService(
-            effect.pipe(
-              Actor.as(
-                System.make({ source: "process", onBehalfOf: { subject: identity.userId } }),
-              ),
-            ),
-            CurrentIdentity,
-            identity,
+      )
+    const cookieSession = resolveSession((request) => new Headers(request.headers))
+    return Authentication.of({
+      session: (effect) => asPerson(cookieSession, effect),
+      secureSession: (effect) => asPerson(cookieSession, effect),
+      bearer: (effect, { credential }) =>
+        asPerson(
+          resolveSession(
+            () => new Headers({ authorization: `Bearer ${Redacted.value(credential)}` }),
           ),
+          effect,
         ),
       apiKey: (effect, { credential }) =>
         Effect.gen(function* () {

@@ -20,8 +20,9 @@ export class Forbidden extends Schema.TaggedError<Forbidden>()(
 /**
  * What a `NotFound` names. `actor` is an actor address the live deployment
  * does not have, `actor-type` a type it does not serve, `live deployment` an
- * environment with nothing deployed, and `command` a command the actor does
- * not declare, so a caller tells them apart without reading `id`.
+ * environment with nothing deployed, `command` a command the actor does
+ * not declare, and `source` a source archive the project was never sent, so a
+ * caller tells them apart without reading `id`.
  */
 export const NotFoundResource = Schema.Literals([
   "actor",
@@ -37,6 +38,7 @@ export const NotFoundResource = Schema.Literals([
   "member",
   "organization",
   "project",
+  "source",
 ])
 export type NotFoundResource = typeof NotFoundResource.Type
 

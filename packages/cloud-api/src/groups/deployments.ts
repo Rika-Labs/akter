@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 
 import {
   BuildLog,
@@ -9,6 +9,7 @@ import {
   DeploymentSummary,
   RecordBuild,
   FailBuild,
+  SourceArchive,
 } from "../deployments.ts"
 import { ReadErrors, WriteErrors } from "../errors.ts"
 import {
@@ -40,6 +41,17 @@ export class DeploymentsGroup extends HttpApiGroup.make("deployments").add(
     success: DeploymentDetail,
     error: WriteErrors,
   }),
+  HttpApiEndpoint.post("uploadSource", "/projects/:projectId/sources", {
+    params: projectParams,
+    payload: Schema.Uint8Array.pipe(
+      HttpApiSchema.asUint8Array({ contentType: "application/gzip" }),
+    ),
+    success: SourceArchive,
+    error: WriteErrors,
+  }).annotate(
+    OpenApi.Description,
+    "Stores a gzip-compressed tar of a build context for the project and answers its digest, the SHA-256 of the bytes sent. Sending the same bytes again answers the same digest. A deployment created with `source` naming that digest is built from it by the control plane's builder. A control plane without a builder answers 501 `NotImplemented`, and an archive over 64 MiB is a 409 `Conflict`.",
+  ),
   HttpApiEndpoint.get("get", "/projects/:projectId/deployments/:deploymentId", {
     params: deploymentParams,
     success: DeploymentDetail,

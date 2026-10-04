@@ -1,9 +1,36 @@
 import { expect, it } from "@effect/vitest"
 import * as Cloud from "@akter/cloud-api"
 import { Crypto, Effect, Schedule, Schema } from "effect"
-import { Cookies } from "effect/http"
+import { Cookies, HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
-import { enterpriseOrganizations, read, signupWith, TestLive, testServer } from "./fixtures.ts"
+import { CLI_CLIENT_ID } from "./auth.ts"
+import {
+  baseOrigin,
+  enterpriseOrganizations,
+  read,
+  signupWith,
+  TestLive,
+  testServer,
+} from "./fixtures.ts"
+
+const DeviceCode = Schema.Struct({
+  device_code: Schema.String,
+  user_code: Schema.String,
+  verification_uri: Schema.String,
+  verification_uri_complete: Schema.String,
+  expires_in: Schema.Finite,
+  interval: Schema.Finite,
+})
+
+const DeviceToken = Schema.Struct({
+  access_token: Schema.String,
+  token_type: Schema.String,
+  expires_in: Schema.Finite,
+})
+
+const DeviceError = Schema.Struct({ error: Schema.String })
+
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 it.layer(TestLive, { excludeTestServices: true })(
   "cloud API over real Postgres and Bun HTTP",
@@ -561,6 +588,166 @@ it.layer(TestLive, { excludeTestServices: true })(
           ])
         }),
       { timeout: 60000 },
+    )
+
+    it.effect(
+      "signs a CLI in through the device authorization grant, accepts its bearer session on the API until sign-out, and refuses wrong clients, other users' approvals, denials and expired codes",
+      () =>
+        Effect.gen(function* () {
+          const { request, origin } = yield* testServer
+          const sql = yield* SqlClient.SqlClient
+          const client = yield* HttpClient.HttpClient
+          const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+          const signup = signupWith({ request, sql, suffix })
+          const alice = yield* signup("device-alice")
+          const bob = yield* signup("device-bob")
+          const start = (clientId: string) =>
+            request({ path: "/auth/device/code", method: "POST", body: { client_id: clientId } })
+          const code = Effect.gen(function* () {
+            const response = yield* start(CLI_CLIENT_ID)
+            expect(response.status).toBe(200)
+            return yield* read(response, DeviceCode)
+          })
+          const errorOf = Effect.fn(function* (response: Parameters<typeof read>[0]) {
+            expect(response.status).toBe(400)
+            return (yield* read(response, DeviceError)).error
+          })
+          const poll = (deviceCode: string, clientId = CLI_CLIENT_ID) =>
+            request({
+              path: "/auth/device/token",
+              method: "POST",
+              body: { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: clientId },
+            })
+          const settled = (deviceCode: string) =>
+            poll(deviceCode).pipe(
+              Effect.flatMap((response) =>
+                Effect.map(
+                  response.status === 200 ? Effect.succeed("granted") : errorOf(response),
+                  (error) => ({ response, error }),
+                ),
+              ),
+              Effect.filterOrFail(
+                ({ error }) => error !== "slow_down" && error !== "authorization_pending",
+              ),
+              Effect.retry({ times: 20, schedule: Schedule.spaced("1 second") }),
+              Effect.map(({ response }) => response),
+              Effect.orDie,
+            )
+          const claim = (userCode: string, cookie: string) =>
+            request({ path: `/auth/device?user_code=${encodeURIComponent(userCode)}`, cookie })
+          const decide = (decision: "approve" | "deny", userCode: string, cookie: string) =>
+            request({
+              path: `/auth/device/${decision}`,
+              method: "POST",
+              cookie,
+              body: { userCode },
+            })
+          const me = (token: string) =>
+            request({ path: "/api/me", headers: { authorization: `Bearer ${token}` } })
+
+          expect(yield* errorOf(yield* start("someone-else"))).toBe("invalid_client")
+
+          const approved = yield* code
+          expect(approved.verification_uri).toBe(`${baseOrigin}/device`)
+          expect(approved.verification_uri_complete).toBe(
+            `${baseOrigin}/device?user_code=${approved.user_code}`,
+          )
+          expect(yield* errorOf(yield* poll(approved.device_code))).toBe("authorization_pending")
+          expect((yield* claim(approved.user_code, alice.cookie)).status).toBe(200)
+          expect((yield* decide("approve", approved.user_code, bob.cookie)).status).toBe(403)
+          expect((yield* decide("approve", approved.user_code, alice.cookie)).status).toBe(200)
+          const granted = yield* settled(approved.device_code)
+          expect(granted.status).toBe(200)
+          const token = yield* read(granted, DeviceToken)
+          expect(token.token_type).toBe("Bearer")
+          expect(token.expires_in).toBeGreaterThan(0)
+
+          const signedIn = yield* me(token.access_token)
+          expect(signedIn.status).toBe(200)
+          const identity = yield* read(signedIn, Cloud.Me)
+          expect(identity.user?.email).toBe(alice.email)
+          expect(identity.identityKind).toBe("session")
+          expect((yield* me(`${token.access_token}x`)).status).toBe(401)
+          expect(
+            yield* errorOf(yield* settled(approved.device_code)),
+            "a redeemed device code grants no second session",
+          ).toBe("invalid_grant")
+
+          const denied = yield* code
+          expect((yield* claim(denied.user_code, bob.cookie)).status).toBe(200)
+          expect((yield* decide("deny", denied.user_code, bob.cookie)).status).toBe(200)
+          expect(yield* errorOf(yield* settled(denied.device_code))).toBe("access_denied")
+
+          const expired = yield* code
+          yield* sql`UPDATE "deviceCode" SET "expiresAt" = now() - interval '1 second' WHERE "deviceCode" = ${expired.device_code}`
+          expect(yield* errorOf(yield* settled(expired.device_code))).toBe("expired_token")
+
+          const browserSignIn = yield* request({
+            path: "/auth/sign-in/email",
+            method: "POST",
+            body: { email: alice.email, password: "correct-horse-battery-staple-42" },
+          })
+          expect(browserSignIn.status).toBe(200)
+          expect(browserSignIn.headers["set-auth-token"]).toBeUndefined()
+
+          const project = yield* read(
+            yield* request({
+              path: `/api/organizations/${
+                (yield* read(
+                  yield* request({
+                    path: "/api/organizations",
+                    method: "POST",
+                    headers: { authorization: `Bearer ${token.access_token}` },
+                    body: { name: "Device organization", slug: `device-${suffix}` },
+                  }),
+                  Cloud.OrganizationMembership,
+                )).organization.id
+              }/projects`,
+              method: "POST",
+              headers: { authorization: `Bearer ${token.access_token}` },
+              body: { name: "Device project", slug: "device", homeRegion: "us-east-1" },
+            }),
+            Cloud.Project,
+          )
+          const upload = (headers: Record<string, string>) =>
+            client
+              .execute(
+                HttpClientRequest.post(`${origin}/api/projects/${project.id}/sources`).pipe(
+                  HttpClientRequest.setHeaders(headers),
+                  HttpClientRequest.bodyUint8Array(
+                    new Uint8Array([31, 139, 8, 0]),
+                    "application/gzip",
+                  ),
+                ),
+              )
+              .pipe(Effect.map((response) => response.status))
+          expect(yield* upload({ authorization: `Bearer ${token.access_token}` })).toBe(501)
+          expect(yield* upload({ cookie: bob.cookie })).toBe(403)
+          expect(yield* upload({})).toBe(401)
+          expect(
+            (yield* request({
+              path: `/api/projects/${project.id}/deployments`,
+              method: "POST",
+              headers: { authorization: `Bearer ${token.access_token}` },
+              body: {
+                environment: "production",
+                commitSha: "abcdef1",
+                source: { digest: `sha256:${"d".repeat(64)}`, dockerfile: "Dockerfile" },
+              },
+            })).status,
+          ).toBe(501)
+
+          const signedOut = yield* request({
+            path: "/auth/sign-out",
+            method: "POST",
+            headers: { authorization: `Bearer ${token.access_token}` },
+            body: {},
+          })
+          expect(signedOut.status).toBe(200)
+          expect((yield* me(token.access_token)).status).toBe(401)
+          expect((yield* request({ path: "/api/me", cookie: alice.cookie })).status).toBe(200)
+        }),
+      { timeout: 120000 },
     )
   },
 )

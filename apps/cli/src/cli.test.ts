@@ -22,6 +22,10 @@ describe("durable", () => {
         "receipts",
         "dead-letters",
         "subscriptions",
+        "login",
+        "logout",
+        "whoami",
+        "deploy",
         "tenants",
       ])
         expect(root.stdout).toMatch(new RegExp(`^  ${command} +\\S`, "m"))
@@ -88,7 +92,8 @@ describe("durable", () => {
           "MissingArgument",
           "Missing required argument: actor",
         ],
-        [["deploy"], "UnknownSubcommand", 'Unknown subcommand "deploy"'],
+        [["launch"], "UnknownSubcommand", 'Unknown subcommand "launch"'],
+        [["deploy"], "MissingOption", "Missing required flag: --project"],
       ] as const) {
         const refused = yield* runCli(args)
 

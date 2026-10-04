@@ -23,6 +23,12 @@ export const exemptions: ReadonlyArray<Exemption> = [
       "The Compose usage-cap E2E exercises the API, edge and runner image together rather than one source module.",
   },
   {
+    path: "apps/cli/src/hosted-stack.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The Compose E2E exercises login, whoami, deploy and logout against the API, edge and runner image together rather than one source module.",
+  },
+  {
     path: "tooling/oxlint/anti-slop",
     rule: "tests-beside-sources",
     reason:
