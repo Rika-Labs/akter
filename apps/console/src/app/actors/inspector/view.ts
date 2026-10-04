@@ -22,6 +22,7 @@ import { AppRoute } from "../../navigation/routes.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, type Message, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
+import { shortCommandId } from "../mapping.ts"
 import {
   type ActorPage,
   type InspectorTab,
@@ -170,7 +171,12 @@ const panel = (
         rows: page.receipts.map((receipt, index) => ({
           key: `${receipt.commandId}-${String(index)}`,
           tone: receipt.replayed ? "muted" : "default",
-          cells: [receipt.commandId, receipt.command, receipt.result, receipt.at],
+          cells: [
+            h.span([h.Title(receipt.commandId)], [shortCommandId(receipt.commandId)]),
+            receipt.command,
+            receipt.result,
+            receipt.at,
+          ],
         })),
       }),
     ),

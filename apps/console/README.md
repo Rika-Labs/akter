@@ -65,7 +65,9 @@ outcome), events, jobs and the event feed cursor, with no sample notice. What th
 report (turn, owned rows, subscribers, sockets, awake state, runner, region, mailbox, receipt times
 and activity) reads as unknown (`—` or an empty state that says it isn't reported), never as zero.
 A committed state with an entry that does not decode reads as unreadable rather than as `null`.
-Closing Send command after the actor answered reloads a live inspector, so it shows the new state. The
+Closing Send command after the actor answered reloads a live inspector, so it shows the new state.
+A runner-minted receipt id (`v1.<ms>.<ms>.<uuid>`) reads as its uuid's first 8 characters, with the
+full id as the cell's title; other ids read unchanged. The
 contract carries no caller on receipts, events or the timeline, so the inspector cannot show who
 sent a command.
 Against an API that cannot inspect actors yet, the inspector still reads the actor's live job

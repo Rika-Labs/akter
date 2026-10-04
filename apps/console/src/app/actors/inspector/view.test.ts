@@ -95,6 +95,21 @@ describe("actor inspector", () => {
       ),
     ))
 
+  it("shortens a runner-minted receipt id and keeps the full id in its title", () => {
+    const full = "v1.1791099825418.1791186225418.5979a62a-ca7e-48a3-82b3-fff071bcd715"
+    return scene(
+      "/actors/Counter/hits?tab=receipts",
+      toActorPage({
+        ...unreported,
+        receipts: [{ ...unreported.receipts[0]!, commandId: full }],
+      }),
+      Scene.expect(Scene.role("table", { name: "Receipts" })).toContainText(
+        "5979a62aIncrementSuccess—",
+      ),
+      Scene.expect(Scene.title(full)).toHaveText("5979a62a"),
+    )
+  })
+
   it("shows an event's unreported subscribers as a dash", () =>
     scene(
       "/actors/Counter/hits?tab=events",
