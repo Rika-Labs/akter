@@ -84,7 +84,7 @@ export const toOrganizationSummary = (input: {
   id: input.organization.id,
   name: input.organization.name,
   slug: input.organization.slug,
-  plan: input.organization.plan,
+  plan: "id" in input.organization.plan ? input.organization.plan.id : "unbound",
   role: input.role,
 })
 
@@ -199,17 +199,34 @@ export const toRegionChoices = (input: {
   return [...inUse, ...available]
 }
 
+/**
+ * The billing page's model has no unbound plan: an unbound organization is recognised by its caps'
+ * `unbound` reason, so its plan maps to the Free-shaped placeholder the page already ignores in
+ * that state rather than to an offer the organization holds.
+ */
 export const toBilling = (billing: BillingSummary): Billing => ({
-  plan: {
-    id: billing.plan.id,
-    name: billing.plan.name,
-    subscribed: billing.plan.subscribedId ?? billing.plan.id,
-    paymentStatus: billing.plan.paymentStatus ?? null,
-    basePriceCents: billing.plan.basePriceCents,
-    provisional: billing.plan.provisional ?? false,
-    renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
-    monthToDateCents: billing.plan.monthToDateEstimateCents,
-  },
+  plan:
+    "id" in billing.plan
+      ? {
+          id: billing.plan.id,
+          name: billing.plan.name,
+          subscribed: billing.plan.subscribedId ?? billing.plan.id,
+          paymentStatus: billing.plan.paymentStatus ?? null,
+          basePriceCents: billing.plan.basePriceCents,
+          provisional: billing.plan.provisional ?? false,
+          renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
+          monthToDateCents: billing.plan.monthToDateEstimateCents,
+        }
+      : {
+          id: "free",
+          name: "Free",
+          subscribed: "free",
+          paymentStatus: "free",
+          basePriceCents: 0,
+          provisional: false,
+          renewsAt: null,
+          monthToDateCents: billing.spendLimit.currentSpendCents,
+        },
   card:
     billing.paymentMethod === null
       ? null

@@ -7,6 +7,7 @@ import {
   Forbidden,
   NotFound,
   QuotaExceeded,
+  QuotaUnbound,
   SpendLimitExceeded,
   StorageQuotaExceeded,
   RunnerDefect,
@@ -36,6 +37,7 @@ type Refusal =
   | Forbidden
   | NotFound
   | QuotaExceeded
+  | QuotaUnbound
   | SpendLimitExceeded
   | StorageQuotaExceeded
   | CloudUnavailable
@@ -789,6 +791,41 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           yield* runtime.sendCommand({ ...command, commandId: "expired-race" }).pipe(Effect.flip),
         ).toEqual(ExpiredKey.make({ commandId: "expired-race" }))
         expect(forwarded(edge.seen)).toEqual([])
+      }),
+  )
+
+  it.effect(
+    "answers the edge's 503 QuotaUnbound as a typed 402 refusal for each reason, while the edge's quota outage stays a reasonless Unavailable",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+
+        for (const reason of ["tenant", "account", "plan"] as const) {
+          const unbound = { deployment: "dep1", tenant: "acme", reason }
+          const served = yield* Schema.encodeEffect(Schema.toCodecJson(QuotaUnbound))(
+            QuotaUnbound.make(unbound),
+          ).pipe(Effect.orDie)
+          yield* edge.answer(runner(() => refused(served, 503)))
+
+          const error = yield* runtime
+            .sendCommand({ ...command, commandId: `client-unbound-${reason}` })
+            .pipe(Effect.flip)
+
+          expect(error).toBeInstanceOf(QuotaUnbound)
+          expect(error).toEqual(QuotaUnbound.make(unbound))
+        }
+
+        yield* edge.answer(
+          runner(() => refused(Schema.TaggedStruct("QuotaUnavailable", {}).make({}), 503)),
+        )
+
+        const outage = yield* runtime
+          .sendCommand({ ...command, commandId: "client-quota-outage" })
+          .pipe(Effect.flip)
+
+        expect(outage).toBeInstanceOf(CloudUnavailable)
+        expect(outage).not.toHaveProperty("reason")
       }),
   )
 

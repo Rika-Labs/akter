@@ -45,7 +45,10 @@ export const workspaceFrom: {
         role: membership?.role ?? "",
       },
       organization: membership?.organization.name ?? "",
-      plan: membership?.organization.plan ?? "",
+      plan:
+        membership !== undefined && "id" in membership.organization.plan
+          ? membership.organization.plan.id
+          : "",
       projects: projects.map((project) => ({
         slug: project.slug,
         deployed: project.status !== "empty",

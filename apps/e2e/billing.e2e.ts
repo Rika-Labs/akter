@@ -1,3 +1,4 @@
+import { KnownPlan, UnboundPlan } from "@akter/cloud-api"
 import { expect, type Page, type Route, test } from "@playwright/test"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
@@ -9,7 +10,7 @@ const organization = (plan: string) => ({
   id: "org_bill",
   name: "Billing Org",
   slug: "billing-org",
-  plan,
+  plan: plan === "free" || plan === "pro" ? KnownPlan.make({ id: plan }) : UnboundPlan.make({}),
   createdAt: "2026-01-01T00:00:00Z",
 })
 const project = {
@@ -526,8 +527,8 @@ test("never shows an organization without a billing account as Free", async ({ p
   await page.route(
     "**/api/**",
     controlPlane({
-      plan: "free",
-      billing: () => ({ ...freeBilling, caps: unboundCaps }),
+      plan: "unbound",
+      billing: () => ({ ...freeBilling, plan: UnboundPlan.make({}), caps: unboundCaps }),
       usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
     }),
   )

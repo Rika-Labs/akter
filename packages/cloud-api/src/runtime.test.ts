@@ -16,6 +16,7 @@ import {
   ConnectionLimitExceeded,
   OwnedTableRows,
   QuotaExceeded,
+  QuotaUnbound,
   SpendLimitExceeded,
   StorageQuotaExceeded,
   SendCommand,
@@ -265,6 +266,26 @@ describe("runtime models", () => {
       }),
       429,
     )
+  })
+
+  it("declares the edge's QuotaUnbound on sendCommand as a typed 402 carrying the edge's reason", () => {
+    const responses =
+      OpenApi.fromApi(CloudApi).paths[
+        "/api/projects/{projectId}/environments/{environment}/runtime/commands"
+      ]?.post?.responses ?? {}
+    const wire = encode(
+      QuotaUnbound,
+      QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason: "account" }),
+    ) as { readonly [key: string]: Schema.Json }
+
+    expect(wire["_tag"]).toBe("QuotaUnbound")
+    expect(wire).toMatchObject({ deployment: "dep_1", tenant: "acme", reason: "account" })
+
+    expect(QuotaUnbound.ast.annotations?.["httpApiStatus"]).toBe(402)
+    expect(encode(QuotaUnbound, decode(QuotaUnbound, wire))).toEqual(wire)
+    expect(rejects(QuotaUnbound, { ...wire, reason: "unbound" })).toBe(true)
+    expect(JSON.stringify(responses[402])).toContain("QuotaUnbound")
+    expect(JSON.stringify(responses[503])).not.toContain("QuotaUnbound")
   })
 
   it("carries a refused command's framework reason itself, never its ActorError envelope or an unknown reason", () => {

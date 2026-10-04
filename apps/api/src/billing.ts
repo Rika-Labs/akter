@@ -139,13 +139,15 @@ const session = Effect.fn("Billing.session")(function* (organizationId: string, 
 
 /**
  * A plan the pricing configuration does not know is an operator fault the
- * edge refuses with a 503 too, so billing and usage reads answer a typed
- * `Unavailable` rather than a server error.
+ * edge refuses too, so billing and usage answer a typed `Unavailable` with
+ * reason `unknownPlan` rather than a server error, and a client tells it
+ * from an outage.
  */
 const unknownPlan = ({ tierId }: UnknownPlan) =>
   Cloud.Unavailable.make({
     message: `The organization's plan ${tierId} is not in the pricing configuration`,
     retryAfterSeconds: 60,
+    reason: "unknownPlan",
   })
 
 export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (handlers) =>
@@ -192,27 +194,34 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
       .handle("get", ({ params }) =>
         Effect.gen(function* () {
           yield* access.organization(params.organizationId)
-          const account = yield* repository.account(params.organizationId)
-          const stored = Option.getOrUndefined(account)
-          const tier = yield* pricing.tier(stored?.plan ?? "free")
-          const priced = yield* pricing.tier(stored?.subscribedPlan ?? tier.id)
+          const stored = Option.getOrUndefined(yield* repository.account(params.organizationId))
+          const caps = yield* organizationCaps(params.organizationId).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+          )
+          if (stored === undefined)
+            return {
+              plan: Cloud.UnboundPlan.make({}),
+              paymentMethod: null,
+              billingEmail: null,
+              spendLimit: { limitCents: null, currentSpendCents: 0 },
+              caps,
+            }
+          const tier = yield* pricing.tier(stored.plan)
+          const priced = yield* pricing.tier(stored.subscribedPlan)
           const report = yield* usageReport(params.organizationId, priced.id, yield* currentPeriod)
           const estimate =
             priced.basePriceCents +
             report.meters.reduce((total, meter) => total + meter.overageCostCents, 0)
-          const customer = stored?.customerId
+          const customer = stored.customerId
           const paymentMethod =
             customer == null ? null : yield* provider.paymentMethod(customer).pipe(Effect.orDie)
           const details =
             customer == null ? null : yield* provider.billingDetails(customer).pipe(Effect.orDie)
-          const caps = yield* organizationCaps(params.organizationId).pipe(
-            Effect.catchTag("SqlError", Effect.die),
-          )
           return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.BillingSummary))({
             plan: {
               id: tier.id,
               subscribedId: priced.id,
-              paymentStatus: stored?.paymentStatus ?? "free",
+              paymentStatus: stored.paymentStatus,
               name: tier.name,
               basePriceCents: priced.basePriceCents,
               currency: "usd",
@@ -224,9 +233,9 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
               provisional: priced.provisional,
             },
             paymentMethod,
-            billingEmail: stored?.billingEmail ?? null,
+            billingEmail: stored.billingEmail,
             spendLimit: {
-              limitCents: stored?.spendLimitCents ?? null,
+              limitCents: stored.spendLimitCents,
               currentSpendCents: estimate,
             },
             caps,
@@ -247,10 +256,11 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
       .handle("setSpendLimit", ({ params, payload }) =>
         Effect.gen(function* () {
           yield* access.organization(params.organizationId, "admin")
+          const stored = Option.getOrUndefined(yield* repository.account(params.organizationId))
+          if (stored !== undefined) yield* pricing.tier(stored.plan)
+          const tier = yield* pricing.tier(stored?.subscribedPlan ?? "free")
           const { actor } = yield* initialized(params.organizationId)
           yield* actor.SetSpendLimit({ cents: payload.limitCents }).pipe(Effect.mapError(refused))
-          const account = Option.getOrUndefined(yield* repository.account(params.organizationId))
-          const tier = yield* pricing.tier(account?.subscribedPlan ?? account?.plan ?? "free")
           const report = yield* usageReport(params.organizationId, tier.id, yield* currentPeriod)
           return {
             limitCents: payload.limitCents,

@@ -1,4 +1,4 @@
-import { Forbidden, NotImplemented, Unavailable } from "@akter/cloud-api"
+import { Forbidden, KnownPlan, NotImplemented, Unavailable } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { AppRoute } from "../navigation/routes.ts"
@@ -25,7 +25,7 @@ const organization = {
   id: "org_1",
   name: "Acme",
   slug: "acme",
-  plan: "pro",
+  plan: KnownPlan.make({ id: "pro" }),
   createdAt: "2026-09-01T00:00:00.000Z",
 }
 
