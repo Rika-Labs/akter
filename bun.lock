@@ -5,6 +5,7 @@
     "": {
       "name": "monorepo-project-template",
       "devDependencies": {
+        "@distilled.cloud/github": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/tsgo": "0.45.0",
         "@types/bun": "1.4.2",
@@ -342,6 +343,7 @@
     "@distilled.cloud/aws": "1.0.0-rc.13",
     "@distilled.cloud/axiom": "1.0.0-rc.13",
     "@distilled.cloud/cloudflare": "1.0.0-rc.13",
+    "@distilled.cloud/github": "1.0.0-rc.13",
     "@distilled.cloud/planetscale": "1.0.0-rc.13",
     "@distilled.cloud/stripe": "1.0.0-rc.13",
     "@effect/platform-browser": "4.0.0",
@@ -575,6 +577,8 @@
     "@distilled.cloud/fly-io": ["@distilled.cloud/fly-io@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-Ipp+9nvs+PzqwDPhZq2/BEHNUeWzXKhrvjfT/eBLFHo/QpH0HgdMH8MSQe6/LGszZoormwA6ZrTv2wxaFO7ZiQ=="],
 
     "@distilled.cloud/gcp": ["@distilled.cloud/gcp@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-un8jqil9ejt96oN+OfEDUsbrEOpC6Ut4B/73DqKDttvt0Btal1OeBNTTQsftVCpeEzXAvkYKGRIT2AeEu1J5jA=="],
+
+    "@distilled.cloud/github": ["@distilled.cloud/github@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-4c+Oiq8a//GTOJp0xThQcQbIHSI8zokevhz2FFTvBQBiKjDeAQKHXP/XOwdo1EVnZ9ox/Y7OHK/YoLrjmxiq1A=="],
 
     "@distilled.cloud/hetzner": ["@distilled.cloud/hetzner@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-FvqofgMypNkeZbnjGjWMZqvqGd9GxcMzdbi/6JrbcPaHMJG+CCBGt/mAa7mLlEovzwVaGCsBnOXJ6rP5pZjB4Q=="],
 

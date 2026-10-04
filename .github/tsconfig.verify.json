@@ -5,6 +5,8 @@
     "src/verify.test.ts",
     "src/replica.ts",
     "src/node-postgres.ts",
-    "src/release/smoke.ts"
+    "src/release/smoke.ts",
+    "src/evidence-gate.ts",
+    "src/github.ts"
   ]
 }
