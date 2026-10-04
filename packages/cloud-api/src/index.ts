@@ -2,6 +2,7 @@ export {
   Conflict,
   Forbidden,
   NotFound,
+  NotFoundResource,
   NotImplemented,
   Unavailable,
   ReadErrors,

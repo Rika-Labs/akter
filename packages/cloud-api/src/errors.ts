@@ -17,10 +17,33 @@ export class Forbidden extends Schema.TaggedError<Forbidden>()(
   { httpApiStatus: 403 },
 ) {}
 
+/**
+ * What a `NotFound` names. `actor` is an actor address the live deployment
+ * does not have, `actor-type` a type it does not serve, `live deployment` an
+ * environment with nothing deployed, and `command` a command the actor does
+ * not declare, so a caller tells them apart without reading `id`.
+ */
+export const NotFoundResource = Schema.Literals([
+  "actor",
+  "actor-type",
+  "api-key",
+  "command",
+  "cursor",
+  "deployment",
+  "domain",
+  "environment",
+  "invitation",
+  "live deployment",
+  "member",
+  "organization",
+  "project",
+])
+export type NotFoundResource = typeof NotFoundResource.Type
+
 /** The resource does not exist or is not visible to the caller; answered 404. */
 export class NotFound extends Schema.TaggedError<NotFound>()(
   "NotFound",
-  { resource: Schema.String, id: Schema.String },
+  { resource: NotFoundResource, id: Schema.String },
   { httpApiStatus: 404 },
 ) {}
 
