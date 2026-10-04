@@ -44,6 +44,7 @@ const freeCaps = (commandUnits: number): ReadonlyArray<CapState> => [
     used: commandUnits,
     atCap: commandUnits >= 5_000_000,
     refusing: commandUnits + 5 > 5_000_000,
+    unitsPerCommand: 5,
   },
   { cap: "spend", limit: null, used: 0, atCap: false, refusing: false },
   { cap: "connections", limit: 100, used: 3, atCap: false, refusing: false },
@@ -235,7 +236,7 @@ describe("billing", () => {
       billingScreen,
       { ...emptySettings, billing: { ...free, caps: freeCaps(5_000_000) }, plans, usage: usage(0) },
       Scene.expect(Scene.role("note")).toHaveText(
-        "This organization has used the commands its plan includes for October 2026. New commands are refused until next month; reads keep working.",
+        "This organization has used the 1M commands its plan includes for October 2026. New commands are refused until next month; reads keep working.",
       ),
       Scene.expect(Scene.role("link", { name: "Upgrade" })).toBeAbsent(),
     ))
@@ -291,7 +292,7 @@ describe("usage", () => {
       { ...emptySettings, usage: usage(1_000_000) },
       Scene.expectAll(Scene.all.role("note")).toHaveCount(1),
       Scene.expect(Scene.role("note")).toContainText(
-        "This organization has used the commands its plan includes for October 2026. New commands are refused until next month; reads keep working.",
+        "This organization has used the 1M commands its plan includes for October 2026. New commands are refused until next month; reads keep working.",
       ),
       Scene.expect(Scene.role("link", { name: "Upgrade" })).toHaveAttr("href", "/settings/billing"),
       Scene.expect(Scene.text("Counted in commands above as 3,000")).toExist(),

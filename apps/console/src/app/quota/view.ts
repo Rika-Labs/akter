@@ -1,5 +1,5 @@
 import { styleAttributes } from "@akter/ui"
-import { formatCurrency, formatInteger } from "@akter/ui/geometry"
+import { formatCompact, formatCurrency, formatInteger } from "@akter/ui/geometry"
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { Function } from "effect"
@@ -38,8 +38,8 @@ const noticeWording = (notice: CapNotice): { readonly text: string; readonly act
       text: "Billing isn’t set up for this organization, so new commands are refused.",
       action: "Set up billing",
     }),
-    CommandCap: ({ period }) => ({
-      text: `This organization has used the commands its plan includes for ${formatPeriod(period)}. New commands are refused until next month; reads keep working.`,
+    CommandCap: ({ period, commands }) => ({
+      text: `This organization has used the ${commands === null ? "" : `${formatCompact(commands)} `}commands its plan includes for ${formatPeriod(period)}. New commands are refused until next month; reads keep working.`,
       action: "Upgrade",
     }),
     StorageCap: ({ usedBytes, limitBytes }) => ({
