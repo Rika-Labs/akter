@@ -126,13 +126,19 @@ export class RunnerAtCapacity extends Schema.TaggedError<RunnerAtCapacity>()(
   {},
 ) {}
 
-/** The hosted organization's period usage would exceed its plan's hard quota. */
+/**
+ * The hosted organization's period usage would exceed its plan's hard quota.
+ * `limitUnits`, `usedUnits` and `requestedUnits` are usage units, where one
+ * command weighs `unitsPerCommand`, so a reader states them as commands
+ * without knowing the weights.
+ */
 export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()("QuotaExceeded", {
   organizationId: Schema.String,
   period: Schema.String,
   limitUnits: Schema.Finite,
   usedUnits: Schema.Finite,
   requestedUnits: Schema.Finite,
+  unitsPerCommand: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   retryAfterMs: Schema.Finite,
 }) {}
 

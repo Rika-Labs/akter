@@ -67,6 +67,7 @@ describe("actorErrorOf", () => {
           limitUnits: 5_000_000,
           usedUnits: 4_999_998,
           requestedUnits: 5,
+          unitsPerCommand: 5,
           retryAfterMs: 75_123,
         })
         const spend = SpendLimitExceeded.make({

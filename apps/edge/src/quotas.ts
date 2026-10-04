@@ -580,6 +580,7 @@ export const quotas = Effect.fnUntraced(function* (
             limitUnits,
             usedUnits: used,
             requestedUnits: units,
+            unitsPerCommand: COMMAND_UNITS,
             retryAfterMs: Math.ceil(account.resetMs),
           })
 

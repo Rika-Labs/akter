@@ -52,12 +52,11 @@ const freeCaps = (commandUnits: number): ReadonlyArray<CapState> => [
 ]
 
 const unboundCaps: ReadonlyArray<CapState> = freeCaps(0).map((cap) => ({
-  cap: cap.cap,
+  ...cap,
   limit: null,
-  used: cap.used,
   atCap: false,
   refusing: true,
-  reason: "unbound",
+  reason: "unbound" as const,
 }))
 
 /** An organization without a billing account, as billing reports it: no plan and every cap unbound. */

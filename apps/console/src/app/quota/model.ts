@@ -54,10 +54,7 @@ export const capNotice = (input: {
     Match.when("commands", () =>
       CapNotice.CommandCap({
         period: input.period,
-        commands:
-          refusing.unitsPerCommand === undefined
-            ? null
-            : Math.floor(limit / refusing.unitsPerCommand),
+        commands: refusing.cap === "commands" ? Math.floor(limit / refusing.unitsPerCommand) : null,
       }),
     ),
     Match.when("storage", () => CapNotice.StorageCap({ usedBytes: used, limitBytes: limit })),

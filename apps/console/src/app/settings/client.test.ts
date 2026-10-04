@@ -85,7 +85,7 @@ const usageBody = {
 
 const billingBody = {
   plan: {
-    id: "free",
+    ...KnownPlan.make({ id: "free" }),
     name: "Free",
     basePriceCents: 0,
     currency: "usd",

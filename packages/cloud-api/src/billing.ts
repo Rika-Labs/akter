@@ -13,7 +13,11 @@ import {
   Timestamp,
 } from "./primitives.ts"
 
-export const Plan = Schema.Struct({
+/**
+ * The plan of an organization with a billing account, tagged `known` like the
+ * organization's `KnownPlan`, so `Plan | UnboundPlan` is a tagged union.
+ */
+export const Plan = Schema.TaggedStruct("known", {
   id: PlanId,
   name: Schema.String,
   basePriceCents: NonNegativeInt,
@@ -42,30 +46,38 @@ export const SpendLimit = Schema.Struct({
 })
 export type SpendLimit = typeof SpendLimit.Type
 
-/**
- * One cap as the edge's admission decides it now, whatever period is being
- * reported. `limit` and `used` are usage units for `commands`, the same units
- * as `QuotaExceeded`'s `limitUnits` and `usedUnits`; a read weighs one unit and
- * a command `unitsPerCommand` units, which the `commands` cap always carries
- * and no other cap does, so commands are `used / unitsPerCommand`. They are
- * cents for `spend`, open connections for
- * `connections`, and for `storage` the largest latest sample of a serving
- * deployment's tenant, since storage is capped per deployment and tenant;
- * `limit` is null when the cap does not apply. `atCap` means usage has
- * reached the limit; `refusing` means the edge would refuse the next new
- * command, or for `connections` the next new connection. `reason` is
- * `unbound` when the edge refuses everything because the organization has no
- * billing account; such caps have no limit.
- */
-export const CapState = Schema.Struct({
-  cap: Schema.Literals(["commands", "spend", "connections", "storage"]),
+const capFields = {
   limit: Schema.NullOr(NonNegative),
   used: NonNegative,
   atCap: Schema.Boolean,
   refusing: Schema.Boolean,
   reason: Schema.optionalKey(Schema.Literal("unbound")),
-  unitsPerCommand: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
-})
+}
+
+/**
+ * One cap as the edge's admission decides it now, whatever period is being
+ * reported, discriminated by `cap`. `limit` is null when the cap does not
+ * apply. `atCap` means usage has reached the limit; `refusing` means the edge
+ * would refuse the next new command, or for `connections` the next new
+ * connection. `reason` is `unbound` when the edge refuses everything because
+ * the organization has no billing account; such caps have no limit.
+ *
+ * For `commands`, `limit` and `used` are usage units, the same units as
+ * `QuotaExceeded`'s `limitUnits` and `usedUnits`: a read weighs one unit and a
+ * command `unitsPerCommand` units, which this cap always carries and no other
+ * does, so commands are `used / unitsPerCommand`. They are cents for `spend`,
+ * open connections for `connections`, and for `storage` the largest latest
+ * sample of a serving deployment's tenant, since storage is capped per
+ * deployment and tenant.
+ */
+export const CapState = Schema.Union([
+  Schema.Struct({
+    cap: Schema.Literal("commands"),
+    ...capFields,
+    unitsPerCommand: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  }),
+  Schema.Struct({ cap: Schema.Literals(["spend", "connections", "storage"]), ...capFields }),
+])
 export type CapState = typeof CapState.Type
 
 /**

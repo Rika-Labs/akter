@@ -28,8 +28,13 @@ const project = {
   createdAt: "2026-01-01T00:00:00Z",
 }
 
-const plan = (input: { id: string; name: string; basePriceCents: number; estimate: number }) => ({
-  id: input.id,
+const plan = (input: {
+  id: KnownPlan["id"]
+  name: string
+  basePriceCents: number
+  estimate: number
+}) => ({
+  ...KnownPlan.make({ id: input.id }),
   subscribedId: input.id,
   paymentStatus: input.id === "free" ? "free" : "active",
   name: input.name,
@@ -742,7 +747,7 @@ test("explains a typed quota refusal in the send dialog and links to Billing", a
         return route.fulfill({
           status: 429,
           contentType: "application/json",
-          body: '{"_tag":"QuotaExceeded","organizationId":"org_bill","period":"2026-10","limitUnits":5000000,"usedUnits":5000000,"requestedUnits":5,"retryAfterMs":2419200000}',
+          body: '{"_tag":"QuotaExceeded","organizationId":"org_bill","period":"2026-10","limitUnits":5000000,"usedUnits":5000000,"requestedUnits":5,"unitsPerCommand":5,"retryAfterMs":2419200000}',
         })
       },
     }),

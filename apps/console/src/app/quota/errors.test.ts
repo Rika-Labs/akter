@@ -24,6 +24,7 @@ const refusals = {
     limitUnits: 5_000_000,
     usedUnits: 4_999_999,
     requestedUnits: 5,
+    unitsPerCommand: 5,
     retryAfterMs: 86_400_000,
   }),
   spend: SpendLimitExceeded.make({
@@ -105,7 +106,7 @@ describe("quota refusals", () => {
     expect(
       quotaRefusal(
         undecoded(
-          '{"_tag":"CommandRefused","commandId":"c","reasonTag":"QuotaExceeded","reason":{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5,"usedUnits":5,"requestedUnits":5,"retryAfterMs":1}}',
+          '{"_tag":"CommandRefused","commandId":"c","reasonTag":"QuotaExceeded","reason":{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5,"usedUnits":5,"requestedUnits":5,"unitsPerCommand":5,"retryAfterMs":1}}',
         ),
       ),
     ).toEqual(Option.none())

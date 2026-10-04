@@ -6,6 +6,7 @@ import {
   Integration,
   Invitation,
   Invoice,
+  KnownPlan,
   PlanCatalog,
   Project,
   ProjectEndpoints,
@@ -280,7 +281,7 @@ describe("billing", () => {
       Effect.gen(function* () {
         const summary = yield* decode(BillingSummary)({
           plan: {
-            id: "free",
+            ...KnownPlan.make({ id: "free" }),
             name: "Free",
             basePriceCents: 0,
             currency: "usd",
@@ -316,7 +317,7 @@ describe("billing", () => {
       Effect.gen(function* () {
         const summary = yield* decode(BillingSummary)({
           plan: {
-            id: "free",
+            ...KnownPlan.make({ id: "free" }),
             subscribedId: "team",
             paymentStatus: "past_due",
             name: "Free",
