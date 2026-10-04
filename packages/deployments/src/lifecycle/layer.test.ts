@@ -932,23 +932,23 @@ describe("DeploymentLifecycle with a builder", () => {
         const { lifecycle, settle } = yield* environment("p-build-race")
         const gate = yield* Deferred.make<void>()
 
-        provider.gates.set("build:r1", gate)
+        provider.gates.set("build:x1", gate)
         yield* lifecycle.Create({
-          deploymentId: "r1",
+          deploymentId: "x1",
           commitSha: "feed001",
           message: "raced",
           author,
           regions: [],
-          envSnapshot: "env-r1",
+          envSnapshot: "env-x1",
         })
 
         const building = yield* Effect.forkChild(settle)
 
-        while (!provider.calls.some((call) => call.step === "build" && call.deploymentId === "r1"))
+        while (!provider.calls.some((call) => call.step === "build" && call.deploymentId === "x1"))
           yield* Effect.sleep("20 millis")
 
         yield* lifecycle.RecordBuild({
-          deploymentId: "r1",
+          deploymentId: "x1",
           imageDigest: "sha256:external",
           commitSha: "feed001",
         })
@@ -956,7 +956,7 @@ describe("DeploymentLifecycle with a builder", () => {
         yield* Fiber.join(building)
         yield* settle
 
-        expect(yield* lifecycle.Get({ deploymentId: "r1" })).toMatchObject({
+        expect(yield* lifecycle.Get({ deploymentId: "x1" })).toMatchObject({
           status: "live",
           imageDigest: "sha256:external",
           steps: [
@@ -967,7 +967,7 @@ describe("DeploymentLifecycle with a builder", () => {
           ],
         })
         expect(
-          provider.calls.filter((call) => call.step === "migrate" && call.deploymentId === "r1"),
+          provider.calls.filter((call) => call.step === "migrate" && call.deploymentId === "x1"),
         ).toEqual([expect.objectContaining({ imageDigest: "sha256:external" })])
       }),
     ))

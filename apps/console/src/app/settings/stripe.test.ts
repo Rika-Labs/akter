@@ -46,6 +46,22 @@ describe("hostedPageUrl", () => {
     expect(
       hostedPageUrl("http://localhost:5173/settings/billing?next=javascript:x", development),
     ).toEqual(Option.none())
+  })
+
+  it("links the stand-in's invoice PDFs only where it runs, and only its PDF path", () => {
+    const pdf = "http://localhost:5173/billing/invoices/in_local_7a3f9c2e1b/pdf"
+    expect(hostedPageUrl(pdf, development)).toEqual(Option.some(pdf))
+    expect(hostedPageUrl(pdf, { ...development, standIn: false })).toEqual(Option.none())
+    expect(
+      hostedPageUrl("https://app.akter.dev/billing/invoices/in_local_7a3f9c2e1b/pdf", production),
+    ).toEqual(Option.none())
+    for (const path of [
+      "/billing/invoices/in_local_1",
+      "/billing/invoices/in_local_1/pdf/extra",
+      "/billing/invoices/../portal/bps_1/pdf",
+      "/billing/invoices/in%2Flocal/pdf",
+    ])
+      expect(hostedPageUrl(`http://localhost:5173${path}`, development)).toEqual(Option.none())
     expect(
       hostedPageUrl("http://localhost:5173/billing/portal/bps_local_1?redirect=x", development),
     ).toEqual(Option.none())

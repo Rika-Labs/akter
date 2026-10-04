@@ -26,7 +26,7 @@ export const usageReport = Effect.fn("Billing.usage")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const pricing = yield* Pricing
-  const tier = yield* pricing.tier(plan).pipe(Effect.orDie)
+  const tier = yield* pricing.tier(plan)
   const start = DateTime.makeUnsafe(`${period}-01T00:00:00.000Z`)
   const from = DateTime.formatIso(start)
   const until = DateTime.formatIso(DateTime.add(start, { months: 1 }))
@@ -54,9 +54,7 @@ export const usageReport = Effect.fn("Billing.usage")(function* (
   const byteHours = projects.reduce((total, project) => total + project.storage_byte_hours, 0)
   const storageGbMonths = byteHours / 1_000_000_000 / hoursInMonth(period)
   const weighted = pricing.weightedCommands(commands, reads)
-  const estimate = yield* pricing
-    .estimate(plan, { commands: weighted, storageGbMonths })
-    .pipe(Effect.orDie)
+  const estimate = yield* pricing.estimate(plan, { commands: weighted, storageGbMonths })
   let allocated = 0
   const variableCents = estimate.commandOverageCents + estimate.storageCents
   const byProject = projects.map((project, index) => {
@@ -113,6 +111,30 @@ export const usageReport = Effect.fn("Billing.usage")(function* (
       provisional: tier.provisional,
     },
   }).pipe(Effect.orDie)
+})
+
+/**
+ * The organization's latest storage: the latest sample of each bound tenant
+ * of a serving deployment, summed, at the newest of their hours, or null
+ * before any was sampled. A drained deployment's last sample is left out, so
+ * a redeploy never counts the same data twice. A tenant is bound by its exact
+ * mapping, else its deployment's `'*'` mapping, as metering binds it.
+ */
+export const latestStorageSample = Effect.fn("Billing.latestStorageSample")(function* (
+  organizationId: string,
+) {
+  const sql = yield* SqlClient.SqlClient
+  const [row] = yield* sql<{ readonly bytes: number | null; readonly sampledAt: Date | null }>`
+    SELECT sum(s.logical_bytes)::float8 AS bytes, max(s.hour) AS "sampledAt"
+    FROM cloud_meter_storage_sample s
+    JOIN deployment d ON d.id = s.deployment_id AND d.serving
+    WHERE (SELECT m.organization_id FROM cloud_meter_tenant m
+      WHERE m.deployment_id = s.deployment_id AND m.tenant IN (s.tenant, '*')
+      ORDER BY (m.tenant = '*') LIMIT 1) = ${organizationId}
+  `.pipe(Effect.orDie)
+  return row?.bytes == null || row.sampledAt === null
+    ? null
+    : { bytes: row.bytes, sampledAt: DateTime.fromDateUnsafe(row.sampledAt) }
 })
 
 export const currentPeriod = Effect.map(DateTime.now, (now) => DateTime.formatIso(now).slice(0, 7))

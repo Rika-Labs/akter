@@ -7,12 +7,17 @@ import {
   CommandExpired,
   CommandRefused,
   Conflict,
+  ConnectionLimitExceeded,
   Forbidden,
   NotFound,
   NotImplemented,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
   RunnerDefect,
   Unavailable,
 } from "@akter/cloud-api"
+import * as Framework from "@rikalabs/akter/client"
 import {
   Context,
   type Duration,
@@ -70,18 +75,28 @@ const unavailable = (what: string) => Effect.die(new Error(`Runtime request fail
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
-/** The framework's refusals the control plane tells apart; any other reason is an outage or a defect. */
+/**
+ * The framework's refusals the control plane tells apart. Any other framework
+ * reason answered 4xx reaches the console as a `CommandRefused` carrying it;
+ * anything else is an outage or a defect. The edge's usage refusals decode
+ * straight into the API's errors, which share the framework's tags and
+ * payloads, so no caller reads the envelope.
+ */
 const Reason = Schema.Union([
   Schema.TaggedStruct("NotCreated", {}),
   Schema.TaggedStruct("CommandConflict", {}),
   Schema.TaggedStruct("CommandExpired", {}),
   Schema.TaggedStruct("Unauthorized", { code: Schema.String }),
-  Schema.TaggedStruct("InvalidInput", { code: Schema.String }),
+  Framework.InvalidInput,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  ConnectionLimitExceeded,
+  StorageQuotaExceeded,
 ])
 
 const ActorErrorBody = Schema.TaggedStruct("ActorError", { reason: Reason })
-const GenericActorErrorBody = Schema.TaggedStruct("ActorError", {
-  reason: Schema.Struct({ _tag: Schema.String }),
+const FrameworkActorErrorBody = Schema.TaggedStruct("ActorError", {
+  reason: Framework.ActorError.fields.reason,
 })
 
 const DefectBody = Schema.TaggedStruct("Defect", {})
@@ -93,8 +108,8 @@ const Job = Schema.Struct({ job: Schema.String, jobId: Schema.String, attempts: 
 const ActorJobs = Schema.Struct({ jobs: Schema.Array(Job), deadLetters: Schema.Array(Job) })
 
 const decodeActorError = Schema.decodeUnknownOption(ActorErrorBody)
+const decodeFrameworkActorError = Schema.decodeUnknownOption(FrameworkActorErrorBody)
 const decodeDetail = Schema.decodeUnknownEffect(Inspection.ActorDetail)
-const decodeGenericActorError = Schema.decodeUnknownOption(GenericActorErrorBody)
 const decodeCommandId = Schema.decodeUnknownEffect(CommandId)
 const decodeJobs = Schema.decodeUnknownEffect(ActorJobs)
 
@@ -361,18 +376,18 @@ export const makeRuntime = Effect.gen(function* () {
     const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
 
     if (refusal === undefined) {
-      const generic = Option.getOrUndefined(decodeGenericActorError(body))
-      if (generic?.reason._tag === "MailboxFull")
+      const framework = Option.getOrUndefined(decodeFrameworkActorError(body))?.reason
+      if (framework?._tag === "MailboxFull")
         return yield* Unavailable.make({
           message: "The actor mailbox is temporarily full",
           retryAfterSeconds: 1,
         })
 
-      if (generic !== undefined && status >= 400 && status < 500)
+      if (framework !== undefined && status >= 400 && status < 500)
         return yield* CommandRefused.make({
           commandId,
-          reasonTag: generic.reason._tag,
-          reason: body,
+          reasonTag: framework._tag,
+          reason: framework,
         })
 
       if (
@@ -408,10 +423,14 @@ export const makeRuntime = Effect.gen(function* () {
                 message: "The deployment could not authorize the request",
                 retryAfterSeconds: 1,
               }),
-        InvalidInput: ({ code }) =>
-          code === "unknown_route"
+        InvalidInput: (invalid) =>
+          invalid.code === "unknown_route"
             ? NotFound.make({ resource: "command", id: `${input.address}/${input.command}` })
-            : CommandRefused.make({ commandId, reasonTag: "InvalidInput", reason: body }),
+            : CommandRefused.make({ commandId, reasonTag: "InvalidInput", reason: invalid }),
+        QuotaExceeded: (refused) => refused,
+        SpendLimitExceeded: (refused) => refused,
+        ConnectionLimitExceeded: (refused) => refused,
+        StorageQuotaExceeded: (refused) => refused,
       }),
     )
   })

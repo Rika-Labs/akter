@@ -1,4 +1,4 @@
-import { completeLocalCheckout, signWebhook, StripeBilling } from "@akter/billing"
+import { completeLocalCheckout, localInvoicePdf, signWebhook, StripeBilling } from "@akter/billing"
 import { Clock, Context, Effect, Option, Redacted, Schema } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
 import { SqlClient } from "effect/sql"
@@ -18,7 +18,12 @@ interface LocalSession {
   readonly params: { readonly success_url?: string }
 }
 
-/** Development-only hosted pages are opaque session capabilities, just like their provider counterparts, and never mount in Stripe or production mode. */
+/**
+ * Development-only hosted pages are opaque session capabilities, just like
+ * their provider counterparts, and never mount in Stripe or production mode.
+ * An invoice's PDF is addressed by its unguessable invoice id, as Stripe's
+ * hosted invoice PDFs are.
+ */
 export const localBillingRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const options = yield* LocalBillingOptions
@@ -100,6 +105,22 @@ export const localBillingRoutes = HttpRouter.use((router) =>
           completed: true,
           subscriptionId: subscription.subscriptionId,
           returnUrl: stored.value.params.success_url ?? null,
+        })
+      }),
+    )
+
+    yield* router.add(
+      "GET",
+      "/billing/invoices/:invoiceId/pdf",
+      Effect.gen(function* () {
+        const { invoiceId } = yield* HttpRouter.params
+        if (invoiceId === undefined || !/^in_[A-Za-z0-9_]{1,128}$/u.test(invoiceId))
+          return HttpServerResponse.empty({ status: 404 })
+        const document = yield* localInvoicePdf(invoiceId).pipe(Effect.orDie)
+        if (Option.isNone(document)) return HttpServerResponse.empty({ status: 404 })
+        return HttpServerResponse.uint8Array(document.value, {
+          contentType: "application/pdf",
+          headers: { "content-disposition": `inline; filename="${invoiceId}.pdf"` },
         })
       }),
     )

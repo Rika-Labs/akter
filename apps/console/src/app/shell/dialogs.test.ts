@@ -1,5 +1,4 @@
-import { ProjectId } from "@akter/cloud-api"
-import { SpendLimitExceeded, StorageQuotaExceeded } from "@rikalabs/akter/client"
+import { ProjectId, SpendLimitExceeded, StorageQuotaExceeded } from "@akter/cloud-api"
 import { Option } from "effect"
 import * as Scene from "foldkit/scene"
 import type { HtmlBuilder } from "foldkit/html"

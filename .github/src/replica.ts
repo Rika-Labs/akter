@@ -15,6 +15,15 @@ const CONTAINER = Bun.env["TEST_REPLICA_CONTAINER"] ?? "durable-replica"
 
 const PORT = Bun.env["TEST_REPLICA_PORT"] ?? "5433"
 
+/**
+ * The replica streams through a physical slot, so the primary keeps every WAL
+ * segment until the replica has received it. Without one, each `CREATE
+ * DATABASE` and `DROP DATABASE` forces a checkpoint that recycles segments a
+ * briefly lagging walsender has not sent yet, and the replica then stops for
+ * the rest of the run with "requested WAL segment has already been removed".
+ */
+const SLOT = CONTAINER.replaceAll(/[^a-zA-Z0-9_]/g, "_").toLowerCase()
+
 const run = Effect.fn("run")(function* (command: ReadonlyArray<string>) {
   const child = Bun.spawn([...command], { stdout: "pipe", stderr: "pipe" })
   const stdout = yield* Effect.promise(() => new Response(child.stdout).text())
@@ -122,6 +131,11 @@ const program = Effect.gen(function* () {
         `Replica container ${CONTAINER} already exists; remove only your own container before retrying`,
       ),
     )
+  yield* must(
+    psql(
+      `SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = '${SLOT}' AND NOT active`,
+    ),
+  )
   yield* must([
     "docker",
     "run",
@@ -137,7 +151,7 @@ const program = Effect.gen(function* () {
     image,
     "bash",
     "-c",
-    `pg_basebackup -h 127.0.0.1 -p ${port} -U ${user} -D /tmp/replica -R -X stream && chmod 700 /tmp/replica && exec postgres -D /tmp/replica -p ${PORT} -c listen_addresses=127.0.0.1`,
+    `pg_basebackup -h 127.0.0.1 -p ${port} -U ${user} -D /tmp/replica -R -X stream -C -S ${SLOT} && chmod 700 /tmp/replica && exec postgres -D /tmp/replica -p ${PORT} -c listen_addresses=127.0.0.1`,
   ])
 
   for (let attempt = 0; attempt < 60; attempt++) {

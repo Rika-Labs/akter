@@ -6,6 +6,7 @@ import {
   Integration,
   Invitation,
   Invoice,
+  PlanCatalog,
   Project,
   ProjectEndpoints,
   ProjectRegion,
@@ -28,6 +29,7 @@ import {
   parseMemberRoleKey,
   parseNotificationKey,
   parseSpendLimit,
+  planChoices,
   settingsSeed,
   spendLimitValue,
 } from "./keys.ts"
@@ -39,6 +41,7 @@ import {
   toInvoices,
   toKeys,
   toPendingInvitations,
+  toPlans,
   toProjectSummary,
   toRegionChoices,
   toUsage,
@@ -300,6 +303,7 @@ describe("billing", () => {
           card: null,
           billingEmail: null,
           spendLimit: { limitCents: null, currentCents: 1999 },
+          caps: [],
         })
         expect(dollars(1999)).toBe(19.99)
       }),
@@ -334,6 +338,66 @@ describe("billing", () => {
           renewsAt: Date.UTC(2026, 10, 1),
           monthToDateCents: 31_337,
         })
+      }),
+    ))
+
+  it("carries every cap's state as the control plane reports it, unbound included", () =>
+    run(
+      Effect.gen(function* () {
+        const unbound = (cap: string, used: number) => ({
+          cap,
+          limit: null,
+          used,
+          atCap: false,
+          refusing: true,
+          reason: "unbound",
+        })
+        const summary = yield* decode(BillingSummary)({
+          plan: {
+            id: "free",
+            name: "Free",
+            basePriceCents: 0,
+            currency: "usd",
+            renewsAt: null,
+            monthToDateEstimateCents: 0,
+          },
+          paymentMethod: null,
+          billingEmail: null,
+          spendLimit: { limitCents: null, currentSpendCents: 0 },
+          caps: [
+            unbound("commands", 35),
+            unbound("spend", 0),
+            unbound("connections", 2),
+            unbound("storage", 4_096),
+          ],
+        })
+        expect(toBilling(summary).caps).toEqual([
+          {
+            cap: "commands",
+            limit: null,
+            used: 35,
+            atCap: false,
+            refusing: true,
+            reason: "unbound",
+          },
+          { cap: "spend", limit: null, used: 0, atCap: false, refusing: true, reason: "unbound" },
+          {
+            cap: "connections",
+            limit: null,
+            used: 2,
+            atCap: false,
+            refusing: true,
+            reason: "unbound",
+          },
+          {
+            cap: "storage",
+            limit: null,
+            used: 4_096,
+            atCap: false,
+            refusing: true,
+            reason: "unbound",
+          },
+        ])
       }),
     ))
 
@@ -386,6 +450,144 @@ describe("billing", () => {
           null,
           null,
         ])
+      }),
+    ))
+})
+
+describe("plan catalog", () => {
+  const tier = (input: {
+    readonly id: string
+    readonly name: string
+    readonly basePriceCents: number
+    readonly commandCap: number | null
+    readonly features: ReadonlyArray<string>
+    readonly provisional: boolean
+  }) => ({
+    id: input.id,
+    name: input.name,
+    basePriceCents: input.basePriceCents,
+    currency: "usd",
+    allowances: {
+      commands: 3_000_000,
+      commandCap: input.commandCap,
+      storageGb: 0.75,
+      concurrentConnections: 250,
+    },
+    overage: { commandCentsPerMillion: 80, storageCentsPerGbMonth: 25 },
+    features: input.features,
+    provisional: input.provisional,
+  })
+
+  it("maps each plan's prices and allowances and marks the ones Checkout sells", () =>
+    run(
+      Effect.gen(function* () {
+        const catalog = yield* decode(PlanCatalog)({
+          plans: [
+            tier({
+              id: "free",
+              name: "Hobby",
+              basePriceCents: 0,
+              commandCap: 3_000_000,
+              features: ["command-cap", "storage-cap"],
+              provisional: false,
+            }),
+            tier({
+              id: "team",
+              name: "Studio",
+              basePriceCents: 4_900,
+              commandCap: null,
+              features: ["command-overage", "storage-overage", "checkout"],
+              provisional: true,
+            }),
+          ],
+          readCommandWeight: 0.2,
+          provisional: true,
+        })
+        expect(toPlans(catalog)).toEqual({
+          plans: [
+            {
+              id: "free",
+              name: "Hobby",
+              basePriceCents: 0,
+              includedCommands: 3_000_000,
+              commandCap: 3_000_000,
+              commandCentsPerMillion: 80,
+              storageGb: 0.75,
+              storageCap: true,
+              storageCentsPerGbMonth: 25,
+              connections: 250,
+              checkout: null,
+              provisional: false,
+            },
+            {
+              id: "team",
+              name: "Studio",
+              basePriceCents: 4_900,
+              includedCommands: 3_000_000,
+              commandCap: null,
+              commandCentsPerMillion: 80,
+              storageGb: 0.75,
+              storageCap: false,
+              storageCentsPerGbMonth: 25,
+              connections: 250,
+              checkout: "team",
+              provisional: true,
+            },
+          ],
+          readCommandWeight: 0.2,
+          provisional: true,
+        })
+      }),
+    ))
+
+  it("offers only plans the catalog sells through Checkout, never the one already billed", () =>
+    run(
+      Effect.gen(function* () {
+        const catalog = yield* decode(PlanCatalog)({
+          plans: [
+            tier({
+              id: "free",
+              name: "Free",
+              basePriceCents: 0,
+              commandCap: 1_000_000,
+              features: ["command-cap", "checkout"],
+              provisional: false,
+            }),
+            tier({
+              id: "pro",
+              name: "Pro",
+              basePriceCents: 2_500,
+              commandCap: null,
+              features: ["command-overage", "checkout"],
+              provisional: true,
+            }),
+            tier({
+              id: "team",
+              name: "Team",
+              basePriceCents: 24_900,
+              commandCap: null,
+              features: ["command-overage", "checkout"],
+              provisional: true,
+            }),
+            tier({
+              id: "enterprise",
+              name: "Enterprise",
+              basePriceCents: 250_000,
+              commandCap: null,
+              features: ["command-overage"],
+              provisional: true,
+            }),
+          ],
+          readCommandWeight: 0.2,
+          provisional: true,
+        })
+        const plans = toPlans(catalog)
+        expect(planChoices({ subscribed: "pro", plans }).map(({ plan }) => plan)).toEqual(["team"])
+        expect(planChoices({ subscribed: "free", plans }).map(({ plan }) => plan)).toEqual([
+          "pro",
+          "team",
+        ])
+        expect(planChoices({ subscribed: "free", plans: null })).toEqual([])
       }),
     ))
 })
@@ -477,12 +679,41 @@ describe("usage", () => {
           ["storageGb", 2, 60],
         ])
         expect(mapped.projects[0]?.reads).toBe(11)
+        expect(mapped.latestStorageSample).toBe(null)
+        expect(mapped.caps).toEqual([])
         expect(mapped.pricing).toEqual({
           freeCommands: 1_000_000,
           readCommandWeight: 0.2,
           storagePerGbCents: 30,
           provisional: true,
         })
+      }),
+    ))
+})
+
+describe("usage caps", () => {
+  it("reads the latest storage sample and the storage cap the edge checks", () =>
+    run(
+      Effect.gen(function* () {
+        const usage = yield* decode(Usage)({
+          period: "2026-10",
+          meters: [],
+          latestStorageSample: { bytes: 734_000_000, sampledAt: "2026-10-04T09:00:00.000Z" },
+          caps: [
+            { cap: "storage", limit: 500_000_000, used: 512_000_000, atCap: true, refusing: true },
+          ],
+          commandsPerDay: [],
+          byProject: [],
+          pricing: { freeCommands: 1_000_000, readCommandWeight: 0.2, storagePerGbCents: 30 },
+        })
+        const mapped = toUsage(usage)
+        expect(mapped.latestStorageSample).toEqual({
+          bytes: 734_000_000,
+          sampledAt: Date.UTC(2026, 9, 4, 9),
+        })
+        expect(mapped.caps).toEqual([
+          { cap: "storage", limit: 500_000_000, used: 512_000_000, atCap: true, refusing: true },
+        ])
       }),
     ))
 })
@@ -596,6 +827,7 @@ describe("setting keys", () => {
         card: null,
         billingEmail: null,
         spendLimit: { limitCents: null, currentCents: 0 },
+        caps: [],
       },
       members: [{ id: "mem_1", name: "Maya", email: "maya@acme.dev", role: "admin" }],
     })

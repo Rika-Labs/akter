@@ -1,4 +1,11 @@
-import { type PlanId, type PricingConfig, PricingLive, type PricingTier } from "@akter/billing"
+import {
+  organizationCaps,
+  UnknownPlan,
+  type PlanId,
+  type PricingConfig,
+  PricingLive,
+  type PricingTier,
+} from "@akter/billing"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {
@@ -2030,6 +2037,226 @@ describe("quotas service", () => {
 
           yield* live.service.releaseLease(kept)
           expect(yield* leaseCount(edge)).toBe(2)
+        }),
+      ),
+    60_000,
+  )
+})
+
+describe("cap state agrees with admission", () => {
+  const capsExit = Effect.fnUntraced(function* (edge: FixtureEdge) {
+    const priced = yield* Layer.build(PricingLive(pricing))
+
+    return yield* organizationCaps(edge.organizationId).pipe(
+      Effect.provideService(SqlClient.SqlClient, edge.sql),
+      Effect.provideContext(priced),
+      Effect.exit,
+    )
+  })
+
+  const capsOf = Effect.fnUntraced(function* (edge: FixtureEdge) {
+    const caps = yield* (yield* capsExit(edge)).pipe(Effect.orDie)
+
+    return Object.fromEntries(caps.map((state) => [state.cap, state]))
+  })
+
+  it(
+    "reports every cap refusing as unbound while the edge refuses an organization with no billing account, and fails on a plan it refuses",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const runner = yield* startRunner
+          const edge = yield* start({ unbound: true }, runner)
+          const key = yield* keyFor(edge, "acme")
+
+          yield* edge.sql`INSERT INTO cloud_meter_tenant (deployment_id, tenant, organization_id, project_id) VALUES (${edge.deployment}, '*', ${edge.organizationId}, 'proj')`.pipe(
+            Effect.orDie,
+          )
+
+          const noAccount = yield* command(edge, key, { cid: "c1" })
+
+          expect(noAccount.status).toBe(503)
+          expect(noAccount.reason).toMatchObject({ reason: "account" })
+          expect(Object.values(yield* capsOf(edge))).toEqual(
+            (["commands", "spend", "connections", "storage"] as const).map((cap) => ({
+              cap,
+              limit: null,
+              used: 0,
+              atCap: false,
+              refusing: true,
+              reason: "unbound",
+            })),
+          )
+
+          yield* edge.sql`INSERT INTO cloud_billing_account (organization_id, plan) VALUES (${edge.organizationId}, 'platinum')`.pipe(
+            Effect.orDie,
+          )
+
+          expect((yield* command(edge, key, { cid: "c2" })).reason).toMatchObject({
+            reason: "plan",
+          })
+          expect(yield* capsExit(edge)).toEqual(Exit.fail(UnknownPlan.make({ tierId: "platinum" })))
+
+          yield* edge.sql`UPDATE cloud_billing_account SET plan = 'free' WHERE organization_id = ${edge.organizationId}`.pipe(
+            Effect.orDie,
+          )
+
+          expect((yield* command(edge, key, { cid: "c3" })).status).toBe(200)
+          expect((yield* capsOf(edge))["commands"]).toMatchObject({ used: 5, refusing: false })
+          expect((yield* capsOf(edge))["commands"]).not.toHaveProperty("reason")
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "turns the Free command cap to refusing once a command no longer fits, before the units are all used",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({})
+          const key = yield* keyFor(edge, "acme")
+
+          for (let n = 0; n < 8; n++)
+            expect((yield* command(edge, key, { cid: `c${n}`, id: `o-${n}` })).status).toBe(200)
+
+          expect((yield* capsOf(edge))["commands"]).toEqual({
+            cap: "commands",
+            limit: 50,
+            used: 40,
+            atCap: false,
+            refusing: false,
+          })
+          expect((yield* command(edge, key, { cid: "ninth" })).status).toBe(200)
+          expect((yield* read(edge, key)).status).toBe(200)
+          expect((yield* capsOf(edge))["commands"]).toMatchObject({
+            used: 46,
+            atCap: false,
+            refusing: true,
+          })
+
+          const refused = yield* command(edge, key, { cid: "tenth" })
+
+          expect(refused.status).toBe(429)
+          expect(refused.reason["_tag"]).toBe("QuotaExceeded")
+
+          for (let n = 0; n < 4; n++) expect((yield* read(edge, key)).status).toBe(200)
+
+          expect((yield* capsOf(edge))["commands"]).toMatchObject({
+            used: 50,
+            atCap: true,
+            refusing: true,
+          })
+          expect((yield* read(edge, key)).status).toBe(429)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "refuses Free storage and connections exactly when their state says so",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({})
+          const key = yield* keyFor(edge, "acme")
+          const sampled = (bytes: number) =>
+            edge.sql`
+              INSERT INTO cloud_meter_storage_sample (deployment_id, tenant, hour, logical_bytes)
+              VALUES (${edge.deployment}, 'acme', date_trunc('hour', now()), ${bytes})
+              ON CONFLICT (deployment_id, tenant) DO UPDATE SET logical_bytes = excluded.logical_bytes
+            `.pipe(Effect.orDie)
+
+          expect((yield* capsOf(edge))["storage"]).toEqual({
+            cap: "storage",
+            limit: 500_000_000,
+            used: 0,
+            atCap: false,
+            refusing: false,
+          })
+
+          yield* sampled(499_999_999)
+          expect((yield* capsOf(edge))["storage"]).toMatchObject({
+            used: 499_999_999,
+            refusing: false,
+          })
+          expect((yield* command(edge, key, { cid: "under" })).status).toBe(200)
+
+          yield* sampled(500_000_000)
+          expect((yield* capsOf(edge))["storage"]).toMatchObject({
+            used: 500_000_000,
+            atCap: true,
+            refusing: true,
+          })
+
+          const refused = yield* command(edge, key, { cid: "at" })
+
+          expect(refused.status).toBe(429)
+          expect(refused.reason["_tag"]).toBe("StorageQuotaExceeded")
+          expect((yield* read(edge, key)).status).toBe(200)
+
+          const sockets = yield* Effect.forEach([0, 1], () => openSocket(edge, key))
+
+          for (const socket of sockets) expect((yield* socket.frame).t).toBe("open")
+
+          expect((yield* capsOf(edge))["connections"]).toEqual({
+            cap: "connections",
+            limit: 3,
+            used: 2,
+            atCap: false,
+            refusing: false,
+          })
+          expect((yield* (yield* openSocket(edge, key)).frame).t).toBe("open")
+          expect((yield* capsOf(edge))["connections"]).toMatchObject({
+            used: 3,
+            atCap: true,
+            refusing: true,
+          })
+          expect((yield* deniedUpgrade(edge, key)).status).toBe(429)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "prices the spend cap on the next command, and leaves a paid plan without command or storage caps",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({ plan: "pro", spendLimitCents: 1003 })
+          const key = yield* keyFor(edge, "acme")
+
+          for (let n = 0; n < 4; n++)
+            expect((yield* command(edge, key, { cid: `c${n}`, id: `o-${n}` })).status).toBe(200)
+
+          const before = yield* capsOf(edge)
+
+          expect(before["spend"]).toEqual({
+            cap: "spend",
+            limit: 1003,
+            used: 1002,
+            atCap: false,
+            refusing: false,
+          })
+          expect(before["commands"]).toEqual({
+            cap: "commands",
+            limit: null,
+            used: 20,
+            atCap: false,
+            refusing: false,
+          })
+          expect(before["storage"]).toMatchObject({ limit: null, refusing: false })
+          expect((yield* command(edge, key, { cid: "fifth" })).status).toBe(200)
+          expect((yield* capsOf(edge))["spend"]).toMatchObject({
+            used: 1003,
+            atCap: true,
+            refusing: true,
+          })
+
+          const refused = yield* command(edge, key, { cid: "sixth" })
+
+          expect(refused.status).toBe(402)
+          expect(refused.reason["_tag"]).toBe("SpendLimitExceeded")
         }),
       ),
     60_000,

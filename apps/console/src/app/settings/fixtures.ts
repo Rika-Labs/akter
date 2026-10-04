@@ -6,6 +6,14 @@ const at = (month: number, day: number, hour = 12, minute = 0): number =>
 
 /** Fixture settings for the Acme organization and its `storefront` project. Test data. */
 
+/** Pro's caps: none refusing, and only the spend limit and connections bounded. */
+const caps = [
+  { cap: "commands", limit: null, used: 206_000_000, atCap: false, refusing: false },
+  { cap: "spend", limit: 50_000, used: 20_670, atCap: false, refusing: false },
+  { cap: "connections", limit: 5_000, used: 412, atCap: false, refusing: false },
+  { cap: "storage", limit: null, used: 2_100_000_000, atCap: false, refusing: false },
+] as const
+
 export const preferencesSlice: SettingsSlice = {
   preferences: {
     defaultEnvironment: "production",
@@ -222,6 +230,73 @@ export const billingSlice: SettingsSlice = {
     card: { brand: "Visa", lastFour: "4242", expiryMonth: 8, expiryYear: 2028 },
     billingEmail: "billing@acme.dev",
     spendLimit: { limitCents: 50_000, currentCents: 20_670 },
+    caps,
+  },
+}
+
+/** The pricing configuration's default catalog. */
+export const plansSlice: SettingsSlice = {
+  plans: {
+    plans: [
+      {
+        id: "free",
+        name: "Free",
+        basePriceCents: 0,
+        includedCommands: 1_000_000,
+        commandCap: 1_000_000,
+        commandCentsPerMillion: 0,
+        storageGb: 0.5,
+        storageCap: true,
+        storageCentsPerGbMonth: 0,
+        connections: 100,
+        checkout: null,
+        provisional: false,
+      },
+      {
+        id: "pro",
+        name: "Pro",
+        basePriceCents: 2_500,
+        includedCommands: 25_000_000,
+        commandCap: null,
+        commandCentsPerMillion: 100,
+        storageGb: 10,
+        storageCap: false,
+        storageCentsPerGbMonth: 30,
+        connections: 5_000,
+        checkout: "pro",
+        provisional: true,
+      },
+      {
+        id: "team",
+        name: "Team",
+        basePriceCents: 24_900,
+        includedCommands: 300_000_000,
+        commandCap: null,
+        commandCentsPerMillion: 60,
+        storageGb: 100,
+        storageCap: false,
+        storageCentsPerGbMonth: 30,
+        connections: 50_000,
+        checkout: "team",
+        provisional: true,
+      },
+      {
+        id: "enterprise",
+        name: "Enterprise",
+        basePriceCents: 250_000,
+        includedCommands: 5_000_000_000,
+        commandCap: null,
+        commandCentsPerMillion: 50,
+        storageGb: 1_000,
+        storageCap: false,
+        storageCentsPerGbMonth: 30,
+        connections: 100_000,
+        checkout: "enterprise",
+        provisional: true,
+      },
+    ],
+    readCommandWeight: 0.2,
+    provisional: true,
   },
 }
 
@@ -286,6 +361,8 @@ export const usageSlice: SettingsSlice = {
         unit: "gigabytes",
       },
     ],
+    latestStorageSample: { bytes: 6_800_000_000, sampledAt: at(9, 30, 23, 0) },
+    caps,
     commandsPerDay: seededSeries({
       length: 30,
       base: 1_380_000,

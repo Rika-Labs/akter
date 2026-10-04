@@ -68,6 +68,7 @@ import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { seedRuntime } from "./operators/seed.ts"
 import { TelemetrySampler } from "./telemetry/sampler.ts"
+import { turnGroups } from "./turn/group.ts"
 import { TurnConnections, turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
 import {
@@ -1576,7 +1577,13 @@ export const Database = {
 
     const database = Layer.mergeAll(
       boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
-      turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+      neki === true
+        ? turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types })
+        : turnGroups.pipe(
+            Layer.provideMerge(
+              turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+            ),
+          ),
       queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
       coordinationLayer(
