@@ -51,7 +51,7 @@ const noticeWording = (notice: CapNotice): NoticeWording =>
       action: undefined,
     }),
     CommandCap: ({ period, commands }) => ({
-      text: `This organization has used the ${commands === null ? "" : `${formatCompact(commands)} `}commands its plan includes for ${formatPeriod(period)}. New commands are refused until next month; reads keep working.`,
+      text: `This organization has used the ${formatCompact(commands)} commands its plan includes for ${formatPeriod(period)}. New commands are refused until next month; reads keep working.`,
       action: "Upgrade",
     }),
     StorageCap: ({ usedBytes, limitBytes }) => ({

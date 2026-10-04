@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest"
 import { sendFailure } from "../commands/errors.ts"
 import { CommandSucceeded } from "../commands/model.ts"
 import { DeploymentPage } from "../deployments/model.ts"
-import { emptySettings, type Billing } from "../settings/model.ts"
+import { BillingPlan, emptySettings, type Billing } from "../settings/model.ts"
 import { workspace } from "../workspace/fixtures.ts"
 import {
   AnsweredCommand,
@@ -36,7 +36,7 @@ import { Dialog, type Model } from "./model.ts"
 import { init, nextCommandId, resendRefused, update } from "./update.ts"
 
 const billing: Billing = {
-  plan: {
+  plan: BillingPlan.make({
     id: "pro",
     name: "Pro",
     subscribed: "pro",
@@ -45,7 +45,7 @@ const billing: Billing = {
     provisional: true,
     renewsAt: null,
     monthToDateCents: 30_000,
-  },
+  }),
   card: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 30_000 },

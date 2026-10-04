@@ -1,6 +1,6 @@
 import type { CapState } from "@akter/cloud-api"
 import { describe, expect, it } from "vitest"
-import type { Billing } from "../settings/model.ts"
+import { type Billing, BillingPlan } from "../settings/model.ts"
 import { CapNotice, capNotice, spendLimitReached } from "./model.ts"
 
 const clear: ReadonlyArray<CapState> = [
@@ -139,7 +139,7 @@ describe("capNotice", () => {
 
 describe("spendLimitReached", () => {
   const billing = (currentCents: number): Billing => ({
-    plan: {
+    plan: BillingPlan.make({
       id: "pro",
       name: "Pro",
       subscribed: "pro",
@@ -148,7 +148,7 @@ describe("spendLimitReached", () => {
       provisional: true,
       renewsAt: null,
       monthToDateCents: currentCents,
-    },
+    }),
     card: null,
     billingEmail: null,
     spendLimit: { limitCents: null, currentCents },

@@ -9,7 +9,7 @@ import { init } from "../shell/update.ts"
 import { workspace } from "../workspace/fixtures.ts"
 import { type CapState, UnboundPlan } from "@akter/cloud-api"
 import { plansSlice } from "./fixtures.ts"
-import { emptySettings, type Billing, type SettingsPage, type Usage } from "./model.ts"
+import { BillingPlan, emptySettings, type Billing, type SettingsPage, type Usage } from "./model.ts"
 import { billingScreen, usageScreen } from "./organization.ts"
 
 const shell = (): Model => {
@@ -17,17 +17,19 @@ const shell = (): Model => {
   return { ...init({ workspace, theme: "light" }, url).model, loading: false }
 }
 
+const freePlan = BillingPlan.make({
+  id: "free",
+  name: "Free",
+  subscribed: "free",
+  paymentStatus: "free",
+  basePriceCents: 0,
+  provisional: false,
+  renewsAt: null,
+  monthToDateCents: 0,
+})
+
 const free: Billing = {
-  plan: {
-    id: "free",
-    name: "Free",
-    subscribed: "free",
-    paymentStatus: "free",
-    basePriceCents: 0,
-    provisional: false,
-    renewsAt: null,
-    monthToDateCents: 0,
-  },
+  plan: freePlan,
   card: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 0 },
@@ -220,7 +222,7 @@ describe("billing", () => {
       billingScreen,
       {
         ...emptySettings,
-        billing: { ...free, plan: { ...free.plan, name: "Hobby" } },
+        billing: { ...free, plan: { ...freePlan, name: "Hobby" } },
         plans,
         usage: usage(10),
       },
@@ -248,7 +250,7 @@ describe("billing", () => {
         billing: {
           ...free,
           plan: {
-            ...free.plan,
+            ...freePlan,
             subscribed: "team",
             paymentStatus: "past_due",
             basePriceCents: 24_900,
@@ -399,7 +401,7 @@ describe("costs", () => {
   const pro: Billing = {
     ...free,
     plan: {
-      ...free.plan,
+      ...freePlan,
       id: "pro",
       name: "Pro",
       subscribed: "pro",
