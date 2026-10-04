@@ -189,6 +189,7 @@ export const order: ActorPage = ActorPage.make({
   generation: 14,
   turn: 31,
   runner: "us-east-1/r3",
+  region: "us-east-1",
   tenant: "acme",
   mailbox: 0,
   state: '{\n  "total": 4200,\n  "chargeId": "ch_3Q9xA2",\n  "status": "paid",\n  "refunded": 0\n}',
