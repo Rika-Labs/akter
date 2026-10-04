@@ -9,7 +9,7 @@
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/api/src/config.test.ts apps/api/src/runtime.test.ts",
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. --reporter=default --reporter=json --outputFile=apps/api/.cache/integration-results.json --silent=passed-only apps/api/src/server.test.ts apps/api/src/repository.test.ts apps/api/src/auth.test.ts apps/api/src/rollout.test.ts apps/api/src/billing.test.ts apps/api/src/billing-actor.test.ts apps/api/src/billing-repository.test.ts apps/api/src/metering-actor.test.ts apps/api/src/collector.test.ts apps/api/src/usage.test.ts",
-    "test:stack": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/api/src/deployment-stack.test.ts"
+    "test:stack": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/api/src/deployment-stack.test.ts apps/api/src/caps-stack.test.ts"
   },
   "dependencies": {
     "@akter/billing": "workspace:*",
