@@ -2,7 +2,8 @@ import { Config, Context, Effect, Layer, ManagedRuntime, Redacted } from "effect
 import { SqlClient } from "effect/sql"
 import { afterAll, describe, expect, it } from "vitest"
 import { Database } from "../layer.ts"
-import { ReadReplica } from "./replica.ts"
+import { Coordination } from "./coordination.ts"
+import { QueryPool, ReadReplica } from "./replica.ts"
 import { TurnConnections } from "../turn/pipeline.ts"
 import { withKeepalives } from "./keepalive.ts"
 
@@ -21,6 +22,7 @@ const keepalives = (
           url,
           startupParameters,
           startupOptions,
+          coordination: { url, startupParameters, startupOptions },
           replica: {
             url,
             startupParameters: { tcp_keepalives_count: "4", ...startupParameters },
@@ -30,6 +32,8 @@ const keepalives = (
       )
       const sql = Context.get(client, SqlClient.SqlClient)
       const replica = Context.get(client, ReadReplica)!
+      const queries = Context.get(client, QueryPool)!
+      const coordination = Context.get(client, Coordination)!
       const turns = Context.get(client, TurnConnections)
       const connection = yield* turns.lease
       const statement = `SELECT current_setting('tcp_keepalives_idle') AS idle,
@@ -38,6 +42,8 @@ const keepalives = (
 
       return {
         offTurn: yield* sql.unsafe(statement),
+        query: yield* queries.unsafe(statement),
+        coordination: yield* coordination.unsafe(statement),
         replica: yield* replica.unsafe(statement),
         turn: yield* connection.queryValues(statement),
       }
@@ -48,11 +54,13 @@ describe("runtime sessions with Postgres", () => {
   const runtime = ManagedRuntime.make(Layer.empty)
   afterAll(() => runtime.dispose())
 
-  it("sets probes on turn, off-turn and replica sessions", () =>
+  it("sets probes on turn, off-turn, query, coordination and replica sessions", () =>
     runtime.runPromise(
       Effect.gen(function* () {
         expect(yield* keepalives()).toEqual({
           offTurn: [{ idle: "5", interval: "2", count: "3" }],
+          query: [{ idle: "5", interval: "2", count: "3" }],
+          coordination: [{ idle: "5", interval: "2", count: "3" }],
           replica: [{ idle: "5", interval: "2", count: "4" }],
           turn: [["5", "2", "3"]],
         })
@@ -64,6 +72,8 @@ describe("runtime sessions with Postgres", () => {
       Effect.gen(function* () {
         expect(yield* keepalives({ tcp_keepalives_idle: "30" })).toEqual({
           offTurn: [{ idle: "30", interval: "2", count: "3" }],
+          query: [{ idle: "30", interval: "2", count: "3" }],
+          coordination: [{ idle: "30", interval: "2", count: "3" }],
           replica: [{ idle: "30", interval: "2", count: "4" }],
           turn: [["30", "2", "3"]],
         })
@@ -74,11 +84,15 @@ describe("runtime sessions with Postgres", () => {
       Effect.gen(function* () {
         expect(yield* keepalives(undefined, "-c tcp_keepalives_idle=30")).toEqual({
           offTurn: [{ idle: "30", interval: "2", count: "3" }],
+          query: [{ idle: "30", interval: "2", count: "3" }],
+          coordination: [{ idle: "30", interval: "2", count: "3" }],
           replica: [{ idle: "30", interval: "2", count: "4" }],
           turn: [["30", "2", "3"]],
         })
         expect(yield* keepalives(undefined, undefined, "-c tcp_keepalives_interval=7")).toEqual({
           offTurn: [{ idle: "5", interval: "7", count: "3" }],
+          query: [{ idle: "5", interval: "7", count: "3" }],
+          coordination: [{ idle: "5", interval: "7", count: "3" }],
           replica: [{ idle: "5", interval: "7", count: "4" }],
           turn: [["5", "7", "3"]],
         })

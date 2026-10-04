@@ -99,7 +99,10 @@ export const OwnedTable = S.Struct({
 
 /**
  * Everything the actor inspector shows about one instance. A null is a fact
- * the runner does not report, shown as unknown rather than as zero or empty.
+ * the runner does not report, shown as unknown rather than as zero or empty;
+ * `runner` and `region` already read `—` when unreported. `state` is null when
+ * an entry of the committed state does not decode, since part of it would
+ * misstate the whole.
  */
 export const ActorPage = S.TaggedStruct("ActorPage", {
   commandScope: S.optional(CommandScope),
@@ -109,9 +112,10 @@ export const ActorPage = S.TaggedStruct("ActorPage", {
   generation: S.Finite,
   turn: S.NullOr(S.Finite),
   runner: S.String,
+  region: S.String,
   tenant: S.String,
   mailbox: S.NullOr(S.Finite),
-  state: S.String,
+  state: S.NullOr(S.String),
   tables: S.NullOr(S.Array(OwnedTable)),
   receipts: S.Array(Receipt),
   events: S.Array(EmittedEvent),

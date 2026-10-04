@@ -5,6 +5,7 @@ import type { SqlConnection } from "effect/sql"
 import { admissionLimit, isOverloaded } from "../admission.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { asSqlConnection } from "./connection.ts"
+import { fairGate } from "./gate.ts"
 
 /** Extra checkouts each pool holds beyond its connections before refusing further work. */
 export const POOL_WAITERS = 64
@@ -52,17 +53,33 @@ const direct = <A>(statement: Effect.Effect<A, SqlError.SqlError>) => statement
 
 /**
  * The native Postgres client with at most 64 queued checkouts beyond its
- * connection capacity. All SQL entry points share admission, including
- * reservations, transactions, streams and listeners; bounding only command
- * dispatch would leave queries and background callers able to grow the pool's
- * waiter list. A refused checkout sent no statement. The scope owns a slot
- * until the connection returns, so cancellation never leaks capacity.
+ * connection capacity, handing its connections out first come, first served.
+ * All SQL entry points share admission, including reservations,
+ * transactions, streams and listeners; bounding only command dispatch would
+ * leave queries and background callers able to grow the pool's waiter list.
+ * A refused checkout sent no statement.
+ *
+ * A checkout passes three stages in order: the bounded admission slot,
+ * refused at once past the limit; a first-come, first-served gate with one
+ * slot per connection, so a caller never waits behind one that asked after
+ * it, which Effect's pool allows because it hands a freed connection to
+ * whichever fiber asks next; then the pool, which therefore never has a
+ * waiter of its own. Both slots belong to the checkout's scope, or to the
+ * borrowed statement, and return with the connection, so cancellation never
+ * leaks either. A statement inside a transaction reuses its connection and
+ * takes neither.
+ *
+ * Apart from the gates it is `PgClient.make`: the same compiler, transforms,
+ * span attributes, commit check, savepoint release, JSON fragments, and
+ * notifications, which use a checkout of their own rather than the caller's
+ * transaction.
  */
 export const boundedPool = Effect.fnUntraced(function* (options: PgClient.PgPoolConfig) {
   const pool = yield* PgPool.make(options)
   const slots = options.maxConnections ?? 10
-  const gate = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
-  const enter = gate.take.pipe(Effect.mapError(poolRefusal))
+  const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
+  const fair = fairGate(slots)
+  const enter = Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), fair.take)
   const connection = (session: Effect.Success<typeof pool.get>) =>
     asSqlConnection({ connection: session, send: direct })
   const acquire = Effect.andThen(enter, Effect.map(pool.get, connection))
@@ -70,8 +87,8 @@ export const boundedPool = Effect.fnUntraced(function* (options: PgClient.PgPool
     acquirer: acquire,
     transactionAcquirer: Effect.andThen(enter, Effect.map(pool.reserve, connection)),
     borrower: (use) =>
-      gate
-        .admit(pool.use((session) => use(connection(session))))
+      admission
+        .admit(fair.use(pool.use((session) => use(connection(session)))))
         .pipe(
           Effect.mapError((error) => (Schema.is(ActorError)(error) ? poolRefusal(error) : error)),
         ),
@@ -101,8 +118,28 @@ export const boundedPool = Effect.fnUntraced(function* (options: PgClient.PgPool
         enter,
         Effect.flatMap(pool.reserve, (session) => session.listen(channel)),
       ),
-    notify: (channel: string, payload: string) =>
-      Effect.asVoid(sql`SELECT pg_notify(${channel}, ${payload})`),
+    notify: (channel: string, payload: string) => {
+      if (new TextEncoder().encode(channel).byteLength > 63) {
+        const message = "PostgreSQL channel names must not exceed 63 UTF-8 bytes"
+        return Effect.fail(
+          SqlError.SqlError.make({
+            reason: SqlError.UnknownError.make({
+              cause: new Error(message),
+              message,
+              operation: "notify",
+            }),
+          }),
+        )
+      }
+
+      return Effect.asVoid(
+        Effect.scoped(
+          Effect.flatMap(acquire, (conn) =>
+            conn.executeRaw("SELECT pg_notify($1, $2)", [channel, payload]),
+          ),
+        ),
+      )
+    },
   }) satisfies PgClient.PgClient
 })
 

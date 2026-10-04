@@ -1,7 +1,13 @@
 import { ActorInspector, ActorInstance, ActorTypeActivity } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import { cellText, toActorInstance, toActorPage, toTypeActivity } from "./mapping.ts"
+import {
+  cellText,
+  shortCommandId,
+  toActorInstance,
+  toActorPage,
+  toTypeActivity,
+} from "./mapping.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(schema)))(JSON.stringify(input))
@@ -67,9 +73,9 @@ describe("actor inspector mapping", () => {
           mailbox: 5,
           connections: { sockets: 3, feedCursor: null },
         })
-        expect(yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(page.state)).toEqual(
-          inspector.state,
-        )
+        expect(
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(page.state ?? ""),
+        ).toEqual(inspector.state)
         expect(page.events).toEqual([{ name: "OrderPlaced", cursor: "1184", subscribers: 3 }])
         expect(page.jobs).toEqual([
           { name: "Charge", id: "job_44f", attempts: 2, status: "retrying" },
@@ -135,6 +141,8 @@ describe("actor inspector mapping", () => {
         expect(page).toMatchObject({
           awake: null,
           turn: null,
+          runner: "—",
+          region: "—",
           mailbox: null,
           tables: null,
           activity: null,
@@ -144,6 +152,34 @@ describe("actor inspector mapping", () => {
         })
       }),
     ))
+
+  it("keeps a state with an undecodable entry unreadable rather than writing it as null", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const page = toActorPage(yield* decode(ActorInspector, { ...inspector, state: null }))
+        expect(page.state).toBeNull()
+        expect(toActorPage(yield* decode(ActorInspector, inspector)).region).toBe("us-east-1")
+      }),
+    ))
+})
+
+describe("receipt command ids", () => {
+  it("shortens a runner-minted id to the first 8 characters of its uuid", () => {
+    expect(
+      shortCommandId("v1.1791099825418.1791186225418.5979a62a-ca7e-48a3-82b3-fff071bcd715"),
+    ).toBe("5979a62a")
+  })
+
+  it("shows any other id unchanged, including one that only resembles a runner id", () => {
+    expect(shortCommandId("cmd_7Hq2")).toBe("cmd_7Hq2")
+    expect(shortCommandId("5979a62a-ca7e-48a3-82b3-fff071bcd715")).toBe(
+      "5979a62a-ca7e-48a3-82b3-fff071bcd715",
+    )
+    expect(shortCommandId("v2.1.2.5979a62a-ca7e-48a3-82b3-fff071bcd715")).toBe(
+      "v2.1.2.5979a62a-ca7e-48a3-82b3-fff071bcd715",
+    )
+    expect(shortCommandId("v1.1.2.not-a-uuid")).toBe("v1.1.2.not-a-uuid")
+  })
 })
 
 describe("actor instance mapping", () => {

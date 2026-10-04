@@ -9,7 +9,7 @@ import type { ActorRef } from "../identity/caller.ts"
 import type { Holder } from "./connections/holder.ts"
 import type { ReadSet } from "./connections/reads.ts"
 import { watchStream } from "./connections/watch.ts"
-import { caughtUp } from "./database/replica.ts"
+import { caughtUp, QueryPool } from "./database/replica.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
 import { decompress, routingKey } from "./storage/codec.ts"
@@ -48,6 +48,7 @@ export const committedReads = ({
   readonly holder: Holder
 }): Pick<InternalActors["Service"], "exists" | "query" | "watch" | "pollWorkflow"> => {
   const reruns = Semaphore.makeUnsafe(WATCH_RERUNS)
+  const queryPool = Context.get(services, QueryPool)
   const usage = Context.getUnsafe(services, UsageAccounting)
   const accounting = accountsUsage(usage) ? usage : undefined
 
@@ -142,21 +143,21 @@ export const committedReads = ({
           return outcome
         }).pipe(withTenant(request.ref.tenant), Effect.provideService(SqlClient.SqlClient, client))
 
-      const replicated =
-        replica !== undefined && registration.tables.length === 0 && registration.blobs.length === 0
+      const owned = registration.tables.length > 0 || registration.blobs.length > 0
+      const local = owned ? primary : (queryPool ?? primary)
 
       const outcome = yield* Effect.gen(function* () {
-        if (!replicated) return yield* read(primary)
+        if (owned || replica === undefined) return yield* read(local)
 
         if (minVersion !== undefined) {
           const ready = yield* caughtUp(replica, minVersion).pipe(
             Effect.catchIf(SqlError.isSqlError, () => Effect.succeed(false)),
           )
 
-          if (!ready) return yield* read(primary)
+          if (!ready) return yield* read(local)
         }
 
-        return yield* read(replica).pipe(Effect.catchIf(SqlError.isSqlError, () => read(primary)))
+        return yield* read(replica).pipe(Effect.catchIf(SqlError.isSqlError, () => read(local)))
       }).pipe(
         Effect.timeoutOrElse({
           duration: registration.timeoutMs,

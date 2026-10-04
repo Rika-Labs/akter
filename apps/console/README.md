@@ -60,9 +60,16 @@ input is sent as a new command. An ID the operator typed is always used as typed
 `RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
 input makes a new one. The dialog captures the actor's project and environment and closes on every
 URL change; navigation can never retarget an old actor address. The inspector shows the actor as
-the runner reports it: committed state, generation, receipts, events, jobs and the event feed
-cursor. What the runner does not report (turn, owned rows, subscribers, sockets, awake state,
-runner, mailbox and activity) reads as unknown (`—` or an empty state that says so), never as zero.
+the runner reports it: committed state, generation, receipts (with their `Success` or `Failure`
+outcome), events, jobs and the event feed cursor, with no sample notice. What the runner does not
+report (turn, owned rows, subscribers, sockets, awake state, runner, region, mailbox, receipt times
+and activity) reads as unknown (`—` or an empty state that says it isn't reported), never as zero.
+A committed state with an entry that does not decode reads as unreadable rather than as `null`.
+Closing Send command after the actor answered reloads a live inspector, so it shows the new state.
+A runner-minted receipt id (`v1.<ms>.<ms>.<uuid>`) reads as its uuid's first 8 characters, with the
+full id as the cell's title; other ids read unchanged. The
+contract carries no caller on receipts, events or the timeline, so the inspector cannot show who
+sent a command.
 Against an API that cannot inspect actors yet, the inspector still reads the actor's live job
 list; an actor that has one keeps the Jobs tab and Send command live while the rest of the page is
 sample data. An address the runtime

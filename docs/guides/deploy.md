@@ -101,9 +101,9 @@ Gate traffic on `RuntimeControl.readiness` or served `GET /ready`, not on a list
 
 ## Sizing
 
-Each runner owns its pools. Keep `processes × (maxConnections + offTurnConnections)` plus operator headroom below the database's `max_connections`.
+Each runner owns its pools. Keep `processes × (maxConnections + offTurnConnections + queryConnections)`, plus the `coordination` pool's connections when configured, plus operator headroom below the database's `max_connections`.
 
-- **Connections.** Each command holds one Postgres connection for its whole turn. `Database.postgres({ maxConnections })` defaults to 50; keep it plus migrations, backups, and operator sessions under the server's `max_connections`. A pooler in front of Postgres is unverified.
+- **Connections.** Each command holds one Postgres connection until its transaction ends; a pipelined chain keeps its session until the chain ends. `Database.postgres({ maxConnections })` defaults to 50, `offTurnConnections` and `queryConnections` to 10 each; count every pool targeting the server, plus migrations, backups, and operator sessions, under its `max_connections`. A pooler in front of Postgres is unverified.
 - **Memory.** A resident actor holds about 20 KiB of JavaScript heap on the measured runner, so the default `maxResidentActors` of 10,000 is about 200 MiB. A command that needs a new activation past the limit fails `RunnerAtCapacity`, and its handle retries until an idle actor hibernates.
 
 See [deployment](../operations/01-deployment.md#postgres-connections-across-runners) for the arithmetic.
