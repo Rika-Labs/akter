@@ -1067,6 +1067,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
       Effect.gen(function* () {
         const {
           owned,
+          sql,
           call,
           alice,
           aliceId,
@@ -1100,12 +1101,14 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const built = ["build:succeeded", "migrate:succeeded", "start-runners:succeeded"]
 
         const first = yield* create("a", "Counter v1")
-        expect(first).toMatchObject({ status: "in-progress", phase: "building", imageDigest: null })
-        expect(yield* settled(first.id)).toMatchObject({
-          status: "live",
-          message: "Counter v1",
-          imageDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
-        })
+        const imageOf = (id: string) =>
+          sql<{ image: string }>("SELECT image FROM deployment WHERE id = $1", [id]).pipe(
+            Effect.map((rows) => rows[0]?.image),
+          )
+        expect(first.status).toBe("in-progress")
+        expect(first.steps[0]).toMatchObject({ name: "build", status: "running" })
+        expect(yield* settled(first.id)).toMatchObject({ status: "live", message: "Counter v1" })
+        expect(yield* imageOf(first.id)).toMatch(/^sha256:[0-9a-f]{64}$/u)
         expect(yield* steps(first.id)).toEqual([...built, "drain-previous:skipped"])
         const log = yield* call(`${deployments}/${first.id}/build-log`, { cookie: alice }).pipe(
           Effect.flatMap((response) => read(response, Cloud.BuildLog)),
@@ -1147,10 +1150,11 @@ layer(Layer.provideMerge(ImagesLive, services), {
           commitSha: commit("a"),
           message: "Redeploy aaaaaaa: Counter v1",
           rolledBackFrom: null,
-          phase: "building",
         })
+        expect(redeployed.steps[0]).toMatchObject({ name: "build", status: "running" })
         expect(yield* settled(redeployed.id)).toMatchObject({ status: "live" })
         expect(yield* steps(redeployed.id)).toEqual([...built, "drain-previous:succeeded"])
+        expect(yield* imageOf(redeployed.id)).toMatch(/^sha256:[0-9a-f]{64}$/u)
         expect(yield* statusOf(rolledBack.id)).toBe("drained")
         expect((yield* send(1)).result).toMatchObject({
           count: 5,
