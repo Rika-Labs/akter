@@ -17,6 +17,7 @@ import {
   Context,
   Crypto,
   DateTime,
+  Deferred,
   Effect,
   Exit,
   Layer,
@@ -77,6 +78,7 @@ const provider = {
     | "catalog_not_ready"
     | "expired"
     | undefined,
+  checkoutGate: undefined as Deferred.Deferred<void> | undefined,
   customerFor: new Map<string, string>(),
   calls: {
     ensureCustomer: [] as Array<{
@@ -161,7 +163,10 @@ const FakeBilling = Layer.succeed(
           const url = provider.sessions.get(key) ?? `https://pay.test/${key}`
           provider.sessions.set(key, url)
 
-          return Effect.succeed({ id: `cs_${key}`, url })
+          return (provider.checkoutGate === undefined
+            ? Effect.void
+            : Deferred.await(provider.checkoutGate)
+          ).pipe(Effect.as({ id: `cs_${key}`, url }))
         },
       ),
     openPortal: (input) =>
@@ -248,6 +253,8 @@ afterAll(() => runtime.dispose())
 
 afterEach(() => {
   provider.failEnsure = false
+  if (provider.checkoutGate !== undefined) Deferred.doneUnsafe(provider.checkoutGate, Effect.void)
+  provider.checkoutGate = undefined
   provider.failCheckout = undefined
   provider.customerFor.clear()
   provider.changeStatus = "active"
@@ -821,11 +828,21 @@ describe("BillingActor subscription lifecycle", () => {
           ),
         )
         provider.failCheckout = undefined
+        const checkoutGate = yield* Deferred.make<void>()
+        provider.checkoutGate = checkoutGate
         expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("pending")
         expect(
           yield* actor.StartCheckout({ ...checkout("lost"), tierId: "team" }).pipe(Effect.exit),
         ).toEqual(Exit.fail(RequestConflict.make({ requestId: "lost" })))
         expect((yield* actor.StartCheckout(checkout("lost"))).status).toBe("pending")
+        expect(yield* actor.GetRequest({ requestId: "lost" })).toMatchObject({
+          status: "pending",
+          ambiguous: true,
+          sessionId: null,
+          url: null,
+        })
+        yield* Deferred.succeed(checkoutGate, undefined)
+        provider.checkoutGate = undefined
         yield* test.advance(0)
         expect(yield* actor.GetRequest({ requestId: "lost" })).toMatchObject({
           status: "ready",
