@@ -12,28 +12,28 @@ import { toActorPage } from "../mapping.ts"
 import type { ActorPage } from "../model.ts"
 import { actorScreen } from "./view.ts"
 
+const receipt: ActorInspector["receipts"][number] = {
+  commandId: "cmd_1",
+  command: "Increment",
+  result: "Success",
+  caller: null,
+  at: null,
+  expiresAt: DateTime.makeUnsafe("2026-10-05T12:00:00.000Z"),
+  replayed: false,
+}
+
 /** The inspector as the API answers it today: every field the runner does not report is null. */
 const unreported: ActorInspector = {
   address: "Counter/hits",
   state: { count: 3 },
   turn: null,
   tables: null,
-  receipts: [
-    {
-      commandId: "cmd_1",
-      command: "Increment",
-      result: "Success",
-      caller: { kind: "user", subject: "user:usr_ada", source: null },
-      at: null,
-      expiresAt: DateTime.makeUnsafe("2026-10-04T12:00:00.000Z"),
-      replayed: false,
-    },
-  ],
+  receipts: [receipt],
   events: [
     {
       name: "Incremented",
       cursor: "3",
-      emittedAt: DateTime.makeUnsafe("2026-10-03T12:00:00.000Z"),
+      emittedAt: DateTime.makeUnsafe("2026-10-04T12:00:00.000Z"),
       subscribers: null,
     },
   ],
@@ -50,6 +50,10 @@ const unreported: ActorInspector = {
   },
   timeline: null,
 }
+
+const user = (subject: string) => ({ kind: "user" as const, subject, source: null })
+
+const receipts = Scene.role("table", { name: "Receipts" })
 
 const shell = (path: string): Model => {
   const url = Option.getOrThrow(Url.fromString(`http://localhost${path}`))
@@ -116,7 +120,7 @@ describe("actor inspector", () => {
       "/actors/Counter/hits?tab=receipts",
       toActorPage({
         ...unreported,
-        receipts: [{ ...unreported.receipts[0]!, commandId: full }],
+        receipts: unreported.receipts.map((receipt) => ({ ...receipt, commandId: full })),
       }),
       Scene.expect(Scene.role("table", { name: "Receipts" })).toContainText(
         "5979a62aIncrementSuccess—",
@@ -129,7 +133,9 @@ describe("actor inspector", () => {
     scene(
       "/actors/Counter/hits?tab=events",
       toActorPage(unreported),
-      Scene.expect(Scene.role("table", { name: "Events" })).toContainText("3Incremented—"),
+      Scene.expect(Scene.role("table", { name: "Events" })).toContainText(
+        "3Incremented10-04 12:00—",
+      ),
     ))
 
   it("reads unreported sockets as a dash beside the event feed cursor", () =>
@@ -154,5 +160,110 @@ describe("actor inspector", () => {
       toActorPage({ ...unreported, state: null }),
       Scene.expect(Scene.text("Committed state isn’t readable")).toExist(),
       Scene.expect(Scene.text("null")).toBeAbsent(),
+    ))
+
+  it("names whom each receipt ran as and when the runner stops answering retries from it", () =>
+    scene(
+      "/actors/Counter/hits?tab=receipts",
+      toActorPage({
+        ...unreported,
+        receipts: [
+          { ...receipt, commandId: "cmd_own", caller: user("user:usr_dallen") },
+          { ...receipt, commandId: "cmd_other", caller: user("user:usr_lee") },
+          { ...receipt, commandId: "cmd_key", caller: user("api-key:key_01J9ZK3QWX") },
+          {
+            ...receipt,
+            commandId: "cmd_timer",
+            caller: { kind: "system", subject: null, source: "timer" },
+          },
+          {
+            ...receipt,
+            commandId: "cmd_anon",
+            caller: { kind: "anonymous", subject: null, source: null },
+          },
+        ],
+      }),
+      Scene.expect(receipts).toContainText("cmd_ownIncrementSuccessDallen Pyrah—10-05 12:00"),
+      Scene.expect(receipts).toContainText("cmd_otherIncrementSuccessuser:usr_lee—"),
+      Scene.expect(receipts).toContainText("cmd_keyIncrementSuccessAPI key …ZK3QWX—"),
+      Scene.expect(Scene.title("api-key:key_01J9ZK3QWX")).toHaveText("API key …ZK3QWX"),
+      Scene.expect(Scene.title("user:usr_dallen")).toHaveText("Dallen Pyrah"),
+      Scene.expect(receipts).toContainText("cmd_timerIncrementSuccessSystem"),
+      Scene.expect(Scene.title("timer")).toHaveText("System"),
+      Scene.expect(receipts).toContainText("cmd_anonIncrementSuccessAnonymous"),
+      Scene.expect(receipts).not.toContainText("null"),
+    ))
+
+  it("writes an undecodable caller as a dash rather than as null", () =>
+    scene(
+      "/actors/Counter/hits?tab=receipts",
+      toActorPage(unreported),
+      Scene.expect(receipts).toContainText("cmd_1IncrementSuccess——10-05 12:00"),
+      Scene.expect(receipts).not.toContainText("null"),
+      Scene.expect(receipts).not.toContainText("NaN"),
+    ))
+
+  it("puts the shortened command id and its caller under each timeline entry", () =>
+    scene(
+      "/actors/Counter/hits",
+      toActorPage({
+        ...unreported,
+        timeline: [
+          {
+            at: DateTime.makeUnsafe("2026-10-04T12:00:01.000Z"),
+            kind: "command",
+            label: "Increment",
+            detail: "v1.1791099825418.1791186225418.5979a62a-ca7e-48a3-82b3-fff071bcd715",
+            caller: user("user:usr_dallen"),
+          },
+          {
+            at: DateTime.makeUnsafe("2026-10-04T12:00:01.000Z"),
+            kind: "event",
+            label: "Incremented",
+            detail: null,
+            caller: null,
+          },
+        ],
+      }),
+      Scene.expect(Scene.text("5979a62a · Dallen Pyrah")).toExist(),
+      Scene.expect(Scene.text("Activity isn’t reported")).toBeAbsent(),
+      Scene.expect(Scene.text("null")).toBeAbsent(),
+    ))
+
+  it("says the timeline is empty rather than leaving the activity blank", () =>
+    scene(
+      "/actors/Counter/hits",
+      toActorPage({ ...unreported, timeline: [] }),
+      Scene.expect(Scene.text("Nothing has reached this actor’s timeline yet.")).toExist(),
+      Scene.expect(Scene.text("Activity isn’t reported")).toBeAbsent(),
+    ))
+
+  it("shortens a runner-minted job id and keeps the full id in its title", () => {
+    const full = "v1.1791125701166.1791215731166.f6f589c8-c515-4d13-a8b9-f2800b9d18c9"
+    return scene(
+      "/actors/Counter/hits?tab=jobs",
+      toActorPage({
+        ...unreported,
+        jobs: [{ id: full, name: "Later", attempts: 0, status: "queued" }],
+      }),
+      Scene.expect(Scene.role("table", { name: "Jobs" })).toContainText("f6f589c8Later0Queued"),
+      Scene.expect(Scene.title(full)).toHaveText("f6f589c8"),
+    )
+  })
+
+  it("titles a system delivery by its source and the subject it acted for when they differ", () =>
+    scene(
+      "/actors/Counter/hits?tab=receipts",
+      toActorPage({
+        ...unreported,
+        receipts: [
+          {
+            ...receipt,
+            commandId: "cmd_job",
+            caller: { kind: "system", subject: "user:usr_lee", source: "job" },
+          },
+        ],
+      }),
+      Scene.expect(Scene.title("job · user:usr_lee")).toHaveText("System"),
     ))
 })

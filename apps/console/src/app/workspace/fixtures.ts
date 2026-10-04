@@ -6,7 +6,7 @@ import type { Workspace } from "./model.ts"
  * numbers are illustrative test data, not measurements.
  */
 export const workspace: Workspace = {
-  person: { name: "Dallen Pyrah", email: "dallen@acme.dev", role: "Owner" },
+  person: { id: "usr_dallen", name: "Dallen Pyrah", email: "dallen@acme.dev", role: "Owner" },
   organization: "Acme",
   plan: KnownPlan.make({ id: "pro" }),
   projects: [

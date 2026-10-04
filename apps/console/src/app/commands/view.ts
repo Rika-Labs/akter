@@ -3,9 +3,11 @@ import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import type { HtmlBuilder } from "foldkit/html"
 import { Option } from "effect"
+import { shortCommandId } from "../actors/mapping.ts"
 import * as Routes from "../navigation/routes.ts"
 import { ChangedTailFilter, type Message, ToggledTail } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
+import { callerCell } from "./caller.ts"
 import type { CommandsPage, TailEntry } from "./model.ts"
 
 const styles = stylex.create({
@@ -111,6 +113,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
         empty: "No turns for this actor type yet.",
         columns: [
           { key: "time", label: "Time", width: "7.25rem", mono: true, muted: true },
+          { key: "id", label: "Command id", width: "6rem", mono: true, hideBelow: "compact" },
           { key: "took", label: "Took", width: "4.5rem", align: "end", hideBelow: "compact" },
           { key: "actor", label: "Actor", width: "minmax(8rem, 1fr)", mono: true },
           {
@@ -120,6 +123,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
             mono: true,
             hideBelow: "narrow",
           },
+          { key: "caller", label: "Caller", width: "minmax(0, 1fr)", hideBelow: "narrow" },
           { key: "result", label: "Result", width: "minmax(5rem, 9rem)" },
         ],
         rows: entries.map((entry) => ({
@@ -128,6 +132,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
           tone: entry.result === "replayed" ? "muted" : "default",
           cells: [
             entry.time,
+            h.span([h.Title(entry.commandId)], [shortCommandId(entry.commandId)]),
             entry.took,
             model.pageSample
               ? `${entry.actorType}/${entry.key}`
@@ -139,6 +144,7 @@ export const commandsScreen = ({ h, model, page }: ScreenInput<CommandsPage>): S
                   [`${entry.actorType}/${entry.key}`],
                 ),
             entry.command,
+            callerCell(h, model.workspace.person, entry.caller),
             result(h, entry),
           ],
         })),

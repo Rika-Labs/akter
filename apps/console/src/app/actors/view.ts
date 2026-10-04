@@ -4,6 +4,7 @@ import * as stylex from "@stylexjs/stylex"
 import * as Routes from "../navigation/routes.ts"
 import { ChangedField } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
+import { knownTotal, orUnknown, unknown } from "../shell/unknown.ts"
 import type { ActorsPage } from "./model.ts"
 
 const layout = stylex.create({ filter: { maxWidth: "20rem" } })
@@ -18,12 +19,7 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
       (type.commands ?? []).some((command) => command.toLocaleLowerCase().includes(query)),
   )
   const instances = page.types.reduce((sum, type) => sum + type.instances, 0)
-  const awake = page.types.some((type) => type.awake === null)
-    ? null
-    : page.types.reduce((sum, type) => sum + (type.awake ?? 0), 0)
-  const commandsPerSecond = page.types.some((type) => type.commandsPerSecond === null)
-    ? null
-    : page.types.reduce((sum, type) => sum + (type.commandsPerSecond ?? 0), 0)
+  const awake = knownTotal(page.types.map((type) => type.awake))
   return {
     title: "Actors",
     crumbs: [{ label: "Actors" }],
@@ -36,17 +32,19 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
           { label: "Instances", value: formatCompact(instances), detail: "rows in your Postgres" },
           {
             label: "Awake",
-            value: awake === null ? "—" : formatInteger(awake),
+            value: orUnknown(formatInteger)(awake),
             detail:
-              instances === 0
-                ? "no actors yet"
-                : awake === null
-                  ? "not reported"
+              awake === null
+                ? undefined
+                : instances === 0
+                  ? "no actors yet"
                   : `${((awake / instances) * 100).toFixed(1)}% of all actors`,
           },
           {
             label: "Commands / s",
-            value: commandsPerSecond === null ? "—" : formatInteger(commandsPerSecond),
+            value: orUnknown(formatInteger)(
+              knownTotal(page.types.map((type) => type.commandsPerSecond)),
+            ),
           },
         ],
       }),
@@ -83,11 +81,11 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
           href: model.pageSample ? undefined : Routes.actorType({ actorType: type.name }),
           cells: [
             type.name,
-            type.commands?.join(", ") ?? "—",
+            type.commands?.join(", ") ?? unknown,
             formatInteger(type.instances),
-            type.awake === null ? "—" : formatInteger(type.awake),
-            type.commandsPerSecond === null ? "—" : formatInteger(type.commandsPerSecond),
-            type.commandsPerSecond === 0 || type.p99Ms === null ? "—" : formatDuration(type.p99Ms),
+            orUnknown(formatInteger)(type.awake),
+            orUnknown(formatInteger)(type.commandsPerSecond),
+            type.commandsPerSecond === 0 ? unknown : orUnknown(formatDuration)(type.p99Ms),
           ],
         })),
       }),

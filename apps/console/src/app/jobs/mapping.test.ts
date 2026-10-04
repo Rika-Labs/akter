@@ -49,7 +49,11 @@ describe("jobs mapping", () => {
             { at: "2026-10-03T11:58:00.000Z", value: 41 },
           ],
         })
-        const page = toJobsPage(now)({ summary, deadLetters: [yield* decode(DeadLetter, letter)] })
+        const page = toJobsPage(now)({
+          summary,
+          deadLetters: [yield* decode(DeadLetter, letter)],
+          resolvable: true,
+        })
         expect(page).toMatchObject({
           queued: 88,
           running: 312,
@@ -62,27 +66,26 @@ describe("jobs mapping", () => {
       }),
     ))
 
-  it("writes running jobs, jobs done and p99 the runners do not report as unknown", () =>
+  it("keeps unreported running jobs, jobs done, p99 and throughput unknown instead of zero", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const page = toJobsPage(now)({
-          summary: yield* decode(JobsSummary, {
-            queued: 2,
-            running: null,
-            retrying: 1,
-            dead: 1,
-            byType: [{ jobName: "Charge", done: null, retried: 1, dead: 1, p99Ms: null }],
-            throughput: null,
-          }),
-          deadLetters: [],
-        })
-        expect(page).toMatchObject({
-          queued: 2,
+        const summary = yield* decode(JobsSummary, {
+          queued: 0,
           running: null,
           retrying: 1,
-          types: [{ name: "Charge", done: null, retried: 1, dead: 1, p99: "—" }],
+          dead: 1,
+          byType: [{ jobName: "Charge", done: null, retried: 1, dead: 1, p99Ms: null }],
+          throughput: null,
+        })
+        const page = toJobsPage(now)({ summary, deadLetters: [], resolvable: false })
+        expect(page).toMatchObject({
+          queued: 0,
+          running: null,
+          retrying: 1,
+          resolvable: false,
           labels: [],
-          throughput: [],
+          throughput: null,
+          types: [{ name: "Charge", done: null, retried: 1, dead: 1, p99: "—" }],
         })
       }),
     ))

@@ -12,9 +12,10 @@ import { barChart } from "@akter/ui/charts"
 import { formatInteger } from "@akter/ui/geometry"
 import * as Routes from "../navigation/routes.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
+import { sampleNotice, unknown } from "../shell/unknown.ts"
 import type { WorkflowsPage } from "./model.ts"
 
-const tones: Readonly<Record<WorkflowsPage["runs"][number]["status"], StatusTone>> = {
+const tones: Readonly<Record<NonNullable<WorkflowsPage["runs"][number]["status"]>, StatusTone>> = {
   Waiting: "attention",
   Running: "pending",
   Sleeping: "idle",
@@ -22,12 +23,17 @@ const tones: Readonly<Record<WorkflowsPage["runs"][number]["status"], StatusTone
   Failed: "danger",
 }
 
-/** Workflows and timers: long-running work owned by actors, and the schedules that start it. */
+/**
+ * Workflows and timers: long-running work owned by actors, and the schedules that start it.
+ * Schedules that fell back to sample data on a live page carry the page's only notice and lend no
+ * count to its live numbers.
+ */
 export const workflowsScreen = ({ h, model, page }: ScreenInput<WorkflowsPage>): Screen => {
   const schedules = section(h, {
     title: "Schedules",
     meta: "cron",
     children: [
+      ...(page.schedulesSample ? [sampleNotice(h)] : []),
       dataTable(h, {
         label: "Schedules",
         columns: [
@@ -81,11 +87,14 @@ export const workflowsScreen = ({ h, model, page }: ScreenInput<WorkflowsPage>):
             value: formatInteger(page.timers),
             detail: page.nextTimer === null ? "none pending" : `next fires in ${page.nextTimer}`,
           },
-          {
-            label: "Schedules",
-            value: String(page.schedules.length),
-            detail: page.nextSchedule === null ? "none scheduled" : `next: ${page.nextSchedule}`,
-          },
+          page.schedulesSample
+            ? { label: "Schedules", value: unknown }
+            : {
+                label: "Schedules",
+                value: String(page.schedules.length),
+                detail:
+                  page.nextSchedule === null ? "none scheduled" : `next: ${page.nextSchedule}`,
+              },
         ],
       }),
       section(h, {
@@ -130,7 +139,9 @@ export const workflowsScreen = ({ h, model, page }: ScreenInput<WorkflowsPage>):
                 run.step,
                 run.waitingFor,
                 run.started,
-                status(h, { tone: tones[run.status], label: run.status }),
+                run.status === null
+                  ? unknown
+                  : status(h, { tone: tones[run.status], label: run.status }),
               ],
             })),
           }),

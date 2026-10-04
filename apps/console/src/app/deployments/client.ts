@@ -1,6 +1,6 @@
-import { DeploymentId } from "@akter/cloud-api"
+import { DeploymentId, NotFound } from "@akter/cloud-api"
 import type { DeploymentSummary, ProjectId } from "@akter/cloud-api"
-import { DateTime, Effect, Option, Schema } from "effect"
+import { DateTime, Effect, Option, Predicate, Schema } from "effect"
 import {
   cloud,
   ConsoleError,
@@ -27,6 +27,19 @@ interface Page {
 
 const maxDetailPages = 100
 
+/**
+ * Whether a page request failed because the server no longer takes the cursor it was given: one it
+ * does not recognise is `NotFound` `cursor`, and one it cannot read is answered 400. Paging then
+ * starts again from the first page rather than reporting the API unreachable.
+ */
+const staleCursor = <E>(error: E): boolean =>
+  (Schema.is(NotFound)(error) && error.resource === "cursor") ||
+  Predicate.isTagged(error, "HttpApiSchemaError") ||
+  (Predicate.isTagged(error, "HttpClientError") &&
+    Predicate.hasProperty(error, "response") &&
+    Predicate.hasProperty(error.response, "status") &&
+    error.response.status === 400)
+
 /** Loads the newest deploys of the current environment. */
 export const loadDeployments: Effect.Effect<Loaded<DeploymentsPage>, ConsoleError> = withProject(
   (api, { project, environment }) =>
@@ -47,12 +60,15 @@ const commitReference = /^[0-9a-f]{7,40}$/i
  * reference that names no deployment. An exact id always wins: it is read directly, so an unknown
  * id is not found at once and never falls back to another deployment. Only a reference shaped like
  * a commit, in either case, is then searched for in the history, newest first, so a commit names its
- * newest deployment; a deployment without a recorded commit never matches; rollbacks and redeploys reuse commits, which is why the console's own links use ids.
- * The history of the deployment's environment is also read for rollback targets: a live deploy
- * keeps paging until an earlier deployment it could roll back to turns up or the history ends,
- * stopping quietly at `maxDetailPages`. A cursor the server repeats, or a history longer than
- * `maxDetailPages` pages that never holds the commit, fails with an `InvalidResponse`
- * `ConsoleError` instead of looping.
+ * newest deployment; a deployment without a recorded commit never matches; rollbacks and redeploys
+ * reuse commits, which is why the console's own links use ids. The history of the deployment's
+ * environment is also read for rollback targets: a live deploy keeps paging until an earlier
+ * deployment it could roll back to turns up or the history ends, stopping quietly at
+ * `maxDetailPages`. A cursor the server no longer takes starts the search over from the first page
+ * once. A second one ends it: with the history read so far when the deployment was found, and
+ * otherwise with an `IncompleteHistory` `ConsoleError` asking to try again, since the deployment
+ * may well exist. A cursor the server repeats, or a history longer than `maxDetailPages` pages that
+ * never holds the commit, fails with an `InvalidResponse` `ConsoleError` instead of looping.
  */
 export const loadDeployment = (
   reference: string,
@@ -73,11 +89,37 @@ export const loadDeployment = (
         const history: Array<DeploymentSummary> = []
         let hit: DeploymentSummary | undefined = byId
         let cursor: string | undefined = undefined
+        let restarted = false
         for (let pages = 0; pages < maxDetailPages; pages++) {
-          const page: Page = yield* api.deployments.list({
-            params,
-            query: { environment: byId?.environment ?? environment, limit: 100, cursor },
-          })
+          const read: Option.Option<Page> = yield* api.deployments
+            .list({
+              params,
+              query: { environment: byId?.environment ?? environment, limit: 100, cursor },
+            })
+            .pipe(
+              Effect.asSome,
+              Effect.catchIf(
+                (error) => cursor !== undefined && staleCursor(error),
+                () => Effect.succeedNone,
+              ),
+            )
+          if (Option.isNone(read)) {
+            if (restarted) {
+              if (hit === undefined)
+                return yield* ConsoleError.make({
+                  kind: "IncompleteHistory",
+                  message: "Couldn’t finish searching the deployment history. Try again.",
+                })
+              break
+            }
+            restarted = true
+            cursor = undefined
+            seen.clear()
+            history.length = 0
+            hit = byId
+            continue
+          }
+          const page: Page = read.value
           history.push(...page.items)
           hit ??= page.items.find(
             (item) =>

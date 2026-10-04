@@ -151,11 +151,16 @@ export const tailEntry = (sequence: number): TailEntry => {
   const turn = turns[sequence % turns.length] ?? turns[0]
   return {
     sequence,
+    commandId: `v1.1791099825418.1791186225418.${String(sequence).padStart(8, "0")}-5a1e-4c0d-8e2f-0d3a7c9b1e42`,
     time: clock(sequence),
     actorType: turn?.actorType ?? "Order",
     key: turn?.key ?? "ord_8f2c",
     command: turn?.command ?? "Place",
     took: turn?.took ?? "—",
+    caller:
+      sequence % 4 === 3
+        ? { kind: "system", subject: null, source: "timer" }
+        : { kind: "user", subject: "user:usr_dallen", source: null },
     result: turn?.result ?? "ok",
     detail: turn?.detail ?? "ok",
   }

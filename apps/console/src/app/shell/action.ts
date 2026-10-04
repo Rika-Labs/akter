@@ -48,7 +48,10 @@ export const canSendCommand = (
     (page) => Predicate.isTagged(page, "ActorPage") && page.commandScope !== undefined,
   )
 
-/** Sample provenance blocks admission even when an event bypasses a disabled control. */
+/**
+ * Sample provenance blocks admission even when an event bypasses a disabled control, and so does a
+ * jobs page whose source cannot retry or discard dead letters.
+ */
 export const canMutate = (
   input: Readonly<{
     page: Option.Option<PageData>
@@ -60,8 +63,15 @@ export const canMutate = (
   !input.loading &&
   Option.match(input.page, {
     onNone: () => !input.sample,
-    onSome: (page) =>
-      Predicate.isTagged(page, "SettingsPage")
-        ? !blockedBySample(page, input.action)
-        : !input.sample,
+    onSome: (page) => {
+      if (Predicate.isTagged(page, "SettingsPage")) return !blockedBySample(page, input.action)
+      if (
+        Predicate.isTagged(page, "JobsPage") &&
+        !page.resolvable &&
+        (Predicate.isTagged(input.action, "RetryDeadLetters") ||
+          Predicate.isTagged(input.action, "DiscardDeadLetter"))
+      )
+        return false
+      return !input.sample
+    },
   })
