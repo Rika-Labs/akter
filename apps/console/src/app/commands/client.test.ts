@@ -1,8 +1,21 @@
-import { CommandFailed, Conflict, Forbidden, NotImplemented } from "@akter/cloud-api"
+import {
+  CommandExpired,
+  CommandFailed,
+  CommandRefused,
+  Conflict,
+  Forbidden,
+  NotFound,
+  NotImplemented,
+  RunnerDefect,
+  Unavailable,
+} from "@akter/cloud-api"
+import { SpendLimitExceeded } from "@rikalabs/akter/client"
 import { DateTime, Effect, Schema, Stream } from "effect"
 import { ProjectId } from "@akter/cloud-api"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { quotaMessage } from "../quota/errors.ts"
 import { loadCommands, openTurns, sendCommand, streamTurns } from "./client.ts"
+import { retryable } from "./errors.ts"
 import { CommandAnswer, CommandRejected, CommandsPage, CommandSucceeded } from "./model.ts"
 
 const fetch = vi.spyOn(globalThis, "fetch")
@@ -116,6 +129,11 @@ const encoded = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Schema.encodeEffect(Schema.toCodecJson(schema))(value)
 
 const live = () => vi.stubEnv("VITE_CONSOLE_FIXTURES", "0")
+
+/** The edge's envelope around a runner refusal, as `CommandRefused.reason` forwards it. */
+const ActorError = Schema.TaggedStruct("ActorError", { reason: Schema.Json })
+const InvalidInput = Schema.TaggedStruct("InvalidInput", { code: Schema.String })
+const NotAdmitted = Schema.TaggedStruct("NotAdmitted", {})
 
 const send = {
   scope: { projectId: ProjectId.make("prj_1"), environment: "production" as const },
@@ -244,12 +262,138 @@ describe("sendCommand over the derived API", () => {
         route(() => json(conflict, 409))
         expect(yield* sendCommand(send).pipe(Effect.flip)).toMatchObject({
           kind: "Conflict",
-          message: "Command id reused.",
+          message:
+            "This command ID was already used for a different command or payload, so nothing ran. Clear the Command ID to send this as a new command.",
         })
         fetch.mockRejectedValue(new TypeError("Failed to fetch"))
         expect(yield* sendCommand(send).pipe(Effect.flip)).toMatchObject({ kind: "Unavailable" })
       }),
     ))
+
+  it("words each key, admission and runner failure for the send dialog", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        live()
+        const failure = <T, E>(schema: Schema.Codec<T, E>, value: T, status: number) =>
+          Effect.gen(function* () {
+            const body = yield* encoded(schema, value)
+            route(() => json(body, status))
+            return yield* sendCommand({ ...send, commandId: "key-1" }).pipe(Effect.flip)
+          })
+        expect(
+          yield* failure(CommandExpired, CommandExpired.make({ commandId: "key-1" }), 410),
+        ).toMatchObject({
+          kind: "CommandExpired",
+          message:
+            "This command ID’s retry window has closed, so Akter won’t run it again. Clear the Command ID to send it as a new command.",
+        })
+        expect(yield* failure(RunnerDefect, RunnerDefect.make({}), 502)).toMatchObject({
+          kind: "RunnerDefect",
+          message:
+            "The runner hit an internal error while running this command. It wasn’t retried and can’t be resent with this command ID. Check the actor first; to send it again as a new command, clear the Command ID.",
+        })
+        expect(
+          yield* failure(
+            Unavailable,
+            Unavailable.make({
+              message: "The actor mailbox is temporarily full",
+              retryAfterSeconds: 1,
+            }),
+            503,
+          ),
+        ).toMatchObject({
+          kind: "Unavailable",
+          message:
+            "The actor mailbox is temporarily full. Nothing was lost: send again to retry with the same command ID, and it runs at most once.",
+        })
+        expect(
+          yield* failure(
+            CommandRefused,
+            CommandRefused.make({
+              commandId: "runner-id",
+              reasonTag: "InvalidInput",
+              reason: ActorError.make({ reason: InvalidInput.make({ code: "bad_payload" }) }),
+            }),
+            422,
+          ),
+        ).toMatchObject({
+          kind: "CommandRefused",
+          message:
+            "Order/ord_8f2c refused Charge before running it (InvalidInput: bad_payload). Nothing was committed, so you can change the command or payload and send it again.",
+        })
+        expect(
+          yield* failure(
+            CommandRefused,
+            CommandRefused.make({
+              commandId: "runner-id",
+              reasonTag: "NotAdmitted",
+              reason: ActorError.make({ reason: NotAdmitted.make({}) }),
+            }),
+            422,
+          ),
+        ).toMatchObject({
+          message:
+            "Order/ord_8f2c refused Charge before running it (NotAdmitted). Nothing was committed, so you can change the command or payload and send it again.",
+        })
+        expect(
+          yield* failure(NotFound, NotFound.make({ resource: "actor", id: "Order/ord_8f2c" }), 404),
+        ).toMatchObject({
+          kind: "NotFound",
+          message:
+            "Order/ord_8f2c doesn’t exist yet, and Charge doesn’t create it. Send the command that creates this actor first.",
+        })
+        expect(
+          yield* failure(
+            NotFound,
+            NotFound.make({ resource: "live deployment", id: "prj_1/production" }),
+            404,
+          ),
+        ).toMatchObject({ message: "This environment has no live deployment to run the command." })
+      }),
+    ))
+
+  it("keeps the plan's own wording for a quota refusal the runner forwards", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        live()
+        const refusal = SpendLimitExceeded.make({
+          organizationId: "org_1",
+          period: "2026-10",
+          limitCents: 12_500,
+          projectedCents: 12_501,
+        })
+        const body = yield* encoded(
+          CommandRefused,
+          CommandRefused.make({
+            commandId: "runner-id",
+            reasonTag: "SpendLimitExceeded",
+            reason: ActorError.make({
+              reason: yield* encoded(SpendLimitExceeded, refusal),
+            }),
+          }),
+        )
+        route(() => json(body, 422))
+        expect(yield* sendCommand(send).pipe(Effect.flip)).toEqual(
+          expect.objectContaining({ kind: "SpendLimitExceeded", message: quotaMessage(refusal) }),
+        )
+      }),
+    ))
+})
+
+describe("send retries", () => {
+  it("offers a retry with the same command ID except after a final failure", () => {
+    expect(["Unavailable", "CommandRefused", "NotFound", "QuotaExceeded"].map(retryable)).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ])
+    expect(["Conflict", "CommandExpired", "RunnerDefect"].map(retryable)).toEqual([
+      false,
+      false,
+      false,
+    ])
+  })
 })
 
 const turn = {

@@ -1,16 +1,23 @@
-import { Forbidden, Unavailable } from "@akter/cloud-api"
+import { CommandRefused, Forbidden, Unavailable } from "@akter/cloud-api"
 import {
   ConnectionLimitExceeded,
+  MailboxFull,
   QuotaExceeded,
   SpendLimitExceeded,
   StorageQuotaExceeded,
 } from "@rikalabs/akter/client"
-import { Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { consoleError } from "../api/client.ts"
 import { isQuotaKind, quotaMessage, quotaRefusal } from "./errors.ts"
 
 const generic = "We couldn’t reach Akter. Please try again."
+
+/** The edge's envelope around a runner refusal, as `CommandRefused.reason` forwards it. */
+const ActorError = Schema.TaggedStruct("ActorError", {
+  reason: Schema.Json,
+  isRetryable: Schema.Boolean,
+})
 
 const refusals = {
   command: QuotaExceeded.make({
@@ -70,6 +77,29 @@ describe("quota refusals", () => {
     const decoded = quotaRefusal(JSON.parse(JSON.stringify(refusals.spend)))
     expect(Option.map(decoded, quotaMessage)).toEqual(Option.some(quotaMessage(refusals.spend)))
   })
+
+  it("reads a runner's refusal forwarded as CommandRefused as the plan refusal inside it", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const forwarded = (reason: Schema.Json) =>
+          CommandRefused.make({
+            commandId: "runner-id",
+            reasonTag: "QuotaExceeded",
+            reason: ActorError.make({ reason, isRetryable: false }),
+          })
+        const command = yield* Schema.encodeEffect(Schema.toCodecJson(QuotaExceeded))(
+          refusals.command,
+        )
+        expect(consoleError(forwarded(command))).toMatchObject({
+          kind: "QuotaExceeded",
+          message: quotaMessage(refusals.command),
+        })
+        const full = yield* Schema.encodeEffect(Schema.toCodecJson(MailboxFull))(
+          MailboxFull.make({}),
+        )
+        expect(quotaRefusal(forwarded(full))).toEqual(Option.none())
+      }),
+    ))
 
   it("never mistakes another error, or a quota tag without its payload, for a refusal", () => {
     expect(quotaRefusal(Forbidden.make({ message: "Owners only." }))).toEqual(Option.none())
