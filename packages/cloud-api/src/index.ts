@@ -138,6 +138,8 @@ export {
   ActorTypeSummary,
   CommandFailed,
   CommandRefused,
+  CommandExpired,
+  RunnerDefect,
   CommandLogEntry,
   CommandOutcome,
   CommandSent,

@@ -208,6 +208,20 @@ export const CommandSent = Schema.Struct({
 })
 export type CommandSent = typeof CommandSent.Type
 
+/** A client key remains expired for 30 days after its runner identity expires; answered 410. */
+export class CommandExpired extends Schema.TaggedError<CommandExpired>()(
+  "CommandExpired",
+  { commandId: Schema.String },
+  { httpApiStatus: 410 },
+) {}
+
+/** A remote runner defect is opaque and must never cause an automatic retry; answered 502. */
+export class RunnerDefect extends Schema.TaggedError<RunnerDefect>()(
+  "RunnerDefect",
+  {},
+  { httpApiStatus: 502 },
+) {}
+
 /** The runner refused admission without committing a command receipt; answered 422. */
 export class CommandRefused extends Schema.TaggedError<CommandRefused>()(
   "CommandRefused",

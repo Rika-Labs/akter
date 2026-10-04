@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, Layer, Option, Predicate, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Predicate, Schedule, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/sql"
 
 /** The kinds of principal that can perform an audited action. */
@@ -146,11 +146,32 @@ export interface CommandKey {
   readonly commandId: string
 }
 
-/** The runner-minted id and the original input are immutable once assigned to a client key. */
+/** An active assignment references the runner receipt; expiry leaves only a key tombstone. */
 export interface CommandAssignment {
-  readonly commandId: string
-  readonly payload: Schema.Json
+  readonly commandId: string | null
+  readonly payloadHash: string | null
+  readonly expiresAt: number
+  readonly expired: boolean
 }
+
+const canonicalJson = (value: Schema.Json): string => {
+  if (!Predicate.isObject(value)) return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+  const object = value as { readonly [key: string]: Schema.Json }
+  return `{${Object.keys(object)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key]!)}`)
+    .join(",")}}`
+}
+
+/** Hashes JSON semantics rather than object insertion order, without retaining request contents. */
+export const commandPayloadHash = (value: Schema.Json) =>
+  new Bun.CryptoHasher("sha256").update(canonicalJson(value)).digest("hex")
+
+const commandKeyHash = (key: string) =>
+  new Bun.CryptoHasher("sha256").update(JSON.stringify(key)).digest("hex")
+
+const COMMAND_SWEEP_ROWS = 1000
 
 /**
  * The control plane's own durable records: projects, environments, per-user
@@ -163,10 +184,21 @@ export interface CommandAssignment {
 export class Repository extends Context.Service<
   Repository,
   {
+    /** Reads active receipt references or expired tombstones using the database clock. */
     readonly findCommand: (input: CommandKey) => Effect.Effect<CommandAssignment | undefined>
+    /** A concurrent first send keeps the winner's immutable receipt reference, hash and expiry. */
     readonly assignCommand: (
-      input: CommandKey & { readonly payload: Schema.Json; readonly mintedCommandId: string },
+      input: CommandKey & {
+        readonly payloadHash: string
+        readonly mintedCommandId: string
+        readonly expiresAt: number
+      },
     ) => Effect.Effect<CommandAssignment>
+    /** Clears at most 1,000 expired assignments and prunes at most 1,000 30-day tombstones. */
+    readonly sweepCommands: Effect.Effect<{
+      readonly expired: number
+      readonly pruned: number
+    }>
     /** The organization's projects, oldest first. */
     readonly listProjects: (input: {
       readonly organizationId: string
@@ -338,25 +370,15 @@ const migrations: ReadonlyArray<string> = [
     environment text NOT NULL CHECK (environment <> ''),
     address text NOT NULL CHECK (address <> ''),
     command text NOT NULL CHECK (command <> ''),
-    idempotency_key text NOT NULL CHECK (idempotency_key <> ''),
-    command_id text NOT NULL CHECK (command_id <> ''),
-    payload json NOT NULL,
+    key_hash text NOT NULL,
+    command_id text CHECK (command_id <> ''),
+    payload_hash text,
+    expires_at_ms bigint NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (organization_id, project_id, environment, address, command, idempotency_key),
+    PRIMARY KEY (organization_id, project_id, environment, address, command, key_hash),
     UNIQUE (command_id)
   )`,
-  `DO $$ BEGIN
-    IF EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = 'cloud_command_idempotency'
-        AND column_name = 'payload' AND data_type = 'jsonb'
-    ) THEN
-      ALTER TABLE cloud_command_idempotency ALTER COLUMN payload TYPE json USING payload::json;
-    END IF;
-  END $$`,
 ]
-
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
 const DEFAULT_PREFERENCES: Preferences = {
   defaultEnvironment: "production",
@@ -469,6 +491,50 @@ export const RepositoryLive = Layer.effect(
       Effect.gen(function* () {
         yield* sql`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK})`
         for (const statement of migrations) yield* sql.unsafe(statement)
+        const legacy = yield* sql`
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'cloud_command_idempotency'
+            AND column_name = 'payload'
+        `
+        if (legacy.length > 0) {
+          yield* sql`LOCK TABLE cloud_command_idempotency IN ACCESS EXCLUSIVE MODE`
+          yield* sql`ALTER TABLE cloud_command_idempotency
+            ADD COLUMN IF NOT EXISTS key_hash text,
+            ADD COLUMN IF NOT EXISTS payload_hash text,
+            ADD COLUMN IF NOT EXISTS expires_at_ms bigint`
+          for (;;) {
+            const rows = yield* sql<CommandKey & { payload: Schema.Json; mintedCommandId: string }>`
+              SELECT organization_id AS "organizationId", project_id AS "projectId",
+                environment, address, command, idempotency_key AS "commandId",
+                command_id AS "mintedCommandId", payload
+              FROM cloud_command_idempotency WHERE key_hash IS NULL LIMIT ${COMMAND_SWEEP_ROWS}
+            `
+            if (rows.length === 0) break
+            for (const row of rows) {
+              const expiresAt = Number(row.mintedCommandId.split(".")[2])
+              if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0)
+                return yield* Effect.die(new Error("An existing command assignment has no expiry"))
+              yield* sql`UPDATE cloud_command_idempotency SET
+                key_hash = ${commandKeyHash(row.commandId)},
+                payload_hash = ${commandPayloadHash(row.payload)}, expires_at_ms = ${expiresAt}
+                WHERE organization_id = ${row.organizationId} AND project_id = ${row.projectId}
+                  AND environment = ${row.environment} AND address = ${row.address}
+                  AND command = ${row.command} AND idempotency_key = ${row.commandId}`
+            }
+          }
+          yield* sql`ALTER TABLE cloud_command_idempotency
+            DROP CONSTRAINT cloud_command_idempotency_pkey,
+            DROP COLUMN idempotency_key, DROP COLUMN payload,
+            ALTER COLUMN command_id DROP NOT NULL,
+            ALTER COLUMN key_hash SET NOT NULL, ALTER COLUMN expires_at_ms SET NOT NULL,
+            ADD PRIMARY KEY (organization_id, project_id, environment, address, command, key_hash)`
+        }
+        yield* sql`CREATE INDEX IF NOT EXISTS cloud_command_idempotency_active_expiry_idx
+          ON cloud_command_idempotency (expires_at_ms)
+          WHERE command_id IS NOT NULL OR payload_hash IS NOT NULL`
+        yield* sql`CREATE INDEX IF NOT EXISTS cloud_command_idempotency_tombstone_expiry_idx
+          ON cloud_command_idempotency (expires_at_ms)
+          WHERE command_id IS NULL AND payload_hash IS NULL`
       }),
     )
 
@@ -515,32 +581,75 @@ export const RepositoryLive = Layer.effect(
         slack: stored[event]?.slack ?? false,
       }))
 
+    const sweepCommands = sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const expired = yield* sql`
+            WITH candidates AS (
+              SELECT ctid FROM cloud_command_idempotency
+              WHERE expires_at_ms <= extract(epoch FROM statement_timestamp()) * 1000
+                AND (command_id IS NOT NULL OR payload_hash IS NOT NULL)
+              ORDER BY expires_at_ms LIMIT ${COMMAND_SWEEP_ROWS} FOR UPDATE SKIP LOCKED
+            )
+            UPDATE cloud_command_idempotency SET command_id = NULL, payload_hash = NULL
+            WHERE ctid IN (SELECT ctid FROM candidates)
+              AND expires_at_ms <= extract(epoch FROM statement_timestamp()) * 1000
+            RETURNING 1
+          `
+          const pruned = yield* sql`
+            WITH candidates AS (
+              SELECT ctid FROM cloud_command_idempotency
+              WHERE expires_at_ms < extract(epoch FROM statement_timestamp() - interval '30 days') * 1000
+                AND command_id IS NULL AND payload_hash IS NULL
+              ORDER BY expires_at_ms LIMIT ${COMMAND_SWEEP_ROWS} FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM cloud_command_idempotency WHERE ctid IN (SELECT ctid FROM candidates)
+              AND expires_at_ms < extract(epoch FROM statement_timestamp() - interval '30 days') * 1000
+              AND command_id IS NULL AND payload_hash IS NULL
+            RETURNING 1
+          `
+          return { expired: expired.length, pruned: pruned.length }
+        }),
+      )
+      .pipe(Effect.orDie)
+
     return {
+      sweepCommands,
       findCommand: (input) =>
         sql<CommandAssignment>`
-          SELECT command_id AS "commandId", payload FROM cloud_command_idempotency
+          SELECT CASE WHEN expires_at_ms > extract(epoch FROM clock_timestamp()) * 1000
+              THEN command_id END AS "commandId",
+            CASE WHEN expires_at_ms > extract(epoch FROM clock_timestamp()) * 1000
+              THEN payload_hash END AS "payloadHash",
+            expires_at_ms::float8 AS "expiresAt",
+            expires_at_ms <= extract(epoch FROM clock_timestamp()) * 1000 AS expired
+          FROM cloud_command_idempotency
           WHERE organization_id = ${input.organizationId} AND project_id = ${input.projectId}
             AND environment = ${input.environment} AND address = ${input.address}
-            AND command = ${input.command} AND idempotency_key = ${input.commandId}
+            AND command = ${input.command} AND key_hash = ${commandKeyHash(input.commandId)}
         `.pipe(
           Effect.map(([row]) => row),
           Effect.orDie,
         ),
       assignCommand: (input) =>
         Effect.gen(function* () {
-          const payload = yield* encodeJson(input.payload).pipe(Effect.orDie)
           const [row] = yield* sql<CommandAssignment>`
             INSERT INTO cloud_command_idempotency (
               organization_id, project_id, environment, address, command,
-              idempotency_key, command_id, payload
+              key_hash, command_id, payload_hash, expires_at_ms
             ) VALUES (
               ${input.organizationId}, ${input.projectId}, ${input.environment},
-              ${input.address}, ${input.command}, ${input.commandId},
-              ${input.mintedCommandId}, ${payload}::json
+              ${input.address}, ${input.command}, ${commandKeyHash(input.commandId)},
+              ${input.mintedCommandId}, ${input.payloadHash}, ${input.expiresAt}
             )
-            ON CONFLICT (organization_id, project_id, environment, address, command, idempotency_key)
-            DO UPDATE SET idempotency_key = cloud_command_idempotency.idempotency_key
-            RETURNING command_id AS "commandId", payload
+            ON CONFLICT (organization_id, project_id, environment, address, command, key_hash)
+            DO UPDATE SET key_hash = cloud_command_idempotency.key_hash
+            RETURNING CASE WHEN expires_at_ms > extract(epoch FROM clock_timestamp()) * 1000
+                THEN command_id END AS "commandId",
+              CASE WHEN expires_at_ms > extract(epoch FROM clock_timestamp()) * 1000
+                THEN payload_hash END AS "payloadHash",
+              expires_at_ms::float8 AS "expiresAt",
+              expires_at_ms <= extract(epoch FROM clock_timestamp()) * 1000 AS expired
           `
           if (row === undefined)
             return yield* Effect.die(new Error("Command assignment is missing"))
@@ -978,5 +1087,17 @@ export const RepositoryLive = Layer.effect(
           return { items, nextCursor: rows.length > size ? items[size - 1]!.id : null }
         }).pipe(dieOnSql),
     }
+  }),
+)
+
+/** Runs the bounded command-key sweep once a minute for the API process lifetime. */
+export const RepositoryRetentionLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const repository = yield* Repository
+    yield* repository.sweepCommands.pipe(
+      Effect.catchCause(() => Effect.logWarning("Command retention sweep failed")),
+      Effect.repeat(Schedule.spaced("1 minute")),
+      Effect.forkScoped,
+    )
   }),
 )

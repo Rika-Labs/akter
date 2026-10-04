@@ -2,11 +2,13 @@ import {
   type ActorJob,
   CloudApi,
   CommandFailed,
+  CommandExpired,
   CommandRefused,
   Conflict,
   Forbidden,
   NotFound,
   NotImplemented,
+  RunnerDefect,
   Unavailable,
 } from "@akter/cloud-api"
 import {
@@ -23,7 +25,7 @@ import {
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Access } from "./access.ts"
-import { Repository } from "./repository.ts"
+import { commandPayloadHash, Repository } from "./repository.ts"
 
 /**
  * Where and as whom the control plane reaches one environment's runners: the
@@ -67,6 +69,7 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 const Reason = Schema.Union([
   Schema.TaggedStruct("NotCreated", {}),
   Schema.TaggedStruct("CommandConflict", {}),
+  Schema.TaggedStruct("CommandExpired", {}),
   Schema.TaggedStruct("Unauthorized", { code: Schema.String }),
   Schema.TaggedStruct("InvalidInput", { code: Schema.String }),
 ])
@@ -97,8 +100,6 @@ const split = (address: string) => {
 
   return { type: address.slice(0, slash), id: address.slice(slash + 1) }
 }
-
-const samePayload = Schema.toEquivalence(Schema.Json)
 
 /**
  * The requests the control plane makes of a runner, all through the edge.
@@ -133,17 +134,19 @@ export const makeRuntime = Effect.gen(function* () {
         ),
       )
 
+    const text = yield* response.text.pipe(Effect.catch(() => unavailable("body")))
+    const body = Option.getOrUndefined(decodeJson(text))
+    if (Schema.is(DefectBody)(body)) return yield* RunnerDefect.make({})
+
     if ([502, 503, 504].includes(response.status))
       return yield* Unavailable.make({
         message: "The deployment is temporarily unavailable",
         retryAfterSeconds: 1,
       })
 
-    const text = yield* response.text.pipe(Effect.catch(() => unavailable("body")))
-
     return {
       status: response.status,
-      body: Option.getOrUndefined(decodeJson(text)),
+      body,
       replayed: response.headers["durable-replayed"],
     }
   })
@@ -206,18 +209,27 @@ export const makeRuntime = Effect.gen(function* () {
         commandId: clientKey,
       }
       let assigned = yield* repository.findCommand(key)
+      const payloadHash = commandPayloadHash(input.payload)
+      if (assigned?.expired === true) return yield* CommandExpired.make({ commandId: clientKey })
       if (assigned === undefined) {
         const minted = yield* mint
+        const expiresAt = Number(minted.commandId.split(".")[2])
+        if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0)
+          return yield* unavailable("minted command id has no expiry")
         assigned = yield* repository.assignCommand({
           ...key,
-          payload: input.payload,
+          payloadHash,
           mintedCommandId: minted.commandId,
+          expiresAt,
         })
+        if (assigned.expired) return yield* CommandExpired.make({ commandId: clientKey })
       }
-      if (!samePayload(assigned.payload, input.payload))
+      if (assigned.payloadHash !== payloadHash)
         return yield* Conflict.make({
           message: "The idempotency key was already used for another payload",
         })
+      if (assigned.commandId === null)
+        return yield* unavailable("an active command assignment has no receipt reference")
       commandId = assigned.commandId
     }
 
@@ -246,8 +258,6 @@ export const makeRuntime = Effect.gen(function* () {
     const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
 
     if (refusal === undefined) {
-      if (Schema.is(DefectBody)(body)) return yield* unavailable(`command answered ${status}`)
-
       const generic = Option.getOrUndefined(decodeGenericActorError(body))
       if (generic?.reason._tag === "MailboxFull")
         return yield* Unavailable.make({
@@ -287,6 +297,7 @@ export const makeRuntime = Effect.gen(function* () {
           Conflict.make({
             message: `The command id ${commandId} was already used for another command`,
           }),
+        CommandExpired: () => CommandExpired.make({ commandId: clientKey ?? commandId }),
         Unauthorized: ({ code }) =>
           code === "access_denied" || code === "receipt_access_denied"
             ? Forbidden.make({ message: "The actor refused the command" })

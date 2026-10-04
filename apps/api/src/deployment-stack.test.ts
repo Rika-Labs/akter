@@ -30,6 +30,7 @@ import type { PlatformError } from "effect/PlatformError"
 import { Pool } from "pg"
 import type { ApiOptions } from "./config.ts"
 import { infrastructure, routes } from "./server.ts"
+import { Repository } from "./repository.ts"
 
 /**
  * Real containers, real Postgres, the real edge process and the real API
@@ -810,6 +811,50 @@ layer(Layer.provideMerge(ImagesLive, services), {
           replayed: true,
           result: { count: 3, version: "v1" },
         })
+
+        const commands = Context.get(context, Repository)
+        yield* sql(
+          `UPDATE cloud_command_idempotency SET expires_at_ms =
+          (extract(epoch FROM clock_timestamp()) * 1000)::bigint - 1000
+          WHERE command_id = $1`,
+          [counted.commandId],
+        )
+        const expiredReplies = yield* Effect.all(
+          [
+            commands.sweepCommands,
+            Effect.forEach([0, 1, 2, 3], () => sendAs(alice, 3, clientKey), { concurrency: 4 }),
+          ],
+          { concurrency: 2 },
+        )
+        for (const response of expiredReplies[1]) {
+          expect(response.status).toBe(410)
+          expect(yield* read(response, Cloud.CommandExpired)).toEqual(
+            Cloud.CommandExpired.make({ commandId: clientKey }),
+          )
+        }
+        yield* sql(
+          `UPDATE cloud_command_idempotency SET expires_at_ms =
+          (extract(epoch FROM clock_timestamp() - interval '31 days') * 1000)::bigint
+          WHERE organization_id = $1 AND project_id = $2 AND command_id IS NULL`,
+          [membership.organization.id, project.id],
+        )
+        const reusedReplies = yield* Effect.all(
+          [
+            commands.sweepCommands,
+            Effect.forEach([0, 1, 2, 3], () => sendAs(alice, 3, clientKey), { concurrency: 4 }),
+          ],
+          { concurrency: 2 },
+        )
+        for (const response of reusedReplies[1]) {
+          expect([200, 410]).toContain(response.status)
+          if (response.status === 200)
+            expect(yield* read(response, Cloud.CommandSent)).toMatchObject({
+              result: { count: 18, version: "v1" },
+            })
+        }
+        const reused = yield* send(3, clientKey)
+        expect(reused.commandId).not.toBe(counted.commandId)
+        expect(reused.result).toMatchObject({ count: 18, version: "v1" })
       }),
     1_500_000,
   )

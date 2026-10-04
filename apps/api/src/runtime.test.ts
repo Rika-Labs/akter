@@ -1,15 +1,17 @@
 import {
   CommandFailed,
+  CommandExpired as ExpiredKey,
   CommandRefused,
   Conflict,
   Forbidden,
   NotFound,
+  RunnerDefect,
   Unavailable as CloudUnavailable,
 } from "@akter/cloud-api"
 import { expect, it } from "@effect/vitest"
-import { Cause, Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { Cause, Clock, Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
-import { Repository } from "./repository.ts"
+import { type CommandAssignment, commandPayloadHash, Repository } from "./repository.ts"
 import { makeRuntime, RuntimeEdge } from "./runtime.ts"
 
 interface Seen {
@@ -21,12 +23,26 @@ interface Seen {
 
 type Answer = (request: Request) => Response
 
-type Refusal = CommandFailed | CommandRefused | Conflict | Forbidden | NotFound | CloudUnavailable
+type Refusal =
+  | CommandFailed
+  | CommandRefused
+  | Conflict
+  | Forbidden
+  | NotFound
+  | CloudUnavailable
+  | ExpiredKey
+  | RunnerDefect
 
-interface Row {
-  readonly commandId: string
-  readonly payload: Schema.Json
-}
+type Row = CommandAssignment
+const expiresAt = Effect.runSync(Clock.currentTimeMillis) + 86_400_000
+const mintedId = (index: number) =>
+  `v1.1.${expiresAt}.00000000-0000-4000-8000-${String(index).padStart(12, "0")}`
+const assignment = (commandId: string, payload: Schema.Json): Row => ({
+  commandId,
+  payloadHash: commandPayloadHash(payload),
+  expiresAt,
+  expired: false,
+})
 
 interface Scope {
   readonly organizationId: string
@@ -169,7 +185,11 @@ const repository = Layer.effect(
       })
 
     const assignCommand = (
-      input: Scope & { readonly payload: Schema.Json; readonly mintedCommandId: string },
+      input: Scope & {
+        readonly payloadHash: string
+        readonly mintedCommandId: string
+        readonly expiresAt: number
+      },
     ) =>
       Effect.sync(() => {
         calls.push(`assign ${input.mintedCommandId}`)
@@ -180,7 +200,12 @@ const repository = Layer.effect(
         }
         const existing = rows.get(key(input))
         if (existing !== undefined) return existing
-        const row: Row = { commandId: input.mintedCommandId, payload: input.payload }
+        const row: Row = {
+          commandId: input.mintedCommandId,
+          payloadHash: input.payloadHash,
+          expiresAt: input.expiresAt,
+          expired: false,
+        }
         rows.set(key(input), row)
         return row
       })
@@ -238,7 +263,7 @@ const runner = (otherwise: Answer): Answer => {
   let minted = 0
 
   return (request) => {
-    if (isMint(request)) return json({ commandId: `v1.minted.${++minted}` })
+    if (isMint(request)) return json({ commandId: mintedId(++minted) })
     if (inspectorPath(request)) return json(NotFoundBody.make({}), 404)
     return otherwise(request)
   }
@@ -260,7 +285,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         const sent = yield* runtime.sendCommand(command)
 
         expect(sent).toEqual({
-          commandId: "v1.minted.1",
+          commandId: mintedId(1),
           result: { cancelled: true },
           replayed: false,
         })
@@ -271,7 +296,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
 
         const request = edge.seen[1]!
 
-        expect(request.headers.get("idempotency-key")).toBe("v1.minted.1")
+        expect(request.headers.get("idempotency-key")).toBe(mintedId(1))
         expect(request.headers.get("host")).toBe("orders.akter.test")
         expect(request.headers.get("authorization")).toBe(`Bearer ${SECRET}`)
         expect(request.headers.get("content-type")).toContain("application/json")
@@ -296,7 +321,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         const sent = yield* runtime.sendCommand({ ...command, commandId: clientKey })
 
         expect(sent).toEqual({
-          commandId: "v1.minted.1",
+          commandId: mintedId(1),
           result: { cancelled: true },
           replayed: false,
         })
@@ -304,16 +329,15 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           "/command-ids",
           "/actors/Order/o%2F1/Cancel",
         ])
-        expect(forwarded(edge.seen)[0]!.headers.get("idempotency-key")).toBe("v1.minted.1")
+        expect(forwarded(edge.seen)[0]!.headers.get("idempotency-key")).toBe(mintedId(1))
         for (const { path, body, headers } of edge.seen) {
           expect(path).not.toContain(clientKey)
           expect(body).not.toContain(clientKey)
           for (const [, value] of headers) expect(value).not.toContain(clientKey)
         }
-        expect(store.rows.get(key(scope(clientKey)))).toEqual({
-          commandId: "v1.minted.1",
-          payload: { reason: "late" },
-        })
+        expect(store.rows.get(key(scope(clientKey)))).toEqual(
+          assignment(mintedId(1), { reason: "late" }),
+        )
       }),
   )
 
@@ -327,7 +351,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         yield* edge.answer(runner(() => json({ cancelled: true })))
 
         expect(yield* runtime.sendCommand({ ...command, commandId: "client-retry" })).toEqual({
-          commandId: "v1.minted.1",
+          commandId: mintedId(1),
           result: { cancelled: true },
           replayed: false,
         })
@@ -335,12 +359,12 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         yield* edge.answer(runner(() => json({ cancelled: "stored" }, 200, true)))
 
         expect(yield* runtime.sendCommand({ ...command, commandId: "client-retry" })).toEqual({
-          commandId: "v1.minted.1",
+          commandId: mintedId(1),
           result: { cancelled: "stored" },
           replayed: true,
         })
         expect(edge.seen.map(({ path }) => path)).toEqual(["/actors/Order/o%2F1/Cancel"])
-        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe("v1.minted.1")
+        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe(mintedId(1))
 
         yield* edge.answer(runner(() => json({ cancelled: "again" })))
 
@@ -350,7 +374,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             address: "Order/o/2",
             commandId: "client-retry",
           }),
-        ).toEqual({ commandId: "v1.minted.1", result: { cancelled: "again" }, replayed: false })
+        ).toEqual({ commandId: mintedId(1), result: { cancelled: "again" }, replayed: false })
         expect(edge.seen.map(({ path }) => path)).toEqual([
           "/command-ids",
           "/actors/Order/o%2F2/Cancel",
@@ -378,9 +402,9 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             payload: { detail: { at: 3, by: "ops" }, reason: "late" },
             commandId: "client-payload",
           }),
-        ).toEqual({ commandId: "v1.minted.1", result: { cancelled: true }, replayed: true })
+        ).toEqual({ commandId: mintedId(1), result: { cancelled: true }, replayed: true })
         expect(edge.seen.map(({ path }) => path)).toEqual(["/actors/Order/o%2F1/Cancel"])
-        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe("v1.minted.1")
+        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe(mintedId(1))
 
         yield* edge.answer(runner(() => json({ cancelled: "again" })))
 
@@ -407,10 +431,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         const store = yield* StandInStore
         const runtime = yield* makeRuntime
 
-        yield* store.race(scope("client-race"), {
-          commandId: "v1.winner",
-          payload: { reason: "late" },
-        })
+        yield* store.race(scope("client-race"), assignment("v1.winner", { reason: "late" }))
         yield* edge.answer(runner(() => json({ cancelled: true }, 200, true)))
 
         expect(yield* runtime.sendCommand({ ...command, commandId: "client-race" })).toEqual({
@@ -418,15 +439,15 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           result: { cancelled: true },
           replayed: true,
         })
-        expect(store.calls).toEqual(["find", "assign v1.minted.1"])
+        expect(store.calls).toEqual(["find", `assign ${mintedId(1)}`])
         expect(forwarded(edge.seen).map(({ headers }) => headers.get("idempotency-key"))).toEqual([
           "v1.winner",
         ])
 
-        yield* store.race(scope("client-race-mismatch"), {
-          commandId: "v1.other",
-          payload: { reason: "other" },
-        })
+        yield* store.race(
+          scope("client-race-mismatch"),
+          assignment("v1.other", { reason: "other" }),
+        )
         yield* edge.answer(runner(() => json({ cancelled: true })))
 
         const error = yield* runtime
@@ -458,12 +479,12 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         yield* edge.answer(runner(() => json(null, 200, false)))
 
         expect(yield* runtime.sendCommand({ ...command, commandId: "client-unfinished" })).toEqual({
-          commandId: "v1.minted.1",
+          commandId: mintedId(1),
           result: null,
           replayed: false,
         })
         expect(edge.seen.map(({ path }) => path)).toEqual(["/actors/Order/o%2F1/Cancel"])
-        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe("v1.minted.1")
+        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe(mintedId(1))
       }),
   )
 
@@ -504,7 +525,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
 
         expect(declared).toEqual(
           CommandFailed.make({
-            commandId: "v1.minted.1",
+            commandId: mintedId(1),
             errorTag: "OutOfStock",
             error: OutOfStock.make({ sku: "s1" }),
             replayed: false,
@@ -519,14 +540,14 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             .pipe(Effect.flip),
         ).toEqual(
           CommandFailed.make({
-            commandId: "v1.minted.1",
+            commandId: mintedId(1),
             errorTag: "OutOfStock",
             error: OutOfStock.make({ sku: "s1" }),
             replayed: true,
           }),
         )
         expect(edge.seen.map(({ path }) => path)).toEqual(["/actors/Order/o%2F1/Cancel"])
-        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe("v1.minted.1")
+        expect(edge.seen[0]!.headers.get("idempotency-key")).toBe(mintedId(1))
 
         const cases: ReadonlyArray<readonly [Response, (error: Refusal) => boolean]> = [
           [refused(NotCreated.make({}), 404), Schema.is(NotFound)],
@@ -549,10 +570,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             refused(Unauthorized.make({ code: "reauthorization_unavailable" }), 403),
             Schema.is(CloudUnavailable),
           ],
-          [
-            refused(CommandExpired.make({ commandId: "v1.expired" }), 410),
-            (error) => Schema.is(CommandRefused)(error) && error.reasonTag === "CommandExpired",
-          ],
+          [refused(CommandExpired.make({ commandId: "v1.expired" }), 410), Schema.is(ExpiredKey)],
           [
             refused(InvalidCommandId.make({ commandId: "v1.bad", code: "malformed" }), 400),
             (error) => Schema.is(CommandRefused)(error) && error.reasonTag === "InvalidCommandId",
@@ -561,7 +579,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             refused(InvalidInput.make({ code: "decode" }), 400),
             (error) =>
               Schema.is(CommandRefused)(error) &&
-              error.commandId === "v1.minted.1" &&
+              error.commandId === mintedId(1) &&
               error.reasonTag === "InvalidInput",
           ],
         ]
@@ -615,6 +633,48 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
       }),
   )
 
+  it.effect("refuses a retained expired key before minting, payload comparison or delivery", () =>
+    Effect.gen(function* () {
+      const edge = yield* StandInEdge
+      const store = yield* StandInStore
+      const runtime = yield* makeRuntime
+      store.rows.set(key(scope("expired-key")), {
+        commandId: null,
+        payloadHash: null,
+        expiresAt: (yield* Clock.currentTimeMillis) - 1,
+        expired: true,
+      })
+      yield* edge.answer(runner(() => json({ mustNotRun: true })))
+      expect(
+        yield* runtime
+          .sendCommand({ ...command, commandId: "expired-key", payload: "different" })
+          .pipe(Effect.flip),
+      ).toEqual(ExpiredKey.make({ commandId: "expired-key" }))
+      expect(edge.seen).toEqual([])
+    }),
+  )
+
+  it.effect(
+    "refuses an expiry that wins the assignment race without sending under the losing minted id",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const store = yield* StandInStore
+        const runtime = yield* makeRuntime
+        yield* store.race(scope("expired-race"), {
+          commandId: null,
+          payloadHash: null,
+          expiresAt: (yield* Clock.currentTimeMillis) - 1,
+          expired: true,
+        })
+        yield* edge.answer(runner(() => json({ mustNotRun: true })))
+        expect(
+          yield* runtime.sendCommand({ ...command, commandId: "expired-race" }).pipe(Effect.flip),
+        ).toEqual(ExpiredKey.make({ commandId: "expired-race" }))
+        expect(forwarded(edge.seen)).toEqual([])
+      }),
+  )
+
   it.effect(
     "maps temporary edge outages to 503 while keeping a remote defect or unknown refusal opaque",
     () =>
@@ -639,7 +699,6 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           )
         }
         for (const [index, answer] of [
-          json(Defect.make({ traceId: "t" }), 500),
           refused(Schema.TaggedStruct("Novel", {}).make({}), 500),
         ].entries()) {
           yield* edge.answer(runner(() => answer.clone()))
@@ -651,6 +710,27 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true)
         }
       }),
+  )
+
+  it.effect("returns an opaque non-retryable RunnerDefect after one runner attempt", () =>
+    Effect.gen(function* () {
+      const edge = yield* StandInEdge
+      const runtime = yield* makeRuntime
+      yield* edge.answer(
+        runner(() =>
+          json(
+            { ...Defect.make({ traceId: "private-trace" }), message: "private-database-url" },
+            500,
+          ),
+        ),
+      )
+      const failure = yield* runtime.sendCommand(command).pipe(Effect.flip)
+      expect(failure).toEqual(RunnerDefect.make({}))
+      expect(yield* Schema.encodeUnknownEffect(Schema.fromJsonString(RunnerDefect))(failure)).toBe(
+        '{"_tag":"RunnerDefect"}',
+      )
+      expect(forwarded(edge.seen)).toHaveLength(1)
+    }),
   )
 
   it.effect(

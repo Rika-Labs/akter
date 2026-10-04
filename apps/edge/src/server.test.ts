@@ -277,7 +277,10 @@ describeConformance({
 /** What a runner saw of one request or upgrade. */
 interface Seen {
   readonly headers: Headers
+  readonly path: string
 }
+
+const Defect = Schema.TaggedStruct("Defect", { traceId: Schema.String })
 
 /**
  * A runner that records the headers of every request and upgrade it gets, and
@@ -300,7 +303,8 @@ const startRunner = Effect.fnUntraced(function* () {
     port: 0,
     hostname: "127.0.0.1",
     fetch: (request, served) => {
-      seen.push({ headers: request.headers })
+      const path = new URL(request.url).pathname
+      seen.push({ headers: request.headers, path })
 
       if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
         served.upgrade(request, { headers: { "sec-websocket-protocol": SUBPROTOCOL } })
@@ -308,7 +312,13 @@ const startRunner = Effect.fnUntraced(function* () {
         return undefined
       }
 
-      if (new URL(request.url).pathname !== "/events") return new Response("ok")
+      if (path.endsWith("/Defect"))
+        return new Response(JSON.stringify(Defect.make({ traceId: "private-trace" })), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        })
+
+      if (path !== "/events") return new Response("ok")
 
       return new Response(Stream.toReadableStream(events), {
         headers: { "content-type": "text/event-stream" },
@@ -444,6 +454,17 @@ const withEdge = (
 const lastRequest = (runner: { readonly seen: ReadonlyArray<Seen> }) => runner.seen.at(-1)!.headers
 
 describe("Hosted edge client address", () => {
+  it("forwards a runner defect once without retrying it", () =>
+    withEdge({ primaryRegion: "r1" }, ({ edge, runner, send }) =>
+      Effect.gen(function* () {
+        const key = yield* edge.issueApiKey({ tenant: "t1", subject: "u1" })
+        expect(yield* send("/actors/Counter/c1/Defect", { authorization: `Bearer ${key}` })).toBe(
+          500,
+        )
+        expect(runner.seen.filter((request) => request.path.endsWith("/Defect"))).toHaveLength(1)
+      }),
+    ))
+
   it("ignores spoofed forwarding headers from a peer outside the trusted lists and tells the runner the peer's address", () =>
     withEdge(
       {
