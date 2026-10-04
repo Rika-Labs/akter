@@ -29,6 +29,13 @@ export interface ApiOptions {
   readonly runnerPort?: number
   readonly runnerNetwork?: string
   readonly runnerRouteViaNetwork?: boolean
+  /**
+   * Where the local Docker platform keeps the authority that issues each
+   * runner its peer certificate, so runners started before and after an API
+   * restart still trust each other. Without it the authority lives only as
+   * long as the process.
+   */
+  readonly runnerPeerAuthority?: string
   readonly migrationCommand?: ReadonlyArray<string>
   readonly runnerIdleSeconds?: number
   readonly runnerEcs?: EcsOptions
@@ -257,6 +264,9 @@ export const loadOptions = Effect.gen(function* () {
     ),
     runnerRouteViaNetwork: yield* Config.Boolean("RUNNER_ROUTE_VIA_NETWORK").pipe(
       Config.withDefault(false),
+    ),
+    runnerPeerAuthority: Option.getOrUndefined(
+      yield* Config.String("RUNNER_PEER_AUTHORITY_DIR").pipe(Config.option),
     ),
     runnerIdleSeconds: yield* Config.schema(
       Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),

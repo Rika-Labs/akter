@@ -62,6 +62,21 @@
       }
     },
     {
+      "files": ["packages/akter/src/runtime/peering/transport.test.ts"],
+      "rules": {
+        "effecttsgo/process-env": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/akter/src/runtime/peering/*.ts",
+        "packages/deployments/src/runners/docker.test.ts"
+      ],
+      "rules": {
+        "effecttsgo/node-builtin-import": "off"
+      }
+    },
+    {
       "files": ["packages/react/src/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

@@ -14,7 +14,7 @@
 
 `Runner.socket` provides runner wiring to `Actors.layer`. The application supplies Effect platform TCP server and client layers; Akter supplies NDJSON RPC, direct messages, SQL runner storage, generation fencing, and receipt/outbox recovery. The framework stays platform-independent and does not enable Cluster's persisted-message store. The Bun adapter uses OS sockets between separate processes.
 
-Advertisement and binding are separate. Advertise a unique direct private address, never a wildcard or shared ingress. The protocol trusts peers and has no built-in authentication or TLS; isolate the network or supply an authenticated encrypted tunnel. Edge assertions do not secure this listener.
+Advertisement and binding are separate. Advertise a unique direct private address, never a wildcard or shared ingress. The protocol trusts peers and has no built-in authentication or TLS; isolate the network or supply an authenticated encrypted tunnel. Edge assertions do not secure this listener. Amendment (#541): [ADR 0086](0086-runner-mutual-tls.md) adds `Runner.mtls`, a mutual TLS transport that authenticates peers by deployment; the plaintext platform layers remain for isolated networks only.
 
 Defaults are 256 shards, expiring table locks, 35-second expiration, 10-second lock refresh (capped at a third of expiration), one-second assignment refresh, and 15-second entity termination. Table leases retain the singleton database lease check. Lock expiration is not an availability deadline. All commits retain the generation fence.
 

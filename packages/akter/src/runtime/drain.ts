@@ -16,10 +16,11 @@ export type Readiness =
       /**
        * `draining` or `drained` after `drain`; `storage` when the database does
        * not answer; `routing` while acquiring shards or once sharding has
-       * shut down; `unregistered` before
-       * any actor, job, or query layer registers.
+       * shut down; `peering` when a mutual TLS runner's certificate has
+       * expired or its credentials have failed to load for too long;
+       * `unregistered` before any actor, job, or query layer registers.
        */
-      readonly reason: "draining" | "drained" | "storage" | "routing" | "unregistered"
+      readonly reason: "draining" | "drained" | "storage" | "routing" | "peering" | "unregistered"
     }
 
 /** What a drain did. */

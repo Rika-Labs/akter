@@ -15,7 +15,7 @@ description: "Take an app from the quickstart to a production process on Postgre
 Akter is alpha. Before you deploy, know the limits the [support matrix](../operations/support-matrix.md) records:
 
 - **Postgres only.** PGlite is for development and tests, one process per data directory. Production PGlite is not supported.
-- **Single runner or a private TCP runner cluster.** `Runner.socket` is the public Postgres configuration for separate processes. Three-process command, relay, singleton, schedule, SIGKILL, and rolling-drain drills run on one host; separate-host networks and hosting providers still require their own evidence.
+- **Single runner or a TCP runner cluster.** `Runner.socket` is the public Postgres configuration for separate processes. Runners authenticate each other with mutual TLS (`Runner.mtls`). Three-process command, relay, singleton, schedule, SIGKILL, and rolling-drain drills run on one host; separate-host networks and hosting providers still require their own evidence.
 - **Embedded or served.** `Actors.serve` serves commands, reducers, and queries over HTTP, connections over WebSocket, and feeds, streams, and watches over SSE. These transports are verified behind Bun's HTTP server on loopback; no proxy, load balancer, or hosting provider has been verified.
 - **No managed hosting.** Hosted runners are planned.
 - **Not on npm yet.** Install `@rikalabs/akter` from a locally packed tarball, as in the [quickstart](../quickstart.md), until the first alpha release.
@@ -61,17 +61,24 @@ Give the app its own database: the runtime records its retry window and each act
 
 ## Several runners
 
-Every process builds the same actor layers and shares the database, but advertises its own directly reachable private address. Runners can all start at once against an empty database: startup serializes creation of the migration bookkeeping and cluster tables. Provide `Runner.socket` to `Actors.layer`; the platform supplies the real TCP server and client. On Bun:
+Every process builds the same actor layers and shares the database, but advertises its own directly reachable private address. Runners can all start at once against an empty database: startup serializes creation of the migration bookkeeping and cluster tables. Provide `Runner.socket` to `Actors.layer` with `Runner.mtls` as its transport:
 
 ```ts
-import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
-import { Layer, Redacted } from "effect"
+import { readFile } from "node:fs/promises"
+import { Effect, Layer, Redacted } from "effect"
 import { Actors, Database, Runner } from "@rikalabs/akter/runtime"
 
 const runner = Runner.socket({
   address: { host: "runner-a.internal", port: 4400 },
   listenAddress: { host: "10.0.0.5", port: 4400 },
-  transport: Layer.merge(layerSocketServer, layerClientProtocol),
+  transport: Runner.mtls({
+    deployment: "shop-production",
+    credentials: Effect.promise(async () => ({
+      ca: await readFile("/etc/akter/peer/ca.pem", "utf8"),
+      certificate: await readFile("/etc/akter/peer/certificate.pem", "utf8"),
+      key: Redacted.make(await readFile("/etc/akter/peer/key.pem", "utf8")),
+    })),
+  }),
   shardsPerGroup: 256,
   shardLockExpiration: "35 seconds",
   shardLockRefreshInterval: "10 seconds",
@@ -89,9 +96,13 @@ const runtime = RoomLive.pipe(
 )
 ```
 
-Supply `BunCrypto.layer` as in the single-process example. The equivalent Effect Node TCP layers can be supplied, but only Bun is exercised by the process drills. The listener is separate from `Actors.serve` and uses NDJSON RPC over sockets, not HTTP. This is **trusted internal traffic**: use an isolated private network or an authenticated encrypted tunnel. Do not expose the port to public clients. The server does not authenticate peers or terminate TLS.
+Supply `BunCrypto.layer` as in the single-process example. The listener is separate from `Actors.serve` and uses NDJSON RPC over TLS 1.3, not HTTP. Each runner's certificate has exactly one subject alternative name, the URI `Runner.identity("shop-production")` (`spiffe://akter/deployment/shop-production`), and must chain to an authority in `ca`. A certificate with any other name besides it is refused. Session resumption is off, so every connection runs a full handshake. Both sides refuse a peer without a certificate, a plaintext peer, an untrusted or expired certificate, and a runner of another deployment before any runner message is exchanged. Any authority that can issue the URI SAN works (cert-manager, SPIRE, step-ca, AWS Private CA); `RunnerAuthority.make()` and `authority.issue({ deployment })` create development credentials.
 
-`address` advertises a unique private DNS name or IP reachable directly by every peer, never a wildcard or a shared load-balancer address. `listenAddress` binds an interface and can differ; bind the private interface, because the listener has no authentication and a wildcard bind exposes it on every interface of the host. Never run two incarnations at one address; keep it reserved until the old process exits and releases its locks. Prove your network's reachability and failure behavior before deploying across hosts.
+`credentials` runs at startup and again every `refreshEvery` (default one minute). Replace the files to rotate without a restart: new connections use the new certificate, and established ones continue. To rotate the authority, first add the new authority to every runner's `ca` and wait a refresh, then replace each certificate and key with ones from the new authority, then remove the old authority. Credentials that fail validation on a refresh, or take longer than `refreshTimeout` (default 10 seconds) to load, are logged and the previous ones stay in use; at startup they stop the runner. Readiness reports `peering` once the current certificate has expired or loads have failed for `unhealthyAfter` (default 5 minutes), so a runner that can no longer peer leaves ingress. A peer's certificate is checked at the handshake only, so an expired or distrusted peer keeps an established session until either side reconnects.
+
+The platform plaintext layers (`Layer.merge(layerSocketServer, layerClientProtocol)` from `@effect/platform-bun/BunClusterSocket`) remain available for a network isolated to one deployment's runners. They authenticate no one: any process that reaches the port can deliver runner messages.
+
+`address` advertises a unique private DNS name or IP reachable directly by every peer, never a wildcard or a shared load-balancer address. `listenAddress` binds an interface and can differ; bind the private interface, and never expose the port to public clients, even over mutual TLS. Never run two incarnations at one address; keep it reserved until the old process exits and releases its locks. Prove your network's reachability and failure behavior before deploying across hosts.
 
 Defaults are 256 shards per group, one-second assignment refresh, and expiring table locks with the singleton lease check. Survivors wait for the dead owner's expiration, and stale generations still fail the database fence. Advisory multi-runner locks are unsupported: the pinned storage assigns colliding lock IDs to distinct private holder groups ([ADR 0068](../decisions/0068-production-multi-runner.md)). Expiration defaults to 35 seconds and must be at least 3 seconds; Cluster caps lock refresh at a third of it. Polling, activation, and retries add time beyond expiration. `entityTerminationTimeout` defaults to 15 seconds and bounds activation shutdown during handoff.
 

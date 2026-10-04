@@ -3,6 +3,7 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { Sharding } from "effect/cluster"
 import { SqlClient } from "effect/sql"
 import type { Readiness } from "./drain.ts"
+import { PeerHealth } from "./peering/transport.ts"
 import { RunnerReadiness } from "./runner.ts"
 
 /** How long readiness waits for the database before it reports storage unavailable. */
@@ -13,8 +14,9 @@ const READINESS_CACHE = "1 second"
 
 /**
  * Builds the runtime's readiness answer, returned as `serving`: not ready
- * while routing is shut down, assigned shards are not acquired, or nothing is
- * registered, otherwise ready when storage answers. PGlite always answers from the layer's own lifetime, since
+ * while routing is shut down, assigned shards are not acquired, a mutual TLS
+ * transport can no longer peer, or nothing is registered, otherwise ready
+ * when storage answers. PGlite always answers from the layer's own lifetime, since
  * a single connection held by a turn would make a probe report unready;
  * Postgres storage answers are reused for at most a second; public runner
  * registration snapshots are checked on each probe.
@@ -34,6 +36,7 @@ export const servingReadiness = Effect.fnUntraced(function* ({
 }) {
   const embedded = Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
   const runner = yield* Effect.serviceOption(RunnerReadiness)
+  const peering = yield* Effect.serviceOption(PeerHealth)
 
   const storage = embedded
     ? Effect.succeed(true)
@@ -54,6 +57,9 @@ export const servingReadiness = Effect.fnUntraced(function* ({
       return { ready: false, reason: "unregistered" } as const
 
     if (!(yield* storage)) return { ready: false, reason: "storage" } as const
+
+    if (Option.isSome(peering) && !(yield* peering.value.healthy))
+      return { ready: false, reason: "peering" } as const
 
     if (Option.isSome(runner) && !(yield* runner.value.acquired(sharding)))
       return { ready: false, reason: "routing" } as const
