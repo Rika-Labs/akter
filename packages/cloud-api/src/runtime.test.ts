@@ -152,6 +152,19 @@ describe("runtime models", () => {
     expect(rejects(CommandLogEntry, { ...entry, outcome: "retried" })).toBe(true)
     expect(rejects(CommandLogEntry, { ...entry, durationMs: -1 })).toBe(true)
     expect(rejects(CommandLogEntry, { ...entry, caller: { kind: "robot" } })).toBe(true)
+    for (const kind of ["apiKey", "api-key"])
+      expect(
+        rejects(CommandLogEntry, {
+          ...entry,
+          caller: { kind, subject: "api-key:k_1", source: null },
+        }),
+      ).toBe(true)
+    expect(
+      decode(CommandLogEntry, {
+        ...entry,
+        caller: { kind: "user", subject: "api-key:k_1", source: null },
+      }).caller,
+    ).toEqual({ kind: "user", subject: "api-key:k_1", source: null })
     expect(
       decode(CommandLogEntry, { ...entry, at: null, durationMs: null, payloadPreview: null }),
     ).toMatchObject({ at: null, durationMs: null, payloadPreview: null })
@@ -337,9 +350,10 @@ describe("runtime models", () => {
     expect(rejects(CommandRefused, { ...wire, reason: { ...reasonWire, code: "late" } })).toBe(true)
   })
 
-  it("carries an actor type's commands per second and per-command volume over a window", () => {
+  it("carries an actor type's commands per second and per-command volume over a window, from when the runner began recording", () => {
     const activity = {
       window: "24h",
+      since: "2026-10-03T08:30:00.000Z",
       series: [
         { at: "2026-10-03T09:00:00.000Z", value: 12.5 },
         { at: "2026-10-03T10:00:00.000Z", value: 0 },
@@ -348,6 +362,7 @@ describe("runtime models", () => {
     }
     expect(encode(ActorTypeActivity, decode(ActorTypeActivity, activity))).toEqual(activity)
     expect(rejects(ActorTypeActivity, { ...activity, window: "30d" })).toBe(true)
+    expect(rejects(ActorTypeActivity, { ...activity, since: null })).toBe(true)
     expect(
       rejects(ActorTypeActivity, {
         ...activity,
@@ -356,9 +371,10 @@ describe("runtime models", () => {
     ).toBe(true)
   })
 
-  it("carries a turn-latency histogram whose last bucket has no upper bound, with p50, p95 and p99", () => {
+  it("carries a turn-latency histogram whose last bucket has no upper bound, with p50, p95 and p99, null when no turn committed", () => {
     const latency = {
       window: "1h",
+      since: "2026-10-03T08:30:00.000Z",
       buckets: [
         { upToMs: 1, count: 900 },
         { upToMs: 10, count: 90 },
@@ -370,8 +386,27 @@ describe("runtime models", () => {
     }
     expect(encode(TurnLatency, decode(TurnLatency, latency))).toEqual(latency)
     expect(
-      rejects(TurnLatency, { window: "1h", buckets: latency.buckets, p50Ms: 1, p99Ms: 2 }),
+      rejects(TurnLatency, {
+        window: "1h",
+        since: latency.since,
+        buckets: latency.buckets,
+        p50Ms: 1,
+        p99Ms: 2,
+      }),
     ).toBe(true)
+    const empty = {
+      ...latency,
+      buckets: [
+        { upToMs: 1, count: 0 },
+        { upToMs: null, count: 0 },
+      ],
+      p50Ms: null,
+      p95Ms: null,
+      p99Ms: null,
+    }
+    expect(encode(TurnLatency, decode(TurnLatency, empty))).toEqual(empty)
+    const { since: _since, ...sinceless } = latency
+    expect(rejects(TurnLatency, sinceless)).toBe(true)
     expect(rejects(TurnLatency, { ...latency, buckets: [{ upToMs: -1, count: 1 }] })).toBe(true)
   })
 

@@ -297,9 +297,10 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
             yield* sql<{ view_name: string; version: number }>`
               SELECT view_name, version FROM durable.views ORDER BY view_name COLLATE "C"`,
           ).toEqual(
-            [...VIEWS]
-              .sort()
-              .map((view_name) => ({ view_name, version: view_name === "dead_letters" ? 2 : 1 })),
+            [...VIEWS].sort().map((view_name) => ({
+              view_name,
+              version: view_name === "dead_letters" || view_name === "receipts" ? 2 : 1,
+            })),
           )
 
           for (const view of VIEWS) {

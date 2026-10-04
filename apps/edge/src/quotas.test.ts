@@ -306,21 +306,27 @@ const deniedUpgrade = (edge: FixtureEdge, key?: string) =>
   })
 
 /** Opens a stream and keeps it open until `stop`; the scope also ends it. */
-const hold = Effect.fnUntraced(function* (edge: FixtureEdge, key: string, path: string) {
+const hold = Effect.fnUntraced(function* (
+  edge: FixtureEdge,
+  key: string,
+  path: string,
+  method: "GET" | "POST" = "POST",
+) {
   const client = yield* HttpClient.HttpClient
   const answered = yield* Deferred.make<Reply>()
   const finished = yield* Deferred.make<string>()
+  const headers = { authorization: `Bearer ${key}` }
 
   const fiber = yield* Effect.forkScoped(
     client
       .execute(
-        HttpClientRequest.bodyText(
-          HttpClientRequest.post(`${edge.url}${path}`, {
-            headers: { authorization: `Bearer ${key}` },
-          }),
-          "{}",
-          "application/json",
-        ),
+        method === "GET"
+          ? HttpClientRequest.get(`${edge.url}${path}`, { headers })
+          : HttpClientRequest.bodyText(
+              HttpClientRequest.post(`${edge.url}${path}`, { headers }),
+              "{}",
+              "application/json",
+            ),
       )
       .pipe(
         Effect.flatMap((response) =>
@@ -454,6 +460,13 @@ const SERVICE_READS = [
   "/inspector/receipts?type=Order&id=o-1&limit=50",
   "/inspector/latest-events?type=Order&id=o-1&limit=500",
   "/inspector/timeline?type=Order&id=o-1&limit=50",
+  "/inspector/schedules",
+  "/inspector/live/overview",
+  "/inspector/live/activity?type=Order&window=1h",
+  "/inspector/live/latency?type=Order&window=7d",
+  `/inspector/live/actors?type=Order&ids=${encodeURIComponent('["o-1"]')}`,
+  "/inspector/live/connections",
+  "/inspector/commands/stream?type=Order&outcome=Failure",
 ]
 
 describe("meteringOf", () => {
@@ -544,6 +557,14 @@ describe("meteringOf", () => {
       ["GET", "/inspector/timeline/o-1", null],
       ["GET", "/inspector/Actor-Types", null],
       ["GET", "/inspector/latest-events%2F", null],
+      ["GET", "/inspector/live", null],
+      ["GET", "/inspector/live/", null],
+      ["GET", "/inspector/live/actors/o-1", null],
+      ["GET", "/inspector/commands", null],
+      ["GET", "/inspector/commands/stream/", null],
+      ["GET", "/inspector/schedules/Order", null],
+      ["POST", "/inspector/commands/stream", null],
+      ["POST", "/inspector/live/overview", null],
       ["POST", "/inspector/receipts", null],
       ["POST", "/inspector/job-types", null],
       ["POST", "/ready", null],
@@ -1057,6 +1078,57 @@ describe("control plane service credential", () => {
           expect((yield* read(edge, key)).status).toBe(200)
           expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 6 })
           expect(yield* reservationCount(edge)).toBe(2)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "streams the inspector's command stream to its service credential without a connection lease, and refuses it to a tenant key before the runner",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const runner = yield* runnerWith((incoming) =>
+            new URL(incoming.url).pathname === "/inspector/commands/stream"
+              ? new Response(": open\n\nevent: command\nid: e-1.1\ndata: {}\n\n", {
+                  headers: { "content-type": "text/event-stream" },
+                })
+              : undefined,
+          )
+          const bounded = {
+            ...pricing,
+            tiers: pricing.tiers.map((candidate) => ({ ...candidate, concurrentConnections: 1 })),
+          }
+          const edge = yield* start({ pricing: bounded }, runner)
+          const service = yield* serviceKey(edge)
+          const tenant = yield* keyFor(edge, "acme")
+
+          const first = yield* hold(edge, service, "/inspector/commands/stream?type=Order", "GET")
+          const second = yield* hold(edge, service, "/inspector/commands/stream", "GET")
+
+          expect([first.reply.status, second.reply.status]).toEqual([200, 200])
+          expect(yield* first.finished).toBe(": open\n\nevent: command\nid: e-1.1\ndata: {}\n\n")
+          expect(yield* leaseCount(edge)).toBe(0)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 0 })
+
+          const held = yield* watch(edge, tenant)
+          expect(held.reply.status).toBe(200)
+          expect(yield* leaseCount(edge)).toBe(1)
+
+          const refused = yield* get(edge, tenant, "/inspector/commands/stream")
+          expect([refused.status, refused.reason["_tag"]]).toEqual([501, "UnsupportedBillingRoute"])
+          expect(
+            runner.seen
+              .filter(({ path }) => path === "/inspector/commands/stream")
+              .map(({ search, assertion }) => [search, assertion !== null]),
+          ).toEqual([
+            ["?type=Order", true],
+            ["", true],
+          ])
+
+          yield* first.stop
+          yield* second.stop
+          yield* held.stop
         }),
       ),
     60_000,

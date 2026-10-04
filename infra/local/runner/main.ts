@@ -10,6 +10,7 @@ import {
 } from "@rikalabs/akter/runtime"
 import { Cause, Config, Context, Exit, Duration, Effect, Layer, Option, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpRouter } from "effect/http"
+import { Beacon, beaconLayers, Ticker } from "./beacon.ts"
 import { Counter, counterLayers } from "./counter.ts"
 import { Ledger, ledgerLayers } from "./ledger.ts"
 import { peerRunner } from "./peer.ts"
@@ -51,6 +52,7 @@ const load = Effect.gen(function* () {
 
   return {
     auth,
+    region: options.region,
     basePath: basePath === "" ? undefined : (basePath as `/${string}`),
     database: yield* Config.Redacted("DATABASE_URL"),
     hostname: yield* Config.String("HOST").pipe(Config.withDefault("0.0.0.0")),
@@ -64,7 +66,7 @@ const load = Effect.gen(function* () {
 })
 
 /**
- * A locally built example runner: a served `Counter` and `Ledger` over
+ * A locally built example runner: a served `Counter`, `Ledger`, `Beacon` and `Ticker` over
  * Postgres behind the edge's assertions. It is a public socket runner, so a replacement
  * release can start while the one it replaces still serves.
  *
@@ -81,6 +83,7 @@ const program = Effect.gen(function* () {
     Layer.mergeAll(
       ...counterLayers({ version: config.version, runner: config.runner }),
       ...ledgerLayers,
+      ...beaconLayers,
     ).pipe(
       Layer.provideMerge(Actors.layer().pipe(Layer.provide(peerRunner))),
       Layer.provideMerge(Database.postgres({ url: config.database })),
@@ -92,11 +95,11 @@ const program = Effect.gen(function* () {
     HttpRouter.serve(
       Layer.mergeAll(
         Actors.serve({
-          actors: [Counter, Ledger],
+          actors: [Counter, Ledger, Beacon, Ticker],
           auth: config.auth,
           basePath: config.basePath,
         }),
-        Inspector.serve({ auth: config.auth }),
+        Inspector.serve({ auth: config.auth, runner: config.runner, region: config.region }),
       ),
     ).pipe(
       Layer.provide(Layer.succeedContext(runtime)),

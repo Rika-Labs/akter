@@ -60,6 +60,34 @@ export class RunnerReadiness extends Context.Service<
   }
 >()("@rikalabs/akter/runtime/runner/RunnerReadiness") {}
 
+/** How many runners other than this one the cluster's runner storage lists. */
+export class RunnerPeers extends Context.Service<
+  RunnerPeers,
+  {
+    /** Healthy or not; undefined when the storage could not be read. */
+    readonly peers: Effect.Effect<number | undefined>
+  }
+>()("@rikalabs/akter/runtime/runner/RunnerPeers") {}
+
+/** Counts the runners the storage lists under any address but this runner's own. */
+export const runnerPeers = Effect.gen(function* () {
+  const config = yield* ShardingConfig.ShardingConfig
+  const storage = yield* RunnerStorage.RunnerStorage
+  const self = Option.map(config.runnerAddress, PrimaryKey.value)
+
+  return RunnerPeers.of({
+    peers: storage.getRunners.pipe(
+      Effect.map(
+        (runners) =>
+          runners.filter(
+            ([runner]) => Option.isNone(self) || PrimaryKey.value(runner.address) !== self.value,
+          ).length,
+      ),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  })
+})
+
 /** Builds assignment expectations independently of the runner's local acquisition state. */
 export const acquiredShards = Effect.gen(function* () {
   const config = yield* ShardingConfig.ShardingConfig

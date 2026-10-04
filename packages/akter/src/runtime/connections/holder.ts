@@ -1329,6 +1329,13 @@ export const connectionHolder = Effect.fnUntraced(function* (options: HolderOpti
     open,
     deliver,
     size: () => held.size,
+    /** The open sessions this holder holds for `tenant`: each one's actor, member and feed tags. */
+    census: (tenant: string) =>
+      [...held.values()].flatMap((connection) =>
+        connection.open && !connection.ended && connection.ref.tenant === tenant
+          ? [{ ref: connection.ref, member: connection.member, feed: connection.feed ?? [] }]
+          : [],
+      ),
     /** The clock authorization and credential expiry are measured on, in epoch milliseconds. */
     now,
   }

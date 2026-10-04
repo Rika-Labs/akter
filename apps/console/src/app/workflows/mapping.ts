@@ -60,8 +60,10 @@ export const toSchedule =
     lastRun:
       schedule.lastRun === null
         ? "—"
-        : `${schedule.lastRun.outcome} · ${formatDuration(schedule.lastRun.durationMs)}`,
-    nextRun: until(now)(schedule.nextRunAt),
+        : schedule.lastRun.durationMs === null
+          ? schedule.lastRun.outcome
+          : `${schedule.lastRun.outcome} · ${formatDuration(schedule.lastRun.durationMs)}`,
+    nextRun: schedule.nextRunAt === null ? "—" : until(now)(schedule.nextRunAt),
   })
 
 /**
@@ -81,10 +83,11 @@ export const toWorkflowsPage =
     }>,
   ): WorkflowsPage => {
     const runs = input.workflows.map(toWorkflowRun(now))
-    const soonest = [...input.schedules].sort(
-      (left, right) =>
-        DateTime.toEpochMillis(left.nextRunAt) - DateTime.toEpochMillis(right.nextRunAt),
-    )[0]
+    const soonest = input.schedules
+      .flatMap((schedule) =>
+        schedule.nextRunAt === null ? [] : [{ name: schedule.name, at: schedule.nextRunAt }],
+      )
+      .sort((left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at))[0]
     return WorkflowsPage.make({
       running: runs.filter((run) => run.status === "Running").length,
       waitingOnEvents: runs.filter((run) => run.status === "Waiting").length,
@@ -102,7 +105,7 @@ export const toWorkflowsPage =
       nextSchedule:
         soonest === undefined || input.sampleSchedules !== undefined
           ? null
-          : `${soonest.name} ${until(now)(soonest.nextRunAt)}`,
+          : `${soonest.name} ${until(now)(soonest.at)}`,
       runs,
       schedules: input.sampleSchedules ?? input.schedules.map(toSchedule(now)),
       schedulesSample: input.sampleSchedules !== undefined,

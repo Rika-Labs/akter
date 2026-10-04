@@ -9,7 +9,7 @@ import { ConnectionsPage } from "./model.ts"
  * their actors sleep.
  */
 export const toConnectionsPage = (summary: ConnectionsSummary): ConnectionsPage => {
-  const history = [...summary.openVersusParked].sort(
+  const history = [...(summary.openVersusParked ?? [])].sort(
     (left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at),
   )
   return ConnectionsPage.make({

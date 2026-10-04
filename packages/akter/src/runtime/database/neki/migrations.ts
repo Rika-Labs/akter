@@ -161,6 +161,7 @@ const replayDdl = (sql: SqlClient.SqlClient, text: string) =>
       if (/^DROP CONSTRAINT /i.test(action))
         return `ALTER TABLE ${table} ${action.replace(/^DROP CONSTRAINT (?!IF EXISTS )/i, "DROP CONSTRAINT IF EXISTS ")}`
       if (/^ENABLE ROW LEVEL SECURITY$/i.test(action)) return text
+      if (new RegExp(`^ALTER COLUMN ${identifier}\\s+SET DEFAULT\\s`, "i").test(action)) return text
       const constraint = new RegExp(`^ADD CONSTRAINT (${identifier})\\s+`, "i").exec(action)
       if (constraint !== null) {
         const [row] = yield* sql<{ exists: boolean }>`SELECT EXISTS (

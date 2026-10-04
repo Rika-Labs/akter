@@ -132,7 +132,8 @@ export type Metering =
  * The exact paths the control plane reads with its service credential: a
  * runner's readiness, which rollouts probe before going live, and the
  * inspector's operator reads, which the console's runtime views ask through
- * the edge.
+ * the edge: its durable reads, its schedules, its live reads of one runner's
+ * memory and its command stream.
  */
 const SERVICE_READS: ReadonlySet<string> = new Set([
   "/ready",
@@ -148,7 +149,27 @@ const SERVICE_READS: ReadonlySet<string> = new Set([
   "/inspector/receipts",
   "/inspector/latest-events",
   "/inspector/timeline",
+  "/inspector/schedules",
+  "/inspector/live/overview",
+  "/inspector/live/activity",
+  "/inspector/live/latency",
+  "/inspector/live/actors",
+  "/inspector/live/connections",
+  "/inspector/commands/stream",
 ])
+
+/**
+ * Whether a request is one of the control plane's own free reads: a `GET` of
+ * a `SERVICE_READS` path on its service credential. Such a read is not the
+ * tenant's traffic, so an SSE answer to it, the inspector's command stream,
+ * holds no connection lease against the tenant's plan; the runner bounds how
+ * many it serves.
+ */
+export const isServiceRead = (request: {
+  readonly method: string
+  readonly path: string
+  readonly service: boolean
+}) => request.service && request.method.toUpperCase() === "GET" && SERVICE_READS.has(request.path)
 
 const decoded = (segment: string) => {
   try {
@@ -191,8 +212,7 @@ export const meteringOf = (request: {
 
   if (method === "OPTIONS") return { kind: "free" }
 
-  if (request.service && method === "GET" && SERVICE_READS.has(request.path))
-    return { kind: "free" }
+  if (isServiceRead(request)) return { kind: "free" }
 
   const segments = request.path.split("/")
   const at = segments.indexOf("actors")

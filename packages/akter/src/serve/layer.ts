@@ -905,9 +905,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             .payload(body)
             .pipe(Effect.mapError((error) => undecodable(error)))
 
+          const ref = refOf(definition, id, authenticated)
+
           const elements = actors.subscribe(
             Request.make({
-              ref: refOf(definition, id, authenticated),
+              ref,
               caller: authenticated.caller,
               command: member.tag,
               commandId: "",
@@ -915,7 +917,12 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             }),
           )
 
-          return elements.pipe(streamResponse, eventStream)
+          return Stream.unwrap(
+            Effect.acquireRelease(
+              Effect.sync(() => actors.live.streamOpened(ref)),
+              (release) => Effect.sync(release),
+            ).pipe(Effect.as(elements)),
+          ).pipe(streamResponse, eventStream)
         })
 
       const watchHandler = (definition: ServedDefinition, member: ServedMember) =>

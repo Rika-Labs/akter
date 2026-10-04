@@ -291,6 +291,7 @@ test("reloads activity and per-command volumes for the selected window", async (
       return route.fulfill({
         json: {
           window,
+          since: "2026-10-03T09:00:00Z",
           series: [
             { at: "2026-10-03T10:00:00Z", value: 4 },
             { at: "2026-10-03T11:00:00Z", value: 13 },
@@ -627,6 +628,7 @@ test("reloads the overview latency histogram window and preserves its unbounded 
       return route.fulfill({
         json: {
           window,
+          since: "2026-10-03T09:00:00Z",
           buckets: [
             { upToMs: 2, count: window === "7d" ? 19 : 7 },
             { upToMs: null, count: 13 },

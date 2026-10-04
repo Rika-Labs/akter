@@ -229,6 +229,8 @@ interface Plan {
   readonly broadcasts: ReadonlyArray<Broadcast>
   /** The actor's event sequence once this batch commits. */
   readonly head: string
+  /** The database clock the batch's fenced admission read selected, before any test-clock offset. */
+  readonly startedAtMs: number
   /**
    * Each command's committed events, in delivery order. Their stamps and the
    * outbox replies are filled in as the commit group replies, so read them
@@ -258,6 +260,7 @@ type ReceiptRow = {
   readonly caller_key: string
   readonly outcome: string
   readonly expires_at_ms: number
+  readonly started_at_ms: number
 }
 
 /** Rows a committed turn adds; nothing when it replays, acknowledges, or rolls back. */
@@ -298,6 +301,8 @@ export interface Done {
   readonly version: string
   /** The database clock read on the turn's session after the transaction ended. */
   readonly endedAtMs: number
+  /** The database clock the batch's fenced admission read selected; 0 when the batch was never admitted. */
+  readonly startedAtMs: number
   /** What the batch changed that a watched query may have read; nothing when it rolled back. */
   readonly wrote: WriteSet
   /** The commit made outbox or subscription work due now, so the relay should claim it at once. */
@@ -982,6 +987,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             caller_key: callerKey(member.request.caller),
             outcome,
             expires_at_ms: commandTimes(member.request.commandId).expiresAt,
+            started_at_ms: Number(first.now),
           })
           yield* hooks.at("beforeCommit", member.request)
           settled[member.index] = Result.succeed(result.outcome)
@@ -997,6 +1003,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           wake: false,
           broadcasts: [],
           head: first.head,
+          startedAtMs: Number(first.now),
           committed: [],
           emitted: [],
           outbox: [],
@@ -1059,6 +1066,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         wake,
         broadcasts,
         head: String(BigInt(first.head) + BigInt(events)),
+        startedAtMs: Number(first.now),
         committed,
         emitted,
         outbox: outboxes,
@@ -1125,6 +1133,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         written: plan.writes === undefined ? nothingWritten : plan.written,
         version,
         endedAtMs,
+        startedAtMs: plan.startedAtMs,
         wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
         wake:
           plan.wake ||

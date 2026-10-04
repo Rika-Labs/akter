@@ -13,6 +13,7 @@ import {
   CommandFailed,
   CommandExpired,
   CommandRefused,
+  CommandStreamGap,
   Conflict,
   ConnectionLimitExceeded,
   Forbidden,
@@ -37,7 +38,9 @@ import {
   Predicate,
   Redacted,
   Schema,
+  Stream,
 } from "effect"
+import { Sse } from "effect/encoding"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
@@ -177,16 +180,55 @@ const errorTagOf = (outcome: Inspection.Decoded | null | undefined) =>
 
 const instant = (epochMillis: number) => DateTime.makeUnsafe(epochMillis)
 
-/** A receipt as the console reads it: its outcome tag, whom it ran as and when it expires. */
+const instantOrNull = (epochMillis: number | null) =>
+  epochMillis === null ? null : instant(epochMillis)
+
+/** A receipt as the console reads it: its outcome tag, whom it ran as, when it committed and when it expires. */
 const receiptOf = (receipt: Inspection.ReceiptRow): Receipt => ({
   commandId: receipt.commandId,
   command: receipt.command,
   result: receipt.outcomeTag,
   caller: callerOf(receipt.callerKey),
-  at: null,
+  at: instantOrNull(receipt.committedAtMs),
   expiresAt: instant(receipt.expiresAtMs),
   replayed: false,
 })
+
+/**
+ * A receipt's turn from its fenced read to its write, on the database clock;
+ * null when the receipt predates the runner recording either time.
+ */
+const durationOf = (receipt: Inspection.ReceiptRow) =>
+  receipt.startedAtMs === null || receipt.committedAtMs === null
+    ? null
+    : Math.max(0, receipt.committedAtMs - receipt.startedAtMs)
+
+/**
+ * Whether a live answer covers the whole environment: only while the cluster
+ * lists no runner but the one that answered, since the control plane reaches
+ * one runner per request and does not add up a sample of them.
+ */
+const covers = (scope: Inspection.LiveScope) => scope.peers === 0
+
+/** A live command as the console's command log reads it. */
+const streamedOf = (sent: Inspection.StreamCommand): CommandLogEntry => ({
+  commandId: sent.commandId,
+  at: instant(sent.atMs),
+  durationMs: Math.max(0, sent.durationMs),
+  address: `${sent.actorType}/${sent.actorId}`,
+  command: sent.command,
+  caller: callerOf(sent.callerKey),
+  payloadPreview: sent.payloadPreview,
+  outcome: sent.outcomeTag === "Success" ? "ok" : "error",
+  errorTag: sent.errorTag,
+})
+
+const encodeIds = (ids: ReadonlyArray<string>) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(ids).pipe(Effect.orDie)
+
+const decodeStreamCommand = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Inspection.StreamCommand),
+)
 
 const timelineOf = (entry: Inspection.TimelineRow): ActorTimelineEntry => ({
   at: instant(entry.atMs),
@@ -374,29 +416,43 @@ const toInspector = (
   detail: Inspection.ActorDetail,
   events: ReadonlyArray<ActorEvent>,
   timeline: ReadonlyArray<Inspection.TimelineRow>,
-): ActorInspector => ({
-  address,
-  state: stateOf(detail.state),
-  turn: null,
-  tables: null,
-  receipts: detail.receipts.map(receiptOf),
-  events,
-  jobs: jobsOf(detail),
-  connections: {
-    sockets: null,
-    feedCursor: detail.actor.lastEventSequence > 0 ? String(detail.actor.lastEventSequence) : null,
-  },
-  properties: {
-    status: null,
-    type: detail.actor.actorType,
-    generation: detail.actor.generation,
-    runner: null,
-    region: null,
-    tenant,
-    mailboxDepth: null,
-  },
-  timeline: timeline.map(timelineOf),
-})
+  live: { readonly scope: Inspection.LiveScope; readonly actor: LiveActor } | undefined,
+): ActorInspector => {
+  const awake = live?.actor.awake === true
+
+  return {
+    address,
+    state: stateOf(detail.state),
+    turn: null,
+    tables: null,
+    receipts: detail.receipts.map(receiptOf),
+    events: events.map((event) => ({
+      ...event,
+      subscribers:
+        live === undefined
+          ? null
+          : (live.actor.feeds.find((feed) => feed.event === event.name)?.subscribers ?? 0),
+    })),
+    jobs: jobsOf(detail),
+    connections: {
+      sockets: live?.actor.sockets ?? null,
+      feedCursor:
+        detail.actor.lastEventSequence > 0 ? String(detail.actor.lastEventSequence) : null,
+    },
+    properties: {
+      status: live === undefined ? null : awake ? "awake" : "idle",
+      type: detail.actor.actorType,
+      generation: detail.actor.generation,
+      runner: awake ? (live?.scope.runner ?? null) : null,
+      region: awake ? (live?.scope.region ?? null) : null,
+      tenant,
+      mailboxDepth: live === undefined ? null : (live.actor.mailbox ?? 0),
+    },
+    timeline: timeline.map(timelineOf),
+  }
+}
+
+type LiveActor = Inspection.LiveActors["actors"][number]
 
 const split = (address: string) => {
   const slash = address.indexOf("/")
@@ -754,15 +810,159 @@ export const makeRuntime = Effect.gen(function* () {
       { ...params, limit: String(PAGE_ROWS) },
       Inspection.TimelinePage,
     )
+    const live = yield* liveActors(target, type, [id])
 
-    return toInspector(input.address, target.tenant, found, events ?? [], timeline?.entries ?? [])
+    return toInspector(
+      input.address,
+      target.tenant,
+      found,
+      events ?? [],
+      timeline?.entries ?? [],
+      live === undefined ? undefined : { scope: live.scope, actor: live.actors[0]! },
+    )
   })
+
+  /**
+   * The serving runner's live view of named actors of one type, or undefined
+   * when another runner serves the environment too.
+   */
+  const liveActors = Effect.fn("Runtime.liveActors")(function* (
+    target: RuntimeTarget,
+    type: string,
+    ids: ReadonlyArray<string>,
+  ) {
+    const found = yield* readAll(
+      target,
+      "/live/actors",
+      { type, ids: yield* encodeIds(ids) },
+      Inspection.LiveActors,
+    )
+
+    return covers(found.scope) ? found : undefined
+  })
+
+  /**
+   * The commands the serving runner commits for the target's tenant, as one
+   * stream across the runner's credential expiry: when a runner's stream
+   * ends, the next resumes after the last entry it sent. It ends when the
+   * runner answers `gap`, which means it no longer holds what came after,
+   * when the runner can't be reached or answers anything but a stream, or
+   * when a stream ends without the runner's `end`, as when the runner goes
+   * away. A client reconnects to start again.
+   */
+  const commandStream = (
+    target: RuntimeTarget,
+    filter: { readonly type?: string | undefined; readonly outcome?: "Success" | "Failure" },
+  ): Stream.Stream<CommandLogEntry, CommandStreamGap> => {
+    const segment = (after: string | undefined): Stream.Stream<CommandLogEntry, CommandStreamGap> =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          let last = after
+          let resumable = false
+          let gapped = false
+
+          const response = yield* client
+            .execute(
+              HttpClientRequest.get(
+                url(target, `${target.inspectorPath ?? "/inspector"}/commands/stream`),
+              ).pipe(
+                HttpClientRequest.setUrlParams(
+                  Object.fromEntries(
+                    Object.entries({ type: filter.type, outcome: filter.outcome, after }).filter(
+                      (entry): entry is [string, string] => entry[1] !== undefined,
+                    ),
+                  ),
+                ),
+                HttpClientRequest.setHeaders({
+                  host: target.host,
+                  authorization: `Bearer ${Redacted.value(target.credential)}`,
+                }),
+              ),
+            )
+            .pipe(Effect.timeout(target.requestTimeout ?? "35 seconds"), Effect.option)
+
+          if (Option.isNone(response) || response.value.status !== 200) {
+            yield* Effect.logWarning("Runtime command stream refused").pipe(
+              Effect.annotateLogs({
+                status: Option.isNone(response) ? "unreachable" : response.value.status,
+                body: Option.isNone(response)
+                  ? ""
+                  : (yield* response.value.text.pipe(Effect.orElseSucceed(() => ""))).slice(0, 300),
+              }),
+            )
+
+            return Stream.empty
+          }
+
+          return response.value.stream.pipe(
+            Stream.decodeText,
+            Stream.pipeThroughChannel(Sse.decode()),
+            Stream.tap((event) =>
+              Effect.sync(() => {
+                if (event.event === "gap") gapped = true
+              }),
+            ),
+            Stream.takeWhile((event) => event.event !== "gap"),
+            Stream.tap((event) =>
+              Effect.sync(() => {
+                if (event.event === "end") resumable = true
+              }),
+            ),
+            Stream.filter((event) => event.event === "command"),
+            Stream.mapEffect((event) =>
+              decodeStreamCommand(event.data).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    last = event.id ?? last
+                  }),
+                ),
+                Effect.map(streamedOf),
+              ),
+            ),
+            Stream.catchCause(() => Stream.empty),
+            Stream.concat(
+              Stream.suspend(() =>
+                gapped
+                  ? Stream.fail(CommandStreamGap.make({}))
+                  : resumable
+                    ? segment(last)
+                    : Stream.empty,
+              ),
+            ),
+          )
+        }),
+      )
+
+    return segment(undefined)
+  }
+
+  /**
+   * A wholly live read of the serving runner, or `NotImplemented` unless the
+   * cluster lists no other runner, since no request reaches the others' memory
+   * and a sample of runners would misstate the environment.
+   */
+  const liveRead = <A extends { readonly scope: Inspection.LiveScope }, I>(
+    target: RuntimeTarget,
+    path: string,
+    params: Readonly<Record<string, string | undefined>>,
+    schema: Schema.Codec<A, I>,
+    operation: string,
+  ) =>
+    readAll(target, path, params, schema).pipe(
+      Effect.filterOrElse(
+        (found) => covers(found.scope),
+        () => NotImplemented.make({ operation }),
+      ),
+    )
 
   return {
     sendCommand,
     actorJobs,
     inspectActor,
     latestEvents,
+    liveActors,
+    liveRead,
+    commandStream,
     read,
     readAll,
     everyName,
@@ -795,14 +995,18 @@ const decodeDeadLetterId = Schema.decodeUnknownEffect(DeadLetterId)
 /**
  * The console's runtime endpoints, answered by asking runners through the
  * edge after the caller's project access is established: reads need read
- * permission and `sendCommand` write permission. Reads come from the runner's
- * read-only inspector over its durable views, so each field those views do not
- * hold is null and each endpoint that needs nothing else stays
- * `NotImplemented` rather than answer with invented numbers: rates,
- * latencies, the live stream, connections, schedules, owned-table rows, and
- * retrying or discarding a dead letter, which no runner route the control
- * plane can reach performs. A command is attributed to the signed-in user or
- * API key that sent it, after the control plane has authorized it.
+ * permission and `sendCommand` write permission. Durable reads come from the
+ * runner's read-only inspector over its durable views. Rates, latencies, the
+ * live stream, connections, awake actors, mailboxes and placement come from
+ * the serving runner's memory, and are reported only while the cluster lists
+ * no other runner, since a request reaches one runner and a sample of them
+ * would misstate the environment: until then wholly live endpoints are
+ * `NotImplemented` and live fields are null. Each field nothing measures is
+ * null, and owned-table rows, the instances `status` filter and retrying or
+ * discarding a dead letter, which no runner route the control plane can reach
+ * performs, stay `NotImplemented`, rather than answer with invented numbers.
+ * A command is attributed to the signed-in user or API key that sent it,
+ * after the control plane has authorized it.
  */
 export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) =>
   Effect.gen(function* () {
@@ -834,15 +1038,32 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
     const overview = (target: RuntimeTarget) =>
       runtime.readAll(target, "/overview", {}, Inspection.Overview)
 
-    const summaryOf = (row: Inspection.ActorTypeRow) => ({
-      name: row.actorType,
-      commands: null,
-      instances: row.actors,
-      awake: null,
-      commandsPerSecond: null,
-      p99Ms: null,
-      maxMailbox: null,
-    })
+    /** The serving runner's live overview, or undefined while another runner serves too. */
+    const liveOverview = (target: RuntimeTarget) =>
+      runtime
+        .readAll(target, "/live/overview", {}, Inspection.LiveOverview)
+        .pipe(Effect.map((found) => (covers(found.scope) ? found : undefined)))
+
+    const summaryOf = (row: Inspection.ActorTypeRow, live: Inspection.LiveOverview | undefined) => {
+      const found = live?.actorTypes.find((type) => type.actorType === row.actorType)
+
+      return {
+        name: row.actorType,
+        commands: null,
+        instances: row.actors,
+        awake: live === undefined ? null : (found?.awake ?? 0),
+        commandsPerSecond:
+          live === undefined
+            ? null
+            : found === undefined
+              ? live.total.perSecond === null
+                ? null
+                : 0
+              : found.perSecond,
+        p99Ms: found?.p99Ms ?? null,
+        maxMailbox: live === undefined ? null : (found?.maxMailbox?.depth ?? 0),
+      }
+    }
 
     const actorPage = <A, I>(
       target: RuntimeTarget,
@@ -875,6 +1096,16 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           const target = yield* edge.resolve({ ...params, organizationId })
           const { counts } = yield* overview(target)
           const jobs = yield* jobTypes(target)
+          const live = yield* liveOverview(target)
+          const day =
+            live === undefined
+              ? undefined
+              : yield* runtime.readAll(
+                  target,
+                  "/live/activity",
+                  { window: "24h" },
+                  Inspection.LiveActivity,
+                )
           const [deployed] = yield* sql<{ at: Date | null }>`
             SELECT max(created_at) AS at FROM deployment_rollout
             WHERE organization_id = ${organizationId} AND tenant_id = ${organizationId}
@@ -883,8 +1114,19 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           )
 
           return {
-            commands: null,
-            actors: { awake: null, total: counts.actors },
+            commands:
+              live === undefined || day?.activity == null || live.total.perSecond === null
+                ? null
+                : {
+                    perSecond: live.total.perSecond,
+                    series24h: day.activity.points.map((point) => ({
+                      at: instant(point.atMs),
+                      value: point.perSecond,
+                    })),
+                    p50Ms: live.total.p50Ms,
+                    p99Ms: live.total.p99Ms,
+                  },
+            actors: { awake: live?.total.awake ?? null, total: counts.actors },
             jobs: { inFlight: counts.jobs, donePerHour: null },
             deadLettersByJobType: jobs.flatMap((job) =>
               job.deadLetters === 0 ? [] : [{ jobName: job.job, count: job.deadLetters }],
@@ -894,7 +1136,16 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
             health: {
               runners: null,
               databaseCpuPercent: null,
-              maxMailbox: null,
+              maxMailbox:
+                live === undefined
+                  ? null
+                  : {
+                      depth: live.total.maxMailbox?.depth ?? 0,
+                      actor:
+                        live.total.maxMailbox === null
+                          ? null
+                          : `${live.total.maxMailbox.actorType}/${live.total.maxMailbox.actorId}`,
+                    },
               parkedSockets: null,
               outboxLagP99Ms: null,
               lastDeployAt: deployed?.at == null ? null : DateTime.fromDateUnsafe(deployed.at),
@@ -946,25 +1197,72 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
         }),
       )
       .handle("listActorTypes", ({ params }) =>
-        environment(params).pipe(
-          Effect.flatMap((target) => actorTypes(target)),
-          Effect.map((rows) => rows.map(summaryOf)),
-        ),
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+          const rows = yield* actorTypes(target)
+          const live = yield* liveOverview(target)
+
+          return rows.map((row) => summaryOf(row, live))
+        }),
       )
       .handle("getActorType", ({ params }) =>
         Effect.gen(function* () {
-          const [row] = yield* actorTypes(yield* environment(params), params.actorType)
+          const target = yield* environment(params)
+          const [row] = yield* actorTypes(target, params.actorType)
 
           if (row === undefined)
             return yield* NotFound.make({ resource: "actor-type", id: params.actorType })
 
-          return summaryOf(row)
+          return summaryOf(row, yield* liveOverview(target))
         }),
       )
-      .handle("getActorTypeActivity", ({ params }) =>
-        allowed(params, "runtime.getActorTypeActivity"),
+      .handle("getActorTypeActivity", ({ params, query }) =>
+        Effect.gen(function* () {
+          const window = query.window ?? "24h"
+          const { activity } = yield* runtime.liveRead(
+            yield* environment(params),
+            "/live/activity",
+            { type: params.actorType, window },
+            Inspection.LiveActivity,
+            "runtime.getActorTypeActivity",
+          )
+
+          if (activity === null) return yield* notImplemented("runtime.getActorTypeActivity")
+
+          return {
+            window,
+            since: instant(activity.sinceMs),
+            series: activity.points.map((point) => ({
+              at: instant(point.atMs),
+              value: point.perSecond,
+            })),
+            commands: activity.commands,
+          }
+        }),
       )
-      .handle("getActorTypeLatency", ({ params }) => allowed(params, "runtime.getActorTypeLatency"))
+      .handle("getActorTypeLatency", ({ params, query }) =>
+        Effect.gen(function* () {
+          const window = query.window ?? "24h"
+          const { latency } = yield* runtime.liveRead(
+            yield* environment(params),
+            "/live/latency",
+            { type: params.actorType, window },
+            Inspection.LiveLatency,
+            "runtime.getActorTypeLatency",
+          )
+
+          if (latency === null) return yield* notImplemented("runtime.getActorTypeLatency")
+
+          return {
+            window,
+            since: instant(latency.sinceMs),
+            buckets: latency.buckets,
+            p50Ms: latency.p50Ms,
+            p95Ms: latency.p95Ms,
+            p99Ms: latency.p99Ms,
+          }
+        }),
+      )
       .handle("listActorInstances", ({ params, query }) =>
         Effect.gen(function* () {
           const target = yield* environment(params)
@@ -985,12 +1283,23 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
             Inspection.ActorsPage,
           )
 
+          const live =
+            page.actors.length === 0
+              ? undefined
+              : yield* runtime.liveActors(
+                  target,
+                  params.actorType,
+                  page.actors.map((actor) => actor.actorId),
+                )
+
           return {
-            items: page.actors.map((actor) => ({
+            items: page.actors.map((actor, index) => ({
               key: actor.actorId,
-              status: null,
-              lastCommand: null,
-              lastActivityAt: null,
+              status:
+                live === undefined ? null : live.actors[index]?.awake === true ? "awake" : "idle",
+              lastCommand: actor.lastCommand?.command ?? null,
+              lastActivityAt:
+                actor.lastCommand === null ? null : instant(actor.lastCommand.committedAtMs),
               generation: actor.generation,
             })),
             nextCursor: cursorOf(page.next),
@@ -1027,11 +1336,8 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       )
       .handle("listActorEvents", ({ params }) =>
         Effect.gen(function* () {
-          const events = yield* runtime.latestEvents(
-            yield* environment(params),
-            params.actorType,
-            params.key,
-          )
+          const target = yield* environment(params)
+          const events = yield* runtime.latestEvents(target, params.actorType, params.key)
 
           if (events === undefined)
             return yield* NotFound.make({
@@ -1039,7 +1345,16 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
               id: `${params.actorType}/${params.key}`,
             })
 
-          return events
+          const live = yield* runtime.liveActors(target, params.actorType, [params.key])
+          const feeds = live?.actors[0]?.feeds
+
+          return events.map((event) => ({
+            ...event,
+            subscribers:
+              feeds === undefined
+                ? null
+                : (feeds.find((feed) => feed.event === event.name)?.subscribers ?? 0),
+          }))
         }),
       )
       .handle("listActorJobs", ({ params }) =>
@@ -1100,8 +1415,8 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           return {
             items: page.receipts.map((receipt): CommandLogEntry => ({
               commandId: receipt.commandId,
-              at: null,
-              durationMs: null,
+              at: instantOrNull(receipt.committedAtMs),
+              durationMs: durationOf(receipt),
               address: `${receipt.actorType}/${receipt.actorId}`,
               command: receipt.command,
               caller: callerOf(receipt.callerKey),
@@ -1113,7 +1428,32 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           }
         }),
       )
-      .handle("streamCommands", ({ params }) => allowed(params, "runtime.streamCommands"))
+      .handle("streamCommands", ({ params, query }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+
+          if (query.outcome === "replayed")
+            return yield* notImplemented("runtime.streamCommands.replayed")
+
+          yield* runtime.liveRead(
+            target,
+            "/live/connections",
+            {},
+            Inspection.LiveConnections,
+            "runtime.streamCommands",
+          )
+
+          return runtime.commandStream(target, {
+            type: query.actorType,
+            outcome:
+              query.outcome === undefined
+                ? undefined
+                : query.outcome === "ok"
+                  ? "Success"
+                  : "Failure",
+          })
+        }),
+      )
       .handle("getJobs", ({ params }) =>
         Effect.gen(function* () {
           const jobs = yield* jobTypes(yield* environment(params))
@@ -1205,8 +1545,68 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           }
         }),
       )
-      .handle("listSchedules", ({ params }) => allowed(params, "runtime.listSchedules"))
-      .handle("getConnections", ({ params }) => allowed(params, "runtime.getConnections"))
+      .handle("listSchedules", ({ params }) =>
+        Effect.gen(function* () {
+          const { schedules } = yield* runtime.readAll(
+            yield* environment(params),
+            "/schedules",
+            {},
+            Inspection.Schedules,
+          )
+
+          return schedules.map((schedule) => ({
+            name: schedule.command,
+            actorPattern: `${schedule.actorType}/*`,
+            cron: schedule.expression,
+            lastRun:
+              schedule.lastRun === null
+                ? null
+                : {
+                    at: instant(schedule.lastRun.committedAtMs),
+                    outcome:
+                      schedule.lastRun.outcomeTag === "Success"
+                        ? ("ok" as const)
+                        : ("error" as const),
+                    durationMs:
+                      schedule.lastRun.durationMs === null
+                        ? null
+                        : Math.max(0, schedule.lastRun.durationMs),
+                  },
+            nextRunAt: instantOrNull(schedule.nextDueAtMs),
+          }))
+        }),
+      )
+      .handle("getConnections", ({ params }) =>
+        Effect.gen(function* () {
+          const found = yield* runtime.liveRead(
+            yield* environment(params),
+            "/live/connections",
+            {},
+            Inspection.LiveConnections,
+            "runtime.getConnections",
+          )
+          const sse = (counts: {
+            readonly feeds: number
+            readonly streams: number
+            readonly watches: number
+          }) => counts.feeds + counts.streams + counts.watches
+
+          return {
+            open: found.sockets + sse(found),
+            parked: null,
+            sseStreams: sse(found),
+            feedSubscribers: found.feeds,
+            replayGaps: null,
+            openVersusParked: null,
+            byActorType: found.byActorType.map((type) => ({
+              actorType: type.actorType,
+              open: type.sockets + sse(type),
+              parked: null,
+              sse: sse(type),
+            })),
+          }
+        }),
+      )
       .handle("sendCommand", ({ params, payload }) =>
         Effect.gen(function* () {
           const organizationId = yield* access.project(params.projectId, "write")

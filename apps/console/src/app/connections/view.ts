@@ -17,11 +17,15 @@ export const connectionsScreen = ({ h, model, page }: ScreenInput<ConnectionsPag
         { label: "Open sockets", value: formatInteger(page.sockets), trend: page.open.slice(-40) },
         {
           label: "Parked",
-          value: formatInteger(page.parked),
+          value: page.parked === null ? "—" : formatInteger(page.parked),
           detail: "held while their actors sleep",
         },
         { label: "SSE streams", value: formatInteger(page.streams) },
-        { label: "Replay gaps", value: String(page.replayGaps), detail: "last 24 hours" },
+        {
+          label: "Replay gaps",
+          value: page.replayGaps === null ? "—" : String(page.replayGaps),
+          detail: "last 24 hours",
+        },
       ],
     }),
     columns(h, {
@@ -50,10 +54,17 @@ export const connectionsScreen = ({ h, model, page }: ScreenInput<ConnectionsPag
             stackedBar(h, {
               label: "Sockets by state",
               format: formatInteger,
-              segments: [
-                { label: "Active", value: Math.max(0, page.sockets - page.parked), tone: "ink" },
-                { label: "Parked", value: page.parked, tone: "muted" },
-              ],
+              segments:
+                page.parked === null
+                  ? [{ label: "Open", value: page.sockets, tone: "ink" }]
+                  : [
+                      {
+                        label: "Active",
+                        value: Math.max(0, page.sockets - page.parked),
+                        tone: "ink",
+                      },
+                      { label: "Parked", value: page.parked, tone: "muted" },
+                    ],
             }),
           ],
         }),
@@ -89,8 +100,10 @@ export const connectionsScreen = ({ h, model, page }: ScreenInput<ConnectionsPag
             cells: [
               row.actorType,
               formatInteger(row.sockets),
-              formatInteger(row.parked),
-              row.sockets === 0 ? "—" : `${Math.round((row.parked / row.sockets) * 100)}%`,
+              row.parked === null ? "—" : formatInteger(row.parked),
+              row.parked === null || row.sockets === 0
+                ? "—"
+                : `${Math.round((row.parked / row.sockets) * 100)}%`,
               formatInteger(row.streams),
             ],
           })),

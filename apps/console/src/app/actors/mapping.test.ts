@@ -274,6 +274,7 @@ describe("actor instance mapping", () => {
 describe("actor type activity mapping", () => {
   const activity = {
     window: "7d",
+    since: "2026-09-26T14:00:00.000Z",
     series: [
       { at: "2026-10-03T14:00:00.000Z", value: 30 },
       { at: "2026-10-02T14:00:00.000Z", value: 10 },

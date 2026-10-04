@@ -153,6 +153,7 @@ export {
   CommandRefused,
   CommandExpired,
   RunnerDefect,
+  CommandStreamGap,
   CommandLogEntry,
   ConnectionLimitExceeded,
   QuotaErrors,

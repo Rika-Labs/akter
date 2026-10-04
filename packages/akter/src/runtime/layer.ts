@@ -65,6 +65,12 @@ import { recordedPlacement } from "./storage/placements.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
+import {
+  type LiveRecorder,
+  liveRecorder,
+  LiveRuntime,
+  type OpenConnection,
+} from "./telemetry/live.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { seedRuntime } from "./operators/seed.ts"
 import { TelemetrySampler } from "./telemetry/sampler.ts"
@@ -106,6 +112,8 @@ import { servingReadiness } from "./readiness.ts"
 import {
   acquiredShards,
   checkRunnerConfiguration,
+  RunnerPeers,
+  runnerPeers,
   RunnerReadiness,
   LocalRequestSerialization,
   RunnerWiring,
@@ -469,6 +477,23 @@ export const layer = (options: Options = {}) => {
       >()
 
       const defectLog = boundedDefectLog(defectCapacity)
+      let recorder: LiveRecorder | undefined
+      const currentRecorder = () => recorder
+      const enableRecorder = Effect.map(Clock.currentTimeMillis, (startedAtMs) => {
+        recorder ??= liveRecorder({ startedAtMs, epoch: runtimeId.slice(0, 8) })
+
+        return recorder
+      })
+      const servedStreams = new Map<
+        string,
+        {
+          readonly actorType: string
+          readonly actorId: string
+          readonly tenant: string
+          count: number
+        }
+      >()
+      const peers = yield* RunnerPeers
 
       const database = yield* rowsDatabase
       const clockOffset = yield* FrameworkClock
@@ -1143,6 +1168,62 @@ export const layer = (options: Options = {}) => {
         tenantScope,
       })
 
+      const live = LiveRuntime.of({
+        recorder: currentRecorder,
+        enable: enableRecorder,
+        resident: (tenant) =>
+          [...diagnostics].flatMap(([actorType, { resident }]) =>
+            resident().flatMap((activation) =>
+              activation.tenant === tenant
+                ? [{ actorType, actorId: activation.id, mailbox: activation.mailbox }]
+                : [],
+            ),
+          ),
+        connections: (tenant) => [
+          ...(holder?.census(tenant) ?? []).map(({ ref, member, feed }): OpenConnection => ({
+            actorType: ref.actor,
+            actorId: ref.id,
+            kind: member === FEED_MEMBER ? "feed" : isWatchMember(member) ? "watch" : "socket",
+            events: member === FEED_MEMBER ? feed : [],
+          })),
+          ...[...servedStreams.values()].flatMap((served): Array<OpenConnection> =>
+            served.tenant === tenant
+              ? Array.from({ length: served.count }, () => ({
+                  actorType: served.actorType,
+                  actorId: served.actorId,
+                  kind: "stream",
+                  events: [],
+                }))
+              : [],
+          ),
+        ],
+        schedules: () =>
+          [...registrations.values()].flatMap((registration) =>
+            registration.cron.map((entry) => ({
+              actorType: registration.name,
+              key: entry.key,
+              command: entry.command,
+            })),
+          ),
+        peers: peers.peers,
+        streamOpened: (ref) => {
+          const key = JSON.stringify([ref.tenant, ref.actor, ref.id])
+          const served = servedStreams.get(key) ?? {
+            tenant: ref.tenant,
+            actorType: ref.actor,
+            actorId: ref.id,
+            count: 0,
+          }
+          served.count += 1
+          servedStreams.set(key, served)
+
+          return () => {
+            served.count -= 1
+            if (served.count === 0) servedStreams.delete(key)
+          }
+        },
+      })
+
       const internalActors = InternalActors.of({
         fleet: (request) =>
           fleetSubscribe === undefined
@@ -1205,6 +1286,7 @@ export const layer = (options: Options = {}) => {
           writable,
           defectLog,
           outbox,
+          recorder: currentRecorder,
         }),
         ...committedReads({
           registrations,
@@ -1228,6 +1310,7 @@ export const layer = (options: Options = {}) => {
           deliverProgress(message).pipe(Effect.ignoreCause, Effect.provideContext(services)),
         transport,
         holder,
+        live,
         hibernate: (ref) =>
           Effect.flatMap(
             entityId(ref),
@@ -1454,7 +1537,7 @@ export const layer = (options: Options = {}) => {
             wiring?.production === true
               ? acquiredShards
               : Effect.succeed({ acquired: () => Effect.succeed(true) }),
-          ),
+          ).pipe(Layer.merge(Layer.effect(RunnerPeers, runnerPeers))),
         ),
         Layer.provideMerge(directMessages),
         Layer.provideMerge(mailboxRefusals),
