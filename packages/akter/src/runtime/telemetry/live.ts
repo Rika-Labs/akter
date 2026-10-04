@@ -140,8 +140,6 @@ const truncated = (text: string, length: number) =>
 
 const quoted = (text: string) => JSON.stringify(truncated(text, PREVIEW_STRING))
 
-const isArray = Schema.is(Schema.Array(Schema.Json))
-
 /**
  * One value of a payload as the preview shows it: at most `PREVIEW_MEMBERS`
  * members of an object or array, `PREVIEW_DEPTH` levels down, strings cut to
@@ -154,7 +152,7 @@ const render = (value: Schema.Json, depth: number): string => {
 
   if (Predicate.isString(value)) return PERSONAL.test(value) ? REDACTED : quoted(value)
 
-  if (isArray(value)) {
+  if (Array.isArray(value)) {
     if (depth >= PREVIEW_DEPTH) return "[…]"
 
     const shown = value.slice(0, PREVIEW_MEMBERS).map((item) => render(item, depth + 1))
@@ -164,12 +162,13 @@ const render = (value: Schema.Json, depth: number): string => {
 
   if (depth >= PREVIEW_DEPTH) return "{…}"
 
+  const object = value as Schema.JsonObject
   const named = NAMING_MEMBERS.some((member) => {
-    const naming = value[member]
+    const naming = object[member]
 
     return Predicate.isString(naming) && (sensitiveKey(naming) || PERSONAL.test(naming))
   })
-  const entries = Object.entries(value)
+  const entries = Object.entries(object)
   const shown = entries.slice(0, PREVIEW_MEMBERS).map(([key, member]) => {
     if (PERSONAL.test(key)) return `${REDACTED}:${REDACTED}`
 
