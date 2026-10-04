@@ -32,6 +32,12 @@ An interrupted sweep leaves whole batches and resumes on the next one. A replay 
 
 Restore of a whole-database snapshot, including across pruned history, follows [backup and restore](04-backup-restore.md). Per-tenant horizons and automatic dead-letter retention are not implemented.
 
+## Control-plane command keys
+
+The API retains a command-key assignment until its runner-minted command id expires. It stores the scoped key hash, canonical payload hash and runner receipt reference, not the full request or result. Once a minute each API process clears at most 1,000 expired assignments into tombstones and prunes at most 1,000 tombstones older than 30 days past expiry, using row locks with `SKIP LOCKED`. Concurrent reuse cannot remint a retained key. Clients must keep keys unique for at least the retry window plus 30 days; after the tombstone is pruned, reuse starts a new command.
+
+The first upgrade from full JSON assignments backfills their hashes and encoded expiry while holding an exclusive table lock, then removes raw keys and payloads. Drain and stop older API processes before that schema upgrade; their old SQL is not compatible with the hashed table. Runner receipts and accepted work are unaffected.
+
 ## Content sweep
 
 Built by M4.13 ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blobs.md)). A per-tenant sweep, run from the minute cleanup loop and at most hourly per tenant, deletes content no actor references once its last grant is older than the grace (24 hours) plus the longest `executionTimeout` of an actor type that declares content, plus the clock-skew bound. An upload that is never attached lives about 25 hours with the defaults. The sweep is operator-tier maintenance and never runs on a turn path. A runner claims a tenant by moving its `tenant_content_sweeps.swept_at_ms` in one `UPDATE … FOR UPDATE SKIP LOCKED`, which serves as the lock: two sweeps of one tenant never start within the hour, and a concurrent one would still be safe, because every delete re-checks the grant horizon. Each batch picks candidates whose `granted_until_ms` is older than `sweep start − grace − T − S`, scans `actor_content_refs` by `(tenant_id, hash)`, and deletes unreferenced rows and their chunks in one statement that re-checks `granted_until_ms < sweep start − T − S`. `T` is the largest `executionTimeout` any runner recorded in `actor_content_types` for an actor type that declares content; it only grows.

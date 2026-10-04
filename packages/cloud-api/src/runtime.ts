@@ -186,9 +186,10 @@ export type CommandLogEntry = typeof CommandLogEntry.Type
 const commandName = Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(128)))
 
 /**
- * A command the console sends to one actor. `commandId` is the idempotency
- * key: when omitted the server mints a new one, and when a caller resends the
- * same id the runner answers from its stored receipt without running the
+ * A command the console sends to one actor. `commandId` is the client
+ * idempotency key: when omitted the server mints a new one, and when a caller
+ * resends the same key the control plane reuses its durably assigned command
+ * id. The runner then answers from its stored receipt without running the
  * command again.
  */
 export const SendCommand = Schema.Struct({
@@ -206,6 +207,27 @@ export const CommandSent = Schema.Struct({
   replayed: Schema.Boolean,
 })
 export type CommandSent = typeof CommandSent.Type
+
+/** A client key remains expired for 30 days after its runner identity expires; answered 410. */
+export class CommandExpired extends Schema.TaggedError<CommandExpired>()(
+  "CommandExpired",
+  { commandId: Schema.String },
+  { httpApiStatus: 410 },
+) {}
+
+/** A remote runner defect is opaque and must never cause an automatic retry; answered 502. */
+export class RunnerDefect extends Schema.TaggedError<RunnerDefect>()(
+  "RunnerDefect",
+  {},
+  { httpApiStatus: 502 },
+) {}
+
+/** The runner refused admission without committing a command receipt; answered 422. */
+export class CommandRefused extends Schema.TaggedError<CommandRefused>()(
+  "CommandRefused",
+  { commandId: Schema.String, reasonTag: Schema.String, reason: Schema.Json },
+  { httpApiStatus: 422 },
+) {}
 
 /**
  * The actor ran the command and returned a typed error, answered 422. `errorTag`

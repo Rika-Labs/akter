@@ -101,6 +101,17 @@ export const consoleError = (cause: unknown): ConsoleError => {
     return ConsoleError.make({ kind: "NotFound", message: "This resource is no longer available." })
   if (Schema.is(Conflict)(cause))
     return ConsoleError.make({ kind: "Conflict", message: cause.message })
+  if (Predicate.isTagged(cause, "CommandExpired"))
+    return ConsoleError.make({
+      kind: "CommandExpired",
+      message: "This command key has expired. Start a new command instead of retrying it.",
+    })
+  if (Predicate.isTagged(cause, "RunnerDefect"))
+    return ConsoleError.make({
+      kind: "RunnerDefect",
+      message:
+        "The runner encountered an internal error. This command was not automatically retried.",
+    })
   if (Predicate.isTagged(cause, "NotImplemented"))
     return ConsoleError.make({
       kind: "NotImplemented",

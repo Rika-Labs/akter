@@ -2,10 +2,13 @@ import {
   type ActorJob,
   CloudApi,
   CommandFailed,
+  CommandExpired,
+  CommandRefused,
   Conflict,
   Forbidden,
   NotFound,
   NotImplemented,
+  RunnerDefect,
   Unavailable,
 } from "@akter/cloud-api"
 import {
@@ -22,6 +25,7 @@ import {
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Access } from "./access.ts"
+import { commandPayloadHash, Repository } from "./repository.ts"
 
 /**
  * Where and as whom the control plane reaches one environment's runners: the
@@ -65,11 +69,15 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
 const Reason = Schema.Union([
   Schema.TaggedStruct("NotCreated", {}),
   Schema.TaggedStruct("CommandConflict", {}),
+  Schema.TaggedStruct("CommandExpired", {}),
   Schema.TaggedStruct("Unauthorized", { code: Schema.String }),
   Schema.TaggedStruct("InvalidInput", { code: Schema.String }),
 ])
 
 const ActorErrorBody = Schema.TaggedStruct("ActorError", { reason: Reason })
+const GenericActorErrorBody = Schema.TaggedStruct("ActorError", {
+  reason: Schema.Struct({ _tag: Schema.String }),
+})
 
 const DefectBody = Schema.TaggedStruct("Defect", {})
 
@@ -80,6 +88,7 @@ const Job = Schema.Struct({ job: Schema.String, jobId: Schema.String, attempts: 
 const ActorJobs = Schema.Struct({ jobs: Schema.Array(Job), deadLetters: Schema.Array(Job) })
 
 const decodeActorError = Schema.decodeUnknownOption(ActorErrorBody)
+const decodeGenericActorError = Schema.decodeUnknownOption(GenericActorErrorBody)
 const decodeCommandId = Schema.decodeUnknownEffect(CommandId)
 const decodeJobs = Schema.decodeUnknownEffect(ActorJobs)
 
@@ -100,6 +109,7 @@ const split = (address: string) => {
 export const makeRuntime = Effect.gen(function* () {
   const edge = yield* RuntimeEdge
   const client = yield* HttpClient.HttpClient
+  const repository = yield* Repository
 
   const call = Effect.fn("Runtime.call")(function* (
     target: RuntimeTarget,
@@ -124,17 +134,19 @@ export const makeRuntime = Effect.gen(function* () {
         ),
       )
 
+    const text = yield* response.text.pipe(Effect.catch(() => unavailable("body")))
+    const body = Option.getOrUndefined(decodeJson(text))
+    if (Schema.is(DefectBody)(body)) return yield* RunnerDefect.make({})
+
     if ([502, 503, 504].includes(response.status))
       return yield* Unavailable.make({
         message: "The deployment is temporarily unavailable",
         retryAfterSeconds: 1,
       })
 
-    const text = yield* response.text.pipe(Effect.catch(() => unavailable("body")))
-
     return {
       status: response.status,
-      body: Option.getOrUndefined(decodeJson(text)),
+      body,
       replayed: response.headers["durable-replayed"],
     }
   })
@@ -171,18 +183,55 @@ export const makeRuntime = Effect.gen(function* () {
     const target = yield* edge.resolve(input)
     const { type, id } = split(input.address)
 
-    const minted =
-      input.commandId === undefined
-        ? yield* call(target, HttpClientRequest.post(url(target, "/command-ids"))).pipe(
-            Effect.flatMap(({ status, body }) =>
-              status === 200
-                ? decodeCommandId(body).pipe(Effect.orDie)
-                : unavailable(`command id mint answered ${status}`),
-            ),
-          )
-        : undefined
+    const mint = call(target, HttpClientRequest.post(url(target, "/command-ids"))).pipe(
+      Effect.flatMap(({ status, body }) => {
+        if (status === 200) return decodeCommandId(body).pipe(Effect.orDie)
+        const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
+        if (refusal?._tag === "Unauthorized")
+          return Unavailable.make({
+            message: "The deployment could not authorize the request",
+            retryAfterSeconds: 1,
+          })
+        return unavailable(`command id mint answered ${status}`)
+      }),
+    )
 
-    const commandId = input.commandId ?? minted?.commandId ?? ""
+    const clientKey = input.commandId
+    let commandId: string
+    if (clientKey === undefined) commandId = (yield* mint).commandId
+    else {
+      const key = {
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        environment: input.environment,
+        address: input.address,
+        command: input.command,
+        commandId: clientKey,
+      }
+      let assigned = yield* repository.findCommand(key)
+      const payloadHash = commandPayloadHash(input.payload)
+      if (assigned?.expired === true) return yield* CommandExpired.make({ commandId: clientKey })
+      if (assigned === undefined) {
+        const minted = yield* mint
+        const expiresAt = Number(minted.commandId.split(".")[2])
+        if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0)
+          return yield* unavailable("minted command id has no expiry")
+        assigned = yield* repository.assignCommand({
+          ...key,
+          payloadHash,
+          mintedCommandId: minted.commandId,
+          expiresAt,
+        })
+        if (assigned.expired) return yield* CommandExpired.make({ commandId: clientKey })
+      }
+      if (assigned.payloadHash !== payloadHash)
+        return yield* Conflict.make({
+          message: "The idempotency key was already used for another payload",
+        })
+      if (assigned.commandId === null)
+        return yield* unavailable("an active command assignment has no receipt reference")
+      commandId = assigned.commandId
+    }
 
     const {
       status,
@@ -209,8 +258,21 @@ export const makeRuntime = Effect.gen(function* () {
     const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
 
     if (refusal === undefined) {
+      const generic = Option.getOrUndefined(decodeGenericActorError(body))
+      if (generic?.reason._tag === "MailboxFull")
+        return yield* Unavailable.make({
+          message: "The actor mailbox is temporarily full",
+          retryAfterSeconds: 1,
+        })
+
+      if (generic !== undefined && status >= 400 && status < 500)
+        return yield* CommandRefused.make({
+          commandId,
+          reasonTag: generic.reason._tag,
+          reason: body,
+        })
+
       if (
-        Schema.is(DefectBody)(body) ||
         Predicate.isTagged(body, "ActorError") ||
         !Predicate.hasProperty(body, "_tag") ||
         !Predicate.isString(body._tag)
@@ -235,14 +297,18 @@ export const makeRuntime = Effect.gen(function* () {
           Conflict.make({
             message: `The command id ${commandId} was already used for another command`,
           }),
+        CommandExpired: () => CommandExpired.make({ commandId: clientKey ?? commandId }),
         Unauthorized: ({ code }) =>
-          code === "access_denied"
+          code === "access_denied" || code === "receipt_access_denied"
             ? Forbidden.make({ message: "The actor refused the command" })
-            : unavailable("the edge refused the control plane's credential"),
+            : Unavailable.make({
+                message: "The deployment could not authorize the request",
+                retryAfterSeconds: 1,
+              }),
         InvalidInput: ({ code }) =>
           code === "unknown_route"
             ? NotFound.make({ resource: "command", id: `${input.address}/${input.command}` })
-            : CommandFailed.make({ commandId, errorTag: "InvalidInput", error: body, replayed }),
+            : CommandRefused.make({ commandId, reasonTag: "InvalidInput", reason: body }),
       }),
     )
   })
