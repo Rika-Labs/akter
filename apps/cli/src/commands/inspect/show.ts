@@ -58,7 +58,7 @@ const shown = (value: Inspection.Decoded | null | undefined) =>
         ? JSON.stringify(value.json)
         : `(undecodable: ${value.undecodable})`
 
-/** One actor as `durable inspect` prints it. */
+/** One actor as `akter inspect` prints it. */
 export const formatActor = (page: typeof ActorPage.Type) =>
   [
     `${page.actor.actorType}/${page.actor.actorId}  generation ${page.actor.generation}  events through ${page.actor.lastEventSequence}`,
@@ -95,11 +95,11 @@ export const inspect = ({
     token,
   })
 
-/** Decodes the runner's actor page and formats it as `durable inspect` prints it. */
+/** Decodes the runner's actor page and formats it as `akter inspect` prints it. */
 export const formatInspection = (answer: Schema.Json) =>
   Effect.map(decodeActorPage(answer), formatActor)
 
-/** `durable inspect <Type>/<id>`: one actor's state, newest receipts, and dead letters. */
+/** `akter inspect <Type>/<id>`: one actor's state, newest receipts, and dead letters. */
 export const inspectCommand = Command.make("inspect", flags, (options) =>
   operatorCommand({ options, request: inspect, format: formatInspection }),
 ).pipe(

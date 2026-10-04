@@ -33,6 +33,7 @@ import {
 import { RuntimeEdge } from "./runtime.ts"
 import { MeteringRepositoryLive } from "./metering-repository.ts"
 import { RepositoryLive } from "./repository.ts"
+import { Sources, SourcesLive } from "./sources.ts"
 
 /**
  * The local platform's runner peer authority: the one saved in `directory`,
@@ -121,10 +122,12 @@ export const cloudRuntime = (options: ApiOptions) =>
       yield* ensureLifecycleTables
       const actors = Actors.layer({ relay: { poll: "100 millis" } })
       const runners = RunnerLayers.pipe(Layer.provideMerge(actors))
+      const sources = SourcesLive({ builds: options.localBuild !== undefined })
       const platform = Layer.unwrap(
         Effect.gen(function* () {
           const migrations = yield* ImageMigrations
           const builds = yield* Effect.serviceOption(ImageBuilds)
+          const uploaded = yield* Sources
           return rolloutPlatform(options, {
             migrate: (release) =>
               Schema.decodeEffect(
@@ -152,24 +155,38 @@ export const cloudRuntime = (options: ApiOptions) =>
             build: Option.match(builds, {
               onNone: () => undefined,
               onSome: (builder) => (request) =>
-                builder
-                  .build({
-                    tag: `akter-build:${request.deploymentId}`,
-                    buildArgs: { RUNNER_VERSION: request.commitSha.slice(0, 7) },
-                  })
-                  .pipe(
-                    Effect.map((built) => ({ imageDigest: built.imageId, log: built.log })),
-                    Effect.mapError((failure) =>
-                      PlatformFailure.make({
-                        reason: failure.reason,
-                        retryable: failure.retryable,
-                      }),
-                    ),
+                uploaded.forDeployment(request.deploymentId).pipe(
+                  Effect.mapError(() =>
+                    PlatformFailure.make({
+                      reason: "The deployment's source could not be read",
+                      retryable: true,
+                    }),
                   ),
+                  Effect.flatMap((source) =>
+                    builder
+                      .build({
+                        tag: `akter-build:${request.deploymentId}`,
+                        buildArgs: { RUNNER_VERSION: request.commitSha.slice(0, 7) },
+                        ...Option.match(source, {
+                          onNone: () => ({}),
+                          onSome: (found) => ({ source: found }),
+                        }),
+                      })
+                      .pipe(
+                        Effect.map((built) => ({ imageDigest: built.imageId, log: built.log })),
+                        Effect.mapError((failure) =>
+                          PlatformFailure.make({
+                            reason: failure.reason,
+                            retryable: failure.retryable,
+                          }),
+                        ),
+                      ),
+                  ),
+                ),
             }),
           })
         }),
-      ).pipe(Layer.provide(runners))
+      ).pipe(Layer.provide(runners), Layer.provide(sources))
       return DeploymentLifecycleLive.pipe(
         Layer.provide(platform),
         Layer.provide(
@@ -178,6 +195,7 @@ export const cloudRuntime = (options: ApiOptions) =>
           ),
         ),
         Layer.provideMerge(runners),
+        Layer.provideMerge(sources),
       )
     }),
   ).pipe(

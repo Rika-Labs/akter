@@ -4,6 +4,7 @@ export {
   NotFound,
   NotFoundResource,
   NotImplemented,
+  PayloadTooLarge,
   Unavailable,
   UnavailableReason,
   ReadErrors,
@@ -121,17 +122,22 @@ export {
 export {
   BuildLog,
   BuildLogLine,
+  ContextPath,
   CreateDeployment,
   DeploymentAuthor,
   DeploymentDetail,
   DeploymentRunner,
+  DeploymentSource,
   DeploymentStatus,
   DeploymentSummary,
   ImageDigest,
+  MAX_SOURCE_BYTES,
   RecordBuild,
   FailBuild,
   RolloutStep,
   RolloutStepName,
+  SourceArchive,
+  SourceDigest,
 } from "./deployments.ts"
 
 export {

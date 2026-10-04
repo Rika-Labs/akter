@@ -37,7 +37,7 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json)
 
 const decodeMinted = Schema.decodeUnknownEffect(Schema.Struct({ commandId: Schema.String }))
 
-describe("durable dev", () => {
+describe("akter dev", () => {
   it(
     "runs the entry on PGlite in memory on loopback for the default tenant, and refuses bad options",
     () =>
@@ -66,7 +66,7 @@ describe("durable dev", () => {
           return found === null ? Effect.fail("not listening yet") : Effect.succeed(found[1]!)
         }).pipe(Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }))
 
-        expect(printed.stdout.split("\n")[0]).toBe(`durable dev: ${entry} on PGlite (in memory)`)
+        expect(printed.stdout.split("\n")[0]).toBe(`akter dev: ${entry} on PGlite (in memory)`)
         expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
         expect(printed.stdout).toContain(`  inspector  ${origin}${INSPECTOR_PATH} (tenant default)`)
 

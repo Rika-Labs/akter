@@ -87,11 +87,57 @@ export const DeploymentDetail = Schema.Struct({
 })
 export type DeploymentDetail = typeof DeploymentDetail.Type
 
+/** A source archive's name: the SHA-256 of its gzip-compressed tar bytes. */
+export const SourceDigest = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/u)),
+)
+export type SourceDigest = typeof SourceDigest.Type
+
+/** The most bytes one source archive may hold. */
+export const MAX_SOURCE_BYTES = 64 * 1024 * 1024
+
+/** A build context the project received, named by its digest. */
+export const SourceArchive = Schema.Struct({
+  digest: SourceDigest,
+  sizeBytes: NonNegativeInt,
+})
+export type SourceArchive = typeof SourceArchive.Type
+
+/** A path inside a build context: relative, `/`-separated, and never leaving it. */
+export const ContextPath = Schema.String.pipe(
+  Schema.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(255),
+    Schema.makeFilter(
+      (path) =>
+        (!path.startsWith("/") &&
+          !path.includes("\\") &&
+          path
+            .split("/")
+            .every((segment) => segment !== "" && segment !== "." && segment !== "..")) ||
+        "A context path is relative and stays inside the context",
+    ),
+  ),
+)
+
+/** What the control plane's builder builds a deployment from: an uploaded archive and the Dockerfile inside it. */
+export const DeploymentSource = Schema.Struct({
+  digest: SourceDigest,
+  dockerfile: ContextPath,
+})
+export type DeploymentSource = typeof DeploymentSource.Type
+
+/**
+ * `source` names an archive sent with `uploadSource` for a control plane
+ * that builds deployments itself; without it, such a control plane builds its
+ * own configured context, and one without a builder waits for `RecordBuild`.
+ */
 export const CreateDeployment = Schema.Struct({
   environment: EnvironmentName,
   commitSha: CommitSha,
   message: Schema.optional(Schema.String),
   regions: Schema.optional(Schema.Array(RegionId)),
+  source: Schema.optional(DeploymentSource),
 })
 export type CreateDeployment = typeof CreateDeployment.Type
 

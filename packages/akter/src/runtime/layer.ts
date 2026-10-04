@@ -189,7 +189,7 @@ export interface Options {
   }
   /** Telemetry this runner keeps beside the spans and metrics it reports. */
   readonly observability?: {
-    /** Defect spans the runner keeps for `durable defects list`, newest last. Default 1,000. */
+    /** Defect spans the runner keeps for `akter defects list`, newest last. Default 1,000. */
     readonly defects?: number
     /**
      * How often one runner of the deployment samples the database gauges
@@ -202,7 +202,7 @@ export interface Options {
    * How long this runtime keeps writing event and effect payload versions
    * without refreshing its writer rows; it refreshes every half window and
    * refuses new turns once a window passes without a refresh, so
-   * `durable payloads clear` can tell when no turn still writes an old
+   * `akter payloads clear` can tell when no turn still writes an old
    * version. Default 2 minutes, at least 1 second.
    */
   readonly payloadWriterWindow?: Duration.Input
@@ -267,7 +267,7 @@ export interface Options {
   }
   /**
    * The fleet views this runtime maintains and serves. They need Postgres with
-   * `wal_level=logical`, a login with `REPLICATION`, and `durable fleet setup`;
+   * `wal_level=logical`, a login with `REPLICATION`, and `akter fleet setup`;
    * startup refuses otherwise, and PGlite refuses any view. One runner at a
    * time maintains them, off the turn path.
    */
@@ -696,7 +696,7 @@ export const layer = (options: Options = {}) => {
 
       /**
        * A runtime that could not refresh its writer rows within the window
-       * may already count as gone to `durable payloads clear`, so it starts
+       * may already count as gone to `akter payloads clear`, so it starts
        * no turn until a refresh succeeds. The check is local.
        */
       const writable = Effect.gen(function* () {

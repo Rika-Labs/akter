@@ -111,7 +111,7 @@ export const formatDefects = ({
     .join("\n")
 }
 
-/** `durable defects list`: every named runner's recent defect spans, merged oldest first. */
+/** `akter defects list`: every named runner's recent defect spans, merged oldest first. */
 export const listCommand = Command.make("list", flags, (options) =>
   Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis

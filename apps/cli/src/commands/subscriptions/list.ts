@@ -68,7 +68,7 @@ const Row = Schema.Struct({
 
 const decodeRows = Schema.decodeUnknownEffect(Schema.Array(Row))
 
-/** The failing rows as `durable subscriptions list` prints them, one per row plus its last error. */
+/** The failing rows as `akter subscriptions list` prints them, one per row plus its last error. */
 export const formatLagging = (answer: Schema.Json) =>
   Effect.map(decodeRows(answer), (rows) =>
     rows.length === 0
@@ -81,7 +81,7 @@ export const formatLagging = (answer: Schema.Json) =>
           .join("\n"),
   )
 
-/** `durable subscriptions list --lagging`: the rows whose deliveries keep failing. */
+/** `akter subscriptions list --lagging`: the rows whose deliveries keep failing. */
 export const listCommand = Command.make("list", flags, (options) =>
   operatorCommand({ options, request: list, format: formatLagging }),
 ).pipe(

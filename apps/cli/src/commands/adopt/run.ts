@@ -20,7 +20,7 @@ import { Database } from "@rikalabs/akter/runtime"
 import { CommandFailed, fail } from "../../failure.ts"
 import { actorsOf, entryFlags, loadEntry } from "../workflows/check.ts"
 
-/** The commands `durable adopt` runs. */
+/** The commands `akter adopt` runs. */
 export type AdoptCommand = "plan" | "observe" | "backfill" | "enforce" | "status" | "release"
 
 /** What one `adopt` command runs with. */
@@ -211,7 +211,7 @@ const defaults = {
 const table = (verb: string) =>
   Argument.String("table").pipe(Argument.withDescription(`The adopted table to ${verb}`))
 
-/** `durable adopt plan`: each adopted table's plan and the SQL it needs; exits 1 while a table has a problem. */
+/** `akter adopt plan`: each adopted table's plan and the SQL it needs; exits 1 while a table has a problem. */
 export const planCommand = Command.make(
   "plan",
   {
@@ -234,7 +234,7 @@ export const planCommand = Command.make(
   ),
 )
 
-/** `durable adopt observe <table>`: starts recording legacy writes, or reports them with `--report`. */
+/** `akter adopt observe <table>`: starts recording legacy writes, or reports them with `--report`. */
 export const observeCommand = Command.make(
   "observe",
   {
@@ -277,7 +277,7 @@ export const observeCommand = Command.make(
   ),
 )
 
-/** `durable adopt backfill <table>`: fills `routing_key` on an observed table in batches. */
+/** `akter adopt backfill <table>`: fills `routing_key` on an observed table in batches. */
 export const backfillCommand = Command.make(
   "backfill",
   {
@@ -301,7 +301,7 @@ export const backfillCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Fill routing_key on an observed table's rows, in batches"))
 
-/** `durable adopt enforce <table>`: makes a backfilled table the runtime's, refusing other writers. */
+/** `akter adopt enforce <table>`: makes a backfilled table the runtime's, refusing other writers. */
 export const enforceCommand = Command.make(
   "enforce",
   {
@@ -335,7 +335,7 @@ export const enforceCommand = Command.make(
   ),
 )
 
-/** `durable adopt release <table> --to observe`: returns an enforced table to observing. */
+/** `akter adopt release <table> --to observe`: returns an enforced table to observing. */
 export const releaseCommand = Command.make(
   "release",
   {
@@ -348,7 +348,7 @@ export const releaseCommand = Command.make(
   (options) => run({ ...defaults, ...options, command: "release" }),
 ).pipe(Command.withDescription("Return an enforced table to observing"))
 
-/** `durable adopt status`: every adopted table's mode and rows left to backfill. */
+/** `akter adopt status`: every adopted table's mode and rows left to backfill. */
 export const statusCommand = Command.make(
   "status",
   { databaseUrl: entryFlags.databaseUrl, json: entryFlags.json },

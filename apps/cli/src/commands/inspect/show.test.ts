@@ -46,7 +46,7 @@ const operators = OperatorAuth.tokens([
   },
 ])
 
-describe("durable inspect and durable receipts show", () => {
+describe("akter inspect and akter receipts show", () => {
   it("parses an actor name, tenant, and receipt count", () =>
     Effect.gen(function* () {
       const runner = recordingFetch({})

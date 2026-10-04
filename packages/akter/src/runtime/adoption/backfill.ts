@@ -67,7 +67,7 @@ const backfillTable = Effect.fnUntraced(function* (target: AdoptionTarget, batch
 
   if (adoption === undefined)
     return yield* AdoptionRefused.make({
-      message: `${name} is not observed; run durable adopt observe ${target.table} first`,
+      message: `${name} is not observed; run akter adopt observe ${target.table} first`,
     })
 
   if (adoption.mode === "enforce")

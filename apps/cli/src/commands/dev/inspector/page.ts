@@ -117,12 +117,12 @@ export const page = ({
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>durable dev inspector</title>
+<title>akter dev inspector</title>
 <style>${STYLES}</style>
 </head>
 <body data-api="${escape(api)}">
 <header class="top">
-  <span class="brand">durable dev<small>inspector</small></span>
+  <span class="brand">akter dev<small>inspector</small></span>
   <span class="badge info">tenant <strong id="tenant">…</strong></span>
   <span class="badge">read-only</span>
   <span class="spacer"></span>

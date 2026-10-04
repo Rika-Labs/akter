@@ -55,7 +55,7 @@ export const repair = ({
           },
   })
 
-/** `durable dead-letters retry <jobId>`: runs a dead-lettered job again, printing the runner's JSON answer. */
+/** `akter dead-letters retry <jobId>`: runs a dead-lettered job again, printing the runner's JSON answer. */
 export const retryCommand = Command.make(
   "retry",
   {
@@ -75,7 +75,7 @@ export const retryCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Run a dead-lettered job again"))
 
-/** `durable dead-letters discard <jobId>`: settles a dead letter without running it, printing the runner's JSON answer. */
+/** `akter dead-letters discard <jobId>`: settles a dead letter without running it, printing the runner's JSON answer. */
 export const discardCommand = Command.make("discard", flags, (options) =>
   operatorCommand({
     options: { ...options, action: "discard" as const, providerChecked: false },

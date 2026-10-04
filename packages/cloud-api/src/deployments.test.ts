@@ -3,7 +3,12 @@ import { OpenApi } from "effect/http-api"
 import { describe, expect, it } from "vitest"
 
 import { CloudApi } from "./contract.ts"
-import { DeploymentRunner, DeploymentSummary, RecordBuild } from "./deployments.ts"
+import {
+  CreateDeployment,
+  DeploymentRunner,
+  DeploymentSummary,
+  RecordBuild,
+} from "./deployments.ts"
 
 const summary = {
   id: "dep_3",
@@ -47,6 +52,30 @@ describe("deployment rollback", () => {
     expect(valid({ ...input, environmentSnapshot: { "BAD NAME": "lost" } })).toBe(false)
     expect(valid({ ...input, environmentSnapshot: { APP_SETTING: 17 } })).toBe(false)
     expect(valid({ ...input, commitSha: "not-a-commit" })).toBe(false)
+  })
+
+  it("names a source by its archive digest and keeps its Dockerfile inside the context", () => {
+    const input = {
+      environment: "production",
+      commitSha: "abcdef1234",
+      source: { digest: `sha256:${"c".repeat(64)}`, dockerfile: "infra/runner/Dockerfile" },
+    }
+    const valid = (value: Schema.Json) =>
+      Exit.isSuccess(Effect.runSyncExit(Schema.decodeUnknownEffect(CreateDeployment)(value)))
+    expect(valid(input)).toBe(true)
+    expect(valid({ ...input, source: { ...input.source, dockerfile: "Dockerfile" } })).toBe(true)
+    for (const dockerfile of [
+      "",
+      "/etc/Dockerfile",
+      "../Dockerfile",
+      "infra/../../Dockerfile",
+      "./Dockerfile",
+      "infra//Dockerfile",
+      "infra\\Dockerfile",
+    ])
+      expect(valid({ ...input, source: { ...input.source, dockerfile } })).toBe(false)
+    for (const digest of [`sha256:${"c".repeat(63)}`, `sha256:${"C".repeat(64)}`, "c".repeat(64)])
+      expect(valid({ ...input, source: { ...input.source, digest } })).toBe(false)
   })
 
   it("keeps unmeasured runner metrics unknown instead of substituting zero", () => {

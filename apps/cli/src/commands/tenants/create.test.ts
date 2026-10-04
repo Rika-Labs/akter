@@ -25,7 +25,7 @@ const valid = [
   "ops@example.com",
 ]
 
-describe("durable tenants create arguments", () => {
+describe("akter tenants create arguments", () => {
   it("reads the tenant and every required flag before it opens the control plane", () =>
     Effect.gen(function* () {
       const unreachable = yield* runCli(valid)
@@ -91,7 +91,7 @@ const controlPlane = Effect.gen(function* () {
   return { url: base.href, pool }
 })
 
-describe.skipIf(!postgres)("durable tenants create on Postgres", () => {
+describe.skipIf(!postgres)("akter tenants create on Postgres", () => {
   it(
     "records the home through TenantHome, attributed to the operator, and refuses another region",
     () =>

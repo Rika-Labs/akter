@@ -40,7 +40,7 @@ const operators = OperatorAuth.tokens([
   { token: Redacted.make("reader-token"), grant: grant("*") },
 ])
 
-describe("durable defects list", () => {
+describe("akter defects list", () => {
   it("parses runners, filters, and compact durations", () =>
     Effect.gen(function* () {
       const runners = recordingFetch([])
