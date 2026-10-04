@@ -269,6 +269,7 @@ describe("usage", () => {
       Scene.expect(
         Scene.text("Commands plus reads, a read counting as 0.2 of a command"),
       ).toExist(),
+      Scene.expect(Scene.text("Average stored this month")).toExist(),
     ))
 
   it("shows the latest storage sample and the storage cap the edge refuses at", () =>

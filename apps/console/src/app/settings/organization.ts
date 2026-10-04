@@ -550,12 +550,13 @@ const meterFormat = (unit: UsageMeter["unit"]): ((value: number) => string) =>
 
 /**
  * What a meter's numbers mean, from the pricing the control plane reports with them. `capped` names
- * the allowances the edge stops new commands at, as its cap state reports them.
+ * the allowances the edge stops new commands at, as its cap state reports them; an unbound
+ * organization has no plan to describe, so its meters say nothing about caps or prices.
  */
 const meterDetail = (
   entry: UsageMeter,
   usage: Usage,
-  capped: { readonly commands: boolean; readonly storage: boolean },
+  capped: { readonly commands: boolean; readonly storage: boolean; readonly unbound: boolean },
 ): string | undefined => {
   const overage =
     entry.overageCostCents > 0
@@ -572,9 +573,13 @@ const meterDetail = (
   if (entry.meter === "storageGb")
     return [
       "Average stored this month",
-      capped.storage
-        ? "This plan pauses new commands while a tenant’s latest sample is at the cap; reads keep working"
-        : `${formatCents(usage.pricing.storagePerGbCents)} per GB-month beyond the allowance`,
+      ...(capped.unbound
+        ? []
+        : [
+            capped.storage
+              ? "This plan pauses new commands while a tenant’s latest sample is at the cap; reads keep working"
+              : `${formatCents(usage.pricing.storagePerGbCents)} per GB-month beyond the allowance`,
+          ]),
       ...(overage === undefined ? [] : [overage]),
     ].join(". ")
   return overage
@@ -609,7 +614,11 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
   const notice = capNotice({ caps: usage.caps, period: usage.period })
   const bounded = (name: "commands" | "storage") =>
     usage.caps.some((cap) => cap.cap === name && cap.limit !== null && cap.reason === undefined)
-  const capped = { commands: bounded("commands"), storage: bounded("storage") }
+  const capped = {
+    commands: bounded("commands"),
+    storage: bounded("storage"),
+    unbound: usage.caps.some((cap) => cap.reason === "unbound"),
+  }
   const reads = usage.meters.find((entry) => entry.meter === "reads")
   return screen(h, "Usage", [
     ...(notice === undefined ? [] : [capNoticeView(h, notice)]),
