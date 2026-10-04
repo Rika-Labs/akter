@@ -72,6 +72,19 @@ describe("stateCodec.writes", () => {
     expect(Effect.runSync(codec.writes(state, new Set()))).toEqual([])
   })
 
+  it("writes null for a value JSON cannot hold, as the whole state's text omits it", () => {
+    const loose = { kept: Schema.String, opaque: Schema.Any }
+    const codec = stateCodec({ fields: loose, migrations: [], maxBytes: 10_000 })
+
+    for (const opaque of [() => 1, Symbol("opaque"), undefined])
+      expect(
+        Effect.runSync(codec.writes({ kept: "k", opaque }, new Set(["opaque", "kept"]))),
+      ).toEqual([
+        ["opaque", "null"],
+        ["kept", '"k"'],
+      ])
+  })
+
   it("dies when the whole state's UTF-8 text passes maxStateBytes, even if no large key is dirty", () => {
     const bytes = new TextEncoder().encode(text(state)).byteLength
     const fits = stateCodec({ fields, migrations: [], maxBytes: bytes })

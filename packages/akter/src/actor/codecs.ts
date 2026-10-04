@@ -122,7 +122,9 @@ export const stateCodec = ({
    * The rows a turn writes: each dirty key's JSON as the whole state's JSON
    * text holds it, after the whole text is checked against the size limit.
    * The state is encoded once and each key serialized from that encoding,
-   * which is the JSON text the whole state parses back to.
+   * which is the JSON text the whole state parses back to: a value JSON
+   * cannot hold, such as a function in a `Schema.Any` field, is absent from
+   * that text, so it writes `null`.
    */
   const writes = (current: StateValue, dirty: ReadonlySet<string>) =>
     Effect.flatMap(encodeJsonState(current).pipe(Effect.orDie), (encoded) => {
@@ -136,7 +138,7 @@ export const stateCodec = ({
       for (const key of dirty)
         rows.push([
           key,
-          JSON.stringify((encoded as Readonly<Record<string, Schema.Json>>)[key] ?? null),
+          JSON.stringify((encoded as Readonly<Record<string, Schema.Json>>)[key] ?? null) ?? "null",
         ])
 
       if (dirty.size > 0 && version > 0) rows.push([VERSION_KEY, String(version)])

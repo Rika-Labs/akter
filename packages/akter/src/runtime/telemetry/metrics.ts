@@ -148,9 +148,11 @@ const attributed = (metric: Metric.Metric<number, unknown>, attributes: Attribut
     attributedMetrics.set(metric, byKey)
   }
 
-  let key = ""
-
-  for (const name in attributes) key += `${name}\u0000${attributes[name]}\u0001`
+  const key = JSON.stringify(
+    Object.entries(attributes).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    ),
+  )
 
   let cached = byKey.get(key)
 

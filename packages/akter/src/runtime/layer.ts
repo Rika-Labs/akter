@@ -106,6 +106,7 @@ import {
   acquiredShards,
   checkRunnerConfiguration,
   RunnerReadiness,
+  LocalRequestSerialization,
   RunnerWiring,
 } from "./runner.ts"
 
@@ -1474,7 +1475,7 @@ export const layer = (options: Options = {}) => {
         Layer.provideMerge(
           ShardingConfig.layer({
             shardsPerGroup: 1,
-            simulateRemoteSerialization: false,
+            simulateRemoteSerialization: yield* LocalRequestSerialization,
             maxResidentEntities: maxResidentActors,
             ...wiring?.config,
             ...holderShardGroups(wiring?.config ?? {}),

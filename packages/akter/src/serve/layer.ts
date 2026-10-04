@@ -138,6 +138,9 @@ const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
 /** A quoted value is the idempotency-key draft's structured-field string. */
 const QUOTED = /^"(.*)"$/
 
+/** A `content-length` value: decimal digits only, so a sign, a fraction or `NaN` is malformed framing. */
+const DECIMAL = /^[0-9]+$/
+
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true })
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))
@@ -564,16 +567,35 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       ) {
         const length = Headers.get(request.headers, "content-length")
 
-        if (Option.isSome(length) && Number(length.value) > limit)
-          return yield* invalidInput("too_large")
+        if (Option.isSome(length)) {
+          if (!DECIMAL.test(length.value)) return yield* invalidInput("decode")
 
-        if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
+          const declared = Number(length.value)
 
-        if (Option.isSome(length))
-          return yield* request.arrayBuffer.pipe(
-            Effect.map((buffer) => new Uint8Array(buffer)),
-            Effect.mapError(() => invalidInput("decode")),
+          if (declared > limit) return yield* invalidInput("too_large")
+
+          if (declared === 0) return new Uint8Array(0)
+
+          const framed = new Uint8Array(declared)
+          let filled = 0
+
+          yield* request.stream.pipe(
+            Stream.mapError(() => invalidInput("decode")),
+            Stream.runForEach((chunk) => {
+              if (filled + chunk.byteLength > declared)
+                return Effect.fail(invalidInput("too_large"))
+
+              framed.set(chunk, filled)
+              filled += chunk.byteLength
+
+              return Effect.void
+            }),
           )
+
+          if (filled !== declared) return yield* invalidInput("decode")
+
+          return framed
+        }
 
         const unframed = Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
 

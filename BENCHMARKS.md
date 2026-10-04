@@ -58,10 +58,10 @@ Logging adds no measurable time on this path: the benchmark app disables the HTT
 ### What changed
 
 - Attributed metrics are made once per attribute set. A fresh `Metric.withAttributes` sorted and serialized its attributes on every update, five times per command.
-- Commands delivered to an entity on the same runner skip Cluster's simulated remote serialization, a schema encode and decode of every request. Remote deliveries still serialize.
+- Commands delivered to an entity on the same runner skip Cluster's simulated remote serialization, a schema encode and decode of every request. Remote deliveries still serialize, and test runtimes keep the local round trip so every test delivery still checks the request schema.
 - A turn binds its owned tables and blobs on first use. Most turns use neither, and binding built row predicates, routing keys and error values every turn. The capability guards are unchanged; new conformance cases check that a capability first used after its turn dies and writes nothing.
 - State rows are serialized from one encoding of the state, instead of encoding, re-parsing the whole text and re-encoding each key. The rows are byte-identical, and the size limit still applies to the whole state's text.
-- A body with `content-length` is read in one call instead of a stream fold. Unframed and chunked bodies keep the streaming, limit-checked read.
+- A body with `content-length` is read into one buffer of the declared length instead of a growing list of chunks. A malformed length is refused as `decode`, and a body that runs past its declared length as `too_large`, so a host that hands the web handler an unframed request cannot bypass the limit. Unframed and chunked bodies keep the streaming, limit-checked read. The measured candidate read framed bodies with one `arrayBuffer` call; this framed stream read replaced it after review and was not re-measured.
 - The activation worker and the turn reuse the request's merged context instead of copying the runtime's services into it again. The command client is looked up once per actor type, and the served outcome no longer builds a matcher per request.
 
 ### More runner processes on one host

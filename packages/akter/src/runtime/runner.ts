@@ -15,6 +15,18 @@ import { SocketServer } from "effect/socket"
 import { SqlClient } from "effect/sql"
 import { admissionSharding, MailboxRefusals } from "./topology/admission.ts"
 
+/**
+ * Whether a command to an entity on this runner is encoded and decoded the
+ * way a remote delivery is. Off by default: a local hop hands the owner the
+ * request the runtime built and validated, and only a remote hop needs the
+ * bytes. Test runtimes turn it on so every delivery still checks the request
+ * schema.
+ */
+export const LocalRequestSerialization = Context.Reference<boolean>(
+  "@rikalabs/akter/runtime/runner/LocalRequestSerialization",
+  { defaultValue: () => false },
+)
+
 /** Package-internal wiring shared by production runners and fault-injecting test runners. */
 export class RunnerWiring extends Context.Service<
   RunnerWiring,
