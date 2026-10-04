@@ -1,7 +1,6 @@
 import { Effect, Layer } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { CloudApi, NotImplemented } from "@akter/cloud-api"
-import { Access } from "./access.ts"
 
 const notImplemented = (operation: string) => Effect.fail(NotImplemented.make({ operation }))
 
@@ -51,84 +50,9 @@ export const IntegrationsNotImplemented = HttpApiBuilder.group(
     ),
 )
 
-export const DeploymentsNotImplemented = HttpApiBuilder.group(CloudApi, "deployments", (handlers) =>
-  Effect.succeed(
-    handlers
-      .handle("list", () => notImplemented("deployments.list"))
-      .handle("create", () => notImplemented("deployments.create"))
-      .handle("get", () => notImplemented("deployments.get"))
-      .handle("getBuildLog", () => notImplemented("deployments.getBuildLog"))
-      .handle("rollback", () => notImplemented("deployments.rollback"))
-      .handle("redeploy", () => notImplemented("deployments.redeploy")),
-  ),
-)
-
-export const RuntimeNotImplemented = HttpApiBuilder.group(CloudApi, "runtime", (handlers) =>
-  Effect.gen(function* () {
-    const access = yield* Access
-    return handlers
-      .handle("getOverview", () => notImplemented("runtime.getOverview"))
-      .handle("getSidebarCounts", () => notImplemented("runtime.getSidebarCounts"))
-      .handle("search", () => notImplemented("runtime.search"))
-      .handle("listActorTypes", () => notImplemented("runtime.listActorTypes"))
-      .handle("getActorType", () => notImplemented("runtime.getActorType"))
-      .handle("getActorTypeActivity", ({ params }) =>
-        access
-          .project(params.projectId)
-          .pipe(Effect.andThen(notImplemented("runtime.getActorTypeActivity"))),
-      )
-      .handle("getActorTypeLatency", ({ params }) =>
-        access
-          .project(params.projectId)
-          .pipe(Effect.andThen(notImplemented("runtime.getActorTypeLatency"))),
-      )
-      .handle("listActorInstances", () => notImplemented("runtime.listActorInstances"))
-      .handle("inspectActor", () => notImplemented("runtime.inspectActor"))
-      .handle("listActorTables", () => notImplemented("runtime.listActorTables"))
-      .handle("listActorReceipts", () => notImplemented("runtime.listActorReceipts"))
-      .handle("listActorEvents", () => notImplemented("runtime.listActorEvents"))
-      .handle("listActorJobs", () => notImplemented("runtime.listActorJobs"))
-      .handle("listActorTimeline", () => notImplemented("runtime.listActorTimeline"))
-      .handle("listCommands", () => notImplemented("runtime.listCommands"))
-      .handle("streamCommands", () => notImplemented("runtime.streamCommands"))
-      .handle("getJobs", () => notImplemented("runtime.getJobs"))
-      .handle("listDeadLetters", () => notImplemented("runtime.listDeadLetters"))
-      .handle("retryDeadLetter", () => notImplemented("runtime.retryDeadLetter"))
-      .handle("discardDeadLetter", () => notImplemented("runtime.discardDeadLetter"))
-      .handle("listWorkflows", () => notImplemented("runtime.listWorkflows"))
-      .handle("getTimers", () => notImplemented("runtime.getTimers"))
-      .handle("listSchedules", () => notImplemented("runtime.listSchedules"))
-      .handle("getConnections", () => notImplemented("runtime.getConnections"))
-      .handle("sendCommand", ({ params }) =>
-        access
-          .project(params.projectId, "write")
-          .pipe(Effect.andThen(notImplemented("runtime.sendCommand"))),
-      )
-  }),
-)
-
-export const BillingNotImplemented = HttpApiBuilder.group(CloudApi, "billing", (handlers) =>
-  Effect.succeed(
-    handlers
-      .handle("get", () => notImplemented("billing.get"))
-      .handle("listInvoices", () => notImplemented("billing.listInvoices"))
-      .handle("setSpendLimit", () => notImplemented("billing.setSpendLimit"))
-      .handle("startCheckout", () => notImplemented("billing.startCheckout"))
-      .handle("openPortal", () => notImplemented("billing.openPortal")),
-  ),
-)
-
-export const UsageNotImplemented = HttpApiBuilder.group(CloudApi, "usage", (handlers) =>
-  Effect.succeed(handlers.handle("get", () => notImplemented("usage.get"))),
-)
-
 export const PendingLayers = Layer.mergeAll(
   EnvironmentVariablesNotImplemented,
   DomainsNotImplemented,
   RegionsNotImplemented,
   IntegrationsNotImplemented,
-  DeploymentsNotImplemented,
-  RuntimeNotImplemented,
-  BillingNotImplemented,
-  UsageNotImplemented,
 )

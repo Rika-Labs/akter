@@ -172,6 +172,7 @@ export const toOverviewPage =
       deploys: overview.recentDeployments.slice(0, 3).map((deployment) => {
         const record = toDeployRecord(now)(deployment)
         return {
+          id: record.id,
           commit: record.commit,
           message: record.message,
           status: record.status,

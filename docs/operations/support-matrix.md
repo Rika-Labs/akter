@@ -1,9 +1,35 @@
 # Backend support matrix
 
+## Control-plane deployment boundary
+
+The deployment lifecycle and runner-provider slice uses the same Postgres authority as the framework. Its evidence is separate from hosted-provider certification:
+
+| Surface                               | Evidence boundary                                                                                                                                     | Not established by this boundary                              |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Lifecycle, rollback and activation    | Focused real local Postgres tests through Akter actors, including failed steps, concurrent rollouts, idempotent build recording and atomic activation | Neki, multi-host control-plane topology and provider recovery |
+| Runner provisioning and scale to zero | Local actor/provider and Docker-stack scenarios; committed wake, withdrawal, drain and restart obligations                                            | Fargate boot latency or VM isolation                          |
+| ECS Fargate ARM64 adapter             | Fake HTTP protocol tests against Distilled's typed operations and immutable task definitions                                                          | Real IAM, capacity, networking, TLS and AWS service behavior  |
+| Cloudflare/NLB edge                   | Local peer-trust tests and streaming HTTP/WebSocket/SSE regressions; configured NLB source preservation and security-group graph                      | Real Cloudflare-to-NLB traffic or hosted TLS                  |
+| Deploy workflow                       | Reusable GitHub Actions template and typed digest/commit registration endpoint                                                                        | A credential-bearing ECR push or GitHub App installation      |
+
+These rows state the required verification boundary, not a claim that an unrun scenario passed. The control-plane API currently hosts its actors in one embedded process, so the infrastructure keeps one API task. Multiple control-plane processes require explicit public socket-runner wiring and topology evidence. See [ADR 0075](../decisions/0075-deployment-and-runner-orchestration.md) and the [deployment verification guide](../verification/cloud-deployments.md).
+
 **Responsibility:** show real capability differences by backend.  
 **Authority:** operational evidence.  
 **Owner role:** platform/verification.
 **Change policy:** a change requires operator review when a procedure or limit changes.
+
+## Hosted billing support
+
+| Capability                                                             | Local evidence scope                                                                                                              | Provider support                                                                                                                     |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Stripe catalog, checkout/portal requests, signatures and meter streams | Distilled adapter over fake HTTP; SQL-backed local Stripe service                                                                 | Real Stripe tax/payment flows, portal behavior, fractional usage validation and webhook delivery remain unverified                   |
+| Billing lifecycle and entitlement projection                           | Akter actor commands/jobs on real Postgres with rollback, idempotence and provider-success-loss evidence                          | Neki placement and credentialed Stripe lifecycle remain unverified                                                                   |
+| Committed receipt/read accounting                                      | Opt-in transaction hook and per-deployment journal on real Postgres, including retention, replay and before/after-commit failures | Neki/shared-schema attribution remains unsupported without provider/isolation evidence                                               |
+| Hourly import and retry-safe export                                    | Actor-owned evidence/rollups and immutable provider payloads; >23-hour ambiguity is quarantined for reconciliation                | Stripe acceptance is asynchronous; asynchronous validation/error handling and outage reconciliation need live evidence               |
+| Free/spend ingress and realtime caps                                   | Organization-wide SQL reservations and renewable leases across local edges                                                        | Caps apply to new edge admission; admitted internal work finishes. Free storage uses the latest hourly sample, with no billed excess |
+
+Paid prices remain provisional until the Neki fleet benchmark. Storage accounting samples logical tenant row bytes; it does not establish physical-volume/index accounting or invent missing historical samples.
 
 ## Runtime portability
 
@@ -13,6 +39,8 @@ The framework supports Bun 1.4.2+ and Node 24+. Both run the core Postgres confo
 The data shard map's ordinary database path is covered by real Postgres range-boundary, `SKIP LOCKED`, failed-settle, public-API intent/timer/job/cron, holder-liveness, and session-isolation tests in `runtime/database/shards.test.ts`. Its default claim remains one statement and one network flight. `runtime/database/migrations.test.ts` checks all per-actor and per-tenant primary and unique keys from the migrated catalog, including partial indexes. These are Postgres results, not a two-shard Neki result: `EXPLAIN (NEKI_PLAN)` and a real Neki topology remain unverified, pending #66 and a supplied map ([ADR 0067](../decisions/0067-due-work-shard-ranges.md)).
 
 Support means the shared `@rikalabs/akter/testing` conformance suite passes and the deployment-specific gates are demonstrated. A cell that says “verified” is supported within the scope it states (backend, runner count, and process model). The conformance cases run in the `Verify` workflow on every pull request and on `main` (`bun run check:ci`: the PGlite suites, `test:integration` on real Postgres with a streaming replica and the Docker drills, and the Playwright suite), and the deterministic simulation and random-seed properties run again nightly. “Verified, single runner” means one runtime process; multi-runner claims name their runner count and say whether the runners were in-process or separate processes. Every other cell says “unverified” or “unsupported” with its reason. Neki cells are gated: the suites run against Neki only on dedicated hardware in [#66](https://github.com/Rika-Labs/akter/issues/66), so no Neki cell is verified.
+
+**Startup migration protocol:** Postgres retains transactional migration rollback and verifies six concurrent first-boot `Actors.layer` builds, and six public `Runner.socket` runners, on empty databases with default, same-database, and separate-database coordination pools. The opt-in Neki autocommit/progress protocol is verified on real Postgres through SIGKILL at every durable boundary, a waiting second process after owner death, and a 0025-to-0026 upgrade preserving job data. These local protocol checks use a propagation stand-in and are not Neki passes. Neki fresh start, crash recovery, concurrent start and upgrade are prepared in `runtime/database/neki/migrations.test.ts`, gated by `TEST_NEKI_DATABASE_URL`, skipped without it, and unverified pending #66. Advisory-lock placement, catalogs and actual router propagation remain provider gates. PGlite's transactional startup behavior is unchanged. See [ADR 0070](../decisions/0070-neki-startup-migrations.md).
 
 `turn.mint` now carries committed creating-intent provenance in the relay request instead of reading the parent's outbox during the child's first turn ([ADR 0048 amendment](../decisions/0048-mint-progress-and-inspection-record-corrections.md#amendment-child-local-creating-intent-proof-485-2026-10-03)). Cross-routing-key creation, forgery refusal, and crash/replay evidence live in `conformance/mint.ts`; `conformance/single-shard.ts` records only child-key statements during that delivery. This removes the known cross-shard proof read from ADR 0057 without claiming Neki support: physical shard placement and single transaction mode still need #66.
 

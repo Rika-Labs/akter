@@ -1,4 +1,14 @@
-import { Conflict, Me, NotImplemented, Forbidden, NotFound, Unauthorized } from "@akter/cloud-api"
+import {
+  CommandExpired,
+  Conflict,
+  Forbidden,
+  Me,
+  NotFound,
+  NotImplemented,
+  ProjectId,
+  RunnerDefect,
+  Unauthorized,
+} from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import {
@@ -112,6 +122,43 @@ describe("route fallback", () => {
     ).toMatchObject({ kind: "Unauthorized", message: "Sign in to continue." })
     expect(consoleError(new TypeError("Failed to fetch"))).toMatchObject({ kind: "Unavailable" })
   })
+
+  it("keeps expired keys and runner defects non-retryable in the console", () => {
+    expect(consoleError(CommandExpired.make({ commandId: "client-key" }))).toMatchObject({
+      kind: "CommandExpired",
+    })
+    expect(consoleError(RunnerDefect.make({}))).toMatchObject({ kind: "RunnerDefect" })
+  })
+
+  it("decodes the opaque RunnerDefect response without retrying the command", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const defectBody = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.toCodecJson(RunnerDefect)),
+        )(RunnerDefect.make({}))
+        fetch.mockResolvedValue(
+          new Response(defectBody, {
+            status: 502,
+            headers: { "content-type": "application/json" },
+          }),
+        )
+        const api = yield* cloud
+        const failure = yield* api.runtime
+          .sendCommand({
+            params: { projectId: ProjectId.make("project"), environment: "production" },
+            payload: {
+              address: "Counter/one",
+              command: "Increment",
+              payload: 3,
+              commandId: "client-key",
+            },
+          })
+          .pipe(Effect.flip)
+        expect(failure).toEqual(RunnerDefect.make({}))
+        expect(fetch).toHaveBeenCalledTimes(1)
+        expect(consoleError(failure).kind).toBe("RunnerDefect")
+      }),
+    ))
 
   it("forced fixture mode never executes a live request", () =>
     Effect.runPromise(

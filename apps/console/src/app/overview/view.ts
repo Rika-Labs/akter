@@ -21,6 +21,7 @@ import * as stylex from "@stylexjs/stylex"
 import { colors, space } from "@akter/ui/tokens.stylex"
 import type { HtmlBuilder } from "foldkit/html"
 import * as Routes from "../navigation/routes.ts"
+import { capNoticeView } from "../quota/view.ts"
 import { CopiedText } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { DeploySummary, EmptyProjectPage, OverviewPage } from "./model.ts"
@@ -61,7 +62,7 @@ const healthLinks = (page: OverviewPage, sample: boolean): ReadonlyMap<string, s
       "Runners",
       live === undefined || sample
         ? Routes.deployments()
-        : Routes.deployment({ commit: live.commit }),
+        : Routes.deployment({ deployment: live.id }),
     ],
   ])
 }
@@ -82,6 +83,7 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
     ],
     body: pageBody(h, [
       pageHeader(h, { title: "Overview" }),
+      ...(page.cap === undefined ? [] : [capNoticeView(h, page.cap)]),
       statRow(h, {
         label: "Last 24 hours",
         stats: page.stats.map((stat) => ({
@@ -192,8 +194,8 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
                   { key: "when", label: "When", width: "3rem", align: "end" },
                 ],
                 rows: page.deploys.map((deploy) => ({
-                  key: deploy.commit,
-                  href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
+                  key: deploy.id,
+                  href: model.pageSample ? undefined : Routes.deployment({ deployment: deploy.id }),
                   cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
                 })),
               }),
@@ -267,6 +269,7 @@ export const emptyProjectScreen = ({ h, model, page }: ScreenInput<EmptyProjectP
       title: "Ship your first actor",
       description: `${page.project} is ready in ${page.region}. Nothing is running yet.`,
     }),
+    ...(page.cap === undefined ? [] : [capNoticeView(h, page.cap)]),
     columns(h, {
       layout: "wide-left",
       children: [

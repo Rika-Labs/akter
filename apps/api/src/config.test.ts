@@ -1,4 +1,4 @@
-import { ConfigProvider, Effect, Redacted } from "effect"
+import { Cause, ConfigProvider, Effect, Exit, Redacted } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 import { loadOptions } from "./config.ts"
 
@@ -26,11 +26,42 @@ describe("API configuration", () => {
       )
       expect(options.port).toBe(3001)
       expect(options.emailMode).toBe("local")
+      expect(options.billingMode).toBe("local")
+      expect(options.stripeApiKey).toBeUndefined()
       expect(options.github).toBeUndefined()
       expect(Redacted.value(options.databaseUrl)).toBe(
         "postgres://project:project@localhost/postgres",
       )
     }),
+  )
+  it.effect(
+    "requires Stripe credentials and a nondevelopment webhook secret without disclosing cell URLs",
+    () =>
+      Effect.gen(function* () {
+        const base = {
+          CONTROL_PLANE_DATABASE_URL: "postgres://project:project@localhost/postgres",
+          AUTH_SECRET: "a-local-test-signing-secret-long-enough",
+        }
+        for (const invalid of [
+          { BILLING_MODE: "stripe" },
+          { BILLING_MODE: "stripe", STRIPE_API_KEY: "fake-key-not-used" },
+          {
+            METER_CELLS:
+              '[{"deploymentId":"cell","databaseUrl":"postgres://private-value@localhost/db","unexpected":true},{"databaseUrl":"postgres://private-value@localhost/db"}]',
+          },
+        ]) {
+          const result = yield* loadOptions.pipe(
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromUnknown({ ...base, ...invalid }),
+            ),
+            Effect.exit,
+          )
+          expect(Exit.isFailure(result)).toBe(true)
+          if (Exit.isFailure(result))
+            expect(Cause.pretty(result.cause)).not.toContain("private-value")
+        }
+      }),
   )
   it.effect("refuses production with the readable local email outbox", () =>
     Effect.gen(function* () {
@@ -54,8 +85,11 @@ describe("API configuration", () => {
     AUTH_SECRET: "a-production-signing-secret-long-enough",
     API_PRODUCTION: "true",
     EMAIL_MODE: "ses",
-    API_ORIGIN: "https://api.akter.example",
-    CONSOLE_ORIGIN: "https://console.akter.example",
+    API_ORIGIN: "https://api.akter.dev",
+    CONSOLE_ORIGIN: "https://app.akter.dev",
+    BILLING_MODE: "stripe",
+    STRIPE_API_KEY: "local-configuration-test-key-never-used",
+    STRIPE_WEBHOOK_SECRET: "local-configuration-test-webhook-never-used",
   }
   const loadProduction = (overrides: Record<string, string>) =>
     Effect.exit(
@@ -81,13 +115,13 @@ describe("API configuration", () => {
         ),
       )
       expect(options.consoleOrigin).toBeUndefined()
-      expect(options.origin).toBe("https://api.akter.example")
+      expect(options.origin).toBe("https://api.akter.dev")
     }),
   )
   it.effect("refuses production origins that are not public https", () =>
     Effect.gen(function* () {
       const refused: ReadonlyArray<Record<string, string>> = [
-        { API_ORIGIN: "http://api.akter.example" },
+        { API_ORIGIN: "http://api.akter.dev" },
         { CONSOLE_ORIGIN: "https://localhost:5173" },
         { AUTH_TRUSTED_IDP_ORIGINS: "https://idp.example,http://idp.example" },
       ]
@@ -99,6 +133,14 @@ describe("API configuration", () => {
     Effect.gen(function* () {
       const result = yield* loadProduction({
         AUTH_SECRET: "local-development-only-change-before-production",
+      })
+      expect(result._tag).toBe("Failure")
+    }),
+  )
+  it.effect("refuses a shared runner environment in production", () =>
+    Effect.gen(function* () {
+      const result = yield* loadProduction({
+        RUNNER_ENVIRONMENT: '{"DATABASE_URL":"postgres://shared"}',
       })
       expect(result._tag).toBe("Failure")
     }),

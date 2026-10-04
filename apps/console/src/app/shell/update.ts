@@ -3,16 +3,22 @@ import * as Navigation from "foldkit/navigation"
 import type { Return } from "foldkit/update"
 import { type Url, toString } from "foldkit/url"
 import { selectedWindow } from "../api/client.ts"
-import { toOpeningTail, toTailEntry } from "../commands/mapping.ts"
+import { retryable } from "../commands/errors.ts"
+import type { CommandScope, CommandSubmission } from "../commands/model.ts"
+import { canonicalPayload, toOpeningTail, toTailEntry } from "../commands/mapping.ts"
 import { settingsSeed } from "../settings/keys.ts"
 import {
   choiceFields,
   parseMemberRoleKey,
   parseNotificationKey,
+  parseSpendLimit,
+  planChoiceKey,
+  planChoices,
   spendLimitKey,
   toggleFields,
 } from "../settings/keys.ts"
 import { slugify } from "../auth/model.ts"
+import { spendLimitReached } from "../quota/model.ts"
 import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
@@ -45,10 +51,11 @@ import {
   SignUp,
   WriteClipboard,
 } from "./command.ts"
-import { Action, canMutate } from "./action.ts"
+import { Action, canMutate, canSendCommand } from "./action.ts"
 import { Message } from "./message.ts"
 import { Dialog, type Flags, type Model, type Toast, withoutPasswords } from "./model.ts"
 import { paletteResults } from "./palette.ts"
+import { currentProject } from "./sidebar.ts"
 
 type Result = Return<Model, Message>
 
@@ -145,9 +152,10 @@ const initial = (flags: Flags, url: Url): Result => {
       tailError: Option.none(),
       commandAnswer: Option.none(),
       commandError: Option.none(),
-      commandUsedId: Option.none(),
+      commandSubmission: Option.none(),
       sendingCommand: false,
       commandSession: 0,
+      changingDeployment: Option.none(),
       resolved: [],
       revoked: [],
     },
@@ -207,6 +215,22 @@ const settingsPage = (model: Model) =>
     Predicate.isTagged(page, "SettingsPage") ? Option.some(page) : Option.none(),
   )
 
+/**
+ * Whether a spend limit the views chose would refuse new commands as soon as it is saved, because
+ * the month's estimate has already reached it. Such a limit waits for an explicit save.
+ */
+const refusesRightAway = (model: Model, value: string): boolean => {
+  const limitCents = parseSpendLimit(value)
+  return Option.exists(
+    Option.flatMap(settingsPage(model), (page) => Option.fromNullishOr(page.billing)),
+    (billing) =>
+      limitCents !== null &&
+      limitCents !== undefined &&
+      limitCents !== billing.spendLimit.limitCents &&
+      spendLimitReached({ limitCents, billing }),
+  )
+}
+
 const mutate = (model: Model, action: Action): Result =>
   canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action })
     ? { model, commands: [Mutate({ action })] }
@@ -222,6 +246,122 @@ const savesChoice = (key: string): boolean =>
   Object.keys(choiceFields).includes(key) ||
   key === spendLimitKey ||
   parseMemberRoleKey(key) !== undefined
+
+/** The command the send dialog holds, with its payload in the form the control plane compares. */
+const commandInput = (model: Model) => ({
+  command: (model.fields["command-name"] ?? "").trim(),
+  payload: canonicalPayload(model.fields["command-payload"] ?? "{}"),
+})
+
+const sameInput = (
+  sent: CommandSubmission,
+  input: Readonly<{ command: string; payload: string }>,
+): boolean => sent.command === input.command && sent.payload === input.payload
+
+/**
+ * The command ID the dialog's next send uses, or none when it mints a fresh one. A typed ID is
+ * always used as typed, and a cleared field always mints. The ID the console generated for the last
+ * send is reused only while the command and payload equal what was sent, compared the way the
+ * control plane compares them, so a retry runs at most once and changed input is a new command.
+ */
+export const nextCommandId = (model: Model): Option.Option<string> => {
+  const shown = (model.fields["command-id"] ?? "").trim()
+  if (shown === "") return Option.none()
+  const generated = Option.filter(
+    model.commandSubmission,
+    (sent) => sent.generated && sent.id === shown,
+  )
+  if (Option.isNone(generated) || sameInput(generated.value, commandInput(model)))
+    return Option.some(shown)
+  return Option.none()
+}
+
+/**
+ * Whether the dialog's next send would repeat the submission that last failed in a way a retry
+ * with the same command ID cannot fix, so sending it is not offered. Changed input or a cleared
+ * command ID makes it a new submission.
+ */
+export const resendRefused = (model: Model): boolean =>
+  Option.exists(model.commandError, ({ kind }) => !retryable(kind)) &&
+  Option.exists(
+    model.commandSubmission,
+    (sent) =>
+      Option.exists(nextCommandId(model), (id) => id === sent.id) &&
+      sameInput(sent, commandInput(model)),
+  )
+
+/**
+ * Sends the dialog's command with the ID `nextCommandId` chooses. Without one it asks for a fresh
+ * ID first and the send resumes when it arrives; `minted` marks that ID as the console's own.
+ */
+const send = (
+  model: Model,
+  target: Readonly<{ address: string; scope: CommandScope }>,
+  minted: boolean,
+): Result => {
+  if (
+    !canSendCommand({ page: model.page, sample: model.pageSample }) ||
+    model.loading ||
+    model.sendingCommand ||
+    resendRefused(model)
+  )
+    return { model }
+  const chosen = minted
+    ? Option.some((model.fields["command-id"] ?? "").trim())
+    : nextCommandId(model)
+  if (Option.isNone(chosen))
+    return {
+      model: {
+        ...model,
+        sendingCommand: true,
+        commandAnswer: Option.none(),
+        commandError: Option.none(),
+        fields: { ...model.fields, "command-id": "" },
+      },
+      commands: [NewCommandId({ session: model.commandSession })],
+    }
+  const commandId = chosen.value
+  const generated =
+    minted ||
+    Option.exists(model.commandSubmission, (sent) => sent.generated && sent.id === commandId)
+  return {
+    model: {
+      ...model,
+      sendingCommand: true,
+      commandAnswer: Option.none(),
+      commandError: Option.none(),
+      commandSubmission: Option.some({ id: commandId, ...commandInput(model), generated }),
+      fields: { ...model.fields, "command-id": commandId },
+    },
+    commands: [
+      SendActorCommand({
+        session: model.commandSession,
+        address: target.address,
+        scope: target.scope,
+        command: (model.fields["command-name"] ?? "").trim(),
+        payload: model.fields["command-payload"] ?? "{}",
+        commandId,
+      }),
+    ],
+  }
+}
+
+/**
+ * Starts a rollback or redeploy unless one is already in flight, remembering the deployment page it
+ * started from so a second click cannot send it twice.
+ */
+const changeDeployment = (model: Model, action: Action): Result => {
+  if (Option.isSome(model.changingDeployment)) return { model }
+  if (!canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action }))
+    return mutate(model, action)
+  return {
+    model: { ...model, changingDeployment: Option.some(deploymentReference(model.route)) },
+    commands: [Mutate({ action })],
+  }
+}
+
+const deploymentReference = (route: AppRoute): string =>
+  AppRoute.isAnyOf(["Deployment"])(route) ? route.deployment : ""
 
 const deadLetterIds = (model: Model): ReadonlyArray<string> =>
   Option.match(model.page, {
@@ -270,41 +410,9 @@ const confirm = (model: Model, dialog: Dialog): Result =>
           }),
         )
       },
-      SendCommand: ({ address, scope }) => {
-        if (model.pageSample || model.loading || model.sendingCommand) return { model }
-        const commandId = (model.fields["command-id"] ?? "").trim()
-        if (commandId === "")
-          return {
-            model: {
-              ...model,
-              sendingCommand: true,
-              commandAnswer: Option.none(),
-              commandError: Option.none(),
-            },
-            commands: [NewCommandId({ session: model.commandSession })],
-          }
-        return {
-          model: {
-            ...model,
-            sendingCommand: true,
-            commandAnswer: Option.none(),
-            commandError: Option.none(),
-            commandUsedId: Option.some(commandId),
-            fields: { ...model.fields, "command-id": commandId },
-          },
-          commands: [
-            SendActorCommand({
-              session: model.commandSession,
-              address,
-              scope,
-              command: (model.fields["command-name"] ?? "").trim(),
-              payload: model.fields["command-payload"] ?? "{}",
-              commandId,
-            }),
-          ],
-        }
-      },
-      RollBack: ({ id, commit }) => mutate(model, Action.RollBack({ id, commit })),
+      SendCommand: (target) => send(model, target, false),
+      RollBack: ({ id, commit }) => changeDeployment(model, Action.RollBack({ id, commit })),
+      Redeploy: ({ id, commit }) => changeDeployment(model, Action.Redeploy({ id, commit })),
       DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
       KeyCreated: () => ({ model }),
     }),
@@ -451,14 +559,28 @@ const submit = (model: Model, form: string): Result => {
       )
     }),
     Match.when("change-plan", () => {
-      const current = Option.flatMap(settingsPage(model), (page) =>
+      const billing = Option.flatMap(settingsPage(model), (page) =>
         Option.fromNullishOr(page.billing),
-      ).pipe(Option.map((billing) => billing.plan.id))
-      if (Option.contains(current, "enterprise")) return mutate(model, Action.OpenBillingPortal())
-      const plan = Option.contains(current, "pro") ? "enterprise" : "pro"
-      return mutate(model, Action.StartCheckout({ plan }))
+      )
+      const subscribed = Option.match(billing, {
+        onNone: () => "free" as const,
+        onSome: (found) => found.plan.subscribed,
+      })
+      const choices = planChoices(subscribed)
+      const plan = choices.find((choice) => choice === model.choices[planChoiceKey]) ?? choices[0]
+      if (plan === undefined) return unavailable(model, "Another plan")
+      return mutate(
+        model,
+        subscribed === "free" ? Action.StartCheckout({ plan }) : Action.ChangePlan({ plan }),
+      )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),
+    Match.when("spend-limit", () =>
+      mutate(
+        model,
+        Action.SaveChoice({ key: spendLimitKey, value: model.choices[spendLimitKey] ?? "" }),
+      ),
+    ),
     Match.orElse((name) => {
       const [prefix, id] = name.split(":")
       if (prefix === "resend-invite" && id !== undefined)
@@ -486,10 +608,13 @@ const step = (model: Model, message: Message): Result =>
   Message.match(message, {
     ChangedUrl: ({ url }) => {
       const route = Routes.parseUrl(url)
+      const switchedProject =
+        AppRoute.isAnyOf(["Project"])(route) && route.project !== currentProject(model)
       return {
         model: {
           ...model,
           route,
+          changingDeployment: switchedProject ? Option.none() : model.changingDeployment,
           dialog: Option.none(),
           drawer: false,
           loading: true,
@@ -498,7 +623,7 @@ const step = (model: Model, message: Message): Result =>
           tailError: Option.none(),
           commandAnswer: Option.none(),
           commandError: Option.none(),
-          commandUsedId: Option.none(),
+          commandSubmission: Option.none(),
           sendingCommand: false,
           commandSession: model.commandSession + 1,
           page: Option.none(),
@@ -637,6 +762,7 @@ const step = (model: Model, message: Message): Result =>
     },
     ChoseSetting: ({ key, value }) => {
       const next = { ...model, choices: { ...model.choices, [key]: value } }
+      if (key === spendLimitKey && refusesRightAway(model, value)) return { model: next }
       if (key === "seriesWindow" && ["1h", "24h", "7d"].includes(value))
         return model.pageSample
           ? { model }
@@ -666,39 +792,38 @@ const step = (model: Model, message: Message): Result =>
     ChangedSettingsQuery: ({ query }) => ({ model: { ...model, settingsQuery: query } }),
     SubmittedForm: ({ form }) => submit(model, form),
     OpenedDialog: ({ dialog }) =>
-      then(closePalette(model), (next) => {
-        const session = next.commandSession + 1
-        const sending = Predicate.isTagged(dialog, "SendCommand")
-        return {
-          model: {
-            ...next,
-            dialog: Option.some(dialog),
-            fields: sending
-              ? { ...next.fields, "command-id": "", "command-payload": "{}", "command-name": "" }
-              : next.fields,
-            commandAnswer: Option.none(),
-            commandError: Option.none(),
-            commandUsedId: Option.none(),
-            sendingCommand: false,
-            commandSession: session,
-          },
-          commands: [
-            ShowDialog({ id: dialogId, focus: dialogFocus(dialog) }),
-            ...(sending ? [NewCommandId({ session })] : []),
-          ],
-        }
-      }),
+      then(closePalette(model), (next) => ({
+        model: {
+          ...next,
+          dialog: Option.some(dialog),
+          fields: Predicate.isTagged(dialog, "SendCommand")
+            ? { ...next.fields, "command-id": "", "command-payload": "{}", "command-name": "" }
+            : next.fields,
+          commandAnswer: Option.none(),
+          commandError: Option.none(),
+          commandSubmission: Option.none(),
+          sendingCommand: false,
+          commandSession: next.commandSession + 1,
+        },
+        commands: [ShowDialog({ id: dialogId, focus: dialogFocus(dialog) })],
+      })),
     ClosedDialog: () => ({
       model: {
         ...model,
         dialog: Option.none(),
         commandAnswer: Option.none(),
         commandError: Option.none(),
-        commandUsedId: Option.none(),
+        commandSubmission: Option.none(),
         sendingCommand: false,
         commandSession: model.commandSession + 1,
       },
-      commands: [HideDialog({ id: dialogId })],
+      commands: [
+        HideDialog({ id: dialogId }),
+        ...(Option.isSome(model.commandAnswer) &&
+        Option.exists(model.page, (page) => Predicate.isTagged(page, "MissingActorPage"))
+          ? [LoadPage({ route: model.route })]
+          : []),
+      ],
     }),
     ConfirmedDialog: () =>
       Option.match(model.dialog, {
@@ -767,7 +892,9 @@ const step = (model: Model, message: Message): Result =>
     FailedCommand: ({ session, kind, message }) => {
       if (session !== model.commandSession) return { model }
       if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
-      return { model: { ...model, sendingCommand: false, commandError: Option.some(message) } }
+      return {
+        model: { ...model, sendingCommand: false, commandError: Option.some({ kind, message }) },
+      }
     },
     PreparedCommandId: ({ session, id }) => {
       if (session !== model.commandSession || (model.fields["command-id"] ?? "").trim() !== "")
@@ -777,7 +904,7 @@ const step = (model: Model, message: Message): Result =>
         onNone: () => ({ model }),
         onSome: (dialog) =>
           model.sendingCommand && Predicate.isTagged(dialog, "SendCommand")
-            ? confirm({ ...prepared, sendingCommand: false }, dialog)
+            ? send({ ...prepared, sendingCommand: false }, dialog, true)
             : { model: prepared },
       })
     },
@@ -819,6 +946,25 @@ const step = (model: Model, message: Message): Result =>
         model: next,
         commands: isAuthRoute(next.route) ? [] : [LoadPage({ route: next.route })],
       })),
+    ChangedDeployment: ({ href, title, description }) => {
+      const settled = { ...model, changingDeployment: Option.none() }
+      const stayed = Option.exists(
+        model.changingDeployment,
+        (from) => deploymentReference(model.route) === from,
+      )
+      const lists = AppRoute.isAnyOf(["Deployments", "Overview", "Project"])(model.route)
+      return then(stayed ? go(settled, href) : { model: settled }, (moved) =>
+        then(toast(moved, { title, description, tone: "live" }), (next) => ({
+          model: next,
+          commands: [
+            LoadWorkspace(),
+            ...(!stayed && lists ? [LoadPage({ route: next.route })] : []),
+          ],
+        })),
+      )
+    },
+    FailedDeploymentChange: ({ message }) =>
+      step({ ...model, changingDeployment: Option.none() }, Message.FailedMutation({ message })),
     CreatedKey: ({ name, secret }) =>
       then(
         {
@@ -830,7 +976,11 @@ const step = (model: Model, message: Message): Result =>
           commands: [LoadPage({ route: next.route })],
         }),
       ),
-    SignedOut: () => then(closePalette(model), (next) => ({ model: next, commands: [SignOut()] })),
+    SignedOut: () =>
+      then(closePalette({ ...model, changingDeployment: Option.none() }), (next) => ({
+        model: next,
+        commands: [SignOut()],
+      })),
     CompletedAuth: ({ href, refresh, title, description }) =>
       then(
         {

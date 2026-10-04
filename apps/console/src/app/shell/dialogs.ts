@@ -20,8 +20,11 @@ import {
   CopiedText,
   type Message,
 } from "./message.ts"
+import { isQuotaKind } from "../quota/errors.ts"
+import { billingLink } from "../quota/view.ts"
+import { canSendCommand } from "./action.ts"
 import type { Dialog, Model } from "./model.ts"
-import { dialogId } from "./update.ts"
+import { dialogId, nextCommandId, resendRefused } from "./update.ts"
 
 const styles = stylex.create({
   note: { color: colors.mutedForeground, fontSize: typography.small },
@@ -147,7 +150,7 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
       }),
       SendCommand: ({ address, scope }) => ({
         title: "Send a command",
-        description: `To ${address} in ${scope.environment} (${scope.projectId}). Reusing a command ID returns its stored receipt.`,
+        description: `To ${address} in ${scope.environment} (${scope.projectId}). Sending the same command again reuses its command ID, so it runs at most once.`,
         body: [
           text(h, model, {
             id: "command-name",
@@ -176,9 +179,15 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
           text(h, model, {
             id: "command-id",
             label: "Command ID (optional)",
-            placeholder: "Leave empty to generate a retry-safe ID",
+            placeholder: "Generated when you send",
             mono: true,
           }),
+          (model.fields["command-id"] ?? "").trim() !== "" && Option.isNone(nextCommandId(model))
+            ? h.p(
+                [...styleAttributes(h, styles.note)],
+                ["The command or payload changed, so sending it uses a new command ID."],
+              )
+            : h.empty,
           model.sendingCommand
             ? h.p(
                 [h.Role("status"), ...styleAttributes(h, styles.note)],
@@ -187,12 +196,16 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
             : h.empty,
           Option.match(model.commandError, {
             onNone: () => h.empty,
-            onSome: (message) =>
-              h.p([h.Role("alert"), ...styleAttributes(h, styles.note)], [message]),
+            onSome: ({ kind, message }) =>
+              h.p(
+                [h.Role("alert"), ...styleAttributes(h, styles.note)],
+                isQuotaKind(kind) ? [`${message} `, billingLink(h, "Open Billing")] : [message],
+              ),
           }),
-          Option.match(model.commandUsedId, {
+          Option.match(model.commandSubmission, {
             onNone: () => h.empty,
-            onSome: (id) => h.p([...styleAttributes(h, styles.mono)], [`Command ID used: ${id}`]),
+            onSome: ({ id }) =>
+              h.p([...styleAttributes(h, styles.mono)], [`Command ID used: ${id}`]),
           }),
           Option.match(model.commandAnswer, {
             onNone: () => h.empty,
@@ -227,7 +240,8 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         danger: false,
         ready:
           !model.sendingCommand &&
-          !model.pageSample &&
+          !resendRefused(model) &&
+          canSendCommand({ page: model.page, sample: model.pageSample }) &&
           (model.fields["command-name"] ?? "").trim() !== "",
       }),
       RollBack: ({ commit }) => ({
@@ -237,6 +251,15 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         body: [],
         confirm: "Roll back",
         danger: true,
+        ready: true,
+      }),
+      Redeploy: ({ commit }) => ({
+        title: `Redeploy ${commit}?`,
+        description:
+          "A new deployment builds this commit again and rolls it out. The live deployment keeps serving until the new one is live.",
+        body: [],
+        confirm: "Redeploy",
+        danger: false,
         ready: true,
       }),
       KeyCreated: ({ name, secret }) => ({

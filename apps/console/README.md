@@ -23,7 +23,7 @@ exactly once. Better Auth uses the same origin's `/auth` mount. A cross-origin d
 credentialed CORS and cookie configuration on the API server.
 
 For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
-proxy `/api` and `/auth` through Vite (the default target is `http://127.0.0.1:3001`). The
+proxy `/api`, `/auth` and the local Stripe stand-in's `/billing` pages through Vite (the default target is `http://127.0.0.1:3001`). The
 accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
 Set `API_PROXY_TARGET` to its API port and `CONSOLE_ORIGIN` to the console origin. A same-origin
 development proxy can also use the console origin as `API_ORIGIN`.
@@ -47,13 +47,52 @@ closes the stream; reconnect refreshes the snapshot before opening another strea
 is unavailable or interrupted leaves the snapshot visible with an inline explanation. Sample
 pages never start a stream or simulate new turns.
 
-The inspector's Send command dialog accepts JSON and an optional command ID, shows the actor's
-result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
-fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
-response reuse the same receipt key. The dialog captures the actor's project and environment
-and closes on every URL change; navigation can never retarget an old actor address. Deployment detail offers
-earlier successful deployments in the same environment as rollback targets and displays
-`rolledBackFrom` on the newly created deployment.
+The inspector's Send command dialog accepts JSON and an optional command ID (the contract's
+`commandId`, the client idempotency key), shows the actor's result or typed `CommandFailed`
+payload, and notes a replayed receipt quietly. Each submission gets one key, chosen when it is
+sent: a blank field gets a fresh ID, and a generated ID is reused only while the command and the
+payload match what was sent, comparing the parsed JSON with sorted keys the way the control plane
+hashes it. So a retry after a lost response or a `503 Unavailable`, even with the payload
+reformatted or edited and changed back, runs at most once and answers `replayed`, while changed
+input is sent as a new command. An ID the operator typed is always used as typed. Each refusal has its own wording: `409` (the key is bound to other input),
+`410 CommandExpired` (the key's retry window closed), `CommandRefused` with the runner's reason,
+`503 Unavailable` (send again with the same key) and `502 RunnerDefect`. After a `409`, `410` or
+`RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
+input makes a new one. The dialog captures the actor's project and environment and closes on every
+URL change; navigation can never retarget an old actor address. When the runtime cannot inspect
+actors yet, the inspector still reads the actor's live job list; an actor that has one keeps the
+Jobs tab and Send command live while the rest of the page is sample data. An address the runtime
+reports as no actor at all has never received a command, so the inspector offers Send first
+command for it; any other missing resource or failure renders as usual.
+
+Deployment detail offers earlier successful deployments in the same environment as rollback
+targets and displays `rolledBackFrom` on the newly created deployment. Redeploy starts a new
+deployment of the viewed commit, which is built again. Both ask for confirmation, stay disabled
+while either is in flight, and show the API's refusal otherwise. On success they open the new
+deployment, titled as the API names it (`Rollback to <short sha>: <message>`), only if its page is
+still open; after navigating away the console just reports it and refreshes a deployments list or
+overview that is open. Signing out or switching project releases the in-flight hold. Rollbacks and redeploys reuse earlier
+commits, so the console (overview included) links deployments by id. A deployment URL is read as an
+id first; an unknown id is not found, and only a commit-shaped reference (in either case) opens its
+newest deployment.
+Runner actor counts and CPU the runtime does not measure show `—`, never `0`.
+
+Billing and Usage read the control plane's Stripe-backed records. Prices, allowances and the read
+weight come from the API (paid prices are flagged provisional); the console hardcodes none. A Free
+organization upgrades through Stripe Checkout in the same tab; a paid one changes plan through the
+plan endpoint, which may stay pending until payment succeeds. The billing portal opens in a new tab
+and invoice PDFs open in their own. Only `https:` links on Stripe's Checkout, billing, invoice and
+pay hosts are opened or linked; the local stand-in's same-origin `/billing` pages are accepted only
+by the Vite development server, and any other link is refused with a message. A spend limit the
+month's estimate has already reached waits for an explicit save, because it refuses new commands
+right away. Free's included commands and storage are shown as the hard caps
+they are. When Free's commands are used up, or the month's estimate is past the spend limit, Usage
+and Overview show one quiet notice linking to Billing; storage has no such notice because usage
+reports a monthly average rather than the latest sample the cap is checked against. Plan refusals
+(`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`, `StorageQuotaExceeded`) are
+recognised by the framework's tags and payloads and explained in place with a link to Billing. On
+`sendCommand` they arrive as a `CommandRefused` whose `reason` is the edge's `ActorError` envelope;
+the cloud API types that reason only as JSON, so the console reads the refusal inside it by shape.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when
@@ -61,8 +100,10 @@ windows and bucket boundaries match. Its unbounded tail remains explicit and it 
 combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
 histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
 Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
-times are UTC. The local API currently answers runtime and deployment endpoints with typed 501s;
-protocol/browser tests exercise their declared responses, not a live runner implementation.
+times are UTC. The API serves deployments, rollback, redeploy, command sending and actor jobs
+from real runners; the other runtime reads (overview, actor types and instances, inspection,
+command log and stream, jobs, workflows, connections) still answer typed 501s and fall back to
+sample data.
 
 ## Layout
 
@@ -88,7 +129,7 @@ Emailed invitation links use `/invitations/:id`; the earlier compatibility URL i
 
 Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
 `/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,
-`/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:commit`,
+`/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:deployment` (an id or a commit),
 `/regions`.
 
 Settings: `/settings`, `/settings/appearance`, `/settings/profile`, `/settings/notifications`,
@@ -100,7 +141,8 @@ Settings: `/settings`, `/settings/appearance`, `/settings/profile`, `/settings/n
 
 ## Verification
 
-`bun run typecheck`, `bun run lint` and `bun run test` here; browser flows live in `apps/e2e`
+`bun run typecheck`, `bun run lint` and `bun run test` here (`vitest.config.ts` compiles StyleX so
+view tests render real components); browser flows live in `apps/e2e`
 (`bun run --cwd apps/e2e test:e2e`), which builds and previews this app.
 
 FoldKit 0.163 exposes route constructors through a Proxy whose `.make` Effect 4.0 caches with

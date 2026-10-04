@@ -20,7 +20,7 @@ export const AppRoute = Route.defineRouteUnion({
   Workflows: {},
   Connections: {},
   Deployments: {},
-  Deployment: { commit: S.String },
+  Deployment: { deployment: S.String },
   Regions: {},
   SettingsGeneral: {},
   SettingsAppearance: {},
@@ -136,7 +136,7 @@ export const connections = pipe(page("connections"), Route.mapTo(construct.Conne
 export const deployments = pipe(page("deployments"), Route.mapTo(construct.Deployments))
 export const deployment = pipe(
   page("deployments"),
-  Route.slash(Route.string("commit")),
+  Route.slash(Route.string("deployment")),
   Route.mapTo(construct.Deployment),
 )
 export const regions = pipe(page("regions"), Route.mapTo(construct.Regions))

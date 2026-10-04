@@ -1,5 +1,36 @@
 # Akter benchmarks
 
+## Issue #493: served commands in two database flights (2026-10-03)
+
+This before/after run isolates [ADR 0072](docs/decisions/0072-served-command-in-two-round-trips.md): receipt resolution moves into fenced admission, and the expiry recheck uses a fresh clock read after the transaction ends in the commit flight. The baseline is merged `origin/main` `8c40961f0`; the candidate is the `fix/493-two-round-trips` worktree based on it. Both sides include #552's per-command CPU cuts and generator reuse. No load-shedding or fair-pool branch was included.
+
+All six measurements ran serially on one Linux x86-64 Daytona sandbox with a verified outer limit of four CPUs (`400000 100000`) and 4 GiB RAM. App and Postgres shared one Docker container capped at three CPUs, pinned to logical CPUs 0–2, with a 3 GiB memory limit. The driver used a separate container capped at one CPU, pinned to logical CPU 3, with 512 MiB RAM. Traffic used loopback HTTP on the Docker host network, not Daytona's HTTPS preview. These affinity sets keep our driver off our app/DB CPUs; they do not establish exclusive physical-host cores. Versions were Bun 1.4.2, Effect 4.0.0 and Postgres 18.6-bookworm; `synchronous_commit` stayed on, `pg_stat_statements` and logical WAL were enabled, and PGDATA used the Docker writable layer, not tmpfs.
+
+The order was before/after, after/before, before/after. Every side got a fresh database and process. Sequential served commands used one caller/key with a 3-second warm-up and 20-second measurement. Spread commands used 64 closed-loop callers over 10,000 random keys, with all 10,000 setup writes acknowledged before a 3-second warm-up and 20-second measurement on another fresh database. Every latency cohort had zero measured errors and every spread setup had zero errors. Closed-loop percentiles retain coordinated-omission limitations.
+
+The counting phase routed **both** runtime pools through a wire recorder, warmed them, measured 2,000 sequential commands with supplied ids and 2,000 replays, and subtracted background traffic at its independently measured 10-second idle rate. A flight is a client write after the server last answered on its session. A statement is a Sync-terminated extended-protocol cycle or a simple Query message. This includes transaction controls and the surrounding reads omitted by the older turn-pool-only instrument. `pg_stat_statements` corroborated 7.003→5.003 calls per fresh command; its totals in this run omit the two transaction controls, so wire counts are the total-statement measure. The exact conformance expectations independently derive three admission statements plus four commit statements, and enforce two flights across every pool.
+
+Cells are the median of the three cohort statistics, with minimum–maximum in brackets; percentiles are not pooled. This is a single-node comparison of these snapshots and limits, not a production SLO or a Neki claim.
+
+| Measurement                      | Before                    | After                     |
+| -------------------------------- | ------------------------- | ------------------------- |
+| Fresh command flights/op         | 4.002 [4.001–4.002]       | 2.001 [1.998–2.001]       |
+| Fresh command wire statements/op | 9.002 [9.002–9.003]       | 7.002 [6.999–7.003]       |
+| Warm replay flights/op           | 1.999 [1.999–2.000]       | 2.001 [1.999–2.002]       |
+| Warm replay wire statements/op   | 2.000 [2.000–2.000]       | 5.000 [5.000–5.003]       |
+| Sequential served commands op/s  | 660.4 [659.1–668.1]       | 757.5 [461.4–789.8]       |
+| Sequential p50 ms                | 1.276 [1.267–1.293]       | 1.148 [1.115–1.224]       |
+| Sequential p99 ms                | 4.685 [4.508–4.740]       | 4.073 [3.496–26.282]      |
+| Sequential max ms                | 45.701 [28.275–83.687]    | 59.179 [26.143–93.353]    |
+| 64 callers / 10,000 keys op/s    | 550.7 [516.3–592.5]       | 1,088.7 [1,087.6–1,127.1] |
+| 64 callers / 10,000 keys p50 ms  | 104.207 [95.227–115.164]  | 55.078 [54.019–55.852]    |
+| 64 callers / 10,000 keys p99 ms  | 332.098 [316.211–335.414] | 131.505 [121.517–139.275] |
+| 64 callers / 10,000 keys max ms  | 624.923 [539.913–693.121] | 252.963 [227.729–290.459] |
+
+The done condition is measured: an ordinary served command goes from four database flights to two, and nine wire statements to seven. Median sequential throughput improved 15% and spread throughput nearly doubled. Sequential p50 fell 10% and p99 fell 13% in these three repeats; the candidate had one slow sequential cohort, so neither these local tails nor the maxima establish a production latency guarantee. Replay now costs a fenced owner turn and three more statements, though it still uses two flights and never runs the handler. This is an explicit cost tradeoff, not a claim that replay became faster.
+
+The harness, source bundles, cohort JSON and logs are outside the repository at `~/.capy/work/akter-perf/493/`; final results are in `results/daytona`. Every sandbox created for this task was deleted. Earlier Mac runs under severe cross-project load, HTTPS-preview runs dominated by about 45 ms of proxy latency, and the direct-network run before the admission-proven recovery correction were retained as diagnostics and are not included above. The remainder of this report describes the earlier comparison and its distinct setup, not this 3+1 CPU split.
+
 ## Served-command CPU follow-up (#491, 2026-10-03)
 
 This follow-up compares refreshed `origin/main` snapshot `ec73e6d25` with

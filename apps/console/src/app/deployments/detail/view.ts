@@ -4,6 +4,7 @@ import {
   codeBlock,
   columns,
   dataTable,
+  emptyState,
   pageBody,
   pageHeader,
   section,
@@ -12,6 +13,7 @@ import {
   type StatusTone,
 } from "@akter/ui"
 import { rolloutTimeline } from "@akter/ui/charts"
+import { Option } from "effect"
 import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import { deployStatus } from "../../overview/view.ts"
 import * as Routes from "../../navigation/routes.ts"
@@ -35,9 +37,13 @@ const healthLabels: Readonly<Record<Runner["health"], string>> = {
 
 const rollbackTargetKey = "rollbackTarget"
 
-/** One deploy: how its rollout went, the runners it started, and its build log. */
+/**
+ * One deploy: how its rollout went, the runners it started, and its build log. Rollback and
+ * redeploy stay disabled while either is in flight, so a second click cannot start another.
+ */
 export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>): Screen => {
   const { deploy, rolledBackFrom } = page
+  const changing = Option.isSome(model.changingDeployment)
   const target =
     page.rollbackTargets.find((candidate) => candidate.id === model.choices[rollbackTargetKey]) ??
     page.rollbackTargets[0]
@@ -83,7 +89,16 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
           target === undefined
             ? undefined
             : OpenedDialog({ dialog: Dialog.RollBack({ id: target.id, commit: target.commit }) }),
-        disabled: model.pageSample || deploy.status !== "Live" || target === undefined,
+        disabled: model.pageSample || changing || deploy.status !== "Live" || target === undefined,
+      }),
+      button(h, {
+        label: "Redeploy",
+        variant: "ghost",
+        size: "sm",
+        onClick: OpenedDialog({
+          dialog: Dialog.Redeploy({ id: deploy.id, commit: deploy.commit }),
+        }),
+        disabled: model.pageSample || changing || deploy.status === "Rolling out",
       }),
     ],
     body: pageBody(h, [
@@ -149,7 +164,7 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
                   cells: [
                     runner.id,
                     runner.region,
-                    formatInteger(runner.actors),
+                    runner.actors === null ? "—" : formatInteger(runner.actors),
                     runner.cpu,
                     status(h, {
                       tone: healthTones[runner.health],
@@ -163,14 +178,20 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
           section(h, {
             title: "Build log",
             children: [
-              codeBlock(h, {
-                code: page.log,
-                language: "log",
-                size: "small",
-                onCopy: model.pageSample
-                  ? undefined
-                  : CopiedText({ text: page.log, label: "build log" }),
-              }),
+              page.log === ""
+                ? emptyState(h, {
+                    title: "No build output",
+                    description: "The build recorded no log lines.",
+                    align: "start",
+                  })
+                : codeBlock(h, {
+                    code: page.log,
+                    language: "log",
+                    size: "small",
+                    onCopy: model.pageSample
+                      ? undefined
+                      : CopiedText({ text: page.log, label: "build log" }),
+                  }),
             ],
           }),
         ],

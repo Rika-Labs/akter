@@ -5,6 +5,7 @@ import {
   codeBlock,
   dataTable,
   emptyState,
+  pageBody,
   pageHeader,
   propertyList,
   section,
@@ -21,7 +22,13 @@ import { AppRoute } from "../../navigation/routes.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, type Message, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
-import { type ActorPage, type InspectorTab, inspectorTab, inspectorTabs } from "../model.ts"
+import {
+  type ActorPage,
+  type InspectorTab,
+  inspectorTab,
+  inspectorTabs,
+  type MissingActorPage,
+} from "../model.ts"
 
 const styles = stylex.create({
   split: {
@@ -215,13 +222,13 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
         label: "Copy address",
         variant: "ghost",
         size: "sm",
-        disabled: model.pageSample,
+        disabled: model.pageSample && page.commandScope === undefined,
         onClick: CopiedText({ text: address, label: "address" }),
       }),
       button(h, {
         label: "Send command",
         size: "sm",
-        disabled: model.pageSample || page.commandScope === undefined,
+        disabled: page.commandScope === undefined,
         onClick:
           page.commandScope === undefined
             ? undefined
@@ -298,5 +305,37 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
         ),
       ],
     ),
+  }
+}
+
+/**
+ * An address no command has reached yet. Nothing is wrong with it: the command that creates the
+ * actor brings it into being, so the page offers to send that first command to this address.
+ */
+export const missingActorScreen = ({ h, page }: ScreenInput<MissingActorPage>): Screen => {
+  const address = `${page.actorType}/${page.key}`
+  return {
+    title: address,
+    crumbs: [
+      { label: "Actors", href: Routes.actors() },
+      { label: page.actorType, href: Routes.actorType({ actorType: page.actorType }) },
+      { label: page.key, mono: true },
+    ],
+    body: pageBody(h, [
+      emptyState(h, {
+        title: `${address} hasn’t received a command yet`,
+        description:
+          "Actors come into being with their first command. Send the command that creates this one and the inspector shows it from its first turn.",
+        actions: [
+          button(h, {
+            label: "Send first command",
+            variant: "primary",
+            onClick: OpenedDialog({
+              dialog: Dialog.SendCommand({ address, scope: page.commandScope }),
+            }),
+          }),
+        ],
+      }),
+    ]),
   }
 }

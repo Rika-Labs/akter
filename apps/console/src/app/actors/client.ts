@@ -1,9 +1,17 @@
-import { DateTime, Effect } from "effect"
-import { type ConsoleError, type Loaded, load, selectedWindow, withProject } from "../api/client.ts"
+import { NotFound } from "@akter/cloud-api"
+import { DateTime, Effect, Schema } from "effect"
+import {
+  type ConsoleError,
+  consoleError,
+  type Loaded,
+  load,
+  selectedWindow,
+  withProject,
+} from "../api/client.ts"
 import { orUndefined } from "../overview/absent.ts"
 import { flattenLoaded, sourced } from "../overview/partial.ts"
 import { toActorInstance, toActorPage, toTypeActivity } from "./mapping.ts"
-import { type ActorPage, ActorTypePage, ActorsPage } from "./model.ts"
+import { type ActorPage, ActorTypePage, ActorsPage, MissingActorPage } from "./model.ts"
 
 /** Loads the project's actor types. */
 export const loadActors: Effect.Effect<Loaded<ActorsPage>, ConsoleError> = withProject(
@@ -63,17 +71,55 @@ export const loadActorType = (
     ).pipe(Effect.map(flattenLoaded))
   })
 
-/** Loads one actor for the inspector, or nothing when there is no such actor. */
+/**
+ * Loads one actor for the inspector. An address the runtime reports as no actor at all has simply
+ * never received a command, so it loads as a `MissingActorPage` that can send the first one; any
+ * other missing resource, such as an environment with no live deployment, is nothing. When the
+ * runtime cannot inspect actors yet, its job list still proves the actor exists: the page then
+ * shows those live jobs and keeps the real command scope, so commands can be sent, while the rest
+ * of the inspector is sample data. Only when the job list is unavailable too does the whole page
+ * fall back to the fixture.
+ */
 export const loadActor = (
   input: Readonly<{ actorType: string; key: string }>,
-): Effect.Effect<Loaded<ActorPage | undefined>, ConsoleError> =>
+): Effect.Effect<Loaded<ActorPage | MissingActorPage | undefined>, ConsoleError> =>
   withProject(
-    (api, { project, environment }) =>
-      Effect.gen(function* () {
-        const inspector = yield* api.runtime.inspectActor({
-          params: { projectId: project.id, environment, ...input },
-        })
-        return { ...toActorPage(inspector), commandScope: { projectId: project.id, environment } }
-      }).pipe(orUndefined),
-    () => import("./fixtures.ts").then((fixtures) => fixtures.actorPage(input)),
-  )
+    (api, { project, environment }) => {
+      const params = { projectId: project.id, environment, ...input }
+      const commandScope = { projectId: project.id, environment }
+      return api.runtime.inspectActor({ params }).pipe(
+        Effect.map((inspector) => sourced({ ...toActorPage(inspector), commandScope }, false)),
+        Effect.catchTag("NotImplemented", (uninspectable) =>
+          api.runtime.listActorJobs({ params }).pipe(
+            Effect.catchTag("NotImplemented", () => Effect.fail(uninspectable)),
+            Effect.flatMap((jobs) =>
+              Effect.tryPromise({
+                try: () => import("./fixtures.ts"),
+                catch: consoleError,
+              }).pipe(
+                Effect.map((fixtures) =>
+                  sourced({ ...fixtures.sampleActor(input), jobs, commandScope }, true),
+                ),
+              ),
+            ),
+          ),
+        ),
+        Effect.catchIf(
+          (error) => Schema.is(NotFound)(error) && error.resource === "actor",
+          () =>
+            Effect.succeed(
+              sourced<ActorPage | MissingActorPage>(
+                MissingActorPage.make({ ...input, commandScope }),
+                false,
+              ),
+            ),
+        ),
+        orUndefined,
+        Effect.map(
+          (found): Loaded<ActorPage | MissingActorPage | undefined> =>
+            found ?? sourced(undefined, false),
+        ),
+      )
+    },
+    () => import("./fixtures.ts").then((fixtures) => sourced(fixtures.actorPage(input), true)),
+  ).pipe(Effect.map(flattenLoaded))

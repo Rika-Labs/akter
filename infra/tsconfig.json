@@ -1,1 +1,1 @@
-{ "extends": "../tsconfig.json", "include": ["src", "*.run.ts"] }
+{ "extends": "../tsconfig.json", "include": ["src", "local/runner", "*.run.ts"] }

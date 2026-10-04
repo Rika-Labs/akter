@@ -290,7 +290,10 @@ describe("billing", () => {
           plan: {
             id: "free",
             name: "Free",
+            subscribed: "free",
+            paymentStatus: null,
             basePriceCents: 0,
+            provisional: false,
             renewsAt: null,
             monthToDateCents: 1999,
           },
@@ -299,6 +302,38 @@ describe("billing", () => {
           spendLimit: { limitCents: null, currentCents: 1999 },
         })
         expect(dollars(1999)).toBe(19.99)
+      }),
+    ))
+
+  it("keeps the billed plan apart from the plan whose limits apply while payment fails", () =>
+    run(
+      Effect.gen(function* () {
+        const summary = yield* decode(BillingSummary)({
+          plan: {
+            id: "free",
+            subscribedId: "team",
+            paymentStatus: "past_due",
+            name: "Free",
+            basePriceCents: 24_900,
+            currency: "usd",
+            renewsAt: "2026-11-01T00:00:00.000Z",
+            monthToDateEstimateCents: 31_337,
+            provisional: true,
+          },
+          paymentMethod: { brand: "visa", lastFour: "0341", expiryMonth: 3, expiryYear: 2029 },
+          billingEmail: "ops@acme.dev",
+          spendLimit: { limitCents: 40_000, currentSpendCents: 31_337 },
+        })
+        expect(toBilling(summary).plan).toEqual({
+          id: "free",
+          name: "Free",
+          subscribed: "team",
+          paymentStatus: "past_due",
+          basePriceCents: 24_900,
+          provisional: true,
+          renewsAt: Date.UTC(2026, 10, 1),
+          monthToDateCents: 31_337,
+        })
       }),
     ))
 
@@ -324,6 +359,33 @@ describe("billing", () => {
           (entry) => decode(Invoice)(entry),
         )
         expect(toInvoices(listed).map((entry) => entry.number)).toEqual(["INV-9", "INV-8", "INV-7"])
+      }),
+    ))
+
+  it("links only invoice PDFs on Stripe's hosts", () =>
+    run(
+      Effect.gen(function* () {
+        const invoice = (number: string, pdfUrl: string) =>
+          decode(Invoice)({
+            id: number,
+            number,
+            periodStart: "2026-09-01T00:00:00.000Z",
+            periodEnd: "2026-10-01T00:00:00.000Z",
+            amountCents: 100,
+            currency: "usd",
+            status: "paid",
+            pdfUrl,
+          })
+        const listed = yield* Effect.all([
+          invoice("INV-1", "https://pay.stripe.com/invoice/acct_1/in_1/pdf"),
+          invoice("INV-2", "javascript:alert(1)"),
+          invoice("INV-3", "https://pay.stripe.com.evil.dev/in_3.pdf"),
+        ])
+        expect(toInvoices(listed).map((entry) => entry.pdfUrl)).toEqual([
+          "https://pay.stripe.com/invoice/acct_1/in_1/pdf",
+          null,
+          null,
+        ])
       }),
     ))
 })
@@ -363,8 +425,64 @@ describe("usage", () => {
           ["Egress", "gigabytes", 0],
         ])
         expect(mapped.projects).toEqual([
-          { id: "prj_1", name: "storefront", commands: 7, estimatedCostCents: 40 },
+          { id: "prj_1", name: "storefront", commands: 7, reads: null, estimatedCostCents: 40 },
         ])
+        expect(mapped.pricing).toEqual({
+          freeCommands: 0,
+          readCommandWeight: 0.1,
+          storagePerGbCents: 15,
+          provisional: false,
+        })
+      }),
+    ))
+
+  it("carries overage, its cost, per-project reads and the published pricing", () =>
+    run(
+      Effect.gen(function* () {
+        const usage = yield* decode(Usage)({
+          period: "2026-10",
+          meters: [
+            {
+              meter: "commands",
+              used: 26_000_000.4,
+              included: 25_000_000,
+              overage: 1_000_000.4,
+              overageCostCents: 100,
+            },
+            { meter: "storageGb", used: 12, included: 10, overage: 2, overageCostCents: 60 },
+          ],
+          commandsPerDay: [],
+          byProject: [
+            {
+              projectId: "prj_2",
+              name: "billing",
+              commands: 3,
+              reads: 11,
+              storageGbMonths: 0.25,
+              estimatedCostCents: 160,
+            },
+          ],
+          pricing: {
+            freeCommands: 1_000_000,
+            readCommandWeight: 0.2,
+            storagePerGbCents: 30,
+            provisional: true,
+          },
+        })
+        const mapped = toUsage(usage)
+        expect(
+          mapped.meters.map((entry) => [entry.meter, entry.overage, entry.overageCostCents]),
+        ).toEqual([
+          ["commands", 1_000_000.4, 100],
+          ["storageGb", 2, 60],
+        ])
+        expect(mapped.projects[0]?.reads).toBe(11)
+        expect(mapped.pricing).toEqual({
+          freeCommands: 1_000_000,
+          readCommandWeight: 0.2,
+          storagePerGbCents: 30,
+          provisional: true,
+        })
       }),
     ))
 })
@@ -447,6 +565,9 @@ describe("setting keys", () => {
     expect(parseSpendLimit(spendLimitValue(50_000))).toBe(50_000)
     expect(parseSpendLimit("12.5")).toBeUndefined()
     expect(parseSpendLimit("-1")).toBeUndefined()
+    expect(parseSpendLimit("")).toBeUndefined()
+    expect(parseSpendLimit(" ")).toBeUndefined()
+    expect(parseSpendLimit("1e5")).toBeUndefined()
   })
 
   it("seeds switches and selects from what the control plane reports, not from unset", () => {
@@ -462,7 +583,16 @@ describe("setting keys", () => {
       },
       notifications: [{ event: "dead_letter", email: true, slack: false }],
       billing: {
-        plan: { id: "pro", name: "Pro", basePriceCents: 2000, renewsAt: null, monthToDateCents: 0 },
+        plan: {
+          id: "pro",
+          name: "Pro",
+          subscribed: "pro",
+          paymentStatus: "active",
+          basePriceCents: 2000,
+          provisional: false,
+          renewsAt: null,
+          monthToDateCents: 0,
+        },
         card: null,
         billingEmail: null,
         spendLimit: { limitCents: null, currentCents: 0 },

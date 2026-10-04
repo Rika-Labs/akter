@@ -21,17 +21,24 @@
     "apps/api": {
       "name": "@akter/api",
       "dependencies": {
+        "@akter/billing": "workspace:*",
         "@akter/cloud-api": "workspace:*",
+        "@akter/deployments": "workspace:*",
+        "@akter/metering": "workspace:*",
+        "@akter/postgres": "workspace:*",
         "@alchemy.run/better-auth": "2.0.0-beta.80",
         "@better-auth/api-key": "1.7.7",
         "@better-auth/core": "1.7.7",
         "@better-auth/sso": "1.7.7",
         "@distilled.cloud/aws": "1.0.0-rc.13",
         "@distilled.cloud/core": "1.0.0-rc.13",
+        "@distilled.cloud/stripe": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "alchemy": "2.0.0-beta.80",
         "better-auth": "1.7.7",
+        "drizzle-orm": "catalog:",
         "effect": "catalog:",
         "pg": "8.23.0",
       },
@@ -48,13 +55,17 @@
         "durable": "./src/main.ts",
       },
       "dependencies": {
+        "@akter/billing": "workspace:*",
         "@akter/deployments": "workspace:*",
+        "@distilled.cloud/stripe": "catalog:",
         "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
         "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
         "@akter/postgres": "workspace:*",
+        "@effect/sql-pglite": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-orm": "catalog:",
         "pg": "8.23.0",
@@ -67,6 +78,7 @@
         "@akter/cloud-api": "workspace:*",
         "@akter/ui": "workspace:*",
         "@effect/platform-browser": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "@stylexjs/stylex": "catalog:",
         "better-auth": "1.7.7",
         "effect": "catalog:",
@@ -93,6 +105,7 @@
     "apps/edge": {
       "name": "@akter/edge",
       "dependencies": {
+        "@akter/billing": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
         "@rikalabs/akter": "workspace:*",
@@ -100,6 +113,7 @@
       },
       "devDependencies": {
         "@akter/deployments": "workspace:*",
+        "@akter/metering": "workspace:*",
         "@akter/postgres": "workspace:*",
         "@types/pg": "8.23.1",
         "pg": "8.23.0",
@@ -133,6 +147,7 @@
         "@distilled.cloud/planetscale": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "alchemy": "catalog:",
         "effect": "catalog:",
       },
@@ -176,6 +191,20 @@
         "@effect/platform-node",
       ],
     },
+    "packages/billing": {
+      "name": "@akter/billing",
+      "dependencies": {
+        "@distilled.cloud/stripe": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "@effect/vitest": "catalog:",
+        "@electric-sql/pglite": "0.5.8",
+        "vitest": "catalog:",
+      },
+    },
     "packages/cloud-api": {
       "name": "@akter/cloud-api",
       "dependencies": {
@@ -188,6 +217,7 @@
     "packages/deployments": {
       "name": "@akter/deployments",
       "dependencies": {
+        "@distilled.cloud/aws": "catalog:",
         "@rikalabs/akter": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
@@ -196,6 +226,7 @@
         "@akter/postgres": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@effect/vitest": "catalog:",
         "@types/pg": "8.23.1",
         "pg": "8.23.0",
         "vitest": "catalog:",
@@ -210,6 +241,20 @@
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
         "@effect/vitest": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
+    "packages/metering": {
+      "name": "@akter/metering",
+      "dependencies": {
+        "@rikalabs/akter": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@types/pg": "8.23.1",
+        "pg": "8.23.0",
         "vitest": "catalog:",
       },
     },
@@ -297,6 +342,7 @@
     "@distilled.cloud/axiom": "1.0.0-rc.13",
     "@distilled.cloud/cloudflare": "1.0.0-rc.13",
     "@distilled.cloud/planetscale": "1.0.0-rc.13",
+    "@distilled.cloud/stripe": "1.0.0-rc.13",
     "@effect/platform-browser": "4.0.0",
     "@effect/platform-bun": "4.0.0",
     "@effect/platform-node": "4.0.0",
@@ -325,6 +371,8 @@
   "packages": {
     "@akter/api": ["@akter/api@workspace:apps/api"],
 
+    "@akter/billing": ["@akter/billing@workspace:packages/billing"],
+
     "@akter/cli": ["@akter/cli@workspace:apps/cli"],
 
     "@akter/cloud-api": ["@akter/cloud-api@workspace:packages/cloud-api"],
@@ -340,6 +388,8 @@
     "@akter/flags": ["@akter/flags@workspace:packages/flags"],
 
     "@akter/infra": ["@akter/infra@workspace:infra"],
+
+    "@akter/metering": ["@akter/metering@workspace:packages/metering"],
 
     "@akter/oxlint": ["@akter/oxlint@workspace:tooling/oxlint"],
 

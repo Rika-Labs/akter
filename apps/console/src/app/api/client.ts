@@ -5,10 +5,21 @@ import {
   type Project,
   type SeriesWindow,
 } from "@akter/cloud-api"
-import { Context, Crypto, Effect, Function, Layer, ManagedRuntime, Predicate, Schema } from "effect"
+import {
+  Context,
+  Crypto,
+  Effect,
+  Function,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Predicate,
+  Schema,
+} from "effect"
 import { BrowserCrypto } from "@effect/platform-browser"
 import { FetchHttpClient } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
+import { quotaMessage, quotaRefusal } from "../quota/errors.ts"
 
 /** The public API mount; the contract already owns its `/api` prefix. */
 export const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api"
@@ -90,11 +101,25 @@ export const consoleError = (cause: unknown): ConsoleError => {
     return ConsoleError.make({ kind: "NotFound", message: "This resource is no longer available." })
   if (Schema.is(Conflict)(cause))
     return ConsoleError.make({ kind: "Conflict", message: cause.message })
+  if (Predicate.isTagged(cause, "CommandExpired"))
+    return ConsoleError.make({
+      kind: "CommandExpired",
+      message: "This command key has expired. Start a new command instead of retrying it.",
+    })
+  if (Predicate.isTagged(cause, "RunnerDefect"))
+    return ConsoleError.make({
+      kind: "RunnerDefect",
+      message:
+        "The runner encountered an internal error. This command was not automatically retried.",
+    })
   if (Predicate.isTagged(cause, "NotImplemented"))
     return ConsoleError.make({
       kind: "NotImplemented",
       message: "This action isn’t available yet.",
     })
+  const refusal = quotaRefusal(cause)
+  if (Option.isSome(refusal))
+    return ConsoleError.make({ kind: refusal.value._tag, message: quotaMessage(refusal.value) })
   return ConsoleError.make({
     kind: "Unavailable",
     message: "We couldn’t reach Akter. Please try again.",

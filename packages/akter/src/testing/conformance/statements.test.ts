@@ -1,5 +1,37 @@
 import { describe, expect, it } from "vitest"
-import { scopeOf } from "./statements.ts"
+import { scopeOf, wireStatements } from "./statements.ts"
+
+describe("wire statement recorder", () => {
+  it("counts fragmented Sync and Query messages without counting startup, Parse or Bind", () => {
+    const startup = Buffer.alloc(8)
+    startup.writeInt32BE(8, 0)
+    startup.writeInt32BE(196608, 4)
+    const message = (type: string, payload = "") => {
+      const body = Buffer.from(payload)
+      const header = Buffer.alloc(5)
+      header.write(type, 0)
+      header.writeInt32BE(body.length + 4, 1)
+
+      return Buffer.concat([header, body])
+    }
+
+    const bytes = Buffer.concat([
+      startup,
+      message("P", "SELECT 1"),
+      message("B"),
+      message("S"),
+      message("P", "SELECT 2"),
+      message("B"),
+      message("S"),
+      message("Q", "ROLLBACK\0"),
+    ])
+    const count = wireStatements()
+    const observations = Array.from(bytes, (byte) => count(Buffer.of(byte)))
+
+    expect(observations.reduce((total, statements) => total + statements, 0)).toBe(3)
+    expect(count(message("S"))).toBe(1)
+  })
+})
 
 describe("statement scope", () => {
   it("calls a statement keyed when it filters or inserts by routing_key", () => {

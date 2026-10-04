@@ -3,6 +3,7 @@ import {
   Context,
   Crypto,
   Deferred,
+  DateTime,
   Effect,
   Exit,
   Fiber,
@@ -11,7 +12,15 @@ import {
   Schema,
   Scope,
 } from "effect"
-import { Actor, ActorError, Actors, MailboxFull, RunnerAtCapacity } from "../../index.ts"
+import {
+  Actor,
+  ActorError,
+  Actors,
+  CommandExpired,
+  MailboxFull,
+  RunnerAtCapacity,
+} from "../../index.ts"
+import { commandTimes } from "../../identity/command.ts"
 import { ACTIVATION_MAILBOX } from "../../runtime/entity/register.ts"
 import type { Request } from "../../runtime/request.ts"
 import { TurnConnections } from "../../runtime/turn/pipeline.ts"
@@ -186,6 +195,38 @@ const reasonOf = (exit: Exit.Exit<unknown, unknown>) => {
  * once with `ActorUnavailable`.
  */
 export const capacityConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "a capacity-rejected command that expires before its first admission never runs or writes a receipt",
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      withCapacity(
+        environment,
+        { maxResidentActors: 1 },
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const resident = yield* Sleepy.get("expiry-resident")
+          const waiting = yield* Sleepy.get("expiry-waiting")
+          expect(yield* resident.Touch()).toBe(1)
+          const minted = commandTimes(yield* (yield* Actors).mintCommandId)
+          const now = DateTime.toEpochMillis(yield* test.now)
+          const id = `v1.${now + 500 - (minted.expiresAt - minted.issuedAt)}.${now + 500}.d1a434bc-10c3-444a-8c76-223f6169c958`
+          const holding = yield* test.pauseNext("beforeCommit")
+          const occupied = yield* resident.Touch().pipe(Effect.forkChild)
+          yield* holding.reached
+
+          const call = yield* waiting
+            .Touch()
+            .pipe(Actor.commandId(id), Effect.flip, Effect.forkChild)
+          yield* Effect.sleep("800 millis")
+          yield* holding.release
+          expect(yield* Fiber.join(occupied)).toBe(2)
+          expect((yield* Fiber.join(call)).reason).toEqual(CommandExpired.make({ commandId: id }))
+          const inspected = yield* test.inspect(waiting.ref)
+          expect(inspected.receipts).toBe(0)
+          expect(inspected.state).toEqual({})
+        }),
+      ),
+  },
   {
     name: "over-capacity load on an unbounded mailbox fails RunnerAtCapacity after deliveryTimeout, never MailboxFull",
     timeoutMs: 30_000,

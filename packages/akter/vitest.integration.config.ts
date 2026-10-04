@@ -48,6 +48,7 @@ export default defineConfig({
             "packages/akter/src/runtime/events/append.test.ts",
             "packages/akter/src/runtime/subscriptions/storage.test.ts",
             "packages/akter/src/runtime/database/neki/session.test.ts",
+            "packages/akter/src/runtime/database/neki/migrations.test.ts",
             "packages/akter/src/runtime/database/coordination.test.ts",
           ],
           exclude: [

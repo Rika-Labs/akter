@@ -666,6 +666,8 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             }
 
             expect(runs.count).toBe(before)
+            expect(first.headers.get("durable-replayed")).toBe("false")
+            expect(replay.headers.get("durable-replayed")).toBe("true")
           }
         }),
       ),
@@ -685,7 +687,9 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             body: { text: "hi" },
           })
 
-          expect((yield* call).body).toBe(1)
+          const first = yield* call
+          expect(first.body).toBe(1)
+          expect(first.headers.get("durable-replayed")).toBe("false")
           const before = runs.count
 
           const retry = yield* server.send("/actors/HttpRoom/replay/Post", {
@@ -696,8 +700,37 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(retry).toMatchObject({ status: 200, body: 1 })
           expect(retry.headers.get("x-request-id")).toBe(key)
+          expect(retry.headers.get("durable-replayed")).toBe("true")
           expect(runs.count).toBe(before)
           expect(yield* receipts(tenant, "HttpRoom", "replay")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "reports one commit and receipt replays for concurrent HTTP retries under one command id",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const key = yield* server.mint()
+          const replies = yield* Effect.forEach(
+            Array.from({ length: 8 }),
+            () =>
+              server.send("/actors/HttpRoom/concurrent-replay/Post", {
+                token: `${tenant}:alice`,
+                key,
+                body: { text: "only once" },
+              }),
+            { concurrency: "unbounded" },
+          )
+          expect(replies.map((reply) => reply.body)).toEqual(Array.from({ length: 8 }, () => 1))
+          expect(
+            replies
+              .map((reply) => reply.headers.get("durable-replayed"))
+              .sort((left, right) => (left ?? "").localeCompare(right ?? "")),
+          ).toEqual(["false", "true", "true", "true", "true", "true", "true", "true"])
+          expect(yield* receipts(tenant, "HttpRoom", "concurrent-replay")).toBe(1)
         }),
       ),
   },

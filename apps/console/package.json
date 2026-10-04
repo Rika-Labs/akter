@@ -8,12 +8,13 @@
     "preview": "bun --bun vite preview --host 127.0.0.1 --port ${CONSOLE_PORT:-3002} --strictPort",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/console/src"
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts"
   },
   "dependencies": {
     "@akter/cloud-api": "workspace:*",
     "@akter/ui": "workspace:*",
     "@effect/platform-browser": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "@stylexjs/stylex": "catalog:",
     "better-auth": "1.7.7",
     "effect": "catalog:",

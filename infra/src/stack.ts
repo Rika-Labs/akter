@@ -34,11 +34,17 @@ export const resources = Effect.gen(function* () {
       restrictPublicBuckets: true,
     },
   }).pipe(adopt(true), retain())
-  const { vpc, subnets, loadBalancer, servicesGroup } = yield* network(config)
+  const { vpc, subnets, loadBalancer, servicesGroup, edgeGroup } = yield* network(config)
   const cluster = yield* AWS.ECS.Cluster("Cluster", {
     clusterName: config.name,
     capacityProviders: ["FARGATE", "FARGATE_SPOT"],
     defaultCapacityProviderStrategy: [{ capacityProvider: "FARGATE", weight: 1 }],
+  })
+  const runnerGroup = yield* AWS.EC2.SecurityGroup("RunnerGroup", {
+    vpcId: vpc.vpcId,
+    ingress: [
+      { ipProtocol: "tcp", fromPort: 8080, toPort: 8080, referencedGroupId: edgeGroup.groupId },
+    ],
   })
   const runnerRepository = yield* AWS.ECR.Repository("RunnerBase", {
     repositoryName: "akter/runner-base",
@@ -59,6 +65,10 @@ export const resources = Effect.gen(function* () {
     name: `${config.name}/auth`,
     kmsKeyId: secretsKey.keyArn,
     generateSecretString: { PasswordLength: 64, ExcludePunctuation: true },
+  })
+  const edgeSigningKeys = yield* AWS.SecretsManager.Secret("EdgeSigningKeys", {
+    name: `${config.name}/edge-signing-keys`,
+    kmsKeyId: secretsKey.keyArn,
   })
   const database = yield* Neki.Database("Database", {
     organization: config.planetscaleOrganization,
@@ -216,9 +226,42 @@ export const resources = Effect.gen(function* () {
               logHeaders.secretArn,
               turnstileSecret.secretArn,
               databaseSecret.secretArn,
+              edgeSigningKeys.secretArn,
             ],
           },
           { Effect: "Allow", Action: ["kms:Decrypt"], Resource: secretsKey.keyArn },
+        ],
+      },
+    },
+  })
+  const runnerExecutionRole = yield* AWS.IAM.Role("RunnerExecutionRole", {
+    assumeRolePolicyDocument: {
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Principal: { Service: "ecs-tasks.amazonaws.com" },
+          Action: ["sts:AssumeRole"],
+        },
+      ],
+    },
+    inlinePolicies: {
+      Images: {
+        Version: "2012-10-17",
+        Statement: [
+          { Effect: "Allow", Action: ["ecr:GetAuthorizationToken"], Resource: "*" },
+          {
+            Effect: "Allow",
+            Action: [
+              "ecr:BatchCheckLayerAvailability",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchGetImage",
+            ],
+            Resource: [
+              runnerRepository.repositoryArn,
+              `arn:aws:ecr:${config.region}:${config.accountId}:repository/akter/runners/*`,
+            ],
+          },
         ],
       },
     },
@@ -235,6 +278,48 @@ export const resources = Effect.gen(function* () {
       ],
     },
     inlinePolicies: {
+      RunnerProvisioning: {
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["ecs:RegisterTaskDefinition"],
+            Resource: `arn:aws:ecs:${config.region}:${config.accountId}:task-definition/akter-runner-*`,
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:DescribeTaskDefinition"],
+            Resource: "*",
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:RunTask"],
+            Resource: `arn:aws:ecs:${config.region}:${config.accountId}:task-definition/akter-runner-*`,
+            Condition: { ArnEquals: { "ecs:cluster": cluster.clusterArn } },
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:StopTask", "ecs:DescribeTasks"],
+            Resource: Output.interpolate`arn:aws:ecs:${config.region}:${config.accountId}:task/${cluster.clusterName}/*`,
+            Condition: {
+              ArnEquals: { "ecs:cluster": cluster.clusterArn },
+              Null: { "aws:ResourceTag/akter:deployment": "false" },
+            },
+          },
+          {
+            Effect: "Allow",
+            Action: ["ecs:TagResource"],
+            Resource: Output.interpolate`arn:aws:ecs:${config.region}:${config.accountId}:task/${cluster.clusterName}/*`,
+            Condition: { StringEquals: { "ecs:CreateAction": "RunTask" } },
+          },
+          {
+            Effect: "Allow",
+            Action: ["iam:PassRole"],
+            Resource: runnerExecutionRole.roleArn,
+            Condition: { StringEquals: { "iam:PassedToService": "ecs-tasks.amazonaws.com" } },
+          },
+        ],
+      },
       CustomerEnvironment: {
         Version: "2012-10-17",
         Statement: [
@@ -273,8 +358,11 @@ export const resources = Effect.gen(function* () {
         protocol: "TCP",
         targetType: "ip",
         healthCheckProtocol: "HTTP",
-        healthCheckPath: "/health",
-        attributes: { "deregistration_delay.timeout_seconds": "120" },
+        healthCheckPath: application.name === "api" ? "/ready" : "/health",
+        attributes: {
+          "deregistration_delay.timeout_seconds": "120",
+          "preserve_client_ip.enabled": application.name === "edge" ? "true" : "false",
+        },
       })
       const listener = yield* AWS.ELBv2.Listener("Listener", {
         loadBalancerArn: loadBalancer.loadBalancerArn,
@@ -302,6 +390,54 @@ export const resources = Effect.gen(function* () {
             environment: [
               { name: "NODE_ENV", value: "production" },
               { name: "PORT", value: String(application.port) },
+              ...(application.name === "api"
+                ? [
+                    { name: "API_PORT", value: String(application.port) },
+                    { name: "API_HOST", value: "0.0.0.0" },
+                    { name: "API_PRODUCTION", value: "true" },
+                    { name: "API_ORIGIN", value: `https://api.${config.zone}` },
+                    { name: "CONSOLE_ORIGIN", value: `https://app.${config.zone}` },
+                    { name: "EMAIL_MODE", value: "ses" },
+                    { name: "EMAIL_FROM", value: `Akter <auth@mail.${config.zone}>` },
+                    { name: "EDGE_ORIGIN", value: `https://edge.${config.zone}` },
+                    { name: "DEPLOYMENT_DOMAIN", value: `apps.${config.zone}` },
+                    {
+                      name: "RUNNER_ECS_CONFIG",
+                      value: Output.all(
+                        cluster.clusterArn,
+                        runnerGroup.groupId,
+                        runnerExecutionRole.roleArn,
+                        ...subnets.map(({ privateSubnetId }) => privateSubnetId),
+                      ).pipe(
+                        Output.map(([clusterArn, groupId, roleArn, ...privateSubnets]) =>
+                          JSON.stringify({
+                            regions: {
+                              [config.region]: {
+                                cluster: clusterArn,
+                                subnets: privateSubnets,
+                                securityGroups: [groupId],
+                              },
+                            },
+                            container: "runner",
+                            port: 8080,
+                            definition: { executionRoleArn: roleArn },
+                          }),
+                        ),
+                      ),
+                    },
+                  ]
+                : []),
+              ...(application.name === "edge"
+                ? [
+                    { name: "EDGE_NLB_ONLY", value: "true" },
+                    {
+                      name: "EDGE_CLOUDFLARE_RANGES",
+                      value:
+                        "173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22",
+                    },
+                    { name: "EDGE_ISSUER", value: `https://edge.${config.zone}` },
+                  ]
+                : []),
               { name: "AWS_REGION", value: config.region },
               { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "https://api.axiom.co" },
               { name: "OTEL_EXPORTER_OTLP_PROTOCOL", value: "http/protobuf" },
@@ -316,7 +452,10 @@ export const resources = Effect.gen(function* () {
               { name: "OTEL_EXPORTER_OTLP_LOGS_HEADERS", valueFrom: logHeaders.secretArn },
               ...(application.name === "console"
                 ? []
-                : [{ name: "DATABASE_URL", valueFrom: databaseSecret.secretArn }]),
+                : [{ name: "CONTROL_PLANE_DATABASE_URL", valueFrom: databaseSecret.secretArn }]),
+              ...(application.name === "edge"
+                ? [{ name: "EDGE_SIGNING_KEYS", valueFrom: edgeSigningKeys.secretArn }]
+                : []),
               ...(application.name === "api"
                 ? [
                     {
@@ -337,10 +476,10 @@ export const resources = Effect.gen(function* () {
         cluster,
         task,
         serviceName: application.name,
-        desiredCount: config.stage === "prod" ? 2 : 1,
+        desiredCount: application.name === "api" ? 1 : config.stage === "prod" ? 2 : 1,
         subnets: subnets.map(({ privateSubnetId }) => privateSubnetId),
         vpcId: vpc.vpcId,
-        securityGroups: [servicesGroup.groupId],
+        securityGroups: [application.name === "edge" ? edgeGroup.groupId : servicesGroup.groupId],
         assignPublicIp: false,
         capacityProviderStrategy: [{ capacityProvider: "FARGATE", weight: 1 }],
         loadBalancers: [
@@ -352,7 +491,7 @@ export const resources = Effect.gen(function* () {
         ],
       })
       const service = yield* declareService
-      const hostname = `${application.name}.${config.zone}`
+      const hostname = `${application.name === "console" ? "app" : application.name}.${config.zone}`
       const dns = yield* Cloudflare.DNS.Record("Dns", {
         zoneId: zone.zoneId,
         name: hostname,

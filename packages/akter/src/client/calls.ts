@@ -188,6 +188,7 @@ const retryDelay = (retry: Retry, clock: DatabaseClock) => (attempted: Attempted
       Match.tags({
         ActorUnavailable: () => retryAfterOf(failure),
         RunnerAtCapacity: () => retryAfterOf(failure),
+        ConnectionLimitExceeded: () => retryAfterOf(failure),
         MailboxFull: () => retryAfterOf(failure),
         Timeout: () => Effect.asSome(jittered(50)),
         TransportError: (reason) =>

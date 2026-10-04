@@ -38,11 +38,18 @@ export class NotImplemented extends Schema.TaggedError<NotImplemented>()(
   { httpApiStatus: 501 },
 ) {}
 
+/** A deployment or its edge is temporarily unavailable; callers retry with the same command identity. */
+export class Unavailable extends Schema.TaggedError<Unavailable>()(
+  "Unavailable",
+  { message: Schema.String, retryAfterSeconds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)) },
+  { httpApiStatus: 503 },
+) {}
+
 /** Errors every authenticated read can raise besides `Unauthorized`, which the middleware owns. */
-export const ReadErrors = [Forbidden, NotFound, NotImplemented] as const
+export const ReadErrors = [Forbidden, NotFound, NotImplemented, Unavailable] as const
 
 /** Errors every mutation can raise besides `Unauthorized`, which the middleware owns. */
-export const WriteErrors = [Forbidden, NotFound, Conflict, NotImplemented] as const
+export const WriteErrors = [Forbidden, NotFound, Conflict, NotImplemented, Unavailable] as const
 
 /** Errors for operations on no existing resource, such as listing the caller's own data. */
 export const SelfErrors = [Forbidden, NotImplemented] as const

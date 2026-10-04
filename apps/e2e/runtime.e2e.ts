@@ -1,4 +1,4 @@
-import { expect, test, type Route } from "@playwright/test"
+import { expect, type Page, test, type Route } from "@playwright/test"
 import { Deferred, Effect, Schema } from "effect"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
@@ -44,6 +44,12 @@ const inspector = {
   },
   timeline: [],
 }
+
+const deploymentNotFound = (path: string) => ({
+  status: 404,
+  contentType: "application/json",
+  body: `{"_tag":"NotFound","resource":"deployment","id":"${path.split("/").at(-1) ?? ""}"}`,
+})
 
 const controlPlane = (route: Route) => {
   const path = new URL(route.request().url()).pathname
@@ -374,6 +380,7 @@ test("rolls back to the previous successful deployment and shows the returned pr
       return route.fulfill({ json: { ...current, steps: [], runners: [] } })
     if (path.endsWith("/deployments/deploy_rollback"))
       return route.fulfill({ json: { ...next, steps: [], runners: [] } })
+    if (/\/deployments\/[^/]+$/.test(path)) return route.fulfill(deploymentNotFound(path))
     return controlPlane(route)
   })
   await page.goto(`${origin}/deployments/aaaaaaa`)
@@ -382,10 +389,206 @@ test("rolls back to the previous successful deployment and shows the returned pr
   await expect(page.getByRole("option")).toHaveCount(1)
   await page.getByRole("button", { name: "Roll back", exact: true }).click()
   await page.getByRole("dialog").getByRole("button", { name: "Roll back", exact: true }).click()
-  await expect(page).toHaveURL(`${origin}/deployments/bbbbbbb`)
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_rollback`)
   await expect(page.getByRole("heading", { name: "Restoring previous release" })).toBeVisible()
   await expect(page.getByRole("main")).toContainText("rolled back from bbbbbbb")
   expect(posted).toBe(true)
+})
+
+interface RunnerRow {
+  readonly id: string
+  readonly region: string
+  readonly actorCount: number | null
+  readonly cpuPercent: number | null
+  readonly health: string
+}
+
+const liveDeployment = {
+  id: "deploy_live",
+  projectId: "runtime_project",
+  environment: "production",
+  commitSha: "aaaaaaa",
+  message: "Current release",
+  author: { name: "Operator", image: null },
+  regions: ["us-west-2"],
+  runnerCount: 2,
+  durationMs: 40 as number | null,
+  status: "live",
+  rolledBackFrom: null as string | null,
+  createdAt: "2026-10-03T10:00:00Z",
+}
+const drainedDeployment = {
+  ...liveDeployment,
+  id: "deploy_drained",
+  commitSha: "bbbbbbb",
+  message: "Previous release",
+  status: "drained",
+  createdAt: "2026-10-03T08:00:00Z",
+}
+
+const serveDeployments = (
+  page: Page,
+  options: Readonly<{
+    history?: () => ReadonlyArray<typeof liveDeployment>
+    runners?: ReadonlyArray<RunnerRow>
+    onPost: (path: string, route: Route) => Promise<void>
+  }>,
+) =>
+  page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (route.request().method() === "POST") return options.onPost(path, route)
+    const history = options.history?.() ?? [liveDeployment, drainedDeployment]
+    if (path === "/api/projects/runtime_project/deployments")
+      return route.fulfill({ json: { items: history, nextCursor: null } })
+    if (path.endsWith("/build-log")) return route.fulfill({ json: { lines: [], complete: true } })
+    const detail = history.find((deployment) => path.endsWith(`/deployments/${deployment.id}`))
+    if (detail !== undefined)
+      return route.fulfill({ json: { ...detail, steps: [], runners: options.runners ?? [] } })
+    return controlPlane(route)
+  })
+
+test("shows unmeasured runner telemetry as unknown and measured zeroes as zero", async ({
+  page,
+}) => {
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await serveDeployments(page, {
+    runners: [
+      {
+        id: "runner-unmeasured",
+        region: "us-west-2",
+        actorCount: null,
+        cpuPercent: null,
+        health: "healthy",
+      },
+      { id: "runner-idle", region: "us-west-2", actorCount: 0, cpuPercent: 0, health: "starting" },
+    ],
+    onPost: () => Promise.reject(new Error("viewing a deployment must not change it")),
+  })
+  await page.goto(`${origin}/deployments/deploy_live`)
+  const runners = page.getByRole("table", { name: "Runners" })
+  await expect(runners.getByRole("row").filter({ hasText: "runner-unmeasured" })).toContainText(
+    /us-west-2\s*—\s*—\s*Healthy/,
+  )
+  await expect(runners.getByRole("row").filter({ hasText: "runner-idle" })).toContainText(
+    /us-west-2\s*0\s*0%\s*Starting/,
+  )
+  await expect(page.getByRole("note")).toHaveCount(0)
+})
+
+test("asks before rolling back and shows a refused rollback instead of a success", async ({
+  page,
+}) => {
+  const posts: Array<string> = []
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await serveDeployments(page, {
+    onPost: (path, route) => {
+      posts.push(path)
+      return route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: '{"_tag":"Conflict","message":"A rollout is already in progress"}',
+      })
+    },
+  })
+  await page.goto(`${origin}/deployments/deploy_live`)
+  await expect(page.getByRole("heading", { name: "Current release" })).toBeVisible()
+  await page.getByRole("button", { name: "Roll back", exact: true }).click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog).toContainText("Roll back to bbbbbbb?")
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  await expect(dialog).toBeHidden()
+  expect(posts).toEqual([])
+  await page.getByRole("button", { name: "Roll back", exact: true }).click()
+  await dialog.getByRole("button", { name: "Roll back", exact: true }).click()
+  await expect(
+    page.getByRole("status").filter({ hasText: "A rollout is already in progress" }),
+  ).toBeVisible()
+  await expect(page.getByRole("status").filter({ hasText: "Rolling back" })).toHaveCount(0)
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_live`)
+  expect(posts).toEqual(["/api/projects/runtime_project/deployments/deploy_drained/rollback"])
+})
+
+test("asks before redeploying and opens the new deployment the server started", async ({
+  page,
+}) => {
+  const posts: Array<string> = []
+  const started = {
+    ...liveDeployment,
+    id: "deploy_again",
+    message: "Redeploy deploy_live",
+    status: "in-progress",
+    durationMs: null,
+    createdAt: "2026-10-03T11:00:00Z",
+  }
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await serveDeployments(page, {
+    history: () =>
+      posts.length === 0
+        ? [liveDeployment, drainedDeployment]
+        : [started, liveDeployment, drainedDeployment],
+    onPost: (path, route) => {
+      posts.push(path)
+      return route.fulfill({ json: { ...started, steps: [], runners: [] } })
+    },
+  })
+  await page.goto(`${origin}/deployments/deploy_live`)
+  await page.getByRole("button", { name: "Redeploy", exact: true }).click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog).toContainText("Redeploy aaaaaaa?")
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  expect(posts).toEqual([])
+  await page.getByRole("button", { name: "Redeploy", exact: true }).click()
+  await dialog.getByRole("button", { name: "Redeploy", exact: true }).click()
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_again`)
+  await expect(page.getByRole("heading", { name: "Redeploy deploy_live" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Redeploy", exact: true })).toBeDisabled()
+  expect(posts).toEqual(["/api/projects/runtime_project/deployments/deploy_live/redeploy"])
+})
+
+test("keeps live jobs and command sending on an inspector the runtime cannot inspect yet", async ({
+  page,
+}) => {
+  let sent = 0
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Counter/hits/jobs"))
+      return route.fulfill({
+        json: [{ name: "Notify", id: "job_live_7", attempts: 2, status: "retrying" }],
+      })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      sent += 1
+      expect(route.request().postDataJSON()).toMatchObject({
+        address: "Counter/hits",
+        command: "Increment",
+        payload: 3,
+      })
+      return route.fulfill({
+        json: { commandId: "cmd_live", result: { count: 3 }, replayed: false },
+      })
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Counter/hits?tab=jobs`)
+  await expect(page.getByRole("heading", { name: "Counter/hits" })).toBeVisible()
+  await expect(page.getByRole("note")).toContainText("Sample data")
+  await expect(page.getByRole("table", { name: "Jobs" })).toContainText("job_live_7")
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Increment")
+  await dialog.getByLabel("Payload", { exact: true }).fill("3")
+  await dialog.getByRole("button", { name: "Send command" }).click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  await expect(dialog.getByRole("figure")).toContainText('"count": 3')
+  expect(sent).toBe(1)
 })
 
 test("reloads the overview latency histogram window and preserves its unbounded tail", async ({
@@ -443,4 +646,250 @@ test("reloads the overview latency histogram window and preserves its unbounded 
   await page.getByRole("button", { name: "Last 7 days", exact: true }).click()
   await expect(distribution).toContainText("≤ 2.0 ms: 19, > 2.0 ms: 13")
   expect(windows).toEqual(["24h", "7d"])
+})
+
+const signIn = (page: Page) =>
+  page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+
+const commandRoute = (
+  page: Page,
+  answer: (body: { commandId: string; payload: unknown }) => Parameters<Route["fulfill"]>[0],
+) =>
+  page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Order/ord-live")) return route.fulfill({ json: inspector })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST")
+      return route.fulfill(answer(route.request().postDataJSON()))
+    return controlPlane(route)
+  })
+
+const openSendDialog = async (page: Page) => {
+  await page.goto(`${origin}/actors/Order/ord-live`)
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Refund")
+  await dialog.getByLabel("Payload", { exact: true }).fill('{"amount":17}')
+  return { dialog, submit: dialog.getByRole("button", { name: "Send command", exact: true }) }
+}
+
+test("retries a submission with its own command ID, shows the replay quietly and mints a new ID for new input", async ({
+  page,
+}) => {
+  const ids: Array<string> = []
+  await signIn(page)
+  await commandRoute(page, (body) => {
+    const replayed = ids.includes(body.commandId)
+    ids.push(body.commandId)
+    return { json: { commandId: body.commandId, result: { balance: ids.length }, replayed } }
+  })
+  const { dialog, submit } = await openSendDialog(page)
+  await expect(dialog.getByLabel("Command ID (optional)")).toHaveValue("")
+  await submit.click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/)
+  await submit.click()
+  await expect(dialog.getByText("Replayed — returned the stored receipt.")).toBeVisible()
+  await expect(dialog.getByRole("alert")).toHaveCount(0)
+  await dialog.getByLabel("Payload", { exact: true }).fill('{ "amount": 17 }')
+  await expect(
+    dialog.getByText("The command or payload changed, so sending it uses a new command ID."),
+  ).toHaveCount(0)
+  await dialog.getByLabel("Payload", { exact: true }).fill('{"amount":18}')
+  await expect(
+    dialog.getByText("The command or payload changed, so sending it uses a new command ID."),
+  ).toBeVisible()
+  await submit.click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  expect(ids).toHaveLength(3)
+  expect(ids[1]).toBe(ids[0])
+  expect(ids[2]).toMatch(/^[0-9a-f-]{36}$/)
+  expect(ids[2]).not.toBe(ids[0])
+  await expect(dialog.getByLabel("Command ID (optional)")).toHaveValue(ids[2]!)
+})
+
+test("explains an expired command ID and only sends again as a new command", async ({ page }) => {
+  const ids: Array<string> = []
+  await signIn(page)
+  await commandRoute(page, (body) => {
+    ids.push(body.commandId)
+    return ids.length === 1
+      ? {
+          status: 410,
+          contentType: "application/json",
+          body: `{"_tag":"CommandExpired","commandId":"${body.commandId}"}`,
+        }
+      : { json: { commandId: body.commandId, result: { balance: 3 }, replayed: false } }
+  })
+  const { dialog, submit } = await openSendDialog(page)
+  await dialog.getByLabel("Command ID (optional)").fill("old-key")
+  await submit.click()
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "This command ID’s retry window has closed, so Akter won’t run it again. Clear the Command ID to send it as a new command.",
+  )
+  await expect(submit).toBeDisabled()
+  await dialog.getByLabel("Command ID (optional)").fill("")
+  await expect(submit).toBeEnabled()
+  await submit.click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  expect(ids[0]).toBe("old-key")
+  expect(ids[1]).toMatch(/^[0-9a-f-]{36}$/)
+})
+
+test("reports a runner defect once and offers no retry", async ({ page }) => {
+  let sends = 0
+  await signIn(page)
+  await commandRoute(page, () => {
+    sends += 1
+    return { status: 502, contentType: "application/json", body: '{"_tag":"RunnerDefect"}' }
+  })
+  const { dialog, submit } = await openSendDialog(page)
+  await submit.click()
+  await expect(dialog.getByRole("alert")).toContainText(
+    "The runner hit an internal error while running this command. It wasn’t retried and can’t be resent with this command ID.",
+  )
+  await expect(submit).toBeDisabled()
+  await submit.dispatchEvent("click")
+  await page.waitForTimeout(300)
+  expect(sends).toBe(1)
+})
+
+test("offers Send first command for an actor no command has reached, and only then", async ({
+  page,
+}) => {
+  const sent: Array<unknown> = []
+  await signIn(page)
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Counter/fresh/jobs"))
+      return sent.length === 0
+        ? route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: '{"_tag":"NotFound","resource":"actor","id":"Counter/fresh"}',
+          })
+        : route.fulfill({ json: [] })
+    if (path.endsWith("/runtime/actors/Counter/denied/jobs"))
+      return route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: '{"_tag":"Forbidden","message":"No access to this actor"}',
+      })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      sent.push(route.request().postDataJSON())
+      return route.fulfill({
+        json: { commandId: "cmd_first", result: { count: 1 }, replayed: false },
+      })
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Counter/denied`)
+  await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Send first command" })).toHaveCount(0)
+
+  await page.goto(`${origin}/actors/Counter/fresh`)
+  await expect(
+    page.getByRole("heading", { name: "Counter/fresh hasn’t received a command yet" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Send first command" }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await expect(dialog).toContainText("To Counter/fresh in production (runtime_project)")
+  await dialog.getByLabel("Command", { exact: true }).fill("Increment")
+  await dialog.getByLabel("Payload", { exact: true }).fill("1")
+  await dialog.getByRole("button", { name: "Send command", exact: true }).click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  expect(sent).toEqual([
+    expect.objectContaining({ address: "Counter/fresh", command: "Increment", payload: 1 }),
+  ])
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  await expect(page.getByRole("heading", { name: "Counter/fresh", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Send first command" })).toHaveCount(0)
+})
+
+const rollback = {
+  ...drainedDeployment,
+  id: "deploy_rollback",
+  message: "Rollback to bbbbbbb: Previous release",
+  status: "in-progress",
+  durationMs: null,
+  rolledBackFrom: "deploy_drained",
+  createdAt: "2026-10-03T11:00:00Z",
+}
+
+/** Serves the live and drained deployments and holds every POST until `release` resolves. */
+const holdRollback = async (page: Page) => {
+  const posts: Array<string> = []
+  const held = Deferred.makeUnsafe<void>()
+  await signIn(page)
+  await serveDeployments(page, {
+    history: () =>
+      posts.length === 0
+        ? [liveDeployment, drainedDeployment]
+        : [rollback, liveDeployment, drainedDeployment],
+    onPost: async (path, route) => {
+      posts.push(path)
+      await Effect.runPromise(Deferred.await(held))
+      await route.fulfill({ json: { ...rollback, steps: [], runners: [] } })
+    },
+  })
+  return { posts, release: () => Effect.runPromise(Deferred.succeed(held, undefined)) }
+}
+
+test("a double-clicked rollback sends one POST and opens the new deployment under its own title", async ({
+  page,
+}) => {
+  const { posts, release } = await holdRollback(page)
+  await page.goto(`${origin}/deployments/deploy_live`)
+  await page.getByRole("button", { name: "Roll back", exact: true }).click()
+  await page.getByRole("dialog").getByRole("button", { name: "Roll back", exact: true }).dblclick()
+  await expect.poll(() => posts.length).toBe(1)
+  await expect(page.getByRole("button", { name: "Roll back", exact: true })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Redeploy", exact: true })).toBeDisabled()
+  await page.waitForTimeout(300)
+  expect(posts).toEqual(["/api/projects/runtime_project/deployments/deploy_drained/rollback"])
+  await release()
+  await expect(page).toHaveURL(`${origin}/deployments/deploy_rollback`)
+  await expect(
+    page.getByRole("heading", { name: "Rollback to bbbbbbb: Previous release" }),
+  ).toBeVisible()
+  expect(posts).toHaveLength(1)
+})
+
+test("stays on the page the user moved to when a rollback lands", async ({ page }) => {
+  const { posts, release } = await holdRollback(page)
+  await page.goto(`${origin}/deployments/deploy_live`)
+  await page.getByRole("button", { name: "Roll back", exact: true }).click()
+  await page.getByRole("dialog").getByRole("button", { name: "Roll back", exact: true }).click()
+  await expect.poll(() => posts.length).toBe(1)
+  await page
+    .getByRole("navigation", { name: "Project" })
+    .getByRole("link", { name: "Actors", exact: true })
+    .click()
+  await expect(page).toHaveURL(`${origin}/actors`)
+  await release()
+  await expect(
+    page.getByRole("status").filter({ hasText: "Rollback to bbbbbbb: Previous release" }),
+  ).toBeVisible()
+  await expect(page).toHaveURL(`${origin}/actors`)
+})
+
+test("shows not found for an unknown deployment id instead of another deployment", async ({
+  page,
+}) => {
+  const lists: Array<string> = []
+  await signIn(page)
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === "/api/projects/runtime_project/deployments") {
+      lists.push(path)
+      return route.fulfill({ json: { items: [liveDeployment], nextCursor: null } })
+    }
+    if (/\/deployments\/[^/]+$/.test(path)) return route.fulfill(deploymentNotFound(path))
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/deployments/deploy_missing`)
+  await expect(page.getByRole("heading", { name: "This page drifted off" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Current release" })).toHaveCount(0)
+  expect(lists).toEqual([])
 })
