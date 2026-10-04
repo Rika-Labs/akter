@@ -82,4 +82,23 @@ describe("command tail mapping", () => {
         ).toBe(0)
       }),
     ))
+
+  it("writes a turn whose time and duration the runners do not report as dashes, keeping the page newest first", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const newer = yield* decode(
+          CommandLogEntry,
+          entry({ at: null, durationMs: null, payloadPreview: null, command: "Refund" }),
+        )
+        const older = yield* decode(
+          CommandLogEntry,
+          entry({ at: null, durationMs: null, payloadPreview: null, command: "Place" }),
+        )
+        expect(toTailEntry(0)(newer)).toMatchObject({ time: "—", took: "—" })
+        expect(toRecentTurns([newer, older]).map((turn) => [turn.sequence, turn.command])).toEqual([
+          [1, "Refund"],
+          [0, "Place"],
+        ])
+      }),
+    ))
 })

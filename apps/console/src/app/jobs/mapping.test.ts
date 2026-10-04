@@ -61,4 +61,29 @@ describe("jobs mapping", () => {
         expect(page.deadLetters.map((row) => row.id)).toEqual(["dl_9"])
       }),
     ))
+
+  it("writes running jobs, jobs done and p99 the runners do not report as unknown", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const page = toJobsPage(now)({
+          summary: yield* decode(JobsSummary, {
+            queued: 2,
+            running: null,
+            retrying: 1,
+            dead: 1,
+            byType: [{ jobName: "Charge", done: null, retried: 1, dead: 1, p99Ms: null }],
+            throughput: null,
+          }),
+          deadLetters: [],
+        })
+        expect(page).toMatchObject({
+          queued: 2,
+          running: null,
+          retrying: 1,
+          types: [{ name: "Charge", done: null, retried: 1, dead: 1, p99: "—" }],
+          labels: [],
+          throughput: [],
+        })
+      }),
+    ))
 })

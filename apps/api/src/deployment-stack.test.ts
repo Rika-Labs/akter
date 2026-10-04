@@ -1068,7 +1068,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
     () =>
       Effect.gen(function* () {
         const images = yield* Images
-        const { app, call, alice, aliceId, mallory, suffix, project, deploy, settled } =
+        const { app, call, alice, aliceId, mallory, suffix, project, deploy, settled, detail } =
           yield* startStack()
 
         const deployed = yield* deploy("a", images.v1)
@@ -1096,6 +1096,9 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const seven = yield* sent("Ledger/a", "Record", 7)
         const one = yield* sent("Ledger/b", "Record", 1)
         expect([five.result, seven.result, one.result]).toEqual([5, 12, 1])
+        const adjusted = yield* sent("Ledger/a", "Adjust", 3)
+        expect(adjusted.result).toBe(15)
+        yield* sent("Ledger/b", "Queue", 4)
         const noted = yield* sent("Ledger/a", "Note", "hello")
         const refusal = yield* send("Ledger/a", "Refuse", "no")
         expect(refusal.status).toBe(422)
@@ -1120,20 +1123,22 @@ layer(Layer.provideMerge(ImagesLive, services), {
           )
 
         yield* poll(
-          "every Settle job to dead-letter",
+          "every Settle job to dead-letter and the Retry job to fail its first attempt",
           90,
-          rows<{ dead: number; pending: number }>(
-            "SELECT (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = 'default') AS dead, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default') AS pending",
+          rows<{ dead: number; retrying: number; queued: number }>(
+            "SELECT (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = 'default') AS dead, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default' AND job = 'Retry' AND attempts > 0) AS retrying, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default' AND job = 'Later' AND attempts = 0) AS queued",
           ),
-          ([found]) => found?.dead === 3 && found.pending === 0,
+          ([found]) => found?.dead === 3 && found.retrying === 1 && found.queued === 1,
         )
         yield* poll(
-          "the review to suspend on its clock",
+          "the review to suspend on its clock and the other two runs to finish",
           90,
-          rows<{ status: string }>("SELECT status FROM durable.workflows WHERE execution_id = $1", [
-            executionId,
-          ]),
-          ([found]) => found?.status === "suspended",
+          rows<{ workflow: string; status: string }>(
+            "SELECT workflow, status FROM durable.workflows WHERE tenant_id = 'default' ORDER BY workflow",
+          ),
+          (found) =>
+            found.map((row) => `${row.workflow}:${row.status}`).join(",") ===
+            "Doomed:finished,Quick:finished,Review:suspended",
         )
 
         const get = <A, I>(path: string, schema: Schema.Codec<A, I>, cookie = alice) =>
@@ -1179,10 +1184,15 @@ layer(Layer.provideMerge(ImagesLive, services), {
           "SELECT (SELECT count(*)::int FROM durable.actors WHERE tenant_id = 'default') AS actors, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default') AS jobs, (SELECT count(*)::int FROM durable.timers WHERE tenant_id = 'default') AS timers",
         )
         expect(counts?.actors).toBe(3)
-        expect(yield* get("/overview", Cloud.Overview)).toEqual({
+        expect(counts?.jobs).toBe(2)
+        const overview = yield* get("/overview", Cloud.Overview)
+        expect({
+          ...overview,
+          health: { ...overview.health, lastDeployAt: millis(overview.health.lastDeployAt) },
+        }).toEqual({
           commands: null,
           actors: { awake: null, total: 3 },
-          jobs: { inFlight: counts?.jobs, donePerHour: null },
+          jobs: { inFlight: 2, donePerHour: null },
           deadLettersByJobType: [{ jobName: "Settle", count: 3 }],
           throughput: null,
           p99: null,
@@ -1192,7 +1202,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
             maxMailbox: null,
             parkedSockets: null,
             outboxLagP99Ms: null,
-            lastDeployAt: null,
+            lastDeployAt: DateTime.toEpochMillis((yield* detail(deployed)).createdAt),
           },
           recentDeployments: null,
         })
@@ -1243,11 +1253,15 @@ layer(Layer.provideMerge(ImagesLive, services), {
 
         const search = (q: string) =>
           get(`/search?q=${encodeURIComponent(q)}`, Schema.Array(Cloud.SearchResult)).pipe(
-            Effect.map((results) => results.map((result) => result.id)),
+            Effect.map((results) => results.map((result) => `${result.kind} ${result.id}`)),
           )
-        expect(yield* search("Ledger/")).toEqual(["Ledger/a", "Ledger/b"])
-        expect(yield* search("Led")).toEqual(["Ledger/a", "Ledger/b"])
-        expect(yield* search("Counter/so")).toEqual(["Counter/solo"])
+        expect(yield* search("Ledger/")).toEqual(["actor Ledger/a", "actor Ledger/b"])
+        expect(yield* search("Led")).toEqual([
+          "actor-type Ledger",
+          "actor Ledger/a",
+          "actor Ledger/b",
+        ])
+        expect(yield* search("Counter/so")).toEqual(["actor Counter/solo"])
         expect(yield* search("Ledger/z")).toEqual([])
 
         const receiptRows = yield* rows<{
@@ -1273,6 +1287,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const sentToA = new Map([
           [five.commandId, "Record"],
           [seven.commandId, "Record"],
+          [adjusted.commandId, "Adjust"],
           [noted.commandId, "Note"],
           [refused.commandId, "Refuse"],
           [opened.commandId, "OpenReview"],
@@ -1308,28 +1323,62 @@ layer(Layer.provideMerge(ImagesLive, services), {
           "Failure",
         )
 
-        const events = yield* rows<{ sequence: number; command_id: string; emitted_at_ms: string }>(
-          "SELECT sequence::int AS sequence, command_id, emitted_at_ms::text FROM durable.events WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND actor_id = 'a' ORDER BY sequence",
+        const events = yield* rows<{
+          sequence: number
+          event: string
+          command_id: string
+          emitted_at_ms: string
+        }>(
+          "SELECT sequence::int AS sequence, event, command_id, emitted_at_ms::text FROM durable.events WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND actor_id = 'a' ORDER BY sequence DESC",
         )
-        expect(events.map((event) => event.command_id)).toEqual([five.commandId, seven.commandId])
-        const at = (commandId: string) =>
-          Number(events.find((event) => event.command_id === commandId)?.emitted_at_ms)
+        expect(events.map((event) => [event.sequence, event.event, event.command_id])).toEqual([
+          [4, "Adjusted", adjusted.commandId],
+          [3, "Recorded", adjusted.commandId],
+          [2, "Recorded", seven.commandId],
+          [1, "Recorded", five.commandId],
+        ])
+        const emitted = (sequence: number) =>
+          Number(events.find((event) => event.sequence === sequence)?.emitted_at_ms)
 
-        expect(
-          (yield* get("/actors/Ledger/a/events", Schema.Array(Cloud.ActorEvent))).map((event) => ({
-            ...event,
-            emittedAt: millis(event.emittedAt),
-          })),
-        ).toEqual([
-          { name: "Recorded", cursor: "2", emittedAt: at(seven.commandId), subscribers: null },
+        const listedEvents = (yield* get(
+          "/actors/Ledger/a/events",
+          Schema.Array(Cloud.ActorEvent),
+        )).map((event) => ({ ...event, emittedAt: millis(event.emittedAt) }))
+        expect(listedEvents).toEqual([
+          { name: "Adjusted", cursor: "4", emittedAt: emitted(4), subscribers: null },
+          { name: "Recorded", cursor: "3", emittedAt: emitted(3), subscribers: null },
         ])
 
-        const expectedTimeline = [
-          { kind: "event", label: "Recorded", detail: seven.commandId, at: at(seven.commandId) },
-          { kind: "command", label: "Record", detail: seven.commandId, at: at(seven.commandId) },
-          { kind: "event", label: "Recorded", detail: five.commandId, at: at(five.commandId) },
-          { kind: "command", label: "Record", detail: five.commandId, at: at(five.commandId) },
-        ].map((entry) => ({ ...entry, caller: asAlice }))
+        const expectedTimeline = events.flatMap((event, index) => {
+          const entry = {
+            kind: "event",
+            label: event.event,
+            detail: event.command_id,
+            at: Number(event.emitted_at_ms),
+            caller: asAlice,
+          }
+          if (events[index + 1]?.command_id === event.command_id) return [entry]
+          const own = events.filter((other) => other.command_id === event.command_id)
+          return [
+            entry,
+            {
+              kind: "command",
+              label: sentToA.get(event.command_id),
+              detail: event.command_id,
+              at: Math.min(...own.map((other) => Number(other.emitted_at_ms))),
+              caller: asAlice,
+            },
+          ]
+        })
+        expect(expectedTimeline.map((entry) => `${entry.kind} ${String(entry.label)}`)).toEqual([
+          "event Adjusted",
+          "event Recorded",
+          "command Adjust",
+          "event Recorded",
+          "command Record",
+          "event Recorded",
+          "command Record",
+        ])
         const timeline = yield* every("/actors/Ledger/a/timeline?limit=3", Cloud.ActorTimelineEntry)
         expect(timeline.map((entry) => ({ ...entry, at: millis(entry.at) }))).toEqual(
           expectedTimeline,
@@ -1338,7 +1387,10 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const inspected = yield* get("/actors/Ledger/a", Cloud.ActorInspector)
         expect(inspected.receipts).toEqual(receipts)
         expect(inspected.timeline).toEqual(timeline)
-        expect(inspected.state).toEqual({ total: 12 })
+        expect(
+          inspected.events.map((event) => ({ ...event, emittedAt: millis(event.emittedAt) })),
+        ).toEqual(listedEvents)
+        expect(inspected.state).toEqual({ total: 15 })
 
         const missingActor = yield* call(`${runtime}/actors/Ledger/missing/receipts`, {
           cookie: alice,
@@ -1348,17 +1400,29 @@ layer(Layer.provideMerge(ImagesLive, services), {
           resource: "actor",
           id: "Ledger/missing",
         })
-        expect(
-          (yield* call(`${runtime}/actors/Ledger/a/receipts?cursor=not-ours`, { cookie: alice }))
-            .status,
-        ).toBe(404)
+        const tampered = (expiresAtMs: number) =>
+          Buffer.from(
+            JSON.stringify({ actorType: "Ledger", actorId: "a", expiresAtMs, commandId: "x" }),
+          ).toString("base64url")
+        for (const cursor of ["not-ours", tampered(1.5), tampered(1e21), tampered(-1)]) {
+          const refusedCursor = yield* call(
+            `${runtime}/actors/Ledger/a/receipts?cursor=${cursor}`,
+            { cookie: alice },
+          )
+          expect([cursor, refusedCursor.status]).toEqual([cursor, 404])
+          expect(yield* read(refusedCursor, Cloud.NotFound)).toMatchObject({ resource: "cursor" })
+        }
 
         expect(yield* get("/jobs", Cloud.JobsSummary)).toEqual({
-          queued: 0,
+          queued: 1,
           running: null,
-          retrying: 0,
+          retrying: 1,
           dead: 3,
-          byType: [{ jobName: "Settle", done: null, retried: 0, dead: 3, p99Ms: null }],
+          byType: [
+            { jobName: "Later", done: null, retried: 0, dead: 0, p99Ms: null },
+            { jobName: "Retry", done: null, retried: 1, dead: 0, p99Ms: null },
+            { jobName: "Settle", done: null, retried: 0, dead: 3, p99Ms: null },
+          ],
           throughput: null,
         })
 
@@ -1371,8 +1435,11 @@ layer(Layer.provideMerge(ImagesLive, services), {
         }>(
           "SELECT actor_id, job_id, attempts::int AS attempts, cause, dead_at_ms::text FROM durable.dead_letters WHERE tenant_id = 'default'",
         )
+        const letters = yield* every("/dead-letters?limit=2", Cloud.DeadLetter)
+        for (const letter of letters)
+          expect(letter.lastError).not.toMatch(/\sat\s|node_modules|\/workspace|\.[cm]?[jt]s:\d/u)
         expect(
-          (yield* every("/dead-letters?limit=2", Cloud.DeadLetter)).map((letter) => ({
+          letters.map((letter) => ({
             ...letter,
             since: millis(letter.since),
           })),
@@ -1389,35 +1456,43 @@ layer(Layer.provideMerge(ImagesLive, services), {
               jobId: row.job_id,
               actor: `Ledger/${row.actor_id}`,
               attempts: row.attempts,
-              lastError: row.cause,
+              lastError: "Unsettled",
               since: Number(row.dead_at_ms),
             })),
         )
         expect(deadRows.map((row) => row.actor_id).toSorted()).toEqual(["a", "a", "b"])
 
-        const [started] = yield* rows<{ started_at_ms: string }>(
-          "SELECT started_at_ms::text FROM durable.workflows WHERE execution_id = $1",
-          [executionId],
+        const runs = yield* rows<{ execution_id: string; workflow: string; started_at_ms: string }>(
+          "SELECT execution_id, workflow, started_at_ms::text FROM durable.workflows WHERE tenant_id = 'default'",
         )
-        const review = {
-          id: executionId,
-          name: "Review",
-          actor: "Ledger/a",
-          step: { index: 2, total: null, name: "cool-off" },
-          waitingFor: { kind: "timer", name: "cool-off" },
-          startedAt: Number(started?.started_at_ms),
-          status: "waiting",
-        }
+        expect(runs.find((run) => run.workflow === "Review")?.execution_id).toBe(executionId)
+        const expectedRuns = runs
+          .toSorted(
+            (left, right) =>
+              Number(right.started_at_ms) - Number(left.started_at_ms) ||
+              byCodeUnit(left.execution_id, right.execution_id),
+          )
+          .map((run) => ({
+            id: run.execution_id,
+            name: run.workflow,
+            actor: "Ledger/a",
+            step: run.workflow === "Review" ? { index: 2, total: null, name: "cool-off" } : null,
+            waitingFor: run.workflow === "Review" ? { kind: "timer", name: "cool-off" } : null,
+            startedAt: Number(run.started_at_ms),
+            status: { Review: "waiting", Quick: "completed", Doomed: "failed" }[run.workflow],
+          }))
         const workflows = (query: string) =>
           every(`/workflows${query}`, Cloud.Workflow).pipe(
             Effect.map((found) =>
               found.map((run) => ({ ...run, startedAt: millis(run.startedAt) })),
             ),
           )
-        expect(yield* workflows("")).toEqual([review])
-        expect(yield* workflows("?status=waiting")).toEqual([review])
+        const only = (name: string) => expectedRuns.filter((run) => run.name === name)
+        expect(yield* workflows("?limit=1")).toEqual(expectedRuns)
+        expect(yield* workflows("?status=waiting")).toEqual(only("Review"))
+        expect(yield* workflows("?status=completed&limit=1")).toEqual(only("Quick"))
+        expect(yield* workflows("?status=failed&limit=1")).toEqual(only("Doomed"))
         expect(yield* workflows("?status=running")).toEqual([])
-        expect(yield* workflows("?status=completed")).toEqual([])
 
         const [timers] = yield* rows<{ pending: number; due: string }>(
           "SELECT count(*)::int AS pending, min(due_at_ms)::text AS due FROM durable.timers WHERE tenant_id = 'default'",
@@ -1551,6 +1626,10 @@ layer(Layer.provideMerge(ImagesLive, services), {
             Effect.map((found) => found.steps.map((step) => `${step.name}:${step.status}`)),
           )
         const built = ["build:succeeded", "migrate:succeeded", "start-runners:succeeded"]
+        const finished = (id: string) =>
+          poll(`deployment ${id}'s steps to finish`, 120, steps(id), (found) =>
+            found.every((step) => !step.endsWith(":running")),
+          )
 
         const first = yield* create("a", "Counter v1")
         const imageOf = (id: string) =>
@@ -1575,7 +1654,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
 
         const second = yield* create("b", "Counter v2")
         expect(yield* settled(second.id)).toMatchObject({ status: "live" })
-        expect(yield* steps(second.id)).toEqual([...built, "drain-previous:succeeded"])
+        expect(yield* finished(second.id)).toEqual([...built, "drain-previous:succeeded"])
         expect((yield* send(1)).result).toMatchObject({ count: 3, version: "bbbbbbb" })
 
         const rolledBack = yield* call(`${deployments}/${first.id}/rollback`, {
@@ -1605,7 +1684,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         })
         expect(redeployed.steps[0]).toMatchObject({ name: "build", status: "running" })
         expect(yield* settled(redeployed.id)).toMatchObject({ status: "live" })
-        expect(yield* steps(redeployed.id)).toEqual([...built, "drain-previous:succeeded"])
+        expect(yield* finished(redeployed.id)).toEqual([...built, "drain-previous:succeeded"])
         expect(yield* imageOf(redeployed.id)).toMatch(/^sha256:[0-9a-f]{64}$/u)
         expect(yield* statusOf(rolledBack.id)).toBe("drained")
         expect((yield* send(1)).result).toMatchObject({

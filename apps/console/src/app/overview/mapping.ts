@@ -34,7 +34,7 @@ export const deployMarkers =
     if (first === undefined || last === undefined) return []
     const start = DateTime.toEpochMillis(first.at)
     const end = DateTime.toEpochMillis(last.at)
-    return deployments!.flatMap((deployment) => {
+    return (deployments ?? []).flatMap((deployment) => {
       const at = DateTime.toEpochMillis(deployment.createdAt)
       if (at < start || at > end) return []
       const distances = series.map((point) => Math.abs(DateTime.toEpochMillis(point.at) - at))
@@ -99,23 +99,24 @@ export const toOverviewPage =
     }>,
   ): OverviewPage => {
     const { overview } = input
-    const throughput = orderedSeries(overview.throughput!)
-    const p99 = orderedSeries(overview.p99!)
+    const throughput = orderedSeries(overview.throughput ?? [])
+    const p99 = orderedSeries(overview.p99 ?? [])
     const deadLetters = overview.deadLettersByJobType.reduce((sum, type) => sum + type.count, 0)
     const { health } = overview
-    const mailbox = health.maxMailbox!
+    const mailbox = health.maxMailbox
+    const unknown = (label: string) => ({ label, value: "—", healthy: true })
     return OverviewPage.make({
       project: input.project,
       stats: [
         {
           label: "Commands / s",
-          value: formatInteger(overview.commands!.perSecond),
-          trend: orderedSeries(overview.commands!.series24h).map((point) => point.value),
+          value: overview.commands === null ? "—" : formatInteger(overview.commands.perSecond),
+          trend: orderedSeries(overview.commands?.series24h ?? []).map((point) => point.value),
           stepped: false,
         },
         {
           label: "Awake actors",
-          value: formatInteger(overview.actors.awake!),
+          value: overview.actors.awake === null ? "—" : formatInteger(overview.actors.awake),
           trend: [],
           stepped: false,
         },
@@ -132,30 +133,40 @@ export const toOverviewPage =
       previous: [],
       markers: deployMarkers(overview.recentDeployments)(throughput),
       health: [
-        {
-          label: "Runners",
-          value: `${formatInteger(health.runners!.healthy)} of ${formatInteger(health.runners!.total)} healthy`,
-          healthy: health.runners!.healthy === health.runners!.total,
-        },
-        {
-          label: "Database",
-          value: `${String(Math.round(health.databaseCpuPercent!))}% CPU`,
-          healthy: health.databaseCpuPercent! < databaseCpuLimit,
-        },
-        {
-          label: "Mailbox depth",
-          value:
-            mailbox.actor === null
-              ? `max ${formatInteger(mailbox.depth)}`
-              : `max ${formatInteger(mailbox.depth)} · ${mailbox.actor}`,
-          healthy: mailbox.depth < mailboxDepthLimit,
-        },
-        { label: "Parked sockets", value: formatInteger(health.parkedSockets!), healthy: true },
-        {
-          label: "Outbox lag",
-          value: `p99 ${formatDuration(health.outboxLagP99Ms!)}`,
-          healthy: health.outboxLagP99Ms! < outboxLagLimitMs,
-        },
+        health.runners === null
+          ? unknown("Runners")
+          : {
+              label: "Runners",
+              value: `${formatInteger(health.runners.healthy)} of ${formatInteger(health.runners.total)} healthy`,
+              healthy: health.runners.healthy === health.runners.total,
+            },
+        health.databaseCpuPercent === null
+          ? unknown("Database")
+          : {
+              label: "Database",
+              value: `${String(Math.round(health.databaseCpuPercent))}% CPU`,
+              healthy: health.databaseCpuPercent < databaseCpuLimit,
+            },
+        mailbox === null
+          ? unknown("Mailbox depth")
+          : {
+              label: "Mailbox depth",
+              value:
+                mailbox.actor === null
+                  ? `max ${formatInteger(mailbox.depth)}`
+                  : `max ${formatInteger(mailbox.depth)} · ${mailbox.actor}`,
+              healthy: mailbox.depth < mailboxDepthLimit,
+            },
+        health.parkedSockets === null
+          ? unknown("Parked sockets")
+          : { label: "Parked sockets", value: formatInteger(health.parkedSockets), healthy: true },
+        health.outboxLagP99Ms === null
+          ? unknown("Outbox lag")
+          : {
+              label: "Outbox lag",
+              value: `p99 ${formatDuration(health.outboxLagP99Ms)}`,
+              healthy: health.outboxLagP99Ms < outboxLagLimitMs,
+            },
         {
           label: "Dead letters",
           value: deadLetters === 0 ? "none" : `${formatInteger(deadLetters)} need a decision`,
@@ -163,13 +174,13 @@ export const toOverviewPage =
         },
       ],
       latency: {
-        p50: overview.commands!.p50Ms,
-        p99: overview.commands!.p99Ms,
+        p50: overview.commands?.p50Ms ?? null,
+        p99: overview.commands?.p99Ms ?? null,
         hours: p99.map((point) => hourLabel(point.at)),
         p99Series: p99.map((point) => point.value),
       },
       distribution: input.distribution,
-      deploys: overview.recentDeployments!.slice(0, 3).map((deployment) => {
+      deploys: (overview.recentDeployments ?? []).slice(0, 3).map((deployment) => {
         const record = toDeployRecord(now)(deployment)
         return {
           id: record.id,

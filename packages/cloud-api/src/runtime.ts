@@ -22,9 +22,10 @@ export type SidebarCounts = typeof SidebarCounts.Type
  * to retry) and the dead letters by job name. Each nullable field is null when
  * the runners do not report it, never zero or empty: command rates and
  * latencies, throughput and p99 series, awake actors, jobs done per hour and
- * the runner, database, mailbox, socket and outbox-lag health. The overview
- * does not read deployments, so `lastDeployAt` and `recentDeployments` are
- * null here; the deployments list reports them.
+ * the runner, database, mailbox, socket and outbox-lag health.
+ * `lastDeployAt` is when the environment's newest deployment was created, null
+ * when it has none. `recentDeployments` is null here; the deployments list
+ * reports them with their rollout state.
  */
 export const Overview = Schema.Struct({
   commands: Schema.NullOr(
@@ -368,7 +369,8 @@ export type DeadLetter = typeof DeadLetter.Type
  * `index` n and `total` m, and `index` never exceeds `total`. `total` is null
  * when the runner does not know how many steps the workflow has, and `step`
  * is null when the run holds no recorded step, as once it finished. A failed
- * run ended with a declared failure, a defect or an interruption.
+ * run ended with a declared failure, a defect or an interruption. `status` is
+ * null for a finished run whose stored result does not decode.
  */
 export const Workflow = Schema.Struct({
   id: Schema.String,
@@ -394,7 +396,7 @@ export const Workflow = Schema.Struct({
     Schema.Struct({ kind: Schema.Literals(["event", "timer"]), name: Schema.String }),
   ),
   startedAt: Timestamp,
-  status: Schema.Literals(["running", "waiting", "completed", "failed"]),
+  status: Schema.NullOr(Schema.Literals(["running", "waiting", "completed", "failed"])),
 })
 export type Workflow = typeof Workflow.Type
 
@@ -439,9 +441,13 @@ export const ConnectionsSummary = Schema.Struct({
 })
 export type ConnectionsSummary = typeof ConnectionsSummary.Type
 
-/** A command-palette hit among the runtime's own data; pages and settings are searched client side. */
+/**
+ * A command-palette hit among the runtime's own data; pages and settings are
+ * searched client side. An `actor-type` hit's `id` is the type's name and an
+ * `actor` hit's its address.
+ */
 export const SearchResult = Schema.Struct({
-  kind: Schema.Literals(["actor", "deployment"]),
+  kind: Schema.Literals(["actor-type", "actor", "deployment"]),
   id: Schema.String,
   title: Schema.String,
   subtitle: Schema.NullOr(Schema.String),

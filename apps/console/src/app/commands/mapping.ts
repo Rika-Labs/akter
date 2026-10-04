@@ -27,12 +27,14 @@ export const toTailEntry =
     const { actorType, key } = splitAddress(entry.address)
     return {
       sequence,
-      time: clockMillis(entry.at!),
-      took: formatDuration(entry.durationMs!),
+      time: entry.at === null ? "—" : clockMillis(entry.at),
+      took: entry.durationMs === null ? "—" : formatDuration(entry.durationMs),
       actorType,
       key,
       command:
-        entry.payloadPreview === "" ? entry.command : `${entry.command} ${entry.payloadPreview}`,
+        entry.payloadPreview === null || entry.payloadPreview === ""
+          ? entry.command
+          : `${entry.command} ${entry.payloadPreview}`,
       result: entry.outcome,
       detail: Match.value(entry.outcome).pipe(
         Match.when("error", () => entry.errorTag ?? "error"),
@@ -45,8 +47,14 @@ export const toTailEntry =
 
 /** A page of the command log, newest first, numbered so the newest has the highest sequence. */
 export const toRecentTurns = (entries: ReadonlyArray<CommandLogEntry>): ReadonlyArray<TailEntry> =>
-  [...entries]
-    .sort((left, right) => DateTime.toEpochMillis(left.at!) - DateTime.toEpochMillis(right.at!))
+  (entries.every((entry) => entry.at !== null)
+    ? [...entries].sort(
+        (left, right) =>
+          DateTime.toEpochMillis(left.at ?? DateTime.makeUnsafe(0)) -
+          DateTime.toEpochMillis(right.at ?? DateTime.makeUnsafe(0)),
+      )
+    : [...entries].reverse()
+  )
     .map((entry, index) => toTailEntry(index)(entry))
     .reverse()
 
