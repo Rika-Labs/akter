@@ -46,10 +46,13 @@ export type SpendLimit = typeof SpendLimit.Type
  * One cap as the edge's admission decides it now, whatever period is being
  * reported. `limit` and `used` are usage units (five per command, one per
  * read) for `commands`, cents for `spend`, open connections for
- * `connections`, and the largest tenant's latest sampled bytes for `storage`,
- * which is capped per tenant; `limit` is null when the cap does not apply.
- * `atCap` means usage has reached the limit; `refusing` means the edge would
- * refuse the next new command, or for `connections` the next new connection.
+ * `connections`, and for `storage` the largest latest sample of a serving
+ * deployment's tenant, since storage is capped per deployment and tenant;
+ * `limit` is null when the cap does not apply. `atCap` means usage has
+ * reached the limit; `refusing` means the edge would refuse the next new
+ * command, or for `connections` the next new connection. `reason` is
+ * `unbound` when the edge refuses everything because the organization has no
+ * billing account; such caps have no limit.
  */
 export const CapState = Schema.Struct({
   cap: Schema.Literals(["commands", "spend", "connections", "storage"]),
@@ -57,6 +60,7 @@ export const CapState = Schema.Struct({
   used: NonNegative,
   atCap: Schema.Boolean,
   refusing: Schema.Boolean,
+  reason: Schema.optionalKey(Schema.Literal("unbound")),
 })
 export type CapState = typeof CapState.Type
 

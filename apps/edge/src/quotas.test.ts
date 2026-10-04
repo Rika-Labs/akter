@@ -1,5 +1,6 @@
 import {
   organizationCaps,
+  UnknownPlan,
   type PlanId,
   type PricingConfig,
   PricingLive,
@@ -1952,16 +1953,70 @@ describe("quotas service", () => {
 })
 
 describe("cap state agrees with admission", () => {
-  const capsOf = Effect.fnUntraced(function* (edge: FixtureEdge) {
+  const capsExit = Effect.fnUntraced(function* (edge: FixtureEdge) {
     const priced = yield* Layer.build(PricingLive(pricing))
-    const caps = yield* organizationCaps(edge.organizationId).pipe(
+
+    return yield* organizationCaps(edge.organizationId).pipe(
       Effect.provideService(SqlClient.SqlClient, edge.sql),
       Effect.provideContext(priced),
-      Effect.orDie,
+      Effect.exit,
     )
+  })
+
+  const capsOf = Effect.fnUntraced(function* (edge: FixtureEdge) {
+    const caps = yield* (yield* capsExit(edge)).pipe(Effect.orDie)
 
     return Object.fromEntries(caps.map((state) => [state.cap, state]))
   })
+
+  it(
+    "reports every cap refusing as unbound while the edge refuses an organization with no billing account, and fails on a plan it refuses",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const runner = yield* startRunner
+          const edge = yield* start({ unbound: true }, runner)
+          const key = yield* keyFor(edge, "acme")
+
+          yield* edge.sql`INSERT INTO cloud_meter_tenant (deployment_id, tenant, organization_id, project_id) VALUES (${edge.deployment}, '*', ${edge.organizationId}, 'proj')`.pipe(
+            Effect.orDie,
+          )
+
+          const noAccount = yield* command(edge, key, { cid: "c1" })
+
+          expect(noAccount.status).toBe(503)
+          expect(noAccount.reason).toMatchObject({ reason: "account" })
+          expect(Object.values(yield* capsOf(edge))).toEqual(
+            (["commands", "spend", "connections", "storage"] as const).map((cap) => ({
+              cap,
+              limit: null,
+              used: 0,
+              atCap: false,
+              refusing: true,
+              reason: "unbound",
+            })),
+          )
+
+          yield* edge.sql`INSERT INTO cloud_billing_account (organization_id, plan) VALUES (${edge.organizationId}, 'platinum')`.pipe(
+            Effect.orDie,
+          )
+
+          expect((yield* command(edge, key, { cid: "c2" })).reason).toMatchObject({
+            reason: "plan",
+          })
+          expect(yield* capsExit(edge)).toEqual(Exit.fail(UnknownPlan.make({ tierId: "platinum" })))
+
+          yield* edge.sql`UPDATE cloud_billing_account SET plan = 'free' WHERE organization_id = ${edge.organizationId}`.pipe(
+            Effect.orDie,
+          )
+
+          expect((yield* command(edge, key, { cid: "c3" })).status).toBe(200)
+          expect((yield* capsOf(edge))["commands"]).toMatchObject({ used: 5, refusing: false })
+          expect((yield* capsOf(edge))["commands"]).not.toHaveProperty("reason")
+        }),
+      ),
+    60_000,
+  )
 
   it(
     "turns the Free command cap to refusing once a command no longer fits, before the units are all used",

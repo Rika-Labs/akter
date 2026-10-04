@@ -74,10 +74,12 @@ export type CapName = "commands" | "spend" | "connections" | "storage"
 /**
  * One cap as edge admission sees it now. `limit` and `used` are units for
  * `commands`, cents for `spend`, open connections for `connections` and the
- * largest tenant's latest sampled bytes for `storage`; `limit` is `null` when
- * the cap does not apply. `atCap` means usage has reached the limit, and
- * `refusing` that the edge would refuse the next new command (for
- * `connections`, the next new connection).
+ * largest latest sampled bytes of a serving deployment's tenant for
+ * `storage`; `limit` is `null` when the cap does not apply. `atCap` means
+ * usage has reached the limit, and `refusing` that the edge would refuse the
+ * next new command (for `connections`, the next new connection). `reason` is
+ * `unbound` when the edge refuses every metered request regardless of usage,
+ * because the organization has no billing account.
  */
 export interface CapState {
   readonly cap: CapName
@@ -85,6 +87,7 @@ export interface CapState {
   readonly used: number
   readonly atCap: boolean
   readonly refusing: boolean
+  readonly reason?: "unbound"
 }
 
 /** What edge admission reads about an organization in its current period. */
@@ -139,13 +142,17 @@ export const capStates = Effect.fnUntraced(function* (usage: AdmissionUsage) {
 
 /**
  * An organization's caps as edge admission would decide them now, read from
- * the same control-plane rows the edge reads: the billing account (an
- * organization without one has Free entitlements and no spend limit), the
+ * the same control-plane rows the edge reads: the billing account, the
  * current UTC period's committed and reserved units by the database clock,
- * the live connection leases, and the latest storage sample of each tenant
- * bound to the organization. Storage is capped per tenant, so the largest
- * sample decides it. The read takes no locks, so it reports the state at one
- * snapshot rather than reserving anything.
+ * the live connection leases, and the latest storage sample of each tenant of
+ * a serving deployment bound to the organization. The edge checks storage
+ * per deployment and tenant, so the largest of those samples decides it, and
+ * a drained deployment's last sample no longer counts. An organization with
+ * no billing account is refused everything by the edge, so every cap reports
+ * `refusing` with reason `unbound` and no limit. A plan the pricing
+ * configuration does not know fails with `UnknownPlan`, as the edge refuses
+ * it. The read takes no locks, so it reports the state at one snapshot
+ * rather than reserving anything.
  */
 export const organizationCaps = Effect.fnUntraced(function* (organizationId: string) {
   const sql = yield* SqlClient.SqlClient
@@ -167,6 +174,7 @@ export const organizationCaps = Effect.fnUntraced(function* (organizationId: str
       (SELECT count(*)::int FROM cloud_connection_lease l
         WHERE l.organization_id = ${organizationId} AND l.expires_at > now()) AS "openConnections",
       (SELECT max(s.logical_bytes) FROM cloud_meter_storage_sample s
+        JOIN deployment d ON d.id = s.deployment_id AND d.serving
         WHERE (SELECT m.organization_id FROM cloud_meter_tenant m
           WHERE m.deployment_id = s.deployment_id AND m.tenant IN (s.tenant, '*')
           ORDER BY (m.tenant = '*') LIMIT 1) = ${organizationId}) AS "largestSampleBytes"
@@ -176,15 +184,35 @@ export const organizationCaps = Effect.fnUntraced(function* (organizationId: str
       AND u.period = to_char(now() AT TIME ZONE 'utc', 'YYYY-MM')
   `
 
-  const tier = yield* pricing.tier(row?.plan ?? "free")
+  const usedUnits = row?.usedUnits ?? 0
+  const openConnections = row?.openConnections ?? 0
+  const largestSampleBytes = row?.largestSampleBytes ?? undefined
+
+  if (row?.plan == null || row.subscribedPlan == null) {
+    const unbound = (cap: CapName, used: number): CapState => ({
+      cap,
+      limit: null,
+      used,
+      atCap: false,
+      refusing: true,
+      reason: "unbound",
+    })
+
+    return [
+      unbound("commands", usedUnits),
+      unbound("spend", 0),
+      unbound("connections", openConnections),
+      unbound("storage", largestSampleBytes ?? 0),
+    ]
+  }
 
   return yield* capStates({
-    tier,
-    subscribedPlan: row?.subscribedPlan ?? tier.id,
-    spendLimitCents: row?.spendLimitCents ?? null,
-    usedUnits: row?.usedUnits ?? 0,
-    storageGbMonths: row?.storageGbMonths ?? 0,
-    openConnections: row?.openConnections ?? 0,
-    largestSampleBytes: row?.largestSampleBytes ?? undefined,
+    tier: yield* pricing.tier(row.plan),
+    subscribedPlan: row.subscribedPlan,
+    spendLimitCents: row.spendLimitCents,
+    usedUnits,
+    storageGbMonths: row.storageGbMonths ?? 0,
+    openConnections,
+    largestSampleBytes,
   })
 })

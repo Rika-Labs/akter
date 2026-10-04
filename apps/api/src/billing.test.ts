@@ -1114,6 +1114,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
           const elsewhere = yield* w.project(noise, outsider, "elsewhere")
           yield* w.subscribe(org, alice.cookie, "pro", "usage-pro")
 
+          yield* w.sql`INSERT INTO deployment (id, primary_region) VALUES ('dep-1', 'us-east-1')`.pipe(
+            Effect.orDie,
+          )
           yield* Effect.forEach(
             [
               ["t1", org, first.id],
@@ -1279,6 +1282,63 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             { cap: "connections", limit: 100, used: 1, atCap: false, refusing: false },
             { cap: "storage", limit: 500_000_000, used: 500_000_000, atCap: true, refusing: true },
           ])
+
+          yield* w.sql`INSERT INTO deployment (id, primary_region) VALUES ('dep-2', 'us-east-1')`
+          yield* w.sql`UPDATE deployment SET serving = (id = 'dep-2') WHERE id IN ('dep-1', 'dep-2')`
+          yield* w.sql`INSERT INTO cloud_meter_tenant (deployment_id, tenant, organization_id, project_id)
+            VALUES ('dep-2', '*', ${noise}, ${elsewhere.id})`
+          const storageOf = (organizationId: string, cookie: string) =>
+            w
+              .summary(organizationId, cookie)
+              .pipe(Effect.map((summary) => summary.caps?.find((state) => state.cap === "storage")))
+          expect(yield* storageOf(noise, outsider.cookie)).toEqual({
+            cap: "storage",
+            limit: 500_000_000,
+            used: 0,
+            atCap: false,
+            refusing: false,
+          })
+          yield* w.sql`SELECT cloud_meter_storage_observe('dep-2', 't3', '2026-09-13T00:00:00Z', 499999999)`
+          expect(yield* storageOf(noise, outsider.cookie)).toMatchObject({
+            used: 499_999_999,
+            refusing: false,
+          })
+          const redeployed = yield* read(
+            yield* w.request({
+              path: `/api/organizations/${org}/usage?period=2026-08`,
+              cookie: bob.cookie,
+            }),
+            Cloud.Usage,
+          )
+          expect(redeployed.latestStorageSample).toBeNull()
+          expect(redeployed.caps?.find((state) => state.cap === "storage")).toMatchObject({
+            used: 0,
+          })
+
+          yield* w.sql`DELETE FROM cloud_billing_account WHERE organization_id = ${noise}`
+          expect((yield* w.summary(noise, outsider.cookie)).caps).toEqual(
+            (["commands", "spend", "connections", "storage"] as const).map((cap) => ({
+              cap,
+              limit: null,
+              used: { commands: 0, spend: 0, connections: 1, storage: 499_999_999 }[cap],
+              atCap: false,
+              refusing: true,
+              reason: "unbound",
+            })),
+          )
+
+          yield* w.sql`UPDATE cloud_billing_account SET plan = 'platinum' WHERE organization_id = ${org}`
+          for (const path of [
+            `/api/organizations/${org}/usage`,
+            `/api/organizations/${org}/billing`,
+          ]) {
+            const refused = yield* w.request({ path, cookie: alice.cookie })
+            expect(refused.status).toBe(503)
+            expect(yield* read(refused, Cloud.Unavailable)).toMatchObject({
+              message: "The organization's plan platinum is not in the pricing configuration",
+            })
+          }
+          yield* w.sql`UPDATE cloud_billing_account SET plan = 'pro' WHERE organization_id = ${org}`
 
           const empty = yield* read(
             yield* w.request({

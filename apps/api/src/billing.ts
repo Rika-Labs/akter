@@ -1,6 +1,7 @@
 import {
   defaultPricingConfig,
   organizationCaps,
+  type UnknownPlan,
   Pricing,
   storageLimitBytes,
   PricingLive,
@@ -136,6 +137,17 @@ const session = Effect.fn("Billing.session")(function* (organizationId: string, 
   }
 })
 
+/**
+ * A plan the pricing configuration does not know is an operator fault the
+ * edge refuses with a 503 too, so billing and usage reads answer a typed
+ * `Unavailable` rather than a server error.
+ */
+const unknownPlan = ({ tierId }: UnknownPlan) =>
+  Cloud.Unavailable.make({
+    message: `The organization's plan ${tierId} is not in the pricing configuration`,
+    retryAfterSeconds: 60,
+  })
+
 export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (handlers) =>
   Effect.gen(function* () {
     const access = yield* Access
@@ -182,8 +194,8 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
           yield* access.organization(params.organizationId)
           const account = yield* repository.account(params.organizationId)
           const stored = Option.getOrUndefined(account)
-          const tier = yield* pricing.tier(stored?.plan ?? "free").pipe(Effect.orDie)
-          const priced = yield* pricing.tier(stored?.subscribedPlan ?? tier.id).pipe(Effect.orDie)
+          const tier = yield* pricing.tier(stored?.plan ?? "free")
+          const priced = yield* pricing.tier(stored?.subscribedPlan ?? tier.id)
           const report = yield* usageReport(params.organizationId, priced.id, yield* currentPeriod)
           const estimate =
             priced.basePriceCents +
@@ -193,7 +205,9 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
             customer == null ? null : yield* provider.paymentMethod(customer).pipe(Effect.orDie)
           const details =
             customer == null ? null : yield* provider.billingDetails(customer).pipe(Effect.orDie)
-          const caps = yield* organizationCaps(params.organizationId).pipe(Effect.orDie)
+          const caps = yield* organizationCaps(params.organizationId).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+          )
           return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.BillingSummary))({
             plan: {
               id: tier.id,
@@ -217,7 +231,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
             },
             caps,
           }).pipe(Effect.orDie)
-        }),
+        }).pipe(Effect.catchTag("UnknownPlan", unknownPlan)),
       )
       .handle("listInvoices", ({ params }) =>
         Effect.gen(function* () {
@@ -236,9 +250,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
           const { actor } = yield* initialized(params.organizationId)
           yield* actor.SetSpendLimit({ cents: payload.limitCents }).pipe(Effect.mapError(refused))
           const account = Option.getOrUndefined(yield* repository.account(params.organizationId))
-          const tier = yield* pricing
-            .tier(account?.subscribedPlan ?? account?.plan ?? "free")
-            .pipe(Effect.orDie)
+          const tier = yield* pricing.tier(account?.subscribedPlan ?? account?.plan ?? "free")
           const report = yield* usageReport(params.organizationId, tier.id, yield* currentPeriod)
           return {
             limitCents: payload.limitCents,
@@ -246,7 +258,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
               tier.basePriceCents +
               report.meters.reduce((sum, meter) => sum + meter.overageCostCents, 0),
           }
-        }),
+        }).pipe(Effect.catchTag("UnknownPlan", unknownPlan)),
       )
       .handle("startCheckout", ({ params, payload }) =>
         Effect.gen(function* () {
@@ -366,9 +378,11 @@ export const UsageLive = HttpApiBuilder.group(Cloud.CloudApi, "usage", (handlers
         return {
           ...report,
           latestStorageSample: yield* latestStorageSample(params.organizationId),
-          caps: yield* organizationCaps(params.organizationId).pipe(Effect.orDie),
+          caps: yield* organizationCaps(params.organizationId).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+          ),
         }
-      }),
+      }).pipe(Effect.catchTag("UnknownPlan", unknownPlan)),
     )
   }),
 )
