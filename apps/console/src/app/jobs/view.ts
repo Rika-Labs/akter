@@ -14,6 +14,7 @@ import { barChart } from "@akter/ui/charts"
 import { formatInteger } from "@akter/ui/geometry"
 import { space } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
+import { shortCommandId } from "../actors/mapping.ts"
 import * as Routes from "../navigation/routes.ts"
 import { OpenedDialog, RetriedAllDeadLetters, RetriedDeadLetter } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
@@ -105,7 +106,10 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                 rows: open.map((letter) => ({
                   key: letter.id,
                   cells: [
-                    `${letter.job} · ${letter.jobId}`,
+                    h.span(
+                      [h.Title(letter.jobId)],
+                      [`${letter.job} · ${shortCommandId(letter.jobId)}`],
+                    ),
                     model.pageSample
                       ? `${letter.actorType}/${letter.key}`
                       : h.a(

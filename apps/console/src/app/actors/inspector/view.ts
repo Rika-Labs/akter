@@ -22,7 +22,7 @@ import { AppRoute } from "../../navigation/routes.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, type Message, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
-import { orUnknown } from "../../shell/unknown.ts"
+import { orUnknown, unreported } from "../../shell/unknown.ts"
 import { callerCell, callerText } from "../../commands/caller.ts"
 import { shortCommandId } from "../mapping.ts"
 import {
@@ -301,26 +301,28 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
                       description: "The runner doesn’t keep a timeline for this actor.",
                       align: "start",
                     })
-                  : activityFeed(h, {
-                      label: `${address} activity`,
-                      entries: page.activity.map((entry) => ({
-                        key: entry.key,
-                        tone: entry.committed ? "live" : "idle",
-                        title: [
-                          h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
-                          ` ${entry.title}`,
-                        ],
-                        detail: [
-                          entry.detail,
-                          entry.caller === null
-                            ? ""
-                            : callerText(model.workspace.person)(entry.caller),
-                        ]
-                          .filter((part) => part !== "")
-                          .join(" · "),
-                        time: entry.time,
-                      })),
-                    }),
+                  : page.activity.length === 0
+                    ? unreported(h, "Nothing has reached this actor’s timeline yet.")
+                    : activityFeed(h, {
+                        label: `${address} activity`,
+                        entries: page.activity.map((entry) => ({
+                          key: entry.key,
+                          tone: entry.committed ? "live" : "idle",
+                          title: [
+                            h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
+                            ` ${entry.title}`,
+                          ],
+                          detail: [
+                            entry.detail,
+                            entry.caller === null
+                              ? ""
+                              : callerText(model.workspace.person)(entry.caller),
+                          ]
+                            .filter((part) => part !== "")
+                            .join(" · "),
+                          time: entry.time,
+                        })),
+                      }),
               ],
             }),
           ],

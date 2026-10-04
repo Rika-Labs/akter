@@ -1,10 +1,13 @@
 import { styleAttributes } from "@akter/ui"
-import { colors } from "@akter/ui/tokens.stylex"
+import { colors, space } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { Function } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 
-const styles = stylex.create({ quiet: { color: colors.mutedForeground } })
+const styles = stylex.create({
+  quiet: { color: colors.mutedForeground },
+  notice: { marginBlockEnd: space.md },
+})
 
 /** How the console writes a value the runtime does not report: never zero, never `null`. */
 export const unknown = "—"
@@ -39,6 +42,10 @@ export const unreported: {
  */
 export const sampleNotice = <Message>(h: HtmlBuilder<Message>): Html =>
   h.p(
-    [h.Role("note"), h.DataAttribute("slot", "sample-notice"), ...styleAttributes(h, styles.quiet)],
+    [
+      h.Role("note"),
+      h.DataAttribute("slot", "sample-notice"),
+      ...styleAttributes(h, styles.quiet, styles.notice),
+    ],
     ["Sample data — this part isn’t connected yet."],
   )

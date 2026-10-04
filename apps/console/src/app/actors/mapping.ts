@@ -34,9 +34,10 @@ const runnerCommandId =
   /^v1\.\d+\.\d+\.([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 
 /**
- * A receipt's command id as the Receipts table shows it. A runner-minted id
- * (`v1.<ms>.<ms>.<uuid>`) is only told apart by its uuid, so it reads as the
- * uuid's first 8 characters; any other id reads unchanged.
+ * A runner-minted id as tables show it: receipts, the command log and dead
+ * letters' jobs. A runner-minted id (`v1.<ms>.<ms>.<uuid>`) is only told apart
+ * by its uuid, so it reads as the uuid's first 8 characters; any other id reads
+ * unchanged.
  */
 export const shortCommandId = (commandId: string): string =>
   runnerCommandId.exec(commandId)?.[1] ?? commandId

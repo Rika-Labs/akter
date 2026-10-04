@@ -12,7 +12,7 @@ const page = (resolvable: boolean) =>
     deadLetters: [
       {
         id: "dl_1",
-        jobId: "job_1",
+        jobId: "v1.1791107675322.1791194075322.9a04ad75-7a87-4306-a067-1639a2df91ff",
         job: "Charge",
         actorType: "Order",
         key: "ord_1",
@@ -42,18 +42,33 @@ describe("jobs with unmeasured fields", () => {
   it("keeps live dead letters read-only with one quiet reason when they can't be resolved", () =>
     screenScene(
       { path: "/jobs", screen: jobsScreen, page: page(false) },
-      Scene.expect(Scene.role("button", { name: "Retry job_1" })).toBeDisabled(),
-      Scene.expect(Scene.role("button", { name: "Discard job_1" })).toBeDisabled(),
+      Scene.expect(
+        Scene.role("button", {
+          name: "Retry v1.1791107675322.1791194075322.9a04ad75-7a87-4306-a067-1639a2df91ff",
+        }),
+      ).toBeDisabled(),
+      Scene.expect(
+        Scene.role("button", {
+          name: "Discard v1.1791107675322.1791194075322.9a04ad75-7a87-4306-a067-1639a2df91ff",
+        }),
+      ).toBeDisabled(),
       Scene.expect(Scene.role("button", { name: "Retry all" })).toBeDisabled(),
       Scene.expect(Scene.text("Retry and discard aren’t available yet.")).toExist(),
       Scene.expect(Scene.role("link", { name: "Order/ord_1" })).toExist(),
+      Scene.expect(
+        Scene.title("v1.1791107675322.1791194075322.9a04ad75-7a87-4306-a067-1639a2df91ff"),
+      ).toHaveText("Charge · 9a04ad75"),
       Scene.expectAll(Scene.all.role("note")).toHaveCount(0),
     ))
 
   it("offers retry and discard without the reason when the source resolves dead letters", () =>
     screenScene(
       { path: "/jobs", screen: jobsScreen, page: page(true) },
-      Scene.expect(Scene.role("button", { name: "Retry job_1" })).toBeEnabled(),
+      Scene.expect(
+        Scene.role("button", {
+          name: "Retry v1.1791107675322.1791194075322.9a04ad75-7a87-4306-a067-1639a2df91ff",
+        }),
+      ).toBeEnabled(),
       Scene.expect(Scene.text("Retry and discard aren’t available yet.")).toBeAbsent(),
     ))
 })

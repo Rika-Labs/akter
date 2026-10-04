@@ -228,4 +228,12 @@ describe("actor inspector", () => {
       Scene.expect(Scene.text("Activity isn’t reported")).toBeAbsent(),
       Scene.expect(Scene.text("null")).toBeAbsent(),
     ))
+
+  it("says the timeline is empty rather than leaving the activity blank", () =>
+    scene(
+      "/actors/Counter/hits",
+      toActorPage({ ...unreported, timeline: [] }),
+      Scene.expect(Scene.text("Nothing has reached this actor’s timeline yet.")).toExist(),
+      Scene.expect(Scene.text("Activity isn’t reported")).toBeAbsent(),
+    ))
 })
