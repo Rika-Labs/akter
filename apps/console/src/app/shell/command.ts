@@ -20,7 +20,7 @@ import * as Auth from "../auth/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
-import { rollBackDeployment } from "../deployments/client.ts"
+import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts"
 import { sendCommand } from "../commands/client.ts"
 import { CommandScope } from "../commands/model.ts"
 import * as Settings from "../settings/client.ts"
@@ -473,15 +473,23 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         ),
       RollBack: ({ id, commit }) =>
         rollBackDeployment(id).pipe(
-          Effect.map(({ deploy, rolledBackFrom }) =>
+          Effect.map(({ deploy }) =>
             CompletedAuth({
-              href: Routes.deployment({ commit: deploy.commit }),
+              href: Routes.deployment({ deployment: deploy.id }),
               refresh: true,
               title: `Rolling back to ${commit}`,
-              description:
-                rolledBackFrom === null
-                  ? "The new deployment is starting."
-                  : `Redeploying ${rolledBackFrom.commit ?? rolledBackFrom.id}.`,
+              description: "The live deployment keeps serving until the new one is live.",
+            }),
+          ),
+        ),
+      Redeploy: ({ id, commit }) =>
+        redeployDeployment(id).pipe(
+          Effect.map((deploy) =>
+            CompletedAuth({
+              href: Routes.deployment({ deployment: deploy.id }),
+              refresh: true,
+              title: `Redeploying ${commit}`,
+              description: "The new deployment is building.",
             }),
           ),
         ),

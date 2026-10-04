@@ -74,7 +74,7 @@ const pageFor = (route: AppRoute): Effect.Effect<LoadedPage, ConsoleError> =>
     Workflows: () => some(loadWorkflows),
     Connections: () => some(loadConnections),
     Deployments: () => some(loadDeployments),
-    Deployment: ({ commit }) => some(loadDeployment(commit)),
+    Deployment: ({ deployment }) => some(loadDeployment(deployment)),
     Regions: () => some(loadRegions),
     SettingsGeneral: () => some(loadSettings(route)),
     SettingsAppearance: () => some(loadSettings(route)),

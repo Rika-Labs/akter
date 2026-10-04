@@ -188,3 +188,103 @@ describe("actor type over the live API", () => {
       }),
     ))
 })
+
+const actor = "/api/projects/prj_1/environments/production/runtime/actors/Counter/hits"
+
+const inspect = (answers: Readonly<Record<string, MockedAnswer>>) => {
+  const responder = apiResponder({ ...signedIn({ status: "live" }), ...answers })
+  fetch.mockImplementation(responder.respond)
+  return { responder, loaded: loadActor({ actorType: "Counter", key: "hits" }) }
+}
+
+describe("actor inspector over the live API", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_CONSOLE_FIXTURES", "0")
+  })
+
+  afterEach(() => {
+    fetch.mockReset()
+  })
+
+  it("shows live jobs and keeps the real command scope when only inspection is not implemented", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { loaded } = inspect({
+          [actor]: notImplemented("runtime.inspectActor"),
+          [`${actor}/jobs`]: {
+            body: [
+              { name: "Notify", id: "job_live", attempts: 2, status: "retrying" },
+              { name: "Settle", id: "job_dead", attempts: 5, status: "dead" },
+            ],
+          },
+        })
+        const page = yield* loaded
+        expect(page.sample).toBe(true)
+        expect(page.data).toMatchObject({
+          actorType: "Counter",
+          key: "hits",
+          commandScope: { projectId: "prj_1", environment: "production" },
+          jobs: [
+            { id: "job_live", name: "Notify", attempts: 2, status: "retrying" },
+            { id: "job_dead", name: "Settle", attempts: 5, status: "dead" },
+          ],
+        })
+      }),
+    ))
+
+  it("falls back to the fixture without a command scope when jobs are not implemented either", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { loaded } = inspect({
+          [actor]: notImplemented("runtime.inspectActor"),
+          [`${actor}/jobs`]: notImplemented("runtime.listActorJobs"),
+        })
+        expect(yield* loaded).toEqual({ data: undefined, sample: true })
+      }),
+    ))
+
+  it("answers an actor the runner does not have with nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { loaded } = inspect({
+          [actor]: notImplemented("runtime.inspectActor"),
+          [`${actor}/jobs`]: notFound({ resource: "actor", id: "Counter/hits" }),
+        })
+        expect(yield* loaded).toEqual({ data: undefined, sample: false })
+      }),
+    ))
+
+  it("reads a fully inspected actor as live without asking for jobs separately", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { loaded, responder } = inspect({
+          [actor]: {
+            body: {
+              address: "Counter/hits",
+              state: { count: 3 },
+              turn: 4,
+              tables: [],
+              receipts: [],
+              events: [],
+              jobs: [],
+              connections: { sockets: 0, feedCursor: null },
+              properties: {
+                status: "idle",
+                type: "Counter",
+                generation: 1,
+                runner: null,
+                region: "us-east-1",
+                tenant: "default",
+                mailboxDepth: 0,
+              },
+              timeline: [],
+            },
+          },
+        })
+        const page = yield* loaded
+        expect(page.sample).toBe(false)
+        expect(page.data).toMatchObject({ state: '{\n  "count": 3\n}', jobs: [] })
+        expect(responder.seen.some((path) => path.endsWith("/jobs"))).toBe(false)
+      }),
+    ))
+})
