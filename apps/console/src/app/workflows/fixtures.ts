@@ -91,6 +91,7 @@ export const workflows: WorkflowsPage = WorkflowsPage.make({
       nextRun: "in 21 s",
     },
   ],
+  schedulesSample: false,
   fired: {
     hours: hourLabels({ points: 48, end: 14 }),
     values: seededSeries({ length: 48, base: 310, volatility: 70, seed: 17 }).map((value) =>

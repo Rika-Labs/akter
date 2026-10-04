@@ -1,5 +1,6 @@
 import {
   ActorTypeSummary as CloudActorTypeSummary,
+  CommandCaller,
   JobStatus,
   SeriesWindow,
 } from "@akter/cloud-api"
@@ -16,10 +17,13 @@ export const ActorsPage = S.TaggedStruct("ActorsPage", {
 })
 export type ActorsPage = typeof ActorsPage.Type
 
-/** One instance of a type: its key, whether it is awake, and its last command and turn. */
+/**
+ * One instance of a type: its key, whether it is awake (null when the runtime does not say), and its
+ * last command and turn, which read `—` when unreported.
+ */
 export const ActorInstance = S.Struct({
   key: S.String,
-  awake: S.Boolean,
+  awake: S.NullOr(S.Boolean),
   generation: S.Finite,
   lastCommand: S.String,
   lastTurn: S.String,
@@ -38,31 +42,46 @@ export const TypeActivity = S.Struct({
 })
 export type TypeActivity = typeof TypeActivity.Type
 
-/** One actor type in detail: its numbers, its activity over the window, and the instances on its first page. */
+/**
+ * One actor type in detail: its numbers, its activity over the window, and the instances on its
+ * first page. `activitySample` marks activity that fell back to sample data on an otherwise live
+ * page.
+ */
 export const ActorTypePage = S.TaggedStruct("ActorTypePage", {
   commandScope: S.optional(CommandScope),
   summary: ActorTypeSummary,
   instances: S.Array(ActorInstance),
   activity: TypeActivity,
+  activitySample: S.Boolean,
 })
 export type ActorTypePage = typeof ActorTypePage.Type
 
 /** A row in the actor's owned table. */
 export const OwnedRow = S.Struct({ cells: S.Array(S.String) })
 
-/** A stored command receipt; `result` and `at` read `—` when the runner does not report them. */
+/**
+ * A stored command receipt; `result` and `at` read `—` when the runner does not report them.
+ * `caller` is whom the command ran as, null when the runner's record of it does not decode, and
+ * `expires` when the runner stops answering a retry from it.
+ */
 export const Receipt = S.Struct({
   commandId: S.String,
   command: S.String,
   result: S.String,
+  caller: S.NullOr(CommandCaller),
   at: S.String,
+  expires: S.String,
   replayed: S.Boolean,
 })
 
-/** An event class the actor emitted, with the cursor of its newest event and its subscribers, null when unreported. */
+/**
+ * An event class the actor emitted, with the cursor and emission time of its newest event and its
+ * subscribers, null when unreported.
+ */
 export const EmittedEvent = S.Struct({
   cursor: S.String,
   name: S.String,
+  emitted: S.String,
   subscribers: S.NullOr(S.Finite),
 })
 
@@ -80,13 +99,17 @@ export const ActorConnections = S.Struct({
   feedCursor: S.NullOr(S.String),
 })
 
-/** One entry in the actor's activity feed. */
+/**
+ * One entry in the actor's activity feed. `caller` is whom its command ran as, null when unreported
+ * or once the command's receipt has expired.
+ */
 export const ActorActivity = S.Struct({
   key: S.String,
   committed: S.Boolean,
   title: S.String,
   subject: S.String,
   detail: S.String,
+  caller: S.NullOr(CommandCaller),
   time: S.String,
 })
 

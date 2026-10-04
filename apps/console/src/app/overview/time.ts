@@ -33,6 +33,10 @@ export const clock = (at: DateTime.Utc): string => DateTime.formatIso(at).slice(
 /** The UTC time of day to the millisecond, `14:02:16.998`. */
 export const clockMillis = (at: DateTime.Utc): string => DateTime.formatIso(at).slice(11, 23)
 
+/** The UTC month, day, hour and minute, `10-05 14:00`, for instants that may be days away. */
+export const dayClock = (at: DateTime.Utc): string =>
+  DateTime.formatIso(at).slice(5, 16).replace("T", " ")
+
 /** The UTC hour and minute, `14:00`, for chart axes. */
 export const hourLabel = (at: DateTime.Utc): string => DateTime.formatIso(at).slice(11, 16)
 
@@ -57,7 +61,7 @@ export const windowSeconds: Readonly<Record<SeriesWindow, number>> = {
 export const seriesLabel =
   (window: SeriesWindow) =>
   (at: DateTime.Utc): string =>
-    window === "7d" ? DateTime.formatIso(at).slice(5, 16).replace("T", " ") : hourLabel(at)
+    window === "7d" ? dayClock(at) : hourLabel(at)
 
 /** Splits an actor address `Type/key` at its first slash; keys may contain slashes. */
 export const splitAddress = (address: string) => {

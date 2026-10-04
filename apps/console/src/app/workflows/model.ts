@@ -1,6 +1,9 @@
 import { Schema as S } from "effect"
 
-/** A running or finished workflow owned by an actor. A workflow waiting on a timer reads `Sleeping`. */
+/**
+ * A running or finished workflow owned by an actor. A workflow waiting on a timer reads `Sleeping`,
+ * and `status` is null when the run's stored result does not decode.
+ */
 export const WorkflowRun = S.Struct({
   id: S.String,
   workflow: S.String,
@@ -9,7 +12,7 @@ export const WorkflowRun = S.Struct({
   step: S.String,
   waitingFor: S.String,
   started: S.String,
-  status: S.Literals(["Waiting", "Running", "Sleeping", "Done", "Failed"]),
+  status: S.NullOr(S.Literals(["Waiting", "Running", "Sleeping", "Done", "Failed"])),
 })
 export type WorkflowRun = typeof WorkflowRun.Type
 
@@ -30,7 +33,8 @@ export const TimersFired = S.Struct({ hours: S.Array(S.String), values: S.Array(
  * The workflows and timers page. The run counts are taken over `runs`; `truncated` is true when
  * the source holds more runs than the page lists, so the counts are lower bounds. `nextTimer` and
  * `nextSchedule` are `null` when nothing is pending, and `fired` is drawn when the source reports
- * timer history.
+ * timer history. `schedulesSample` marks schedules that fell back to sample data on an otherwise
+ * live page.
  */
 export const WorkflowsPage = S.TaggedStruct("WorkflowsPage", {
   running: S.Finite,
@@ -41,6 +45,7 @@ export const WorkflowsPage = S.TaggedStruct("WorkflowsPage", {
   nextSchedule: S.NullOr(S.String),
   runs: S.Array(WorkflowRun),
   schedules: S.Array(Schedule),
+  schedulesSample: S.Boolean,
   fired: S.optional(TimersFired),
 })
 export type WorkflowsPage = typeof WorkflowsPage.Type

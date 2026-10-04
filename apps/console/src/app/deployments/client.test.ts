@@ -322,6 +322,102 @@ describe("deployments client against the live API", () => {
       }),
     ))
 
+  it("starts again from the first page when a cursor goes stale, and never reports the API down", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const history = [
+          [live, deployment({ id: "dep_failed", commitSha: "bbbbbbb", status: "failed" })],
+          [deployment({ id: "dep_drained", commitSha: "ddddddd" })],
+        ]
+        for (const stale of [
+          () => json('{"_tag":"NotFound","resource":"cursor","id":"p1"}', 404),
+          () => json('{"_tag":"HttpApiSchemaError","message":"bad cursor"}', 400),
+        ]) {
+          fetch.mockClear()
+          let refusals = 0
+          fetch.mockImplementation((input) => {
+            const url = new URL(input instanceof Request ? input.url : String(input))
+            if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+            if (url.pathname.endsWith("/build-log"))
+              return Promise.resolve(json(JSON.stringify({ lines: [], complete: true })))
+            const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
+            if (detail !== undefined)
+              return Promise.resolve(json(JSON.stringify({ ...live, steps: [], runners: [] })))
+            if (url.pathname.endsWith("/deployments")) {
+              const cursor = url.searchParams.get("cursor")
+              if (cursor !== null && refusals === 0) {
+                refusals += 1
+                return Promise.resolve(stale())
+              }
+              const index = cursor === null ? 0 : 1
+              return Promise.resolve(
+                json(
+                  JSON.stringify({ items: history[index], nextCursor: index === 0 ? "p1" : null }),
+                ),
+              )
+            }
+            return Promise.resolve(json(JSON.stringify([project])))
+          })
+          const found = yield* loadDeployment("a3f9c21")
+          expect(found.data?.rollbackTargets.map((target) => target.id)).toEqual(["dep_drained"])
+          expect(deploymentRequests()).toHaveLength(4)
+        }
+      }),
+    ))
+
+  it("asks to try again, not not-found, when the cursor goes stale twice before the deployment turns up", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        fetch.mockImplementation((input) => {
+          const url = new URL(input instanceof Request ? input.url : String(input))
+          if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+          const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
+          if (detail !== undefined) return Promise.resolve(missing(detail))
+          if (url.pathname.endsWith("/deployments"))
+            return Promise.resolve(
+              url.searchParams.get("cursor") === null
+                ? json(
+                    JSON.stringify({
+                      items: [deployment({ id: "dep_other", commitSha: "bbbbbbb" })],
+                      nextCursor: "p1",
+                    }),
+                  )
+                : json('{"_tag":"NotFound","resource":"cursor","id":"p1"}', 404),
+            )
+          return Promise.resolve(json(JSON.stringify([project])))
+        })
+        const error = yield* loadDeployment("a3f9c21").pipe(Effect.flip)
+        expect(error).toMatchObject({
+          kind: "IncompleteHistory",
+          message: "Couldn’t finish searching the deployment history. Try again.",
+        })
+      }),
+    ))
+
+  it("ends the search with the history read so far when the first page's cursor goes stale twice", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        fetch.mockImplementation((input) => {
+          const url = new URL(input instanceof Request ? input.url : String(input))
+          if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+          if (url.pathname.endsWith("/build-log"))
+            return Promise.resolve(json(JSON.stringify({ lines: [], complete: true })))
+          const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
+          if (detail !== undefined)
+            return Promise.resolve(json(JSON.stringify({ ...live, steps: [], runners: [] })))
+          if (url.pathname.endsWith("/deployments"))
+            return Promise.resolve(
+              url.searchParams.get("cursor") === null
+                ? json(JSON.stringify({ items: [live], nextCursor: "p1" }))
+                : json('{"_tag":"NotFound","resource":"cursor","id":"p1"}', 404),
+            )
+          return Promise.resolve(json(JSON.stringify([project])))
+        })
+        const found = yield* loadDeployment("a3f9c21")
+        expect(found.data?.rollbackTargets).toEqual([])
+      }),
+    ))
+
   it("rolls back through the chosen target id and returns the new deployment", () =>
     Effect.runPromise(
       Effect.gen(function* () {

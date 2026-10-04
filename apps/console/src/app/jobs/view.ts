@@ -14,18 +14,24 @@ import { barChart } from "@akter/ui/charts"
 import { formatInteger } from "@akter/ui/geometry"
 import { space } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
+import { shortCommandId } from "../actors/mapping.ts"
 import * as Routes from "../navigation/routes.ts"
 import { OpenedDialog, RetriedAllDeadLetters, RetriedDeadLetter } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
+import { orUnknown, unreported } from "../shell/unknown.ts"
 import type { JobsPage } from "./model.ts"
 
 const styles = stylex.create({
   actions: { display: "flex", justifyContent: "flex-end", gap: space.xs },
 })
 
-/** Jobs: what is queued and running, the dead letters waiting on a decision, and totals by type. */
+/**
+ * Jobs: what is queued and running, the dead letters waiting on a decision, and totals by type. A
+ * source that cannot retry or discard dead letters gets both disabled and one quiet reason.
+ */
 export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen => {
   const open = page.deadLetters.filter((letter) => !model.resolved.includes(letter.id))
+  const readOnly = model.pageSample || !page.resolvable
   return {
     title: "Jobs",
     crumbs: [{ label: "Jobs" }],
@@ -38,7 +44,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
               variant: "ghost",
               size: "sm",
               icon: "retry",
-              disabled: model.pageSample,
+              disabled: readOnly,
               onClick: RetriedAllDeadLetters(),
             }),
           ],
@@ -48,10 +54,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
         label: "Job queue",
         stats: [
           { label: "Queued", value: formatInteger(page.queued) },
-          {
-            label: "Running",
-            value: page.running === null ? "—" : formatInteger(page.running),
-          },
+          { label: "Running", value: orUnknown(formatInteger)(page.running) },
           { label: "Retrying", value: formatInteger(page.retrying) },
           {
             label: "Dead letters",
@@ -64,6 +67,9 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
         title: "Dead letters",
         meta: "out of retries",
         children: [
+          ...(open.length === 0 || model.pageSample || page.resolvable
+            ? []
+            : [unreported(h, "Retry and discard aren’t available yet.")]),
           open.length === 0
             ? emptyState(h, {
                 title: "No dead letters",
@@ -100,7 +106,10 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                 rows: open.map((letter) => ({
                   key: letter.id,
                   cells: [
-                    `${letter.job} · ${letter.jobId}`,
+                    h.span(
+                      [h.Title(letter.jobId)],
+                      [`${letter.job} · ${shortCommandId(letter.jobId)}`],
+                    ),
                     model.pageSample
                       ? `${letter.actorType}/${letter.key}`
                       : h.a(
@@ -116,7 +125,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                           label: "Discard",
                           variant: "ghost",
                           size: "sm",
-                          disabled: model.pageSample,
+                          disabled: readOnly,
                           onClick: OpenedDialog({
                             dialog: Dialog.DiscardDeadLetter({ id: letter.id }),
                           }),
@@ -125,7 +134,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                         button(h, {
                           label: "Retry",
                           size: "sm",
-                          disabled: model.pageSample,
+                          disabled: readOnly,
                           onClick: RetriedDeadLetter({ id: letter.id }),
                           attributes: [h.AriaLabel(`Retry ${letter.jobId}`)],
                         }),
@@ -161,7 +170,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                   key: type.name,
                   cells: [
                     type.name,
-                    type.done === null ? "—" : formatInteger(type.done),
+                    orUnknown(formatInteger)(type.done),
                     formatInteger(type.retried),
                     String(type.dead),
                     type.p99,
@@ -174,17 +183,19 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
             title: "Throughput",
             meta: "jobs done",
             children: [
-              barChart(h, {
-                label: "Jobs done, recent throughput",
-                height: 150,
-                xTicks: 4,
-                data: page.throughput.map((value, index) => ({
-                  key: String(index),
-                  label: page.labels[index] ?? "",
-                  value,
-                  highlight: index === page.throughput.length - 1,
-                })),
-              }),
+              page.throughput === null
+                ? unreported(h, "Job throughput isn’t reported.")
+                : barChart(h, {
+                    label: "Jobs done, recent throughput",
+                    height: 150,
+                    xTicks: 4,
+                    data: page.throughput.map((value, index, values) => ({
+                      key: String(index),
+                      label: page.labels[index] ?? "",
+                      value,
+                      highlight: index === values.length - 1,
+                    })),
+                  }),
             ],
           }),
         ],

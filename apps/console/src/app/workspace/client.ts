@@ -40,6 +40,7 @@ export const workspaceFrom: {
       me.organizations[0]
     return {
       person: {
+        id: me.user?.id,
         name: me.user?.name ?? "",
         email: me.user?.email ?? "",
         role: membership?.role ?? "",

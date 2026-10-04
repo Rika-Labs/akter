@@ -2,6 +2,7 @@ import type { DeadLetter, JobsSummary } from "@akter/cloud-api"
 import { formatDuration } from "@akter/ui/geometry"
 import { DateTime } from "effect"
 import { ago, hourLabel, splitAddress } from "../overview/time.ts"
+import { orUnknown } from "../shell/unknown.ts"
 import { JobsPage } from "./model.ts"
 import type { DeadLetter as DeadLetterRow } from "./model.ts"
 
@@ -22,26 +23,39 @@ export const toDeadLetter =
     }
   }
 
-/** The job queue the runtime reports, with its dead letters, as the console's page. */
+/**
+ * The job queue the runtime reports, with its dead letters, as the console's page. Running jobs,
+ * jobs done, their p99 and the throughput stay unknown when the runtime does not report them.
+ */
 export const toJobsPage =
   (now: DateTime.Utc) =>
-  (input: Readonly<{ summary: JobsSummary; deadLetters: ReadonlyArray<DeadLetter> }>): JobsPage => {
-    const throughput = [...(input.summary.throughput ?? [])].sort(
-      (left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at),
-    )
+  (
+    input: Readonly<{
+      summary: JobsSummary
+      deadLetters: ReadonlyArray<DeadLetter>
+      resolvable: boolean
+    }>,
+  ): JobsPage => {
+    const throughput =
+      input.summary.throughput === null
+        ? null
+        : [...input.summary.throughput].sort(
+            (left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at),
+          )
     return JobsPage.make({
       queued: input.summary.queued,
       running: input.summary.running,
       retrying: input.summary.retrying,
       deadLetters: input.deadLetters.map(toDeadLetter(now)),
+      resolvable: input.resolvable,
       types: input.summary.byType.map((type) => ({
         name: type.jobName,
         done: type.done,
         retried: type.retried,
         dead: type.dead,
-        p99: type.p99Ms === null ? "—" : formatDuration(type.p99Ms),
+        p99: orUnknown(formatDuration)(type.p99Ms),
       })),
-      labels: throughput.map((point) => hourLabel(point.at)),
-      throughput: throughput.map((point) => point.value),
+      labels: throughput?.map((point) => hourLabel(point.at)) ?? [],
+      throughput: throughput?.map((point) => point.value) ?? null,
     })
   }

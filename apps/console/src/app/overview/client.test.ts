@@ -137,7 +137,7 @@ describe("overview over the live API", () => {
       }),
     ))
 
-  it("keeps the live summary and marks the page sample when only the histogram is not implemented", () =>
+  it("keeps the page live and marks only the distribution sample when only the histogram is not implemented", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         for (const missing of [
@@ -146,12 +146,70 @@ describe("overview over the live API", () => {
           `${base}/actor-types`,
         ]) {
           const loaded = yield* load(live({ [missing]: notImplemented("runtime.latency") }))
-          const { distribution, stats } = page(loaded.data)
-          expect(loaded.sample).toBe(true)
+          const { distribution, distributionSample, stats } = page(loaded.data)
+          expect(loaded.sample).toBe(false)
+          expect(distributionSample).toBe(true)
           expect(stats[0]).toMatchObject({ value: "77" })
           expect(distribution?.window).toBe("7d")
           expect(distribution?.bars.at(-1)).toMatchObject({ tail: true })
           expect(distribution?.total).not.toBe(42)
+        }
+      }),
+    ))
+
+  it("reads recent deploys from the deployments list when the overview reports none", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const responder = live({
+          [`${base}/overview`]: { body: { ...overviewBody, recentDeployments: null } },
+          "/api/projects/prj_1/deployments": {
+            body: {
+              items: [
+                {
+                  id: "dep_listed",
+                  projectId: "prj_1",
+                  environment: "production",
+                  commitSha: "c0ffee12",
+                  message: "listed",
+                  author: { name: "maya", image: null },
+                  regions: ["us-east-1"],
+                  runnerCount: 1,
+                  durationMs: 1000,
+                  status: "live",
+                  rolledBackFrom: null,
+                  createdAt: "2026-10-03T09:00:00.000Z",
+                },
+              ],
+              nextCursor: null,
+            },
+          },
+        })
+        const loaded = yield* load(responder)
+        expect(responder.seen).toContain(
+          "/api/projects/prj_1/deployments?limit=3&environment=production",
+        )
+        expect(page(loaded.data).deploys?.map((deploy) => deploy.id)).toEqual(["dep_listed"])
+        const own = live()
+        yield* load(own)
+        expect(own.seen.some((path) => path.startsWith("/api/projects/prj_1/deployments"))).toBe(
+          false,
+        )
+      }),
+    ))
+
+  it("keeps the overview live and its deploys unreported when the deployments list can't be read", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        for (const refusal of [notImplemented("deployments.list"), forbidden]) {
+          const loaded = yield* load(
+            live({
+              [`${base}/overview`]: { body: { ...overviewBody, recentDeployments: null } },
+              "/api/projects/prj_1/deployments": refusal,
+            }),
+          )
+          expect(loaded.sample).toBe(false)
+          expect(page(loaded.data).deploys).toBeNull()
+          expect(page(loaded.data).stats[0]).toMatchObject({ value: "77" })
         }
       }),
     ))

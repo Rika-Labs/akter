@@ -41,6 +41,8 @@ import {
   ReplaceUrl,
   RequestReset,
   ResendVerification,
+  SearchActors,
+  SettlePaletteQuery,
   ResetPassword,
   SelectEnvironment,
   SelectSeriesWindow,
@@ -238,6 +240,15 @@ const mutate = (model: Model, action: Action): Result =>
     ? { model, commands: [Mutate({ action })] }
     : toast(model, { title: "Sample data is read-only.", tone: "warning" })
 
+/**
+ * Retries or discards dead letters, unless the jobs page's source cannot: then nothing is sent and
+ * the person is told why, even when the message bypassed the disabled control.
+ */
+const resolveDeadLetters = (model: Model, action: Action): Result =>
+  Option.exists(model.page, (page) => Predicate.isTagged(page, "JobsPage") && !page.resolvable)
+    ? toast(model, { title: "Retry and discard aren’t available yet.", tone: "warning" })
+    : mutate(model, action)
+
 const unavailable = (model: Model, what: string): Result =>
   toast(model, { title: `${what} isn’t available yet`, tone: "warning" })
 
@@ -375,7 +386,7 @@ const deadLetterIds = (model: Model): ReadonlyArray<string> =>
 const confirm = (model: Model, dialog: Dialog): Result =>
   Match.value(dialog).pipe(
     Match.tagsExhaustive({
-      DiscardDeadLetter: ({ id }) => mutate(model, Action.DiscardDeadLetter({ id })),
+      DiscardDeadLetter: ({ id }) => resolveDeadLetters(model, Action.DiscardDeadLetter({ id })),
       RevokeKey: ({ name }) =>
         mutate(
           model,
@@ -712,11 +723,30 @@ const step = (model: Model, message: Message): Result =>
       const next = { ...model, palette: { ...model.palette, query } }
       const first = paletteResults(next)[0]
       return {
-        model: {
-          ...next,
-          palette:
-            first === undefined ? { open: true, query } : { open: true, query, active: first.id },
-        },
+        model: { ...next, palette: { ...next.palette, active: first?.id } },
+        commands: query.trim() === "" ? [] : [SettlePaletteQuery({ query: query.trim() })],
+      }
+    },
+    SettledPaletteQuery: ({ query }) =>
+      model.palette.open && model.palette.query.trim() === query
+        ? { model, commands: [SearchActors({ query })] }
+        : { model },
+    FoundActors: ({ query, actorTypes, actors }) => {
+      const { found, active } = model.palette
+      if (
+        !model.palette.open ||
+        !model.palette.query.trim().startsWith(query) ||
+        (found !== undefined && query.length < found.query.length)
+      )
+        return { model }
+      const next = { ...model, palette: { ...model.palette, found: { query, actorTypes, actors } } }
+      const results = paletteResults(next)
+      const chosen =
+        active !== undefined &&
+        active !== paletteResults(model)[0]?.id &&
+        results.some((item) => item.id === active)
+      return {
+        model: { ...next, palette: { ...next.palette, active: chosen ? active : results[0]?.id } },
       }
     },
     MovedPaletteSelection: ({ step }) => {
@@ -940,10 +970,11 @@ const step = (model: Model, message: Message): Result =>
               },
             },
     ChangedTailFilter: ({ filter }) => ({ model: { ...model, tail: { ...model.tail, filter } } }),
-    RetriedDeadLetter: ({ id }) => mutate(model, Action.RetryDeadLetters({ ids: [id] })),
+    RetriedDeadLetter: ({ id }) =>
+      resolveDeadLetters(model, Action.RetryDeadLetters({ ids: [id] })),
     RetriedAllDeadLetters: () => {
       const open = deadLetterIds(model).filter((id) => !model.resolved.includes(id))
-      return mutate(model, Action.RetryDeadLetters({ ids: open }))
+      return resolveDeadLetters(model, Action.RetryDeadLetters({ ids: open }))
     },
     Mutated: ({ title, description, reload }) =>
       then(toast(model, { title, description, tone: "live" }), (next) => ({
