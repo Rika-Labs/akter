@@ -11,7 +11,6 @@ import Panel from "../components/panel.astro"
 import PortScene from "../components/port-scene.astro"
 import SectionHeading from "../components/section-heading.astro"
 import Stat from "../components/stat.astro"
-import Wordmark from "../components/wordmark.astro"
 import { finalControl, headlines, hotKey } from "../benchmarks/report.ts"
 import Drawing from "../illustrations/drawing.astro"
 import { ctaStack, useCaseScene } from "../illustrations/scenes.ts"
@@ -36,10 +35,9 @@ const manifest = [
 <Base title="Akter" path="/" landing footer="full">
   <Container width="landing">
     <div {...stylex.attrs(hero.root)}>
-      <h1 aria-label="Akter"><Wordmark size="hero" /></h1>
-      <p {...stylex.attrs(text.display, hero.headline)}>
+      <h1 {...stylex.attrs(text.display, hero.headline)}>
         The framework for <mark {...stylex.attrs(hero.mark)}>durable, stateful backends</mark> that power realtime apps, background work, and agents.
-      </p>
+      </h1>
       <div {...stylex.attrs(hero.install)}><InstallCommand /></div>
       <div {...stylex.attrs(hero.scene)}><PortScene /></div>
     </div>

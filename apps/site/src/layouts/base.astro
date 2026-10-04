@@ -76,7 +76,7 @@ const fullTitle = title === "Akter" ? "Akter: durable, stateful backends" : `${t
   <body {...stylex.attrs(base.body)}>
     <a href="#main" {...stylex.attrs(base.skip)}>Skip to content</a>
     <div {...stylex.attrs(base.shell)}>
-      <SiteHeader current={current} brand={!landing} bordered={!landing} width={landing ? "landing" : "site"} />
+      <SiteHeader current={current} bordered={!landing} width={landing ? "landing" : "site"} />
       <main id="main" {...stylex.attrs(base.main)}>
         <slot />
       </main>
