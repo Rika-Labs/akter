@@ -163,9 +163,10 @@ const FakeBilling = Layer.succeed(
           const url = provider.sessions.get(key) ?? `https://pay.test/${key}`
           provider.sessions.set(key, url)
 
-          return (provider.checkoutGate === undefined
-            ? Effect.void
-            : Deferred.await(provider.checkoutGate)
+          return (
+            provider.checkoutGate === undefined
+              ? Effect.void
+              : Deferred.await(provider.checkoutGate)
           ).pipe(Effect.as({ id: `cs_${key}`, url }))
         },
       ),
