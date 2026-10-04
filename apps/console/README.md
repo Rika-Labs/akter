@@ -157,7 +157,8 @@ inspection from real runners, and the overview, sidebar counts, search (actor ty
 addresses by prefix, offered in the palette with types first, each linking to its page), actor
 types and instances, the command log, jobs, dead letters, workflows and timers from the runners'
 durable views. An actor type the deployment does not serve opens the not-found page, without Send
-first command. The overview takes its recent deploys from the
+first command; since the runtime reports an unknown type's address as a missing actor, the inspector
+reads the type before offering a first command. The overview takes its recent deploys from the
 deployments list when it reports none. Type activity, latency histograms, the command stream,
 connections, schedules and owned-table listing still answer typed 501s and fall back as described
 above. Dead letters can't be retried or discarded yet, so both stay disabled with one quiet reason.
