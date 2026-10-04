@@ -22,7 +22,7 @@ import {
   type StepName,
   splitLifecycleKey,
 } from "./contract.ts"
-import { RolloutPlatform, RolloutRouting } from "./platform.ts"
+import { PlatformFailure, RolloutPlatform, RolloutRouting } from "./platform.ts"
 
 const STEPS: ReadonlyArray<StepName> = ["build", "migrate", "start-runners", "drain-previous"]
 
@@ -160,16 +160,12 @@ const fail = Effect.fnUntraced(function* (
     yield* endStep(rows, deploymentId, pending.name as StepName, "skipped", now)
 })
 
-const enqueue = (
-  rows: Rows,
-  deployment: Deployment,
-  step: "migrate" | "start-runners" | "drain-previous",
-  replaces: string | null,
-) =>
+const enqueue = (rows: Rows, deployment: Deployment, step: StepName, replaces: string | null) =>
   rows.turn.enqueue(
     RolloutStepJob.make({
       step,
       deploymentId: deployment.id,
+      commitSha: deployment.commitSha,
       imageDigest: deployment.imageDigest ?? "",
       envSnapshot: deployment.envSnapshot,
       regions: deployment.regions as ReadonlyArray<Region>,
@@ -190,6 +186,39 @@ const appendLog = Effect.fnUntraced(function* (
   )
 })
 
+/**
+ * Records a build's image and output, then starts migrating: the result of
+ * `RecordBuild` and of a `build` job alike.
+ */
+const recordBuilt = Effect.fnUntraced(function* (
+  routing: Routing,
+  rows: Rows,
+  deployment: Deployment,
+  build: {
+    readonly imageDigest: string
+    readonly commitSha: string
+    readonly envSnapshot: string
+    readonly log: ReadonlyArray<{ readonly stream: "stdout" | "stderr"; readonly text: string }>
+  },
+  now: Date,
+) {
+  const recorded = { ...deployment, ...build }
+
+  yield* appendLog(rows, deployment.id, build.log, now)
+  yield* rows.deployments
+    .update({
+      commitSha: build.commitSha,
+      imageDigest: build.imageDigest,
+      envSnapshot: build.envSnapshot,
+      phase: "build-recorded",
+    })
+    .where({ id: deployment.id })
+  yield* endStep(rows, deployment.id, "build", "succeeded", now)
+  yield* startStep(rows, deployment.id, "migrate", now)
+  yield* routing.register(releaseOf(recorded))
+  yield* enqueue(rows, recorded, "migrate", null)
+})
+
 const awaitingBuild = Effect.fnUntraced(function* (deploymentId: string) {
   const rows = yield* turnRows
   const deployment = yield* rows.deployments.one({ where: { id: deploymentId } })
@@ -205,10 +234,12 @@ const awaitingBuild = Effect.fnUntraced(function* (deploymentId: string) {
 /**
  * Records a new in-progress deployment, refusing while another is. A rollback
  * (`rolledBackFrom` set) starts at `start-runners` with its build and migrate
- * steps skipped; any other deployment waits for its build result.
+ * steps skipped; any other deployment waits for its build result, which a
+ * control plane that `builds` produces itself in a `build` job.
  */
 const begin = Effect.fnUntraced(function* (
   routing: Routing,
+  builds: boolean,
   input: {
     readonly deploymentId: string
     readonly commitSha: string
@@ -277,7 +308,7 @@ const begin = Effect.fnUntraced(function* (
   if (rollback) {
     yield* routing.register(releaseOf(deployment))
     yield* enqueue(rows, deployment, "start-runners", null)
-  }
+  } else if (builds) yield* enqueue(rows, deployment, "build", null)
 
   return yield* detailOf(rows, input.deploymentId).pipe(Effect.orDie)
 })
@@ -292,10 +323,11 @@ const begin = Effect.fnUntraced(function* (
 export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
   Effect.gen(function* () {
     const routing = yield* RolloutRouting
+    const builds = (yield* RolloutPlatform).build !== undefined
 
     return {
       Create: Effect.fnUntraced(function* (input) {
-        return yield* begin(routing, { ...input, imageDigest: null, rolledBackFrom: null })
+        return yield* begin(routing, builds, { ...input, imageDigest: null, rolledBackFrom: null })
       }),
 
       Redeploy: Effect.fnUntraced(function* ({ source, ...input }) {
@@ -304,7 +336,7 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
 
         if (Option.isNone(earlier)) return yield* DeploymentNotFound.make({ deploymentId: source })
 
-        return yield* begin(routing, {
+        return yield* begin(routing, builds, {
           ...input,
           commitSha: earlier.value.commitSha,
           imageDigest: null,
@@ -323,7 +355,7 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
         if (status !== "drained" && status !== "rolled-back")
           return yield* RollbackTargetInvalid.make({ deploymentId: target, status })
 
-        return yield* begin(routing, {
+        return yield* begin(routing, builds, {
           ...input,
           commitSha: earlier.value.commitSha,
           regions: earlier.value.regions as ReadonlyArray<Region>,
@@ -353,26 +385,19 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
           return yield* detailOf(yield* turnRows, deploymentId)
 
         const { rows, deployment, now } = yield* awaitingBuild(deploymentId)
-        const recorded = {
-          ...deployment,
-          imageDigest,
-          commitSha,
-          envSnapshot: envSnapshot ?? deployment.envSnapshot,
-        }
 
-        yield* appendLog(rows, deploymentId, log ?? [], now)
-        yield* rows.deployments
-          .update({
-            commitSha,
+        yield* recordBuilt(
+          routing,
+          rows,
+          deployment,
+          {
             imageDigest,
-            envSnapshot: recorded.envSnapshot,
-            phase: "build-recorded",
-          })
-          .where({ id: deploymentId })
-        yield* endStep(rows, deploymentId, "build", "succeeded", now)
-        yield* startStep(rows, deploymentId, "migrate", now)
-        yield* routing.register(releaseOf(recorded))
-        yield* enqueue(rows, recorded, "migrate", null)
+            commitSha,
+            envSnapshot: envSnapshot ?? deployment.envSnapshot,
+            log: log ?? [],
+          },
+          now,
+        )
 
         return yield* detailOf(rows, deploymentId)
       }),
@@ -411,11 +436,35 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
           return
         }
 
-        const expected: Phase = result.step === "migrate" ? "build-recorded" : "rolling-out"
+        const expected: Phase = Match.value(result.step).pipe(
+          Match.when("build", (): Phase => "building"),
+          Match.when("migrate", (): Phase => "build-recorded"),
+          Match.orElse((): Phase => "rolling-out"),
+        )
 
         if (deployment.status !== "in-progress" || deployment.phase !== expected) return
 
+        if (Predicate.isTagged(result, "BuildSucceeded")) {
+          yield* recordBuilt(
+            routing,
+            rows,
+            deployment,
+            {
+              imageDigest: result.imageDigest,
+              commitSha: deployment.commitSha,
+              envSnapshot: deployment.envSnapshot,
+              log: result.log,
+            },
+            now,
+          )
+
+          return
+        }
+
         if (Predicate.isTagged(result, "StepFailed")) {
+          if (result.step === "build")
+            yield* appendLog(rows, deployment.id, [{ stream: "stderr", text: result.reason }], now)
+
           yield* fail(rows, deployment.id, name, result.reason, now)
 
           if (result.step === "start-runners") {
@@ -524,6 +573,8 @@ export const DeploymentLifecycleCommands = DeploymentLifecycle.toLayer(
 
         if (found.value.status !== "in-progress") return
 
+        if (job.step === "build" && found.value.phase !== "building") return
+
         yield* fail(rows, job.deploymentId, name, cause, now)
 
         if (job.step === "start-runners") {
@@ -627,10 +678,48 @@ export const DeploymentLifecycleJobs = DeploymentLifecycle.toJobLayer(
           regions: job.regions,
         }
 
-        const call = Effect.gen(function* () {
-          if (job.step === "start-runners") return yield* platform.start(release)
+        if (job.step === "build")
+          return yield* (
+            platform.build === undefined
+              ? Effect.fail(
+                  PlatformFailure.make({
+                    reason: "This control plane has no builder",
+                    retryable: false,
+                  }),
+                )
+              : platform.build({
+                  jobId,
+                  organizationId: ref.tenant,
+                  projectId,
+                  environment,
+                  deploymentId: job.deploymentId,
+                  commitSha: job.commitSha ?? "",
+                })
+          ).pipe(
+            Effect.map((built) => ({
+              _tag: "BuildSucceeded" as const,
+              step: "build" as const,
+              deploymentId: job.deploymentId,
+              imageDigest: built.imageDigest,
+              log: built.log,
+            })),
+            Effect.catchIf(
+              (failure) => !failure.retryable,
+              (failure) =>
+                Effect.succeed({
+                  _tag: "StepFailed" as const,
+                  step: "build" as const,
+                  deploymentId: job.deploymentId,
+                  reason: failure.reason,
+                }),
+            ),
+          )
 
-          if (job.step === "migrate") yield* platform.migrate(release)
+        const step = job.step
+        const call = Effect.gen(function* () {
+          if (step === "start-runners") return yield* platform.start(release)
+
+          if (step === "migrate") yield* platform.migrate(release)
           else
             yield* platform.drain({
               jobId,
@@ -648,7 +737,7 @@ export const DeploymentLifecycleJobs = DeploymentLifecycle.toJobLayer(
         return yield* call.pipe(
           Effect.map((runners) => ({
             _tag: "StepSucceeded" as const,
-            step: job.step,
+            step,
             deploymentId: job.deploymentId,
             runners,
           })),
@@ -657,7 +746,7 @@ export const DeploymentLifecycleJobs = DeploymentLifecycle.toJobLayer(
             (failure) =>
               Effect.succeed({
                 _tag: "StepFailed" as const,
-                step: job.step,
+                step,
                 deploymentId: job.deploymentId,
                 reason: failure.reason,
               }),
@@ -668,7 +757,7 @@ export const DeploymentLifecycleJobs = DeploymentLifecycle.toJobLayer(
   }),
 )
 
-/** Commands, queries and executors of the lifecycle; needs a `RolloutPlatform`. */
+/** Commands, queries and executors of the lifecycle; needs a `RolloutPlatform`, whose `build` decides whether the lifecycle builds. */
 export const DeploymentLifecycleLive = Layer.mergeAll(
   DeploymentLifecycleCommands,
   DeploymentLifecycleReads,

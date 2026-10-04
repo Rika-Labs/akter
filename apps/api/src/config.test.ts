@@ -145,4 +145,33 @@ describe("API configuration", () => {
       expect(result._tag).toBe("Failure")
     }),
   )
+  it.effect(
+    "builds images locally only when a build context is named, and never in production",
+    () =>
+      Effect.gen(function* () {
+        const local = {
+          CONTROL_PLANE_DATABASE_URL: "postgres://project:project@localhost/postgres",
+          AUTH_SECRET: "a-local-test-signing-secret-long-enough",
+        }
+        const load = (overrides: Record<string, string>) =>
+          loadOptions.pipe(
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromUnknown({ ...local, ...overrides }),
+            ),
+          )
+        expect((yield* load({})).localBuild).toBeUndefined()
+        expect(
+          (yield* load({
+            RUNNER_BUILD_CONTEXT: "/workspace",
+            RUNNER_BUILD_DOCKERFILE: "infra/local/runner/Dockerfile",
+          })).localBuild,
+        ).toEqual({ context: "/workspace", dockerfile: "infra/local/runner/Dockerfile" })
+        expect((yield* load({ RUNNER_BUILD_CONTEXT: "/src" })).localBuild).toEqual({
+          context: "/src",
+          dockerfile: "Dockerfile",
+        })
+        expect((yield* loadProduction({ RUNNER_BUILD_CONTEXT: "/workspace" }))._tag).toBe("Failure")
+      }),
+  )
 })

@@ -13,6 +13,7 @@ import {
   requestDigest,
   Timeout,
   Unauthorized,
+  User,
 } from "@rikalabs/akter"
 import {
   ActorError as ClientActorError,
@@ -1036,6 +1037,96 @@ describe("control plane service credential", () => {
           expect((yield* read(edge, key)).status).toBe(200)
           expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 6 })
           expect(yield* reservationCount(edge)).toBe(2)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "signs the identity the control plane acts for as the caller, and keeps every tenant credential's own caller whatever it claims",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const leaked: Array<string> = []
+          const runner = yield* runnerWith((incoming) => {
+            const header = incoming.headers.get("akter-on-behalf-of")
+
+            if (header !== null) leaked.push(header)
+
+            return undefined
+          })
+          const edge = yield* start({}, runner)
+          const service = yield* serviceKey(edge)
+          const sameTenant = yield* keyFor(edge, "default")
+          const jwt = yield* tenantJwt(edge, "mallory")
+          const Claims = Schema.fromJsonString(
+            Schema.Struct({ tenant: Schema.String, caller: Schema.Json }),
+          )
+
+          const callerOf = (key: string, cid: string, onBehalfOf?: string) =>
+            Effect.gen(function* () {
+              const before = runner.seen.length
+              const reply = yield* request(edge, key, "/actors/Order/o-1/Place", {
+                headers:
+                  onBehalfOf === undefined
+                    ? { "idempotency-key": cid }
+                    : { "idempotency-key": cid, "akter-on-behalf-of": onBehalfOf },
+              })
+              const seen = runner.seen.slice(before)
+
+              if (seen.length === 0) return { status: reply.status, reason: reply.reason }
+
+              const [, body] = (seen[0]?.assertion ?? "").split(".")
+              const claims = yield* Schema.decodeEffect(Claims)(
+                new TextDecoder().decode(Base64Url.decode(body ?? "").pipe(Result.getOrThrow)),
+              ).pipe(Effect.orDie)
+
+              return { status: reply.status, tenant: claims.tenant, caller: claims.caller }
+            })
+
+          expect(yield* callerOf(service, "s-1", "user:alice_01")).toEqual({
+            status: 200,
+            tenant: "default",
+            caller: User.make({ subject: "user:alice_01" }),
+          })
+          expect(yield* callerOf(service, "s-2", "api-key:key-9")).toMatchObject({
+            caller: User.make({ subject: "api-key:key-9" }),
+          })
+          expect(yield* callerOf(service, "s-3")).toMatchObject({
+            caller: User.make({ subject: "akter-control-plane" }),
+          })
+
+          for (const forged of [
+            "alice",
+            "user:",
+            "system:root",
+            "user:a b",
+            `user:${"x".repeat(129)}`,
+          ]) {
+            const refused = yield* callerOf(
+              service,
+              `s-${forged.length}-${forged.slice(0, 6)}`,
+              forged,
+            )
+
+            expect(refused.status, forged).toBe(400)
+            expect(refused).toMatchObject({ reason: { code: "decode" } })
+            expect(refused.reason?.["_tag"]).toBe("InvalidInput")
+          }
+
+          expect(yield* callerOf(sameTenant, "t-1", "user:alice_01")).toEqual({
+            status: 200,
+            tenant: "default",
+            caller: User.make({ subject: "user-default" }),
+          })
+          expect(yield* callerOf(jwt, "t-2", "user:alice_01")).toEqual({
+            status: 200,
+            tenant: "default",
+            caller: User.make({ subject: "mallory" }),
+          })
+          expect(yield* callerOf(sameTenant, "t-3", "alice")).toMatchObject({ status: 200 })
+          expect(leaked).toEqual([])
+          expect(yield* reservationCount(edge)).toBe(6)
         }),
       ),
     60_000,

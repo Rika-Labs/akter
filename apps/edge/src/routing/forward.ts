@@ -19,7 +19,12 @@ import {
   HttpMethod,
 } from "effect/http"
 import type { EdgeOptions } from "../config.ts"
-import type { Authenticator, Principal } from "../principals/authenticate.ts"
+import {
+  attributed,
+  type Authenticator,
+  ON_BEHALF_OF_HEADER,
+  type Principal,
+} from "../principals/authenticate.ts"
 import {
   meteringOf,
   type QuotaError,
@@ -57,7 +62,8 @@ export interface Edge {
 
 /**
  * Hop-by-hop headers, and credentials a runner must never see: it trusts only
- * the assertion, and hosted runners read no cookie.
+ * the assertion, hosted runners read no cookie, and whom the control plane
+ * acts for travels only as the assertion's caller.
  */
 const DROPPED = new Set([
   "connection",
@@ -72,6 +78,7 @@ const DROPPED = new Set([
   "authorization",
   "cookie",
   ASSERTION_HEADER,
+  ON_BEHALF_OF_HEADER,
 ])
 
 const utf8 = new TextEncoder()
@@ -234,7 +241,9 @@ const bodyOf = (request: Request | Response, limit: number) =>
  * it to a ready runner of the tenant's home region. Without a credential it
  * forwards no assertion, and the runner decides whether the route needs one.
  * The assertion is used only for this request's attempts, and only while it
- * lives.
+ * lives. Its caller is the verified principal's own, except that a request on
+ * the control plane's service credential may name the control-plane identity
+ * it acts for, which then becomes the caller.
  *
  * A watch takes its connection lease before it reserves or reaches a runner,
  * so a connection-cap refusal leaves no usage behind. The lease belongs to the
@@ -264,6 +273,13 @@ export const forward = Effect.fnUntraced(function* (
     return yield* refusal(principal.failure)
 
   const verified = principal?.success
+
+  const caller = attributed({
+    principal: verified,
+    onBehalfOf: request.headers.get(ON_BEHALF_OF_HEADER),
+  })
+
+  if (Result.isFailure(caller)) return yield* refusal(caller.failure)
 
   const metering = meteringOf({
     method: request.method,
@@ -360,7 +376,7 @@ export const forward = Effect.fnUntraced(function* (
       deployment: deployment.id,
       region: routed.region,
       lifetime,
-      principal: verified,
+      principal: caller.success ?? verified,
       req,
       path: url.pathname,
       commandId,

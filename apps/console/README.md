@@ -59,9 +59,13 @@ input is sent as a new command. An ID the operator typed is always used as typed
 `503 Unavailable` (send again with the same key) and `502 RunnerDefect`. After a `409`, `410` or
 `RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
 input makes a new one. The dialog captures the actor's project and environment and closes on every
-URL change; navigation can never retarget an old actor address. When the runtime cannot inspect
-actors yet, the inspector still reads the actor's live job list; an actor that has one keeps the
-Jobs tab and Send command live while the rest of the page is sample data. An address the runtime
+URL change; navigation can never retarget an old actor address. The inspector shows the actor as
+the runner reports it: committed state, generation, receipts, events, jobs and the event feed
+cursor. What the runner does not report (turn, owned rows, subscribers, sockets, awake state,
+runner, mailbox and activity) reads as unknown (`—` or an empty state that says so), never as zero.
+Against an API that cannot inspect actors yet, the inspector still reads the actor's live job
+list; an actor that has one keeps the Jobs tab and Send command live while the rest of the page is
+sample data. An address the runtime
 reports as no actor at all has never received a command, so the inspector offers Send first
 command for it; any other missing resource or failure renders as usual.
 
@@ -69,7 +73,9 @@ Deployment detail offers earlier successful deployments in the same environment 
 targets and displays `rolledBackFrom` on the newly created deployment. Redeploy starts a new
 deployment of the viewed commit, which is built again. Both ask for confirmation, stay disabled
 while either is in flight, and show the API's refusal otherwise. On success they open the new
-deployment, titled as the API names it (`Rollback to <short sha>: <message>`), only if its page is
+deployment, titled as the API names it (`Rollback to <short sha>: <message>` or `Redeploy <short sha>:
+<message>`, always the commit's own message, never an earlier rollback or redeploy title), only if
+its page is
 still open; after navigating away the console just reports it and refreshes a deployments list or
 overview that is open. Signing out or switching project releases the in-flight hold. Rollbacks and redeploys reuse earlier
 commits, so the console (overview included) links deployments by id. A deployment URL is read as an
@@ -100,8 +106,8 @@ windows and bucket boundaries match. Its unbounded tail remains explicit and it 
 combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
 histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
 Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
-times are UTC. The API serves deployments, rollback, redeploy, command sending and actor jobs
-from real runners; the other runtime reads (overview, actor types and instances, inspection,
+times are UTC. The API serves deployments, rollback, redeploy, command sending, actor inspection
+and actor jobs from real runners; the other runtime reads (overview, actor types and instances,
 command log and stream, jobs, workflows, connections) still answer typed 501s and fall back to
 sample data.
 

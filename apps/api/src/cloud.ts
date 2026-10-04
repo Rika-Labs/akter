@@ -5,10 +5,12 @@ import {
   PlatformFailure,
 } from "@akter/deployments/lifecycle"
 import {
+  dockerBuilds,
   dockerMigrations,
   dockerRunners,
   ecsMigrations,
   ecsRunners,
+  ImageBuilds,
   ImageMigrations,
   RunnerLayers,
   RunnerPoller,
@@ -17,11 +19,17 @@ import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
 import { migrate } from "@akter/postgres/migrate"
 import { Actors, Database } from "@rikalabs/akter/runtime"
 import { BunCrypto, BunServices } from "@effect/platform-bun"
-import { Effect, Layer, Redacted, Schema } from "effect"
+import { Effect, Layer, Option, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import type { ApiOptions } from "./config.ts"
-import { environmentHost, rolloutPlatform, rolloutRouting, serviceCredential } from "./rollout.ts"
+import {
+  environmentHost,
+  rolloutPlatform,
+  rolloutRouting,
+  SERVICE_TENANT,
+  serviceCredential,
+} from "./rollout.ts"
 import { RuntimeEdge } from "./runtime.ts"
 import { MeteringRepositoryLive } from "./metering-repository.ts"
 import { RepositoryLive } from "./repository.ts"
@@ -50,6 +58,7 @@ export const runtimeEdge = (options: ApiOptions) =>
               origin: options.edgeOrigin ?? "http://127.0.0.1:3002",
               host: row.host,
               credential: serviceCredential(options.secret, row.id),
+              tenant: SERVICE_TENANT,
               requestTimeout: `${options.runtimeRequestTimeoutSeconds ?? 35} seconds`,
             }
           }),
@@ -81,27 +90,50 @@ export const cloudRuntime = (options: ApiOptions) =>
       const platform = Layer.unwrap(
         Effect.gen(function* () {
           const migrations = yield* ImageMigrations
-          return rolloutPlatform(options, (release) =>
-            Schema.decodeEffect(Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)))(
-              release.envSnapshot,
-            ).pipe(
-              Effect.mapError(() =>
-                PlatformFailure.make({ reason: "Invalid environment snapshot", retryable: false }),
+          const builds = yield* Effect.serviceOption(ImageBuilds)
+          return rolloutPlatform(options, {
+            migrate: (release) =>
+              Schema.decodeEffect(
+                Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+              )(release.envSnapshot).pipe(
+                Effect.mapError(() =>
+                  PlatformFailure.make({
+                    reason: "Invalid environment snapshot",
+                    retryable: false,
+                  }),
+                ),
+                Effect.flatMap((snapshot) =>
+                  migrations.run({
+                    deploymentId: release.deploymentId,
+                    region: release.regions[0] ?? "us-east-1",
+                    image: release.imageDigest,
+                    environment: { ...snapshot, ...options.runnerEnvironment },
+                    idempotencyKey: release.jobId,
+                  }),
+                ),
+                Effect.mapError(() =>
+                  PlatformFailure.make({ reason: "Image migration failed", retryable: false }),
+                ),
               ),
-              Effect.flatMap((snapshot) =>
-                migrations.run({
-                  deploymentId: release.deploymentId,
-                  region: release.regions[0] ?? "us-east-1",
-                  image: release.imageDigest,
-                  environment: { ...snapshot, ...options.runnerEnvironment },
-                  idempotencyKey: release.jobId,
-                }),
-              ),
-              Effect.mapError(() =>
-                PlatformFailure.make({ reason: "Image migration failed", retryable: false }),
-              ),
-            ),
-          )
+            build: Option.match(builds, {
+              onNone: () => undefined,
+              onSome: (builder) => (request) =>
+                builder
+                  .build({
+                    tag: `akter-build:${request.deploymentId}`,
+                    buildArgs: { RUNNER_VERSION: request.commitSha.slice(0, 7) },
+                  })
+                  .pipe(
+                    Effect.map((built) => ({ imageDigest: built.imageId, log: built.log })),
+                    Effect.mapError((failure) =>
+                      PlatformFailure.make({
+                        reason: failure.reason,
+                        retryable: failure.retryable,
+                      }),
+                    ),
+                  ),
+            }),
+          })
         }),
       ).pipe(Layer.provide(runners))
       return DeploymentLifecycleLive.pipe(
@@ -142,6 +174,11 @@ export const cloudRuntime = (options: ApiOptions) =>
               Layer.mergeAll(fromNodeProviderChain(), FetchHttpClient.layer, BunCrypto.layer),
             ),
           ),
+    ),
+    Layer.provide(
+      options.localBuild === undefined
+        ? Layer.empty
+        : dockerBuilds(options.localBuild).pipe(Layer.provide(BunServices.layer)),
     ),
     Layer.provideMerge(cloudDatabase(options)),
     Layer.provideMerge(FetchHttpClient.layer),

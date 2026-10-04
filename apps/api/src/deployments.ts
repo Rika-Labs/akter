@@ -10,17 +10,15 @@ import { Actor, Actors, System } from "@rikalabs/akter"
 import { Crypto, Effect, Option, Predicate, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
-import { Access } from "./access.ts"
+import { Access, attributedSubject } from "./access.ts"
 
 const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String }))
 
 const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
 
-/** Names a source deployment by its short commit and message, as rollback and redeploy labels show it. */
-const sourceLabel = (source: DeploymentDetail) =>
-  source.message === ""
-    ? source.commitSha.slice(0, 7)
-    : `${source.commitSha.slice(0, 7)}: ${source.message}`
+/** Names a commit by its short SHA and message, as rollback and redeploy labels show it. */
+const commitLabel = (commitSha: string, message: string) =>
+  message === "" ? commitSha.slice(0, 7) : `${commitSha.slice(0, 7)}: ${message}`
 
 /** Every actor handle is captured under the organization established by access, never by a request payload. */
 export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments", (handlers) =>
@@ -68,10 +66,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
     })
     const actorOf = (organizationId: string, projectId: string, environment: Environment) =>
       Effect.gen(function* () {
-        const caller = yield* Cloud.CurrentIdentity
-        const subject = Predicate.isTagged(caller, "session")
-          ? `user:${caller.userId}`
-          : `api-key:${caller.keyId}`
+        const subject = attributedSubject(yield* Cloud.CurrentIdentity)
         return yield* DeploymentLifecycle.get(lifecycleKey({ projectId, environment })).pipe(
           Actor.tenant(organizationId),
           Actor.as(System.make({ source: "process", onBehalfOf: { subject } })),
@@ -103,6 +98,21 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
         name: string
       }>`SELECT name FROM cloud_api_key WHERE id = ${caller.keyId}`.pipe(Effect.orDie)
       return { name: key?.name ?? "API key", image: null }
+    })
+    /**
+     * Labels a source deployment by its commit as first deployed. A rollback
+     * or a redeploy keeps its source's commit and both need a source in the
+     * same environment, so the environment's earliest deployment of that
+     * commit is the one created for the commit itself, and its message is the
+     * commit's own rather than an earlier rollback or redeploy label.
+     */
+    const sourceLabel = Effect.fn(function* (source: DeploymentDetail) {
+      const [first] = yield* sql<{
+        message: string
+      }>`SELECT message FROM deployment_rollout WHERE organization_id = ${source.organizationId} AND tenant_id = ${source.organizationId} AND project_id = ${source.projectId} AND environment = ${source.environment} AND commit_sha = ${source.commitSha} ORDER BY seq LIMIT 1`.pipe(
+        Effect.orDie,
+      )
+      return commitLabel(source.commitSha, first?.message ?? source.message)
     })
     const readExpected = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
@@ -211,7 +221,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             .Rollback({
               deploymentId: yield* id,
               target: params.deploymentId,
-              message: `Rollback to ${sourceLabel(target)}`,
+              message: `Rollback to ${yield* sourceLabel(target)}`,
               author: yield* author,
             })
             .pipe(expected, Effect.flatMap(detail))
@@ -244,7 +254,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             .Redeploy({
               deploymentId: yield* id,
               source: params.deploymentId,
-              message: `Redeploy ${sourceLabel(source)}`,
+              message: `Redeploy ${yield* sourceLabel(source)}`,
               author: yield* author,
               regions: source.regions,
               envSnapshot: "{}",
