@@ -11,7 +11,16 @@ export interface Principal {
   readonly caller: typeof User.Type
   /** Epoch milliseconds; caps a session the assertion opens. */
   readonly expiresAt: number
+  /**
+   * The credential is the control plane's deployment service credential: a
+   * hosted API key the control plane registered under `CONTROL_PLANE_SUBJECT`.
+   * A JWT never is, because its issuer, not the control plane, picks its subject.
+   */
+  readonly service: boolean
 }
+
+/** The subject the control plane registers its deployment service credential under. */
+export const CONTROL_PLANE_SUBJECT = "akter-control-plane"
 
 /** Proves a credential for a deployment. */
 export interface Authenticator {
@@ -164,6 +173,7 @@ export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) 
       tenant: row.tenant,
       caller: User.make({ subject: row.subject }),
       expiresAt: (yield* Clock.currentTimeMillis) + session,
+      service: row.subject === CONTROL_PLANE_SUBJECT,
     } satisfies Principal
   })
 
@@ -192,6 +202,7 @@ export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) 
         onNone: () => Number.MAX_SAFE_INTEGER,
         onSome: (at) => at.epochMilliseconds,
       }),
+      service: false,
     } satisfies Principal
   })
 

@@ -121,6 +121,23 @@ export type Metering =
     }
   | { readonly kind: "read"; readonly actor: string; readonly id: string }
 
+/**
+ * The exact paths the control plane reads with its service credential: a
+ * runner's readiness, which rollouts probe before going live, and the
+ * inspector's operator reads, which the console's runtime views ask through
+ * the edge.
+ */
+const SERVICE_READS: ReadonlySet<string> = new Set([
+  "/ready",
+  "/inspector/overview",
+  "/inspector/actors",
+  "/inspector/actor",
+  "/inspector/outbox",
+  "/inspector/jobs",
+  "/inspector/dead-letters",
+  "/inspector/workflows",
+])
+
 const decoded = (segment: string) => {
   try {
     return decodeURIComponent(segment)
@@ -145,16 +162,25 @@ const decoded = (segment: string) => {
  * requests elsewhere, including inspector GETs and MCP calls whose command
  * ids travel in their bodies, are unsupported rather than reserving usage
  * that cannot be correlated to the runner's read journal.
+ *
+ * The control plane's own service credential is free on exactly the GETs in
+ * `SERVICE_READS`, which neither run a handler nor read through the read
+ * journal; every other request it makes, its commands included, is metered as
+ * a tenant's would be.
  */
 export const meteringOf = (request: {
   readonly method: string
   readonly path: string
   readonly idempotencyKey: string | null
   readonly credentialed: boolean
+  readonly service: boolean
 }): Metering => {
   const method = request.method.toUpperCase()
 
   if (method === "OPTIONS") return { kind: "free" }
+
+  if (request.service && method === "GET" && SERVICE_READS.has(request.path))
+    return { kind: "free" }
 
   const segments = request.path.split("/")
   const at = segments.indexOf("actors")

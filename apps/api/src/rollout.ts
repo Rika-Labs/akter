@@ -22,6 +22,7 @@ import { PgClient } from "@effect/sql-pg"
 import { SqlClient } from "effect/sql"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import type { ApiOptions } from "./config.ts"
+import { MeteringRepository } from "./metering-repository.ts"
 import { Repository } from "./repository.ts"
 
 /** The control-plane service credential is deployment-bound and only its hash is stored at the edge. */
@@ -49,13 +50,18 @@ export const environmentHost: {
 
 const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
 
-/** The environment pointer, host mapping and lifecycle status share the same fenced actor transaction. */
+/**
+ * The environment pointer, host mapping, usage binding and lifecycle status
+ * share the same fenced actor transaction, so a deployment can never serve
+ * without the binding its edge needs to meter it.
+ */
 export const rolloutRouting = (options: ApiOptions) =>
   Layer.effect(
     RolloutRouting,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const repository = yield* Repository
+      const metering = yield* MeteringRepository
       return {
         register: Effect.fn(function* (release) {
           const snapshot = yield* Schema.decodeEffect(Snapshot)(release.envSnapshot).pipe(
@@ -89,6 +95,11 @@ export const rolloutRouting = (options: ApiOptions) =>
           yield* sql`INSERT INTO deployment (id, primary_region, scale_to_zero, tier, image, environment_snapshot, serving) VALUES (${release.deploymentId}, ${release.regions[0] ?? "us-east-1"}, ${tier === "free"}, ${tier}, ${release.imageDigest}, ${encoded}::jsonb, false) ON CONFLICT (id) DO NOTHING`.pipe(
             Effect.orDie,
           )
+          yield* metering.bindDeployment({
+            deployment: release.deploymentId,
+            organizationId: release.organizationId,
+            projectId: release.projectId,
+          })
           const hash = new Bun.CryptoHasher("sha256")
             .update(Redacted.value(serviceCredential(options.secret, release.deploymentId)))
             .digest("hex")
