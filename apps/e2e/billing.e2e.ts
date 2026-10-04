@@ -1,4 +1,4 @@
-import { KnownPlan, UnboundPlan } from "@akter/cloud-api"
+import { KnownPlan, UnboundPlan, UnknownPlan } from "@akter/cloud-api"
 import { expect, type Page, type Route, test } from "@playwright/test"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
@@ -6,11 +6,16 @@ const session = {
   user: { id: "u_bill", name: "Billing Owner", email: "owner@example.com", emailVerified: true },
   session: { id: "s_bill" },
 }
+const organizationPlan = (plan: string) => {
+  if (plan === "free" || plan === "pro") return KnownPlan.make({ id: plan })
+  if (plan === "legacy") return UnknownPlan.make({ id: plan })
+  return UnboundPlan.make({})
+}
 const organization = (plan: string) => ({
   id: "org_bill",
   name: "Billing Org",
   slug: "billing-org",
-  plan: plan === "free" || plan === "pro" ? KnownPlan.make({ id: plan }) : UnboundPlan.make({}),
+  plan: organizationPlan(plan),
   createdAt: "2026-01-01T00:00:00Z",
 })
 const project = {
@@ -100,6 +105,15 @@ const freeBilling = {
   billingEmail: null,
   spendLimit: { limitCents: null, currentSpendCents: 0 },
   caps: caps({ plan: "free", commandUnits: 600_000 }),
+}
+
+/** An organization without a billing account, as billing reports it: no plan, limit or spend. */
+const unboundBilling = {
+  plan: UnboundPlan.make({}),
+  paymentMethod: null,
+  billingEmail: null,
+  spendLimit: { limitCents: null, currentSpendCents: 0 },
+  caps: unboundCaps,
 }
 
 /** The catalog the API serves; Team is renamed so a hardcoded plan name would show. */
@@ -481,7 +495,7 @@ test("shows live usage and one quiet notice at Free's command cap", async ({ pag
   const notice = page.getByRole("note")
   await expect(notice).toHaveCount(1)
   await expect(notice).toContainText(
-    "This organization has used the commands its plan includes for October 2026.",
+    "This organization has used the 1M commands its plan includes for October 2026.",
   )
   await expect(notice.getByRole("link", { name: "Upgrade" })).toHaveAttribute(
     "href",
@@ -497,7 +511,7 @@ test("shows live usage and one quiet notice at Free's command cap", async ({ pag
   await expect(table.getByRole("row").nth(1)).toHaveText(["Ledger992K40K$0.00"])
   await page.goto(`${origin}/`)
   await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
-  await expect(page.getByRole("note")).toContainText("used the commands its plan includes")
+  await expect(page.getByRole("note")).toContainText("used the 1M commands its plan includes")
 })
 
 test("refuses a billing link off Stripe and closes the tab it opened", async ({
@@ -565,6 +579,82 @@ test("never shows an organization without a billing account as Free", async ({ p
     page.getByRole("table", { name: "Plan comparison" }).getByText("Free", { exact: true }),
   ).toHaveCount(1)
   await expect(page.getByRole("combobox", { name: "Plan to upgrade to" })).toBeVisible()
+})
+
+test("names an unbound organization's plan as no billing and prices nothing for it", async ({
+  page,
+}) => {
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "unbound",
+      billing: () => unboundBilling,
+      usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
+    }),
+  )
+  await page.goto(`${origin}/`)
+  const account = page.getByRole("button", { name: "Account: Billing Owner" })
+  await expect(account).toContainText("Billing Org · no billing")
+  await expect(account).not.toContainText("Free")
+  await page.goto(`${origin}/settings/billing`)
+  await expect(page.getByText("Billing isn’t set up", { exact: true })).toBeVisible()
+  await expect(account).toContainText("Billing Org · no billing")
+  await expect(page.getByText("This month so far")).toHaveCount(0)
+  await expect(page.getByText("No monthly charge")).toHaveCount(0)
+  await page.goto(`${origin}/settings/usage`)
+  await expect(page.getByRole("table", { name: "Usage by project" })).toContainText("Ledger")
+  await expect(page.getByRole("columnheader", { name: "Estimate" })).toHaveCount(0)
+  await expect(page.getByRole("main")).not.toContainText("$")
+  await expect(page.getByRole("main")).not.toContainText("provisional")
+})
+
+test("says an unknown plan isn't recognised, calmly, while org context still loads", async ({
+  page,
+}) => {
+  const unknownPlan = {
+    status: 503,
+    contentType: "application/json",
+    body: '{"_tag":"Unavailable","message":"The organization\'s plan legacy is not in the pricing configuration","retryAfterSeconds":60,"reason":"unknownPlan"}',
+  }
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "legacy",
+      billing: () => freeBilling,
+      usage: usage({ commands: 120_000, included: 1_000_000 }),
+      extra: (route, path) =>
+        path === "/api/organizations/org_bill/billing" ||
+        path === "/api/organizations/org_bill/usage"
+          ? route.fulfill(unknownPlan)
+          : undefined,
+    }),
+  )
+  await page.goto(`${origin}/settings/billing`)
+  await expect(page.getByRole("heading", { level: 1, name: "Billing" })).toBeVisible()
+  await expect(
+    page.getByText("This organization’s plan isn’t recognised. Contact support."),
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Account: Billing Owner" })).toContainText(
+    "Billing Org · plan not recognised",
+  )
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0)
+  await expect(page.getByText("Billing can’t be read right now")).toHaveCount(0)
+  await expect(page.getByRole("main")).not.toContainText("legacy")
+  await page.goto(`${origin}/settings/usage`)
+  await expect(page.getByRole("heading", { level: 1, name: "Usage" })).toBeVisible()
+  await expect(
+    page.getByText("This organization’s plan isn’t recognised. Contact support."),
+  ).toBeVisible()
+  await expect(page.getByRole("meter")).toHaveCount(0)
+  await page.goto(`${origin}/`)
+  await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
+  const notice = page.getByRole("note")
+  await expect(notice).toHaveText(
+    "This organization’s plan isn’t recognised, so new commands are refused. Contact support.",
+  )
+  await expect(notice.getByRole("link")).toHaveCount(0)
 })
 
 test("explains a tenant at Free's storage cap from the latest sample", async ({ page }) => {
@@ -676,5 +766,52 @@ test("explains a typed quota refusal in the send dialog and links to Billing", a
     "href",
     "/settings/billing",
   )
+  expect(sends).toBe(1)
+})
+
+test("explains a command the edge couldn't bill and offers no resend with the same ID", async ({
+  page,
+}) => {
+  let sends = 0
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "unbound",
+      billing: () => unboundBilling,
+      usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
+      extra: (route, path) => {
+        if (path === "/api/organizations/org_bill/projects")
+          return route.fulfill({ json: [{ ...project, status: "live" }] })
+        if (path.endsWith("/runtime/actors/Order/ord-quota"))
+          return route.fulfill({ json: inspector })
+        if (!path.endsWith("/runtime/commands") || route.request().method() !== "POST")
+          return undefined
+        sends += 1
+        return route.fulfill({
+          status: 402,
+          contentType: "application/json",
+          body: '{"_tag":"QuotaUnbound","deployment":"dep_bill","tenant":"org_bill","reason":"account"}',
+        })
+      },
+    }),
+  )
+  await page.goto(`${origin}/actors/Order/ord-quota`)
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Refund")
+  await dialog.getByLabel("Payload", { exact: true }).fill('{"amount":17}')
+  const send = dialog.getByRole("button", { name: "Send command", exact: true })
+  await send.click()
+  const alert = dialog.getByRole("alert")
+  await expect(alert).toHaveText(
+    "Billing isn’t set up for this organization, so the command wasn’t run. Choose a plan in Billing, then send it as a new command. Open Billing",
+  )
+  await expect(alert.getByRole("link", { name: "Open Billing" })).toHaveAttribute(
+    "href",
+    "/settings/billing",
+  )
+  await expect(alert).not.toContainText("couldn’t reach Akter")
+  await expect(send).toBeDisabled()
   expect(sends).toBe(1)
 })

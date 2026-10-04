@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { AppRoute } from "../navigation/routes.ts"
 import { Action } from "../shell/action.ts"
-import { loadSettings } from "./client.ts"
+import { loadSettings, setSpendLimit } from "./client.ts"
 import { endpointsSlice, environmentsSlice, keysSlice } from "./fixtures.ts"
 import { SettingsSection } from "./model.ts"
 import { blockedBySample, isSample } from "./sample.ts"
@@ -143,7 +143,7 @@ describe("loadSettings", () => {
           ["Free", null],
           ["Pro", "pro"],
         ])
-        expect(billing.billing?.plan.id).toBe("free")
+        expect(billing.billing?.plan).toMatchObject({ id: "free", name: "Free" })
         expect(requested().toSorted()).toEqual([
           "/api/billing/plans",
           "/api/me",
@@ -178,6 +178,64 @@ describe("loadSettings", () => {
               "Billing can’t be read right now, so plan and usage figures aren’t shown. Try again in a minute.",
           })
         }
+      }),
+    ))
+
+  it("loads Billing and Usage for a plan the pricing doesn't know instead of failing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const unknownPlan = yield* Schema.encodeEffect(Schema.fromJsonString(Unavailable))(
+          Unavailable.make({
+            message: "The organization's plan legacy is not in the pricing configuration",
+            retryAfterSeconds: 60,
+            reason: "unknownPlan",
+          }),
+        )
+        respond({
+          ...identity,
+          "/api/organizations/org_1/usage": () => reply(unknownPlan, 503),
+          "/api/organizations/org_1/billing": () => reply(unknownPlan, 503),
+          "/api/organizations/org_1/billing/invoices": () => json([]),
+          "/api/billing/plans": () => json(catalogBody),
+        })
+        for (const route of [AppRoute.SettingsUsage(), AppRoute.SettingsBilling()]) {
+          const { data: page, sample } = yield* loadSettings(route)
+          expect(page.unknownPlan).toBe(true)
+          expect(page.billing).toBe(null)
+          expect(page.usage).toBe(null)
+          expect(sample).toBe(false)
+        }
+      }),
+    ))
+
+  it("says a spend limit wasn't saved for an unknown plan, and is unconfirmed in an outage", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const encode = Schema.encodeEffect(Schema.fromJsonString(Unavailable))
+        const unknownPlan = yield* encode(
+          Unavailable.make({
+            message: "Unknown plan",
+            retryAfterSeconds: 60,
+            reason: "unknownPlan",
+          }),
+        )
+        const outage = yield* encode(Unavailable.make({ message: "Down", retryAfterSeconds: 60 }))
+        let body = unknownPlan
+        respond({
+          ...identity,
+          "/api/organizations/org_1/billing/spend-limit": () => reply(body, 503),
+        })
+        expect(yield* Effect.flip(setSpendLimit(50_000))).toMatchObject({
+          kind: "Unavailable",
+          message:
+            "This organization’s plan isn’t recognised, so the spend limit wasn’t saved. Contact support.",
+        })
+        body = outage
+        expect(yield* Effect.flip(setSpendLimit(50_000))).toMatchObject({
+          kind: "Unavailable",
+          message:
+            "Billing couldn’t confirm the spend limit right now. Reload in a minute to see whether it was saved.",
+        })
       }),
     ))
 

@@ -1,5 +1,5 @@
 import type { ActorInspector } from "@akter/cloud-api"
-import { Option } from "effect"
+import { DateTime, Option } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import * as Scene from "foldkit/scene"
 import * as Url from "foldkit/url"
@@ -19,9 +19,24 @@ const unreported: ActorInspector = {
   turn: null,
   tables: null,
   receipts: [
-    { commandId: "cmd_1", command: "Increment", result: "Success", at: null, replayed: false },
+    {
+      commandId: "cmd_1",
+      command: "Increment",
+      result: "Success",
+      caller: { kind: "user", subject: "user:usr_ada", source: null },
+      at: null,
+      expiresAt: DateTime.makeUnsafe("2026-10-04T12:00:00.000Z"),
+      replayed: false,
+    },
   ],
-  events: [{ name: "Incremented", cursor: "3", subscribers: null }],
+  events: [
+    {
+      name: "Incremented",
+      cursor: "3",
+      emittedAt: DateTime.makeUnsafe("2026-10-03T12:00:00.000Z"),
+      subscribers: null,
+    },
+  ],
   jobs: [],
   connections: { sockets: null, feedCursor: "3" },
   properties: {

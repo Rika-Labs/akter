@@ -11,11 +11,12 @@ import {
   sidebarUser,
   styleAttributes,
 } from "@akter/ui"
+import { Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import { appDestinations, searchSettings } from "../navigation/sections.ts"
-import { address } from "../workspace/model.ts"
+import { address, planLabel } from "../workspace/model.ts"
 import {
   ChangedSettingsQuery,
   ChoseTheme,
@@ -45,6 +46,20 @@ export const currentProject = (model: Model): string => {
   const remembered = rememberedProject()
   if (remembered !== null && slugs.includes(remembered)) return remembered
   return slugs[0] ?? "No project"
+}
+
+/**
+ * The organization as the sidebar names it: its name and, when it has one, its plan. The plan takes
+ * its catalog name only while a page holding the catalog is open, and otherwise its title-cased id.
+ */
+export const organizationLabel = (model: Model): string => {
+  const { organization, plan } = model.workspace
+  if (plan === null) return organization
+  const catalog = Option.match(model.page, {
+    onNone: () => [],
+    onSome: (page) => (Predicate.isTagged(page, "SettingsPage") ? (page.plans?.plans ?? []) : []),
+  })
+  return `${organization} · ${planLabel(plan, catalog)}`
 }
 
 const accountMenu = (h: HtmlBuilder<Message>, model: Model): Html =>
@@ -85,7 +100,7 @@ const accountMenu = (h: HtmlBuilder<Message>, model: Model): Html =>
     trigger: (attributes) =>
       sidebarUser(h, {
         name: model.workspace.person.name,
-        detail: `${model.workspace.organization} · ${model.workspace.plan}`,
+        detail: organizationLabel(model),
         attributes: [h.AriaLabel(`Account: ${model.workspace.person.name}`), ...attributes],
       }),
   })
@@ -100,7 +115,7 @@ const projectSwitcher = (h: HtmlBuilder<Message>, model: Model): Html => {
         label: "Projects",
         block: true,
         entries: [
-          { kind: "heading", label: model.workspace.organization },
+          { kind: "heading", label: organizationLabel(model) },
           ...model.workspace.projects.map((project) => ({
             kind: "item" as const,
             label: project.slug,

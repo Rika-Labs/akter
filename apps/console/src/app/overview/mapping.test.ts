@@ -73,7 +73,7 @@ describe("overview mapping", () => {
           value: "1,284",
           trend: [10, 20, 30],
         })
-        expect(orderedSeries(parsed.p99).map((entry) => entry.value)).toEqual([12, 18])
+        expect(orderedSeries(parsed.p99!).map((entry) => entry.value)).toEqual([12, 18])
       }),
     ))
 
@@ -151,11 +151,44 @@ describe("deploy markers", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const parsed = yield* decode(Overview, overview)
-        const series = orderedSeries(parsed.throughput)
+        const series = orderedSeries(parsed.throughput!)
         expect(deployMarkers(parsed.recentDeployments)(series)).toEqual([
           { index: 2, label: "a3f9c21" },
         ])
         expect(deployMarkers(parsed.recentDeployments)([])).toEqual([])
+      }),
+    ))
+
+  it("writes what the runners do not report as a dash instead of throwing or showing zero", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, {
+          ...overview,
+          commands: null,
+          actors: { awake: null, total: 3 },
+          jobs: { inFlight: 0, donePerHour: null },
+          throughput: null,
+          p99: null,
+          health: {
+            runners: null,
+            databaseCpuPercent: null,
+            maxMailbox: null,
+            parkedSockets: null,
+            outboxLagP99Ms: null,
+            lastDeployAt: null,
+          },
+          recentDeployments: null,
+        })
+        const page = toOverviewPage(now)({ project: "storefront", overview: parsed })
+        expect(page.stats.slice(0, 2)).toMatchObject([
+          { label: "Commands / s", value: "—", trend: [] },
+          { label: "Awake actors", value: "—" },
+        ])
+        expect(page.throughput).toEqual([])
+        expect(page.latency).toMatchObject({ p50: null, p99: null, p99Series: [] })
+        expect(page.health.slice(0, 5).map((row) => row.value)).toEqual(["—", "—", "—", "—", "—"])
+        expect(page.deploys).toEqual([])
+        expect(page.markers).toEqual([])
       }),
     ))
 })

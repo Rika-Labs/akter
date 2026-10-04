@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Predicate, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import type * as Inspection from "../../protocol/inspection.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
@@ -80,16 +80,26 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
         (SELECT count(*)::int FROM durable.workflows
           WHERE tenant_id = ${tenant} AND status <> 'finished') AS "openWorkflows"`
 
-    return { tenant, views, counts: counts! } satisfies Inspection.Overview
+    const [timer] = yield* sql<{ dueAtMs: number | null }>`
+      SELECT min(due_at_ms)::float8 AS "dueAtMs" FROM durable.timers WHERE tenant_id = ${tenant}`
+
+    return {
+      tenant,
+      views,
+      counts: counts!,
+      nextTimerDueAtMs: timer?.dueAtMs ?? null,
+    } satisfies Inspection.Overview
   })
 
 interface StoredActor extends Inspection.ActorRow {
   readonly routingKey: string
 }
 
-/** One keyset page of actors, optionally of a single type. */
+/** One keyset page of actors, optionally of a single type or under an address prefix. */
 interface ActorsPage extends Page {
   readonly actorType?: string | undefined
+  /** Keeps only actors whose address, `type/id`, starts with it. */
+  readonly prefix?: string | undefined
   /** Keyset cursor: the last actor of the previous page. */
   readonly after?: ActorIdentity | undefined
 }
@@ -97,11 +107,22 @@ interface ActorsPage extends Page {
 /**
  * The tenant's actors in `(actor_type, actor_id)` order, one page after `after`. The cursor
  * comparison uses the same `C` collation as the ORDER BY, or a cursor could skip or repeat actors.
+ * A prefix that names a whole type, `type/` and more, matches that type's ids by their own prefix,
+ * so it reads one type rather than every actor of the tenant.
  */
 export const actors = (page: ActorsPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     const byType = page.actorType === undefined ? sql`TRUE` : sql`actor_type = ${page.actorType}`
+    const slash = page.prefix?.indexOf("/") ?? -1
+
+    const byPrefix =
+      page.prefix === undefined
+        ? sql`TRUE`
+        : slash === -1
+          ? sql`starts_with(actor_type, ${page.prefix})`
+          : sql`actor_type = ${page.prefix.slice(0, slash)}
+              AND starts_with(actor_id, ${page.prefix.slice(slash + 1)})`
 
     const after =
       page.after === undefined
@@ -113,7 +134,7 @@ export const actors = (page: ActorsPage) =>
         generation::float8 AS generation, created,
         last_event_sequence::float8 AS "lastEventSequence"
       FROM durable.actors
-      WHERE tenant_id = ${page.tenant} AND ${byType} AND ${after}
+      WHERE tenant_id = ${page.tenant} AND ${byType} AND ${byPrefix} AND ${after}
       ORDER BY actor_type COLLATE "C", actor_id COLLATE "C"
       LIMIT ${page.limit + 1}`
 
@@ -190,6 +211,13 @@ const jobOf = (row: JobRow) => ({
 })
 
 const deadLetterOf = (row: DeadLetterRow) => ({ ...row, payload: decodeText(row.payload) })
+
+const receiptOf = <Row extends ReceiptRow>({ events, callerKey, outcome, ...receipt }: Row) => ({
+  ...receipt,
+  callerKey: decodeText(callerKey),
+  outcome: decodeText(outcome),
+  events: events === null ? [] : events.split(",").map(Number),
+})
 
 const stepOf = (row: StepRow) => ({
   step: row.step,
@@ -329,12 +357,7 @@ export const actor = (page: ActorPage) =>
     return Option.some({
       actor: row,
       state: state.map(({ key, value, bytes }) => ({ key, bytes, value: decodeBytes(value) })),
-      receipts: receipts.map(({ events: committed, callerKey, outcome, ...receipt }) => ({
-        ...receipt,
-        callerKey: decodeText(callerKey),
-        outcome: decodeText(outcome),
-        events: committed === null ? [] : committed.split(",").map(Number),
-      })),
+      receipts: receipts.map(receiptOf),
       events: events.map(({ value, ...event }) => ({ ...event, value: decodeBytes(value) })),
       outbox: outbox.map(outboxOf),
       jobs: jobs.map(jobOf),
@@ -372,48 +395,374 @@ export const jobs = ({ tenant, limit }: Page) =>
     return { jobs: rows.map(jobOf) } satisfies typeof Inspection.JobsPage.Type
   })
 
-/** The tenant's dead letters, newest first. */
-export const deadLetters = ({ tenant, limit }: Page) =>
+/** A tenant-wide keyset page of dead letters. */
+interface DeadLettersPage extends Page {
+  /** Keyset cursor: the last dead letter of the previous page. */
+  readonly after?: { readonly deadAtMs: number; readonly jobId: string } | undefined
+}
+
+/** The tenant's dead letters, newest first, one page after `after`. */
+export const deadLetters = ({ tenant, limit, after }: DeadLettersPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
     const rows = yield* sql.unsafe<DeadLetterRow>(
       `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters WHERE tenant_id = $1
-        ORDER BY dead_at_ms DESC, job_id COLLATE "C" LIMIT $2`,
-      [tenant, limit],
+        AND ($2::int8 IS NULL OR dead_at_ms < $2::int8
+          OR (dead_at_ms = $2::int8 AND job_id COLLATE "C" > $3))
+        ORDER BY dead_at_ms DESC, job_id COLLATE "C" LIMIT $4`,
+      [tenant, after?.deadAtMs ?? null, after?.jobId ?? "", limit + 1],
     )
 
-    return { deadLetters: rows.map(deadLetterOf) } satisfies typeof Inspection.DeadLettersPage.Type
+    const items = rows.slice(0, limit)
+    const last = items.at(-1)
+
+    return {
+      deadLetters: items.map(deadLetterOf),
+      next:
+        rows.length > limit && last !== undefined
+          ? { deadAtMs: last.deadAtMs, jobId: last.jobId }
+          : null,
+    } satisfies typeof Inspection.DeadLettersPage.Type
   })
 
-/** A tenant-wide page of workflow executions. */
+/** A tenant-wide keyset page of workflow executions. */
 interface WorkflowsPage extends Page {
-  /** `open` is every execution not yet finished. */
-  readonly status: "open" | "all"
+  /**
+   * `open` is every execution not yet finished; `running`, `suspended` and
+   * `finished` name one stored status; `completed` and `failed` are finished
+   * executions whose result is, or is not, a success.
+   */
+  readonly status: "open" | "all" | "running" | "suspended" | "finished" | "completed" | "failed"
+  /** Keyset cursor: the last execution of the previous page. */
+  readonly after?: { readonly startedAtMs: number; readonly executionId: string } | undefined
 }
 
-/** The tenant's workflow executions, newest first, each with its recorded steps. */
-export const workflows = ({ tenant, limit, status }: WorkflowsPage) =>
+/** Whether a finished execution's stored result is a success, or `undefined` when it does not decode. */
+const succeeded = (row: WorkflowRow) => {
+  const result = decodeBytes(row.result)
+
+  if (result === null || !("json" in result) || !isTaggedJson(result.json)) return undefined
+
+  return Predicate.isTagged(result.json, "Success")
+}
+
+const isTaggedJson = Schema.is(Schema.Struct({ _tag: Schema.String }))
+
+/**
+ * The tenant's workflow executions, newest first, one page after `after`, each
+ * with its recorded steps. The steps are read for the same page of executions,
+ * so each listed execution has all its steps. A finished execution's result
+ * is compressed, so `completed` and `failed` read finished executions
+ * `MAX_LIMIT` at a time and keep those whose result matches until the page is
+ * full; a result that does not decode matches neither.
+ */
+export const workflows = ({ tenant, limit, status, after }: WorkflowsPage) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const stored = status === "completed" || status === "failed" ? "finished" : status
+
+    const page = `tenant_id = $1
+      AND ($2 = 'all' OR ($2 = 'open' AND status <> 'finished') OR status = $2)
+      AND ($3::int8 IS NULL OR started_at_ms < $3::int8
+        OR (started_at_ms = $3::int8 AND execution_id COLLATE "C" > $4))`
+
+    const read = (from: WorkflowsPage["after"], size: number) =>
+      sql.unsafe<WorkflowRow>(
+        `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows WHERE ${page}
+          ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5`,
+        [tenant, stored, from?.startedAtMs ?? null, from?.executionId ?? "", size],
+      )
+
+    const rows: Array<WorkflowRow> = []
+
+    if (stored === status) rows.push(...(yield* read(after, limit + 1)))
+    else {
+      let from = after
+
+      while (rows.length <= limit) {
+        const batch = yield* read(from, MAX_LIMIT)
+        rows.push(...batch.filter((row) => succeeded(row) === (status === "completed")))
+        const last = batch.at(-1)
+
+        if (batch.length < MAX_LIMIT || last === undefined) break
+
+        from = { startedAtMs: last.startedAtMs, executionId: last.executionId }
+      }
+    }
+
+    const items = rows.slice(0, limit)
+    const last = items.at(-1)
+
+    const steps =
+      items.length === 0
+        ? []
+        : yield* sql.unsafe<StepRow>(
+            `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
+              WHERE tenant_id = $1 AND execution_id IN (${items.map((_, index) => `$${String(index + 2)}`).join(", ")})
+              ORDER BY started_at_ms, step COLLATE "C", attempt`,
+            [tenant, ...items.map((row) => row.executionId)],
+          )
+
+    return {
+      workflows: items.map((row) => workflowOf(row, steps)),
+      next:
+        rows.length > limit && last !== undefined
+          ? { startedAtMs: last.startedAtMs, executionId: last.executionId }
+          : null,
+    } satisfies typeof Inspection.WorkflowsPage.Type
+  })
+
+/** A keyset page of names, optionally one name only or those starting with a prefix. */
+interface NamesPage extends Page {
+  /** Reads only this name. */
+  readonly name?: string | undefined
+  /** Reads only names starting with it. */
+  readonly prefix?: string | undefined
+  /** Keyset cursor: the last name of the previous page. */
+  readonly after?: string | undefined
+}
+
+/** The tenant's actor types by name, each with how many actors it has, one page after `after`. */
+export const actorTypes = ({ tenant, limit, name, prefix, after }: NamesPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    const rows = yield* sql.unsafe<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows
-        WHERE tenant_id = $1 AND ($2 = 'all' OR status <> 'finished')
-        ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $3`,
-      [tenant, status, limit],
-    )
+    const rows = yield* sql<Inspection.ActorTypeRow>`
+      SELECT actor_type AS "actorType", count(*)::int AS actors
+      FROM durable.actors
+      WHERE tenant_id = ${tenant}
+        AND ${name === undefined ? sql`TRUE` : sql`actor_type = ${name}`}
+        AND ${prefix === undefined ? sql`TRUE` : sql`starts_with(actor_type, ${prefix})`}
+        AND ${after === undefined ? sql`TRUE` : sql`actor_type COLLATE "C" > ${after}`}
+      GROUP BY actor_type
+      ORDER BY actor_type COLLATE "C"
+      LIMIT ${limit + 1}`
 
-    const steps = yield* sql.unsafe<StepRow>(
-      `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
-        WHERE tenant_id = $1 AND execution_id IN (SELECT execution_id FROM durable.workflows
-          WHERE tenant_id = $1 AND ($2 = 'all' OR status <> 'finished')
-          ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $3)
-        ORDER BY started_at_ms, step COLLATE "C", attempt`,
-      [tenant, status, limit],
-    )
+    const items = rows.slice(0, limit)
 
     return {
-      workflows: rows.map((row) => workflowOf(row, steps)),
-    } satisfies typeof Inspection.WorkflowsPage.Type
+      actorTypes: items,
+      next: rows.length > limit ? (items.at(-1)?.actorType ?? null) : null,
+    } satisfies typeof Inspection.ActorTypesPage.Type
+  })
+
+/**
+ * The tenant's job names, each with its pending jobs split by whether an
+ * attempt has failed, and its dead letters, one page after `after`.
+ */
+export const jobTypes = ({ tenant, limit, after }: NamesPage) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const rows = yield* sql<Inspection.JobTypeRow>`
+      SELECT job, sum(queued)::int AS queued, sum(retrying)::int AS retrying,
+        sum(dead)::int AS "deadLetters"
+      FROM (
+        SELECT job, count(*) FILTER (WHERE attempts = 0) AS queued,
+          count(*) FILTER (WHERE attempts > 0) AS retrying, 0 AS dead
+        FROM durable.jobs WHERE tenant_id = ${tenant} GROUP BY job
+        UNION ALL
+        SELECT job, 0, 0, count(*) FROM durable.dead_letters WHERE tenant_id = ${tenant} GROUP BY job
+      ) named
+      WHERE ${after === undefined ? sql`TRUE` : sql`job COLLATE "C" > ${after}`}
+      GROUP BY job
+      ORDER BY job COLLATE "C"
+      LIMIT ${limit + 1}`
+
+    const items = rows.slice(0, limit)
+
+    return {
+      jobTypes: items,
+      next: rows.length > limit ? (items.at(-1)?.job ?? null) : null,
+    } satisfies typeof Inspection.JobTypesPage.Type
+  })
+
+/** A keyset page of receipts: one actor's, one type's or the whole tenant's. */
+interface ReceiptsPage extends Page {
+  readonly actorType?: string | undefined
+  /** Reads one actor, of `actorType`. */
+  readonly actorId?: string | undefined
+  readonly outcomeTag?: "Success" | "Failure" | undefined
+  /** Keyset cursor: the last receipt of the previous page. */
+  readonly after?:
+    | (ActorIdentity & { readonly expiresAtMs: number; readonly commandId: string })
+    | undefined
+}
+
+type TenantReceiptRow = ReceiptRow & ActorIdentity
+
+/**
+ * Receipts, the latest expiry first, one page after `after`, each with the
+ * events it committed. A receipt's expiry is the one its command id carries,
+ * so this is the order the command ids were issued in, not the order the
+ * turns committed. `None` when the page names one actor the tenant does not
+ * have.
+ */
+export const receipts = (page: ReceiptsPage) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    let scope = sql`TRUE`
+
+    if (page.actorType !== undefined && page.actorId !== undefined) {
+      const found = yield* findActor({ ...page, actorType: page.actorType, actorId: page.actorId })
+
+      if (Option.isNone(found)) return Option.none()
+
+      scope = sql`r.routing_key = ${found.value.routingKey}::int8
+        AND r.actor_type = ${page.actorType} AND r.actor_id = ${page.actorId}`
+    } else if (page.actorType !== undefined) scope = sql`r.actor_type = ${page.actorType}`
+
+    const after =
+      page.after === undefined
+        ? sql`TRUE`
+        : sql`(r.expires_at_ms < ${page.after.expiresAtMs}::int8
+            OR (r.expires_at_ms = ${page.after.expiresAtMs}::int8
+              AND (r.actor_type COLLATE "C", r.actor_id COLLATE "C", r.command_id COLLATE "C")
+                > (${page.after.actorType}, ${page.after.actorId}, ${page.after.commandId})))`
+
+    const rows = yield* sql<TenantReceiptRow>`
+      SELECT r.actor_type AS "actorType", r.actor_id AS "actorId",
+        r.command_id AS "commandId", r.command, r.caller_key AS "callerKey",
+        r.outcome_tag AS "outcomeTag", r.outcome, r.expires_at_ms::float8 AS "expiresAtMs",
+        (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events e
+          WHERE e.routing_key = r.routing_key AND e.tenant_id = r.tenant_id
+            AND e.actor_type = r.actor_type AND e.actor_id = r.actor_id
+            AND e.command_id = r.command_id) AS events
+      FROM durable.receipts r
+      WHERE r.tenant_id = ${page.tenant} AND ${scope} AND ${after}
+        AND ${page.outcomeTag === undefined ? sql`TRUE` : sql`r.outcome_tag = ${page.outcomeTag}`}
+      ORDER BY r.expires_at_ms DESC, r.actor_type COLLATE "C", r.actor_id COLLATE "C",
+        r.command_id COLLATE "C"
+      LIMIT ${page.limit + 1}`
+
+    const items = rows.slice(0, page.limit)
+    const last = items.at(-1)
+
+    return Option.some({
+      receipts: items.map(receiptOf),
+      next:
+        rows.length > page.limit && last !== undefined
+          ? {
+              actorType: last.actorType,
+              actorId: last.actorId,
+              expiresAtMs: last.expiresAtMs,
+              commandId: last.commandId,
+            }
+          : null,
+    } satisfies typeof Inspection.ReceiptsPage.Type)
+  })
+
+/** A keyset page of one actor's event names. */
+interface LatestEventsPage extends ActorPage {
+  /** Keyset cursor: the last event name of the previous page. */
+  readonly after?: string | undefined
+}
+
+/**
+ * The newest retained event of each name one actor emitted, by name, one page
+ * after `after`. `None` when the tenant has no such actor.
+ */
+export const latestEvents = (page: LatestEventsPage) =>
+  Effect.gen(function* () {
+    const found = yield* findActor(page)
+
+    if (Option.isNone(found)) return Option.none()
+
+    const sql = yield* SqlClient.SqlClient
+
+    const rows = yield* sql<Inspection.LatestEventRow>`
+      SELECT event, sequence, "emittedAtMs" FROM (
+        SELECT DISTINCT ON (event) event, sequence::float8 AS sequence,
+          emitted_at_ms::float8 AS "emittedAtMs"
+        FROM durable.events
+        WHERE routing_key = ${found.value.routingKey}::int8 AND tenant_id = ${page.tenant}
+          AND actor_type = ${page.actorType} AND actor_id = ${page.actorId}
+          AND ${page.after === undefined ? sql`TRUE` : sql`event COLLATE "C" > ${page.after}`}
+        ORDER BY event, sequence DESC
+      ) latest
+      ORDER BY event COLLATE "C"
+      LIMIT ${page.limit + 1}`
+
+    const items = rows.slice(0, page.limit)
+
+    return Option.some({
+      events: items,
+      next: rows.length > page.limit ? (items.at(-1)?.event ?? null) : null,
+    } satisfies typeof Inspection.LatestEventsPage.Type)
+  })
+
+/** A keyset page of one actor's timeline. */
+interface TimelinePage extends ActorPage {
+  /** Keyset cursor: the last entry of the previous page. */
+  readonly before?: { readonly sequence: number; readonly kind: "command" | "event" } | undefined
+}
+
+type StoredTimelineRow = Omit<Inspection.TimelineRow, "callerKey"> & {
+  readonly callerKey: string | null
+}
+
+/**
+ * One actor's timeline, newest first, one page after `before`: every retained
+ * event at its emission time, and every retained receipt whose turn emitted
+ * events, at that turn's emission time and placed after its own events. A
+ * receipt whose turn emitted nothing has no recorded time, so it is not on the
+ * timeline. Event sequences only grow, so they order the timeline exactly.
+ * `None` when the tenant has no such actor.
+ */
+export const timeline = (page: TimelinePage) =>
+  Effect.gen(function* () {
+    const found = yield* findActor(page)
+
+    if (Option.isNone(found)) return Option.none()
+
+    const sql = yield* SqlClient.SqlClient
+
+    const owned = (alias: string) =>
+      sql`${sql(alias)}.routing_key = ${found.value.routingKey}::int8
+        AND ${sql(alias)}.tenant_id = ${page.tenant}
+        AND ${sql(alias)}.actor_type = ${page.actorType} AND ${sql(alias)}.actor_id = ${page.actorId}`
+
+    const before =
+      page.before === undefined
+        ? sql`TRUE`
+        : sql`(sequence, rank) < (${page.before.sequence}::float8, ${page.before.kind === "event" ? 1 : 0})`
+
+    const rows = yield* sql<StoredTimelineRow>`
+      SELECT kind, sequence, name, "commandId", "callerKey", "atMs" FROM (
+        SELECT 'event' AS kind, 1 AS rank, e.sequence::float8 AS sequence, e.event AS name,
+          e.command_id AS "commandId", r.caller_key AS "callerKey",
+          e.emitted_at_ms::float8 AS "atMs"
+        FROM durable.events e
+        LEFT JOIN durable.receipts r ON r.routing_key = e.routing_key
+          AND r.tenant_id = e.tenant_id AND r.actor_type = e.actor_type
+          AND r.actor_id = e.actor_id AND r.command_id = e.command_id
+        WHERE ${owned("e")}
+        UNION ALL
+        SELECT 'command', 0, min(e.sequence)::float8, r.command, r.command_id, r.caller_key,
+          min(e.emitted_at_ms)::float8
+        FROM durable.receipts r
+        JOIN durable.events e ON e.routing_key = r.routing_key
+          AND e.tenant_id = r.tenant_id AND e.actor_type = r.actor_type
+          AND e.actor_id = r.actor_id AND e.command_id = r.command_id
+        WHERE ${owned("r")}
+        GROUP BY r.command_id, r.command, r.caller_key
+      ) entries
+      WHERE ${before}
+      ORDER BY sequence DESC, rank DESC
+      LIMIT ${page.limit + 1}`
+
+    const items = rows.slice(0, page.limit)
+    const last = items.at(-1)
+
+    return Option.some({
+      entries: items.map(({ callerKey, ...entry }) => ({
+        ...entry,
+        callerKey: decodeText(callerKey),
+      })),
+      next:
+        rows.length > page.limit && last !== undefined
+          ? { sequence: last.sequence, kind: last.kind }
+          : null,
+    } satisfies typeof Inspection.TimelinePage.Type)
   })

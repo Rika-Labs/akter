@@ -14,7 +14,10 @@ const Millis = Schema.Finite
 
 const Identity = { actorType: Schema.String, actorId: Schema.String }
 
-/** A tenant's view versions and row counts. */
+/**
+ * A tenant's view versions and row counts, and when its soonest pending timer
+ * is due in epoch milliseconds, null when it has none.
+ */
 export const Overview = Schema.Struct({
   tenant: Schema.String,
   views: Schema.Array(Schema.Struct({ view: Schema.String, version: Schema.Finite })),
@@ -29,6 +32,7 @@ export const Overview = Schema.Struct({
     workflows: Schema.Finite,
     openWorkflows: Schema.Finite,
   }),
+  nextTimerDueAtMs: Schema.NullOr(Millis),
 })
 
 export type Overview = typeof Overview.Type
@@ -205,8 +209,103 @@ export const OutboxPage = Schema.Struct({ outbox: Schema.Array(OutboxRow) })
 /** A tenant-wide page of job rows. */
 export const JobsPage = Schema.Struct({ jobs: Schema.Array(JobRow) })
 
-/** A tenant-wide page of dead letters. */
-export const DeadLettersPage = Schema.Struct({ deadLetters: Schema.Array(DeadLetterRow) })
+/** A tenant-wide page of dead letters; `next` is the dead letter to continue after, or null at the end. */
+export const DeadLettersPage = Schema.Struct({
+  deadLetters: Schema.Array(DeadLetterRow),
+  next: Schema.NullOr(Schema.Struct({ deadAtMs: Millis, jobId: Schema.String })),
+})
 
-/** A tenant-wide page of workflows. */
-export const WorkflowsPage = Schema.Struct({ workflows: Schema.Array(WorkflowRow) })
+/** A tenant-wide page of workflows; `next` is the execution to continue after, or null at the end. */
+export const WorkflowsPage = Schema.Struct({
+  workflows: Schema.Array(WorkflowRow),
+  next: Schema.NullOr(Schema.Struct({ startedAtMs: Millis, executionId: Schema.String })),
+})
+
+/** How many of the tenant's actors have one type. */
+export const ActorTypeRow = Schema.Struct({ actorType: Schema.String, actors: Schema.Finite })
+
+export type ActorTypeRow = typeof ActorTypeRow.Type
+
+/** A page of actor types by name; `next` is the type to continue after, or null at the end. */
+export const ActorTypesPage = Schema.Struct({
+  actorTypes: Schema.Array(ActorTypeRow),
+  next: Schema.NullOr(Schema.String),
+})
+
+/** A receipt with the actor that holds it. */
+export const ActorReceiptRow = Schema.Struct({ ...Identity, ...ReceiptRow.fields })
+
+export type ActorReceiptRow = typeof ActorReceiptRow.Type
+
+/**
+ * A page of receipts, the latest expiry first; `next` is the receipt to
+ * continue after, or null at the end.
+ */
+export const ReceiptsPage = Schema.Struct({
+  receipts: Schema.Array(ActorReceiptRow),
+  next: Schema.NullOr(
+    Schema.Struct({ ...Identity, expiresAtMs: Millis, commandId: Schema.String }),
+  ),
+})
+
+/** The newest retained event of one name, with its sequence and emission time in epoch milliseconds. */
+export const LatestEventRow = Schema.Struct({
+  event: Schema.String,
+  sequence: Schema.Finite,
+  emittedAtMs: Millis,
+})
+
+export type LatestEventRow = typeof LatestEventRow.Type
+
+/** A page of an actor's event names; `next` is the name to continue after, or null at the end. */
+export const LatestEventsPage = Schema.Struct({
+  events: Schema.Array(LatestEventRow),
+  next: Schema.NullOr(Schema.String),
+})
+
+/**
+ * One entry of an actor's timeline: an event at its emission time, or the
+ * command whose turn emitted events, at that turn's emission time and its
+ * first event's sequence. `callerKey` is the caller of the command's retained
+ * receipt, null once the receipt has expired.
+ */
+export const TimelineRow = Schema.Struct({
+  kind: Schema.Literals(["command", "event"]),
+  sequence: Schema.Finite,
+  name: Schema.String,
+  commandId: Schema.String,
+  callerKey: Stored,
+  atMs: Millis,
+})
+
+export type TimelineRow = typeof TimelineRow.Type
+
+/**
+ * A page of an actor's timeline, newest first, each command after the events
+ * its turn emitted; `next` is the entry to continue after, or null at the end.
+ */
+export const TimelinePage = Schema.Struct({
+  entries: Schema.Array(TimelineRow),
+  next: Schema.NullOr(
+    Schema.Struct({ sequence: Schema.Finite, kind: Schema.Literals(["command", "event"]) }),
+  ),
+})
+
+/**
+ * The tenant's pending jobs of one name, split by whether an attempt has
+ * failed yet, and its dead letters of that name.
+ */
+export const JobTypeRow = Schema.Struct({
+  job: Schema.String,
+  queued: Schema.Finite,
+  retrying: Schema.Finite,
+  deadLetters: Schema.Finite,
+})
+
+export type JobTypeRow = typeof JobTypeRow.Type
+
+/** A page of job names; `next` is the name to continue after, or null at the end. */
+export const JobTypesPage = Schema.Struct({
+  jobTypes: Schema.Array(JobTypeRow),
+  next: Schema.NullOr(Schema.String),
+})

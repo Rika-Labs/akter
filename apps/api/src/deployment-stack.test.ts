@@ -820,7 +820,9 @@ layer(Layer.provideMerge(ImagesLive, services), {
               commandId: counted.commandId,
               command: "Increment",
               result: "Success",
+              caller: { kind: "user", subject: `user:${aliceId}`, source: null },
               at: null,
+              expiresAt: DateTime.makeUnsafe(Number(counted.commandId.split(".")[2])),
               replayed: false,
             },
           ],
@@ -836,7 +838,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
             tenant: "default",
             mailboxDepth: null,
           },
-          timeline: null,
+          timeline: [],
         })
         const unknown = yield* inspect(`Counter/never-${suffix}`)
         expect(unknown.status).toBe(404)
@@ -1070,6 +1072,531 @@ layer(Layer.provideMerge(ImagesLive, services), {
   )
 
   it.effect(
+    "reads the runners' overview, actor types and instances, receipts with their callers, events, timeline, jobs, dead letters, workflows and timers through the edge, and refuses another organization",
+    () =>
+      Effect.gen(function* () {
+        const images = yield* Images
+        const { app, call, alice, aliceId, mallory, suffix, project, deploy, settled, detail } =
+          yield* startStack()
+
+        const deployed = yield* deploy("a", images.v1)
+        expect(yield* settled(deployed)).toMatchObject({ status: "live" })
+
+        const runtime = `/api/projects/${project.id}/environments/production/runtime`
+        const send = (address: string, command: string, payload: Schema.Json) =>
+          call(`${runtime}/commands`, {
+            method: "POST",
+            cookie: alice,
+            body: { address, command, payload },
+          })
+        const sent = (address: string, command: string, payload: Schema.Json) =>
+          send(address, command, payload).pipe(
+            Effect.tap((response) =>
+              response.text.pipe(
+                Effect.orDie,
+                Effect.tap((body) => Effect.sync(() => expect(response.status, body).toBe(200))),
+              ),
+            ),
+            Effect.flatMap((response) => read(response, Cloud.CommandSent)),
+          )
+
+        const five = yield* sent("Ledger/a", "Record", 5)
+        const seven = yield* sent("Ledger/a", "Record", 7)
+        const one = yield* sent("Ledger/b", "Record", 1)
+        expect([five.result, seven.result, one.result]).toEqual([5, 12, 1])
+        const adjusted = yield* sent("Ledger/a", "Adjust", 3)
+        expect(adjusted.result).toBe(15)
+        yield* sent("Ledger/b", "Queue", 4)
+        const noted = yield* sent("Ledger/a", "Note", "hello")
+        const refusal = yield* send("Ledger/a", "Refuse", "no")
+        expect(refusal.status).toBe(422)
+        const refused = yield* read(refusal, Cloud.CommandFailed)
+        expect(refused.errorTag).toBe("Refused")
+        const opened = yield* sent("Ledger/a", "OpenReview", "ada")
+        const executionId = yield* Schema.decodeUnknownEffect(Schema.String)(opened.result).pipe(
+          Effect.orDie,
+        )
+        const counted = yield* sent("Counter/solo", "Increment", 2)
+
+        const applicationRows = yield* Effect.acquireRelease(
+          Effect.sync(() => new Pool({ connectionString: app.url, max: 1 })),
+          (pool) => Effect.promise(() => pool.end()),
+        )
+        const rows = <Row extends Record<string, unknown>>(
+          statement: string,
+          values: Array<string> = [],
+        ) =>
+          Effect.promise(() => applicationRows.query<Row>(statement, values)).pipe(
+            Effect.map((result) => result.rows),
+          )
+
+        yield* poll(
+          "every Settle job to dead-letter and the Retry job to fail its first attempt",
+          90,
+          rows<{ dead: number; retrying: number; queued: number }>(
+            "SELECT (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = 'default') AS dead, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default' AND job = 'Retry' AND attempts > 0) AS retrying, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default' AND job = 'Later' AND attempts = 0) AS queued",
+          ),
+          ([found]) => found?.dead === 3 && found.retrying === 1 && found.queued === 1,
+        )
+        yield* poll(
+          "the review to suspend on its clock and the other two runs to finish",
+          90,
+          rows<{ workflow: string; status: string }>(
+            "SELECT workflow, status FROM durable.workflows WHERE tenant_id = 'default' ORDER BY workflow",
+          ),
+          (found) =>
+            found.map((row) => `${row.workflow}:${row.status}`).join(",") ===
+            "Doomed:finished,Quick:finished,Review:suspended",
+        )
+
+        const get = <A, I>(path: string, schema: Schema.Codec<A, I>, cookie = alice) =>
+          call(`${runtime}${path}`, { cookie }).pipe(
+            Effect.tap((response) =>
+              response.text.pipe(
+                Effect.orDie,
+                Effect.tap((body) => Effect.sync(() => expect(response.status, body).toBe(200))),
+              ),
+            ),
+            Effect.flatMap((response) => read(response, schema)),
+          )
+        const every = <A, I>(path: string, item: Schema.Codec<A, I>) =>
+          Effect.gen(function* () {
+            const items: Array<A> = []
+            let cursor: string | null = null
+
+            for (let page = 0; page < 50; page++) {
+              const separator = path.includes("?") ? "&" : "?"
+              const found: {
+                readonly items: ReadonlyArray<A>
+                readonly nextCursor: string | null
+              } = yield* get(
+                cursor === null ? path : `${path}${separator}cursor=${cursor}`,
+                Cloud.Page(item),
+              )
+              items.push(...found.items)
+
+              if (found.nextCursor === null) return items
+
+              cursor = found.nextCursor
+            }
+
+            return yield* Effect.die(new Error(`${path} never reached its last page`))
+          })
+        const millis = (at: DateTime.Utc | null) =>
+          at === null ? null : DateTime.toEpochMillis(at)
+        const byCodeUnit = (left: string, right: string) =>
+          left < right ? -1 : left > right ? 1 : 0
+        const asAlice = { kind: "user", subject: `user:${aliceId}`, source: null }
+
+        const [counts] = yield* rows<{ actors: number; jobs: number; timers: number }>(
+          "SELECT (SELECT count(*)::int FROM durable.actors WHERE tenant_id = 'default') AS actors, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default') AS jobs, (SELECT count(*)::int FROM durable.timers WHERE tenant_id = 'default') AS timers",
+        )
+        expect(counts?.actors).toBe(3)
+        expect(counts?.jobs).toBe(2)
+        const overview = yield* get("/overview", Cloud.Overview)
+        expect({
+          ...overview,
+          health: { ...overview.health, lastDeployAt: millis(overview.health.lastDeployAt) },
+        }).toEqual({
+          commands: null,
+          actors: { awake: null, total: 3 },
+          jobs: { inFlight: 2, donePerHour: null },
+          deadLettersByJobType: [{ jobName: "Settle", count: 3 }],
+          throughput: null,
+          p99: null,
+          health: {
+            runners: null,
+            databaseCpuPercent: null,
+            maxMailbox: null,
+            parkedSockets: null,
+            outboxLagP99Ms: null,
+            lastDeployAt: DateTime.toEpochMillis((yield* detail(deployed)).createdAt),
+          },
+          recentDeployments: null,
+        })
+        expect(yield* get("/sidebar-counts", Cloud.SidebarCounts)).toEqual({
+          actorTypes: 2,
+          openDeadLetters: 3,
+        })
+
+        const summary = (name: string, instances: number) => ({
+          name,
+          commands: null,
+          instances,
+          awake: null,
+          commandsPerSecond: null,
+          p99Ms: null,
+          maxMailbox: null,
+        })
+        expect(yield* get("/actor-types", Schema.Array(Cloud.ActorTypeSummary))).toEqual([
+          summary("Counter", 1),
+          summary("Ledger", 2),
+        ])
+        expect(yield* get("/actor-types/Ledger", Cloud.ActorTypeSummary)).toEqual(
+          summary("Ledger", 2),
+        )
+        const missingType = yield* call(`${runtime}/actor-types/Missing`, { cookie: alice })
+        expect(missingType.status).toBe(404)
+        expect(yield* read(missingType, Cloud.NotFound)).toMatchObject({
+          resource: "actor-type",
+          id: "Missing",
+        })
+
+        const generations = yield* rows<{ actor_id: string; generation: number }>(
+          "SELECT actor_id, generation::int AS generation FROM durable.actors WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
+        )
+        expect(yield* every("/actor-types/Ledger/instances?limit=1", Cloud.ActorInstance)).toEqual(
+          ["a", "b"].map((key) => ({
+            key,
+            status: null,
+            lastCommand: null,
+            lastActivityAt: null,
+            generation: generations.find((row) => row.actor_id === key)?.generation,
+          })),
+        )
+        expect(
+          (yield* call(`${runtime}/actor-types/Ledger/instances?status=awake`, { cookie: alice }))
+            .status,
+        ).toBe(501)
+
+        const search = (q: string) =>
+          get(`/search?q=${encodeURIComponent(q)}`, Schema.Array(Cloud.SearchResult)).pipe(
+            Effect.map((results) => results.map((result) => `${result.kind} ${result.id}`)),
+          )
+        expect(yield* search("Ledger/")).toEqual(["actor Ledger/a", "actor Ledger/b"])
+        expect(yield* search("Led")).toEqual([
+          "actor-type Ledger",
+          "actor Ledger/a",
+          "actor Ledger/b",
+        ])
+        expect(yield* search("Counter/so")).toEqual(["actor Counter/solo"])
+        expect(yield* search("Ledger/z")).toEqual([])
+
+        const receiptRows = yield* rows<{
+          actor_type: string
+          actor_id: string
+          command_id: string
+          command: string
+          outcome_tag: string
+          expires_at_ms: string
+        }>(
+          "SELECT actor_type, actor_id, command_id, command, outcome_tag, expires_at_ms::text FROM durable.receipts WHERE tenant_id = 'default'",
+        )
+        const newestFirst = receiptRows.toSorted(
+          (left, right) =>
+            Number(right.expires_at_ms) - Number(left.expires_at_ms) ||
+            byCodeUnit(left.actor_type, right.actor_type) ||
+            byCodeUnit(left.actor_id, right.actor_id) ||
+            byCodeUnit(left.command_id, right.command_id),
+        )
+        const ledgerA = newestFirst.filter(
+          (row) => row.actor_type === "Ledger" && row.actor_id === "a",
+        )
+        const sentToA = new Map([
+          [five.commandId, "Record"],
+          [seven.commandId, "Record"],
+          [adjusted.commandId, "Adjust"],
+          [noted.commandId, "Note"],
+          [refused.commandId, "Refuse"],
+          [opened.commandId, "OpenReview"],
+        ])
+        expect(ledgerA.map((row) => row.command_id)).toEqual(
+          expect.arrayContaining([...sentToA.keys()]),
+        )
+
+        const receipts = yield* every("/actors/Ledger/a/receipts?limit=2", Cloud.Receipt)
+        expect(
+          receipts.map((receipt) => ({
+            ...receipt,
+            caller: sentToA.has(receipt.commandId) ? receipt.caller : null,
+            expiresAt: millis(receipt.expiresAt),
+          })),
+        ).toEqual(
+          ledgerA.map((row) => ({
+            commandId: row.command_id,
+            command: row.command,
+            result: row.outcome_tag,
+            caller: sentToA.has(row.command_id) ? asAlice : null,
+            at: null,
+            expiresAt: Number(row.expires_at_ms),
+            replayed: false,
+          })),
+        )
+        for (const receipt of receipts)
+          if (sentToA.has(receipt.commandId)) {
+            expect(receipt.command).toBe(sentToA.get(receipt.commandId))
+            expect(millis(receipt.expiresAt)).toBe(Number(receipt.commandId.split(".")[2]))
+          } else expect(receipt.caller?.kind).toBe("system")
+        expect(receipts.find((receipt) => receipt.commandId === refused.commandId)?.result).toBe(
+          "Failure",
+        )
+
+        const events = yield* rows<{
+          sequence: number
+          event: string
+          command_id: string
+          emitted_at_ms: string
+        }>(
+          "SELECT sequence::int AS sequence, event, command_id, emitted_at_ms::text FROM durable.events WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND actor_id = 'a' ORDER BY sequence DESC",
+        )
+        expect(events.map((event) => [event.sequence, event.event, event.command_id])).toEqual([
+          [4, "Adjusted", adjusted.commandId],
+          [3, "Recorded", adjusted.commandId],
+          [2, "Recorded", seven.commandId],
+          [1, "Recorded", five.commandId],
+        ])
+        const emitted = (sequence: number) =>
+          Number(events.find((event) => event.sequence === sequence)?.emitted_at_ms)
+
+        const listedEvents = (yield* get(
+          "/actors/Ledger/a/events",
+          Schema.Array(Cloud.ActorEvent),
+        )).map((event) => ({ ...event, emittedAt: millis(event.emittedAt) }))
+        expect(listedEvents).toEqual([
+          { name: "Adjusted", cursor: "4", emittedAt: emitted(4), subscribers: null },
+          { name: "Recorded", cursor: "3", emittedAt: emitted(3), subscribers: null },
+        ])
+
+        const expectedTimeline = events.flatMap((event, index) => {
+          const entry = {
+            kind: "event",
+            label: event.event,
+            detail: event.command_id,
+            at: Number(event.emitted_at_ms),
+            caller: asAlice,
+          }
+          if (events[index + 1]?.command_id === event.command_id) return [entry]
+          const own = events.filter((other) => other.command_id === event.command_id)
+          return [
+            entry,
+            {
+              kind: "command",
+              label: sentToA.get(event.command_id),
+              detail: event.command_id,
+              at: Math.min(...own.map((other) => Number(other.emitted_at_ms))),
+              caller: asAlice,
+            },
+          ]
+        })
+        expect(expectedTimeline.map((entry) => `${entry.kind} ${String(entry.label)}`)).toEqual([
+          "event Adjusted",
+          "event Recorded",
+          "command Adjust",
+          "event Recorded",
+          "command Record",
+          "event Recorded",
+          "command Record",
+        ])
+        const timeline = yield* every("/actors/Ledger/a/timeline?limit=3", Cloud.ActorTimelineEntry)
+        expect(timeline.map((entry) => ({ ...entry, at: millis(entry.at) }))).toEqual(
+          expectedTimeline,
+        )
+
+        const inspected = yield* get("/actors/Ledger/a", Cloud.ActorInspector)
+        expect(inspected.receipts).toEqual(receipts)
+        expect(inspected.timeline).toEqual(timeline)
+        expect(
+          inspected.events.map((event) => ({ ...event, emittedAt: millis(event.emittedAt) })),
+        ).toEqual(listedEvents)
+        expect(inspected.state).toEqual({ total: 15 })
+
+        const missingActor = yield* call(`${runtime}/actors/Ledger/missing/receipts`, {
+          cookie: alice,
+        })
+        expect(missingActor.status).toBe(404)
+        expect(yield* read(missingActor, Cloud.NotFound)).toMatchObject({
+          resource: "actor",
+          id: "Ledger/missing",
+        })
+        const tampered = (expiresAtMs: number) =>
+          Buffer.from(
+            JSON.stringify({ actorType: "Ledger", actorId: "a", expiresAtMs, commandId: "x" }),
+          ).toString("base64url")
+        for (const cursor of ["not-ours", tampered(1.5), tampered(1e21), tampered(-1)]) {
+          const refusedCursor = yield* call(
+            `${runtime}/actors/Ledger/a/receipts?cursor=${cursor}`,
+            { cookie: alice },
+          )
+          expect([cursor, refusedCursor.status]).toEqual([cursor, 404])
+          expect(yield* read(refusedCursor, Cloud.NotFound)).toMatchObject({ resource: "cursor" })
+        }
+
+        expect(yield* get("/jobs", Cloud.JobsSummary)).toEqual({
+          queued: 1,
+          running: null,
+          retrying: 1,
+          dead: 3,
+          byType: [
+            { jobName: "Later", done: null, retried: 0, dead: 0, p99Ms: null },
+            { jobName: "Retry", done: null, retried: 1, dead: 0, p99Ms: null },
+            { jobName: "Settle", done: null, retried: 0, dead: 3, p99Ms: null },
+          ],
+          throughput: null,
+        })
+
+        const deadRows = yield* rows<{
+          actor_id: string
+          job_id: string
+          attempts: number
+          cause: string
+          dead_at_ms: string
+        }>(
+          "SELECT actor_id, job_id, attempts::int AS attempts, cause, dead_at_ms::text FROM durable.dead_letters WHERE tenant_id = 'default'",
+        )
+        const letters = yield* every("/dead-letters?limit=2", Cloud.DeadLetter)
+        for (const letter of letters)
+          expect(letter.lastError).not.toMatch(/\sat\s|node_modules|\/workspace|\.[cm]?[jt]s:\d/u)
+        expect(
+          letters.map((letter) => ({
+            ...letter,
+            since: millis(letter.since),
+          })),
+        ).toEqual(
+          deadRows
+            .toSorted(
+              (left, right) =>
+                Number(right.dead_at_ms) - Number(left.dead_at_ms) ||
+                byCodeUnit(left.job_id, right.job_id),
+            )
+            .map((row) => ({
+              id: row.job_id,
+              jobName: "Settle",
+              jobId: row.job_id,
+              actor: `Ledger/${row.actor_id}`,
+              attempts: row.attempts,
+              lastError: "Unsettled",
+              since: Number(row.dead_at_ms),
+            })),
+        )
+        expect(deadRows.map((row) => row.actor_id).toSorted()).toEqual(["a", "a", "b"])
+
+        const runs = yield* rows<{ execution_id: string; workflow: string; started_at_ms: string }>(
+          "SELECT execution_id, workflow, started_at_ms::text FROM durable.workflows WHERE tenant_id = 'default'",
+        )
+        expect(runs.find((run) => run.workflow === "Review")?.execution_id).toBe(executionId)
+        const expectedRuns = runs
+          .toSorted(
+            (left, right) =>
+              Number(right.started_at_ms) - Number(left.started_at_ms) ||
+              byCodeUnit(left.execution_id, right.execution_id),
+          )
+          .map((run) => ({
+            id: run.execution_id,
+            name: run.workflow,
+            actor: "Ledger/a",
+            step: run.workflow === "Review" ? { index: 2, total: null, name: "cool-off" } : null,
+            waitingFor: run.workflow === "Review" ? { kind: "timer", name: "cool-off" } : null,
+            startedAt: Number(run.started_at_ms),
+            status: { Review: "waiting", Quick: "completed", Doomed: "failed" }[run.workflow],
+          }))
+        const workflows = (query: string) =>
+          every(`/workflows${query}`, Cloud.Workflow).pipe(
+            Effect.map((found) =>
+              found.map((run) => ({ ...run, startedAt: millis(run.startedAt) })),
+            ),
+          )
+        const only = (name: string) => expectedRuns.filter((run) => run.name === name)
+        expect(yield* workflows("?limit=1")).toEqual(expectedRuns)
+        expect(yield* workflows("?status=waiting")).toEqual(only("Review"))
+        expect(yield* workflows("?status=completed&limit=1")).toEqual(only("Quick"))
+        expect(yield* workflows("?status=failed&limit=1")).toEqual(only("Doomed"))
+        expect(yield* workflows("?status=running")).toEqual([])
+
+        const [timers] = yield* rows<{ pending: number; due: string }>(
+          "SELECT count(*)::int AS pending, min(due_at_ms)::text AS due FROM durable.timers WHERE tenant_id = 'default'",
+        )
+        expect(timers?.pending).toBeGreaterThanOrEqual(3)
+        const firing = yield* get("/timers", Cloud.TimersSummary)
+        expect({ ...firing, nextFireAt: millis(firing.nextFireAt) }).toEqual({
+          pending: timers?.pending,
+          nextFireAt: Number(timers?.due),
+        })
+
+        const commands = yield* every("/commands?limit=3", Cloud.CommandLogEntry)
+        expect(commands.map((entry) => entry.commandId)).toEqual(
+          newestFirst.map((row) => row.command_id),
+        )
+        expect(commands.find((entry) => entry.commandId === counted.commandId)).toEqual({
+          commandId: counted.commandId,
+          at: null,
+          durationMs: null,
+          address: "Counter/solo",
+          command: "Increment",
+          caller: asAlice,
+          payloadPreview: null,
+          outcome: "ok",
+          errorTag: null,
+        })
+        expect(yield* every("/commands?outcome=error", Cloud.CommandLogEntry)).toEqual([
+          {
+            commandId: refused.commandId,
+            at: null,
+            durationMs: null,
+            address: "Ledger/a",
+            command: "Refuse",
+            caller: asAlice,
+            payloadPreview: null,
+            outcome: "error",
+            errorTag: "Refused",
+          },
+        ])
+        expect(
+          (yield* every("/commands?actorType=Counter", Cloud.CommandLogEntry)).map(
+            (entry) => entry.commandId,
+          ),
+        ).toEqual([counted.commandId])
+        expect(yield* every("/commands?outcome=replayed", Cloud.CommandLogEntry)).toEqual([])
+
+        const reads = [
+          "/overview",
+          "/sidebar-counts",
+          "/search?q=Ledger",
+          "/actor-types",
+          "/actor-types/Ledger",
+          "/actor-types/Ledger/instances",
+          "/actors/Ledger/a",
+          "/actors/Ledger/a/receipts",
+          "/actors/Ledger/a/events",
+          "/actors/Ledger/a/timeline",
+          "/commands",
+          "/jobs",
+          "/dead-letters",
+          "/workflows",
+          "/timers",
+        ]
+        for (const path of reads) {
+          const refusedRead = yield* call(`${runtime}${path}`, { cookie: mallory })
+          expect([path, refusedRead.status]).toEqual([path, 403])
+        }
+
+        const theirs = yield* call("/api/organizations", {
+          method: "POST",
+          cookie: mallory,
+          body: { name: "Elsewhere", slug: `elsewhere-${suffix}` },
+        }).pipe(Effect.flatMap((response) => read(response, Cloud.OrganizationMembership)))
+        const theirProject = yield* call(`/api/organizations/${theirs.organization.id}/projects`, {
+          method: "POST",
+          cookie: mallory,
+          body: { name: "Elsewhere app", slug: "elsewhere-app", homeRegion: region },
+        }).pipe(Effect.flatMap((response) => read(response, Cloud.Project)))
+        for (const path of reads) {
+          const elsewhere = yield* call(
+            `/api/projects/${theirProject.id}/environments/production/runtime${path}`,
+            { cookie: mallory },
+          )
+          expect([path, elsewhere.status]).toEqual([path, 404])
+          expect(
+            (yield* call(
+              `/api/projects/${theirProject.id}/environments/production/runtime${path}`,
+              { cookie: alice },
+            )).status,
+          ).toBe(403)
+        }
+      }),
+    1_500_000,
+  )
+
+  it.effect(
     "builds every new deployment locally, labels a redeploy of a rollback by its original commit, and serves each built image",
     () =>
       Effect.gen(function* () {
@@ -1107,6 +1634,10 @@ layer(Layer.provideMerge(ImagesLive, services), {
             Effect.map((found) => found.steps.map((step) => `${step.name}:${step.status}`)),
           )
         const built = ["build:succeeded", "migrate:succeeded", "start-runners:succeeded"]
+        const finished = (id: string) =>
+          poll(`deployment ${id}'s steps to finish`, 120, steps(id), (found) =>
+            found.every((step) => !step.endsWith(":running")),
+          )
 
         const first = yield* create("a", "Counter v1")
         const imageOf = (id: string) =>
@@ -1131,7 +1662,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
 
         const second = yield* create("b", "Counter v2")
         expect(yield* settled(second.id)).toMatchObject({ status: "live" })
-        expect(yield* steps(second.id)).toEqual([...built, "drain-previous:succeeded"])
+        expect(yield* finished(second.id)).toEqual([...built, "drain-previous:succeeded"])
         expect((yield* send(1)).result).toMatchObject({ count: 3, version: "bbbbbbb" })
 
         const rolledBack = yield* call(`${deployments}/${first.id}/rollback`, {
@@ -1161,7 +1692,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         })
         expect(redeployed.steps[0]).toMatchObject({ name: "build", status: "running" })
         expect(yield* settled(redeployed.id)).toMatchObject({ status: "live" })
-        expect(yield* steps(redeployed.id)).toEqual([...built, "drain-previous:succeeded"])
+        expect(yield* finished(redeployed.id)).toEqual([...built, "drain-previous:succeeded"])
         expect(yield* imageOf(redeployed.id)).toMatch(/^sha256:[0-9a-f]{64}$/u)
         expect(yield* statusOf(rolledBack.id)).toBe("drained")
         expect((yield* send(1)).result).toMatchObject({

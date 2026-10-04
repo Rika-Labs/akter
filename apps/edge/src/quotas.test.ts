@@ -449,6 +449,11 @@ const SERVICE_READS = [
   "/inspector/jobs?limit=500",
   "/inspector/dead-letters?limit=500",
   "/inspector/workflows?status=open&limit=500",
+  "/inspector/actor-types?limit=500",
+  "/inspector/job-types?after=Notify&limit=500",
+  "/inspector/receipts?type=Order&id=o-1&limit=50",
+  "/inspector/latest-events?type=Order&id=o-1&limit=500",
+  "/inspector/timeline?type=Order&id=o-1&limit=50",
 ]
 
 describe("meteringOf", () => {
@@ -535,6 +540,12 @@ describe("meteringOf", () => {
       ["GET", "/ready/", null],
       ["GET", "/READY", null],
       ["GET", "/admin/inspector/jobs", null],
+      ["GET", "/inspector/receipts/", null],
+      ["GET", "/inspector/timeline/o-1", null],
+      ["GET", "/inspector/Actor-Types", null],
+      ["GET", "/inspector/latest-events%2F", null],
+      ["POST", "/inspector/receipts", null],
+      ["POST", "/inspector/job-types", null],
       ["POST", "/ready", null],
       ["POST", "/inspector/actor", null],
       ["POST", "/mcp", null],
@@ -1038,6 +1049,8 @@ describe("control plane service credential", () => {
             "UnsupportedBillingRoute",
           )
           expect((yield* get(edge, key, "/inspector/actor/extra")).status).toBe(501)
+          expect((yield* get(edge, key, "/inspector/timeline/extra")).status).toBe(501)
+          expect((yield* request(edge, key, "/inspector/receipts")).status).toBe(501)
           expect((yield* request(edge, key, "/inspector/actor")).status).toBe(501)
 
           expect((yield* command(edge, key, { cid: "service-1" })).status).toBe(200)

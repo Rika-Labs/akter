@@ -54,6 +54,9 @@
       "inputs": [
         "*.ts",
         ".github/src/verify*.ts",
+        ".github/src/evidence-gate.ts",
+        ".github/src/github.ts",
+        ".github/src/policy.ts",
         ".github/src/replica.ts",
         ".github/src/node-postgres.ts",
         ".github/src/release/smoke.ts",

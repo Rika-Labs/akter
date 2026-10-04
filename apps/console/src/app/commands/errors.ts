@@ -6,7 +6,9 @@ import { isQuotaKind, quotaMessage } from "../quota/errors.ts"
 /**
  * The failures after which sending the same submission again cannot help: the key is bound to
  * other input, its retry window has closed or it is unusable, the runner hit a defect that must
- * never be retried, or it refused for a reason the framework marks not retryable.
+ * never be retried, it refused for a reason the framework marks not retryable, or the edge has no
+ * billing account or plan to bill the command to (`QuotaUnbound`, or `Unbillable` when only support
+ * can fix it), which retrying doesn't change.
  * The dialog does not offer to resend that submission with the same command ID.
  */
 const finalKinds: ReadonlyArray<string> = [
@@ -15,6 +17,8 @@ const finalKinds: ReadonlyArray<string> = [
   "RunnerDefect",
   "InvalidCommandId",
   "CommandRefusedFinal",
+  "QuotaUnbound",
+  "Unbillable",
 ]
 
 /** Whether a send that failed with `kind` may be retried with the same command ID. */

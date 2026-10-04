@@ -21,7 +21,7 @@ import {
 import { BrowserCrypto } from "@effect/platform-browser"
 import { FetchHttpClient } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
-import { quotaMessage, quotaRefusal } from "../quota/errors.ts"
+import { quotaKind, quotaMessage, quotaRefusal } from "../quota/errors.ts"
 
 /** The public API mount; the contract already owns its `/api` prefix. */
 export const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api"
@@ -141,7 +141,10 @@ export const consoleError = (cause: unknown): ConsoleError => {
     })
   const refusal = quotaRefusal(cause)
   if (Option.isSome(refusal))
-    return ConsoleError.make({ kind: refusal.value._tag, message: quotaMessage(refusal.value) })
+    return ConsoleError.make({
+      kind: quotaKind(refusal.value),
+      message: quotaMessage(refusal.value),
+    })
   return ConsoleError.make({
     kind: "Unavailable",
     message: "We couldn’t reach Akter. Please try again.",

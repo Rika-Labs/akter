@@ -11,6 +11,7 @@ import {
 import { Cause, Config, Context, Exit, Duration, Effect, Layer, Option, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpRouter } from "effect/http"
 import { Counter, counterLayers } from "./counter.ts"
+import { Ledger, ledgerLayers } from "./ledger.ts"
 import { peerRunner } from "./peer.ts"
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(AssertionKeySet))
@@ -63,8 +64,8 @@ const load = Effect.gen(function* () {
 })
 
 /**
- * A locally built example runner: one served `Counter` over Postgres behind
- * the edge's assertions. It is a public socket runner, so a replacement
+ * A locally built example runner: a served `Counter` and `Ledger` over
+ * Postgres behind the edge's assertions. It is a public socket runner, so a replacement
  * release can start while the one it replaces still serves.
  *
  * SIGTERM interrupts the program, whose last finalizer to register runs
@@ -77,7 +78,10 @@ const program = Effect.gen(function* () {
   const config = yield* load
 
   const runtime = yield* Layer.build(
-    Layer.mergeAll(...counterLayers({ version: config.version, runner: config.runner })).pipe(
+    Layer.mergeAll(
+      ...counterLayers({ version: config.version, runner: config.runner }),
+      ...ledgerLayers,
+    ).pipe(
       Layer.provideMerge(Actors.layer().pipe(Layer.provide(peerRunner))),
       Layer.provideMerge(Database.postgres({ url: config.database })),
       Layer.provideMerge(BunCrypto.layer),
@@ -87,7 +91,11 @@ const program = Effect.gen(function* () {
   yield* Layer.build(
     HttpRouter.serve(
       Layer.mergeAll(
-        Actors.serve({ actors: [Counter], auth: config.auth, basePath: config.basePath }),
+        Actors.serve({
+          actors: [Counter, Ledger],
+          auth: config.auth,
+          basePath: config.basePath,
+        }),
         Inspector.serve({ auth: config.auth }),
       ),
     ).pipe(

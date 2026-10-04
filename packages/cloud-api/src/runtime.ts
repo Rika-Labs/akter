@@ -17,40 +17,61 @@ export const SidebarCounts = Schema.Struct({
 })
 export type SidebarCounts = typeof SidebarCounts.Type
 
+/**
+ * One environment's runtime at a glance, read from its runners' durable views:
+ * how many actors there are, the pending jobs (`inFlight`, queued or waiting
+ * to retry) and the dead letters by job name. Each nullable field is null when
+ * the runners do not report it, never zero or empty: command rates and
+ * latencies, throughput and p99 series, awake actors, jobs done per hour and
+ * the runner, database, mailbox, socket and outbox-lag health.
+ * `lastDeployAt` is when the environment's newest deployment was created, null
+ * when it has none. `recentDeployments` is null here; the deployments list
+ * reports them with their rollout state.
+ */
 export const Overview = Schema.Struct({
-  commands: Schema.Struct({
-    perSecond: NonNegative,
-    series24h: Schema.Array(SeriesPoint),
-    p50Ms: NonNegative,
-    p99Ms: NonNegative,
-  }),
-  actors: Schema.Struct({ awake: NonNegativeInt, total: NonNegativeInt }),
-  jobs: Schema.Struct({ inFlight: NonNegativeInt, donePerHour: NonNegativeInt }),
+  commands: Schema.NullOr(
+    Schema.Struct({
+      perSecond: NonNegative,
+      series24h: Schema.Array(SeriesPoint),
+      p50Ms: NonNegative,
+      p99Ms: NonNegative,
+    }),
+  ),
+  actors: Schema.Struct({ awake: Schema.NullOr(NonNegativeInt), total: NonNegativeInt }),
+  jobs: Schema.Struct({ inFlight: NonNegativeInt, donePerHour: Schema.NullOr(NonNegativeInt) }),
   deadLettersByJobType: Schema.Array(
     Schema.Struct({ jobName: Schema.String, count: NonNegativeInt }),
   ),
-  throughput: Schema.Array(SeriesPoint),
-  p99: Schema.Array(SeriesPoint),
+  throughput: Schema.NullOr(Schema.Array(SeriesPoint)),
+  p99: Schema.NullOr(Schema.Array(SeriesPoint)),
   health: Schema.Struct({
-    runners: Schema.Struct({ healthy: NonNegativeInt, total: NonNegativeInt }),
-    databaseCpuPercent: NonNegative,
-    maxMailbox: Schema.Struct({ depth: NonNegativeInt, actor: Schema.NullOr(ActorAddress) }),
-    parkedSockets: NonNegativeInt,
-    outboxLagP99Ms: NonNegative,
+    runners: Schema.NullOr(Schema.Struct({ healthy: NonNegativeInt, total: NonNegativeInt })),
+    databaseCpuPercent: Schema.NullOr(NonNegative),
+    maxMailbox: Schema.NullOr(
+      Schema.Struct({ depth: NonNegativeInt, actor: Schema.NullOr(ActorAddress) }),
+    ),
+    parkedSockets: Schema.NullOr(NonNegativeInt),
+    outboxLagP99Ms: Schema.NullOr(NonNegative),
     lastDeployAt: Schema.NullOr(Timestamp),
   }),
-  recentDeployments: Schema.Array(DeploymentSummary),
+  recentDeployments: Schema.NullOr(Schema.Array(DeploymentSummary)),
 })
 export type Overview = typeof Overview.Type
 
+/**
+ * One actor type and how many actors of it the runners hold. The runners'
+ * durable views record neither the commands a type declares nor its awake
+ * actors, rates, latencies or mailboxes, so those are null, never empty or
+ * zero.
+ */
 export const ActorTypeSummary = Schema.Struct({
   name: Schema.String,
-  commands: Schema.Array(Schema.String),
+  commands: Schema.NullOr(Schema.Array(Schema.String)),
   instances: NonNegativeInt,
-  awake: NonNegativeInt,
-  commandsPerSecond: NonNegative,
-  p99Ms: NonNegative,
-  maxMailbox: NonNegativeInt,
+  awake: Schema.NullOr(NonNegativeInt),
+  commandsPerSecond: Schema.NullOr(NonNegative),
+  p99Ms: Schema.NullOr(NonNegative),
+  maxMailbox: Schema.NullOr(NonNegativeInt),
 })
 export type ActorTypeSummary = typeof ActorTypeSummary.Type
 
@@ -95,9 +116,13 @@ export const TurnLatency = Schema.Struct({
 })
 export type TurnLatency = typeof TurnLatency.Type
 
+/**
+ * One actor of a type. Whether it is awake, its last command and when it was
+ * last active are null when the runners do not report them.
+ */
 export const ActorInstance = Schema.Struct({
   key: Schema.String,
-  status: Schema.Literals(["awake", "idle"]),
+  status: Schema.NullOr(Schema.Literals(["awake", "idle"])),
   lastCommand: Schema.NullOr(Schema.String),
   lastActivityAt: Schema.NullOr(Timestamp),
   generation: NonNegativeInt,
@@ -112,26 +137,46 @@ export const OwnedTableRows = Schema.Struct({
 export type OwnedTableRows = typeof OwnedTableRows.Type
 
 /**
+ * Whom a command ran as, as the runner recorded it: a `user` with its
+ * `subject` (`user:<id>` or `api-key:<id>` for a command sent from the
+ * console), an `anonymous` caller, or a `system` delivery the framework made
+ * from `source` (an actor's intent, a timer, cron, a workflow, a job or a
+ * subscription), with `subject` the principal of the turn that caused it when
+ * there was one.
+ */
+export const CommandCaller = Schema.Struct({
+  kind: Schema.Literals(["user", "anonymous", "system"]),
+  subject: Schema.NullOr(Schema.String),
+  source: Schema.NullOr(Schema.String),
+})
+export type CommandCaller = typeof CommandCaller.Type
+
+/**
  * A command receipt the runner still holds. `result` is the outcome's tag
  * (`Success` or `Failure`), never the stored value, so reading a receipt
- * reveals that a command ran but not what it returned. `at` is when it
- * committed and is null when the runner did not record that time. A receipt
- * is the committed turn itself, so `replayed` is false unless the entry
- * describes an answer served again from the receipt.
+ * reveals that a command ran but not what it returned. `caller` is whom it
+ * ran as, null when the runner's record of the caller does not decode.
+ * `expiresAt` is when the runner stops answering a retry from it. `at` is when
+ * it committed; runners do not record that time, so it is null. A receipt is
+ * the committed turn itself, so `replayed` is false unless the entry describes
+ * an answer served again from the receipt.
  */
 export const Receipt = Schema.Struct({
   commandId: Schema.String,
   command: Schema.String,
   result: Schema.NullOr(Schema.String),
+  caller: Schema.NullOr(CommandCaller),
   at: Schema.NullOr(Timestamp),
+  expiresAt: Timestamp,
   replayed: Schema.Boolean,
 })
 export type Receipt = typeof Receipt.Type
 
-/** An event the actor emitted: the cursor of its newest retained one, and its subscribers, null when the runner does not report them. */
+/** An event the actor emitted: the cursor and emission time of its newest retained one, and its subscribers, null when the runner does not report them. */
 export const ActorEvent = Schema.Struct({
   name: Schema.String,
   cursor: Schema.String,
+  emittedAt: Timestamp,
   subscribers: Schema.NullOr(NonNegativeInt),
 })
 export type ActorEvent = typeof ActorEvent.Type
@@ -147,22 +192,29 @@ export const ActorJob = Schema.Struct({
 })
 export type ActorJob = typeof ActorJob.Type
 
+/**
+ * One moment of an actor's history: an event it emitted (`label` the event)
+ * or a command whose turn emitted events (`label` the command), both at the
+ * turn's emission time, with `detail` the command id. `caller` is whom the
+ * command ran as, null once its receipt has expired.
+ */
 export const ActorTimelineEntry = Schema.Struct({
   at: Timestamp,
   kind: Schema.Literals(["command", "event", "job"]),
   label: Schema.String,
   detail: Schema.NullOr(Schema.String),
+  caller: Schema.NullOr(CommandCaller),
 })
 export type ActorTimelineEntry = typeof ActorTimelineEntry.Type
 
 /**
  * One actor as the inspector shows it, read from the runner that owns it.
  * `state` is the committed state, one field per stored entry, and null when
- * an entry does not decode. Every other nullable field is null when the
- * runner does not report it: the turn count, owned-table rows, subscriber
- * and socket counts, whether the actor is awake, the runner and region that
- * hold it, its mailbox depth and its timeline. A null is unknown, never zero
- * or empty.
+ * an entry does not decode. `timeline` is its newest timeline page. Every
+ * other nullable field is null when the runner does not report it: the turn
+ * count, owned-table rows, subscriber and socket counts, whether the actor is
+ * awake, the runner and region that hold it and its mailbox depth. A null is
+ * unknown, never zero or empty.
  */
 export const ActorInspector = Schema.Struct({
   address: ActorAddress,
@@ -192,13 +244,20 @@ export type ActorInspector = typeof ActorInspector.Type
 export const CommandOutcome = Schema.Literals(["ok", "error", "replayed"])
 export type CommandOutcome = typeof CommandOutcome.Type
 
-/** One committed command in the live tail; `errorTag` is set only when `outcome` is `error`. */
+/**
+ * One committed command; `errorTag` is set only when `outcome` is `error`.
+ * The command log is read from the runners' receipts, which hold no commit
+ * time, duration or payload, so `at`, `durationMs` and `payloadPreview` are
+ * null there; `caller` is as in `Receipt`.
+ */
 export const CommandLogEntry = Schema.Struct({
-  at: Timestamp,
-  durationMs: NonNegative,
+  commandId: Schema.String,
+  at: Schema.NullOr(Timestamp),
+  durationMs: Schema.NullOr(NonNegative),
   address: ActorAddress,
   command: Schema.String,
-  payloadPreview: Schema.String,
+  caller: Schema.NullOr(CommandCaller),
+  payloadPreview: Schema.NullOr(Schema.String),
   outcome: CommandOutcome,
   errorTag: Schema.NullOr(Schema.String),
 })
@@ -338,22 +397,32 @@ export const QuotaErrors = [
   QuotaUnbound,
 ] as const
 
+/**
+ * One job name: `retried` counts its pending jobs that have failed at least
+ * one attempt and `dead` its dead letters. Jobs done and their latency are
+ * null when the runners do not report them.
+ */
 export const JobTypeStats = Schema.Struct({
   jobName: Schema.String,
-  done: NonNegativeInt,
+  done: Schema.NullOr(NonNegativeInt),
   retried: NonNegativeInt,
   dead: NonNegativeInt,
-  p99Ms: NonNegative,
+  p99Ms: Schema.NullOr(NonNegative),
 })
 export type JobTypeStats = typeof JobTypeStats.Type
 
+/**
+ * The environment's jobs: pending ones that have not failed an attempt yet
+ * (`queued`) or have (`retrying`), and dead letters. Which jobs are running
+ * and the throughput are null when the runners do not report them.
+ */
 export const JobsSummary = Schema.Struct({
   queued: NonNegativeInt,
-  running: NonNegativeInt,
+  running: Schema.NullOr(NonNegativeInt),
   retrying: NonNegativeInt,
   dead: NonNegativeInt,
   byType: Schema.Array(JobTypeStats),
-  throughput: Schema.Array(SeriesPoint),
+  throughput: Schema.NullOr(Schema.Array(SeriesPoint)),
 })
 export type JobsSummary = typeof JobsSummary.Type
 
@@ -369,22 +438,31 @@ export const DeadLetter = Schema.Struct({
 export type DeadLetter = typeof DeadLetter.Type
 
 /**
- * One workflow run. `step.index` counts from 1, so the first step is 1 and a
- * run showing "step n of m" has `index` n and `total` m; `index` never exceeds
- * `total`.
+ * One workflow run. `step` is the step it reached last: `index` counts the
+ * distinct steps it has recorded, from 1, so a run showing "step n of m" has
+ * `index` n and `total` m, and `index` never exceeds `total`. `total` is null
+ * when the runner does not know how many steps the workflow has, and `step`
+ * is null when the run holds no recorded step, as once it finished. A failed
+ * run ended with a declared failure, a defect or an interruption. `status` is
+ * null for a finished run whose stored result does not decode.
  */
 export const Workflow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   actor: ActorAddress,
-  step: Schema.Struct({
-    index: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-    total: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
-    name: Schema.String,
-  }).pipe(
-    Schema.check(
-      Schema.makeFilter(
-        (step) => step.index <= step.total || "step.index must not exceed step.total",
+  step: Schema.NullOr(
+    Schema.Struct({
+      index: Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1))),
+      total: Schema.NullOr(Schema.Int.pipe(Schema.check(Schema.isGreaterThanOrEqualTo(1)))),
+      name: Schema.String,
+    }).pipe(
+      Schema.check(
+        Schema.makeFilter(
+          (step) =>
+            step.total === null ||
+            step.index <= step.total ||
+            "step.index must not exceed step.total",
+        ),
       ),
     ),
   ),
@@ -392,7 +470,7 @@ export const Workflow = Schema.Struct({
     Schema.Struct({ kind: Schema.Literals(["event", "timer"]), name: Schema.String }),
   ),
   startedAt: Timestamp,
-  status: Schema.Literals(["running", "waiting", "completed", "failed"]),
+  status: Schema.NullOr(Schema.Literals(["running", "waiting", "completed", "failed"])),
 })
 export type Workflow = typeof Workflow.Type
 
@@ -437,9 +515,13 @@ export const ConnectionsSummary = Schema.Struct({
 })
 export type ConnectionsSummary = typeof ConnectionsSummary.Type
 
-/** A command-palette hit among the runtime's own data; pages and settings are searched client side. */
+/**
+ * A command-palette hit among the runtime's own data; pages and settings are
+ * searched client side. An `actor-type` hit's `id` is the type's name and an
+ * `actor` hit's its address.
+ */
 export const SearchResult = Schema.Struct({
-  kind: Schema.Literals(["actor", "deployment"]),
+  kind: Schema.Literals(["actor-type", "actor", "deployment"]),
   id: Schema.String,
   title: Schema.String,
   subtitle: Schema.NullOr(Schema.String),

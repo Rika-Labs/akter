@@ -144,7 +144,7 @@ export const instancesOf = (summary: ActorTypeSummary): ReadonlyArray<ActorInsta
     key,
     awake: summary.name !== "NightlyReport" && index < 6,
     generation: 14 + ((index * 7) % 23),
-    lastCommand: summary.commands[index % summary.commands.length] ?? "—",
+    lastCommand: summary.commands![index % summary.commands!.length] ?? "—",
     lastTurn: summary.name === "NightlyReport" ? "9h" : (lastTurns[index] ?? "1h"),
   }))
 
@@ -168,13 +168,13 @@ export const typeActivity =
       ),
       perSecond: seededSeries({
         length,
-        base: Math.max(summary.commandsPerSecond, 1),
-        volatility: Math.max(summary.commandsPerSecond, 4) * 0.2,
+        base: Math.max(summary.commandsPerSecond!, 1),
+        volatility: Math.max(summary.commandsPerSecond!, 4) * 0.2,
         seed: summary.name.length * 13,
       }),
-      commands: summary.commands.map((name, index) => {
+      commands: summary.commands!.map((name, index) => {
         const count = Math.round(
-          (summary.commandsPerSecond * windowSeconds[window]) / (index + 1.6),
+          (summary.commandsPerSecond! * windowSeconds[window]) / (index + 1.6),
         )
         return { name, count, perSecond: count / windowSeconds[window] }
       }),

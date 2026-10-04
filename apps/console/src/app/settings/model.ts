@@ -6,12 +6,14 @@ import {
   IntegrationKind,
   InviteRole,
   NotificationPreference,
+  OrganizationPlan,
   Plan,
   PlanId,
   Preferences,
   RegionId,
   Role,
   StartCheckout,
+  UnboundPlan,
   UsageMeterName,
 } from "@akter/cloud-api"
 import { Schema as S } from "effect"
@@ -47,12 +49,12 @@ export const ProjectSummary = S.Struct({
 })
 export type ProjectSummary = typeof ProjectSummary.Type
 
-/** The organization the organization-level settings pages act on. */
+/** The organization the organization-level settings pages act on, and the plan it is on. */
 export const OrganizationSummary = S.Struct({
   id: S.String,
   name: S.String,
   slug: S.String,
-  plan: S.String,
+  plan: OrganizationPlan,
   role: Role,
 })
 export type OrganizationSummary = typeof OrganizationSummary.Type
@@ -130,22 +132,29 @@ export const PaymentStatus = Plan.fields.paymentStatus.schema
 export type PaymentStatus = typeof PaymentStatus.Type
 
 /**
- * The Stripe subscription as the control plane reports it. `id` is the plan whose limits apply now
- * and `subscribed` the plan the subscription bills; they differ while a payment is failing, which
+ * The plan an organization's billing account is on. `id` is the plan whose limits apply now and
+ * `subscribed` the plan the subscription bills; they differ while a payment is failing, which
  * withdraws paid limits without ending the subscription. `paymentStatus` is null when the control
  * plane does not report one.
  */
+export const BillingPlan = S.Struct({
+  id: PlanId,
+  name: S.String,
+  subscribed: PlanId,
+  paymentStatus: S.NullOr(PaymentStatus),
+  basePriceCents: S.Finite,
+  provisional: S.Boolean,
+  renewsAt: S.NullOr(S.Finite),
+  monthToDateCents: S.Finite,
+})
+export type BillingPlan = typeof BillingPlan.Type
+
+/**
+ * The Stripe subscription as the control plane reports it. `plan` is `unbound` when the
+ * organization has no billing account: it has no plan, price or allowances, and is never Free.
+ */
 export const Billing = S.Struct({
-  plan: S.Struct({
-    id: PlanId,
-    name: S.String,
-    subscribed: PlanId,
-    paymentStatus: S.NullOr(PaymentStatus),
-    basePriceCents: S.Finite,
-    provisional: S.Boolean,
-    renewsAt: S.NullOr(S.Finite),
-    monthToDateCents: S.Finite,
-  }),
+  plan: S.Union([BillingPlan, UnboundPlan]),
   card: S.NullOr(
     S.Struct({
       brand: S.String,
@@ -159,6 +168,16 @@ export const Billing = S.Struct({
   caps: S.Array(CapState),
 })
 export type Billing = typeof Billing.Type
+
+/** Whether billing's plan is `unbound`: the organization has no billing account. */
+export const isUnboundPlan = S.is(UnboundPlan)
+
+/**
+ * The plan billing prices the organization on, or undefined when it has no billing account. The
+ * control plane reports every cap `unbound` exactly then, so pages that read only caps agree.
+ */
+export const billedPlan = (billing: Billing): BillingPlan | undefined =>
+  isUnboundPlan(billing.plan) ? undefined : billing.plan
 
 /**
  * One plan of the control plane's catalog. `commandCap` is the hard stop in commands, null when
@@ -284,9 +303,10 @@ export type SettingsSection = typeof SettingsSection.Type
 
 /**
  * What the settings pages read. A route loads only the slices it renders, so every other slice
- * holds its empty value: an empty array, or null for a single record. `sampleSections` names the
- * slices that hold sample data rather than the control plane's answer; nothing they show may be
- * acted on.
+ * holds its empty value: an empty array, or null for a single record. `unknownPlan` is set when
+ * billing or usage could not be read because the organization's stored plan is not in the pricing
+ * configuration, which leaves that slice null. `sampleSections` names the slices that hold sample
+ * data rather than the control plane's answer; nothing they show may be acted on.
  */
 export const SettingsPage = S.TaggedStruct("SettingsPage", {
   preferences: S.NullOr(Preferences),
@@ -308,6 +328,7 @@ export const SettingsPage = S.TaggedStruct("SettingsPage", {
   usage: S.NullOr(Usage),
   audit: S.Array(AuditEntry),
   auditTruncated: S.Boolean,
+  unknownPlan: S.Boolean,
   sampleSections: S.Array(SettingsSection),
 })
 export type SettingsPage = typeof SettingsPage.Type
@@ -336,5 +357,6 @@ export const emptySettings: SettingsPage = SettingsPage.make({
   usage: null,
   audit: [],
   auditTruncated: false,
+  unknownPlan: false,
   sampleSections: [],
 })

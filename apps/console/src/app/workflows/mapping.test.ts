@@ -129,4 +129,19 @@ describe("workflow mapping", () => {
         expect(idle).toMatchObject({ nextTimer: null, nextSchedule: null, running: 0 })
       }),
     ))
+
+  it("writes a step with no known total without one, and a run with no recorded step as a dash", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parse = (fields: Record<string, Schema.Json>) =>
+          decode(Workflow, workflow(fields)).pipe(Effect.map((value) => toWorkflowRun(now)(value)))
+        expect(yield* parse({ step: { index: 2, total: null, name: "cool-off" } })).toMatchObject({
+          step: "cool-off · 2",
+        })
+        expect(yield* parse({ step: null, status: "completed", waitingFor: null })).toMatchObject({
+          step: "—",
+          status: "Done",
+        })
+      }),
+    ))
 })

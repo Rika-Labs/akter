@@ -41,7 +41,7 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
       label: type.name,
       group: "Actor types",
       icon: "actors" as const,
-      detail: type.commands.join(", "),
+      detail: type.commands?.join(", ") ?? "—",
       onSelect: RequestedHref({ href: Routes.actorType({ actorType: type.name }) }),
     })),
     ...deploys.slice(0, 3).map((deploy) => ({

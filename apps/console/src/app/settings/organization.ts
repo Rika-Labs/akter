@@ -45,14 +45,15 @@ import {
   spendLimitKey,
   spendLimitValue,
 } from "./keys.ts"
-import type {
-  Billing,
-  PaymentStatus,
-  PlanOffer,
-  Plans,
-  SettingsPage,
-  Usage,
-  UsageMeter,
+import {
+  billedPlan,
+  type BillingPlan,
+  type PaymentStatus,
+  type PlanOffer,
+  type Plans,
+  type SettingsPage,
+  type Usage,
+  type UsageMeter,
 } from "./model.ts"
 import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
@@ -266,25 +267,42 @@ const paymentProblems: Readonly<Partial<Record<PaymentStatus, string>>> = {
   canceled: "The subscription was canceled",
 }
 
-const planPrice = (billing: Billing): string =>
-  billing.plan.basePriceCents === 0
+const planPrice = (plan: BillingPlan): string =>
+  plan.basePriceCents === 0
     ? "No monthly charge"
-    : `${formatCurrency(dollars(billing.plan.basePriceCents))} a month plus usage${billing.plan.provisional ? " (provisional price)" : ""}`
+    : `${formatCurrency(dollars(plan.basePriceCents))} a month plus usage${plan.provisional ? " (provisional price)" : ""}`
 
 /** How the plan reads: its price, when it renews, and why paid limits are withheld if they are. */
-const planDescription = (billing: Billing): string => {
-  const problem =
-    billing.plan.paymentStatus === null ? undefined : paymentProblems[billing.plan.paymentStatus]
+const planDescription = (plan: BillingPlan): string => {
+  const problem = plan.paymentStatus === null ? undefined : paymentProblems[plan.paymentStatus]
   const withheld =
-    billing.plan.subscribed !== billing.plan.id
-      ? `${problem ?? "Payment is pending"}, so ${billing.plan.name} limits apply until ${titleCase(billing.plan.subscribed)} is paid for`
+    plan.subscribed !== plan.id
+      ? `${problem ?? "Payment is pending"}, so ${plan.name} limits apply until ${titleCase(plan.subscribed)} is paid for`
       : problem
   return [
-    planPrice(billing),
-    ...(billing.plan.renewsAt === null ? [] : [`renews ${formatDate(billing.plan.renewsAt)}`]),
+    planPrice(plan),
+    ...(plan.renewsAt === null ? [] : [`renews ${formatDate(plan.renewsAt)}`]),
     ...(withheld === undefined ? [] : [withheld]),
   ].join(" · ")
 }
+
+/**
+ * Billing or Usage for an organization whose stored plan the pricing configuration doesn't define.
+ * The control plane can't price it and the edge refuses its work, which retrying won't change, so
+ * the page says so calmly instead of failing as if billing were down.
+ */
+const unknownPlanScreen = (h: H, title: string): Screen =>
+  screen(h, title, [
+    settingsGroup(h, {
+      title: "Plan",
+      rows: [
+        settingsRow(h, {
+          label: "Plan not recognised",
+          description: "This organization’s plan isn’t recognised. Contact support.",
+        }),
+      ],
+    }),
+  ])
 
 /**
  * What a plan includes, as the catalog states it: its commands and storage, and for each whether it
@@ -372,18 +390,22 @@ const planComparison = (
 /**
  * Organization › Billing: the plan and its change, the catalog to compare plans in, payment method,
  * spend limit and invoices. An organization without a billing account is refused every new command
- * by the edge, so it reads as not set up, never as Free.
+ * by the edge, so it reads as not set up, never as Free, and shows no price or allowance of its own.
  */
 export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
   const { billing, plans, usage } = page
-  if (billing === null) return screen(h, "Billing", [])
+  if (billing === null)
+    return page.unknownPlan ? unknownPlanScreen(h, "Billing") : screen(h, "Billing", [])
   const billingSample = isSample(page, "billing")
   const free = !hasPaidPlan(billing)
-  const unbound = isUnbound(billing.caps)
+  const plan = billedPlan(billing)
   const notice =
-    unbound || usage === null ? undefined : capNotice({ caps: billing.caps, period: usage.period })
-  const choices = planChoices({ subscribed: billing.plan.subscribed, plans })
-  const current = unbound ? undefined : plans?.plans.find((offer) => offer.id === billing.plan.id)
+    plan === undefined || usage === null
+      ? undefined
+      : capNotice({ caps: billing.caps, period: usage.period })
+  const choices = planChoices({ subscribed: plan?.subscribed ?? null, plans })
+  const current =
+    plan === undefined ? undefined : plans?.plans.find((offer) => offer.id === plan.id)
   const limit = parseSpendLimit(
     model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
   )
@@ -392,12 +414,12 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
     settingsGroup(h, {
       title: "Plan",
       rows: [
-        unbound
+        plan === undefined
           ? settingsRow(h, {
               label: "Billing isn’t set up",
               description: `This organization has no billing account, so new commands are refused.${choices.length === 0 ? "" : " Choosing a plan sets one up."}`,
             })
-          : settingsRow(h, { label: billing.plan.name, description: planDescription(billing) }),
+          : settingsRow(h, { label: plan.name, description: planDescription(plan) }),
         ...(current === undefined || plans === null
           ? []
           : [
@@ -410,7 +432,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           ? []
           : [
               settingsRow(h, {
-                label: unbound ? "Choose a plan" : free ? "Upgrade" : "Change plan",
+                label: plan === undefined ? "Choose a plan" : free ? "Upgrade" : "Change plan",
                 description: free
                   ? "Checkout opens on Stripe, which shows the price before you pay."
                   : "Invoiced right away; the new plan applies once the payment goes through.",
@@ -440,21 +462,23 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                 ),
               }),
             ]),
-        settingsRow(h, {
-          label: "This month so far",
-          description: billing.plan.provisional
-            ? "Estimated from provisional prices: the plan’s price plus usage beyond what it includes"
-            : "Estimated: the plan’s price plus usage beyond what it includes",
-          control: h.span(
-            [...styleAttributes(h, styles.value)],
-            [formatCents(billing.plan.monthToDateCents)],
-          ),
-        }),
+        ...(plan === undefined
+          ? []
+          : [
+              settingsRow(h, {
+                label: "This month so far",
+                description: plan.provisional
+                  ? "Estimated from provisional prices: the plan’s price plus usage beyond what it includes"
+                  : "Estimated: the plan’s price plus usage beyond what it includes",
+                control: h.span(
+                  [...styleAttributes(h, styles.value)],
+                  [formatCents(plan.monthToDateCents)],
+                ),
+              }),
+            ]),
       ],
     }),
-    ...(plans === null
-      ? []
-      : [planComparison(h, { plans, current: unbound ? null : billing.plan.subscribed })]),
+    ...(plans === null ? [] : [planComparison(h, { plans, current: plan?.subscribed ?? null })]),
     settingsGroup(h, {
       title: "Payment",
       footnote:
@@ -484,11 +508,12 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         }),
         settingsRow(h, {
           label: "Monthly spend limit",
-          description: unbound
-            ? "Applies once you’re on a paid plan."
-            : free
-              ? `Applies once you’re on a paid plan; ${billing.plan.name} stops at what it includes instead.`
-              : "New commands that would pass it are refused; work already admitted finishes.",
+          description:
+            plan === undefined
+              ? "Applies once you’re on a paid plan."
+              : free
+                ? `Applies once you’re on a paid plan; ${plan.name} stops at what it includes instead.`
+                : "New commands that would pass it are refused; work already admitted finishes.",
           control: select(h, {
             name: spendLimitKey,
             label: "Monthly spend limit",
@@ -627,10 +652,15 @@ const storedNow = (h: H, usage: Usage): ReadonlyArray<Html> => {
   ]
 }
 
-/** Organization › Usage: this period's meters against the plan, commands per day, and cost by project. */
+/**
+ * Organization › Usage: this period's meters against the plan, commands per day, and cost by
+ * project. The control plane still prices an unbound organization's usage with Free's allowances,
+ * so for one the page shows plain counts and no allowance, price or estimate.
+ */
 export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
   const { usage } = page
-  if (usage === null) return screen(h, "Usage", [])
+  if (usage === null)
+    return page.unknownPlan ? unknownPlanScreen(h, "Usage") : screen(h, "Usage", [])
   const month = formatPeriod(usage.period)
   const notice = capNotice({ caps: usage.caps, period: usage.period })
   const bounded = (name: "commands" | "storage") =>
@@ -645,7 +675,8 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
     ...(notice === undefined ? [] : [capNoticeView(h, notice)]),
     settingsGroup(h, {
       title: month,
-      footnote: usage.pricing.provisional ? "Paid prices are provisional." : undefined,
+      footnote:
+        usage.pricing.provisional && !capped.unbound ? "Paid prices are provisional." : undefined,
       rows: [
         ...usage.meters.flatMap((entry) => {
           if (entry.meter === "reads") return []
@@ -707,7 +738,9 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
     }),
     settingsGroup(h, {
       title: "By project",
-      footnote: `Estimates share out usage beyond the allowance; the plan’s price is not split.${usage.pricing.provisional ? " They use provisional prices." : ""}`,
+      footnote: capped.unbound
+        ? undefined
+        : `Estimates share out usage beyond the allowance; the plan’s price is not split.${usage.pricing.provisional ? " They use provisional prices." : ""}`,
       rows: [
         dataTable(h, {
           label: "Usage by project",
@@ -717,7 +750,9 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
             { key: "project", label: "Project", width: "minmax(0, 1fr)", mono: true },
             { key: "commands", label: "Commands", width: "6rem", align: "end" },
             { key: "reads", label: "Reads", width: "5.5rem", align: "end" },
-            { key: "estimate", label: "Estimate", width: "5.5rem", align: "end" },
+            ...(capped.unbound
+              ? []
+              : [{ key: "estimate", label: "Estimate", width: "5.5rem", align: "end" as const }]),
           ],
           rows: usage.projects.map((project) => ({
             key: project.id,
@@ -725,7 +760,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
               project.name,
               formatCompact(project.commands),
               project.reads === null ? "—" : formatCompact(project.reads),
-              formatCents(project.estimatedCostCents),
+              ...(capped.unbound ? [] : [formatCents(project.estimatedCostCents)]),
             ],
           })),
         }),

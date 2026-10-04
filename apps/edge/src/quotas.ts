@@ -143,6 +143,11 @@ const SERVICE_READS: ReadonlySet<string> = new Set([
   "/inspector/jobs",
   "/inspector/dead-letters",
   "/inspector/workflows",
+  "/inspector/actor-types",
+  "/inspector/job-types",
+  "/inspector/receipts",
+  "/inspector/latest-events",
+  "/inspector/timeline",
 ])
 
 const decoded = (segment: string) => {
