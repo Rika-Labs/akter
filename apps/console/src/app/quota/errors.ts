@@ -45,20 +45,18 @@ export const quotaMessage = (refusal: QuotaRefusal): string =>
 
 /**
  * A runner's admission refusal as the cloud API forwards it: a `CommandRefused` whose `reason` is
- * the edge's served `ActorError` envelope, with the plan refusal inside it.
+ * the framework's refusal itself, which may be a plan refusal.
  */
-const ForwardedRefusal = Schema.TaggedStruct("CommandRefused", {
-  reason: Schema.TaggedStruct("ActorError", { reason: QuotaRefusal }),
-})
+const ForwardedRefusal = Schema.TaggedStruct("CommandRefused", { reason: QuotaRefusal })
 
 /**
  * The plan refusal an API error carries, if it is one: either the framework's error itself, or a
- * `CommandRefused` that forwards it from the edge.
+ * `CommandRefused` that forwards it.
  */
 export const quotaRefusal = (cause: unknown): Option.Option<QuotaRefusal> =>
   Option.orElse(Schema.decodeUnknownOption(QuotaRefusal)(cause), () =>
     Option.map(
       Schema.decodeUnknownOption(ForwardedRefusal)(cause),
-      (forwarded) => forwarded.reason.reason,
+      (forwarded) => forwarded.reason,
     ),
   )

@@ -39,6 +39,23 @@ describe("errors", () => {
     expectRoundTrip(RunnerDefect, RunnerDefect.make({}))
   })
 
+  it("names a missing resource by a closed kind, so a missing actor and a missing deployment differ", () => {
+    const codec = Schema.toCodecJson(NotFound)
+    const wire = Effect.runSync(
+      Schema.encodeEffect(codec)(NotFound.make({ resource: "actor", id: "Counter/hits" })),
+    ) as { readonly [key: string]: Schema.Json }
+    const decodes = (input: Schema.Json) =>
+      Exit.isSuccess(
+        Effect.runSyncExit(
+          Schema.decodeEffect(Schema.fromJsonString(codec))(JSON.stringify(input)),
+        ),
+      )
+
+    expect(wire).toMatchObject({ resource: "actor", id: "Counter/hits" })
+    expect(decodes({ ...wire, resource: "live deployment" })).toBe(true)
+    expect(decodes({ ...wire, resource: "deploy" })).toBe(false)
+  })
+
   it("answers each error with its own status", () => {
     const status = (schema: Schema.Top) => schema.ast.annotations?.["httpApiStatus"]
     expect(

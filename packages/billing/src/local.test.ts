@@ -1,6 +1,16 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Clock, type Crypto, DateTime, Effect, Exit, Layer, ManagedRuntime, Redacted } from "effect"
+import {
+  Clock,
+  type Crypto,
+  DateTime,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+} from "effect"
 import { SqlClient } from "effect/sql"
 import { it } from "@effect/vitest"
 import { afterAll, describe, expect } from "vitest"
@@ -22,6 +32,7 @@ import {
   StripeBillingLocal,
   UnknownSession,
   completeLocalCheckout,
+  localInvoicePdf,
 } from "./local.ts"
 import { signWebhook } from "./webhooks.ts"
 
@@ -412,7 +423,7 @@ describe("local subscriptions", () => {
     }),
   )
   it.live(
-    "persists a simulated card and one paid base-price invoice after checkout completion",
+    "persists a simulated card and one paid base-price invoice, with a real PDF, after checkout completion",
     () =>
       Effect.gen(function* () {
         const config = configFor("simulated-payment", 24900)
@@ -440,8 +451,28 @@ describe("local subscriptions", () => {
           amountCents: 24900,
           currency: "usd",
           status: "paid",
-          pdfUrl: null,
+          pdfUrl: `http://localhost:3000/billing/invoices/${first.invoices[0]!.id}/pdf`,
         })
+        const pdf = new TextDecoder().decode(
+          Option.getOrThrow(yield* query(localInvoicePdf(first.invoices[0]!.id))),
+        )
+        expect(pdf.startsWith("%PDF-1.4\n")).toBe(true)
+        expect(pdf.endsWith("%%EOF\n")).toBe(true)
+        const xref = Number(/startxref\n(\d+)\n/u.exec(pdf)?.[1])
+        expect(pdf.slice(xref, xref + 4)).toBe("xref")
+        const offsets = [...pdf.slice(xref).matchAll(/^(\d{10}) 00000 n $/gmu)].map((entry) =>
+          Number(entry[1]),
+        )
+        expect(
+          offsets.map((offset, index) => pdf.slice(offset).startsWith(`${index + 1} 0 obj`)),
+        ).toEqual([true, true, true, true, true])
+        const stream = /<< \/Length (\d+) >>\nstream\n/u.exec(pdf)!
+        expect(pdf.slice(stream.index + stream[0].length + Number(stream[1]))).toMatch(
+          /^\nendstream/u,
+        )
+        expect(pdf).toContain(`(Invoice ${first.invoices[0]!.number}) Tj`)
+        expect(pdf).toContain("(Amount 249.00 USD) Tj")
+        expect(Option.isNone(yield* query(localInvoicePdf("in_local_missing")))).toBe(true)
         expect(first.invoices[0]!.periodStart).toEqual(completed.currentPeriodEnd)
         expect(first.invoices[0]!.periodEnd).toEqual(
           DateTime.add(first.invoices[0]!.periodStart, { months: 1 }),

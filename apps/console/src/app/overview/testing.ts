@@ -1,4 +1,4 @@
-import { Forbidden, NotFound, NotImplemented } from "@akter/cloud-api"
+import { Forbidden, NotFound, type NotFoundResource, NotImplemented } from "@akter/cloud-api"
 
 /** What a mocked API answers for one path: a JSON body and its status. */
 export interface MockedAnswer {
@@ -25,7 +25,9 @@ export const forbidden: MockedAnswer = {
 }
 
 /** The `NotFound` answer for a resource that does not exist. */
-export const notFound = (target: Readonly<{ resource: string; id: string }>): MockedAnswer => ({
+export const notFound = (
+  target: Readonly<{ resource: NotFoundResource; id: string }>,
+): MockedAnswer => ({
   status: 404,
   body: NotFound.make(target),
 })

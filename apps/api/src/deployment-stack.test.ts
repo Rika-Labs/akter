@@ -110,12 +110,20 @@ const isolatedDatabase = (prefix: string) =>
     return { name, url: base.href, inside: inside.href }
   }).pipe(Effect.orDie)
 
+/**
+ * The two runner images, each under a tag unique to this run and untagged
+ * when the layer closes, because a fixed tag shared with a concurrent run on
+ * the same daemon is retagged under it and its image can be removed mid-run.
+ */
 const ImagesLive = Layer.effect(
   Images,
   Effect.gen(function* () {
     const build = (version: string) =>
       Effect.gen(function* () {
-        const tag = `akter-local-runner:e2e-${version}`
+        const tag = yield* Effect.acquireRelease(
+          unique(`akter-local-runner:e2e-${version}`),
+          (made) => docker("image", "rm", made),
+        )
 
         const built = yield* docker(
           "build",
