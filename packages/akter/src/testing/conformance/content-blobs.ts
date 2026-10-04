@@ -274,9 +274,8 @@ export const contentConformance: ReadonlyArray<ConformanceCase<ContentFixture>> 
           expect(yield* refusal("bare", { hash: ref.hash, size: ref.size, grant: "" })).toBe(
             "malformed",
           )
-          expect(yield* refusal("forged", { ...ref, grant: `${ref.grant.slice(0, -2)}AA` })).toBe(
-            "invalid",
-          )
+          const forged = `${ref.grant.slice(0, -2)}${ref.grant.endsWith("AA") ? "BA" : "AA"}`
+          expect(yield* refusal("forged", { ...ref, grant: forged })).toBe("invalid")
           expect(yield* refusal("resized", { ...ref, size: ref.size + 1 })).toBe("invalid")
 
           const foreign = yield* upload(bytes).pipe(
