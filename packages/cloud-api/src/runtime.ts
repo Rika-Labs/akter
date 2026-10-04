@@ -223,10 +223,18 @@ export class RunnerDefect extends Schema.TaggedError<RunnerDefect>()(
   { httpApiStatus: 502 },
 ) {}
 
-/** The runner refused admission without committing a command receipt; answered 422. */
+/**
+ * The runner refused admission without committing a command receipt; answered
+ * 422. `reason` is the framework's own refusal, already taken out of the
+ * runner's `ActorError` envelope, and `reasonTag` its tag.
+ */
 export class CommandRefused extends Schema.TaggedError<CommandRefused>()(
   "CommandRefused",
-  { commandId: Schema.String, reasonTag: Schema.String, reason: Schema.Json },
+  {
+    commandId: Schema.String,
+    reasonTag: Schema.String,
+    reason: Framework.ActorError.fields.reason,
+  },
   { httpApiStatus: 422 },
 ) {}
 

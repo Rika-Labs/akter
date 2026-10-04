@@ -589,14 +589,20 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           [refused(CommandExpired.make({ commandId: "v1.expired" }), 410), Schema.is(ExpiredKey)],
           [
             refused(InvalidCommandId.make({ commandId: "v1.bad", code: "malformed" }), 400),
-            (error) => Schema.is(CommandRefused)(error) && error.reasonTag === "InvalidCommandId",
+            (error) =>
+              Schema.is(CommandRefused)(error) &&
+              error.reasonTag === "InvalidCommandId" &&
+              Schema.is(Framework.InvalidCommandId)(error.reason) &&
+              error.reason.code === "malformed",
           ],
           [
             refused(InvalidInput.make({ code: "decode" }), 400),
             (error) =>
               Schema.is(CommandRefused)(error) &&
               error.commandId === mintedId(1) &&
-              error.reasonTag === "InvalidInput",
+              error.reasonTag === "InvalidInput" &&
+              Schema.is(Framework.InvalidInput)(error.reason) &&
+              error.reason.code === "decode",
           ],
         ]
 

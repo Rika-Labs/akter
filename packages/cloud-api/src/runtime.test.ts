@@ -2,6 +2,7 @@ import * as Framework from "@rikalabs/akter/client"
 import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
+import { Conflict } from "./errors.ts"
 import { RuntimeGroup } from "./groups/runtime.ts"
 import { CloudApi } from "./contract.ts"
 import { OpenApi } from "effect/http-api"
@@ -10,6 +11,7 @@ import {
   ActorTypeActivity,
   CommandFailed,
   CommandLogEntry,
+  CommandRefused,
   CommandSent,
   ConnectionLimitExceeded,
   OwnedTableRows,
@@ -239,6 +241,34 @@ describe("runtime models", () => {
       }),
       429,
     )
+  })
+
+  it("carries a refused command's framework reason itself, never its ActorError envelope or an unknown reason", () => {
+    const reason = Framework.InvalidCommandId.make({ commandId: "v1.bad", code: "window" })
+    const wire = encode(
+      CommandRefused,
+      CommandRefused.make({ commandId: "v1.bad", reasonTag: "InvalidCommandId", reason }),
+    ) as { readonly [key: string]: Schema.Json }
+    const decoded = decode(CommandRefused, wire)
+    const reasonWire = encode(Framework.InvalidCommandId, reason) as {
+      readonly [key: string]: Schema.Json
+    }
+
+    expect(decoded.reason).toEqual(reason)
+    expect(Schema.is(Framework.InvalidCommandId)(decoded.reason)).toBe(true)
+    expect(
+      rejects(CommandRefused, {
+        ...wire,
+        reason: encode(Framework.ActorError, Framework.ActorError.make({ reason })),
+      }),
+    ).toBe(true)
+    expect(
+      rejects(CommandRefused, {
+        ...wire,
+        reason: encode(Conflict, Conflict.make({ message: "not a framework reason" })),
+      }),
+    ).toBe(true)
+    expect(rejects(CommandRefused, { ...wire, reason: { ...reasonWire, code: "late" } })).toBe(true)
   })
 
   it("carries an actor type's commands per second and per-command volume over a window", () => {
