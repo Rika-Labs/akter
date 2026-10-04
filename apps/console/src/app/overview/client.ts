@@ -1,5 +1,6 @@
-import { DateTime, Effect } from "effect"
+import { DateTime, Effect, Option } from "effect"
 import { type ConsoleError, type Loaded, load, selectedWindow, withProject } from "../api/client.ts"
+import { organizationCap } from "../quota/client.ts"
 import { toLatencyDistribution, toOverviewPage } from "./mapping.ts"
 import { EmptyProjectPage, type OverviewPage } from "./model.ts"
 import { flattenLoaded, sourced } from "./partial.ts"
@@ -45,7 +46,18 @@ const loadSelected = (fixture: () => Promise<OverviewPage | EmptyProjectPage>) =
         )
       }),
     () => fixture().then((data) => sourced(data, true)),
-  ).pipe(Effect.map(flattenLoaded))
+  ).pipe(
+    Effect.map(flattenLoaded),
+    Effect.zipWith(
+      organizationCap,
+      (loaded, cap) =>
+        Option.match(cap, {
+          onNone: () => loaded,
+          onSome: (reached) => ({ ...loaded, data: { ...loaded.data, cap: reached } }),
+        }),
+      { concurrent: true },
+    ),
+  )
 
 /** Loads the selected project's overview, or the empty state when it has never been deployed. */
 export const loadOverview: Effect.Effect<

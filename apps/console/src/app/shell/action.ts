@@ -1,5 +1,6 @@
 import { Option, Predicate, Schema as S } from "effect"
 import { defineTaggedUnion } from "foldkit/schema"
+import { PaidPlan } from "../settings/model.ts"
 import { blockedBySample } from "../settings/sample.ts"
 import type { PageData } from "./page.ts"
 
@@ -19,7 +20,8 @@ export const Action = defineTaggedUnion({
   VerifyDomain: { id: S.String },
   AddRegion: { region: S.String },
   ConnectIntegration: { kind: S.String },
-  StartCheckout: { plan: S.Literals(["pro", "enterprise"]) },
+  StartCheckout: { plan: PaidPlan },
+  ChangePlan: { plan: PaidPlan },
   OpenBillingPortal: {},
   SetVariable: { environment: S.String, name: S.String, value: S.String },
   CreateKey: { name: S.String, permission: S.String, projectScoped: S.Boolean },

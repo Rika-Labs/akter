@@ -21,6 +21,7 @@ import * as stylex from "@stylexjs/stylex"
 import { colors, space } from "@akter/ui/tokens.stylex"
 import type { HtmlBuilder } from "foldkit/html"
 import * as Routes from "../navigation/routes.ts"
+import { capNoticeView } from "../quota/view.ts"
 import { CopiedText } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { DeploySummary, EmptyProjectPage, OverviewPage } from "./model.ts"
@@ -82,6 +83,7 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
     ],
     body: pageBody(h, [
       pageHeader(h, { title: "Overview" }),
+      ...(page.cap === undefined ? [] : [capNoticeView(h, page.cap)]),
       statRow(h, {
         label: "Last 24 hours",
         stats: page.stats.map((stat) => ({
@@ -269,6 +271,7 @@ export const emptyProjectScreen = ({ h, model, page }: ScreenInput<EmptyProjectP
       title: "Ship your first actor",
       description: `${page.project} is ready in ${page.region}. Nothing is running yet.`,
     }),
+    ...(page.cap === undefined ? [] : [capNoticeView(h, page.cap)]),
     columns(h, {
       layout: "wide-left",
       children: [

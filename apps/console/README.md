@@ -23,7 +23,7 @@ exactly once. Better Auth uses the same origin's `/auth` mount. A cross-origin d
 credentialed CORS and cookie configuration on the API server.
 
 For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
-proxy `/api` and `/auth` through Vite (the default target is `http://127.0.0.1:3001`). The
+proxy `/api`, `/auth` and the local Stripe stand-in's `/billing` pages through Vite (the default target is `http://127.0.0.1:3001`). The
 accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
 Set `API_PROXY_TARGET` to its API port and `CONSOLE_ORIGIN` to the console origin. A same-origin
 development proxy can also use the console origin as `API_ORIGIN`.
@@ -61,6 +61,22 @@ deployment of the viewed commit, which is built again. Both ask for confirmation
 deployment on success and show the API's refusal otherwise. Rollbacks and redeploys reuse earlier
 commits, so the console links deployments by id; a commit in the URL opens its newest deployment.
 Runner actor counts and CPU the runtime does not measure show `—`, never `0`.
+
+Billing and Usage read the control plane's Stripe-backed records. Prices, allowances and the read
+weight come from the API (paid prices are flagged provisional); the console hardcodes none. A Free
+organization upgrades through Stripe Checkout in the same tab; a paid one changes plan through the
+plan endpoint, which may stay pending until payment succeeds. The billing portal opens in a new tab
+and invoice PDFs open in their own. Only `https:` links on Stripe's Checkout, billing, invoice and
+pay hosts are opened or linked; the local stand-in's same-origin `/billing` pages are accepted only
+by the Vite development server, and any other link is refused with a message. A spend limit the
+month's estimate has already reached waits for an explicit save, because it refuses new commands
+right away. Free's included commands and storage are shown as the hard caps
+they are. When Free's commands are used up, or the month's estimate is past the spend limit, Usage
+and Overview show one quiet notice linking to Billing; storage has no such notice because usage
+reports a monthly average rather than the latest sample the cap is checked against. Plan refusals
+(`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`, `StorageQuotaExceeded`) are
+recognised by the framework's tags and payloads and explained in place with a link to Billing; the
+cloud API does not yet declare them on `sendCommand`, so today they arrive as an unavailable error.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when
@@ -109,7 +125,8 @@ Settings: `/settings`, `/settings/appearance`, `/settings/profile`, `/settings/n
 
 ## Verification
 
-`bun run typecheck`, `bun run lint` and `bun run test` here; browser flows live in `apps/e2e`
+`bun run typecheck`, `bun run lint` and `bun run test` here (`vitest.config.ts` compiles StyleX so
+view tests render real components); browser flows live in `apps/e2e`
 (`bun run --cwd apps/e2e test:e2e`), which builds and previews this app.
 
 FoldKit 0.163 exposes route constructors through a Proxy whose `.make` Effect 4.0 caches with

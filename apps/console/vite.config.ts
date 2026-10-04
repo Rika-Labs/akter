@@ -16,6 +16,8 @@ const repository = new URL("../../", import.meta.url).pathname
  * source. Tokens stay in `light-dark()` so the Appearance preference can switch `color-scheme`.
  * The console ships as one application chunk (about 165 kB gzipped, mostly Effect and FoldKit), so
  * the chunk warning sits above it rather than splitting routes that every session loads anyway.
+ * The development proxy also forwards `/billing`, where a local API serves its Stripe Checkout and
+ * portal stand-ins, so their links work when the console's origin is the API origin.
  */
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), "")
@@ -29,7 +31,7 @@ export default defineConfig(({ command, mode }) => {
     },
     server: {
       host: "127.0.0.1",
-      proxy: { "/api": { target }, "/auth": { target } },
+      proxy: { "/api": { target }, "/auth": { target }, "/billing": { target } },
     },
     preview: { host: "127.0.0.1" },
     plugins: [
