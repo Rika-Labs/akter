@@ -23,7 +23,7 @@ exactly once. Better Auth uses the same origin's `/auth` mount. A cross-origin d
 credentialed CORS and cookie configuration on the API server.
 
 For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
-proxy `/api` and `/auth` through Vite (the default target is `http://127.0.0.1:3001`). The
+proxy `/api`, `/auth` and the local Stripe stand-in's `/billing` pages through Vite (the default target is `http://127.0.0.1:3001`). The
 accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
 Set `API_PROXY_TARGET` to its API port and `CONSOLE_ORIGIN` to the console origin. A same-origin
 development proxy can also use the console origin as `API_ORIGIN`.
