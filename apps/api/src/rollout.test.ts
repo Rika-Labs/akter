@@ -325,7 +325,7 @@ describe("rollout routing authority", () => {
       }),
     ))
 
-  it("resolves a live environment's edge target only for the organization that owns the project", () =>
+  it("resolves a live environment to its deployment's own edge host, which a later activation never moves, only for the owning organization", () =>
     run(
       Effect.gen(function* () {
         const repository = yield* Repository
@@ -357,9 +357,34 @@ describe("rollout routing authority", () => {
           RuntimeEdge,
         )
         const target = { projectId: project.id, environment: "production" }
-        expect((yield* edge.resolve({ ...target, organizationId: "org-routing" })).host).toBe(
-          `${project.id.replaceAll("_", "-")}-production.localhost`,
-        )
+        const owner = { ...target, organizationId: "org-routing" }
+        const routed = (host: string) =>
+          sql<{
+            deployment_id: string
+          }>`SELECT deployment_id FROM deployment_host WHERE host = ${host}`.pipe(Effect.orDie)
+        const first = yield* edge.resolve(owner)
+        expect(first.host).toBe("release-scoped.localhost")
+        expect(first.credential).toEqual(serviceCredential(options.secret, "release-scoped"))
+
+        const next = release(project.id, "release-scoped-next")
+        yield* sql.withTransaction(routing.register(next)).pipe(Effect.orDie)
+        yield* sql
+          .withTransaction(
+            routing.activate({
+              ...next,
+              previousDeploymentId: "release-scoped",
+              initiator: "user:user-routing",
+            }),
+          )
+          .pipe(Effect.orDie)
+        const second = yield* edge.resolve(owner)
+        expect(second.host).toBe("release-scoped-next.localhost")
+        expect(second.credential).toEqual(serviceCredential(options.secret, "release-scoped-next"))
+        expect(yield* routed(first.host)).toEqual([{ deployment_id: "release-scoped" }])
+        expect(yield* routed(second.host)).toEqual([{ deployment_id: "release-scoped-next" }])
+        expect(yield* routed(`${project.id.replaceAll("_", "-")}-production.localhost`)).toEqual([
+          { deployment_id: "release-scoped-next" },
+        ])
         expect(
           yield* edge.resolve({ ...target, organizationId: "org-other" }).pipe(Effect.flip),
         ).toEqual(NotFound.make({ resource: "live deployment", id: `${project.id}/production` }))
