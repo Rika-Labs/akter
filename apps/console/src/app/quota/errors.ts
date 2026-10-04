@@ -1,32 +1,35 @@
 import { formatCurrency, formatInteger } from "@akter/ui/geometry"
 import {
+  CommandRefused,
   ConnectionLimitExceeded,
   QuotaExceeded,
   SpendLimitExceeded,
   StorageQuotaExceeded,
-} from "@rikalabs/akter/client"
+} from "@akter/cloud-api"
 import { Match, Option, Schema } from "effect"
 import { dollars, formatGigabytes, formatPeriod } from "../settings/format.ts"
 
 /**
- * The refusals a hosted organization's plan causes when a new request is admitted, with the
- * framework's own tags and fields. They are decoded by shape, so an API error that carries the same
- * tag and payload reads exactly as the framework's error does.
+ * A plan refusal of new work, with the framework's tags and fields: one of the cloud API's own
+ * usage errors, or the same refusal a `CommandRefused` carries as its typed `reason`.
  */
-const QuotaRefusal = Schema.Union([
-  Schema.TaggedStruct("QuotaExceeded", QuotaExceeded.fields),
-  Schema.TaggedStruct("SpendLimitExceeded", SpendLimitExceeded.fields),
-  Schema.TaggedStruct("ConnectionLimitExceeded", ConnectionLimitExceeded.fields),
-  Schema.TaggedStruct("StorageQuotaExceeded", StorageQuotaExceeded.fields),
-])
-export type QuotaRefusal = typeof QuotaRefusal.Type
+export type QuotaRefusal =
+  | QuotaExceeded
+  | SpendLimitExceeded
+  | ConnectionLimitExceeded
+  | StorageQuotaExceeded
+  | Extract<CommandRefused["reason"], { readonly _tag: QuotaKind }>
 
-const quotaKinds: ReadonlyArray<string> = QuotaRefusal.members.map(
-  (member) => member.fields._tag.schema.literal,
-)
+const quotaKinds = [
+  "QuotaExceeded",
+  "SpendLimitExceeded",
+  "ConnectionLimitExceeded",
+  "StorageQuotaExceeded",
+] as const
+type QuotaKind = (typeof quotaKinds)[number]
 
 /** Whether an error kind is a plan refusal, which a plan or spend-limit change in Billing lifts. */
-export const isQuotaKind = (kind: string): boolean => quotaKinds.includes(kind)
+export const isQuotaKind = (kind: string): boolean => quotaKinds.some((quota) => quota === kind)
 
 /** What the console says about one refusal: what was refused, why, what still works, and the way out. */
 export const quotaMessage = (refusal: QuotaRefusal): string =>
@@ -43,20 +46,23 @@ export const quotaMessage = (refusal: QuotaRefusal): string =>
     }),
   )
 
-/**
- * A runner's admission refusal as the cloud API forwards it: a `CommandRefused` whose `reason` is
- * the framework's refusal itself, which may be a plan refusal.
- */
-const ForwardedRefusal = Schema.TaggedStruct("CommandRefused", { reason: QuotaRefusal })
+const isUsageError = Schema.is(
+  Schema.Union([QuotaExceeded, SpendLimitExceeded, ConnectionLimitExceeded, StorageQuotaExceeded]),
+)
+
+const isQuotaReason = (
+  reason: CommandRefused["reason"],
+): reason is Extract<CommandRefused["reason"], { readonly _tag: QuotaKind }> =>
+  isQuotaKind(reason._tag)
 
 /**
- * The plan refusal an API error carries, if it is one: either the framework's error itself, or a
- * `CommandRefused` that forwards it.
+ * The plan refusal a decoded API error is, if it is one: one of the cloud API's usage errors, or a
+ * `CommandRefused` whose typed reason is a plan refusal. Only errors the client decoded count; a
+ * value that merely looks like one is not read.
  */
-export const quotaRefusal = (cause: unknown): Option.Option<QuotaRefusal> =>
-  Option.orElse(Schema.decodeUnknownOption(QuotaRefusal)(cause), () =>
-    Option.map(
-      Schema.decodeUnknownOption(ForwardedRefusal)(cause),
-      (forwarded) => forwarded.reason,
-    ),
-  )
+export const quotaRefusal = (cause: unknown): Option.Option<QuotaRefusal> => {
+  if (isUsageError(cause)) return Option.some(cause)
+  if (Schema.is(CommandRefused)(cause) && isQuotaReason(cause.reason))
+    return Option.some(cause.reason)
+  return Option.none()
+}

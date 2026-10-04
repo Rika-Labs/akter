@@ -2,6 +2,8 @@ import { Config, Context, Effect, Layer, Redacted } from "effect"
 import { describe, expect, it } from "vitest"
 import { NekiTurnSessions } from "./session.ts"
 import { TurnConnections, turnConnections } from "../../turn/pipeline.ts"
+import { TurnGroups } from "../../turn/group.ts"
+import { Database } from "../../layer.ts"
 
 /** The session settings a turn's connection reports on each of two leases. */
 const sessionSettings = (neki: boolean) =>
@@ -49,5 +51,20 @@ describe("turn connections on Neki", () => {
 
         expect(first).toMatchObject({ mode: null, fanout: null })
       }).pipe(Effect.orDie),
+    ))
+
+  it("forms no turn groups, because a Neki transaction stays on one shard", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const url = Redacted.make(yield* Config.String("TEST_DATABASE_URL"))
+        const grouped = (neki: boolean) =>
+          Effect.map(
+            Layer.build(Database.postgres({ url, neki })),
+            (context) => Context.getOption(context, TurnGroups)._tag,
+          )
+
+        expect(yield* grouped(true)).toBe("None")
+        expect(yield* grouped(false)).toBe("Some")
+      }).pipe(Effect.scoped, Effect.orDie),
     ))
 })

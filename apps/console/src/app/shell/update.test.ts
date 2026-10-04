@@ -42,6 +42,7 @@ const billing: Billing = {
   card: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 30_000 },
+  caps: [],
 }
 
 const onBilling = (): Model => {
