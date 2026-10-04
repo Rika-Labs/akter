@@ -162,6 +162,7 @@
       "name": "@rikalabs/akter",
       "version": "0.1.0-alpha.0",
       "dependencies": {
+        "@effect/platform-node-shared": "catalog:",
         "@electric-sql/pglite": "0.5.8",
         "@noble/hashes": "2.4.0",
         "@node-rs/xxhash": "1.7.8",

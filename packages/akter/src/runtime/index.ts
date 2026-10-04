@@ -33,6 +33,14 @@ export { Runner } from "./runner.ts"
 
 export type { SocketRunnerOptions } from "./runner.ts"
 
+export type { MutualTlsOptions } from "./peering/transport.ts"
+
+export type { RunnerCredentials } from "./peering/credentials.ts"
+
+export { RunnerAuthority } from "./peering/authority.ts"
+
+export type { IssueOptions } from "./peering/authority.ts"
+
 export { DataDirLocked, DataDirVersion } from "../errors/database.ts"
 
 export type { Options } from "./layer.ts"

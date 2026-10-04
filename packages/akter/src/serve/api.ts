@@ -96,6 +96,7 @@ const ReadinessReason = Schema.Literals([
   "drained",
   "storage",
   "routing",
+  "peering",
   "unregistered",
 ])
 

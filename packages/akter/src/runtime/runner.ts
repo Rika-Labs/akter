@@ -13,6 +13,8 @@ import {
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SocketServer } from "effect/socket"
 import { SqlClient } from "effect/sql"
+import { identity } from "./peering/credentials.ts"
+import { mtls } from "./peering/transport.ts"
 import { admissionSharding, MailboxRefusals } from "./topology/admission.ts"
 
 /**
@@ -109,7 +111,11 @@ export interface SocketRunnerOptions<E> {
   readonly address: { readonly host: string; readonly port: number }
   /** Bind address, defaulting to the advertised address. Use a private interface or an isolated network. */
   readonly listenAddress?: { readonly host: string; readonly port: number }
-  /** Platform TCP server and client layers, such as BunClusterSocket's layerSocketServer and layerClientProtocol. */
+  /**
+   * Runner-to-runner TCP. `Runner.mtls` authenticates and encrypts it; the
+   * platform's plaintext layers, such as BunClusterSocket's layerSocketServer
+   * and layerClientProtocol, are for an isolated private network only.
+   */
   readonly transport: Layer.Layer<
     SocketServer.SocketServer | Runners.RpcClientProtocol,
     E,
@@ -152,10 +158,13 @@ const duration = (value: Duration.Input, name: string, minimum = 1) => {
 }
 
 /**
- * Joins separate processes over platform TCP sockets. Provide this layer to
+ * Joins separate processes over TCP sockets. Provide this layer to
  * `Actors.layer`; the framework keeps direct commands, SQL ownership, receipts,
  * and outbox recovery, rather than enabling Cluster's persisted message store.
- * Socket transport is trusted infrastructure: isolate it from public clients.
+ * A peer can deliver any runner message, so use `Runner.mtls` as the
+ * transport unless the network is isolated to this deployment's runners. The
+ * transport's own services stay in the runtime, so readiness sees whether a
+ * mutual TLS transport can still peer.
  */
 export const socket = <E>(options: SocketRunnerOptions<E>) => {
   const shardsPerGroup = options.shardsPerGroup ?? 256
@@ -192,7 +201,7 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
     Layer.provideMerge(admissionSharding),
     Layer.provideMerge(Runners.layerRpc),
     Layer.provide(RpcServer.layerProtocolSocketServer),
-    Layer.provide(options.transport),
+    Layer.provideMerge(options.transport),
     Layer.provide(RpcSerialization.layerNdjson),
     Layer.orDie,
   )
@@ -205,8 +214,13 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
   })
 }
 
-/** Runner-to-runner transport and ownership configuration, provided to `Actors.layer`. */
-export const Runner = { socket }
+/**
+ * Runner-to-runner transport and ownership configuration, provided to
+ * `Actors.layer`: `socket` wires a runner, `mtls` is its authenticated
+ * transport, and `identity` is the URI subject alternative name a
+ * deployment's runner certificates carry.
+ */
+export const Runner = { socket, mtls, identity }
 
 /** Refuses a routing layout mismatch before any runner registers or takes shards. */
 export const checkRunnerConfiguration = Effect.fnUntraced(function* (

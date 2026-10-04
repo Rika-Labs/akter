@@ -1,6 +1,5 @@
-import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
 import { Runner } from "@rikalabs/akter/runtime"
-import { Effect, Layer } from "effect"
+import { Config, Effect, Layer } from "effect"
 import { networkInterfaces } from "node:os"
 
 /** The port runners reach each other on; it is never published outside the container network. */
@@ -25,16 +24,27 @@ const privateAddress = () => {
  * Runner wiring shared by the served runner and the one-shot migration: the
  * public socket runner with default shard count and lock expiration, so every
  * process agrees on the layout the database records, advertising this
- * container's private address.
+ * container's private address. Runners of every local deployment share one
+ * Docker network, so peers authenticate with the certificate the local
+ * platform issued this container for `RUNNER_PEER_DEPLOYMENT`, and refuse
+ * any other deployment's runners.
  */
 export const peerRunner = Layer.unwrap(
-  Effect.sync(() => {
+  Effect.gen(function* () {
     const host = privateAddress()
+    const credentials = {
+      ca: yield* Config.String("RUNNER_PEER_CA"),
+      certificate: yield* Config.String("RUNNER_PEER_CERTIFICATE"),
+      key: yield* Config.Redacted("RUNNER_PEER_KEY"),
+    }
 
     return Runner.socket({
       address: { host, port: PEER_PORT },
       listenAddress: { host, port: PEER_PORT },
-      transport: Layer.merge(layerSocketServer, layerClientProtocol),
+      transport: Runner.mtls({
+        deployment: yield* Config.String("RUNNER_PEER_DEPLOYMENT"),
+        credentials: Effect.succeed(credentials),
+      }),
     })
   }),
 )
