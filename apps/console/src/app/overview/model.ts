@@ -19,8 +19,9 @@ export const HealthFact = S.Struct({
   healthy: S.Boolean,
 })
 
-/** A deploy in a short history list. */
+/** A deploy in a short history list; `id` is the deployment id its row links to. */
 export const DeploySummary = S.Struct({
+  id: S.String,
   commit: S.String,
   message: S.String,
   status: DeployStatus,

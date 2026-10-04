@@ -90,11 +90,16 @@ const project = {
   createdAt: "2026-01-02T03:04:05Z",
 }
 
+const missing = (id: string) =>
+  json(`{"_tag":"NotFound","resource":"deployment","id":"${id}"}`, 404)
+
 const serve = (deployments: (request: URL) => Response) =>
   fetch.mockImplementation((input) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
     if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
     if (url.pathname.endsWith("/deployments")) return Promise.resolve(deployments(url))
+    const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
+    if (detail !== undefined) return Promise.resolve(missing(detail))
     return Promise.resolve(json(JSON.stringify([project])))
   })
 
@@ -165,7 +170,11 @@ describe("deployments client against the live API", () => {
       const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
       if (detail !== undefined) {
         const found = pages.flat().find((item) => item["id"] === detail)
-        return Promise.resolve(json(JSON.stringify({ ...found, steps: [], runners: [] })))
+        return Promise.resolve(
+          found === undefined
+            ? missing(detail)
+            : json(JSON.stringify({ ...found, steps: [], runners: [] })),
+        )
       }
       if (url.pathname.endsWith("/deployments")) {
         const index = Number(url.searchParams.get("cursor")?.slice(1) ?? "0")
@@ -260,6 +269,33 @@ describe("deployments client against the live API", () => {
         expect((yield* loadDeployment("ddddddd")).data?.deploy).toMatchObject({
           id: "dep_restored",
         })
+      }),
+    ))
+
+  it("prefers an exact id over a commit and never falls back from an unknown id", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const newer = deployment({
+          id: "dep_newer",
+          commitSha: "ddddddd000000000000000000000000000000000",
+          status: "live",
+          createdAt: "2026-10-03T12:00:00.000Z",
+        })
+        const named = deployment({
+          id: "ddddddd",
+          commitSha: "1234567",
+          message: "Deployment whose id looks like a commit",
+          createdAt: "2026-10-02T09:00:00.000Z",
+        })
+        serveHistory([[newer, named]])
+        expect((yield* loadDeployment("ddddddd")).data?.deploy).toMatchObject({
+          id: "ddddddd",
+          message: "Deployment whose id looks like a commit",
+        })
+        fetch.mockClear()
+        expect((yield* loadDeployment("dep_unknown")).data).toBeUndefined()
+        expect(deploymentRequests()).toHaveLength(0)
+        expect((yield* loadDeployment("ddddddd0")).data?.deploy).toMatchObject({ id: "dep_newer" })
       }),
     ))
 
