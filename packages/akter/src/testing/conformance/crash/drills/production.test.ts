@@ -1,10 +1,11 @@
 import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { layerClientProtocol, layerSocketServer } from "@effect/platform-bun/BunClusterSocket"
 import { connect, type ConnectionOptions } from "node:tls"
-import { Config, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import { Config, Context, DateTime, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { Actors, Database, Runner } from "../../../../runtime/index.ts"
+import { Actor } from "../../../../index.ts"
+import { Actors, Database, Runner, RuntimeControl } from "../../../../runtime/index.ts"
 import { migrations } from "../../../../runtime/database/migrations.ts"
 import { RunnerAuthority } from "../../../../runtime/peering/authority.ts"
 import type { RunnerCredentials } from "../../../../runtime/peering/credentials.ts"
@@ -36,7 +37,6 @@ describe("public production runner topology on Postgres", () => {
                       transport: Layer.merge(layerSocketServer, layerClientProtocol),
                       shardsPerGroup: shards,
                       shardLockExpiration: expiration,
-                      entityTerminationTimeout: "2 seconds",
                     }),
                   ),
                   Layer.provide(Database.postgres({ url: database })),
@@ -82,6 +82,66 @@ describe("public production runner topology on Postgres", () => {
         }).pipe(Effect.scoped),
       ),
     30_000,
+  )
+
+  it(
+    "reports readiness as peering once a mutual TLS runner's certificate expires, and ready again after renewal",
+    () =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const database = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const authority = yield* RunnerAuthority.make()
+          let credentials = yield* authority.issue({
+            deployment: "drill",
+            notBefore: yield* DateTime.now,
+            validFor: "6 seconds",
+          })
+          const Probe = Actor.make("PeeringProbe", {
+            key: Schema.String,
+            api: { Ping: Actor.command("Ping") },
+          })
+          const context = yield* Layer.build(
+            Probe.toLayer(Effect.succeed({ Ping: () => Effect.void })).pipe(
+              Layer.provideMerge(
+                Actors.layer().pipe(
+                  Layer.provide(
+                    Runner.socket({
+                      address: { host: "127.0.0.1", port: yield* freePort },
+                      transport: Runner.mtls({
+                        deployment: "drill",
+                        credentials: Effect.sync(() => credentials),
+                        refreshEvery: "200 millis",
+                      }),
+                      shardsPerGroup: 16,
+                    }),
+                  ),
+                  Layer.provide(Database.postgres({ url: database })),
+                ),
+              ),
+            ),
+          )
+          const readiness = Context.get(context, RuntimeControl).readiness
+          yield* until(
+            Effect.map(readiness, ({ ready }) => ready),
+            "the runner to acquire its shards",
+            "20 seconds",
+          )
+          yield* until(
+            Effect.map(readiness, (state) => !state.ready && state.reason === "peering"),
+            "readiness to report the expired certificate",
+            "15 seconds",
+          )
+          credentials = yield* authority.issue({ deployment: "drill" })
+          yield* until(
+            Effect.map(readiness, ({ ready }) => ready),
+            "readiness after renewal",
+            "10 seconds",
+          )
+        }).pipe(Effect.scoped),
+      ),
+    60_000,
   )
 
   for (const authority of ["default", "same", "separate"] as const) {

@@ -26,12 +26,16 @@ export class ImageMigrations extends Context.Service<
  * The image owns its migration command; the local provider only runs it and
  * verifies its exit status. With `peering`, the migration builds the same
  * mutual TLS runner wiring as the deployment's runners and gets its own
- * certificate for the deployment.
+ * certificate for the deployment, valid for an hour. A successful migration's
+ * container is removed so its key does not outlive it; a retry after that
+ * runs the idempotent migration again.
  */
 export const dockerMigrations = (options: {
   readonly command: ReadonlyArray<string>
   readonly network?: string
   readonly peering?: RunnerAuthority
+  /** Default `linux/arm64`, the architecture hosted runners run on. */
+  readonly platform?: string
 }) =>
   Layer.effect(
     ImageMigrations,
@@ -87,6 +91,7 @@ export const dockerMigrations = (options: {
                       ...(yield* peerEnvironment({
                         authority: options.peering,
                         deploymentId: input.deploymentId,
+                        validFor: "1 hour",
                       })),
                     }
               const created = yield* execute(
@@ -95,7 +100,7 @@ export const dockerMigrations = (options: {
                   "--name",
                   name,
                   "--platform",
-                  "linux/arm64",
+                  options.platform ?? "linux/arm64",
                   ...(options.network === undefined ? [] : ["--network", options.network]),
                   ...Object.keys(environment).flatMap((key) => ["--env", key]),
                   input.image,
@@ -110,6 +115,7 @@ export const dockerMigrations = (options: {
             const status = yield* inspect(name)
             if (completed.code !== 0 || status.code !== 0 || status.output.trim() !== "exited 0")
               return yield* MigrationFailed.make({})
+            yield* execute(["rm", name])
           }).pipe(Effect.mapError(() => MigrationFailed.make({}))),
       }
     }),

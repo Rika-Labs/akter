@@ -10,6 +10,7 @@ import {
   Option,
   Redacted,
   Schedule,
+  Schema,
   Scope,
   Stream,
 } from "effect"
@@ -17,9 +18,11 @@ import { RunnerAddress, ShardingConfig } from "effect/cluster"
 import { RpcSerialization } from "effect/rpc"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { X509Certificate } from "node:crypto"
 import { Runner, RunnerAuthority } from "@rikalabs/akter/runtime"
-import { RunnerNotFound, RunnerPlatform, RunnerPlatformError } from "./contract.ts"
+import { RunnerNotFound, RunnerPlatform, RunnerPlatformError, startToken } from "./contract.ts"
 import { dockerRunners } from "./docker.ts"
+import { dockerMigrations, ImageMigrations } from "./migrations.ts"
 
 const image = "python:3.13-slim"
 
@@ -60,6 +63,22 @@ const container = (id: string, format: string) =>
 
     return (yield* handle.stdout.pipe(Stream.decodeText, Stream.mkString)).trim()
   }).pipe(Effect.scoped)
+
+/** A container's environment as Docker records it, which anyone with Docker access can read. */
+const environment = (id: string) =>
+  Effect.flatMap(container(id, "{{json .Config.Env}}"), (json) =>
+    Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(json).pipe(
+      Effect.orDie,
+      Effect.map((entries) =>
+        Object.fromEntries(
+          entries.map((entry) => [
+            entry.slice(0, entry.indexOf("=")),
+            entry.slice(entry.indexOf("=") + 1),
+          ]),
+        ),
+      ),
+    ),
+  )
 
 const remove = (id: string) =>
   Effect.scoped(
@@ -213,15 +232,6 @@ layer(runners, { excludeTestServices: true })("docker runners", (it) => {
         yield* Effect.addFinalizer(() => remove(first.id))
         const second = yield* platform.start(input(`${key}.second`, "peered"))
         yield* Effect.addFinalizer(() => remove(second.id))
-        const environment = (id: string) =>
-          Effect.map(container(id, "{{json .Config.Env}}"), (json) =>
-            Object.fromEntries(
-              (JSON.parse(json) as Array<string>).map((entry) => [
-                entry.slice(0, entry.indexOf("=")),
-                entry.slice(entry.indexOf("=") + 1),
-              ]),
-            ),
-          )
         const [one, two] = [yield* environment(first.id), yield* environment(second.id)]
         const peering = (deployment: string) =>
           Layer.build(
@@ -255,6 +265,45 @@ layer(runners, { excludeTestServices: true })("docker runners", (it) => {
         expect(yield* container(first.id, "{{json .Args}}")).not.toContain("PRIVATE KEY")
       }).pipe(Effect.scoped),
     180_000,
+  )
+
+  it.effect(
+    "gives a migration an hour-long certificate and removes its container, and its key, once it succeeds",
+    () =>
+      Effect.gen(function* () {
+        const authority = yield* RunnerAuthority.make()
+        const key = `${yield* unique}.01HZX.migrate`
+        const migrations = (code: number) =>
+          Effect.map(
+            Layer.build(
+              dockerMigrations({
+                command: ["python", "-c", `import sys; sys.exit(${code})`],
+                peering: authority,
+                platform: process.arch === "arm64" ? "linux/arm64" : "linux/amd64",
+              }).pipe(Layer.provide(services)),
+            ),
+            (context) => Context.get(context, ImageMigrations),
+          )
+        const name = (idempotencyKey: string) =>
+          Effect.map(
+            startToken({ deploymentId: "runners-test", idempotencyKey }),
+            (token) => `akter-migrate-${token.slice(0, 32)}`,
+          ).pipe(Effect.orDie)
+        const failing = `${key}.failing`
+        yield* Effect.addFinalizer(() => Effect.flatMap(name(failing), remove))
+
+        expect(
+          (yield* Effect.exit((yield* migrations(3)).run(input(failing, "migrate"))))._tag,
+        ).toBe("Failure")
+        const leaf = new X509Certificate(
+          (yield* environment(yield* name(failing))).RUNNER_PEER_CERTIFICATE!,
+        )
+        expect(Date.parse(leaf.validTo) - Date.parse(leaf.validFrom)).toBe(60 * 60_000)
+
+        yield* (yield* migrations(0)).run(input(key, "migrate"))
+        expect(yield* container(yield* name(key), "{{.State.Status}}")).toBe("")
+      }).pipe(Effect.scoped),
+    360_000,
   )
 
   it.effect("never repeats a docker command's output or arguments in its failure", () =>

@@ -1,5 +1,5 @@
 import type { RunnerAuthority } from "@rikalabs/akter/runtime"
-import { Crypto, Effect, Layer, Redacted, Schema, Stream } from "effect"
+import { Crypto, type Duration, Effect, Layer, Redacted, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import {
   decodeStart,
@@ -42,18 +42,24 @@ export interface DockerOptions {
  * The variables a local runner reads its mutual TLS credentials from: a fresh
  * key and a certificate that names only `deploymentId`, so runners of other
  * deployments on the same Docker network cannot exchange runner messages with
- * it. They travel like the rest of the environment, never in arguments.
+ * it. They travel like the rest of the environment, never in arguments, but
+ * anyone who can inspect the container can read them; `validFor` bounds how
+ * long a leaked key stays useful (the authority's default when omitted).
  */
 export const peerEnvironment = (options: {
   readonly authority: RunnerAuthority
   readonly deploymentId: string
+  readonly validFor?: Duration.Input
 }) =>
-  Effect.map(options.authority.issue({ deployment: options.deploymentId }), (credentials) => ({
-    RUNNER_PEER_DEPLOYMENT: options.deploymentId,
-    RUNNER_PEER_CA: credentials.ca,
-    RUNNER_PEER_CERTIFICATE: credentials.certificate,
-    RUNNER_PEER_KEY: Redacted.value(credentials.key),
-  }))
+  Effect.map(
+    options.authority.issue({ deployment: options.deploymentId, validFor: options.validFor }),
+    (credentials) => ({
+      RUNNER_PEER_DEPLOYMENT: options.deploymentId,
+      RUNNER_PEER_CA: credentials.ca,
+      RUNNER_PEER_CERTIFICATE: credentials.certificate,
+      RUNNER_PEER_KEY: Redacted.value(credentials.key),
+    }),
+  )
 
 const Inspected = Schema.Array(
   Schema.Struct({

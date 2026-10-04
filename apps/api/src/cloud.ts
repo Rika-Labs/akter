@@ -37,24 +37,35 @@ import { RepositoryLive } from "./repository.ts"
 /**
  * The local platform's runner peer authority: the one saved in `directory`,
  * or a new one saved there on first use, or, without a directory, one that
- * lasts as long as this process.
+ * lasts as long as this process. Certificate and key share one file, which a
+ * new authority reaches only through a hard link that fails when the file
+ * exists, so processes starting together all end up with the one that won.
  */
-const localAuthority = (directory: string | undefined) =>
+export const localAuthority = (directory: string | undefined) =>
   Effect.gen(function* () {
     if (directory === undefined) return yield* RunnerAuthority.make()
     const fs = yield* FileSystem.FileSystem
-    const certificate = `${directory}/authority.pem`
-    const key = `${directory}/authority.key`
-    if (yield* fs.exists(certificate))
-      return yield* RunnerAuthority.from({
-        certificate: yield* fs.readFileString(certificate),
-        key: Redacted.make(yield* fs.readFileString(key)),
+    const bundle = `${directory}/authority.bundle.pem`
+    if (!(yield* fs.exists(bundle))) {
+      const created = yield* RunnerAuthority.make({ name: "akter local runner authority" })
+      yield* fs.makeDirectory(directory, { recursive: true })
+      const staging = yield* fs.makeTempDirectory({ directory, prefix: ".authority-" })
+      const staged = `${staging}/authority.bundle.pem`
+      yield* fs.writeFileString(staged, `${created.certificate}${Redacted.value(created.key)}`, {
+        mode: 0o600,
       })
-    const created = yield* RunnerAuthority.make({ name: "akter local runner authority" })
-    yield* fs.makeDirectory(directory, { recursive: true })
-    yield* fs.writeFileString(key, Redacted.value(created.key), { mode: 0o600 })
-    yield* fs.writeFileString(certificate, created.certificate)
-    return created
+      yield* fs.link(staged, bundle).pipe(Effect.ignore)
+      yield* fs.remove(staging, { recursive: true })
+    }
+    const text = yield* fs.readFileString(bundle)
+    const block = (label: string) =>
+      text.match(
+        new RegExp(`-----BEGIN ${label}-----[\\s\\S]+?-----END ${label}-----\\n`, "u"),
+      )?.[0] ?? ""
+    return yield* RunnerAuthority.from({
+      certificate: block("CERTIFICATE"),
+      key: Redacted.make(block("PRIVATE KEY")),
+    })
   }).pipe(Effect.orDie)
 
 /** A caller's environment is resolved to an edge host; runner addresses and signing keys never reach API handlers. */

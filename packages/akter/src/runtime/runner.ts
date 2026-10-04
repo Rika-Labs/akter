@@ -129,12 +129,7 @@ export interface SocketRunnerOptions<E> {
   readonly shardLockRefreshInterval?: Duration.Input
   /** Default 1 second. */
   readonly refreshAssignmentsInterval?: Duration.Input
-  /**
-   * Default 15 seconds, bounding activation shutdown during a shard handoff.
-   * At most the lock expiration minus the effective refresh interval, so a
-   * runner that loses its lock storage stops its activations before another
-   * runner may take their shards.
-   */
+  /** Default 15 seconds, bounding activation shutdown during a shard handoff. */
   readonly entityTerminationTimeout?: Duration.Input
 }
 
@@ -167,7 +162,9 @@ const duration = (value: Duration.Input, name: string, minimum = 1) => {
  * `Actors.layer`; the framework keeps direct commands, SQL ownership, receipts,
  * and outbox recovery, rather than enabling Cluster's persisted message store.
  * A peer can deliver any runner message, so use `Runner.mtls` as the
- * transport unless the network is isolated to this deployment's runners.
+ * transport unless the network is isolated to this deployment's runners. The
+ * transport's own services stay in the runtime, so readiness sees whether a
+ * mutual TLS transport can still peer.
  */
 export const socket = <E>(options: SocketRunnerOptions<E>) => {
   const shardsPerGroup = options.shardsPerGroup ?? 256
@@ -175,52 +172,36 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
   if (!Number.isSafeInteger(shardsPerGroup) || shardsPerGroup < 1 || shardsPerGroup > 65536)
     throw new Error("shardsPerGroup must be an integer between 1 and 65536")
 
-  const shardLockExpiration = duration(
-    options.shardLockExpiration ?? "35 seconds",
-    "shardLockExpiration",
-    3000,
-  )
-  const shardLockRefreshInterval = duration(
-    options.shardLockRefreshInterval ?? "10 seconds",
-    "shardLockRefreshInterval",
-  )
-  const entityTerminationTimeout = duration(
-    options.entityTerminationTimeout ?? "15 seconds",
-    "entityTerminationTimeout",
-  )
-
-  if (
-    Duration.toMillis(entityTerminationTimeout) >
-    Duration.toMillis(shardLockExpiration) -
-      Math.min(
-        Duration.toMillis(shardLockRefreshInterval),
-        Duration.toMillis(shardLockExpiration) / 3,
-      )
-  )
-    throw new Error(
-      "entityTerminationTimeout must not exceed shardLockExpiration minus the effective shardLockRefreshInterval",
-    )
-
   const config: Partial<ShardingConfig.ShardingConfig["Service"]> = {
     runnerAddress: Option.some(address(options.address, true)),
     runnerListenAddress: Option.some(address(options.listenAddress ?? options.address, false)),
     shardsPerGroup,
     shardLockDisableAdvisory: true,
-    shardLockExpiration,
-    shardLockRefreshInterval,
+    shardLockExpiration: duration(
+      options.shardLockExpiration ?? "35 seconds",
+      "shardLockExpiration",
+      3000,
+    ),
+    shardLockRefreshInterval: duration(
+      options.shardLockRefreshInterval ?? "10 seconds",
+      "shardLockRefreshInterval",
+    ),
     refreshAssignmentsInterval: duration(
       options.refreshAssignmentsInterval ?? "1 second",
       "refreshAssignmentsInterval",
     ),
     entityMessagePollInterval: "1 second",
-    entityTerminationTimeout,
+    entityTerminationTimeout: duration(
+      options.entityTerminationTimeout ?? "15 seconds",
+      "entityTerminationTimeout",
+    ),
   }
 
   const sharding = RunnerServer.layer.pipe(
     Layer.provideMerge(admissionSharding),
     Layer.provideMerge(Runners.layerRpc),
     Layer.provide(RpcServer.layerProtocolSocketServer),
-    Layer.provide(options.transport),
+    Layer.provideMerge(options.transport),
     Layer.provide(RpcSerialization.layerNdjson),
     Layer.orDie,
   )

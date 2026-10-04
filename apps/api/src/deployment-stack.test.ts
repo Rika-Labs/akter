@@ -55,10 +55,18 @@ class Images extends Context.Service<Images, { readonly v1: string; readonly v2:
 const text = (stream: Stream.Stream<Uint8Array, PlatformError>) =>
   stream.pipe(Stream.decodeText, Stream.mkString)
 
-const docker = (...args: ReadonlyArray<string>) =>
+const docker = (...args: ReadonlyArray<string>) => dockerWith({}, ...args)
+
+/** `docker` with extra environment variables, so `--env NAME` passes a value without putting it in argv. */
+const dockerWith = (
+  environment: Readonly<Record<string, string>>,
+  ...args: ReadonlyArray<string>
+) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    const handle = yield* spawner.spawn(ChildProcess.make("docker", [...args]))
+    const handle = yield* spawner.spawn(
+      ChildProcess.make("docker", [...args], { env: { ...environment }, extendEnv: true }),
+    )
 
     const [out, err] = yield* Effect.all([text(handle.stdout), text(handle.stderr)], {
       concurrency: 2,
@@ -175,23 +183,21 @@ const get = (url: string) =>
   })
 
 /**
- * `docker run` arguments carrying a fresh key and peer certificate for the
- * image-level deployment, as the local platform issues them to every runner
- * and migration container.
+ * A fresh key and peer certificate for the image-level deployment, as the
+ * local platform issues them to every runner and migration container: the
+ * values go in the environment of the `docker` process, and only the names in
+ * its arguments.
  */
-const peerArguments = Effect.gen(function* () {
+const peerEnvironment = Effect.gen(function* () {
   const peer = yield* (yield* RunnerAuthority.make()).issue({ deployment: "image-level" })
+  const environment = {
+    RUNNER_PEER_DEPLOYMENT: "image-level",
+    RUNNER_PEER_CA: peer.ca,
+    RUNNER_PEER_CERTIFICATE: peer.certificate,
+    RUNNER_PEER_KEY: Redacted.value(peer.key),
+  }
 
-  return [
-    "-e",
-    "RUNNER_PEER_DEPLOYMENT=image-level",
-    "-e",
-    `RUNNER_PEER_CA=${peer.ca}`,
-    "-e",
-    `RUNNER_PEER_CERTIFICATE=${peer.certificate}`,
-    "-e",
-    `RUNNER_PEER_KEY=${Redacted.value(peer.key)}`,
-  ]
+  return { environment, args: Object.keys(environment).flatMap((name) => ["-e", name]) }
 })
 
 /**
@@ -205,10 +211,11 @@ const startRunner = (options: {
 }) =>
   Effect.gen(function* () {
     const name = yield* unique("akter-e2e-runner")
-    const peer = yield* peerArguments
+    const peer = yield* peerEnvironment
 
     yield* Effect.acquireRelease(
-      docker(
+      dockerWith(
+        peer.environment,
         "run",
         "-d",
         "--name",
@@ -225,7 +232,7 @@ const startRunner = (options: {
         `ASSERTION_REGION=${region}`,
         "-e",
         `ASSERTION_KEYS=${options.keys}`,
-        ...peer,
+        ...peer.args,
         options.image,
       ).pipe(Effect.tap((started) => Effect.sync(() => expect(started.code, started.err).toBe(0)))),
       () => docker("rm", "-f", name),
@@ -646,18 +653,19 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const migrate = (url: string) =>
           Effect.gen(function* () {
             const name = yield* unique("akter-e2e-migrate")
-            const peer = yield* peerArguments
+            const peer = yield* peerEnvironment
 
             return yield* Effect.acquireUseRelease(
               Effect.void,
               () =>
-                docker(
+                dockerWith(
+                  peer.environment,
                   "run",
                   "--name",
                   name,
                   "-e",
                   `DATABASE_URL=${url}`,
-                  ...peer,
+                  ...peer.args,
                   images.v1,
                   ...migrateCommand,
                 ),
