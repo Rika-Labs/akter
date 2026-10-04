@@ -1,88 +1,117 @@
+import type { CapState } from "@akter/cloud-api"
 import { describe, expect, it } from "vitest"
-import type { Billing, Usage, UsageMeter } from "../settings/model.ts"
-import { capReached } from "./model.ts"
+import type { Billing } from "../settings/model.ts"
+import { CapNotice, capNotice, spendLimitReached } from "./model.ts"
 
-const billing = (input: {
-  readonly plan: Billing["plan"]["id"]
-  readonly limitCents: number | null
-  readonly currentCents: number
-}): Billing => ({
-  plan: {
-    id: input.plan,
-    name: input.plan,
-    subscribed: input.plan,
-    paymentStatus: input.plan === "free" ? "free" : "active",
-    basePriceCents: 0,
-    provisional: true,
-    renewsAt: null,
-    monthToDateCents: input.currentCents,
-  },
-  card: null,
-  billingEmail: null,
-  spendLimit: { limitCents: input.limitCents, currentCents: input.currentCents },
-})
+const clear: ReadonlyArray<CapState> = [
+  { cap: "commands", limit: 5_000_000, used: 1_200_000, atCap: false, refusing: false },
+  { cap: "spend", limit: null, used: 0, atCap: false, refusing: false },
+  { cap: "connections", limit: 100, used: 4, atCap: false, refusing: false },
+  { cap: "storage", limit: 500_000_000, used: 120_000_000, atCap: false, refusing: false },
+]
 
-const commands = (used: number, included: number): UsageMeter => ({
-  meter: "commands",
-  label: "Commands",
-  used,
-  included,
-  overage: Math.max(0, used - included),
-  overageCostCents: 0,
-  unit: "count",
-})
+const changing = (...changed: ReadonlyArray<CapState>): ReadonlyArray<CapState> =>
+  clear.map((cap) => changed.find((entry) => entry.cap === cap.cap) ?? cap)
 
-const usage = (meters: ReadonlyArray<UsageMeter>): Usage => ({
-  period: "2026-10",
-  meters,
-  commandsPerDay: [],
-  projects: [],
-  pricing: {
-    freeCommands: 1_000_000,
-    readCommandWeight: 0.2,
-    storagePerGbCents: 30,
-    provisional: true,
-  },
-})
+const notice = (caps: ReadonlyArray<CapState>) => capNotice({ caps, period: "2026-10" })
 
-describe("capReached", () => {
-  it("reports Free's command allowance from the moment it is used up", () => {
-    const free = billing({ plan: "free", limitCents: null, currentCents: 0 })
-    expect(capReached({ billing: free, usage: usage([commands(999_999.8, 1_000_000)]) })).toBe(
-      undefined,
-    )
-    expect(capReached({ billing: free, usage: usage([commands(1_000_000, 1_000_000)]) })).toEqual({
-      cap: "commands",
-      period: "2026-10",
-      limit: 1_000_000,
-    })
+describe("capNotice", () => {
+  it("stays quiet while no cap refuses, and without cap state at all", () => {
+    expect(notice(clear)).toBe(undefined)
+    expect(notice([])).toBe(undefined)
   })
 
-  it("treats a paid allowance as billable overage, not a cap", () => {
-    const pro = billing({ plan: "pro", limitCents: null, currentCents: 4_100 })
-    expect(capReached({ billing: pro, usage: usage([commands(41_000_000, 25_000_000)]) })).toBe(
-      undefined,
-    )
-  })
-
-  it("reports a spend limit from the moment the estimate reaches it", () => {
-    const meters = usage([commands(10, 25_000_000)])
-    const below = billing({ plan: "pro", limitCents: 2_500, currentCents: 2_499 })
-    const at = billing({ plan: "pro", limitCents: 2_500, currentCents: 2_500 })
-    const unlimited = billing({ plan: "pro", limitCents: null, currentCents: 900_000 })
-    expect(capReached({ billing: below, usage: meters })).toBe(undefined)
-    expect(capReached({ billing: at, usage: meters })).toEqual({
+  it("follows the edge's refusal, not usage reaching the limit", () => {
+    const reached = changing({
       cap: "spend",
-      period: "2026-10",
       limit: 2_500,
+      used: 2_500,
+      atCap: true,
+      refusing: false,
     })
-    expect(capReached({ billing: unlimited, usage: meters })).toBe(undefined)
+    expect(notice(reached)).toBe(undefined)
+    const refusing = changing({
+      cap: "spend",
+      limit: 2_500,
+      used: 2_499,
+      atCap: false,
+      refusing: true,
+    })
+    expect(notice(refusing)).toEqual(CapNotice.SpendCap({ period: "2026-10", limitCents: 2_500 }))
   })
 
-  it("prefers the hard cap when Free is past both", () => {
-    const free = billing({ plan: "free", limitCents: 0, currentCents: 1 })
-    expect(capReached({ billing: free, usage: usage([commands(1_200_000, 1_000_000)]) })?.cap).toBe(
-      "commands",
+  it("reports the storage cap with the largest tenant's latest sample and its limit", () => {
+    const storage = changing({
+      cap: "storage",
+      limit: 500_000_000,
+      used: 512_340_000,
+      atCap: true,
+      refusing: true,
+    })
+    expect(notice(storage)).toEqual(
+      CapNotice.StorageCap({ usedBytes: 512_340_000, limitBytes: 500_000_000 }),
     )
+  })
+
+  it("explains a hard cap before a spend limit or connections", () => {
+    const all = changing(
+      { cap: "spend", limit: 0, used: 1, atCap: true, refusing: true },
+      { cap: "connections", limit: 100, used: 100, atCap: true, refusing: true },
+      { cap: "storage", limit: 500_000_000, used: 600_000_000, atCap: true, refusing: true },
+      { cap: "commands", limit: 5_000_000, used: 5_000_000, atCap: true, refusing: true },
+    )
+    expect(notice(all)).toEqual(CapNotice.CommandCap({ period: "2026-10" }))
+    expect(notice(changing(...all.filter((cap) => cap.cap !== "commands")))).toEqual(
+      CapNotice.StorageCap({ usedBytes: 600_000_000, limitBytes: 500_000_000 }),
+    )
+    expect(
+      notice(
+        changing({ cap: "connections", limit: 5_000, used: 5_000, atCap: true, refusing: true }),
+      ),
+    ).toEqual(CapNotice.ConnectionCap({ open: 5_000, limit: 5_000 }))
+  })
+
+  it("reads an organization without a billing account as unbound, never as a reached cap", () => {
+    const unbound: ReadonlyArray<CapState> = clear.map((cap) => ({
+      cap: cap.cap,
+      limit: null,
+      used: cap.used,
+      atCap: false,
+      refusing: true,
+      reason: "unbound",
+    }))
+    expect(notice(unbound)).toEqual(CapNotice.Unbound())
+    expect(notice([...unbound.slice(1), ...clear.slice(0, 1)])).toEqual(CapNotice.Unbound())
+  })
+
+  it("does not quote a refusing cap that has no limit", () => {
+    expect(
+      notice(changing({ cap: "commands", limit: null, used: 9, atCap: false, refusing: true })),
+    ).toBe(undefined)
+  })
+})
+
+describe("spendLimitReached", () => {
+  const billing = (currentCents: number): Billing => ({
+    plan: {
+      id: "pro",
+      name: "Pro",
+      subscribed: "pro",
+      paymentStatus: "active",
+      basePriceCents: 2_500,
+      provisional: true,
+      renewsAt: null,
+      monthToDateCents: currentCents,
+    },
+    card: null,
+    billingEmail: null,
+    spendLimit: { limitCents: null, currentCents },
+    caps: [],
+  })
+
+  it("treats a limit the estimate has reached as refusing right away, and one above it as not", () => {
+    expect(spendLimitReached({ limitCents: 2_500, billing: billing(2_499) })).toBe(false)
+    expect(spendLimitReached({ limitCents: 2_500, billing: billing(2_500) })).toBe(true)
+    expect(spendLimitReached({ limitCents: 0, billing: billing(0) })).toBe(true)
   })
 })

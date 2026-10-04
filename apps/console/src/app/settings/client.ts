@@ -54,6 +54,7 @@ import {
   toMember,
   toOrganizationSummary,
   toPendingInvitations,
+  toPlans,
   toProjectSummary,
   toRegionChoices,
   toUsage,
@@ -93,8 +94,8 @@ const slicesFor = (route: AppRoute): ReadonlyArray<SettingsSection> => {
       SettingsIntegrations: of("integrations"),
       SettingsOrganization: of("organization", "project"),
       SettingsMembers: of("organization", "members", "invitations"),
-      SettingsBilling: of("billing", "invoices", "usage"),
-      SettingsUsage: of("billing", "usage"),
+      SettingsBilling: of("billing", "plans", "invoices", "usage"),
+      SettingsUsage: of("usage"),
       SettingsAudit: of("audit"),
     },
     of(),
@@ -313,8 +314,12 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<Loaded<SettingsPag
           const { organization: current } = yield* organization
           const billing = yield* api.billing.get({ params: { organizationId: current.id } })
           return { billing: toBilling(billing) }
-        }),
+        }).pipe(Effect.catchTag("Unavailable", billingUnavailable)),
         (fixtures) => fixtures.billingSlice,
+      ),
+      plans: slice(
+        api.billing.listPlans().pipe(Effect.map((catalog) => ({ plans: toPlans(catalog) }))),
+        (fixtures) => fixtures.plansSlice,
       ),
       invoices: slice(
         Effect.gen(function* () {
@@ -331,7 +336,7 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<Loaded<SettingsPag
           const { organization: current } = yield* organization
           const usage = yield* api.usage.get({ params: { organizationId: current.id }, query: {} })
           return { usage: toUsage(usage) }
-        }),
+        }).pipe(Effect.catchTag("Unavailable", billingUnavailable)),
         (fixtures) => fixtures.usageSlice,
       ),
       audit: slice(
@@ -363,6 +368,21 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<Loaded<SettingsPag
     )
     return { data: page, sample: forced || sampleSections.length > 0 }
   })
+
+/**
+ * Billing and usage answer `Unavailable` when the organization's plan is missing from the pricing
+ * configuration, an operator fault the edge refuses work for too. The error carries no reason
+ * beyond its message, so every `Unavailable` from these reads is worded the same calm way rather
+ * than as a lost connection.
+ */
+const billingUnavailable = () =>
+  Effect.fail(
+    ConsoleError.make({
+      kind: "Unavailable",
+      message:
+        "Billing can’t be read right now, so plan and usage figures aren’t shown. Try again in a minute.",
+    }),
+  )
 
 const sampleRegions = () =>
   import("./fixtures.ts").then(({ regionsSlice }) => regionsSlice.regions ?? [])
@@ -553,9 +573,23 @@ export const connectIntegration = (input: {
     }),
   ).pipe(Effect.map((connection) => ({ redirectUrl: connection.redirectUrl })))
 
+/**
+ * Saves the spend limit. The control plane can store it and still answer `Unavailable` when it
+ * cannot price the organization's plan, so that answer says the save is unconfirmed, not failed.
+ */
 export const setSpendLimit = (limitCents: number | null): Effect.Effect<void, ConsoleError> =>
   inOrganization((api, organizationId) =>
-    api.billing.setSpendLimit({ params: { organizationId }, payload: { limitCents } }),
+    api.billing.setSpendLimit({ params: { organizationId }, payload: { limitCents } }).pipe(
+      Effect.catchTag("Unavailable", () =>
+        Effect.fail(
+          ConsoleError.make({
+            kind: "Unavailable",
+            message:
+              "Billing couldn’t confirm the spend limit right now. Reload in a minute to see whether it was saved.",
+          }),
+        ),
+      ),
+    ),
   ).pipe(Effect.asVoid)
 
 /** A hosted billing page the console may open, or a calm refusal of one it does not recognise. */

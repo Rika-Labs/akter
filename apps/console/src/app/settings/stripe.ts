@@ -8,8 +8,9 @@ const stripeHosts: ReadonlyArray<string> = [
   "pay.stripe.com",
 ]
 
-/** The local API's Stripe stand-in serves its Checkout and portal sessions on these paths. */
-const standInPath = /^\/billing\/(?:checkout|portal)\/[A-Za-z0-9_]+$/u
+/** The local API's Stripe stand-in serves its Checkout and portal sessions and invoice PDFs on these paths. */
+const standInPath =
+  /^\/billing\/(?:(?:checkout|portal)\/[A-Za-z0-9_]+|invoices\/[A-Za-z0-9_]+\/pdf)$/u
 
 /**
  * Where hosted billing links are opened from: the console's origin, and whether the local API's
