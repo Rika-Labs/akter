@@ -893,3 +893,136 @@ test("shows not found for an unknown deployment id instead of another deployment
   await expect(page.getByRole("heading", { name: "Current release" })).toHaveCount(0)
   expect(lists).toEqual([])
 })
+
+/** An inspector as the API serves it: what the runner's inspector does not hold is null. */
+const unreportedInspector = (count: number) => ({
+  address: "Counter/hits",
+  state: { count },
+  turn: null,
+  tables: null,
+  receipts: [
+    { commandId: "cmd_first", command: "Increment", result: "Success", at: null, replayed: false },
+  ],
+  events: [{ name: "Incremented", cursor: "1", subscribers: null }],
+  jobs: [],
+  connections: { sockets: null, feedCursor: "1" },
+  properties: {
+    status: null,
+    type: "Counter",
+    generation: 1,
+    runner: null,
+    region: null,
+    tenant: "runtime_org",
+    mailboxDepth: null,
+  },
+  timeline: null,
+})
+
+test("shows a live inspector without the sample notice and its unreported fields as unknown", async ({
+  page,
+}) => {
+  const jobs: Array<string> = []
+  let sent = 0
+  await signIn(page)
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Counter/hits"))
+      return route.fulfill({ json: unreportedInspector(3 + sent) })
+    if (path.endsWith("/runtime/actors/Counter/hits/jobs")) jobs.push(path)
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      sent += 1
+      return route.fulfill({
+        json: { commandId: "cmd_next", result: { count: 4 }, replayed: false },
+      })
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Counter/hits`)
+  await expect(page.getByRole("heading", { name: "Counter/hits" })).toBeVisible()
+  await expect(page.getByText('"count": 3')).toBeVisible()
+  await expect(page.getByRole("note")).toHaveCount(0)
+  const properties = page.getByRole("complementary", { name: "Properties" })
+  for (const [term, value] of [
+    ["Status", "—"],
+    ["Generation", "1"],
+    ["Turn", "—"],
+    ["Runner", "—"],
+    ["Region", "—"],
+    ["Tenant", "runtime_org"],
+    ["Mailbox", "—"],
+    ["Sockets", "—"],
+  ] as const)
+    await expect(
+      properties.locator("div", { has: page.getByRole("term").getByText(term, { exact: true }) }),
+    ).toHaveText(`${term}${value}`)
+  await expect(page.getByText("Activity isn’t reported")).toBeVisible()
+  const inspectorTabs = page.getByRole("navigation", { name: "Inspector" })
+  await expect(page.getByRole("button", { name: "Send command", exact: true })).toBeEnabled()
+
+  await inspectorTabs.getByRole("link", { name: "Rows", exact: true }).click()
+  await expect(page.getByText("Owned rows aren’t reported")).toBeVisible()
+  await inspectorTabs.getByRole("link", { name: "Receipts", exact: true }).click()
+  await expect(page.getByRole("table", { name: "Receipts" }).getByRole("row").nth(1)).toHaveText(
+    "cmd_firstIncrementSuccess—",
+  )
+  await inspectorTabs.getByRole("link", { name: "Events", exact: true }).click()
+  await expect(page.getByRole("table", { name: "Events" }).getByRole("row").nth(1)).toHaveText(
+    "1Incremented—",
+  )
+  await inspectorTabs.getByRole("link", { name: "Jobs", exact: true }).click()
+  await expect(page.getByRole("table", { name: "Jobs" })).toContainText("No pending or dead jobs")
+  expect(jobs).toEqual([])
+
+  await inspectorTabs.getByRole("link", { name: "State", exact: true }).click()
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Increment")
+  await dialog.getByLabel("Payload", { exact: true }).fill("1")
+  await dialog.getByRole("button", { name: "Send command", exact: true }).click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  await expect(page.getByText('"count": 4')).toBeVisible()
+  expect(sent).toBe(1)
+})
+
+test("offers Send first command when inspection finds no actor, then inspects the actor it made", async ({
+  page,
+}) => {
+  const sent: Array<unknown> = []
+  await signIn(page)
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Counter/hits"))
+      return sent.length === 0
+        ? route.fulfill({
+            status: 404,
+            contentType: "application/json",
+            body: '{"_tag":"NotFound","resource":"actor","id":"Counter/hits"}',
+          })
+        : route.fulfill({ json: unreportedInspector(1) })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      sent.push(route.request().postDataJSON())
+      return route.fulfill({
+        json: { commandId: "cmd_first", result: { count: 1 }, replayed: false },
+      })
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Counter/hits`)
+  await expect(
+    page.getByRole("heading", { name: "Counter/hits hasn’t received a command yet" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Send first command" }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Increment")
+  await dialog.getByLabel("Payload", { exact: true }).fill("1")
+  await dialog.getByRole("button", { name: "Send command", exact: true }).click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  await expect(page.getByText('"count": 1')).toBeVisible()
+  await expect(page.getByRole("button", { name: "Send first command" })).toHaveCount(0)
+  await expect(page.getByRole("note")).toHaveCount(0)
+  expect(sent).toEqual([
+    expect.objectContaining({ address: "Counter/hits", command: "Increment", payload: 1 }),
+  ])
+})

@@ -29,6 +29,17 @@ export const toTypeActivity = (activity: ActorTypeActivity): TypeActivity => {
 export const cellText = (cell: OwnedTableRows["rows"][number][number]): string =>
   Predicate.isString(cell) ? cell : JSON.stringify(cell)
 
+const runnerCommandId =
+  /^v1\.\d+\.\d+\.([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+
+/**
+ * A receipt's command id as the Receipts table shows it. A runner-minted id
+ * (`v1.<ms>.<ms>.<uuid>`) is only told apart by its uuid, so it reads as the
+ * uuid's first 8 characters; any other id reads unchanged.
+ */
+export const shortCommandId = (commandId: string): string =>
+  runnerCommandId.exec(commandId)?.[1] ?? commandId
+
 const timelineTitles: Readonly<Record<ActorTimelineEntry["kind"], string>> = {
   command: "committed",
   event: "emitted",
@@ -57,9 +68,10 @@ export const toActorPage = (inspector: ActorInspector): ActorPage => {
     generation: properties.generation,
     turn: inspector.turn,
     runner: properties.runner ?? "—",
+    region: properties.region ?? "—",
     tenant: properties.tenant,
     mailbox: properties.mailboxDepth,
-    state: JSON.stringify(inspector.state, null, 2),
+    state: inspector.state === null ? null : JSON.stringify(inspector.state, null, 2),
     tables:
       inspector.tables?.map((table) => ({
         name: table.table,

@@ -84,6 +84,8 @@ The HTTP suite exercises actual Bun HTTP and Postgres: verification through stor
 
 The local deployment-stack E2E builds two example runner images, migrates isolated databases, starts actual Docker runners and a real edge process, then deploys, rolls forward, rolls back, sleeps and wakes through the public API. It inspects a live actor's state and generation, checks that commands reach the actor as the signed-in user and that a tenant credential cannot claim that user, reads a second actor type's overview, types, instances, receipts with their callers, events, timeline, jobs, dead letters, workflows and timers against the runner database's own rows while another organization is refused, and runs a second stack whose API builds every deployment itself, through a redeploy of a rollback. It requires Docker and a host Postgres port reachable by containers through `host.docker.internal`; it uses no provider credentials and removes only the exact containers and databases it creates.
 
+`test:stack` also runs the usage-cap E2E, which brings up `infra/local/compose.yaml` under its own Compose project and free ports, deploys the example runner through the API and drives each usage cap over HTTP. It generates its own edge key, and removes its Compose project with its volumes and built images, the containers started from its runner image, and that image.
+
 ```sh
 TEST_DATABASE_URL=postgres://project:project@127.0.0.1:55433/project \
   bun run --cwd apps/api test:stack

@@ -1,5 +1,5 @@
 import { CommandRefused, NotFound, Unavailable } from "@akter/cloud-api"
-import { Option, Predicate, Schema } from "effect"
+import { Predicate, Schema } from "effect"
 import { ConsoleError, consoleError } from "../api/client.ts"
 import { isQuotaKind } from "../quota/errors.ts"
 
@@ -12,8 +12,6 @@ const finalKinds: ReadonlyArray<string> = ["Conflict", "CommandExpired", "Runner
 
 /** Whether a send that failed with `kind` may be retried with the same command ID. */
 export const retryable = (kind: string): boolean => !finalKinds.includes(kind)
-
-const RefusalCode = Schema.Struct({ reason: Schema.Struct({ code: Schema.String }) })
 
 const sentence = (text: string): string => text.trim().replace(/\.$/, "")
 
@@ -47,10 +45,7 @@ export const sendFailure =
         "The runner hit an internal error while running this command. It wasn’t retried and can’t be resent with this command ID. Check the actor first; to send it again as a new command, clear the Command ID.",
       )
     if (Schema.is(CommandRefused)(cause)) {
-      const code = Option.match(Schema.decodeUnknownOption(RefusalCode)(cause.reason), {
-        onNone: () => "",
-        onSome: ({ reason }) => `: ${reason.code}`,
-      })
+      const code = "code" in cause.reason ? `: ${cause.reason.code}` : ""
       return ConsoleError.make({
         kind: "CommandRefused",
         message: `${sent.address} refused ${sent.command} before running it (${cause.reasonTag}${code}), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.`,

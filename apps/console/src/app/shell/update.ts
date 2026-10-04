@@ -820,7 +820,12 @@ const step = (model: Model, message: Message): Result =>
       commands: [
         HideDialog({ id: dialogId }),
         ...(Option.isSome(model.commandAnswer) &&
-        Option.exists(model.page, (page) => Predicate.isTagged(page, "MissingActorPage"))
+        Option.exists(
+          model.page,
+          (page) =>
+            Predicate.isTagged(page, "MissingActorPage") ||
+            (Predicate.isTagged(page, "ActorPage") && !model.pageSample),
+        )
           ? [LoadPage({ route: model.route })]
           : []),
       ],

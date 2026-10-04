@@ -39,6 +39,22 @@ export const replicaLayer = (options: PgClient.PgPoolConfig | undefined) =>
   ).pipe(Layer.provide(Reactivity.layer))
 
 /**
+ * The primary's pool for queries, apart from the off-turn pool. Command
+ * admission and the receipt replay it serves then never queue behind a burst
+ * of readers, nor readers behind admission. Queries of types with owned
+ * tables or blobs stay on the off-turn pool, because the owned-rows binding
+ * is built on that client.
+ */
+export const QueryPool = Context.Reference<SqlClient.SqlClient | undefined>(
+  "@rikalabs/akter/runtime/database/replica/QueryPool",
+  { defaultValue: () => undefined },
+)
+
+/** Provides `QueryPool` as a bounded, first-come, first-served pool for `options`. */
+export const queryPoolLayer = (options: PgClient.PgPoolConfig) =>
+  Layer.effect(QueryPool, boundedPool(options)).pipe(Layer.provide(Reactivity.layer))
+
+/**
  * Whether the replica has replayed WAL through `version`. A server not in
  * recovery reports no replay position, so it never counts as caught up.
  *

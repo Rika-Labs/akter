@@ -2,6 +2,7 @@ import { PgPool, type PgConnection } from "@effect/sql-pg"
 import { Context, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import type { Scope } from "effect"
 import type { SqlError } from "effect/sql"
+import { fairGate } from "../database/gate.ts"
 import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
 import { admissionLimit } from "../admission.ts"
 import { POOL_WAITERS, poolRefusal } from "../database/bounded.ts"
@@ -35,7 +36,11 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
 /**
  * The turn pool: `maxConnections` sessions, each handed to one turn at a
  * time. A concurrency of one keeps the lease exclusive while the session
- * stays unpinned.
+ * stays unpinned. A lease first takes a bounded admission slot, refused at
+ * once past `maxConnections` plus the waiter allowance, then waits for a
+ * session first come, first served, so a turn never waits behind turns that
+ * asked after it. Both slots stay with the lease's scope and return with the
+ * session.
  *
  * On Neki, each session first runs the Neki session settings.
  */
@@ -46,18 +51,18 @@ export const turnConnections = (options: PgPool.Config) =>
       const settings = yield* TurnPoolSettings
       const neki = yield* NekiTurnSessions
 
+      const config = { ...options, ...settings }
+
       const pool = yield* PgPool.make({
-        ...options,
-        ...settings,
+        ...config,
         multiplex: true,
         multiplexConcurrency: 1,
       })
 
-      const acquire = neki ? nekiLease(pool) : pool.get
-      const admission = admissionLimit({
-        limit: (settings.maxConnections ?? options.maxConnections ?? 10) + POOL_WAITERS,
-        wait: Duration.zero,
-      })
+      const slots = config.maxConnections ?? 10
+      const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
+      const gate = fairGate(slots)
+      const acquire = Effect.andThen(gate.take, neki ? nekiLease(pool) : pool.get)
       let leased = 0
       let waiting = 0
 

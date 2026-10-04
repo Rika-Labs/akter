@@ -1,4 +1,15 @@
-import { Pricing } from "@akter/billing"
+import {
+  COMMAND_UNITS,
+  commandLimitUnits,
+  Pricing,
+  projectedSpendCents,
+  READ_UNITS,
+  refusesConnection,
+  refusesSpend,
+  refusesStorage,
+  refusesUnits,
+  storageLimitBytes,
+} from "@akter/billing"
 import {
   ConnectionLimitExceeded,
   QuotaExceeded,
@@ -16,11 +27,7 @@ import { Clock, Crypto, Deferred, Duration, Effect, Fiber, Match, Schedule, Sche
 import { SqlClient, type SqlError } from "effect/sql"
 import type { EdgeOptions } from "./config.ts"
 
-/** Usage units one command weighs; a read weighs one. */
-export const COMMAND_UNITS = 5
-
-/** Usage units one read weighs. */
-export const READ_UNITS = 1
+export { COMMAND_UNITS, READ_UNITS } from "@akter/billing"
 
 /** No organization, billing account, or known plan is bound to the request's deployment and tenant. */
 export class QuotaUnbound extends Schema.TaggedError<QuotaUnbound>()("QuotaUnbound", {
@@ -538,15 +545,19 @@ export const quotas = Effect.fnUntraced(function* (
           return reservation(existing.period, true)
         }
 
-        if (input.kind === "command" && bound.tier.id === "free") {
-          const limitBytes = bound.tier.includedStorageGb * 1_000_000_000
+        const limitBytes = storageLimitBytes(bound.tier)
+
+        if (input.kind === "command" && limitBytes !== null) {
           const [sample] = yield* sql<{ readonly logicalBytes: number }>`
             SELECT logical_bytes AS "logicalBytes" FROM cloud_meter_storage_sample
             WHERE deployment_id = ${input.deployment} AND tenant = ${input.tenant}
             FOR SHARE
           `
 
-          if (sample !== undefined && sample.logicalBytes >= limitBytes)
+          if (
+            sample !== undefined &&
+            refusesStorage({ tier: bound.tier, sampledBytes: sample.logicalBytes })
+          )
             return yield* StorageQuotaExceeded.make({
               organizationId: bound.organizationId,
               deployment: input.deployment,
@@ -557,41 +568,43 @@ export const quotas = Effect.fnUntraced(function* (
         }
 
         const used = account.commandUnits + account.reservedUnits
-        const projected = used + units
-        const quota = bound.tier.commandQuota
+        const limitUnits = commandLimitUnits(bound.tier)
 
-        if (quota !== null && projected > quota * COMMAND_UNITS)
+        if (
+          limitUnits !== null &&
+          refusesUnits({ tier: bound.tier, usedUnits: used, requestedUnits: units })
+        )
           return yield* QuotaExceeded.make({
             organizationId: bound.organizationId,
             period: account.period,
-            limitUnits: quota * COMMAND_UNITS,
+            limitUnits,
             usedUnits: used,
             requestedUnits: units,
             retryAfterMs: Math.ceil(account.resetMs),
           })
 
         if (bound.spendLimitCents !== null) {
-          const estimate = yield* pricing
-            .estimate(bound.subscribedPlan, {
-              commands: projected / COMMAND_UNITS,
-              storageGbMonths: account.storageGbMonths,
-            })
-            .pipe(
-              Effect.mapError(() =>
-                QuotaUnbound.make({
-                  deployment: input.deployment,
-                  tenant: input.tenant,
-                  reason: "plan",
-                }),
-              ),
-            )
+          const projectedCents = yield* projectedSpendCents({
+            subscribedPlan: bound.subscribedPlan,
+            units: used + units,
+            storageGbMonths: account.storageGbMonths,
+          }).pipe(
+            Effect.provideService(Pricing, pricing),
+            Effect.mapError(() =>
+              QuotaUnbound.make({
+                deployment: input.deployment,
+                tenant: input.tenant,
+                reason: "plan",
+              }),
+            ),
+          )
 
-          if (estimate.totalCents > bound.spendLimitCents)
+          if (refusesSpend({ limitCents: bound.spendLimitCents, projectedCents }))
             return yield* SpendLimitExceeded.make({
               organizationId: bound.organizationId,
               period: account.period,
               limitCents: bound.spendLimitCents,
-              projectedCents: estimate.totalCents,
+              projectedCents,
             })
         }
 
@@ -718,7 +731,7 @@ export const quotas = Effect.fnUntraced(function* (
 
             const open = live?.open ?? 0
 
-            if (open >= bound.tier.concurrentConnections)
+            if (refusesConnection({ tier: bound.tier, open }))
               return yield* ConnectionLimitExceeded.make({
                 organizationId: bound.organizationId,
                 kind: input.kind,

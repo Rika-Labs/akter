@@ -11,6 +11,7 @@
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/cloud-api/src"
   },
   "dependencies": {
+    "@rikalabs/akter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

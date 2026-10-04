@@ -24,7 +24,8 @@ const headers = Effect.map(
   (request) => new Headers(request.headers),
 )
 
-const notFound = (resource: string, id: string) => Cloud.NotFound.make({ resource, id })
+const notFound = (resource: Cloud.NotFoundResource, id: string) =>
+  Cloud.NotFound.make({ resource, id })
 
 const control = Effect.gen(function* () {
   const services = yield* AccountServices

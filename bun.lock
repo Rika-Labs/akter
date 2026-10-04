@@ -208,6 +208,7 @@
     "packages/cloud-api": {
       "name": "@akter/cloud-api",
       "dependencies": {
+        "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {

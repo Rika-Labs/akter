@@ -46,7 +46,7 @@ import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { NekiTurnSessions } from "./database/neki/session.ts"
-import { ReadReplica, replicaLayer } from "./database/replica.ts"
+import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
@@ -1498,21 +1498,26 @@ export const layer = (options: Options = {}) => {
 /** Database layers for `Actors.layer`: `postgres` for real deployments, `pglite` for embedded and test use. */
 export const Database = {
   /**
-   * A runner holds two pools. Turns lease sessions from the turn pool,
-   * `maxConnections` (default 50): a command holds one session for its whole
-   * turn, so a pool smaller than the commands in flight queues callers behind
-   * it. Queries, the relay, migrations, and cluster storage use the off-turn
-   * pool, `offTurnConnections` (default 10), unless `coordination` moves
-   * Cluster storage and deployment locks to an independent unsharded primary.
-   * All runners must designate the same authority. Pools open connections only as
-   * load needs them. Keep the sum of both across runners below the server's
+   * A runner holds three primary pools, plus optional replica and coordination
+   * pools. Turns lease sessions from the turn pool, `maxConnections` (default
+   * 50): a command holds one session until its transaction ends, so a pool
+   * smaller than the commands in flight queues callers behind
+   * it. Queries read from the query pool, `queryConnections` (default 10),
+   * except those of types with owned tables or blobs. Command admission,
+   * receipt replays, the relay, migrations, and cluster storage use the
+   * off-turn pool, `offTurnConnections` (default 10), unless `coordination`
+   * moves Cluster storage and deployment locks to an independent unsharded
+   * primary. All runners must designate the same authority. Every pool opens
+   * connections only as load needs them, refuses checkouts past its
+   * connections plus a bounded waiter allowance, and hands its connections out
+   * first come, first served. Keep the sum across runners below the server's
    * `max_connections`.
    *
    * `replica` is this runner's nearest streaming replica of the same primary.
    * Queries read there once it has replayed the commit version their caller
    * last saw, and read the primary when it is behind or fails. Its pool
    * (`maxConnections` default 10) opens connections only as queries need them.
-   * All three pools request server TCP keepalives at 5 seconds idle, 2 seconds
+   * Every pool requests server TCP keepalives at 5 seconds idle, 2 seconds
    * between probes, and 3 probes. `startupParameters` overrides these defaults
    * independently on the primary and replica configurations.
    *
@@ -1522,6 +1527,7 @@ export const Database = {
   postgres: (
     options: Omit<PgClient.PgPoolConfig, "types"> & {
       readonly offTurnConnections?: number
+      readonly queryConnections?: number
       readonly neki?: boolean
       readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
       /** An unsharded primary shared by every runner; owns coordination rows and Cluster and fleet locks. */
@@ -1539,12 +1545,14 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, replica, neki, coordination, ...configured } = options
+    const { offTurnConnections, queryConnections, replica, neki, coordination, ...configured } =
+      options
     const pool = withKeepalives(configured)
 
     const database = Layer.mergeAll(
       boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+      queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
       coordinationLayer(
         coordination === undefined ? undefined : { ...withKeepalives(coordination), types },

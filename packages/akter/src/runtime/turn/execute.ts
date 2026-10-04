@@ -1,4 +1,5 @@
-import { Cause, Clock, Crypto, Effect, Exit, Option, Result, Schema } from "effect"
+import { Cause, Clock, Crypto, Effect, Exit, Option, Result, Schema, Scope } from "effect"
+import type { PgConnection } from "@effect/sql-pg"
 import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, CommandExpired, NotCreated, Unauthorized } from "../../errors/actor.ts"
 import {
@@ -1151,30 +1152,57 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   }
 
   /**
-   * Postgres: one leased session for the whole run. A batch is opened by
+   * Postgres: a leased session per chain of batches. A batch is opened by
    * queuing `BEGIN` and its admission group; `transact` waits for those
    * replies, runs the handlers, takes the batch already waiting and, when this
    * one leaves the cache warm, queues that batch's `BEGIN` and admission right
    * behind this `COMMIT` in the same flight. The commit tag and version are read
    * in that flight too.
+   *
+   * A batch that chains nothing ends with every reply in and no transaction
+   * open, so the session goes back to the pool before its callers are
+   * answered; publishing never holds a session another turn waits for. A batch
+   * that arrives later leases a session again.
    */
   const pipelined = (turns: TurnConnections["Service"]) =>
     Effect.scoped(
       Effect.gen(function* () {
         const scope = yield* Effect.scope
-        const leasing = yield* Clock.currentTimeMillis
-        const connection = yield* turns.lease.pipe(
-          Effect.tapError((error) =>
-            Effect.sync(() => {
-              poolRefused = isPoolRefusal(error)
-            }),
-          ),
-        )
-        yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
+        let lease:
+          | { readonly connection: PgConnection.PgConnection; readonly scope: Scope.Closeable }
+          | undefined
+
+        const leased = Effect.suspend(() => {
+          if (lease !== undefined) return Effect.void
+
+          return Effect.gen(function* () {
+            const held = yield* Scope.fork(scope)
+            const leasing = yield* Clock.currentTimeMillis
+            const connection = yield* Scope.provide(turns.lease, held).pipe(
+              Effect.tapError((error) =>
+                Effect.sync(() => {
+                  poolRefused = isPoolRefusal(error)
+                }),
+              ),
+              Effect.onError((cause) => Scope.close(held, Exit.failCause(cause))),
+            )
+            yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
+            lease = { connection, scope: held }
+          })
+        })
+
+        const release = Effect.suspend(() => {
+          const held = lease
+          lease = undefined
+
+          return held === undefined ? Effect.void : Scope.close(held.scope, Exit.void)
+        })
+
+        const session = () => lease!.connection
         let open = false
         const deferred: Array<string> = []
 
-        const control = (text: string) => connection.query(text, [], true)
+        const control = (text: string) => session().query(text, [], true)
 
         const flush = () => deferred.splice(0).map((text) => Effect.asVoid(control(text)))
 
@@ -1192,7 +1220,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             ]).pipe(Effect.map(() => reply!.value))
           })
 
-        const session: Session = {
+        const pipeline: Session = {
           send: sendPipelined,
           control: (text) => Effect.asVoid(control(text)),
           defer: (text) =>
@@ -1209,10 +1237,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         })
 
         const inTurn = <A, E, R2>(effect: Effect.Effect<A, E, R2>) =>
-          Effect.provideService(effect, sql.transactionService, [
-            asSqlConnection({ connection, send }),
-            0,
-          ])
+          Effect.suspend(() =>
+            Effect.provideService(effect, sql.transactionService, [
+              asSqlConnection({ connection: session(), send }),
+              0,
+            ]),
+          )
 
         interface Admitting {
           readonly admission: ReturnType<typeof admit>
@@ -1221,7 +1251,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const queue = (batch: ReadonlyArray<W>, view: View, ahead: ReadonlyArray<Statement>) =>
           Effect.flatMap(canonicalsOf(batch), (canonicals) => {
-            const admission = admit(batch, canonicals, view, session, [begin])
+            const admission = admit(batch, canonicals, view, pipeline, [begin])
 
             return Effect.map(
               queueStatements({ scope, group: [...ahead, ...admission.group] }),
@@ -1260,7 +1290,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
               if (!chained) open = false
             }),
-            Effect.map(connection.query(COMMIT_VERSION, [], true), (result) => {
+            Effect.map(session().query(COMMIT_VERSION, [], true), (result) => {
               const ended = result.rows[0] as { version: string; now: string }
               version = ended.version
               endedAtMs = Number(ended.now)
@@ -1312,18 +1342,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               (stepped) => stepped.ending !== "COMMIT" || stepped.tag === "COMMIT",
               () => Effect.die(RetryTurn.make({ message: "Turn commit rolled back" })),
             ),
+            Effect.tap((stepped) => (stepped.chained === undefined ? release : Effect.void)),
           )
 
         return yield* drive(
           (batch) =>
-            queue(batch, view(), []).pipe(
-              inTurn,
+            leased.pipe(
+              Effect.andThen(queue(batch, view(), []).pipe(inTurn)),
               Effect.map(({ admission, flight }): Admitting => ({ admission, admitted: flight })),
             ),
           transact,
         ).pipe(
           Effect.onExit((exit) => {
             if (Exit.isSuccess(exit) || !open) return Effect.void
+
+            const connection = session()
 
             if (Cause.hasInterrupts(exit.cause))
               return sql`SELECT pg_cancel_backend(${connection.processId})`.pipe(

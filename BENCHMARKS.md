@@ -1,5 +1,57 @@
 # Akter benchmarks
 
+## Main after the performance fixes (#529, 2026-10-04)
+
+This before/after run measures where `main` stands with all four performance fixes merged: #552 (per-command CPU, #491), #561 (two database flights, #493), #551 (admission control and load shedding, #494) and #575 (first-come, first-served pools, #492). The baseline is `8c40961f0`, the snapshot used as #493's baseline, which already includes #552. The candidate is `origin/main` `b8aa892d7`. Both sides ran with default runtime, admission and pool settings.
+
+The method and topology are those of the #493 section above. All six sides ran serially on one Linux x86-64 Daytona sandbox (AMD EPYC 9354P host) with a verified outer limit of four CPUs (`400000 100000`) and 4 GiB RAM. App and Postgres shared one Docker container capped at three CPUs, pinned to logical CPUs 0–2, with a 3 GiB memory limit. The driver used a separate container capped at one CPU, pinned to logical CPU 3, with 512 MiB RAM. Traffic used loopback HTTP on the Docker host network, not Daytona's HTTPS preview. These affinity sets keep our driver off our app/DB CPUs; they do not establish exclusive physical-host cores. Versions were Bun 1.4.2, Effect 4.0.0 and Postgres 18.6-bookworm; `synchronous_commit` stayed on, `pg_stat_statements` and logical WAL were enabled, and PGDATA used the Docker writable layer, not tmpfs.
+
+The order was before/after, after/before, before/after. Every side got a fresh container and database cluster, and each cohort got its own fresh database and server process. Sequential served commands used one caller/key with a 3-second warm-up and 20-second measurement. The 64-caller and 256-caller cohorts used closed-loop callers over 10,000 random keys, with all 10,000 setup writes acknowledged before a 3-second warm-up and 20-second measurement. The #493 wire-counting phase was not repeated.
+
+The 256-caller overload cohort is new. A `503 ActorUnavailable` refusal is counted separately from errors, and the refused caller waits the `retryAfter` the server returns (250 ms nominal, ±50% jitter) before sending a new command, as a served client would. The refused share is refusals divided by all measured attempts. Admitted latency covers only the attempt that succeeded, from send to reply; it excludes earlier refusals and retry waits of the same caller. While refused callers wait, fewer than 256 commands are offered at once, about 100 on average in these runs.
+
+Cells are the median of the three cohort statistics, with minimum–maximum in brackets; percentiles are not pooled.
+
+| Measurement                                | Before `8c40961f0`              | After `b8aa892d7`         |
+| ------------------------------------------ | ------------------------------- | ------------------------- |
+| Sequential served commands op/s            | 425.1 [356.5–511.6]             | 653.2 [428.3–685.9]       |
+| Sequential p50 ms                          | 2.066 [1.615–2.117]             | 1.273 [1.260–2.092]       |
+| Sequential p99 ms                          | 5.746 [5.425–19.713]            | 4.902 [4.441–6.208]       |
+| Sequential max ms                          | 91.503 [90.845–129.472]         | 90.525 [25.295–163.163]   |
+| 64 callers / 10,000 keys op/s              | 509.2 [490.5–617.4]             | 1,028.8 [1,028.6–1,055.5] |
+| 64 callers / 10,000 keys p50 ms            | 117.193 [90.255–122.618]        | 59.097 [57.656–59.426]    |
+| 64 callers / 10,000 keys p99 ms            | 333.235 [316.093–335.377]       | 130.931 [129.517–133.492] |
+| 64 callers / 10,000 keys max ms            | 567.765 [525.394–601.324]       | 218.178 [195.834–259.563] |
+| 256 callers / 10,000 keys admitted op/s    | 956.0 [931.1–998.1]             | 932.8 [924.4–976.5]       |
+| 256 callers / 10,000 keys admitted p50 ms  | 212.287 [203.546–222.157]       | 84.116 [81.885–87.250]    |
+| 256 callers / 10,000 keys admitted p99 ms  | 902.608 [878.130–963.677]       | 160.898 [154.594–170.175] |
+| 256 callers / 10,000 keys admitted max ms  | 1,985.418 [1,852.753–2,056.583] | 241.200 [240.021–251.570] |
+| 256 callers / 10,000 keys refused attempts | 0.0% [0.0–0.0]                  | 39.6% [38.5–40.0]         |
+| 256 callers / 10,000 keys refusals/s       | 0.0 [0.0–0.0]                   | 612.0 [607.0–622.0]       |
+
+The latency cohorts had zero measured errors and no refusals: 25,866 before and 35,349 after sequential commands, and 32,461 before and 62,388 after 64-caller commands, all acknowledged. Every 64- and 256-caller setup acknowledged all 10,000 writes with zero errors. In the overload cohort, the before side had no errors and no refusals. Every after-side non-success was an explicit `503 ActorUnavailable`, 37,490 in total, with no other errors.
+
+With 64 callers over 10,000 keys, `main` served 2.0× the baseline's throughput, and p50 and p99 fell 50% and 61%. With 256 callers, admitted throughput was about the same (933 against 956 op/s, with overlapping ranges). The baseline queued every command instead, so its admitted p99 was 903 ms and its maximum about 2 s. `main` refused about 40% of attempts and kept admitted p99 at or below 170 ms and the maximum at or below 252 ms in every repeat. Refusals returned with a p99 of at most 73 ms. The sequential medians improved 54% in throughput and 38% in p50, but both sides had a slow sequential repeat (before r1 and after r3), so the sequential cohort is the noisiest result here and does not establish a production latency guarantee.
+
+### Where the time goes on `main`
+
+A host-side sampler read the app container's cgroup CPU and the Bun server's `utime+stime` every 0.5 s, and `pg_stat_activity` states and wait events twice a second. Postgres CPU below is the container total minus the Bun process, so it also includes the sampler's own `psql` session. The driver used at most 18.5% of its CPU in any cohort, so it was not the limit.
+
+| Cohort (median [range])   | Version | App CPU ms/command  | Postgres CPU ms/command | App cores        | Postgres cores   |
+| ------------------------- | ------- | ------------------- | ----------------------- | ---------------- | ---------------- |
+| 64 callers / 10,000 keys  | Before  | 1.346 [1.343–1.381] | 4.074 [3.105–4.181]     | 0.69 [0.68–0.83] | 2.05 [1.92–2.07] |
+| 64 callers / 10,000 keys  | After   | 1.128 [1.104–1.175] | 0.445 [0.442–0.474]     | 1.19 [1.14–1.21] | 0.47 [0.45–0.49] |
+| 256 callers / 10,000 keys | Before  | 1.229 [1.158–1.250] | 0.517 [0.489–0.519]     | 1.16 [1.16–1.18] | 0.49 [0.46–0.52] |
+| 256 callers / 10,000 keys | After   | 1.246 [1.240–1.337] | 0.470 [0.464–0.504]     | 1.22 [1.16–1.24] | 0.44 [0.43–0.49] |
+
+On `main`, the app spends about 2.5× as much CPU per command as Postgres. The container used about 1.7 of its three CPUs while throughput stayed near 930–1,050 commands/s at both 64 and 256 callers. This is consistent with a single Bun main thread near saturation: the #491 section measured about 1 ms of main-thread CPU per command. This run did not sample main-thread CPU separately. On the baseline at 64 callers, one receipt-resolution statement averaged 3.3–4.3 ms and took 94–95% of Postgres execution time in every repeat. That statement shape is gone on `main` after #561, which is consistent with most of that cohort's Postgres CPU difference.
+
+On `main` with 64 callers, three per-command statements took about 75% of Postgres execution time, each averaging about 0.05 ms: the receipt `INSERT`, the state upsert, and the fenced generation lock. Together they write about 7 WAL records per command, and with `synchronous_commit` on each turn's commit waits for its own WAL flush. 15.5% of client-backend samples were `idle in transaction` waiting on the app (19.2% with 256 callers). `LWLock:WALWrite` was 2.1% and `IO:WalSync` 0.3%. State reads (`SELECT key, value FROM actor_state`) ran once per activation (10,000 times), not per command.
+
+These attributions come from sampled process CPU, cumulative `pg_stat_statements`, which includes the setup writes, and 0.5-second wait-event snapshots. They are diagnostics, not profiles. This is a single-node comparison of these snapshots and limits, not a production SLO or a Neki claim.
+
+The harness, source bundles, cohort JSON, samplers, statement dumps and logs are outside the repository at `~/.capy/work/akter-perf/main-after-perf/`; final results are in `results/daytona`. Three earlier attempts stopped during sandbox setup or at the first statistics dump, because of a connection reset, a missing shell and a SQL cast error. They produced no included measurements. All four sandboxes created for this task were deleted, and a final lookup found none of them and no sandbox with this task's label.
+
 ## Issue #493: served commands in two database flights (2026-10-03)
 
 This before/after run isolates [ADR 0072](docs/decisions/0072-served-command-in-two-round-trips.md): receipt resolution moves into fenced admission, and the expiry recheck uses a fresh clock read after the transaction ends in the commit flight. The baseline is merged `origin/main` `8c40961f0`; the candidate is the `fix/493-two-round-trips` worktree based on it. Both sides include #552's per-command CPU cuts and generator reuse. No load-shedding or fair-pool branch was included.
