@@ -101,13 +101,21 @@ const panel = (
 ): Html =>
   Match.value(tab).pipe(
     Match.when("state", () =>
-      codeBlock(h, {
-        title:
-          page.turn === null ? "Committed state" : `Committed state · turn ${String(page.turn)}`,
-        code: page.state,
-        language: "json",
-        onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
-      }),
+      page.state === null
+        ? emptyState(h, {
+            title: "Committed state isn’t readable",
+            description: "An entry of this actor’s state doesn’t decode, so none of it is shown.",
+            align: "start",
+          })
+        : codeBlock(h, {
+            title:
+              page.turn === null
+                ? "Committed state"
+                : `Committed state · turn ${String(page.turn)}`,
+            code: page.state,
+            language: "json",
+            onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
+          }),
     ),
     Match.when("rows", () =>
       page.tables === null
@@ -152,6 +160,7 @@ const panel = (
     Match.when("receipts", () =>
       dataTable(h, {
         label: "Receipts",
+        empty: "No receipts held",
         columns: [
           { key: "id", label: "Command id", width: "7rem", mono: true },
           { key: "command", label: "Command", width: "minmax(0, 1fr)", mono: true },
@@ -168,6 +177,7 @@ const panel = (
     Match.when("events", () =>
       dataTable(h, {
         label: "Events",
+        empty: "No events emitted",
         columns: [
           { key: "cursor", label: "Cursor", width: "6rem", mono: true },
           { key: "name", label: "Event", width: "minmax(0, 1fr)", mono: true },
@@ -182,6 +192,7 @@ const panel = (
     Match.when("jobs", () =>
       dataTable(h, {
         label: "Jobs",
+        empty: "No pending or dead jobs",
         columns: [
           { key: "id", label: "Job", width: "6rem", mono: true },
           { key: "name", label: "Type", width: "minmax(0, 1fr)", mono: true },
@@ -316,6 +327,7 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
                 { label: "Generation", value: String(page.generation) },
                 { label: "Turn", value: known(page.turn) },
                 { label: "Runner", value: page.runner, mono: true },
+                { label: "Region", value: page.region },
                 { label: "Tenant", value: page.tenant },
                 { label: "Mailbox", value: known(page.mailbox) },
                 { label: "Sockets", value: known(page.connections.sockets) },

@@ -57,9 +57,10 @@ export const toActorPage = (inspector: ActorInspector): ActorPage => {
     generation: properties.generation,
     turn: inspector.turn,
     runner: properties.runner ?? "—",
+    region: properties.region ?? "—",
     tenant: properties.tenant,
     mailbox: properties.mailboxDepth,
-    state: JSON.stringify(inspector.state, null, 2),
+    state: inspector.state === null ? null : JSON.stringify(inspector.state, null, 2),
     tables:
       inspector.tables?.map((table) => ({
         name: table.table,

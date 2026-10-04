@@ -67,9 +67,9 @@ describe("actor inspector mapping", () => {
           mailbox: 5,
           connections: { sockets: 3, feedCursor: null },
         })
-        expect(yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(page.state)).toEqual(
-          inspector.state,
-        )
+        expect(
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(page.state ?? ""),
+        ).toEqual(inspector.state)
         expect(page.events).toEqual([{ name: "OrderPlaced", cursor: "1184", subscribers: 3 }])
         expect(page.jobs).toEqual([
           { name: "Charge", id: "job_44f", attempts: 2, status: "retrying" },
@@ -135,6 +135,8 @@ describe("actor inspector mapping", () => {
         expect(page).toMatchObject({
           awake: null,
           turn: null,
+          runner: "—",
+          region: "—",
           mailbox: null,
           tables: null,
           activity: null,
@@ -142,6 +144,15 @@ describe("actor inspector mapping", () => {
           events: [{ name: "OrderPlaced", cursor: "1184", subscribers: null }],
           receipts: [{ commandId: "cmd_7Hq2", command: "Place", result: "—", at: "—" }],
         })
+      }),
+    ))
+
+  it("keeps a state with an undecodable entry unreadable rather than writing it as null", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const page = toActorPage(yield* decode(ActorInspector, { ...inspector, state: null }))
+        expect(page.state).toBeNull()
+        expect(toActorPage(yield* decode(ActorInspector, inspector)).region).toBe("us-east-1")
       }),
     ))
 })
