@@ -47,19 +47,31 @@ closes the stream; reconnect refreshes the snapshot before opening another strea
 is unavailable or interrupted leaves the snapshot visible with an inline explanation. Sample
 pages never start a stream or simulate new turns.
 
-The inspector's Send command dialog accepts JSON and an optional command ID, shows the actor's
-result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
-fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
-response reuse the same receipt key. The dialog captures the actor's project and environment
-and closes on every URL change; navigation can never retarget an old actor address. When the
-runtime cannot inspect actors yet, the inspector still reads the actor's live job list; an actor
-that has one keeps the Jobs tab and Send command live while the rest of the page is sample data.
+The inspector's Send command dialog accepts JSON and an optional command ID (the contract's
+`commandId`, the client idempotency key), shows the actor's result or typed `CommandFailed`
+payload, and notes a replayed receipt quietly. Each submission gets one key: a blank field is
+filled with a fresh ID when it is sent, sending the same command and payload again reuses it (so a
+retry after a lost response or a `503 Unavailable` runs at most once and answers `replayed`), and
+changing the command or payload discards a generated ID so the next send mints a new one. An ID the
+operator typed is kept. Each refusal has its own wording: `409` (the key is bound to other input),
+`410 CommandExpired` (the key's retry window closed), `CommandRefused` with the runner's reason,
+`503 Unavailable` (send again with the same key) and `502 RunnerDefect`. After a `409`, `410` or
+`RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
+input makes a new one. The dialog captures the actor's project and environment and closes on every
+URL change; navigation can never retarget an old actor address. When the runtime cannot inspect
+actors yet, the inspector still reads the actor's live job list; an actor that has one keeps the
+Jobs tab and Send command live while the rest of the page is sample data. An address the runtime
+reports as no actor at all has never received a command, so the inspector offers Send first
+command for it; any other missing resource or failure renders as usual.
 
 Deployment detail offers earlier successful deployments in the same environment as rollback
 targets and displays `rolledBackFrom` on the newly created deployment. Redeploy starts a new
-deployment of the viewed commit, which is built again. Both ask for confirmation, open the new
-deployment on success and show the API's refusal otherwise. Rollbacks and redeploys reuse earlier
-commits, so the console links deployments by id; a commit in the URL opens its newest deployment.
+deployment of the viewed commit, which is built again. Both ask for confirmation, stay disabled
+while either is in flight, and show the API's refusal otherwise. On success they open the new
+deployment, titled as the API names it (`Rollback to <short sha>: <message>`), only if its page is
+still open; after navigating away the console just reports it. Rollbacks and redeploys reuse earlier
+commits, so the console (overview included) links deployments by id. A deployment URL is read as an
+id first; an unknown id is not found, and only a commit-shaped reference opens its newest deployment.
 Runner actor counts and CPU the runtime does not measure show `—`, never `0`.
 
 Billing and Usage read the control plane's Stripe-backed records. Prices, allowances and the read
@@ -75,8 +87,9 @@ they are. When Free's commands are used up, or the month's estimate is past the 
 and Overview show one quiet notice linking to Billing; storage has no such notice because usage
 reports a monthly average rather than the latest sample the cap is checked against. Plan refusals
 (`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`, `StorageQuotaExceeded`) are
-recognised by the framework's tags and payloads and explained in place with a link to Billing; the
-cloud API does not yet declare them on `sendCommand`, so today they arrive as an unavailable error.
+recognised by the framework's tags and payloads and explained in place with a link to Billing. On
+`sendCommand` they arrive as a `CommandRefused` whose `reason` is the edge's `ActorError` envelope;
+the cloud API types that reason only as JSON, so the console reads the refusal inside it by shape.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when
