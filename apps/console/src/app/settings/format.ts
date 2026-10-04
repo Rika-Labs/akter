@@ -65,3 +65,9 @@ export const formatExpiry = (expiry: { readonly month: number; readonly year: nu
 /** `owner` → `Owner`. */
 export const titleCase = (value: string): string =>
   `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`
+
+const gigabytes = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 })
+
+/** Decimal gigabytes to two places at most: `0.5 GB`, `12.25 GB`; a trace above zero reads `<0.01 GB`. */
+export const formatGigabytes = (value: number): string =>
+  value > 0 && value < 0.01 ? "<0.01 GB" : `${gigabytes.format(value)} GB`

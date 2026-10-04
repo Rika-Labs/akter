@@ -12,6 +12,7 @@ import {
 } from "@akter/ui"
 import { barChart, meter } from "@akter/ui/charts"
 import { formatCompact, formatCurrency, formatInteger } from "@akter/ui/geometry"
+import { Match } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import {
   ChangedField,
@@ -26,13 +27,23 @@ import {
   formatDate,
   formatDay,
   formatExpiry,
+  formatGigabytes,
   formatInstant,
   formatMonth,
   formatPeriod,
   titleCase,
 } from "./format.ts"
-import { memberRoleKey, parseSpendLimit, spendLimitKey, spendLimitValue } from "./keys.ts"
-import type { SettingsPage, UsageMeter } from "./model.ts"
+import { capReached } from "../quota/model.ts"
+import { capNoticeView } from "../quota/view.ts"
+import {
+  memberRoleKey,
+  parseSpendLimit,
+  planChoiceKey,
+  planChoices,
+  spendLimitKey,
+  spendLimitValue,
+} from "./keys.ts"
+import type { Billing, PaymentStatus, SettingsPage, Usage, UsageMeter } from "./model.ts"
 import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
@@ -238,11 +249,52 @@ const spendLimitOptions = (limitCents: number | null) => {
   ]
 }
 
-/** Organization › Billing: the Stripe subscription, payment method, spend limit and invoices. */
+const paymentProblems: Readonly<Partial<Record<PaymentStatus, string>>> = {
+  past_due: "The last payment failed",
+  unpaid: "The subscription is unpaid",
+  incomplete: "The first payment hasn’t gone through",
+  canceled: "The subscription was canceled",
+}
+
+const planPrice = (billing: Billing): string =>
+  billing.plan.basePriceCents === 0
+    ? "No monthly charge"
+    : `${formatCurrency(dollars(billing.plan.basePriceCents))} a month plus usage${billing.plan.provisional ? " (provisional price)" : ""}`
+
+/** How the plan reads: its price, when it renews, and why paid limits are withheld if they are. */
+const planDescription = (billing: Billing): string => {
+  const problem =
+    billing.plan.paymentStatus === null ? undefined : paymentProblems[billing.plan.paymentStatus]
+  const withheld =
+    billing.plan.subscribed !== billing.plan.id
+      ? `${problem ?? "Payment is pending"}, so ${billing.plan.name} limits apply until ${titleCase(billing.plan.subscribed)} is paid for`
+      : problem
+  return [
+    planPrice(billing),
+    ...(billing.plan.renewsAt === null ? [] : [`renews ${formatDate(billing.plan.renewsAt)}`]),
+    ...(withheld === undefined ? [] : [withheld]),
+  ].join(" · ")
+}
+
+/** Free's monthly allowances, each a hard cap, as the usage report states them. */
+const freeAllowances = (usage: Usage): string | undefined => {
+  const commands = usage.meters.find((entry) => entry.meter === "commands")
+  const storage = usage.meters.find((entry) => entry.meter === "storageGb")
+  if (commands === undefined) return undefined
+  return [
+    `${formatCompact(commands.included)} commands a month (a read counts as ${String(usage.pricing.readCommandWeight)} of a command)`,
+    ...(storage === undefined ? [] : [`${formatGigabytes(storage.included)} of storage`]),
+  ].join(" and ")
+}
+
+/** Organization › Billing: the plan and its change, payment method, spend limit and invoices. */
 export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
-  const { billing } = page
+  const { billing, usage } = page
   if (billing === null) return screen(h, "Billing", [])
   const billingSample = isSample(page, "billing")
+  const free = billing.plan.id === "free" && billing.plan.subscribed === "free"
+  const choices = planChoices(billing.plan.subscribed)
+  const allowances = free && usage !== null ? freeAllowances(usage) : undefined
   const limit = parseSpendLimit(
     model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
   )
@@ -250,25 +302,49 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
     settingsGroup(h, {
       title: "Plan",
       rows: [
-        settingsRow(h, {
-          label: billing.plan.name,
-          description: [
-            billing.plan.basePriceCents === 0
-              ? "Free"
-              : `${formatCurrency(dollars(billing.plan.basePriceCents))} a month plus usage`,
-            ...(billing.plan.renewsAt === null
-              ? []
-              : [`Renews ${formatDate(billing.plan.renewsAt)}`]),
-          ].join(". "),
-          control: button(h, {
-            label: billing.plan.id === "free" ? "Upgrade" : "Change plan",
-            size: "sm",
-            disabled: billingSample,
-            onClick: SubmittedForm({ form: "change-plan" }),
-          }),
-        }),
+        settingsRow(h, { label: billing.plan.name, description: planDescription(billing) }),
+        ...(allowances === undefined
+          ? []
+          : [
+              settingsRow(h, {
+                label: "Included",
+                description: `${allowances}. Both are hard caps: at either one, new commands are refused while reads keep working.`,
+              }),
+            ]),
+        ...(choices.length === 0
+          ? []
+          : [
+              settingsRow(h, {
+                label: free ? "Upgrade" : "Change plan",
+                description: free
+                  ? "Checkout opens on Stripe, which shows the price before you pay."
+                  : "Invoiced right away; the new plan applies once the payment goes through.",
+                control: h.span(
+                  [...styleAttributes(h, styles.inline)],
+                  [
+                    select(h, {
+                      name: planChoiceKey,
+                      label: free ? "Plan to upgrade to" : "Plan to change to",
+                      value: model.choices[planChoiceKey] ?? choices[0] ?? "",
+                      size: "sm",
+                      disabled: billingSample,
+                      options: choices.map((plan) => ({ value: plan, label: titleCase(plan) })),
+                      onChange: (value) => ChoseSetting({ key: planChoiceKey, value }),
+                    }),
+                    button(h, {
+                      label: free ? "Continue to checkout" : "Change plan",
+                      size: "sm",
+                      variant: free ? "primary" : "secondary",
+                      disabled: billingSample,
+                      onClick: SubmittedForm({ form: "change-plan" }),
+                    }),
+                  ],
+                ),
+              }),
+            ]),
         settingsRow(h, {
           label: "This month so far",
+          description: "Estimated: the plan’s price plus usage beyond what it includes",
           control: h.span(
             [...styleAttributes(h, styles.value)],
             [formatCurrency(dollars(billing.plan.monthToDateCents))],
@@ -278,13 +354,14 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
     }),
     settingsGroup(h, {
       title: "Payment",
-      footnote: "Payments are processed by Stripe. Card details never reach Akter.",
+      footnote:
+        "Payments are processed by Stripe; card details never reach Akter. The billing portal opens in a new tab.",
       rows: [
         settingsRow(h, {
           label:
             billing.card === null
               ? "No payment method"
-              : `${billing.card.brand} ending ${billing.card.lastFour}`,
+              : `${titleCase(billing.card.brand)} ending ${billing.card.lastFour}`,
           description: [
             ...(billing.card === null
               ? []
@@ -304,7 +381,9 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         }),
         settingsRow(h, {
           label: "Monthly spend limit",
-          description: "At the limit, new deploys pause; running actors keep running.",
+          description: free
+            ? "Applies once you’re on a paid plan; Free stops at what it includes instead."
+            : "New commands that would pass it are refused; work already admitted finishes.",
           control: select(h, {
             name: spendLimitKey,
             label: "Monthly spend limit",
@@ -333,58 +412,115 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
     }),
     settingsGroup(h, {
       title: "Invoices",
-      rows: page.invoices.map((invoice) =>
-        settingsRow(h, {
-          label: formatMonth(invoice.periodStart),
-          description: `${invoice.number} · ${invoice.status}`,
-          href: isSample(page, "invoices") ? undefined : (invoice.pdfUrl ?? undefined),
-          control: h.span(
-            [...styleAttributes(h, styles.muted)],
-            [formatCurrency(dollars(invoice.amountCents))],
-          ),
-        }),
-      ),
+      rows:
+        page.invoices.length === 0
+          ? [settingsRow(h, { label: "No invoices yet" })]
+          : page.invoices.map((invoice) => {
+              const pdf = isSample(page, "invoices") ? null : invoice.pdfUrl
+              return settingsRow(h, {
+                label: formatMonth(invoice.periodStart),
+                description: `${invoice.number} · ${invoice.status}${pdf === null ? "" : " · PDF"}`,
+                href: pdf ?? undefined,
+                attributes:
+                  pdf === null
+                    ? []
+                    : [
+                        h.Target("_blank"),
+                        h.Rel("noopener noreferrer"),
+                        h.AriaLabel(`Invoice ${invoice.number} PDF, opens in a new tab`),
+                      ],
+                control: h.span(
+                  [...styleAttributes(h, styles.muted)],
+                  [formatCurrency(dollars(invoice.amountCents))],
+                ),
+              })
+            }),
     }),
   ])
 }
 
-const meterFormat = (unit: UsageMeter["unit"]) => (value: number) =>
-  unit === "count"
-    ? formatCompact(value)
-    : unit === "hours"
-      ? formatInteger(value)
-      : value >= 1000
-        ? `${String(value / 1000)} TB`
-        : `${formatInteger(value)} GB`
+const meterFormat = (unit: UsageMeter["unit"]): ((value: number) => string) =>
+  Match.value(unit).pipe(
+    Match.when("count", () => formatCompact),
+    Match.when("hours", () => formatInteger),
+    Match.when("gigabytes", () => formatGigabytes),
+    Match.exhaustive,
+  )
+
+/** What a meter's numbers mean, from the pricing the control plane reports with them. */
+const meterDetail = (entry: UsageMeter, usage: Usage, free: boolean): string | undefined => {
+  const overage =
+    entry.overageCostCents > 0
+      ? `${formatCurrency(dollars(entry.overageCostCents))} over the allowance so far`
+      : undefined
+  if (entry.meter === "commands")
+    return [
+      `Commands plus reads, a read counting as ${String(usage.pricing.readCommandWeight)} of a command`,
+      ...(free ? ["Free stops new commands here until next month; reads keep working"] : []),
+      ...(overage === undefined ? [] : [overage]),
+    ].join(". ")
+  if (entry.meter === "storageGb")
+    return [
+      "Average stored this month",
+      free
+        ? "Free pauses new commands while a tenant’s latest sample is at the cap; reads keep working"
+        : `${formatCurrency(dollars(usage.pricing.storagePerGbCents))} per GB-month beyond the allowance`,
+      ...(overage === undefined ? [] : [overage]),
+    ].join(". ")
+  return overage
+}
 
 /** Organization › Usage: this period's meters against the plan, commands per day, and cost by project. */
 export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
-  const { usage } = page
+  const { usage, billing } = page
   if (usage === null) return screen(h, "Usage", [])
   const month = formatPeriod(usage.period)
+  const free = billing?.plan.id === "free"
+  const cap = billing === null ? undefined : capReached({ billing, usage })
+  const reads = usage.meters.find((entry) => entry.meter === "reads")
   return screen(h, "Usage", [
+    ...(cap === undefined ? [] : [capNoticeView(h, cap)]),
     settingsGroup(h, {
       title: month,
-      rows: usage.meters.map((entry) => {
-        const format = meterFormat(entry.unit)
-        return entry.included > 0
-          ? h.div(
-              [...styleAttributes(h, styles.padded)],
-              [
-                meter(h, {
+      footnote: usage.pricing.provisional ? "Paid prices are provisional." : undefined,
+      rows: [
+        ...usage.meters.flatMap((entry) => {
+          if (entry.meter === "reads") return []
+          const format = meterFormat(entry.unit)
+          const detail = meterDetail(entry, usage, free)
+          return entry.included > 0
+            ? [
+                h.div(
+                  [...styleAttributes(h, styles.padded)],
+                  [
+                    meter(h, {
+                      label: entry.label,
+                      value: entry.used,
+                      limit: entry.included,
+                      format,
+                      detail,
+                    }),
+                  ],
+                ),
+              ]
+            : [
+                settingsRow(h, {
                   label: entry.label,
-                  value: entry.used,
-                  limit: entry.included,
-                  format,
+                  description: detail ?? "Nothing included in this plan",
+                  control: h.span([...styleAttributes(h, styles.value)], [format(entry.used)]),
                 }),
-              ],
-            )
-          : settingsRow(h, {
-              label: entry.label,
-              description: "Nothing included in this plan",
-              control: h.span([...styleAttributes(h, styles.value)], [format(entry.used)]),
-            })
-      }),
+              ]
+        }),
+        ...(reads === undefined
+          ? []
+          : [
+              settingsRow(h, {
+                label: "Reads",
+                description: `Counted in commands above as ${formatCompact(reads.used * usage.pricing.readCommandWeight)}`,
+                control: h.span([...styleAttributes(h, styles.value)], [formatCompact(reads.used)]),
+              }),
+            ]),
+      ],
     }),
     settingsGroup(h, {
       title: "Commands per day",
@@ -409,6 +545,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
     }),
     settingsGroup(h, {
       title: "By project",
+      footnote: "Estimates share out usage beyond the allowance; the plan’s price is not split.",
       rows: [
         dataTable(h, {
           label: "Usage by project",
@@ -417,6 +554,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
           columns: [
             { key: "project", label: "Project", width: "minmax(0, 1fr)", mono: true },
             { key: "commands", label: "Commands", width: "6rem", align: "end" },
+            { key: "reads", label: "Reads", width: "5.5rem", align: "end" },
             { key: "estimate", label: "Estimate", width: "5.5rem", align: "end" },
           ],
           rows: usage.projects.map((project) => ({
@@ -424,6 +562,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
             cells: [
               project.name,
               formatCompact(project.commands),
+              project.reads === null ? "—" : formatCompact(project.reads),
               formatCurrency(dollars(project.estimatedCostCents)),
             ],
           })),

@@ -9,6 +9,8 @@ import {
   choiceFields,
   parseMemberRoleKey,
   parseNotificationKey,
+  planChoiceKey,
+  planChoices,
   spendLimitKey,
   toggleFields,
 } from "../settings/keys.ts"
@@ -457,12 +459,20 @@ const submit = (model: Model, form: string): Result => {
       )
     }),
     Match.when("change-plan", () => {
-      const current = Option.flatMap(settingsPage(model), (page) =>
+      const billing = Option.flatMap(settingsPage(model), (page) =>
         Option.fromNullishOr(page.billing),
-      ).pipe(Option.map((billing) => billing.plan.id))
-      if (Option.contains(current, "enterprise")) return mutate(model, Action.OpenBillingPortal())
-      const plan = Option.contains(current, "pro") ? "enterprise" : "pro"
-      return mutate(model, Action.StartCheckout({ plan }))
+      )
+      const subscribed = Option.match(billing, {
+        onNone: () => "free" as const,
+        onSome: (found) => found.plan.subscribed,
+      })
+      const choices = planChoices(subscribed)
+      const plan = choices.find((choice) => choice === model.choices[planChoiceKey]) ?? choices[0]
+      if (plan === undefined) return unavailable(model, "Another plan")
+      return mutate(
+        model,
+        subscribed === "free" ? Action.StartCheckout({ plan }) : Action.ChangePlan({ plan }),
+      )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),
     Match.orElse((name) => {
@@ -773,7 +783,9 @@ const step = (model: Model, message: Message): Result =>
     FailedCommand: ({ session, kind, message }) => {
       if (session !== model.commandSession) return { model }
       if (kind === "Unauthorized") return step(model, Message.FailedPage({ kind, message }))
-      return { model: { ...model, sendingCommand: false, commandError: Option.some(message) } }
+      return {
+        model: { ...model, sendingCommand: false, commandError: Option.some({ kind, message }) },
+      }
     },
     PreparedCommandId: ({ session, id }) => {
       if (session !== model.commandSession || (model.fields["command-id"] ?? "").trim() !== "")

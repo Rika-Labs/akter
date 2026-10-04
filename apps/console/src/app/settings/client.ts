@@ -13,6 +13,7 @@ import {
   MemberId,
   NotificationEvent,
   type OrganizationId,
+  type PlanChange,
   type ProjectId,
   type RegionId,
   Role,
@@ -58,7 +59,13 @@ import {
   toUsage,
   toVariable,
 } from "./mapping.ts"
-import { emptySettings, type SettingsPage, SettingsSection, type SettingsSlice } from "./model.ts"
+import {
+  emptySettings,
+  type PaidPlan,
+  type SettingsPage,
+  SettingsSection,
+  type SettingsSlice,
+} from "./model.ts"
 import type * as Fixtures from "./fixtures.ts"
 
 type Api = Effect.Success<typeof cloud>
@@ -85,8 +92,8 @@ const slicesFor = (route: AppRoute): ReadonlyArray<SettingsSection> => {
       SettingsIntegrations: of("integrations"),
       SettingsOrganization: of("organization", "project"),
       SettingsMembers: of("organization", "members", "invitations"),
-      SettingsBilling: of("billing", "invoices"),
-      SettingsUsage: of("usage"),
+      SettingsBilling: of("billing", "invoices", "usage"),
+      SettingsUsage: of("billing", "usage"),
       SettingsAudit: of("audit"),
     },
     of(),
@@ -550,13 +557,23 @@ export const setSpendLimit = (limitCents: number | null): Effect.Effect<void, Co
     api.billing.setSpendLimit({ params: { organizationId }, payload: { limitCents } }),
   ).pipe(Effect.asVoid)
 
-/** The Stripe Checkout page to send the browser to for a paid plan. */
+/** The Stripe Checkout page that starts a paid subscription; the server builds its return URLs. */
 export const startCheckout = (
-  plan: "pro" | "enterprise",
+  plan: PaidPlan,
 ): Effect.Effect<{ readonly url: string }, ConsoleError> =>
   inOrganization((api, organizationId) =>
     api.billing.startCheckout({ params: { organizationId }, payload: { plan } }),
   )
+
+/**
+ * Moves the existing subscription to another paid plan. Stripe's portal cannot change these
+ * subscriptions, so the control plane does it and answers with the change's status: `pending` while
+ * payment is confirmed, after which the new plan's limits apply.
+ */
+export const changePlan = (plan: PaidPlan): Effect.Effect<PlanChange["status"], ConsoleError> =>
+  inOrganization((api, organizationId) =>
+    api.billing.changePlan({ params: { organizationId }, payload: { plan } }),
+  ).pipe(Effect.map((change) => change.status))
 
 /** The Stripe billing portal to send the browser to, where the card and receipts are managed. */
 export const openBillingPortal: Effect.Effect<{ readonly url: string }, ConsoleError> =

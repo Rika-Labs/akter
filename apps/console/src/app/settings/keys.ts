@@ -1,5 +1,5 @@
-import type { NotificationEvent, Preferences } from "@akter/cloud-api"
-import type { SettingsPage } from "./model.ts"
+import type { NotificationEvent, PlanId, Preferences } from "@akter/cloud-api"
+import { PaidPlan, type SettingsPage } from "./model.ts"
 
 /**
  * The names the settings views give their switches and selects in the shell's `toggles` and
@@ -48,6 +48,13 @@ export const memberRoleKey = (memberId: string): string => `${memberRolePrefix}$
 /** The member id a role select key names, or undefined for any other key. */
 export const parseMemberRoleKey = (key: string): string | undefined =>
   key.startsWith(memberRolePrefix) ? key.slice(memberRolePrefix.length) : undefined
+
+/** The select key of the paid plan an organization would move to; it is never saved by itself. */
+export const planChoiceKey = "plan"
+
+/** The paid plans an organization subscribed to `subscribed` can move to, in the contract's order. */
+export const planChoices = (subscribed: PlanId): ReadonlyArray<PaidPlan> =>
+  PaidPlan.literals.filter((plan) => plan !== subscribed)
 
 /** The select key of the monthly spend limit; its value is whole cents or `none`. */
 export const spendLimitKey = "spendLimit"

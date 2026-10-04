@@ -199,7 +199,10 @@ export const toBilling = (billing: BillingSummary): Billing => ({
   plan: {
     id: billing.plan.id,
     name: billing.plan.name,
+    subscribed: billing.plan.subscribedId ?? billing.plan.id,
+    paymentStatus: billing.plan.paymentStatus ?? null,
     basePriceCents: billing.plan.basePriceCents,
+    provisional: billing.plan.provisional ?? false,
     renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
     monthToDateCents: billing.plan.monthToDateEstimateCents,
   },
@@ -245,18 +248,28 @@ const meters: Readonly<
 export const toUsage = (usage: CloudUsage): Usage => ({
   period: usage.period,
   meters: usage.meters.map((meter) => ({
+    meter: meter.meter,
     label: meters[meter.meter].label,
     unit: meters[meter.meter].unit,
     used: meter.used,
     included: meter.included,
+    overage: meter.overage,
+    overageCostCents: meter.overageCostCents,
   })),
   commandsPerDay: usage.commandsPerDay.map((day) => ({ day: day.day, commands: day.commands })),
   projects: usage.byProject.map((project) => ({
     id: project.projectId,
     name: project.name,
     commands: project.commands,
+    reads: project.reads ?? null,
     estimatedCostCents: project.estimatedCostCents,
   })),
+  pricing: {
+    freeCommands: usage.pricing.freeCommands,
+    readCommandWeight: usage.pricing.readCommandWeight,
+    storagePerGbCents: usage.pricing.storagePerGbCents,
+    provisional: usage.pricing.provisional ?? false,
+  },
 })
 
 /** A target is shown by name when it has one, otherwise by id, otherwise by its kind. */
