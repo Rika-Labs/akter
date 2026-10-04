@@ -6,13 +6,16 @@ import type { Billing } from "../settings/model.ts"
 /**
  * The one cap a page explains while the edge refuses at it, as the control plane reports it:
  * `Unbound` when the organization has no billing account and every new command is refused,
- * otherwise Free's command allowance for `period`, a tenant's storage sample at its cap, the spend
- * limit in cents, or the organization's live connections (which refuse new connections, not
- * commands).
+ * `UnknownPlan` when its stored plan isn't in the pricing configuration, which the edge refuses
+ * every new command for too,
+ * otherwise Free's command allowance for `period` (`commands`, null when the cap doesn't say how
+ * many units a command weighs), a tenant's storage sample at its cap, the spend limit in cents, or
+ * the organization's live connections (which refuse new connections, not commands).
  */
 export const CapNotice = defineTaggedUnion({
   Unbound: {},
-  CommandCap: { period: S.String },
+  UnknownPlan: {},
+  CommandCap: { period: S.String, commands: S.NullOr(S.Finite) },
   StorageCap: { usedBytes: S.Finite, limitBytes: S.Finite },
   SpendCap: { period: S.String, limitCents: S.Finite },
   ConnectionCap: { open: S.Finite, limit: S.Finite },
@@ -32,7 +35,9 @@ const precedence: ReadonlyArray<CapState["cap"]> = ["commands", "storage", "spen
 /**
  * The cap a page explains, if the edge is refusing at one now. Only `refusing` counts: a cap that
  * is merely reached (`atCap`) still admits work the edge would take. An `unbound` cap outranks the
- * rest, because every new command is refused whatever the usage, and has no limit to quote.
+ * rest, because every new command is refused whatever the usage, and has no limit to quote. The
+ * command cap counts usage units, in which a read weighs one and a command `unitsPerCommand`, so
+ * its limit is quoted in whole commands: the commands that fit in it, rounded down.
  */
 export const capNotice = (input: {
   readonly caps: ReadonlyArray<CapState>
@@ -46,7 +51,15 @@ export const capNotice = (input: {
   const { used, limit } = refusing
   return Match.value(refusing.cap).pipe(
     Match.withReturnType<CapNotice>(),
-    Match.when("commands", () => CapNotice.CommandCap({ period: input.period })),
+    Match.when("commands", () =>
+      CapNotice.CommandCap({
+        period: input.period,
+        commands:
+          refusing.unitsPerCommand === undefined
+            ? null
+            : Math.floor(limit / refusing.unitsPerCommand),
+      }),
+    ),
     Match.when("storage", () => CapNotice.StorageCap({ usedBytes: used, limitBytes: limit })),
     Match.when("spend", () => CapNotice.SpendCap({ period: input.period, limitCents: limit })),
     Match.when("connections", () => CapNotice.ConnectionCap({ open: used, limit })),

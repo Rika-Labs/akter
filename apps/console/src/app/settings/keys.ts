@@ -1,5 +1,12 @@
 import type { NotificationEvent, PlanId, Preferences } from "@akter/cloud-api"
-import type { Billing, PaidPlan, PlanOffer, Plans, SettingsPage } from "./model.ts"
+import {
+  billedPlan,
+  type Billing,
+  type PaidPlan,
+  type PlanOffer,
+  type Plans,
+  type SettingsPage,
+} from "./model.ts"
 
 /**
  * The names the settings views give their switches and selects in the shell's `toggles` and
@@ -55,16 +62,19 @@ export const planChoiceKey = "plan"
 /**
  * Whether the organization pays for a plan, so a change goes through the plan endpoint rather than
  * a new Checkout. The control plane prices billing at the subscribed plan, and only plans with a
- * base price are sold through Checkout, so a zero price means no paid subscription.
+ * base price are sold through Checkout, so a zero price means no paid subscription; an
+ * organization without a billing account has no subscription at all.
  */
-export const hasPaidPlan = (billing: Billing): boolean => billing.plan.basePriceCents > 0
+export const hasPaidPlan = (billing: Billing): boolean =>
+  (billedPlan(billing)?.basePriceCents ?? 0) > 0
 
 /**
  * The catalog's plans an organization subscribed to `subscribed` can buy or move to, cheapest
- * first. Without a catalog there is nothing to offer, since the console knows no plan of its own.
+ * first; `subscribed` is null for an organization without a billing account. Without a catalog
+ * there is nothing to offer, since the console knows no plan of its own.
  */
 export const planChoices = (input: {
-  readonly subscribed: PlanId
+  readonly subscribed: PlanId | null
   readonly plans: Plans | null
 }): ReadonlyArray<{ readonly plan: PaidPlan; readonly offer: PlanOffer }> =>
   (input.plans?.plans ?? []).flatMap((offer) =>

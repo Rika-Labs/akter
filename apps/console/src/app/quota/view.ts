@@ -1,5 +1,5 @@
 import { styleAttributes } from "@akter/ui"
-import { formatCurrency, formatInteger } from "@akter/ui/geometry"
+import { formatCompact, formatCurrency, formatInteger } from "@akter/ui/geometry"
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { Function } from "effect"
@@ -31,15 +31,27 @@ export const billingLink: {
   h.a([h.Href(Routes.settingsBilling()), ...styleAttributes(h, styles.link)], [label]),
 )
 
-/** What a notice says, and the label of the link to Billing that lifts the cap. */
-const noticeWording = (notice: CapNotice): { readonly text: string; readonly action: string } =>
-  CapNotice.match(notice, {
+interface NoticeWording {
+  readonly text: string
+  readonly action: string | undefined
+}
+
+/**
+ * What a notice says, and the label of the link to Billing that lifts the cap. An unknown plan has
+ * no action in Billing, so its notice has no link.
+ */
+const noticeWording = (notice: CapNotice): NoticeWording =>
+  CapNotice.match<NoticeWording>(notice, {
     Unbound: () => ({
       text: "Billing isn’t set up for this organization, so new commands are refused.",
       action: "Set up billing",
     }),
-    CommandCap: ({ period }) => ({
-      text: `This organization has used the commands its plan includes for ${formatPeriod(period)}. New commands are refused until next month; reads keep working.`,
+    UnknownPlan: () => ({
+      text: "This organization’s plan isn’t recognised, so new commands are refused. Contact support.",
+      action: undefined,
+    }),
+    CommandCap: ({ period, commands }) => ({
+      text: `This organization has used the ${commands === null ? "" : `${formatCompact(commands)} `}commands its plan includes for ${formatPeriod(period)}. New commands are refused until next month; reads keep working.`,
       action: "Upgrade",
     }),
     StorageCap: ({ usedBytes, limitBytes }) => ({
@@ -68,7 +80,10 @@ export const capNoticeView: {
   (h: HtmlBuilder<Message>, notice: CapNotice): Html
 } = Function.dual(2, (h: HtmlBuilder<Message>, notice: CapNotice): Html => {
   const { text, action } = noticeWording(notice)
-  return h.p(noticeAttributes(h), [`${text} `, billingLink(h, action)])
+  return h.p(
+    noticeAttributes(h),
+    action === undefined ? [text] : [`${text} `, billingLink(h, action)],
+  )
 })
 
 /** The same line on Billing itself, where the way out is on the page rather than behind a link. */

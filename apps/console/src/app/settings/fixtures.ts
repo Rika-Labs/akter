@@ -1,3 +1,4 @@
+import { KnownPlan } from "@akter/cloud-api"
 import { seededSeries } from "../workspace/series.ts"
 import type { SettingsSlice } from "./model.ts"
 
@@ -38,7 +39,13 @@ export const profileSlice: SettingsSlice = {
 }
 
 export const organizationSlice: SettingsSlice = {
-  organization: { id: "org_acme", name: "Acme", slug: "acme", plan: "pro", role: "owner" },
+  organization: {
+    id: "org_acme",
+    name: "Acme",
+    slug: "acme",
+    plan: KnownPlan.make({ id: "pro" }),
+    role: "owner",
+  },
 }
 
 export const projectSlice: SettingsSlice = {

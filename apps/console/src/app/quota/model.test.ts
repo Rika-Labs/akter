@@ -60,7 +60,7 @@ describe("capNotice", () => {
       { cap: "storage", limit: 500_000_000, used: 600_000_000, atCap: true, refusing: true },
       { cap: "commands", limit: 5_000_000, used: 5_000_000, atCap: true, refusing: true },
     )
-    expect(notice(all)).toEqual(CapNotice.CommandCap({ period: "2026-10" }))
+    expect(notice(all)).toEqual(CapNotice.CommandCap({ period: "2026-10", commands: null }))
     expect(notice(changing(...all.filter((cap) => cap.cap !== "commands")))).toEqual(
       CapNotice.StorageCap({ usedBytes: 600_000_000, limitBytes: 500_000_000 }),
     )
@@ -69,6 +69,34 @@ describe("capNotice", () => {
         changing({ cap: "connections", limit: 5_000, used: 5_000, atCap: true, refusing: true }),
       ),
     ).toEqual(CapNotice.ConnectionCap({ open: 5_000, limit: 5_000 }))
+  })
+
+  it("quotes the command cap in commands once a command no longer fits, though a read still does", () => {
+    const commands = (used: number, unitsPerCommand: number): CapState => ({
+      cap: "commands",
+      limit: 5_000_000,
+      used,
+      atCap: used >= 5_000_000,
+      refusing: used + unitsPerCommand > 5_000_000,
+      unitsPerCommand,
+    })
+    expect(notice(changing(commands(999_999 * 5, 5)))).toBe(undefined)
+    expect(notice(changing(commands(999_999 * 5 + 1, 5)))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: 1_000_000 }),
+    )
+    expect(notice(changing(commands(4_999_997, 4)))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: 1_250_000 }),
+    )
+    expect(notice(changing({ ...commands(4_999_999, 4), limit: 4_999_999 }))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: 1_249_999 }),
+    )
+    expect(notice(changing({ ...commands(5_000_003, 5), limit: 5_000_003 }))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: 1_000_000 }),
+    )
+    const { unitsPerCommand: _weight, ...unweighed } = commands(4_999_999, 5)
+    expect(notice(changing(unweighed))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: null }),
+    )
   })
 
   it("reads an organization without a billing account as unbound, never as a reached cap", () => {

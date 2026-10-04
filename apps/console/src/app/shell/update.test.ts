@@ -1,5 +1,12 @@
 import { order } from "../actors/fixtures.ts"
-import { CommandExpired, Conflict, ProjectId, RunnerDefect, Unavailable } from "@akter/cloud-api"
+import {
+  CommandExpired,
+  Conflict,
+  ProjectId,
+  QuotaUnbound,
+  RunnerDefect,
+  Unavailable,
+} from "@akter/cloud-api"
 import { Option } from "effect"
 import type { Return } from "foldkit/update"
 import * as Url from "foldkit/url"
@@ -204,6 +211,22 @@ describe("send command keys", () => {
       expect(step(failed, ConfirmedDialog()).commands ?? []).toEqual([])
       const cleared = step(failed, ChangedField({ name: "command-id", value: "" })).model
       expect(resendRefused(cleared)).toBe(false)
+      expect(named(step(cleared, ConfirmedDialog()), "NewCommandId")).toHaveLength(1)
+    }
+  })
+
+  it("never resends a command the edge couldn't bill, for any of its reasons", () => {
+    for (const reason of ["tenant", "account", "plan"] as const) {
+      const failed = failWith(
+        sendMinted(dialogOpen(), "minted-1").model,
+        QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }),
+      )
+      expect(Option.map(failed.commandError, ({ kind }) => kind)).toEqual(
+        Option.some(reason === "account" ? "QuotaUnbound" : "Unbillable"),
+      )
+      expect(resendRefused(failed)).toBe(true)
+      expect(step(failed, ConfirmedDialog()).commands ?? []).toEqual([])
+      const cleared = step(failed, ChangedField({ name: "command-id", value: "" })).model
       expect(named(step(cleared, ConfirmedDialog()), "NewCommandId")).toHaveLength(1)
     }
   })

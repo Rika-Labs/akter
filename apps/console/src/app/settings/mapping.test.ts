@@ -11,6 +11,7 @@ import {
   ProjectEndpoints,
   ProjectRegion,
   Region,
+  UnboundPlan,
   Usage,
 } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
@@ -24,6 +25,7 @@ import {
   formatPeriod,
 } from "./format.ts"
 import {
+  hasPaidPlan,
   memberRoleKey,
   notificationKey,
   parseMemberRoleKey,
@@ -47,7 +49,7 @@ import {
   toUsage,
   toVariable,
 } from "./mapping.ts"
-import { emptySettings } from "./model.ts"
+import { billedPlan, emptySettings } from "./model.ts"
 
 const decode =
   <T, E>(schema: Schema.Codec<T, E>) =>
@@ -353,25 +355,22 @@ describe("billing", () => {
           reason: "unbound",
         })
         const summary = yield* decode(BillingSummary)({
-          plan: {
-            id: "free",
-            name: "Free",
-            basePriceCents: 0,
-            currency: "usd",
-            renewsAt: null,
-            monthToDateEstimateCents: 0,
-          },
+          plan: UnboundPlan.make({}),
           paymentMethod: null,
           billingEmail: null,
           spendLimit: { limitCents: null, currentSpendCents: 0 },
           caps: [
-            unbound("commands", 35),
+            { ...unbound("commands", 35), unitsPerCommand: 5 },
             unbound("spend", 0),
             unbound("connections", 2),
             unbound("storage", 4_096),
           ],
         })
-        expect(toBilling(summary).caps).toEqual([
+        const billing = toBilling(summary)
+        expect(billing.plan).toEqual(UnboundPlan.make({}))
+        expect(billedPlan(billing)).toBe(undefined)
+        expect(hasPaidPlan(billing)).toBe(false)
+        expect(billing.caps).toEqual([
           {
             cap: "commands",
             limit: null,
@@ -379,6 +378,7 @@ describe("billing", () => {
             atCap: false,
             refusing: true,
             reason: "unbound",
+            unitsPerCommand: 5,
           },
           { cap: "spend", limit: null, used: 0, atCap: false, refusing: true, reason: "unbound" },
           {
@@ -584,6 +584,10 @@ describe("plan catalog", () => {
         const plans = toPlans(catalog)
         expect(planChoices({ subscribed: "pro", plans }).map(({ plan }) => plan)).toEqual(["team"])
         expect(planChoices({ subscribed: "free", plans }).map(({ plan }) => plan)).toEqual([
+          "pro",
+          "team",
+        ])
+        expect(planChoices({ subscribed: null, plans }).map(({ plan }) => plan)).toEqual([
           "pro",
           "team",
         ])

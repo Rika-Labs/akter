@@ -5,6 +5,7 @@ import {
   NotFound,
   NotFoundResource,
   QuotaExceeded,
+  QuotaUnbound,
   SpendLimitExceeded,
   StorageQuotaExceeded,
   Unavailable,
@@ -115,13 +116,34 @@ describe("quota refusals", () => {
     expect(consoleError(Forbidden.make({ message: "Owners only." })).kind).toBe("Forbidden")
   })
 
-  it("links to Billing only for the kinds a plan or limit change lifts", () => {
+  it("words each reason the edge couldn't bill a command differently, never as an outage", () => {
+    const messages = (["tenant", "account", "plan"] as const).map((reason) => {
+      const error = consoleError(QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }))
+      expect(error.kind).toBe(reason === "account" ? "QuotaUnbound" : "Unbillable")
+      expect(error.message).not.toBe(generic)
+      return error.message
+    })
+    expect(new Set(messages).size).toBe(3)
+    expect(messages[0]).toContain("isn’t linked to an organization")
+    expect(messages[1]).toContain("Billing isn’t set up")
+    expect(messages[2]).toContain("plan isn’t recognised")
+    const undecoded = Effect.runSync(
+      Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(
+        '{"_tag":"QuotaUnbound","deployment":"dep_1","tenant":"acme","reason":"plan"}',
+      ),
+    )
+    expect(quotaRefusal(undecoded)).toEqual(Option.none())
+  })
+
+  it("links to Billing only for the kinds a plan or limit change lifts, or Billing explains", () => {
     expect(Object.values(refusals).map((refusal) => isQuotaKind(refusal._tag))).toEqual([
       true,
       true,
       true,
       true,
     ])
+    expect(isQuotaKind("QuotaUnbound")).toBe(true)
+    expect(isQuotaKind("Unbillable")).toBe(false)
     expect(["Forbidden", "Conflict", "Unavailable", "CommandFailed"].some(isQuotaKind)).toBe(false)
   })
 })
