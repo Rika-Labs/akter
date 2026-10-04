@@ -119,6 +119,7 @@ export const overview: OverviewPage = OverviewPage.make({
     p99Series: seededSeries({ length: 96, base: 18, volatility: 5, seed: 4 }),
   },
   distribution: distribution("24h"),
+  distributionSample: false,
   deploys: recentDeploys.slice(0, 3),
 })
 

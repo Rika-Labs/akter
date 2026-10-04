@@ -65,7 +65,7 @@ it("selects the active membership and preserves actor keys containing slashes", 
       })
       const result = workspaceFrom(me, [project], [pin], { actorTypes: 7, openDeadLetters: 3 })
       expect(result).toEqual({
-        person: { name: "Lee", email: "lee@example.com", role: "viewer" },
+        person: { id: "u_9", name: "Lee", email: "lee@example.com", role: "viewer" },
         organization: "Active",
         plan: "pro",
         projects: [{ slug: "inbox", deployed: false, region: "us-west-2" }],

@@ -1,4 +1,4 @@
-import { Dialog } from "../../shell/model.ts"
+import { Dialog, type Model } from "../../shell/model.ts"
 import {
   activityFeed,
   button,
@@ -22,6 +22,8 @@ import { AppRoute } from "../../navigation/routes.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, type Message, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
+import { orUnknown } from "../../shell/unknown.ts"
+import { callerCell, callerText } from "../../commands/caller.ts"
 import { shortCommandId } from "../mapping.ts"
 import {
   type ActorPage,
@@ -92,15 +94,11 @@ const jobLabels: Readonly<Record<ActorPage["jobs"][number]["status"], string>> =
 }
 
 /** A count or flag the runner does not report reads as unknown, never as zero. */
-const known = (value: number | null) => (value === null ? "—" : String(value))
+const known = orUnknown(String)
 
-const panel = (
-  h: HtmlBuilder<Message>,
-  page: ActorPage,
-  tab: InspectorTab,
-  sample: boolean,
-): Html =>
-  Match.value(tab).pipe(
+const panel = (h: HtmlBuilder<Message>, model: Model, page: ActorPage, tab: InspectorTab): Html => {
+  const sample = model.pageSample
+  return Match.value(tab).pipe(
     Match.when("state", () =>
       page.state === null
         ? emptyState(h, {
@@ -166,7 +164,9 @@ const panel = (
           { key: "id", label: "Command id", width: "7rem", mono: true },
           { key: "command", label: "Command", width: "minmax(0, 1fr)", mono: true },
           { key: "result", label: "Result", width: "minmax(0, 1fr)", mono: true },
+          { key: "caller", label: "Caller", width: "minmax(0, 1fr)", hideBelow: "compact" },
           { key: "at", label: "At", width: "5.5rem", align: "end", hideBelow: "compact" },
+          { key: "expires", label: "Expires", width: "6.5rem", align: "end", hideBelow: "narrow" },
         ],
         rows: page.receipts.map((receipt, index) => ({
           key: `${receipt.commandId}-${String(index)}`,
@@ -175,7 +175,9 @@ const panel = (
             h.span([h.Title(receipt.commandId)], [shortCommandId(receipt.commandId)]),
             receipt.command,
             receipt.result,
+            callerCell(h, model.workspace.person, receipt.caller),
             receipt.at,
+            receipt.expires,
           ],
         })),
       }),
@@ -187,11 +189,12 @@ const panel = (
         columns: [
           { key: "cursor", label: "Cursor", width: "6rem", mono: true },
           { key: "name", label: "Event", width: "minmax(0, 1fr)", mono: true },
+          { key: "emitted", label: "Emitted", width: "6.5rem", align: "end", hideBelow: "compact" },
           { key: "subscribers", label: "Subscribers", width: "6.5rem", align: "end" },
         ],
         rows: page.events.map((event) => ({
           key: `${event.name}-${event.cursor}`,
-          cells: [event.cursor, event.name, known(event.subscribers)],
+          cells: [event.cursor, event.name, event.emitted, known(event.subscribers)],
         })),
       }),
     ),
@@ -233,6 +236,7 @@ const panel = (
       }),
     ),
   )
+}
 
 /** The actor inspector: one instance's state, rows, receipts, events, jobs and live connections. */
 export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen => {
@@ -285,7 +289,7 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
             }),
             h.div(
               [h.DataAttribute("panel", tab), ...styleAttributes(h, styles.panel)],
-              [panel(h, page, tab, model.pageSample)],
+              [panel(h, model, page, tab)],
             ),
             section(h, {
               title: "Activity",
@@ -306,7 +310,14 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
                           h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
                           ` ${entry.title}`,
                         ],
-                        detail: entry.detail,
+                        detail: [
+                          entry.detail,
+                          entry.caller === null
+                            ? ""
+                            : callerText(model.workspace.person)(entry.caller),
+                        ]
+                          .filter((part) => part !== "")
+                          .join(" · "),
                         time: entry.time,
                       })),
                     }),

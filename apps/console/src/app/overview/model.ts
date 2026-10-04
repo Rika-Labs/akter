@@ -12,11 +12,14 @@ export const OverviewStat = S.Struct({
   stepped: S.Boolean,
 })
 
-/** One fact in the health summary and whether it needs a look. */
+/**
+ * One fact in the health summary and whether it needs a look. A fact the runtime does not report
+ * reads `—` and is neither healthy nor not, so `healthy` is null.
+ */
 export const HealthFact = S.Struct({
   label: S.String,
   value: S.String,
-  healthy: S.Boolean,
+  healthy: S.NullOr(S.Boolean),
 })
 
 /** A deploy in a short history list; `id` is the deployment id its row links to. */
@@ -29,12 +32,15 @@ export const DeploySummary = S.Struct({
 })
 export type DeploySummary = typeof DeploySummary.Type
 
-/** Turn latency over the day: the current median and 99th percentile, and the p99 line, in milliseconds. */
+/**
+ * Turn latency over the day: the current median and 99th percentile, and the p99 line, in
+ * milliseconds. Each is null when the runtime does not report it.
+ */
 export const Latency = S.Struct({
-  p50: S.Finite,
-  p99: S.Finite,
+  p50: S.NullOr(S.Finite),
+  p99: S.NullOr(S.Finite),
   hours: S.Array(S.String),
-  p99Series: S.Array(S.Finite),
+  p99Series: S.NullOr(S.Array(S.Finite)),
 })
 export type Latency = typeof Latency.Type
 
@@ -57,22 +63,25 @@ export const LatencyDistribution = S.Struct({
 export type LatencyDistribution = typeof LatencyDistribution.Type
 
 /**
- * Everything the project overview draws. `previous` is the same window a day earlier and is empty
- * when the source has no comparison; a stat's `trend` is empty when it has no history.
- * `distribution` is absent when the actor types' latency buckets cannot be added up, and `cap` when
- * the organization has reached no cap that refuses new commands.
+ * Everything the project overview draws. `throughput` is null when the runtime does not report it,
+ * and `previous` is the same window a day earlier, empty when the source has no comparison; a
+ * stat's `trend` is empty when it has no history. `distribution` is absent when the actor types'
+ * latency buckets cannot be added up, and `distributionSample` marks one that fell back to sample
+ * data on an otherwise live page. `deploys` is null when no source reports them, and `cap` absent
+ * when the organization has reached no cap that refuses new commands.
  */
 export const OverviewPage = S.TaggedStruct("OverviewPage", {
   project: S.String,
   stats: S.Array(OverviewStat),
   hours: S.Array(S.String),
-  throughput: S.Array(S.Finite),
+  throughput: S.NullOr(S.Array(S.Finite)),
   previous: S.Array(S.Finite),
   markers: S.Array(S.Struct({ index: S.Finite, label: S.String })),
   health: S.Array(HealthFact),
   latency: Latency,
   distribution: S.optional(LatencyDistribution),
-  deploys: S.Array(DeploySummary),
+  distributionSample: S.Boolean,
+  deploys: S.NullOr(S.Array(DeploySummary)),
   cap: S.optional(CapNotice),
 })
 export type OverviewPage = typeof OverviewPage.Type

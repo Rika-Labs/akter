@@ -12,14 +12,21 @@ import {
 import { toJobsPage } from "./mapping.ts"
 import type { JobsPage } from "./model.ts"
 
-/** Loads the queue totals and the first page of dead letters. */
+/**
+ * Loads the queue totals and the first page of dead letters. The API reads dead letters but answers
+ * `NotImplemented` to retry and discard, so a live page is not `resolvable` and offers neither.
+ */
 export const loadJobs: Effect.Effect<Loaded<JobsPage>, ConsoleError> = withProject(
   (api, { project, environment }) =>
     Effect.gen(function* () {
       const params = { projectId: project.id, environment }
       const summary = yield* api.runtime.getJobs({ params })
       const deadLetters = yield* api.runtime.listDeadLetters({ params, query: { limit: 100 } })
-      return toJobsPage(yield* DateTime.now)({ summary, deadLetters: deadLetters.items })
+      return toJobsPage(yield* DateTime.now)({
+        summary,
+        deadLetters: deadLetters.items,
+        resolvable: false,
+      })
     }),
   () => import("./fixtures.ts").then((fixtures) => fixtures.jobs),
 )

@@ -397,10 +397,12 @@ describe("send retries", () => {
 })
 
 const turn = {
+  commandId: "cmd_1",
   at: "2026-10-03T14:02:16.998Z",
   durationMs: 4.1,
   address: "Order/ord_8f2c",
   command: "Charged",
+  caller: null,
   payloadPreview: "{}",
   outcome: "ok",
   errorTag: null,

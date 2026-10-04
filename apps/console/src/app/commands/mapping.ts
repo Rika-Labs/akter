@@ -2,6 +2,7 @@ import type { CommandFailed, CommandLogEntry, CommandSent } from "@akter/cloud-a
 import { formatDuration } from "@akter/ui/geometry"
 import { DateTime, Match, Option, Predicate, Schema } from "effect"
 import { clockMillis, splitAddress } from "../overview/time.ts"
+import { orUnknown } from "../shell/unknown.ts"
 import { CommandRejected, CommandSucceeded, type Tail, type TailEntry } from "./model.ts"
 
 /** The most turns the tail keeps. */
@@ -18,8 +19,8 @@ export const toOpeningTail =
 
 /**
  * One committed command as a tail row. `sequence` orders rows and keys them, and the caller owns
- * it. An error reads as its typed tag, a replay as `replayed`, and an empty payload leaves the
- * command name bare.
+ * it. An error reads as its typed tag, a replay as `replayed`, and an empty or unreported payload
+ * leaves the command name bare; an unrecorded time or duration reads `—`.
  */
 export const toTailEntry =
   (sequence: number) =>
@@ -27,12 +28,16 @@ export const toTailEntry =
     const { actorType, key } = splitAddress(entry.address)
     return {
       sequence,
-      time: clockMillis(entry.at!),
-      took: formatDuration(entry.durationMs!),
+      commandId: entry.commandId,
+      time: orUnknown(clockMillis)(entry.at),
+      took: orUnknown(formatDuration)(entry.durationMs),
       actorType,
       key,
       command:
-        entry.payloadPreview === "" ? entry.command : `${entry.command} ${entry.payloadPreview}`,
+        entry.payloadPreview === null || entry.payloadPreview === ""
+          ? entry.command
+          : `${entry.command} ${entry.payloadPreview}`,
+      caller: entry.caller,
       result: entry.outcome,
       detail: Match.value(entry.outcome).pipe(
         Match.when("error", () => entry.errorTag ?? "error"),
@@ -43,12 +48,23 @@ export const toTailEntry =
     }
   }
 
-/** A page of the command log, newest first, numbered so the newest has the highest sequence. */
-export const toRecentTurns = (entries: ReadonlyArray<CommandLogEntry>): ReadonlyArray<TailEntry> =>
-  [...entries]
-    .sort((left, right) => DateTime.toEpochMillis(left.at!) - DateTime.toEpochMillis(right.at!))
-    .map((entry, index) => toTailEntry(index)(entry))
-    .reverse()
+const newestFirst = (left: CommandLogEntry, right: CommandLogEntry): number => {
+  if (left.at === null) return right.at === null ? 0 : 1
+  if (right.at === null) return -1
+  return DateTime.toEpochMillis(right.at) - DateTime.toEpochMillis(left.at)
+}
+
+/**
+ * A page of the command log, newest first, numbered so the newest has the highest sequence. An
+ * entry without a recorded time sorts after every timed one, and the sort is stable, so entries
+ * that tie, untimed ones included, keep the order the log gave them.
+ */
+export const toRecentTurns = (
+  entries: ReadonlyArray<CommandLogEntry>,
+): ReadonlyArray<TailEntry> => {
+  const ordered = [...entries].sort(newestFirst)
+  return ordered.map((entry, index) => toTailEntry(ordered.length - 1 - index)(entry))
+}
 
 /** The actor's return value, flagged when it came from the stored receipt of an earlier send. */
 export const toSucceeded = (sent: CommandSent): CommandSucceeded => CommandSucceeded.make(sent)

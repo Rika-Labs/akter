@@ -1,4 +1,4 @@
-import { Overview } from "@akter/cloud-api"
+import { DeploymentSummary, Overview } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { deployMarkers, orderedSeries, toOverviewPage } from "./mapping.ts"
@@ -7,6 +7,11 @@ const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(schema)))(JSON.stringify(input))
 
 const now = DateTime.makeUnsafe("2026-10-03T12:00:00.000Z")
+
+const reported = <A>(value: A | null): A => {
+  if (value === null) throw new Error("Expected a reported value")
+  return value
+}
 
 const point = (hour: number, value: number) => ({
   at: `2026-10-03T${String(hour).padStart(2, "0")}:00:00.000Z`,
@@ -73,7 +78,7 @@ describe("overview mapping", () => {
           value: "1,284",
           trend: [10, 20, 30],
         })
-        expect(orderedSeries(parsed.p99!).map((entry) => entry.value)).toEqual([12, 18])
+        expect(orderedSeries(reported(parsed.p99)).map((entry) => entry.value)).toEqual([12, 18])
       }),
     ))
 
@@ -122,7 +127,7 @@ describe("overview mapping", () => {
       Effect.gen(function* () {
         const parsed = yield* decode(Overview, overview)
         const page = toOverviewPage(now)({ project: "p", overview: parsed })
-        expect(page.deploys.map((deploy) => [deploy.commit, deploy.when])).toEqual([
+        expect(reported(page.deploys).map((deploy) => [deploy.commit, deploy.when])).toEqual([
           ["a3f9c21", "1h"],
           ["77be010", "1d"],
         ])
@@ -141,7 +146,115 @@ describe("overview mapping", () => {
           ],
         })
         const page = toOverviewPage(now)({ project: "p", overview: parsed })
-        expect(page.deploys.map((deploy) => deploy.id)).toEqual(["dep_rollback", "dep_original"])
+        expect(reported(page.deploys).map((deploy) => deploy.id)).toEqual([
+          "dep_rollback",
+          "dep_original",
+        ])
+      }),
+    ))
+})
+
+/** The overview as the runners' durable views answer it: every unmeasured field null. */
+const unmeasured = {
+  commands: null,
+  actors: { awake: null, total: 7 },
+  jobs: { inFlight: 2, donePerHour: null },
+  deadLettersByJobType: [{ jobName: "Charge", count: 1 }],
+  throughput: null,
+  p99: null,
+  health: {
+    runners: null,
+    databaseCpuPercent: null,
+    maxMailbox: null,
+    parkedSockets: null,
+    outboxLagP99Ms: null,
+    lastDeployAt: null,
+  },
+  recentDeployments: null,
+}
+
+describe("overview mapping with unmeasured fields", () => {
+  it("reads every unmeasured number as a dash and keeps measured ones", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, unmeasured)
+        const page = toOverviewPage(now)({ project: "p", overview: parsed })
+        expect(page.stats.map((stat) => [stat.label, stat.value, stat.trend])).toEqual([
+          ["Commands / s", "—", []],
+          ["Awake actors", "—", []],
+          ["Jobs in flight", "2", []],
+          ["Dead letters", "1", []],
+        ])
+        expect(page.health).toEqual([
+          { label: "Runners", value: "—", healthy: null },
+          { label: "Database", value: "—", healthy: null },
+          { label: "Mailbox depth", value: "—", healthy: null },
+          { label: "Parked sockets", value: "—", healthy: null },
+          { label: "Outbox lag", value: "—", healthy: null },
+          { label: "Dead letters", value: "1 need a decision", healthy: false },
+        ])
+        const text = [...page.stats, ...page.health].map((fact) => fact.value).join(" ")
+        expect(text).not.toMatch(/null|NaN|\b0\b/)
+      }),
+    ))
+
+  it("leaves unreported charts null rather than empty or zero", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const page = toOverviewPage(now)({
+          project: "p",
+          overview: yield* decode(Overview, unmeasured),
+        })
+        expect(page.throughput).toBeNull()
+        expect(page.hours).toEqual([])
+        expect(page.markers).toEqual([])
+        expect(page.latency).toEqual({ p50: null, p99: null, hours: [], p99Series: null })
+        expect(page.deploys).toBeNull()
+      }),
+    ))
+
+  it("keeps a latency summary without its series, and a series without its summary", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const summaryOnly = yield* decode(Overview, {
+          ...unmeasured,
+          commands: { perSecond: 4, series24h: [], p50Ms: 1.5, p99Ms: 9 },
+        })
+        expect(toOverviewPage(now)({ project: "p", overview: summaryOnly }).latency).toEqual({
+          p50: 1.5,
+          p99: 9,
+          hours: [],
+          p99Series: null,
+        })
+        const seriesOnly = yield* decode(Overview, { ...unmeasured, p99: [point(9, 18)] })
+        expect(toOverviewPage(now)({ project: "p", overview: seriesOnly }).latency).toEqual({
+          p50: null,
+          p99: null,
+          hours: ["09:00"],
+          p99Series: [18],
+        })
+      }),
+    ))
+
+  it("takes recent deploys from the deployments list only when the overview reports none", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const listed = yield* decode(Schema.Array(DeploymentSummary), [
+          deployment("dep_listed", "c0ffee12", "2026-10-03T09:00:00.000Z"),
+        ])
+        const page = toOverviewPage(now)({
+          project: "p",
+          overview: yield* decode(Overview, unmeasured),
+          deployments: listed,
+        })
+        expect(reported(page.deploys).map((deploy) => deploy.id)).toEqual(["dep_listed"])
+        expect(page.markers).toEqual([])
+        const own = toOverviewPage(now)({
+          project: "p",
+          overview: yield* decode(Overview, overview),
+          deployments: listed,
+        })
+        expect(reported(own.deploys).map((deploy) => deploy.id)).toEqual(["a", "b"])
       }),
     ))
 })
@@ -151,11 +264,10 @@ describe("deploy markers", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const parsed = yield* decode(Overview, overview)
-        const series = orderedSeries(parsed.throughput!)
-        expect(deployMarkers(parsed.recentDeployments)(series)).toEqual([
-          { index: 2, label: "a3f9c21" },
-        ])
-        expect(deployMarkers(parsed.recentDeployments)([])).toEqual([])
+        const series = orderedSeries(reported(parsed.throughput))
+        const deployments = reported(parsed.recentDeployments)
+        expect(deployMarkers(deployments)(series)).toEqual([{ index: 2, label: "a3f9c21" }])
+        expect(deployMarkers(deployments)([])).toEqual([])
       }),
     ))
 })

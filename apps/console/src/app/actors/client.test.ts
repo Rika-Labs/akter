@@ -128,13 +128,14 @@ describe("actor type over the live API", () => {
       }),
     ))
 
-  it("keeps the live summary and instances and marks the page sample when only activity is not implemented", () =>
+  it("keeps the page live and marks only its activity sample when only activity is not implemented", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const loaded = yield* load(
           live({ [`${base}/activity`]: notImplemented("runtime.activity") }),
         )
-        expect(loaded.sample).toBe(true)
+        expect(loaded.sample).toBe(false)
+        expect(loaded.data?.activitySample).toBe(true)
         expect(loaded.data?.summary).toMatchObject({ instances: 3, commandsPerSecond: 0.5 })
         expect(loaded.data?.instances.map((instance) => instance.key)).toEqual(["ord_1"])
         expect(loaded.data?.activity.window).toBe("1h")

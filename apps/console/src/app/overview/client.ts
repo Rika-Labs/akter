@@ -18,6 +18,13 @@ const loadSelected = (fixture: () => Promise<OverviewPage | EmptyProjectPage>) =
         const overview = yield* api.runtime.getOverview({
           params: { projectId: project.id, environment },
         })
+        const deployments =
+          overview.recentDeployments === null
+            ? (yield* api.deployments.list({
+                params: { projectId: project.id },
+                query: { environment, limit: 3 },
+              })).items
+            : undefined
         const distribution = yield* load(
           Effect.gen(function* () {
             const types = yield* api.runtime.listActorTypes({
@@ -40,9 +47,11 @@ const loadSelected = (fixture: () => Promise<OverviewPage | EmptyProjectPage>) =
           toOverviewPage(yield* DateTime.now)({
             project: project.slug,
             overview,
+            deployments,
             distribution: distribution.data,
+            distributionSample: distribution.sample,
           }),
-          distribution.sample,
+          false,
         )
       }),
     () => fixture().then((data) => sourced(data, true)),

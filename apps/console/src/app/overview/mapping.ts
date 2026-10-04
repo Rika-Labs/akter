@@ -1,7 +1,14 @@
-import type { Overview, SeriesPoint, SeriesWindow, TurnLatency } from "@akter/cloud-api"
+import type {
+  DeploymentSummary,
+  Overview,
+  SeriesPoint,
+  SeriesWindow,
+  TurnLatency,
+} from "@akter/cloud-api"
 import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import { DateTime } from "effect"
 import { shortCommit, toDeployRecord } from "../deployments/mapping.ts"
+import { orUnknown, unknown } from "../shell/unknown.ts"
 import { type LatencyDistribution, OverviewPage } from "./model.ts"
 import { hourLabel } from "./time.ts"
 
@@ -27,14 +34,14 @@ export const orderedSeries = (series: ReadonlyArray<SeriesPoint>): ReadonlyArray
  * marker.
  */
 export const deployMarkers =
-  (deployments: Overview["recentDeployments"]) =>
+  (deployments: ReadonlyArray<DeploymentSummary>) =>
   (series: ReadonlyArray<SeriesPoint>): ReadonlyArray<{ index: number; label: string }> => {
     const first = series[0]
     const last = series.at(-1)
     if (first === undefined || last === undefined) return []
     const start = DateTime.toEpochMillis(first.at)
     const end = DateTime.toEpochMillis(last.at)
-    return deployments!.flatMap((deployment) => {
+    return deployments.flatMap((deployment) => {
       const at = DateTime.toEpochMillis(deployment.createdAt)
       if (at < start || at > end) return []
       const distances = series.map((point) => Math.abs(DateTime.toEpochMillis(point.at) - at))
@@ -87,7 +94,11 @@ export const toLatencyDistribution =
 /**
  * The overview the runtime API reports, drawn as the console's page. The API has no yesterday
  * comparison, no history behind the awake, in-flight or dead-letter counts, and no database vendor
- * in its health report, so those parts of the page are empty or plain.
+ * in its health report, so those parts of the page are empty or plain. Whatever the runtime does
+ * not report reads `—`, or as an unreported section, never as zero: command rates and latencies,
+ * the throughput and p99 series, awake actors and each health fact but dead letters. The overview's
+ * own deployments win; `deployments`, read from the deployments list, stand in when it reports
+ * none.
  */
 export const toOverviewPage =
   (now: DateTime.Utc) =>
@@ -95,27 +106,31 @@ export const toOverviewPage =
     input: Readonly<{
       project: string
       overview: Overview
+      deployments?: ReadonlyArray<DeploymentSummary> | undefined
       distribution?: LatencyDistribution | undefined
+      distributionSample?: boolean | undefined
     }>,
   ): OverviewPage => {
     const { overview } = input
-    const throughput = orderedSeries(overview.throughput!)
-    const p99 = orderedSeries(overview.p99!)
+    const { commands, health } = overview
+    const throughput = overview.throughput === null ? null : orderedSeries(overview.throughput)
+    const p99 = overview.p99 === null ? null : orderedSeries(overview.p99)
+    const deployments = overview.recentDeployments ?? input.deployments ?? null
     const deadLetters = overview.deadLettersByJobType.reduce((sum, type) => sum + type.count, 0)
-    const { health } = overview
-    const mailbox = health.maxMailbox!
+    const mailbox = health.maxMailbox
     return OverviewPage.make({
       project: input.project,
       stats: [
         {
           label: "Commands / s",
-          value: formatInteger(overview.commands!.perSecond),
-          trend: orderedSeries(overview.commands!.series24h).map((point) => point.value),
+          value: commands === null ? unknown : formatInteger(commands.perSecond),
+          trend:
+            commands === null ? [] : orderedSeries(commands.series24h).map((point) => point.value),
           stepped: false,
         },
         {
           label: "Awake actors",
-          value: formatInteger(overview.actors.awake!),
+          value: orUnknown(formatInteger)(overview.actors.awake),
           trend: [],
           stepped: false,
         },
@@ -127,35 +142,48 @@ export const toOverviewPage =
         },
         { label: "Dead letters", value: formatInteger(deadLetters), trend: [], stepped: true },
       ],
-      hours: throughput.map((point) => hourLabel(point.at)),
-      throughput: throughput.map((point) => point.value),
+      hours: throughput?.map((point) => hourLabel(point.at)) ?? [],
+      throughput: throughput?.map((point) => point.value) ?? null,
       previous: [],
-      markers: deployMarkers(overview.recentDeployments)(throughput),
+      markers:
+        throughput === null || deployments === null ? [] : deployMarkers(deployments)(throughput),
       health: [
+        health.runners === null
+          ? { label: "Runners", value: unknown, healthy: null }
+          : {
+              label: "Runners",
+              value: `${formatInteger(health.runners.healthy)} of ${formatInteger(health.runners.total)} healthy`,
+              healthy: health.runners.healthy === health.runners.total,
+            },
+        health.databaseCpuPercent === null
+          ? { label: "Database", value: unknown, healthy: null }
+          : {
+              label: "Database",
+              value: `${String(Math.round(health.databaseCpuPercent))}% CPU`,
+              healthy: health.databaseCpuPercent < databaseCpuLimit,
+            },
+        mailbox === null
+          ? { label: "Mailbox depth", value: unknown, healthy: null }
+          : {
+              label: "Mailbox depth",
+              value:
+                mailbox.actor === null
+                  ? `max ${formatInteger(mailbox.depth)}`
+                  : `max ${formatInteger(mailbox.depth)} · ${mailbox.actor}`,
+              healthy: mailbox.depth < mailboxDepthLimit,
+            },
         {
-          label: "Runners",
-          value: `${formatInteger(health.runners!.healthy)} of ${formatInteger(health.runners!.total)} healthy`,
-          healthy: health.runners!.healthy === health.runners!.total,
+          label: "Parked sockets",
+          value: orUnknown(formatInteger)(health.parkedSockets),
+          healthy: health.parkedSockets === null ? null : true,
         },
-        {
-          label: "Database",
-          value: `${String(Math.round(health.databaseCpuPercent!))}% CPU`,
-          healthy: health.databaseCpuPercent! < databaseCpuLimit,
-        },
-        {
-          label: "Mailbox depth",
-          value:
-            mailbox.actor === null
-              ? `max ${formatInteger(mailbox.depth)}`
-              : `max ${formatInteger(mailbox.depth)} · ${mailbox.actor}`,
-          healthy: mailbox.depth < mailboxDepthLimit,
-        },
-        { label: "Parked sockets", value: formatInteger(health.parkedSockets!), healthy: true },
-        {
-          label: "Outbox lag",
-          value: `p99 ${formatDuration(health.outboxLagP99Ms!)}`,
-          healthy: health.outboxLagP99Ms! < outboxLagLimitMs,
-        },
+        health.outboxLagP99Ms === null
+          ? { label: "Outbox lag", value: unknown, healthy: null }
+          : {
+              label: "Outbox lag",
+              value: `p99 ${formatDuration(health.outboxLagP99Ms)}`,
+              healthy: health.outboxLagP99Ms < outboxLagLimitMs,
+            },
         {
           label: "Dead letters",
           value: deadLetters === 0 ? "none" : `${formatInteger(deadLetters)} need a decision`,
@@ -163,21 +191,23 @@ export const toOverviewPage =
         },
       ],
       latency: {
-        p50: overview.commands!.p50Ms,
-        p99: overview.commands!.p99Ms,
-        hours: p99.map((point) => hourLabel(point.at)),
-        p99Series: p99.map((point) => point.value),
+        p50: commands?.p50Ms ?? null,
+        p99: commands?.p99Ms ?? null,
+        hours: p99?.map((point) => hourLabel(point.at)) ?? [],
+        p99Series: p99?.map((point) => point.value) ?? null,
       },
       distribution: input.distribution,
-      deploys: overview.recentDeployments!.slice(0, 3).map((deployment) => {
-        const record = toDeployRecord(now)(deployment)
-        return {
-          id: record.id,
-          commit: record.commit,
-          message: record.message,
-          status: record.status,
-          when: record.when,
-        }
-      }),
+      distributionSample: input.distributionSample ?? false,
+      deploys:
+        deployments?.slice(0, 3).map((deployment) => {
+          const record = toDeployRecord(now)(deployment)
+          return {
+            id: record.id,
+            commit: record.commit,
+            message: record.message,
+            status: record.status,
+            when: record.when,
+          }
+        }) ?? null,
     })
   }

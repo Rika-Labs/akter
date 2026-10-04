@@ -7,7 +7,8 @@ import type {
 } from "@akter/cloud-api"
 import { type DateTime, Predicate } from "effect"
 import { orderedSeries } from "../overview/mapping.ts"
-import { ago, clock, seriesLabel, splitAddress } from "../overview/time.ts"
+import { ago, clock, dayClock, seriesLabel, splitAddress } from "../overview/time.ts"
+import { orUnknown, unknown } from "../shell/unknown.ts"
 import { type ActorInstance, ActorPage, type TypeActivity } from "./model.ts"
 
 /** A type's activity as the page draws it: the series oldest first with UTC labels, the commands as the API ranks them. */
@@ -46,15 +47,18 @@ const timelineTitles: Readonly<Record<ActorTimelineEntry["kind"], string>> = {
   job: "ran",
 }
 
-/** One instance of a type as a row; an instance that never ran a command has none, written `—`. */
+/**
+ * One instance of a type as a row. Whether it is awake stays unknown when the runtime does not say,
+ * and a last command or turn it does not report, or that never happened, is written `—`.
+ */
 export const toActorInstance =
   (now: DateTime.Utc) =>
   (instance: CloudActorInstance): ActorInstance => ({
     key: instance.key,
-    awake: instance.status === "awake",
+    awake: instance.status === null ? null : instance.status === "awake",
     generation: instance.generation,
-    lastCommand: instance.lastCommand ?? "—",
-    lastTurn: instance.lastActivityAt === null ? "—" : ago(now)(instance.lastActivityAt),
+    lastCommand: instance.lastCommand ?? unknown,
+    lastTurn: orUnknown(ago(now))(instance.lastActivityAt),
   })
 
 /** The inspector's view of one actor, read from the runner that owns it; what the runner does not report stays unknown. */
@@ -67,8 +71,8 @@ export const toActorPage = (inspector: ActorInspector): ActorPage => {
     awake: properties.status === null ? null : properties.status === "awake",
     generation: properties.generation,
     turn: inspector.turn,
-    runner: properties.runner ?? "—",
-    region: properties.region ?? "—",
+    runner: properties.runner ?? unknown,
+    region: properties.region ?? unknown,
     tenant: properties.tenant,
     mailbox: properties.mailboxDepth,
     state: inspector.state === null ? null : JSON.stringify(inspector.state, null, 2),
@@ -81,11 +85,18 @@ export const toActorPage = (inspector: ActorInspector): ActorPage => {
     receipts: inspector.receipts.map((receipt) => ({
       commandId: receipt.commandId,
       command: receipt.command,
-      result: receipt.result ?? "—",
-      at: receipt.at === null ? "—" : clock(receipt.at),
+      result: receipt.result ?? unknown,
+      caller: receipt.caller,
+      at: orUnknown(clock)(receipt.at),
+      expires: dayClock(receipt.expiresAt),
       replayed: receipt.replayed,
     })),
-    events: inspector.events,
+    events: inspector.events.map((event) => ({
+      cursor: event.cursor,
+      name: event.name,
+      emitted: dayClock(event.emittedAt),
+      subscribers: event.subscribers,
+    })),
     jobs: inspector.jobs,
     connections: inspector.connections,
     activity:
@@ -94,7 +105,8 @@ export const toActorPage = (inspector: ActorInspector): ActorPage => {
         committed: entry.kind === "command",
         title: timelineTitles[entry.kind],
         subject: entry.label,
-        detail: entry.detail ?? "",
+        detail: entry.detail === null ? "" : shortCommandId(entry.detail),
+        caller: entry.caller,
         time: clock(entry.at),
       })) ?? null,
   })

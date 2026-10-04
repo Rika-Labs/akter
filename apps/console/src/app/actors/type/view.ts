@@ -16,12 +16,18 @@ import { OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
 import { windowName } from "../../overview/time.ts"
 import { windowMenu } from "../../overview/window.ts"
+import { orUnknown, sampleNotice, unknown } from "../../shell/unknown.ts"
 import type { ActorTypePage } from "../model.ts"
 
-/** One actor type: its numbers, its traffic and command volumes over the selected window, and its instances. */
+/**
+ * One actor type: its numbers, its traffic and command volumes over the selected window, and its
+ * instances. Activity that fell back to sample data on a live page carries one notice above its
+ * charts, keeps its window fixed and lends no trend to the live rate.
+ */
 export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>): Screen => {
   const { summary, activity } = page
   const first = page.instances[0]
+  const activityFixed = model.pageSample || page.activitySample
   return {
     title: summary.name,
     crumbs: [
@@ -29,7 +35,7 @@ export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>):
       { label: summary.name, mono: true },
     ],
     actions: [
-      windowMenu(h, { id: "range-menu", selected: activity.window, disabled: model.pageSample }),
+      windowMenu(h, { id: "range-menu", selected: activity.window, disabled: activityFixed }),
       ...(first === undefined
         ? []
         : [
@@ -53,24 +59,27 @@ export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>):
       pageHeader(h, {
         title: summary.name,
         mono: true,
-        description: `Accepts ${summary.commands!.join(", ")}.`,
+        description:
+          summary.commands === null ? undefined : `Accepts ${summary.commands.join(", ")}.`,
       }),
       statRow(h, {
         label: `${summary.name} totals`,
         stats: [
           { label: "Instances", value: formatCompact(summary.instances) },
-          { label: "Awake", value: formatInteger(summary.awake!) },
+          { label: "Awake", value: orUnknown(formatInteger)(summary.awake) },
           {
             label: "Commands / s",
-            value: formatInteger(summary.commandsPerSecond!),
-            trend: activity.perSecond.slice(-40),
+            value: orUnknown(formatInteger)(summary.commandsPerSecond),
+            trend: page.activitySample ? undefined : activity.perSecond.slice(-40),
           },
           {
             label: "p99 turn",
-            value: summary.commandsPerSecond === 0 ? "—" : formatDuration(summary.p99Ms!),
+            value:
+              summary.commandsPerSecond === 0 ? unknown : orUnknown(formatDuration)(summary.p99Ms),
           },
         ],
       }),
+      ...(page.activitySample ? [sampleNotice(h)] : []),
       columns(h, {
         layout: "wide-left",
         children: [
@@ -147,10 +156,12 @@ export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>):
                 : Routes.actor({ actorType: summary.name, key: instance.key }),
               cells: [
                 instance.key,
-                status(h, {
-                  tone: instance.awake ? "live" : "idle",
-                  label: instance.awake ? "Awake" : "Asleep",
-                }),
+                instance.awake === null
+                  ? unknown
+                  : status(h, {
+                      tone: instance.awake ? "live" : "idle",
+                      label: instance.awake ? "Awake" : "Asleep",
+                    }),
                 String(instance.generation),
                 instance.lastCommand,
                 instance.lastTurn,

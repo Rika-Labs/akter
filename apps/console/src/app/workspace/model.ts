@@ -1,8 +1,12 @@
 import { Schema as S } from "effect"
 import { CommandScope } from "../commands/model.ts"
 
-/** The signed-in person. */
+/**
+ * The signed-in person. `id` is their user id when the session is a member's, so the console can
+ * name their own commands; a session signed in with an API key has none.
+ */
 export const Person = S.Struct({
+  id: S.optional(S.String),
   name: S.String,
   email: S.String,
   role: S.String,

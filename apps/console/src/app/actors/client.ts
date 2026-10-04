@@ -28,7 +28,7 @@ export const loadActors: Effect.Effect<Loaded<ActorsPage>, ConsoleError> = withP
 /**
  * Loads one actor type, its activity over the selected window and the first page of its instances,
  * or nothing when there is no such type. When only the activity endpoint is not implemented, the
- * summary and instances stay live and the page is marked sample.
+ * summary and instances stay live, so the page does too, and only its activity is marked sample.
  */
 export const loadActorType = (
   name: string,
@@ -49,15 +49,16 @@ export const loadActorType = (
               import("./fixtures.ts").then((fixtures) => fixtures.typeActivity(window)(summary)),
           )
           const now = yield* DateTime.now
-          return {
-            data: ActorTypePage.make({
+          return sourced(
+            ActorTypePage.make({
               commandScope: { projectId: project.id, environment },
               summary,
               instances: instances.items.map(toActorInstance(now)),
               activity: activity.data,
+              activitySample: activity.sample,
             }),
-            sample: activity.sample,
-          }
+            false,
+          )
         }).pipe(
           orUndefined,
           Effect.map(

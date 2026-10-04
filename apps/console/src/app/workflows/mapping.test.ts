@@ -129,4 +129,57 @@ describe("workflow mapping", () => {
         expect(idle).toMatchObject({ nextTimer: null, nextSchedule: null, running: 0 })
       }),
     ))
+
+  it("writes a step without a known total by its index and a finished run without a step as a dash", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const counted = yield* decode(
+          Workflow,
+          workflow({
+            status: "running",
+            waitingFor: null,
+            step: { index: 2, total: null, name: "pay" },
+          }),
+        )
+        expect(toWorkflowRun(now)(counted).step).toBe("pay · step 2")
+        const finished = yield* decode(
+          Workflow,
+          workflow({ status: "completed", waitingFor: null, step: null }),
+        )
+        const row = toWorkflowRun(now)(finished)
+        expect(row).toMatchObject({ step: "—", status: "Done", waitingFor: "—" })
+        expect(Object.values(row).join(" ")).not.toMatch(/null|NaN|undefined/)
+      }),
+    ))
+
+  it("shows sample schedules on a live page without naming a next schedule from them", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const timers = yield* decode(TimersSummary, { pending: 0, nextFireAt: null })
+        const page = toWorkflowsPage(now)({
+          workflows: [],
+          truncated: false,
+          timers,
+          schedules: [],
+          sampleSchedules: [
+            {
+              name: "nightly",
+              target: "Report/*",
+              cron: "0 2 * * *",
+              lastRun: "—",
+              nextRun: "in 9 h",
+            },
+          ],
+        })
+        expect(page).toMatchObject({ schedulesSample: true, nextSchedule: null, nextTimer: null })
+        expect(page.schedules.map((schedule) => schedule.name)).toEqual(["nightly"])
+        const live = toWorkflowsPage(now)({
+          workflows: [],
+          truncated: false,
+          timers,
+          schedules: [],
+        })
+        expect(live).toMatchObject({ schedulesSample: false, schedules: [] })
+      }),
+    ))
 })
