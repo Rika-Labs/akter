@@ -1,7 +1,7 @@
-import { NotFound } from "@akter/cloud-api"
+import { DeploymentDetail, NotFound, OrganizationMembership, Project } from "@akter/cloud-api"
 import { ActivationRefused, RolloutRouting, type ReleaseRecord } from "@akter/deployments/lifecycle"
 import { migrate } from "@akter/postgres/migrate"
-import { BunCrypto } from "@effect/platform-bun"
+import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {
   Config,
@@ -13,7 +13,10 @@ import {
   Layer,
   ManagedRuntime,
   Redacted,
+  Schedule,
+  Schema,
 } from "effect"
+import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -21,6 +24,7 @@ import { runtimeEdge } from "./cloud.ts"
 import { Repository, RepositoryLive } from "./repository.ts"
 import { rolloutRouting, serviceCredential } from "./rollout.ts"
 import { RuntimeEdge } from "./runtime.ts"
+import { infrastructure, routes } from "./server.ts"
 import type { ApiOptions } from "./config.ts"
 
 const options = {
@@ -58,6 +62,82 @@ const runtime = ManagedRuntime.make(live)
 afterAll(() => runtime.dispose(), 60000)
 const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof live>>) =>
   runtime.runPromise(effect)
+
+const apiLive = Layer.unwrap(
+  Config.Redacted("TEST_DATABASE_URL").pipe(
+    Effect.map((databaseUrl) => infrastructure({ ...options, databaseUrl })),
+  ),
+).pipe(Layer.provideMerge(FetchHttpClient.layer), Layer.provideMerge(BunCrypto.layer))
+const api = ManagedRuntime.make(apiLive)
+afterAll(() => api.dispose(), 60000)
+
+/** Serves the public routes over Bun HTTP and signs one verified owner in, so assertions go through the API a client calls. */
+const publicApi = Effect.gen(function* () {
+  const context = yield* Effect.context<Layer.Success<typeof apiLive>>()
+  const web = yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      HttpRouter.toWebHandler(
+        routes.pipe(
+          Layer.provide(Layer.succeedContext(context)),
+          Layer.provide(BunHttpServer.layerHttpServices),
+        ),
+        { disableLogger: true },
+      ),
+    ),
+    (web) => Effect.promise(() => web.dispose()),
+  )
+  const server = yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (request) => web.handler(request, context),
+      }),
+    ),
+    (server) => Effect.promise(() => server.stop(true)),
+  )
+  const client = yield* HttpClient.HttpClient
+  const sql = yield* SqlClient.SqlClient
+  const request = (path: string, body?: Schema.Json, cookie?: string) =>
+    Effect.gen(function* () {
+      const headers = new Headers({ "content-type": "application/json", origin: options.origin })
+      if (cookie !== undefined) headers.set("cookie", cookie)
+      const base = HttpClientRequest.make(body === undefined ? "GET" : "POST")(
+        `http://127.0.0.1:${server.port}${path}`,
+      ).pipe(HttpClientRequest.setHeaders(headers))
+      return yield* client
+        .execute(body === undefined ? base : yield* HttpClientRequest.bodyJson(body)(base))
+        .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }))
+    }).pipe(Effect.orDie)
+  const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+  const email = `rollout-owner-${suffix}@example.com`
+  const password = "correct-horse-battery-staple-42"
+  const signup = yield* request("/auth/sign-up/email", { name: "Rollout owner", email, password })
+  expect(signup.status).toBe(200)
+  const [verification] = yield* sql<{
+    body: string
+  }>`SELECT body FROM cloud_email_outbox WHERE recipient = ${email} ORDER BY id DESC LIMIT 1`.pipe(
+    Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (rows) => rows.length > 0 }),
+    Effect.timeout("5 seconds"),
+    Effect.orDie,
+  )
+  const link = new URL(verification?.body ?? "")
+  expect((yield* request(link.pathname + link.search)).status).toBe(302)
+  const login = yield* request("/auth/sign-in/email", { email, password })
+  expect(login.status).toBe(200)
+  const cookie = Cookies.toCookieHeader(login.cookies)
+  return {
+    sql,
+    suffix,
+    call: <A, I>(path: string, schema: Schema.Codec<A, I>, body?: Schema.Json) =>
+      request(path, body, cookie).pipe(
+        Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+        Effect.flatMap((response) => response.json),
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.toCodecJson(schema))),
+        Effect.orDie,
+      ),
+  }
+})
 
 const release = (projectId: string, deploymentId: string): ReleaseRecord => ({
   organizationId: "org-routing",
@@ -272,4 +352,57 @@ describe("rollout routing authority", () => {
         ).toEqual(NotFound.make({ resource: "live deployment", id: `${project.id}/production` }))
       }).pipe(Effect.scoped),
     ))
+
+  it(
+    "labels a rollback and a redeploy with the source deployment's short commit and message",
+    () =>
+      api.runPromise(
+        Effect.gen(function* () {
+          const { sql, suffix, call } = yield* publicApi
+          const organization = yield* call("/api/organizations", OrganizationMembership, {
+            name: "Rollout labels",
+            slug: `rollout-labels-${suffix}`,
+          })
+          const project = yield* call(
+            `/api/organizations/${organization.organization.id}/projects`,
+            Project,
+            { name: "Labels", slug: "labels", homeRegion: "us-east-1" },
+          )
+          const path = `/api/projects/${project.id}/deployments`
+          const sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+          const deploy = (commitSha: string, message: string) =>
+            call(path, DeploymentDetail, { environment: "production", commitSha, message })
+          const fail = (deploymentId: string) =>
+            call(`${path}/${deploymentId}/build-failure`, DeploymentDetail, {
+              reason: "Release the environment for the next rollout",
+            })
+          const first = yield* deploy(sha, "Ship the checkout flow")
+          yield* fail(first.id)
+          yield* fail(
+            (yield* deploy("9f8e7d6c5b4a39281706f5e4d3c2b1a098765432", "Tune the cache")).id,
+          )
+          const redeployed = yield* call(`${path}/${first.id}/redeploy`, DeploymentDetail, {})
+          expect(redeployed).toMatchObject({
+            commitSha: sha,
+            message: "Redeploy a1b2c3d: Ship the checkout flow",
+            rolledBackFrom: null,
+          })
+          yield* fail(redeployed.id)
+          const image = `example@sha256:${"c".repeat(64)}`
+          yield* sql`UPDATE deployment_rollout SET status = 'drained', image_digest = ${image} WHERE id = ${first.id}`.pipe(
+            Effect.orDie,
+          )
+          yield* sql`INSERT INTO deployment (id, primary_region, tier, image, environment_snapshot, serving) VALUES (${first.id}, 'us-east-1', 'free', ${image}, ${'{"APP_SETTING":"checkout","DATABASE_URL":"postgres://cell/original"}'}::jsonb, false)`.pipe(
+            Effect.orDie,
+          )
+          const rolledBack = yield* call(`${path}/${first.id}/rollback`, DeploymentDetail, {})
+          expect(rolledBack).toMatchObject({
+            commitSha: sha,
+            message: "Rollback to a1b2c3d: Ship the checkout flow",
+            rolledBackFrom: first.id,
+          })
+        }).pipe(Effect.scoped),
+      ),
+    60000,
+  )
 })

@@ -12,6 +12,9 @@ import {
   ActorTypeActivity,
   ActorTypeSummary,
   CommandFailed,
+  CommandExpired,
+  CommandRefused,
+  RunnerDefect,
   CommandLogEntry,
   CommandOutcome,
   CommandSent,
@@ -135,7 +138,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
   HttpApiEndpoint.get(
     "listActorJobs",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key/jobs",
-    { params: actorParams, success: Schema.Array(ActorJob), error: ReadErrors },
+    { params: actorParams, success: Schema.Array(ActorJob), error: [...ReadErrors, RunnerDefect] },
   ),
   HttpApiEndpoint.get(
     "listActorTimeline",
@@ -163,11 +166,18 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       params: environmentParams,
       payload: SendCommand,
       success: CommandSent,
-      error: [...WriteErrors, CommandFailed, ...QuotaErrors],
+      error: [
+        ...WriteErrors,
+        CommandFailed,
+        CommandRefused,
+        CommandExpired,
+        RunnerDefect,
+        ...QuotaErrors,
+      ],
     },
   ).annotate(
     OpenApi.Description,
-    "Runs one command on one actor through the runner that owns it and answers with the actor's result. Requires write permission on the project. `commandId` defaults to a freshly minted id; resending the same id replays the stored receipt and sets `replayed`. An error the actor itself returns is a 422 `CommandFailed` carrying its tag and payload. The edge's usage refusals keep the framework's tags and payloads: a full Free command quota is a 429 `QuotaExceeded`, a passed spend limit a 402 `SpendLimitExceeded`, a full connection allowance a 429 `ConnectionLimitExceeded` and a Free tenant at its storage cap a 429 `StorageQuotaExceeded`.",
+    "Sends to an actor address, including one not yet created, without requiring an inspector read. Requires project write permission. `commandId` is an optional client idempotency key, not a runner command id. Its scope is organization/project/environment/actor address/command, independent of deployment. The control plane durably assigns a runner-minted id and stores only a canonical payload hash; the same key and JSON input reuse it and replay the receipt with `replayed: true` within the runner's retry window. Different input returns 409 Conflict. After expiry, the key is retained as a tombstone for 30 days and returns 410 `CommandExpired`; reusing it after that starts a new command. Declared actor errors are 422 CommandFailed; admission refusals are typed 4xx, including 422 CommandRefused. Mailbox backpressure remains 503 Unavailable. Remote defects are opaque, non-retryable 502 RunnerDefect errors. The edge's usage refusals keep the framework's tags and payloads: a full Free command quota is a 429 `QuotaExceeded`, a passed spend limit a 402 `SpendLimitExceeded`, a full connection allowance a 429 `ConnectionLimitExceeded` and a Free tenant at its storage cap a 429 `StorageQuotaExceeded`.",
   ),
   HttpApiEndpoint.get(
     "streamCommands",

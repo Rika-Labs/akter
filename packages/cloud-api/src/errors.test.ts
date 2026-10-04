@@ -9,6 +9,7 @@ import {
   Unauthorized,
   Unavailable,
 } from "./errors.ts"
+import { CommandExpired, RunnerDefect } from "./runtime.ts"
 
 const expectRoundTrip = <T extends { readonly _tag: string }, E>(
   schema: Schema.Codec<T, E>,
@@ -34,13 +35,24 @@ describe("errors", () => {
       Unavailable,
       Unavailable.make({ message: "No ready capacity", retryAfterSeconds: 1 }),
     )
+    expectRoundTrip(CommandExpired, CommandExpired.make({ commandId: "client-key" }))
+    expectRoundTrip(RunnerDefect, RunnerDefect.make({}))
   })
 
   it("answers each error with its own status", () => {
     const status = (schema: Schema.Top) => schema.ast.annotations?.["httpApiStatus"]
     expect(
-      [Unauthorized, Forbidden, NotFound, Conflict, NotImplemented, Unavailable].map(status),
-    ).toEqual([401, 403, 404, 409, 501, 503])
+      [
+        Unauthorized,
+        Forbidden,
+        NotFound,
+        Conflict,
+        NotImplemented,
+        Unavailable,
+        CommandExpired,
+        RunnerDefect,
+      ].map(status),
+    ).toEqual([401, 403, 404, 409, 501, 503, 410, 502])
   })
 
   it("accepts only the credential codes the security contract names", () => {

@@ -18,7 +18,7 @@ import { Auth, processRuntimeLayer } from "./auth.ts"
 import type { ApiOptions } from "./config.ts"
 import { localEmail, sesEmail } from "./email.ts"
 import { PendingLayers } from "./pending.ts"
-import { Repository, RepositoryLive } from "./repository.ts"
+import { Repository, RepositoryLive, RepositoryRetentionLive } from "./repository.ts"
 import { ControlLayers } from "./control.ts"
 import { SqlClient } from "effect/sql"
 import { billingInfrastructure, BillingLive, billingWebhook, UsageLive } from "./billing.ts"
@@ -224,6 +224,7 @@ export const infrastructure = (options: ApiOptions) => {
   return Layer.mergeAll(
     auth,
     RepositoryLive,
+    RepositoryRetentionLive.pipe(Layer.provide(RepositoryLive)),
     billingInfrastructure(options),
     Layer.succeed(LocalBillingOptions, options),
     runtimeEdge(options),

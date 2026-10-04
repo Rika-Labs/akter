@@ -165,7 +165,7 @@ describe("runtime models", () => {
         "/api/projects/{projectId}/environments/{environment}/runtime/commands"
       ]?.post
     expect(Object.keys(operation?.responses ?? {})).toEqual(
-      expect.arrayContaining(["200", "401", "403", "404", "409", "422", "501"]),
+      expect.arrayContaining(["200", "401", "403", "404", "409", "410", "422", "501", "502"]),
     )
     expect(operation?.description).toContain("commandId")
     expect(
