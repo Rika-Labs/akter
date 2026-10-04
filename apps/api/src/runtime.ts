@@ -1,7 +1,14 @@
 import {
+  type ActorEvent,
   type ActorInspector,
   type ActorJob,
+  type ActorTimelineEntry,
   CloudApi,
+  type CommandCaller,
+  type CommandLogEntry,
+  DeadLetterId,
+  type Receipt,
+  type Workflow,
   CurrentIdentity,
   CommandFailed,
   CommandExpired,
@@ -15,6 +22,7 @@ import {
 } from "@akter/cloud-api"
 import {
   Context,
+  DateTime,
   type Duration,
   Effect,
   Layer,
@@ -93,13 +101,183 @@ const Job = Schema.Struct({ job: Schema.String, jobId: Schema.String, attempts: 
 const ActorJobs = Schema.Struct({ jobs: Schema.Array(Job), deadLetters: Schema.Array(Job) })
 
 const decodeActorError = Schema.decodeUnknownOption(ActorErrorBody)
-const decodeDetail = Schema.decodeUnknownEffect(Inspection.ActorDetail)
 const decodeGenericActorError = Schema.decodeUnknownOption(GenericActorErrorBody)
 const decodeCommandId = Schema.decodeUnknownEffect(CommandId)
-const decodeJobs = Schema.decodeUnknownEffect(ActorJobs)
 
 /** The most rows the runners' inspector returns for one list. */
 const INSPECTOR_ROWS = 500
+
+/** The rows a runtime page holds when the caller names no limit. */
+const PAGE_ROWS = 50
+
+/** The most actors a search answers with. */
+const SEARCH_ROWS = 20
+
+/** The most pages read to collect one whole list; past it the runner is misbehaving. */
+const MAX_PAGES = 100
+
+const isJsonArray = Schema.is(Schema.Array(Schema.Json))
+
+/**
+ * Whom a receipt's command ran as, from the runner's caller key: the JSON
+ * array `["User", subject]`, `["Anonymous"]` or `["System", source, ref,
+ * onBehalfOf, mint?]`. A key that does not decode is null.
+ */
+const callerOf = (key: Inspection.Decoded | null): CommandCaller | null => {
+  if (key === null || !("json" in key) || !isJsonArray(key.json)) return null
+
+  const [tag, first, , onBehalfOf] = key.json
+
+  if (tag === "User" && Predicate.isString(first))
+    return { kind: "user", subject: first, source: null }
+  if (tag === "Anonymous") return { kind: "anonymous", subject: null, source: null }
+  if (tag === "System" && Predicate.isString(first))
+    return {
+      kind: "system",
+      subject: Predicate.isString(onBehalfOf) ? onBehalfOf : null,
+      source: first,
+    }
+
+  return null
+}
+
+const DeclaredFailure = Schema.TaggedStruct("Failure", {
+  value: Schema.fromJsonString(Schema.Struct({ _tag: Schema.String })),
+})
+
+const decodeFailure = Schema.decodeUnknownOption(DeclaredFailure)
+
+/** The tag of the declared error a failed receipt stores, or null when it has none. */
+const errorTagOf = (outcome: Inspection.Decoded | null | undefined) =>
+  outcome == null || !("json" in outcome)
+    ? null
+    : Option.match(decodeFailure(outcome.json), {
+        onNone: () => null,
+        onSome: (failure) => failure.value._tag,
+      })
+
+const instant = (epochMillis: number) => DateTime.makeUnsafe(epochMillis)
+
+/** A receipt as the console reads it: its outcome tag, whom it ran as and when it expires. */
+const receiptOf = (receipt: Inspection.ReceiptRow): Receipt => ({
+  commandId: receipt.commandId,
+  command: receipt.command,
+  result: receipt.outcomeTag,
+  caller: callerOf(receipt.callerKey),
+  at: null,
+  expiresAt: instant(receipt.expiresAtMs),
+  replayed: false,
+})
+
+const timelineOf = (entry: Inspection.TimelineRow): ActorTimelineEntry => ({
+  at: instant(entry.atMs),
+  kind: entry.kind,
+  label: entry.name,
+  detail: entry.commandId,
+  caller: callerOf(entry.callerKey),
+})
+
+/** Each event name's newest retained event, from rows the inspector lists newest first. */
+const latestOf = (events: ReadonlyArray<Inspection.EventRow>): Array<ActorEvent> => {
+  const latest = new Map<string, Inspection.EventRow>()
+
+  for (const event of events) if (!latest.has(event.event)) latest.set(event.event, event)
+
+  return [...latest.values()].map((event) => ({
+    name: event.event,
+    cursor: String(event.sequence),
+    emittedAt: instant(event.emittedAtMs),
+    subscribers: null,
+  }))
+}
+
+/**
+ * One workflow run as the console reads it. The step is the one the run
+ * started last, numbered by the distinct steps it has recorded; the runner
+ * does not know how many steps the workflow has. A suspended run waits on its
+ * unsettled clock step (a timer) or wait step (an event). A finished run
+ * completed when its stored result is a success and failed otherwise.
+ */
+const workflowOf = (row: Inspection.WorkflowRow) =>
+  Effect.gen(function* () {
+    const names: Array<string> = []
+
+    for (const step of row.steps.toSorted((left, right) => left.startedAtMs - right.startedAtMs))
+      if (!names.includes(step.step)) names.push(step.step)
+
+    const last = row.steps.reduce<Inspection.StepRow | undefined>(
+      (latest, step) =>
+        latest === undefined || step.startedAtMs >= latest.startedAtMs ? step : latest,
+      undefined,
+    )
+
+    const pending = row.steps.find((step) => step.settledAtMs === null)
+
+    const waitingFor: Workflow["waitingFor"] =
+      row.status !== "suspended" || pending === undefined
+        ? null
+        : pending.kind === "clock"
+          ? { kind: "timer", name: pending.step }
+          : pending.kind === "wait"
+            ? { kind: "event", name: pending.waitEvent ?? pending.step }
+            : null
+
+    let status: Workflow["status"]
+
+    if (row.status === "running") status = "running"
+    else if (row.status === "suspended") status = "waiting"
+    else if (row.status === "finished" && row.result !== null && "json" in row.result)
+      status = Predicate.isTagged(row.result.json, "Success") ? "completed" : "failed"
+    else return yield* unavailable(`workflow ${row.executionId} has status ${row.status}`)
+
+    return {
+      id: row.executionId,
+      name: row.workflow,
+      actor: `${row.actorType}/${row.actorId}`,
+      step:
+        last === undefined
+          ? null
+          : { index: names.indexOf(last.step) + 1, total: null, name: last.step },
+      waitingFor,
+      startedAt: instant(row.startedAtMs),
+      status,
+    } satisfies Workflow
+  })
+
+/** A page cursor the console passes back: the runner's own `next`, opaque to the caller. */
+const cursorOf = (next: Schema.Json | null) =>
+  next === null ? null : Buffer.from(JSON.stringify(next), "utf8").toString("base64url")
+
+const ReceiptCursor = Schema.Struct({
+  actorType: Schema.String,
+  actorId: Schema.String,
+  expiresAtMs: Schema.Finite,
+  commandId: Schema.String,
+})
+
+/** The cursor a caller passed back, decoded as `schema`, or `NotFound` for one this API did not issue. */
+const cursor = <A, I>(schema: Schema.Codec<A, I>, value: string | undefined) =>
+  Effect.map(
+    value === undefined
+      ? Effect.succeedNone
+      : Schema.decodeEffect(Schema.fromJsonString(schema))(
+          Buffer.from(value, "base64url").toString("utf8"),
+        ).pipe(
+          Effect.asSome,
+          Effect.mapError(() => NotFound.make({ resource: "cursor", id: value })),
+        ),
+    Option.getOrUndefined,
+  )
+
+const receiptParams = (after: typeof ReceiptCursor.Type | undefined) =>
+  after === undefined
+    ? {}
+    : {
+        afterExpiresAtMs: String(after.expiresAtMs),
+        afterType: after.actorType,
+        afterId: after.actorId,
+        afterCommandId: after.commandId,
+      }
 
 /**
  * The header naming whom a control-plane command acts for. The edge honors it
@@ -148,53 +326,38 @@ const stateOf = (entries: Inspection.ActorDetail["state"]): Schema.Json => {
  * inspector reads only the durable views, which hold no turn count, owned
  * rows, subscriber or socket counts, activation, placement on a runner or
  * mailbox, and keep no commit time on a receipt, so those are null. Each
- * event name keeps its newest retained cursor, and the event feed's cursor is
- * the actor's last event sequence.
+ * event name keeps its newest retained cursor and emission time, the event
+ * feed's cursor is the actor's last event sequence, and the timeline is its
+ * newest page.
  */
 const toInspector = (
   address: string,
   tenant: string,
   detail: Inspection.ActorDetail,
-): ActorInspector => {
-  const events = new Map<string, Inspection.EventRow>()
-
-  for (const event of detail.events) if (!events.has(event.event)) events.set(event.event, event)
-
-  return {
-    address,
-    state: stateOf(detail.state),
-    turn: null,
-    tables: null,
-    receipts: detail.receipts.map((receipt) => ({
-      commandId: receipt.commandId,
-      command: receipt.command,
-      result: receipt.outcomeTag,
-      at: null,
-      replayed: false,
-    })),
-    events: [...events.values()].map((event) => ({
-      name: event.event,
-      cursor: String(event.sequence),
-      subscribers: null,
-    })),
-    jobs: jobsOf(detail),
-    connections: {
-      sockets: null,
-      feedCursor:
-        detail.actor.lastEventSequence > 0 ? String(detail.actor.lastEventSequence) : null,
-    },
-    properties: {
-      status: null,
-      type: detail.actor.actorType,
-      generation: detail.actor.generation,
-      runner: null,
-      region: null,
-      tenant,
-      mailboxDepth: null,
-    },
-    timeline: null,
-  }
-}
+  timeline: ReadonlyArray<Inspection.TimelineRow>,
+): ActorInspector => ({
+  address,
+  state: stateOf(detail.state),
+  turn: null,
+  tables: null,
+  receipts: detail.receipts.map(receiptOf),
+  events: latestOf(detail.events),
+  jobs: jobsOf(detail),
+  connections: {
+    sockets: null,
+    feedCursor: detail.actor.lastEventSequence > 0 ? String(detail.actor.lastEventSequence) : null,
+  },
+  properties: {
+    status: null,
+    type: detail.actor.actorType,
+    generation: detail.actor.generation,
+    runner: null,
+    region: null,
+    tenant,
+    mailboxDepth: null,
+  },
+  timeline: timeline.map(timelineOf),
+})
 
 const split = (address: string) => {
   const slash = address.indexOf("/")
@@ -254,23 +417,79 @@ export const makeRuntime = Effect.gen(function* () {
 
   const url = (target: RuntimeTarget, path: string) => `${target.origin.replace(/\/+$/, "")}${path}`
 
-  /** One actor as the inspector reads it, or `undefined` when the tenant has no such actor. */
-  const inspect = Effect.fn("Runtime.inspect")(function* (target: RuntimeTarget, address: string) {
-    const { type, id } = split(address)
+  /**
+   * One inspector read decoded as `schema`, or `undefined` when the inspector
+   * answers 404, which it does for an actor the tenant does not have.
+   */
+  const read = <A, I>(
+    target: RuntimeTarget,
+    path: string,
+    params: Readonly<Record<string, string | undefined>>,
+    schema: Schema.Codec<A, I>,
+  ) =>
+    Effect.gen(function* () {
+      const { status, body } = yield* call(
+        target,
+        HttpClientRequest.get(url(target, `${target.inspectorPath ?? "/inspector"}${path}`)).pipe(
+          HttpClientRequest.setUrlParams(
+            Object.fromEntries(
+              Object.entries(params).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined,
+              ),
+            ),
+          ),
+        ),
+      )
 
-    const { status, body } = yield* call(
-      target,
-      HttpClientRequest.get(url(target, `${target.inspectorPath ?? "/inspector"}/actor`)).pipe(
-        HttpClientRequest.setUrlParams({ type, id, limit: String(INSPECTOR_ROWS) }),
+      if (status === 404) return undefined
+
+      if (status !== 200) return yield* unavailable(`inspector ${path} answered ${status}`)
+
+      return yield* Schema.decodeUnknownEffect(schema)(body).pipe(Effect.orDie)
+    })
+
+  /** An inspector read that names no actor, so a 404 is the runner misbehaving. */
+  const readAll = <A, I>(
+    target: RuntimeTarget,
+    path: string,
+    params: Readonly<Record<string, string | undefined>>,
+    schema: Schema.Codec<A, I>,
+  ) =>
+    read(target, path, params, schema).pipe(
+      Effect.filterOrElse(
+        (found): found is A => found !== undefined,
+        () => unavailable(`inspector ${path} answered 404`),
       ),
     )
 
-    if (status === 404) return undefined
+  /** Every page of a list keyed by name, read `INSPECTOR_ROWS` at a time. */
+  const everyName = <Page extends { readonly next: string | null }, I, Row>(
+    target: RuntimeTarget,
+    path: string,
+    params: Readonly<Record<string, string | undefined>>,
+    schema: Schema.Codec<Page, I>,
+    rows: (page: Page) => ReadonlyArray<Row>,
+  ) =>
+    Effect.gen(function* () {
+      const all: Array<Row> = []
+      let after: string | undefined
 
-    if (status !== 200) return yield* unavailable(`inspector answered ${status}`)
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const found = yield* readAll(
+          target,
+          path,
+          { ...params, after, limit: String(INSPECTOR_ROWS) },
+          schema,
+        )
+        all.push(...rows(found))
 
-    return body
-  })
+        if (found.next === null) return all
+
+        after = found.next
+      }
+
+      return yield* unavailable(`inspector ${path} had more than ${MAX_PAGES} pages`)
+    })
 
   const sendCommand = Effect.fn("Runtime.sendCommand")(function* (input: {
     readonly organizationId: string
@@ -422,11 +641,18 @@ export const makeRuntime = Effect.gen(function* () {
     readonly environment: string
     readonly address: string
   }) {
-    const found = yield* inspect(yield* edge.resolve(input), input.address)
+    const { type, id } = split(input.address)
+
+    const found = yield* read(
+      yield* edge.resolve(input),
+      "/actor",
+      { type, id, limit: String(INSPECTOR_ROWS) },
+      ActorJobs,
+    )
 
     if (found === undefined) return yield* NotFound.make({ resource: "actor", id: input.address })
 
-    return jobsOf(yield* decodeJobs(found).pipe(Effect.orDie))
+    return jobsOf(found)
   })
 
   const inspectActor = Effect.fn("Runtime.inspectActor")(function* (input: {
@@ -436,50 +662,243 @@ export const makeRuntime = Effect.gen(function* () {
     readonly address: string
   }) {
     const target = yield* edge.resolve(input)
-    const found = yield* inspect(target, input.address)
+    const { type, id } = split(input.address)
+    const params = { type, id, limit: String(INSPECTOR_ROWS) }
+    const found = yield* read(target, "/actor", params, Inspection.ActorDetail)
 
     if (found === undefined) return yield* NotFound.make({ resource: "actor", id: input.address })
 
-    return toInspector(input.address, target.tenant, yield* decodeDetail(found).pipe(Effect.orDie))
+    const timeline = yield* read(
+      target,
+      "/timeline",
+      { ...params, limit: String(PAGE_ROWS) },
+      Inspection.TimelinePage,
+    )
+
+    return toInspector(input.address, target.tenant, found, timeline?.entries ?? [])
   })
 
-  return { sendCommand, actorJobs, inspectActor }
+  return {
+    sendCommand,
+    actorJobs,
+    inspectActor,
+    read,
+    readAll,
+    everyName,
+  }
 })
 
 const notImplemented = (operation: string) => Effect.fail(NotImplemented.make({ operation }))
 
+const ActorCursor = Schema.Struct({ actorType: Schema.String, actorId: Schema.String })
+
+const TimelineCursor = Schema.Struct({
+  sequence: Schema.Finite,
+  kind: Schema.Literals(["command", "event"]),
+})
+
+const DeadLetterCursor = Schema.Struct({ deadAtMs: Schema.Finite, jobId: Schema.String })
+
+const WorkflowCursor = Schema.Struct({ startedAtMs: Schema.Finite, executionId: Schema.String })
+
+/** The stored status a console workflow status reads; a finished run is then told apart by its result. */
+const storedStatus = {
+  running: "running",
+  waiting: "suspended",
+  completed: "finished",
+  failed: "finished",
+} as const
+
+const decodeDeadLetterId = Schema.decodeUnknownEffect(DeadLetterId)
+
 /**
  * The console's runtime endpoints, answered by asking runners through the
- * edge. `sendCommand`, `inspectActor` and `listActorJobs` are the ones a
- * runner's inspection surface can answer, `inspectActor` with null for what
- * the runner does not report: the rest of the contract needs rates,
- * latencies, awake state, mailbox depth, connection counts or a command log
- * that the runners do not report, so they stay `NotImplemented` rather than
- * answer with invented numbers. A command is attributed to the signed-in user
- * or API key that sent it, after the control plane has authorized it.
+ * edge after the caller's project access is established: reads need read
+ * permission and `sendCommand` write permission. Reads come from the runner's
+ * read-only inspector over its durable views, so each field those views do not
+ * hold is null and each endpoint that needs nothing else stays
+ * `NotImplemented` rather than answer with invented numbers: rates,
+ * latencies, the live stream, connections, schedules, owned-table rows, and
+ * retrying or discarding a dead letter, which no runner route the control
+ * plane can reach performs. A command is attributed to the signed-in user or
+ * API key that sent it, after the control plane has authorized it.
  */
 export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) =>
   Effect.gen(function* () {
     const access = yield* Access
+    const edge = yield* RuntimeEdge
     const runtime = yield* makeRuntime
 
+    const environment = (params: { readonly projectId: string; readonly environment: string }) =>
+      access
+        .project(params.projectId)
+        .pipe(Effect.flatMap((organizationId) => edge.resolve({ ...params, organizationId })))
+
+    const allowed = (params: { readonly projectId: string }, operation: string) =>
+      access.project(params.projectId).pipe(Effect.andThen(notImplemented(operation)))
+
+    const actorTypes = (target: RuntimeTarget, type?: string) =>
+      runtime.everyName(
+        target,
+        "/actor-types",
+        { type },
+        Inspection.ActorTypesPage,
+        (page) => page.actorTypes,
+      )
+
+    const jobTypes = (target: RuntimeTarget) =>
+      runtime.everyName(target, "/job-types", {}, Inspection.JobTypesPage, (page) => page.jobTypes)
+
+    const overview = (target: RuntimeTarget) =>
+      runtime.readAll(target, "/overview", {}, Inspection.Overview)
+
+    const summaryOf = (row: Inspection.ActorTypeRow) => ({
+      name: row.actorType,
+      commands: null,
+      instances: row.actors,
+      awake: null,
+      commandsPerSecond: null,
+      p99Ms: null,
+      maxMailbox: null,
+    })
+
+    const actorPage = <A, I>(
+      params: {
+        readonly projectId: string
+        readonly environment: string
+        readonly actorType: string
+        readonly key: string
+      },
+      path: string,
+      extra: Readonly<Record<string, string | undefined>>,
+      schema: Schema.Codec<A, I>,
+    ) =>
+      Effect.gen(function* () {
+        const target = yield* environment(params)
+        const found = yield* runtime.read(
+          target,
+          path,
+          { type: params.actorType, id: params.key, ...extra },
+          schema,
+        )
+
+        if (found === undefined)
+          return yield* NotFound.make({
+            resource: "actor",
+            id: `${params.actorType}/${params.key}`,
+          })
+
+        return found
+      })
+
     return handlers
-      .handle("getOverview", () => notImplemented("runtime.getOverview"))
-      .handle("getSidebarCounts", () => notImplemented("runtime.getSidebarCounts"))
-      .handle("search", () => notImplemented("runtime.search"))
-      .handle("listActorTypes", () => notImplemented("runtime.listActorTypes"))
-      .handle("getActorType", () => notImplemented("runtime.getActorType"))
+      .handle("getOverview", ({ params }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+          const { counts } = yield* overview(target)
+          const jobs = yield* jobTypes(target)
+
+          return {
+            commands: null,
+            actors: { awake: null, total: counts.actors },
+            jobs: { inFlight: counts.jobs, donePerHour: null },
+            deadLettersByJobType: jobs.flatMap((job) =>
+              job.deadLetters === 0 ? [] : [{ jobName: job.job, count: job.deadLetters }],
+            ),
+            throughput: null,
+            p99: null,
+            health: {
+              runners: null,
+              databaseCpuPercent: null,
+              maxMailbox: null,
+              parkedSockets: null,
+              outboxLagP99Ms: null,
+              lastDeployAt: null,
+            },
+            recentDeployments: null,
+          }
+        }),
+      )
+      .handle("getSidebarCounts", ({ params }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+
+          return {
+            actorTypes: (yield* actorTypes(target)).length,
+            openDeadLetters: (yield* overview(target)).counts.deadLetters,
+          }
+        }),
+      )
+      .handle("search", ({ params, query }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+          const found = yield* runtime.readAll(
+            target,
+            "/actors",
+            { prefix: query.q, limit: String(SEARCH_ROWS) },
+            Inspection.ActorsPage,
+          )
+
+          return found.actors.map((actor) => ({
+            kind: "actor" as const,
+            id: `${actor.actorType}/${actor.actorId}`,
+            title: `${actor.actorType}/${actor.actorId}`,
+            subtitle: null,
+          }))
+        }),
+      )
+      .handle("listActorTypes", ({ params }) =>
+        environment(params).pipe(
+          Effect.flatMap((target) => actorTypes(target)),
+          Effect.map((rows) => rows.map(summaryOf)),
+        ),
+      )
+      .handle("getActorType", ({ params }) =>
+        Effect.gen(function* () {
+          const [row] = yield* actorTypes(yield* environment(params), params.actorType)
+
+          if (row === undefined)
+            return yield* NotFound.make({ resource: "actorType", id: params.actorType })
+
+          return summaryOf(row)
+        }),
+      )
       .handle("getActorTypeActivity", ({ params }) =>
-        access
-          .project(params.projectId)
-          .pipe(Effect.andThen(notImplemented("runtime.getActorTypeActivity"))),
+        allowed(params, "runtime.getActorTypeActivity"),
       )
-      .handle("getActorTypeLatency", ({ params }) =>
-        access
-          .project(params.projectId)
-          .pipe(Effect.andThen(notImplemented("runtime.getActorTypeLatency"))),
+      .handle("getActorTypeLatency", ({ params }) => allowed(params, "runtime.getActorTypeLatency"))
+      .handle("listActorInstances", ({ params, query }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+
+          if (query.status !== undefined)
+            return yield* notImplemented("runtime.listActorInstances.status")
+
+          const after = yield* cursor(ActorCursor, query.cursor)
+          const page = yield* runtime.readAll(
+            target,
+            "/actors",
+            {
+              type: params.actorType,
+              limit: String(query.limit ?? PAGE_ROWS),
+              afterType: after?.actorType,
+              afterId: after?.actorId,
+            },
+            Inspection.ActorsPage,
+          )
+
+          return {
+            items: page.actors.map((actor) => ({
+              key: actor.actorId,
+              status: null,
+              lastCommand: null,
+              lastActivityAt: null,
+              generation: actor.generation,
+            })),
+            nextCursor: cursorOf(page.next),
+          }
+        }),
       )
-      .handle("listActorInstances", () => notImplemented("runtime.listActorInstances"))
       .handle("inspectActor", ({ params }) =>
         access.project(params.projectId).pipe(
           Effect.flatMap((organizationId) =>
@@ -492,9 +911,48 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           ),
         ),
       )
-      .handle("listActorTables", () => notImplemented("runtime.listActorTables"))
-      .handle("listActorReceipts", () => notImplemented("runtime.listActorReceipts"))
-      .handle("listActorEvents", () => notImplemented("runtime.listActorEvents"))
+      .handle("listActorTables", ({ params }) => allowed(params, "runtime.listActorTables"))
+      .handle("listActorReceipts", ({ params, query }) =>
+        Effect.gen(function* () {
+          const after = yield* cursor(ReceiptCursor, query.cursor)
+          const page = yield* actorPage(
+            params,
+            "/receipts",
+            { limit: String(query.limit ?? PAGE_ROWS), ...receiptParams(after) },
+            Inspection.ReceiptsPage,
+          )
+
+          return { items: page.receipts.map(receiptOf), nextCursor: cursorOf(page.next) }
+        }),
+      )
+      .handle("listActorEvents", ({ params }) =>
+        Effect.gen(function* () {
+          const events: Array<Inspection.LatestEventRow> = []
+          let after: string | undefined
+
+          for (let page = 0; page < MAX_PAGES; page++) {
+            const found = yield* actorPage(
+              params,
+              "/latest-events",
+              { after, limit: String(INSPECTOR_ROWS) },
+              Inspection.LatestEventsPage,
+            )
+            events.push(...found.events)
+
+            if (found.next === null)
+              return events.map((event) => ({
+                name: event.event,
+                cursor: String(event.sequence),
+                emittedAt: instant(event.emittedAtMs),
+                subscribers: null,
+              }))
+
+            after = found.next
+          }
+
+          return yield* unavailable(`inspector /latest-events had more than ${MAX_PAGES} pages`)
+        }),
+      )
       .handle("listActorJobs", ({ params }) =>
         access.project(params.projectId).pipe(
           Effect.flatMap((organizationId) =>
@@ -507,17 +965,162 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           ),
         ),
       )
-      .handle("listActorTimeline", () => notImplemented("runtime.listActorTimeline"))
-      .handle("listCommands", () => notImplemented("runtime.listCommands"))
-      .handle("streamCommands", () => notImplemented("runtime.streamCommands"))
-      .handle("getJobs", () => notImplemented("runtime.getJobs"))
-      .handle("listDeadLetters", () => notImplemented("runtime.listDeadLetters"))
-      .handle("retryDeadLetter", () => notImplemented("runtime.retryDeadLetter"))
-      .handle("discardDeadLetter", () => notImplemented("runtime.discardDeadLetter"))
-      .handle("listWorkflows", () => notImplemented("runtime.listWorkflows"))
-      .handle("getTimers", () => notImplemented("runtime.getTimers"))
-      .handle("listSchedules", () => notImplemented("runtime.listSchedules"))
-      .handle("getConnections", () => notImplemented("runtime.getConnections"))
+      .handle("listActorTimeline", ({ params, query }) =>
+        Effect.gen(function* () {
+          const before = yield* cursor(TimelineCursor, query.cursor)
+          const page = yield* actorPage(
+            params,
+            "/timeline",
+            {
+              limit: String(query.limit ?? PAGE_ROWS),
+              beforeSequence: before === undefined ? undefined : String(before.sequence),
+              beforeKind: before?.kind,
+            },
+            Inspection.TimelinePage,
+          )
+
+          return { items: page.entries.map(timelineOf), nextCursor: cursorOf(page.next) }
+        }),
+      )
+      .handle("listCommands", ({ params, query }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+          const after = yield* cursor(ReceiptCursor, query.cursor)
+
+          if (query.outcome === "replayed") return { items: [], nextCursor: null }
+
+          const page = yield* runtime.readAll(
+            target,
+            "/receipts",
+            {
+              type: query.actorType,
+              outcome:
+                query.outcome === undefined
+                  ? undefined
+                  : query.outcome === "ok"
+                    ? "Success"
+                    : "Failure",
+              limit: String(query.limit ?? PAGE_ROWS),
+              ...receiptParams(after),
+            },
+            Inspection.ReceiptsPage,
+          )
+
+          return {
+            items: page.receipts.map((receipt): CommandLogEntry => ({
+              commandId: receipt.commandId,
+              at: null,
+              durationMs: null,
+              address: `${receipt.actorType}/${receipt.actorId}`,
+              command: receipt.command,
+              caller: callerOf(receipt.callerKey),
+              payloadPreview: null,
+              outcome: receipt.outcomeTag === "Success" ? "ok" : "error",
+              errorTag: errorTagOf(receipt.outcome),
+            })),
+            nextCursor: cursorOf(page.next),
+          }
+        }),
+      )
+      .handle("streamCommands", ({ params }) => allowed(params, "runtime.streamCommands"))
+      .handle("getJobs", ({ params }) =>
+        Effect.gen(function* () {
+          const jobs = yield* jobTypes(yield* environment(params))
+          const total = (count: (job: Inspection.JobTypeRow) => number) =>
+            jobs.reduce((sum, job) => sum + count(job), 0)
+
+          return {
+            queued: total((job) => job.queued),
+            running: null,
+            retrying: total((job) => job.retrying),
+            dead: total((job) => job.deadLetters),
+            byType: jobs.map((job) => ({
+              jobName: job.job,
+              done: null,
+              retried: job.retrying,
+              dead: job.deadLetters,
+              p99Ms: null,
+            })),
+            throughput: null,
+          }
+        }),
+      )
+      .handle("listDeadLetters", ({ params, query }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+          const after = yield* cursor(DeadLetterCursor, query.cursor)
+          const page = yield* runtime.readAll(
+            target,
+            "/dead-letters",
+            {
+              limit: String(query.limit ?? PAGE_ROWS),
+              afterDeadAtMs: after === undefined ? undefined : String(after.deadAtMs),
+              afterJobId: after?.jobId,
+            },
+            Inspection.DeadLettersPage,
+          )
+
+          return {
+            items: yield* Effect.forEach(page.deadLetters, (letter) =>
+              Effect.map(decodeDeadLetterId(letter.jobId).pipe(Effect.orDie), (id) => ({
+                id,
+                jobName: letter.job,
+                jobId: letter.jobId,
+                actor: `${letter.actorType}/${letter.actorId}`,
+                attempts: letter.attempts,
+                lastError: letter.cause,
+                since: instant(letter.deadAtMs),
+              })),
+            ),
+            nextCursor: cursorOf(page.next),
+          }
+        }),
+      )
+      .handle("retryDeadLetter", ({ params }) =>
+        access
+          .project(params.projectId, "write")
+          .pipe(Effect.andThen(notImplemented("runtime.retryDeadLetter"))),
+      )
+      .handle("discardDeadLetter", ({ params }) =>
+        access
+          .project(params.projectId, "write")
+          .pipe(Effect.andThen(notImplemented("runtime.discardDeadLetter"))),
+      )
+      .handle("listWorkflows", ({ params, query }) =>
+        Effect.gen(function* () {
+          const target = yield* environment(params)
+          const after = yield* cursor(WorkflowCursor, query.cursor)
+          const page = yield* runtime.readAll(
+            target,
+            "/workflows",
+            {
+              status: query.status === undefined ? "all" : storedStatus[query.status],
+              limit: String(query.limit ?? PAGE_ROWS),
+              afterStartedAtMs: after === undefined ? undefined : String(after.startedAtMs),
+              afterExecutionId: after?.executionId,
+            },
+            Inspection.WorkflowsPage,
+          )
+          const runs = yield* Effect.forEach(page.workflows, workflowOf)
+
+          return {
+            items: runs.filter((run) => query.status === undefined || run.status === query.status),
+            nextCursor: cursorOf(page.next),
+          }
+        }),
+      )
+      .handle("getTimers", ({ params }) =>
+        Effect.gen(function* () {
+          const found = yield* overview(yield* environment(params))
+
+          return {
+            pending: found.counts.timers,
+            nextFireAt: found.nextTimerDueAtMs === null ? null : instant(found.nextTimerDueAtMs),
+          }
+        }),
+      )
+      .handle("listSchedules", ({ params }) => allowed(params, "runtime.listSchedules"))
+      .handle("getConnections", ({ params }) => allowed(params, "runtime.getConnections"))
       .handle("sendCommand", ({ params, payload }) =>
         Effect.gen(function* () {
           const organizationId = yield* access.project(params.projectId, "write")

@@ -34,7 +34,7 @@ export const deployMarkers =
     if (first === undefined || last === undefined) return []
     const start = DateTime.toEpochMillis(first.at)
     const end = DateTime.toEpochMillis(last.at)
-    return deployments.flatMap((deployment) => {
+    return deployments!.flatMap((deployment) => {
       const at = DateTime.toEpochMillis(deployment.createdAt)
       if (at < start || at > end) return []
       const distances = series.map((point) => Math.abs(DateTime.toEpochMillis(point.at) - at))
@@ -99,23 +99,23 @@ export const toOverviewPage =
     }>,
   ): OverviewPage => {
     const { overview } = input
-    const throughput = orderedSeries(overview.throughput)
-    const p99 = orderedSeries(overview.p99)
+    const throughput = orderedSeries(overview.throughput!)
+    const p99 = orderedSeries(overview.p99!)
     const deadLetters = overview.deadLettersByJobType.reduce((sum, type) => sum + type.count, 0)
     const { health } = overview
-    const mailbox = health.maxMailbox
+    const mailbox = health.maxMailbox!
     return OverviewPage.make({
       project: input.project,
       stats: [
         {
           label: "Commands / s",
-          value: formatInteger(overview.commands.perSecond),
-          trend: orderedSeries(overview.commands.series24h).map((point) => point.value),
+          value: formatInteger(overview.commands!.perSecond),
+          trend: orderedSeries(overview.commands!.series24h).map((point) => point.value),
           stepped: false,
         },
         {
           label: "Awake actors",
-          value: formatInteger(overview.actors.awake),
+          value: formatInteger(overview.actors.awake!),
           trend: [],
           stepped: false,
         },
@@ -134,13 +134,13 @@ export const toOverviewPage =
       health: [
         {
           label: "Runners",
-          value: `${formatInteger(health.runners.healthy)} of ${formatInteger(health.runners.total)} healthy`,
-          healthy: health.runners.healthy === health.runners.total,
+          value: `${formatInteger(health.runners!.healthy)} of ${formatInteger(health.runners!.total)} healthy`,
+          healthy: health.runners!.healthy === health.runners!.total,
         },
         {
           label: "Database",
-          value: `${String(Math.round(health.databaseCpuPercent))}% CPU`,
-          healthy: health.databaseCpuPercent < databaseCpuLimit,
+          value: `${String(Math.round(health.databaseCpuPercent!))}% CPU`,
+          healthy: health.databaseCpuPercent! < databaseCpuLimit,
         },
         {
           label: "Mailbox depth",
@@ -150,11 +150,11 @@ export const toOverviewPage =
               : `max ${formatInteger(mailbox.depth)} · ${mailbox.actor}`,
           healthy: mailbox.depth < mailboxDepthLimit,
         },
-        { label: "Parked sockets", value: formatInteger(health.parkedSockets), healthy: true },
+        { label: "Parked sockets", value: formatInteger(health.parkedSockets!), healthy: true },
         {
           label: "Outbox lag",
-          value: `p99 ${formatDuration(health.outboxLagP99Ms)}`,
-          healthy: health.outboxLagP99Ms < outboxLagLimitMs,
+          value: `p99 ${formatDuration(health.outboxLagP99Ms!)}`,
+          healthy: health.outboxLagP99Ms! < outboxLagLimitMs,
         },
         {
           label: "Dead letters",
@@ -163,13 +163,13 @@ export const toOverviewPage =
         },
       ],
       latency: {
-        p50: overview.commands.p50Ms,
-        p99: overview.commands.p99Ms,
+        p50: overview.commands!.p50Ms,
+        p99: overview.commands!.p99Ms,
         hours: p99.map((point) => hourLabel(point.at)),
         p99Series: p99.map((point) => point.value),
       },
       distribution: input.distribution,
-      deploys: overview.recentDeployments.slice(0, 3).map((deployment) => {
+      deploys: overview.recentDeployments!.slice(0, 3).map((deployment) => {
         const record = toDeployRecord(now)(deployment)
         return {
           id: record.id,

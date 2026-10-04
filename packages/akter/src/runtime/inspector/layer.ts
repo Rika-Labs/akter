@@ -35,18 +35,59 @@ const Limit = Schema.FiniteFromString.check(
 
 const PageParams = Schema.Struct({ limit: Limit })
 
+const Millis = Schema.FiniteFromString.check(Schema.isInt())
+
 const ActorsParams = Schema.Struct({
   limit: Limit,
   type: Schema.optional(Schema.String),
+  prefix: Schema.optional(Schema.NonEmptyString),
   afterType: Schema.optional(Schema.String),
   afterId: Schema.optional(Schema.String),
 })
 
 const ActorParams = Schema.Struct({ limit: Limit, type: Schema.String, id: Schema.String })
 
+const NamesParams = Schema.Struct({
+  limit: Limit,
+  type: Schema.optional(Schema.String),
+  after: Schema.optional(Schema.String),
+})
+
+const LatestEventsParams = Schema.Struct({
+  ...ActorParams.fields,
+  after: Schema.optional(Schema.String),
+})
+
+const TimelineParams = Schema.Struct({
+  ...ActorParams.fields,
+  beforeSequence: Schema.optional(Millis),
+  beforeKind: Schema.optional(Schema.Literals(["command", "event"])),
+})
+
+const ReceiptsParams = Schema.Struct({
+  limit: Limit,
+  type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String),
+  outcome: Schema.optional(Schema.Literals(["Success", "Failure"])),
+  afterExpiresAtMs: Schema.optional(Millis),
+  afterType: Schema.optional(Schema.String),
+  afterId: Schema.optional(Schema.String),
+  afterCommandId: Schema.optional(Schema.String),
+}).check(
+  Schema.makeFilter(({ type, id }) => id === undefined || type !== undefined || "id needs type"),
+)
+
+const DeadLettersParams = Schema.Struct({
+  limit: Limit,
+  afterDeadAtMs: Schema.optional(Millis),
+  afterJobId: Schema.optional(Schema.String),
+})
+
 const WorkflowsParams = Schema.Struct({
   limit: Limit,
-  status: Schema.optional(Schema.Literals(["open", "all"])),
+  status: Schema.optional(Schema.Literals(["open", "all", "running", "suspended", "finished"])),
+  afterStartedAtMs: Schema.optional(Millis),
+  afterExecutionId: Schema.optional(Schema.String),
 })
 
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
@@ -60,11 +101,21 @@ const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
  * every read trusts. Every read is filtered to the principal's tenant and runs
  * in a read-only transaction.
  *
- * - `GET /overview`: the view catalog and the tenant's row counts.
- * - `GET /actors?type&afterType&afterId&limit`: actors, one keyset page at a time.
+ * - `GET /overview`: the view catalog, the tenant's row counts and its soonest timer.
+ * - `GET /actors?type&prefix&afterType&afterId&limit`: actors, one keyset page
+ *   at a time, optionally those whose `type/id` address starts with `prefix`.
  * - `GET /actor?type&id&limit`: one actor's state, receipts with the events
  *   each committed, events, outbox, jobs, dead letters, and workflows with steps.
- * - `GET /outbox`, `/jobs`, `/dead-letters`, `/workflows?status=open|all`: tenant-wide lists.
+ * - `GET /actor-types?type&after&limit`: actor types with their actor counts.
+ * - `GET /receipts?type&id&outcome&afterExpiresAtMs&afterType&afterId&afterCommandId&limit`:
+ *   receipts of one actor, one type or the tenant, the latest expiry first.
+ * - `GET /latest-events?type&id&after&limit`: one actor's newest event of each name.
+ * - `GET /timeline?type&id&beforeSequence&beforeKind&limit`: one actor's events
+ *   and the commands that emitted them, newest first.
+ * - `GET /job-types?after&limit`: pending jobs and dead letters by job name.
+ * - `GET /outbox`, `/jobs`, `/dead-letters?afterDeadAtMs&afterJobId`,
+ *   `/workflows?status=open|all|running|suspended|finished&afterStartedAtMs&afterExecutionId`:
+ *   tenant-wide lists; the paged ones answer the `next` cursor to pass back.
  */
 const serve = <R = never>(options: InspectorOptions<R>) =>
   HttpRouter.use(
@@ -136,12 +187,13 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
         Effect.asSome(Queries.overview({ tenant })),
       )
 
-      yield* route("/actors", ActorsParams, (tenant, { limit, type, afterType, afterId }) =>
+      yield* route("/actors", ActorsParams, (tenant, { limit, type, prefix, afterType, afterId }) =>
         Effect.asSome(
           Queries.actors({
             tenant,
             limit,
             actorType: type,
+            prefix,
             after:
               afterType === undefined || afterId === undefined
                 ? undefined
@@ -162,12 +214,93 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
         Effect.asSome(Queries.jobs({ tenant, limit })),
       )
 
-      yield* route("/dead-letters", PageParams, (tenant, { limit }) =>
-        Effect.asSome(Queries.deadLetters({ tenant, limit })),
+      yield* route(
+        "/dead-letters",
+        DeadLettersParams,
+        (tenant, { limit, afterDeadAtMs, afterJobId }) =>
+          Effect.asSome(
+            Queries.deadLetters({
+              tenant,
+              limit,
+              after:
+                afterDeadAtMs === undefined || afterJobId === undefined
+                  ? undefined
+                  : { deadAtMs: afterDeadAtMs, jobId: afterJobId },
+            }),
+          ),
       )
 
-      yield* route("/workflows", WorkflowsParams, (tenant, { limit, status }) =>
-        Effect.asSome(Queries.workflows({ tenant, limit, status: status ?? "open" })),
+      yield* route(
+        "/workflows",
+        WorkflowsParams,
+        (tenant, { limit, status, afterStartedAtMs, afterExecutionId }) =>
+          Effect.asSome(
+            Queries.workflows({
+              tenant,
+              limit,
+              status: status ?? "open",
+              after:
+                afterStartedAtMs === undefined || afterExecutionId === undefined
+                  ? undefined
+                  : { startedAtMs: afterStartedAtMs, executionId: afterExecutionId },
+            }),
+          ),
+      )
+
+      yield* route("/actor-types", NamesParams, (tenant, { limit, type, after }) =>
+        Effect.asSome(Queries.actorTypes({ tenant, limit, name: type, after })),
+      )
+
+      yield* route("/job-types", NamesParams, (tenant, { limit, after }) =>
+        Effect.asSome(Queries.jobTypes({ tenant, limit, after })),
+      )
+
+      yield* route(
+        "/receipts",
+        ReceiptsParams,
+        (
+          tenant,
+          { limit, type, id, outcome, afterExpiresAtMs, afterType, afterId, afterCommandId },
+        ) =>
+          Queries.receipts({
+            tenant,
+            limit,
+            actorType: type,
+            actorId: id,
+            outcomeTag: outcome,
+            after:
+              afterExpiresAtMs === undefined ||
+              afterType === undefined ||
+              afterId === undefined ||
+              afterCommandId === undefined
+                ? undefined
+                : {
+                    expiresAtMs: afterExpiresAtMs,
+                    actorType: afterType,
+                    actorId: afterId,
+                    commandId: afterCommandId,
+                  },
+          }),
+      )
+
+      yield* route("/latest-events", LatestEventsParams, (tenant, { limit, type, id, after }) =>
+        Queries.latestEvents({ tenant, limit, actorType: type, actorId: id, after }),
+      )
+
+      yield* route(
+        "/timeline",
+        TimelineParams,
+        (tenant, { limit, type, id, beforeSequence, beforeKind }) =>
+          Queries.timeline({
+            tenant,
+            limit,
+            actorType: type,
+            actorId: id,
+            before:
+              beforeSequence === undefined || beforeKind === undefined
+                ? undefined
+                : { sequence: beforeSequence, kind: beforeKind },
+          }),
       )
     }),
   )

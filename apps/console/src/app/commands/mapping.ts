@@ -27,8 +27,8 @@ export const toTailEntry =
     const { actorType, key } = splitAddress(entry.address)
     return {
       sequence,
-      time: clockMillis(entry.at),
-      took: formatDuration(entry.durationMs),
+      time: clockMillis(entry.at!),
+      took: formatDuration(entry.durationMs!),
       actorType,
       key,
       command:
@@ -46,7 +46,7 @@ export const toTailEntry =
 /** A page of the command log, newest first, numbered so the newest has the highest sequence. */
 export const toRecentTurns = (entries: ReadonlyArray<CommandLogEntry>): ReadonlyArray<TailEntry> =>
   [...entries]
-    .sort((left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at))
+    .sort((left, right) => DateTime.toEpochMillis(left.at!) - DateTime.toEpochMillis(right.at!))
     .map((entry, index) => toTailEntry(index)(entry))
     .reverse()
 

@@ -15,10 +15,10 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
     (type) =>
       query.length === 0 ||
       type.name.toLocaleLowerCase().includes(query) ||
-      type.commands.some((command) => command.toLocaleLowerCase().includes(query)),
+      type.commands!.some((command) => command.toLocaleLowerCase().includes(query)),
   )
   const instances = page.types.reduce((sum, type) => sum + type.instances, 0)
-  const awake = page.types.reduce((sum, type) => sum + type.awake, 0)
+  const awake = page.types.reduce((sum, type) => sum + type.awake!, 0)
   return {
     title: "Actors",
     crumbs: [{ label: "Actors" }],
@@ -39,7 +39,9 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
           },
           {
             label: "Commands / s",
-            value: formatInteger(page.types.reduce((sum, type) => sum + type.commandsPerSecond, 0)),
+            value: formatInteger(
+              page.types.reduce((sum, type) => sum + type.commandsPerSecond!, 0),
+            ),
           },
         ],
       }),
@@ -76,11 +78,11 @@ export const actorsScreen = ({ h, model, page }: ScreenInput<ActorsPage>): Scree
           href: model.pageSample ? undefined : Routes.actorType({ actorType: type.name }),
           cells: [
             type.name,
-            type.commands.join(", "),
+            type.commands!.join(", "),
             formatInteger(type.instances),
-            formatInteger(type.awake),
-            formatInteger(type.commandsPerSecond),
-            type.commandsPerSecond === 0 ? "—" : formatDuration(type.p99Ms),
+            formatInteger(type.awake!),
+            formatInteger(type.commandsPerSecond!),
+            type.commandsPerSecond === 0 ? "—" : formatDuration(type.p99Ms!),
           ],
         })),
       }),

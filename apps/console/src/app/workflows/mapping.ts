@@ -20,7 +20,7 @@ export const toWorkflowRun =
       workflow: workflow.name,
       actorType,
       key,
-      step: `${workflow.step.name} · ${String(workflow.step.index)} of ${String(workflow.step.total)}`,
+      step: `${workflow.step!.name} · ${String(workflow.step!.index)} of ${String(workflow.step!.total)}`,
       waitingFor:
         workflow.waitingFor === null
           ? "—"

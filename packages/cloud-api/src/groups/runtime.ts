@@ -38,6 +38,9 @@ const environmentParams = { projectId: ProjectId, environment: EnvironmentName }
 const actorTypeParams = { ...environmentParams, actorType: Schema.String }
 const actorParams = { ...actorTypeParams, key: Schema.String }
 
+/** A read the runner's inspector answers can also fail with the runner's own opaque defect. */
+const InspectErrors = [...ReadErrors, RunnerDefect] as const
+
 /**
  * Inspection of the runners serving one project environment. Every path sits
  * under `/projects/:projectId/environments/:environment/runtime`; actor keys
@@ -50,19 +53,19 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
     {
       params: environmentParams,
       success: Overview,
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.get(
     "getSidebarCounts",
     "/projects/:projectId/environments/:environment/runtime/sidebar-counts",
-    { params: environmentParams, success: SidebarCounts, error: ReadErrors },
+    { params: environmentParams, success: SidebarCounts, error: InspectErrors },
   ),
   HttpApiEndpoint.get("search", "/projects/:projectId/environments/:environment/runtime/search", {
     params: environmentParams,
     query: { q: Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(256))) },
     success: Schema.Array(SearchResult),
-    error: ReadErrors,
+    error: InspectErrors,
   }),
   HttpApiEndpoint.get(
     "listActorTypes",
@@ -70,13 +73,13 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
     {
       params: environmentParams,
       success: Schema.Array(ActorTypeSummary),
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.get(
     "getActorType",
     "/projects/:projectId/environments/:environment/runtime/actor-types/:actorType",
-    { params: actorTypeParams, success: ActorTypeSummary, error: ReadErrors },
+    { params: actorTypeParams, success: ActorTypeSummary, error: InspectErrors },
   ),
   HttpApiEndpoint.get(
     "getActorTypeActivity",
@@ -111,13 +114,13 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       params: actorTypeParams,
       query: { ...pageQuery, status: Schema.optional(Schema.Literals(["awake", "idle"])) },
       success: Page(ActorInstance),
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.get(
     "inspectActor",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key",
-    { params: actorParams, success: ActorInspector, error: [...ReadErrors, RunnerDefect] },
+    { params: actorParams, success: ActorInspector, error: InspectErrors },
   ),
   HttpApiEndpoint.get(
     "listActorTables",
@@ -127,22 +130,27 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
   HttpApiEndpoint.get(
     "listActorReceipts",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key/receipts",
-    { params: actorParams, query: pageQuery, success: Page(Receipt), error: ReadErrors },
+    { params: actorParams, query: pageQuery, success: Page(Receipt), error: InspectErrors },
   ),
   HttpApiEndpoint.get(
     "listActorEvents",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key/events",
-    { params: actorParams, success: Schema.Array(ActorEvent), error: ReadErrors },
+    { params: actorParams, success: Schema.Array(ActorEvent), error: InspectErrors },
   ),
   HttpApiEndpoint.get(
     "listActorJobs",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key/jobs",
-    { params: actorParams, success: Schema.Array(ActorJob), error: [...ReadErrors, RunnerDefect] },
+    { params: actorParams, success: Schema.Array(ActorJob), error: InspectErrors },
   ),
   HttpApiEndpoint.get(
     "listActorTimeline",
     "/projects/:projectId/environments/:environment/runtime/actors/:actorType/:key/timeline",
-    { params: actorParams, query: pageQuery, success: Page(ActorTimelineEntry), error: ReadErrors },
+    {
+      params: actorParams,
+      query: pageQuery,
+      success: Page(ActorTimelineEntry),
+      error: InspectErrors,
+    },
   ),
   HttpApiEndpoint.get(
     "listCommands",
@@ -155,7 +163,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
         outcome: Schema.optional(CommandOutcome),
       },
       success: Page(CommandLogEntry),
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.post(
@@ -187,12 +195,17 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
   HttpApiEndpoint.get("getJobs", "/projects/:projectId/environments/:environment/runtime/jobs", {
     params: environmentParams,
     success: JobsSummary,
-    error: ReadErrors,
+    error: InspectErrors,
   }),
   HttpApiEndpoint.get(
     "listDeadLetters",
     "/projects/:projectId/environments/:environment/runtime/dead-letters",
-    { params: environmentParams, query: pageQuery, success: Page(DeadLetter), error: ReadErrors },
+    {
+      params: environmentParams,
+      query: pageQuery,
+      success: Page(DeadLetter),
+      error: InspectErrors,
+    },
   ),
   HttpApiEndpoint.post(
     "retryDeadLetter",
@@ -220,7 +233,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
         status: Schema.optional(Schema.Literals(["running", "waiting", "completed", "failed"])),
       },
       success: Page(Workflow),
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.get(
@@ -229,7 +242,7 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
     {
       params: environmentParams,
       success: TimersSummary,
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.get(

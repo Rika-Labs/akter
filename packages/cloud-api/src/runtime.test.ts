@@ -50,11 +50,15 @@ const inspector = {
       commandId: "cmd_1",
       command: "Increment",
       result: "ok",
+      caller: { kind: "system", subject: "user:u_1", source: "timer" },
       at: "2026-10-03T10:00:00.000Z",
+      expiresAt: "2026-10-04T10:00:00.000Z",
       replayed: false,
     },
   ],
-  events: [{ name: "Incremented", cursor: "17", subscribers: 2 }],
+  events: [
+    { name: "Incremented", cursor: "17", emittedAt: "2026-10-03T10:00:00.000Z", subscribers: 2 },
+  ],
   jobs: [{ name: "Notify", id: "job_1", attempts: 1, status: "retrying" }],
   connections: { sockets: 2, feedCursor: null },
   properties: {
@@ -66,7 +70,15 @@ const inspector = {
     tenant: "acme",
     mailboxDepth: 0,
   },
-  timeline: [{ at: "2026-10-03T10:00:00.000Z", kind: "command", label: "Increment", detail: null }],
+  timeline: [
+    {
+      at: "2026-10-03T10:00:00.000Z",
+      kind: "command",
+      label: "Increment",
+      detail: null,
+      caller: null,
+    },
+  ],
 }
 
 describe("runtime models", () => {
@@ -81,8 +93,8 @@ describe("runtime models", () => {
       ...inspector,
       turn: null,
       tables: null,
-      receipts: [{ ...inspector.receipts[0], result: null, at: null }],
-      events: [{ name: "Incremented", cursor: "17", subscribers: null }],
+      receipts: [{ ...inspector.receipts[0], result: null, caller: null, at: null }],
+      events: [{ ...inspector.events[0], subscribers: null }],
       connections: { sockets: null, feedCursor: "17" },
       properties: {
         ...inspector.properties,
@@ -118,10 +130,12 @@ describe("runtime models", () => {
 
   it("distinguishes replayed commands from ok and error ones in the live tail", () => {
     const entry = {
+      commandId: "v1.1.2.c",
       at: "2026-10-03T10:00:01.000Z",
       durationMs: 3.2,
       address: "Counter/room-1",
       command: "Increment",
+      caller: { kind: "user", subject: "user:u_1", source: null },
       payloadPreview: "{}",
       outcome: "replayed",
       errorTag: null,
@@ -129,6 +143,10 @@ describe("runtime models", () => {
     expect(decode(CommandLogEntry, entry).outcome).toBe("replayed")
     expect(rejects(CommandLogEntry, { ...entry, outcome: "retried" })).toBe(true)
     expect(rejects(CommandLogEntry, { ...entry, durationMs: -1 })).toBe(true)
+    expect(rejects(CommandLogEntry, { ...entry, caller: { kind: "robot" } })).toBe(true)
+    expect(
+      decode(CommandLogEntry, { ...entry, at: null, durationMs: null, payloadPreview: null }),
+    ).toMatchObject({ at: null, durationMs: null, payloadPreview: null })
   })
 
   it("round-trips a live-tail event through the SSE wire form with an ISO timestamp", () => {
@@ -136,10 +154,12 @@ describe("runtime models", () => {
     if (!Predicate.hasProperty(stream, "events") || !Schema.isSchema(stream.events))
       throw new Error("The commands stream declares no event schema")
     const payload = {
+      commandId: "v1.1.2.c",
       at: "2026-10-03T10:00:01.000Z",
       durationMs: 3.2,
       address: "Counter/room-1",
       command: "Increment",
+      caller: null,
       payloadPreview: "{}",
       outcome: "ok",
       errorTag: null,
@@ -249,10 +269,20 @@ describe("runtime models", () => {
       startedAt: "2026-10-03T10:00:00.000Z",
       status: "running",
     }
-    const at = (step: { index: number; total: number; name: string }) => ({ ...workflow, step })
+    const at = (step: { index: number; total: number | null; name: string } | null) => ({
+      ...workflow,
+      step,
+    })
 
-    expect(decode(Workflow, workflow).step.index).toBe(1)
-    expect(decode(Workflow, at({ index: 3, total: 3, name: "ship" })).step.index).toBe(3)
+    expect(decode(Workflow, workflow).step?.index).toBe(1)
+    expect(decode(Workflow, at({ index: 3, total: 3, name: "ship" })).step?.index).toBe(3)
+    expect(decode(Workflow, at({ index: 7, total: null, name: "ship" })).step).toEqual({
+      index: 7,
+      total: null,
+      name: "ship",
+    })
+    expect(decode(Workflow, at(null)).step).toBe(null)
+    expect(rejects(Workflow, at({ index: 0, total: null, name: "reserve" }))).toBe(true)
     expect(rejects(Workflow, at({ index: 0, total: 3, name: "reserve" }))).toBe(true)
     expect(rejects(Workflow, at({ index: 4, total: 3, name: "ship" }))).toBe(true)
     expect(rejects(Workflow, at({ index: 1, total: 0, name: "reserve" }))).toBe(true)

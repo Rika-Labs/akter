@@ -73,7 +73,7 @@ describe("overview mapping", () => {
           value: "1,284",
           trend: [10, 20, 30],
         })
-        expect(orderedSeries(parsed.p99).map((entry) => entry.value)).toEqual([12, 18])
+        expect(orderedSeries(parsed.p99!).map((entry) => entry.value)).toEqual([12, 18])
       }),
     ))
 
@@ -151,7 +151,7 @@ describe("deploy markers", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const parsed = yield* decode(Overview, overview)
-        const series = orderedSeries(parsed.throughput)
+        const series = orderedSeries(parsed.throughput!)
         expect(deployMarkers(parsed.recentDeployments)(series)).toEqual([
           { index: 2, label: "a3f9c21" },
         ])

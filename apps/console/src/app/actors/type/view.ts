@@ -53,21 +53,21 @@ export const actorTypeScreen = ({ h, model, page }: ScreenInput<ActorTypePage>):
       pageHeader(h, {
         title: summary.name,
         mono: true,
-        description: `Accepts ${summary.commands.join(", ")}.`,
+        description: `Accepts ${summary.commands!.join(", ")}.`,
       }),
       statRow(h, {
         label: `${summary.name} totals`,
         stats: [
           { label: "Instances", value: formatCompact(summary.instances) },
-          { label: "Awake", value: formatInteger(summary.awake) },
+          { label: "Awake", value: formatInteger(summary.awake!) },
           {
             label: "Commands / s",
-            value: formatInteger(summary.commandsPerSecond),
+            value: formatInteger(summary.commandsPerSecond!),
             trend: activity.perSecond.slice(-40),
           },
           {
             label: "p99 turn",
-            value: summary.commandsPerSecond === 0 ? "—" : formatDuration(summary.p99Ms),
+            value: summary.commandsPerSecond === 0 ? "—" : formatDuration(summary.p99Ms!),
           },
         ],
       }),

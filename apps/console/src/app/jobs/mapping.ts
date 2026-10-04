@@ -26,20 +26,20 @@ export const toDeadLetter =
 export const toJobsPage =
   (now: DateTime.Utc) =>
   (input: Readonly<{ summary: JobsSummary; deadLetters: ReadonlyArray<DeadLetter> }>): JobsPage => {
-    const throughput = [...input.summary.throughput].sort(
+    const throughput = [...input.summary.throughput!].sort(
       (left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at),
     )
     return JobsPage.make({
       queued: input.summary.queued,
-      running: input.summary.running,
+      running: input.summary.running!,
       retrying: input.summary.retrying,
       deadLetters: input.deadLetters.map(toDeadLetter(now)),
       types: input.summary.byType.map((type) => ({
         name: type.jobName,
-        done: type.done,
+        done: type.done!,
         retried: type.retried,
         dead: type.dead,
-        p99: formatDuration(type.p99Ms),
+        p99: formatDuration(type.p99Ms!),
       })),
       labels: throughput.map((point) => hourLabel(point.at)),
       throughput: throughput.map((point) => point.value),

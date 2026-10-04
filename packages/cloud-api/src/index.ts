@@ -136,6 +136,7 @@ export {
   ActorTimelineEntry,
   ActorTypeActivity,
   ActorTypeSummary,
+  CommandCaller,
   CommandFailed,
   CommandRefused,
   CommandExpired,
