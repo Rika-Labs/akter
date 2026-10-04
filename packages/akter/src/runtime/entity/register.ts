@@ -45,6 +45,7 @@ import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 import { OutboxRuntime } from "../turn/outbox.ts"
 import type { TurnGate } from "../drain.ts"
 import { DefectLog } from "../telemetry/defects.ts"
+import { accountsUsage, UsageAccounting } from "../telemetry/usage.ts"
 import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
@@ -351,6 +352,8 @@ export const registerActor = Effect.fnUntraced(function* (
   const services = yield* Effect.context<
     Effect.Services<ReturnType<typeof executeBatches<Waiting, never, never, never>>> | Crypto.Crypto
   >()
+  const usage = Context.getUnsafe(services, UsageAccounting)
+  const accounting = accountsUsage(usage) ? usage : undefined
 
   const entity = commandEntity(registration.name)
 
@@ -836,6 +839,7 @@ export const registerActor = Effect.fnUntraced(function* (
           waited,
           owner.hasConnections ? owner.list(owned) : undefined,
           registration.cron,
+          accounting,
         )
       }
 

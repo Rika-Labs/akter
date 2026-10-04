@@ -21,6 +21,8 @@ import { PendingLayers } from "./pending.ts"
 import { Repository, RepositoryLive } from "./repository.ts"
 import { ControlLayers } from "./control.ts"
 import { SqlClient } from "effect/sql"
+import { billingInfrastructure, BillingLive, billingWebhook, UsageLive } from "./billing.ts"
+import { LocalBillingOptions, localBillingRoutes } from "./local-billing.ts"
 import { publishedKeys } from "@akter/deployments"
 import { DeploymentsLive } from "./deployments.ts"
 import { RuntimeLive } from "./runtime.ts"
@@ -28,7 +30,15 @@ import { cloudRuntime, runnerReconciliation, runtimeEdge } from "./cloud.ts"
 
 export const apiRoutes = HttpApiBuilder.layer(CloudApi, { openapiPath: "/api/openapi.json" }).pipe(
   Layer.provide(
-    Layer.mergeAll(AccountLayers, ControlLayers, PendingLayers, DeploymentsLive, RuntimeLive),
+    Layer.mergeAll(
+      AccountLayers,
+      ControlLayers,
+      PendingLayers,
+      BillingLive,
+      UsageLive,
+      DeploymentsLive,
+      RuntimeLive,
+    ),
   ),
   Layer.provide(AccessLive),
   Layer.provide(Access.layer),
@@ -214,6 +224,8 @@ export const infrastructure = (options: ApiOptions) => {
   return Layer.mergeAll(
     auth,
     RepositoryLive,
+    billingInfrastructure(options),
+    Layer.succeed(LocalBillingOptions, options),
     runtimeEdge(options),
     runnerReconciliation(options),
   ).pipe(Layer.provideMerge(sql))
@@ -222,6 +234,8 @@ export const infrastructure = (options: ApiOptions) => {
 export const routes = Layer.mergeAll(
   apiRoutes,
   authRoutes,
+  billingWebhook,
+  localBillingRoutes,
   HttpRouter.middleware(
     Effect.map(Auth, (auth) =>
       HttpMiddleware.cors({ allowedOrigins: auth.allowedBrowserOrigins, credentials: true }),
@@ -230,9 +244,12 @@ export const routes = Layer.mergeAll(
   ),
 )
 
-export const ApiLive = (options: ApiOptions) =>
-  HttpRouter.serve(routes, { disableLogger: true }).pipe(
-    Layer.provide(infrastructure(options)),
+export const ApiLive = (options: ApiOptions) => {
+  const services = infrastructure(options)
+  return HttpRouter.serve(routes.pipe(HttpRouter.provideRequest(services)), {
+    disableLogger: true,
+  }).pipe(
+    Layer.provide(services),
     Layer.provide(
       BunHttpServer.layer({
         port: options.port,
@@ -240,3 +257,4 @@ export const ApiLive = (options: ApiOptions) =>
       }),
     ),
   )
+}

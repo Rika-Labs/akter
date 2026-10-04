@@ -50,26 +50,9 @@ export const IntegrationsNotImplemented = HttpApiBuilder.group(
     ),
 )
 
-export const BillingNotImplemented = HttpApiBuilder.group(CloudApi, "billing", (handlers) =>
-  Effect.succeed(
-    handlers
-      .handle("get", () => notImplemented("billing.get"))
-      .handle("listInvoices", () => notImplemented("billing.listInvoices"))
-      .handle("setSpendLimit", () => notImplemented("billing.setSpendLimit"))
-      .handle("startCheckout", () => notImplemented("billing.startCheckout"))
-      .handle("openPortal", () => notImplemented("billing.openPortal")),
-  ),
-)
-
-export const UsageNotImplemented = HttpApiBuilder.group(CloudApi, "usage", (handlers) =>
-  Effect.succeed(handlers.handle("get", () => notImplemented("usage.get"))),
-)
-
 export const PendingLayers = Layer.mergeAll(
   EnvironmentVariablesNotImplemented,
   DomainsNotImplemented,
   RegionsNotImplemented,
   IntegrationsNotImplemented,
-  BillingNotImplemented,
-  UsageNotImplemented,
 )

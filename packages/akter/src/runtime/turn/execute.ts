@@ -22,6 +22,7 @@ import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
+import type { UsageAccountingService } from "../telemetry/usage.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
@@ -463,6 +464,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   waited: ReadonlySet<string> = new Set(),
   connections?: ConnectionLister,
   cron: ReadonlyArray<CronEntry> = [],
+  accounting?: UsageAccountingService,
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -999,8 +1001,18 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           Effect.asVoid(sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`),
         )
 
-      if (receipts.length > 0)
+      if (receipts.length > 0) {
         writes.push(Effect.asVoid(sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`))
+
+        if (accounting !== undefined)
+          writes.push(
+            accounting.commands({
+              ref,
+              commandIds: receipts.map((receipt) => receipt.command_id),
+              sql,
+            }),
+          )
+      }
 
       writes.push(...(yield* ticks))
 

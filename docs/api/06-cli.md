@@ -58,6 +58,7 @@ Operate a running deployment:
 
 Control plane:
   tenants    Manage the tenant directory
+  billing    Set up the billing catalog
 ```
 
 ## Operator commands
@@ -65,6 +66,17 @@ Control plane:
 `defects list`, `inspect`, `export`, `receipts show`, `dead-letters`, and `subscriptions` call a runner's `Operators.serve` routes. Each reads its bearer token from `DURABLE_OPERATOR_TOKEN`, or from the environment variable `--token-env` names. `--url` repeats; `defects list` reads every runner named, and the single-actor commands use the first. See [ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md) for the grants each command needs and the [runbooks](../operations/runbooks.md) for when to use them.
 
 ## Commands
+
+### `durable billing setup`
+
+Create or reconcile products, meters and prices using the configured provisional pricing. Every provider creation has a stable identity; repeating setup does not duplicate catalog objects.
+
+```text
+durable billing setup --mode local --database-url postgres://project:project@localhost:55415/project
+durable billing setup --mode stripe
+```
+
+Local mode is the default and uses only the SQL-backed Stripe implementation. Stripe mode reads `STRIPE_API_KEY` from the environment; it is not a command-line argument. API, edge and setup consume the same optional `BILLING_PRICING_CONFIG` JSON configuration. Setup does not publish the planning prices or establish live tax/provider support.
 
 ### `durable dev`
 

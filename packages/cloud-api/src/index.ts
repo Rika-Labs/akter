@@ -170,6 +170,7 @@ export {
   SetSpendLimit,
   SpendLimit,
   StartCheckout,
+  PlanChange,
   Usage,
   UsageMeter,
   UsageMeterName,
