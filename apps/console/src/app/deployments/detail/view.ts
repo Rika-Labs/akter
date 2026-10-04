@@ -13,6 +13,7 @@ import {
   type StatusTone,
 } from "@akter/ui"
 import { rolloutTimeline } from "@akter/ui/charts"
+import { Option } from "effect"
 import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import { deployStatus } from "../../overview/view.ts"
 import * as Routes from "../../navigation/routes.ts"
@@ -36,9 +37,13 @@ const healthLabels: Readonly<Record<Runner["health"], string>> = {
 
 const rollbackTargetKey = "rollbackTarget"
 
-/** One deploy: how its rollout went, the runners it started, and its build log. */
+/**
+ * One deploy: how its rollout went, the runners it started, and its build log. Rollback and
+ * redeploy stay disabled while either is in flight, so a second click cannot start another.
+ */
 export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>): Screen => {
   const { deploy, rolledBackFrom } = page
+  const changing = Option.isSome(model.changingDeployment)
   const target =
     page.rollbackTargets.find((candidate) => candidate.id === model.choices[rollbackTargetKey]) ??
     page.rollbackTargets[0]
@@ -84,7 +89,7 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
           target === undefined
             ? undefined
             : OpenedDialog({ dialog: Dialog.RollBack({ id: target.id, commit: target.commit }) }),
-        disabled: model.pageSample || deploy.status !== "Live" || target === undefined,
+        disabled: model.pageSample || changing || deploy.status !== "Live" || target === undefined,
       }),
       button(h, {
         label: "Redeploy",
@@ -93,7 +98,7 @@ export const deploymentScreen = ({ h, model, page }: ScreenInput<DeploymentPage>
         onClick: OpenedDialog({
           dialog: Dialog.Redeploy({ id: deploy.id, commit: deploy.commit }),
         }),
-        disabled: model.pageSample || deploy.status === "Rolling out",
+        disabled: model.pageSample || changing || deploy.status === "Rolling out",
       }),
     ],
     body: pageBody(h, [

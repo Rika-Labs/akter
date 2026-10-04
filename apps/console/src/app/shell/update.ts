@@ -3,6 +3,8 @@ import * as Navigation from "foldkit/navigation"
 import type { Return } from "foldkit/update"
 import { type Url, toString } from "foldkit/url"
 import { selectedWindow } from "../api/client.ts"
+import { retryable } from "../commands/errors.ts"
+import type { CommandScope } from "../commands/model.ts"
 import { toOpeningTail, toTailEntry } from "../commands/mapping.ts"
 import { settingsSeed } from "../settings/keys.ts"
 import {
@@ -149,9 +151,10 @@ const initial = (flags: Flags, url: Url): Result => {
       tailError: Option.none(),
       commandAnswer: Option.none(),
       commandError: Option.none(),
-      commandUsedId: Option.none(),
+      commandSubmission: Option.none(),
       sendingCommand: false,
       commandSession: 0,
+      changingDeployment: Option.none(),
       resolved: [],
       revoked: [],
     },
@@ -243,6 +246,98 @@ const savesChoice = (key: string): boolean =>
   key === spendLimitKey ||
   parseMemberRoleKey(key) !== undefined
 
+/** The command and payload the send dialog holds, as they would be sent. */
+const commandInput = (model: Model) => ({
+  command: (model.fields["command-name"] ?? "").trim(),
+  payload: model.fields["command-payload"] ?? "{}",
+})
+
+/**
+ * Whether the send dialog holds exactly the submission that last failed in a way a retry with the
+ * same command ID cannot fix, so sending it again is not offered. Changing the input or clearing the
+ * command ID makes it a new submission.
+ */
+export const resendRefused = (model: Model): boolean =>
+  Option.exists(model.commandError, ({ kind }) => !retryable(kind)) &&
+  Option.exists(model.commandSubmission, (sent) => {
+    const input = commandInput(model)
+    return (
+      sent.id === (model.fields["command-id"] ?? "").trim() &&
+      sent.command === input.command &&
+      sent.payload === input.payload
+    )
+  })
+
+/**
+ * Sends the dialog's command. An empty command ID asks for a fresh one first, and the send resumes
+ * when it arrives; `minted` marks that ID as the console's own. Sending the same input again reuses
+ * the ID of the last submission, so a retry after a lost response runs at most once.
+ */
+const send = (
+  model: Model,
+  target: Readonly<{ address: string; scope: CommandScope }>,
+  minted: boolean,
+): Result => {
+  if (
+    !canSendCommand({ page: model.page, sample: model.pageSample }) ||
+    model.loading ||
+    model.sendingCommand ||
+    resendRefused(model)
+  )
+    return { model }
+  const commandId = (model.fields["command-id"] ?? "").trim()
+  if (commandId === "")
+    return {
+      model: {
+        ...model,
+        sendingCommand: true,
+        commandAnswer: Option.none(),
+        commandError: Option.none(),
+      },
+      commands: [NewCommandId({ session: model.commandSession })],
+    }
+  const input = commandInput(model)
+  const generated =
+    minted ||
+    Option.exists(model.commandSubmission, (sent) => sent.generated && sent.id === commandId)
+  return {
+    model: {
+      ...model,
+      sendingCommand: true,
+      commandAnswer: Option.none(),
+      commandError: Option.none(),
+      commandSubmission: Option.some({ id: commandId, ...input, generated }),
+      fields: { ...model.fields, "command-id": commandId },
+    },
+    commands: [
+      SendActorCommand({
+        session: model.commandSession,
+        address: target.address,
+        scope: target.scope,
+        ...input,
+        commandId,
+      }),
+    ],
+  }
+}
+
+/**
+ * Starts a rollback or redeploy unless one is already in flight, remembering the deployment page it
+ * started from so a second click cannot send it twice.
+ */
+const changeDeployment = (model: Model, action: Action): Result => {
+  if (Option.isSome(model.changingDeployment)) return { model }
+  if (!canMutate({ page: model.page, sample: model.pageSample, loading: model.loading, action }))
+    return mutate(model, action)
+  return {
+    model: { ...model, changingDeployment: Option.some(deploymentReference(model.route)) },
+    commands: [Mutate({ action })],
+  }
+}
+
+const deploymentReference = (route: AppRoute): string =>
+  AppRoute.isAnyOf(["Deployment"])(route) ? route.deployment : ""
+
 const deadLetterIds = (model: Model): ReadonlyArray<string> =>
   Option.match(model.page, {
     onNone: () => [],
@@ -290,47 +385,9 @@ const confirm = (model: Model, dialog: Dialog): Result =>
           }),
         )
       },
-      SendCommand: ({ address, scope }) => {
-        if (
-          !canSendCommand({ page: model.page, sample: model.pageSample }) ||
-          model.loading ||
-          model.sendingCommand
-        )
-          return { model }
-        const commandId = (model.fields["command-id"] ?? "").trim()
-        if (commandId === "")
-          return {
-            model: {
-              ...model,
-              sendingCommand: true,
-              commandAnswer: Option.none(),
-              commandError: Option.none(),
-            },
-            commands: [NewCommandId({ session: model.commandSession })],
-          }
-        return {
-          model: {
-            ...model,
-            sendingCommand: true,
-            commandAnswer: Option.none(),
-            commandError: Option.none(),
-            commandUsedId: Option.some(commandId),
-            fields: { ...model.fields, "command-id": commandId },
-          },
-          commands: [
-            SendActorCommand({
-              session: model.commandSession,
-              address,
-              scope,
-              command: (model.fields["command-name"] ?? "").trim(),
-              payload: model.fields["command-payload"] ?? "{}",
-              commandId,
-            }),
-          ],
-        }
-      },
-      RollBack: ({ id, commit }) => mutate(model, Action.RollBack({ id, commit })),
-      Redeploy: ({ id, commit }) => mutate(model, Action.Redeploy({ id, commit })),
+      SendCommand: (target) => send(model, target, false),
+      RollBack: ({ id, commit }) => changeDeployment(model, Action.RollBack({ id, commit })),
+      Redeploy: ({ id, commit }) => changeDeployment(model, Action.Redeploy({ id, commit })),
       DeleteProject: ({ project }) => mutate(model, Action.DeleteProject({ slug: project })),
       KeyCreated: () => ({ model }),
     }),
@@ -538,7 +595,7 @@ const step = (model: Model, message: Message): Result =>
           tailError: Option.none(),
           commandAnswer: Option.none(),
           commandError: Option.none(),
-          commandUsedId: Option.none(),
+          commandSubmission: Option.none(),
           sendingCommand: false,
           commandSession: model.commandSession + 1,
           page: Option.none(),
@@ -659,6 +716,15 @@ const step = (model: Model, message: Message): Result =>
       })),
     ChangedField: ({ name, value }) => {
       const fields = { ...model.fields, [name]: value }
+      if (
+        (name === "command-name" || name === "command-payload") &&
+        value !== model.fields[name] &&
+        Option.exists(
+          model.commandSubmission,
+          (sent) => sent.generated && sent.id === (model.fields["command-id"] ?? "").trim(),
+        )
+      )
+        fields["command-id"] = ""
       if (name === "org-name" && model.fields["org-slug-edited"] !== "yes")
         fields["org-slug"] = slugify(value)
       if (name === "org-slug") fields["org-slug-edited"] = "yes"
@@ -707,39 +773,38 @@ const step = (model: Model, message: Message): Result =>
     ChangedSettingsQuery: ({ query }) => ({ model: { ...model, settingsQuery: query } }),
     SubmittedForm: ({ form }) => submit(model, form),
     OpenedDialog: ({ dialog }) =>
-      then(closePalette(model), (next) => {
-        const session = next.commandSession + 1
-        const sending = Predicate.isTagged(dialog, "SendCommand")
-        return {
-          model: {
-            ...next,
-            dialog: Option.some(dialog),
-            fields: sending
-              ? { ...next.fields, "command-id": "", "command-payload": "{}", "command-name": "" }
-              : next.fields,
-            commandAnswer: Option.none(),
-            commandError: Option.none(),
-            commandUsedId: Option.none(),
-            sendingCommand: false,
-            commandSession: session,
-          },
-          commands: [
-            ShowDialog({ id: dialogId, focus: dialogFocus(dialog) }),
-            ...(sending ? [NewCommandId({ session })] : []),
-          ],
-        }
-      }),
+      then(closePalette(model), (next) => ({
+        model: {
+          ...next,
+          dialog: Option.some(dialog),
+          fields: Predicate.isTagged(dialog, "SendCommand")
+            ? { ...next.fields, "command-id": "", "command-payload": "{}", "command-name": "" }
+            : next.fields,
+          commandAnswer: Option.none(),
+          commandError: Option.none(),
+          commandSubmission: Option.none(),
+          sendingCommand: false,
+          commandSession: next.commandSession + 1,
+        },
+        commands: [ShowDialog({ id: dialogId, focus: dialogFocus(dialog) })],
+      })),
     ClosedDialog: () => ({
       model: {
         ...model,
         dialog: Option.none(),
         commandAnswer: Option.none(),
         commandError: Option.none(),
-        commandUsedId: Option.none(),
+        commandSubmission: Option.none(),
         sendingCommand: false,
         commandSession: model.commandSession + 1,
       },
-      commands: [HideDialog({ id: dialogId })],
+      commands: [
+        HideDialog({ id: dialogId }),
+        ...(Option.isSome(model.commandAnswer) &&
+        Option.exists(model.page, (page) => Predicate.isTagged(page, "MissingActorPage"))
+          ? [LoadPage({ route: model.route })]
+          : []),
+      ],
     }),
     ConfirmedDialog: () =>
       Option.match(model.dialog, {
@@ -820,7 +885,7 @@ const step = (model: Model, message: Message): Result =>
         onNone: () => ({ model }),
         onSome: (dialog) =>
           model.sendingCommand && Predicate.isTagged(dialog, "SendCommand")
-            ? confirm({ ...prepared, sendingCommand: false }, dialog)
+            ? send({ ...prepared, sendingCommand: false }, dialog, true)
             : { model: prepared },
       })
     },
@@ -862,6 +927,21 @@ const step = (model: Model, message: Message): Result =>
         model: next,
         commands: isAuthRoute(next.route) ? [] : [LoadPage({ route: next.route })],
       })),
+    ChangedDeployment: ({ href, title, description }) => {
+      const settled = { ...model, changingDeployment: Option.none() }
+      const stayed = Option.exists(
+        model.changingDeployment,
+        (from) => deploymentReference(model.route) === from,
+      )
+      return then(stayed ? go(settled, href) : { model: settled }, (moved) =>
+        then(toast(moved, { title, description, tone: "live" }), (next) => ({
+          model: next,
+          commands: [LoadWorkspace()],
+        })),
+      )
+    },
+    FailedDeploymentChange: ({ message }) =>
+      step({ ...model, changingDeployment: Option.none() }, Message.FailedMutation({ message })),
     CreatedKey: ({ name, secret }) =>
       then(
         {
