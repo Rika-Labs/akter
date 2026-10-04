@@ -107,6 +107,19 @@ const perActor = (before: Retained, after: Retained) => ({
   bytes: (after.bytes - before.bytes) / ACTORS,
 })
 
+/**
+ * Growth per command over two consecutive rounds of `COMMANDS`, the smaller
+ * of the two. Retention per command grows the heap in every round. A weak
+ * cache's hash table reaching a new high-water capacity, or the engine
+ * compiling hot code, grows it once: a 256 KiB table doubling alone is 64
+ * bytes per command over one round of 4,096. So a step that lands in one
+ * round is not read as retention, and a leak still shows in both.
+ */
+const perCommand = (before: Retained, middle: Retained, after: Retained) => ({
+  objects: Math.min(middle.objects - before.objects, after.objects - middle.objects) / COMMANDS,
+  bytes: Math.min(middle.bytes - before.bytes, after.bytes - middle.bytes) / COMMANDS,
+})
+
 /** Heap cases: bounded retained heap once activations hibernate and once Cluster forgets processed request ids. */
 export const heapConformance: ReadonlyArray<ConformanceCase> = [
   {
@@ -220,15 +233,14 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
                 yield* touchMany
                 const before = yield* forget
                 yield* touchMany
+                const middle = yield* forget
+                yield* touchMany
                 const after = yield* forget
                 const replayed = yield* saved
                 const count = yield* touch("hot-0")
 
                 return {
-                  growth: {
-                    objects: (after.objects - before.objects) / COMMANDS,
-                    bytes: (after.bytes - before.bytes) / COMMANDS,
-                  },
+                  growth: perCommand(before, middle, after),
                   first,
                   replayed,
                   count,
@@ -238,7 +250,7 @@ export const heapConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect({ first, replayed }).toEqual({ first: 1, replayed: 1 })
-          expect(count).toBe((3 * COMMANDS) / HOT_ACTORS + 2)
+          expect(count).toBe((4 * COMMANDS) / HOT_ACTORS + 2)
           expect({ ...growth, bounded: growth.objects < 0.5 && growth.bytes < 64 }).toMatchObject({
             bounded: true,
           })
