@@ -9,7 +9,7 @@ import {
   notImplemented,
   signedIn,
 } from "../overview/testing.ts"
-import { loadActor, loadActorType, loadActors } from "./client.ts"
+import { loadActor, loadActorType, loadActors, searchActors } from "./client.ts"
 import { ActorPage, ActorsPage, ActorTypePage, MissingActorPage } from "./model.ts"
 
 beforeEach(() => {
@@ -314,6 +314,50 @@ describe("actor inspector over the live API", () => {
         expect(page.sample).toBe(false)
         expect(page.data).toMatchObject({ state: '{\n  "count": 3\n}', jobs: [] })
         expect(responder.seen.some((path) => path.endsWith("/jobs"))).toBe(false)
+      }),
+    ))
+})
+
+describe("actor search over the live API", () => {
+  const search = "/api/projects/prj_1/environments/production/runtime/search"
+
+  beforeEach(() => vi.stubEnv("VITE_CONSOLE_FIXTURES", "0"))
+
+  afterEach(() => fetch.mockReset())
+
+  it("finds actor addresses by prefix and skips other kinds of result", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const responder = apiResponder({
+          ...signedIn({ status: "live" }),
+          [search]: {
+            body: [
+              { kind: "actor", id: "Counter/hits", title: "Counter/hits", subtitle: null },
+              { kind: "deployment", id: "dep_1", title: "deploy", subtitle: null },
+            ],
+          },
+        })
+        fetch.mockImplementation(responder.respond)
+        expect(yield* searchActors("  Counter/ ")).toEqual(["Counter/hits"])
+        expect(responder.seen).toContain(`${search}?q=Counter%2F`)
+      }),
+    ))
+
+  it("finds nothing, without asking, for a blank query, and nothing when the search fails", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const responder = apiResponder({
+          ...signedIn({ status: "live" }),
+          [search]: notImplemented("runtime.search"),
+        })
+        fetch.mockImplementation(responder.respond)
+        expect(yield* searchActors("   ")).toEqual([])
+        expect(responder.seen).toEqual([])
+        expect(yield* searchActors("Counter")).toEqual([])
+        fetch.mockImplementation(
+          apiResponder({ ...signedIn({ status: "live" }), [search]: forbidden }).respond,
+        )
+        expect(yield* searchActors("Counter")).toEqual([])
       }),
     ))
 })

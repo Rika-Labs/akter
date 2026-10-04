@@ -2,6 +2,7 @@ import { type PaletteItem, rankPalette } from "@akter/ui"
 import { Option, Predicate } from "effect"
 import * as Routes from "../navigation/routes.ts"
 import { appDestinations, secondaryDestinations, settingsGroups } from "../navigation/sections.ts"
+import { splitAddress } from "../overview/time.ts"
 import { address } from "../workspace/model.ts"
 import { ChoseTheme, type Message, OpenedDialog, RequestedHref, SignedOut } from "./message.ts"
 import { Dialog, type Model } from "./model.ts"
@@ -9,7 +10,8 @@ import { currentProject } from "./sidebar.ts"
 
 /**
  * Everything the palette can do from here: go to any page or setting, open a pinned actor, an actor
- * type or a recent deploy, and run the console's actions.
+ * the runtime found for the query, an actor type or a recent deploy, and run the console's actions.
+ * Found actors answer an earlier, shorter query until the current one's answer arrives.
  */
 export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> => {
   const page = Option.getOrUndefined(model.page)
@@ -17,6 +19,13 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
   const deploys =
     !model.pageSample && Predicate.isTagged(page, "DeploymentsPage") ? page.deploys : []
   const sender = model.pageSample ? undefined : model.workspace.pinned[0]
+  const { found } = model.palette
+  const foundActors =
+    found !== undefined && model.palette.query.trim().startsWith(found.query)
+      ? found.actors.filter(
+          (actor) => !model.workspace.pinned.some((pin) => address(pin) === actor),
+        )
+      : []
   return [
     ...[...appDestinations, ...secondaryDestinations].map((destination) => ({
       id: `page-${destination.id}`,
@@ -36,6 +45,16 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
         href: Routes.actor({ actorType: actor.actorType, key: actor.key }),
       }),
     })),
+    ...foundActors.map((actor) => {
+      const { actorType, key } = splitAddress(actor)
+      return {
+        id: `found-${actor}`,
+        label: actor,
+        group: "Actors",
+        icon: "actors" as const,
+        onSelect: RequestedHref({ href: Routes.actor({ actorType, key }) }),
+      }
+    }),
     ...actorTypes.map((type) => ({
       id: `type-${type.name}`,
       label: type.name,

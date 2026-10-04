@@ -34,11 +34,15 @@ export type Toast = typeof Toast.Type
 export const PageError = S.Struct({ kind: S.String, message: S.String })
 export type PageError = typeof PageError.Type
 
-/** The ⌘K palette: whether it is open, what is typed, and which result is highlighted. */
+/**
+ * The ⌘K palette: whether it is open, what is typed, which result is highlighted, and the actor
+ * addresses the runtime found for the query typed when it was searched.
+ */
 export const Palette = S.Struct({
   open: S.Boolean,
   query: S.String,
   active: S.optional(S.String),
+  found: S.optional(S.Struct({ query: S.String, actors: S.Array(S.String) })),
 })
 export type Palette = typeof Palette.Type
 

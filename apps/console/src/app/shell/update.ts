@@ -39,6 +39,7 @@ import {
   ReplaceUrl,
   RequestReset,
   ResendVerification,
+  SearchActors,
   ResetPassword,
   SelectEnvironment,
   SelectSeriesWindow,
@@ -708,10 +709,17 @@ const step = (model: Model, message: Message): Result =>
       const next = { ...model, palette: { ...model.palette, query } }
       const first = paletteResults(next)[0]
       return {
+        model: { ...next, palette: { ...next.palette, active: first?.id } },
+        commands: query.trim() === "" ? [] : [SearchActors({ query: query.trim() })],
+      }
+    },
+    FoundActors: ({ query, actors }) => {
+      if (!model.palette.open || !model.palette.query.trim().startsWith(query)) return { model }
+      const next = { ...model, palette: { ...model.palette, found: { query, actors } } }
+      return {
         model: {
           ...next,
-          palette:
-            first === undefined ? { open: true, query } : { open: true, query, active: first.id },
+          palette: { ...next.palette, active: next.palette.active ?? paletteResults(next)[0]?.id },
         },
       }
     },

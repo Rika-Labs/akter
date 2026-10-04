@@ -23,6 +23,7 @@ import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
 import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts"
 import { sendCommand } from "../commands/client.ts"
 import { CommandScope } from "../commands/model.ts"
+import { searchActors } from "../actors/client.ts"
 import * as Settings from "../settings/client.ts"
 import { titleCase } from "../settings/format.ts"
 import { spendLimitKey } from "../settings/keys.ts"
@@ -43,6 +44,7 @@ import {
   PreparedCommandId,
   Mutated,
   FailedPage,
+  FoundActors,
   LoadedPage,
   LoadedWorkspace,
   ResentVerification,
@@ -317,6 +319,14 @@ export const SelectEnvironment = Command.define("SelectEnvironment", {
       Effect.ignore,
       Effect.as(RetriedPage()),
     ),
+})
+
+/** Searches actor addresses that start with what the palette holds; a failed search finds none. */
+export const SearchActors = Command.define("SearchActors", {
+  args: { query: S.String },
+  messages: [FoundActors],
+  execute: ({ query }) =>
+    searchActors(query).pipe(Effect.map((actors) => FoundActors({ query, actors }))),
 })
 
 /** Persists the requested chart window before reloading its endpoint data. */

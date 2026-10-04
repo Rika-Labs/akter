@@ -1,10 +1,13 @@
 import { NotFound } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import {
+  cloud,
   type ConsoleError,
   consoleError,
+  fixturesEnabled,
   type Loaded,
   load,
+  projectContext,
   selectedWindow,
   withProject,
 } from "../api/client.ts"
@@ -12,6 +15,29 @@ import { orUndefined } from "../overview/absent.ts"
 import { flattenLoaded, sourced } from "../overview/partial.ts"
 import { toActorInstance, toActorPage, toTypeActivity } from "./mapping.ts"
 import { type ActorPage, ActorTypePage, ActorsPage, MissingActorPage } from "./model.ts"
+
+/** The longest prefix the search endpoint accepts. */
+const searchLength = 256
+
+/**
+ * The addresses of actors in the selected environment whose address starts with `prefix`. The
+ * palette offers them as a convenience, so sample data searches nothing and a search that fails
+ * for any reason finds nothing instead of interrupting what the person is typing.
+ */
+export const searchActors = (prefix: string): Effect.Effect<ReadonlyArray<string>> =>
+  Effect.suspend(() => {
+    const q = prefix.trim().slice(0, searchLength)
+    if (fixturesEnabled() || q === "") return Effect.succeed([])
+    return Effect.gen(function* () {
+      const api = yield* cloud
+      const { project, environment } = yield* projectContext
+      const found = yield* api.runtime.search({
+        params: { projectId: project.id, environment },
+        query: { q },
+      })
+      return found.flatMap((result) => (result.kind === "actor" ? [result.id] : []))
+    }).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
+  })
 
 /** Loads the project's actor types. */
 export const loadActors: Effect.Effect<Loaded<ActorsPage>, ConsoleError> = withProject(
