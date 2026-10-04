@@ -18,23 +18,27 @@ export const SidebarCounts = Schema.Struct({
 export type SidebarCounts = typeof SidebarCounts.Type
 
 /**
- * One environment's runtime at a glance, read from its runners' durable views:
- * how many actors there are, the pending jobs (`inFlight`, queued or waiting
- * to retry) and the dead letters by job name. Each nullable field is null when
- * the runners do not report it, never zero or empty: command rates and
- * latencies, throughput and p99 series, awake actors, jobs done per hour and
- * the runner, database, mailbox, socket and outbox-lag health.
- * `lastDeployAt` is when the environment's newest deployment was created, null
- * when it has none. `recentDeployments` is null here; the deployments list
- * reports them with their rollout state.
+ * One environment's runtime at a glance: how many actors there are, the
+ * pending jobs (`inFlight`, queued or waiting to retry) and the dead letters
+ * by job name from the runners' durable views, and from the serving runner's
+ * memory, while it is the only runner, the command rates and turn times
+ * (`perSecond` over the current minute and the four before it, `series24h`
+ * hourly since the runner began recording, `p50Ms` and `p99Ms` over the last
+ * hour, null with no turn), the resident (`awake`) actors and the deepest
+ * mailbox (`depth` 0 and `actor` null when none waits). Each nullable field is
+ * null when the runners do not report it, never zero or empty: throughput and
+ * p99 series, jobs done per hour and the runner, database, socket and
+ * outbox-lag health. `lastDeployAt` is when the environment's newest
+ * deployment was created, null when it has none. `recentDeployments` is null
+ * here; the deployments list reports them with their rollout state.
  */
 export const Overview = Schema.Struct({
   commands: Schema.NullOr(
     Schema.Struct({
       perSecond: NonNegative,
       series24h: Schema.Array(SeriesPoint),
-      p50Ms: NonNegative,
-      p99Ms: NonNegative,
+      p50Ms: Schema.NullOr(NonNegative),
+      p99Ms: Schema.NullOr(NonNegative),
     }),
   ),
   actors: Schema.Struct({ awake: Schema.NullOr(NonNegativeInt), total: NonNegativeInt }),
@@ -59,10 +63,12 @@ export const Overview = Schema.Struct({
 export type Overview = typeof Overview.Type
 
 /**
- * One actor type and how many actors of it the runners hold. The runners'
- * durable views record neither the commands a type declares nor its awake
- * actors, rates, latencies or mailboxes, so those are null, never empty or
- * zero.
+ * One actor type and how many actors of it the runners hold. While one runner
+ * serves the deployment, it reports how many of them are resident (`awake`),
+ * the type's command rate over the current minute and the four before it, its
+ * p99 turn time over the last hour (null with no turn) and its deepest
+ * mailbox; otherwise those are null. The commands a type declares are not
+ * reported, so `commands` is null, never empty.
  */
 export const ActorTypeSummary = Schema.Struct({
   name: Schema.String,
@@ -88,12 +94,16 @@ export const CommandVolume = Schema.Struct({
 export type CommandVolume = typeof CommandVolume.Type
 
 /**
- * Commands of one actor type over a window. `series` is commands per second at
- * evenly spaced instants, oldest first; `commands` is the volume of each
- * command the type handled in the window, busiest first.
+ * Commands of one actor type over a window, as the serving runner counted the
+ * turns that wrote a receipt. `series` is commands per second at evenly spaced
+ * instants (minutes for `1h`, hours otherwise), oldest first, each the rate
+ * over the part of its interval the runner observed; `commands` is the volume
+ * of each command the type handled in the window, busiest first. `since` is
+ * when the runner began recording: the window holds no point before it.
  */
 export const ActorTypeActivity = Schema.Struct({
   window: SeriesWindow,
+  since: Timestamp,
   series: Schema.Array(SeriesPoint),
   commands: Schema.Array(CommandVolume),
 })
@@ -106,19 +116,28 @@ export const LatencyBucket = Schema.Struct({
 })
 export type LatencyBucket = typeof LatencyBucket.Type
 
-/** How long the turns of one actor type took over a window: buckets in ascending bound order and the 50th, 95th and 99th percentile in milliseconds. */
+/**
+ * How long the turns of one actor type took over a window, from their fenced
+ * read to the database clock after `COMMIT`: buckets in ascending bound order
+ * and the 50th, 95th and 99th percentile in milliseconds, each the bound of
+ * the bucket it falls in capped by the slowest turn, and null when no turn
+ * committed. `since` is when the serving runner began recording.
+ */
 export const TurnLatency = Schema.Struct({
   window: SeriesWindow,
+  since: Timestamp,
   buckets: Schema.Array(LatencyBucket),
-  p50Ms: NonNegative,
-  p95Ms: NonNegative,
-  p99Ms: NonNegative,
+  p50Ms: Schema.NullOr(NonNegative),
+  p95Ms: Schema.NullOr(NonNegative),
+  p99Ms: Schema.NullOr(NonNegative),
 })
 export type TurnLatency = typeof TurnLatency.Type
 
 /**
- * One actor of a type. Whether it is awake, its last command and when it was
- * last active are null when the runners do not report them.
+ * One actor of a type. `lastCommand` and `lastActivityAt` are the command and
+ * commit time of its retained receipt with the newest recorded commit time,
+ * null when none records one. `status` is whether it is resident on the
+ * serving runner, null unless that runner is the only one.
  */
 export const ActorInstance = Schema.Struct({
   key: Schema.String,
@@ -157,9 +176,10 @@ export type CommandCaller = typeof CommandCaller.Type
  * reveals that a command ran but not what it returned. `caller` is whom it
  * ran as, null when the runner's record of the caller does not decode.
  * `expiresAt` is when the runner stops answering a retry from it. `at` is when
- * it committed; runners do not record that time, so it is null. A receipt is
- * the committed turn itself, so `replayed` is false unless the entry describes
- * an answer served again from the receipt.
+ * its commit wrote it, on the database clock; null for a receipt written
+ * before runners recorded it. A receipt is the committed turn itself, so
+ * `replayed` is false unless the entry describes an answer served again from
+ * the receipt.
  */
 export const Receipt = Schema.Struct({
   commandId: Schema.String,
@@ -172,7 +192,11 @@ export const Receipt = Schema.Struct({
 })
 export type Receipt = typeof Receipt.Type
 
-/** An event the actor emitted: the cursor and emission time of its newest retained one, and its subscribers, null when the runner does not report them. */
+/**
+ * An event the actor emitted: the cursor and emission time of its newest
+ * retained one, and its subscribers, the event feeds open on it that name the
+ * event, null unless the serving runner is the only one.
+ */
 export const ActorEvent = Schema.Struct({
   name: Schema.String,
   cursor: Schema.String,
@@ -210,11 +234,13 @@ export type ActorTimelineEntry = typeof ActorTimelineEntry.Type
 /**
  * One actor as the inspector shows it, read from the runner that owns it.
  * `state` is the committed state, one field per stored entry, and null when
- * an entry does not decode. `timeline` is its newest timeline page. Every
+ * an entry does not decode. `timeline` is its newest timeline page. While one
+ * runner serves the deployment, it reports whether the actor is resident
+ * (`awake`), its open sockets, its mailbox depth (0 when idle), and, while it
+ * is awake, the runner's name and region as the runner was configured. Every
  * other nullable field is null when the runner does not report it: the turn
- * count, owned-table rows, subscriber and socket counts, whether the actor is
- * awake, the runner and region that hold it and its mailbox depth. A null is
- * unknown, never zero or empty.
+ * count, owned-table rows, and those live fields with more than one runner.
+ * A null is unknown, never zero or empty.
  */
 export const ActorInspector = Schema.Struct({
   address: ActorAddress,
@@ -246,9 +272,14 @@ export type CommandOutcome = typeof CommandOutcome.Type
 
 /**
  * One committed command; `errorTag` is set only when `outcome` is `error`.
- * The command log is read from the runners' receipts, which hold no commit
- * time, duration or payload, so `at`, `durationMs` and `payloadPreview` are
- * null there; `caller` is as in `Receipt`.
+ * The command log is read from the runners' receipts: `at` is when the commit
+ * wrote the receipt and `durationMs` the turn from its fenced read to that
+ * write, both on the database clock and null for a receipt written before
+ * runners recorded them; receipts keep no payload, so `payloadPreview` is
+ * null there. The live stream sends each command as the serving runner
+ * commits it, `at` read after `COMMIT` and `durationMs` through it, with a
+ * preview of at most 256 characters that the runner cut and redacted. `caller`
+ * is as in `Receipt`.
  */
 export const CommandLogEntry = Schema.Struct({
   commandId: Schema.String,
@@ -480,6 +511,14 @@ export const TimersSummary = Schema.Struct({
 })
 export type TimersSummary = typeof TimersSummary.Type
 
+/**
+ * One cron entry an actor type declares: `name` is the command it runs,
+ * `actorPattern` the type's actors (`Type/*`) and `cron` the expression as the
+ * runtime keys it. `nextRunAt` is the soonest pending tick of the tenant's
+ * actors of the type, null when none holds one. `lastRun` is the newest tick
+ * that committed, found among the type's newest 10,000 receipts, null when
+ * none is there; its `durationMs` is null when the receipt holds no start.
+ */
 export const Schedule = Schema.Struct({
   name: Schema.String,
   actorPattern: Schema.String,
@@ -488,27 +527,35 @@ export const Schedule = Schema.Struct({
     Schema.Struct({
       at: Timestamp,
       outcome: Schema.Literals(["ok", "error"]),
-      durationMs: NonNegative,
+      durationMs: Schema.NullOr(NonNegative),
     }),
   ),
-  nextRunAt: Timestamp,
+  nextRunAt: Schema.NullOr(Timestamp),
 })
 export type Schedule = typeof Schedule.Type
 
+/**
+ * The tenant's open connections on the serving runner, which reports them
+ * only while it is the only runner: `open` counts every WebSocket session and
+ * SSE response, `sseStreams` the SSE responses (event feeds, stream members
+ * and query watches) and `feedSubscribers` the event feeds, overall and by
+ * actor type. Runners do not measure parked connections, replay gaps or their
+ * history, so `parked`, `replayGaps` and `openVersusParked` are null.
+ */
 export const ConnectionsSummary = Schema.Struct({
   open: NonNegativeInt,
-  parked: NonNegativeInt,
+  parked: Schema.NullOr(NonNegativeInt),
   sseStreams: NonNegativeInt,
   feedSubscribers: NonNegativeInt,
-  replayGaps: NonNegativeInt,
-  openVersusParked: Schema.Array(
-    Schema.Struct({ at: Timestamp, open: NonNegativeInt, parked: NonNegativeInt }),
+  replayGaps: Schema.NullOr(NonNegativeInt),
+  openVersusParked: Schema.NullOr(
+    Schema.Array(Schema.Struct({ at: Timestamp, open: NonNegativeInt, parked: NonNegativeInt })),
   ),
   byActorType: Schema.Array(
     Schema.Struct({
       actorType: Schema.String,
       open: NonNegativeInt,
-      parked: NonNegativeInt,
+      parked: Schema.NullOr(NonNegativeInt),
       sse: NonNegativeInt,
     }),
   ),

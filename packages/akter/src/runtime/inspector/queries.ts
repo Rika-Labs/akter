@@ -3,6 +3,7 @@ import { SqlClient } from "effect/sql"
 import type * as Inspection from "../../protocol/inspection.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { decompress } from "../storage/codec.ts"
+import { CRON_PREFIX } from "../cron/key.ts"
 
 export type { Decoded } from "../../protocol/inspection.ts"
 
@@ -113,29 +114,42 @@ interface ActorsPage extends Page {
 export const actors = (page: ActorsPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    const byType = page.actorType === undefined ? sql`TRUE` : sql`actor_type = ${page.actorType}`
+    const byType = page.actorType === undefined ? sql`TRUE` : sql`a.actor_type = ${page.actorType}`
     const slash = page.prefix?.indexOf("/") ?? -1
 
     const byPrefix =
       page.prefix === undefined
         ? sql`TRUE`
         : slash === -1
-          ? sql`starts_with(actor_type, ${page.prefix})`
-          : sql`actor_type = ${page.prefix.slice(0, slash)}
-              AND starts_with(actor_id, ${page.prefix.slice(slash + 1)})`
+          ? sql`starts_with(a.actor_type, ${page.prefix})`
+          : sql`a.actor_type = ${page.prefix.slice(0, slash)}
+              AND starts_with(a.actor_id, ${page.prefix.slice(slash + 1)})`
 
     const after =
       page.after === undefined
         ? sql`TRUE`
-        : sql`(actor_type COLLATE "C", actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
+        : sql`(a.actor_type COLLATE "C", a.actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
 
-    const rows = yield* sql<Inspection.ActorRow>`
-      SELECT actor_type AS "actorType", actor_id AS "actorId", placement,
-        generation::float8 AS generation, created,
-        last_event_sequence::float8 AS "lastEventSequence"
-      FROM durable.actors
-      WHERE tenant_id = ${page.tenant} AND ${byType} AND ${byPrefix} AND ${after}
-      ORDER BY actor_type COLLATE "C", actor_id COLLATE "C"
+    const rows = yield* sql<
+      Inspection.ActorRow & {
+        readonly lastCommand: string | null
+        readonly lastCommittedAtMs: number | null
+      }
+    >`
+      SELECT a.actor_type AS "actorType", a.actor_id AS "actorId", a.placement,
+        a.generation::float8 AS generation, a.created,
+        a.last_event_sequence::float8 AS "lastEventSequence",
+        l.command AS "lastCommand", l.committed_at_ms::float8 AS "lastCommittedAtMs"
+      FROM durable.actors a
+      LEFT JOIN LATERAL (
+        SELECT r.command, r.committed_at_ms FROM durable.receipts r
+        WHERE r.routing_key = a.routing_key AND r.tenant_id = a.tenant_id
+          AND r.actor_type = a.actor_type AND r.actor_id = a.actor_id
+          AND r.committed_at_ms IS NOT NULL
+        ORDER BY r.committed_at_ms DESC, r.command_id COLLATE "C" DESC
+        LIMIT 1) l ON TRUE
+      WHERE a.tenant_id = ${page.tenant} AND ${byType} AND ${byPrefix} AND ${after}
+      ORDER BY a.actor_type COLLATE "C", a.actor_id COLLATE "C"
       LIMIT ${page.limit + 1}`
 
     const more = rows.length > page.limit
@@ -143,7 +157,13 @@ export const actors = (page: ActorsPage) =>
     const last = items.at(-1)
 
     return {
-      actors: items,
+      actors: items.map(({ lastCommand, lastCommittedAtMs, ...actor }) => ({
+        ...actor,
+        lastCommand:
+          lastCommand === null || lastCommittedAtMs === null
+            ? null
+            : { command: lastCommand, committedAtMs: lastCommittedAtMs },
+      })),
       next:
         more && last !== undefined ? { actorType: last.actorType, actorId: last.actorId } : null,
     } satisfies typeof Inspection.ActorsPage.Type
@@ -292,6 +312,7 @@ export const actor = (page: ActorPage) =>
     const receipts = yield* sql<ReceiptRow>`
       SELECT r.command_id AS "commandId", r.command, r.caller_key AS "callerKey",
         r.outcome_tag AS "outcomeTag", r.outcome, r.expires_at_ms::float8 AS "expiresAtMs",
+        r.started_at_ms::float8 AS "startedAtMs", r.committed_at_ms::float8 AS "committedAtMs",
         (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events e
           WHERE e.routing_key = r.routing_key AND e.tenant_id = r.tenant_id
             AND e.actor_type = r.actor_type AND e.actor_id = r.actor_id
@@ -625,6 +646,7 @@ export const receipts = (page: ReceiptsPage) =>
       SELECT r.actor_type AS "actorType", r.actor_id AS "actorId",
         r.command_id AS "commandId", r.command, r.caller_key AS "callerKey",
         r.outcome_tag AS "outcomeTag", r.outcome, r.expires_at_ms::float8 AS "expiresAtMs",
+        r.started_at_ms::float8 AS "startedAtMs", r.committed_at_ms::float8 AS "committedAtMs",
         (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events e
           WHERE e.routing_key = r.routing_key AND e.tenant_id = r.tenant_id
             AND e.actor_type = r.actor_type AND e.actor_id = r.actor_id
@@ -766,3 +788,67 @@ export const timeline = (page: TimelinePage) =>
           : null,
     } satisfies typeof Inspection.TimelinePage.Type)
   })
+
+/** The newest receipts of a type a schedule's last run is looked for among. */
+export const SCHEDULE_RECEIPTS = 10_000
+
+/**
+ * The tenant's state of each declared cron entry: its pending ticks and the
+ * soonest one's due time, and its newest committed tick (a receipt of the
+ * entry's command whose caller is the cron source) among the type's newest
+ * `SCHEDULE_RECEIPTS` receipts by expiry, which the expiry index reads in
+ * order, so a type with more receipts than that answers no last run rather
+ * than scan them all.
+ */
+export const schedules = ({
+  tenant,
+  declared,
+}: {
+  readonly tenant: string
+  readonly declared: ReadonlyArray<{
+    readonly actorType: string
+    readonly key: string
+    readonly command: string
+  }>
+}) =>
+  Effect.forEach(declared, (entry) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+
+      const [timers] = yield* sql<{ pending: number; dueAtMs: number | null }>`
+        SELECT count(*)::int AS pending, min(due_at_ms)::float8 AS "dueAtMs" FROM durable.timers
+        WHERE tenant_id = ${tenant} AND actor_type = ${entry.actorType}
+          AND timer_key = ${entry.key}`
+
+      const [last] = yield* sql<{
+        commandId: string
+        committedAtMs: number
+        durationMs: number | null
+        outcomeTag: string | null
+      }>`
+        SELECT command_id AS "commandId", committed_at_ms::float8 AS "committedAtMs",
+          duration_ms::float8 AS "durationMs", outcome_tag AS "outcomeTag"
+        FROM (
+          SELECT command_id, command, caller_key, committed_at_ms, duration_ms, outcome_tag
+          FROM durable.receipts
+          WHERE tenant_id = ${tenant} AND actor_type = ${entry.actorType}
+          ORDER BY expires_at_ms DESC
+          LIMIT ${SCHEDULE_RECEIPTS}) r
+        WHERE command = ${entry.command} AND starts_with(caller_key, '["System","cron",')
+          AND committed_at_ms IS NOT NULL
+        ORDER BY committed_at_ms DESC, command_id COLLATE "C" DESC
+        LIMIT 1`
+
+      return {
+        actorType: entry.actorType,
+        key: entry.key,
+        expression: entry.key.startsWith(CRON_PREFIX)
+          ? entry.key.slice(CRON_PREFIX.length)
+          : entry.key,
+        command: entry.command,
+        pending: timers?.pending ?? 0,
+        nextDueAtMs: timers?.dueAtMs ?? null,
+        lastRun: last ?? null,
+      }
+    }),
+  ).pipe(Effect.map((found) => ({ schedules: found }) satisfies Inspection.Schedules))

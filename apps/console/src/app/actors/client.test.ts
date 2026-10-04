@@ -59,6 +59,7 @@ const summary = {
 
 const activity = {
   window: "1h",
+  since: "2026-10-03T13:00:00.000Z",
   series: [
     { at: "2026-10-03T14:01:00.000Z", value: 2 },
     { at: "2026-10-03T14:00:00.000Z", value: 1 },

@@ -28,7 +28,7 @@ import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
 import { DeliveryFailed, Executed, Outcome, Request } from "../request.ts"
 import { type RegisteredCommand, type Registration } from "../members.ts"
-import { ActorRef } from "../../identity/caller.ts"
+import { ActorRef, callerKey } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
@@ -47,6 +47,7 @@ import { OutboxRuntime } from "../turn/outbox.ts"
 import type { TurnGate } from "../drain.ts"
 import { DefectLog } from "../telemetry/defects.ts"
 import { accountsUsage, UsageAccounting } from "../telemetry/usage.ts"
+import type { LiveRecorder } from "../telemetry/live.ts"
 import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
@@ -336,6 +337,7 @@ export const registerActor = Effect.fnUntraced(function* (
   gate: TurnGate,
   /** Fails while this runtime may not start turns, e.g. its payload writer rows are stale. */
   writable: Effect.Effect<void, ActorError>,
+  recorder: LiveRecorder,
 ) {
   const sharding = yield* Sharding.Sharding
 
@@ -380,6 +382,7 @@ export const registerActor = Effect.fnUntraced(function* (
   )
 
   const resident = new Map<string, number>()
+  const residentRefs = new Map<string, { readonly tenant: string; readonly id: string }>()
   const building = new Set<string>()
 
   const workers = new Map<string, () => Pick<ActivationDiagnosis, "worker" | "mailbox" | "batch">>()
@@ -392,9 +395,12 @@ export const registerActor = Effect.fnUntraced(function* (
    * Counts a handler of `entityId` as resident until its scope closes; a
    * rebuilt handler can overlap its predecessor, hence the count.
    */
-  const residentWhile = (entityId: string) =>
+  const residentWhile = (entityId: string, tenant: string, id: string) =>
     Effect.acquireRelease(
-      Effect.sync(() => resident.set(entityId, (resident.get(entityId) ?? 0) + 1)).pipe(
+      Effect.sync(() => {
+        resident.set(entityId, (resident.get(entityId) ?? 0) + 1)
+        residentRefs.set(entityId, { tenant, id })
+      }).pipe(
         Effect.andThen(count(Metrics.activationsStarted, typeAttributes, 1)),
         Effect.andThen(Metric.modify(activations, 1)),
       ),
@@ -402,8 +408,10 @@ export const registerActor = Effect.fnUntraced(function* (
         Effect.sync(() => {
           const left = resident.get(entityId)! - 1
 
-          if (left === 0) resident.delete(entityId)
-          else resident.set(entityId, left)
+          if (left === 0) {
+            resident.delete(entityId)
+            residentRefs.delete(entityId)
+          } else resident.set(entityId, left)
         }).pipe(Effect.andThen(Metric.modify(activations, -1))),
     )
 
@@ -434,6 +442,49 @@ export const registerActor = Effect.fnUntraced(function* (
     yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
     yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.jobs)
   })
+
+  /**
+   * Hands each command of a committed batch that wrote a receipt to the live
+   * recorder and the tenant's command streams. A replay, a refusal and an
+   * acknowledged delivery wrote none. The turn's time is its transaction's on
+   * the database clock, from the fenced read to the clock read after `COMMIT`.
+   */
+  const recordLive = (batch: ReadonlyArray<Waiting>, done: Done, nowMs: number) => {
+    const durationMs = Math.max(0, done.endedAtMs - done.startedAtMs)
+
+    for (const [index, settled] of done.settled.entries()) {
+      if (Result.isFailure(settled) || done.replays.has(index)) continue
+
+      const outcome = settled.success
+      const failure = Outcome.guards.Failure(outcome) ? outcome.value : undefined
+
+      if (!Outcome.guards.Success(outcome) && failure === undefined) continue
+
+      const { request } = batch[index]!
+      const failed = failure !== undefined
+
+      recorder.record(
+        request.ref.tenant,
+        registration.name,
+        request.command,
+        failed,
+        durationMs,
+        nowMs,
+      )
+      recorder.publish(request.ref.tenant, nowMs, () => ({
+        commandId: request.commandId,
+        atMs: done.endedAtMs,
+        durationMs,
+        actorType: registration.name,
+        actorId: request.ref.id,
+        command: request.command,
+        callerKey: callerKey(request.caller),
+        failed,
+        payload: request.payload,
+        failure,
+      }))
+    }
+  }
 
   /**
    * Records a deterministic defect in the defect log under its turn span's
@@ -529,7 +580,7 @@ export const registerActor = Effect.fnUntraced(function* (
 
       memory.handler = handler
 
-      yield* residentWhile(entityId).pipe(Scope.provide(handler))
+      yield* residentWhile(entityId, tenant, id).pipe(Scope.provide(handler))
 
       const start = Effect.gen(function* () {
         const scope = yield* Scope.fork(handler)
@@ -709,6 +760,7 @@ export const registerActor = Effect.fnUntraced(function* (
           })
 
         yield* countWritten(done)
+        if (done.written.receipts > 0) recordLive(batch, done, yield* Clock.currentTimeMillis)
 
         if (owner.hasProgress) {
           for (const [index, settled] of done.settled.entries())
@@ -1064,6 +1116,13 @@ export const registerActor = Effect.fnUntraced(function* (
       building: building.has(entityId),
       ...(workers.get(entityId)?.() ?? { worker: "none", mailbox: 0, batch: 0 }),
     }),
+    /** The activations of this type resident now, with the commands waiting in each mailbox. */
+    resident: () =>
+      [...residentRefs].map(([entityId, { tenant, id }]) => ({
+        tenant,
+        id,
+        mailbox: workers.get(entityId)?.().mailbox ?? 0,
+      })),
     /** Activations of this type being rebuilt or restarted in place now. */
     restarting: () => [
       ...new Set([

@@ -1,3 +1,4 @@
+import type { LiveRuntime } from "./telemetry/live.ts"
 import { Context, type Effect, type Scope, type Stream } from "effect"
 import type { Transport } from "./connections/transport.ts"
 import type { Holder } from "./connections/holder.ts"
@@ -29,6 +30,8 @@ export class InternalActors extends Context.Service<
     readonly transport: Transport
     /** This runner's in-process connection holder. */
     readonly holder: Holder
+    /** What this runner knows only in memory, for the inspector's live reads. */
+    readonly live: LiveRuntime["Service"]
     /** Ends the actor's activation on this runner as idle expiry would. */
     readonly hibernate: (ref: ActorRef) => Effect.Effect<void>
     readonly execute: (request: Request) => Effect.Effect<Executed, ActorError>

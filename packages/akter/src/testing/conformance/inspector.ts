@@ -1,8 +1,20 @@
-import { Context, Crypto, Data, Effect, Exit, Layer, Option, Schedule, Schema } from "effect"
+import {
+  Context,
+  Crypto,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect"
 import { FetchHttpClient, Headers, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { Actor, Intent, Unauthorized, User } from "../../index.ts"
 import { Inspector } from "../../runtime/index.ts"
+import { InternalActors } from "../../runtime/actors.ts"
 import * as Queries from "../../runtime/inspector/queries.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
@@ -28,6 +40,25 @@ const WriteThenDie = Actor.command("WriteThenDie", { payload: Schema.String })
 
 const Nudge = Actor.command("Nudge")
 
+const Sign = Actor.command("Sign", {
+  payload: {
+    user: Schema.String,
+    password: Schema.String,
+    note: Schema.String,
+    tags: Schema.Array(Schema.String),
+  },
+})
+
+const Tick = Actor.command("Tick")
+
+/** An actor whose only work is a once-a-minute cron tick. */
+const Scheduled = Actor.make("InspectedSchedule", {
+  key: Schema.String,
+  api: { Nudge },
+  internal: { Tick },
+  schedules: { "* * * * *": Tick },
+})
+
 const Settle = Actor.workflow("Settle", {
   payload: { order: Schema.String },
   success: Schema.String,
@@ -45,7 +76,7 @@ const Inspected = Actor.make("Inspected", {
   }),
   events: [Noted],
   jobs: { Notify: { job: Notify, retry: { times: 0 } } },
-  api: { Write, WriteThenReject, WriteThenDie, Settle },
+  api: { Write, WriteThenReject, WriteThenDie, Settle, Sign },
   internal: { Nudge },
 })
 
@@ -73,6 +104,7 @@ export const inspectorLayer = Layer.mergeAll(
         return yield* Effect.die(new Error("Inspected defect after writing"))
       }),
       Nudge: () => Effect.void,
+      Sign: () => Effect.void,
       Settle: Effect.fnUntraced(function* ({ order }: { readonly order: string }) {
         const reserved = yield* Reserve.run(order, (id) => Effect.succeed(`held-${id}`))
         yield* Pause("10 seconds")
@@ -81,6 +113,7 @@ export const inspectorLayer = Layer.mergeAll(
       }),
     }),
   ),
+  Scheduled.toLayer(Effect.succeed({ Nudge: () => Effect.void, Tick: () => Effect.void })),
   Inspected.toJobLayer(
     Effect.succeed({
       Notify: Effect.fnUntraced(function* () {
@@ -119,10 +152,19 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json)
 
 /** Serves the inspector from a real listening server for the rest of the scope. */
 const serveInspector = Effect.gen(function* () {
-  const context = yield* Effect.context<SqlClient.SqlClient>()
+  const sql = yield* SqlClient.SqlClient
+  const runtime = yield* Effect.serviceOption(InternalActors)
+
+  const context = Option.match(runtime, {
+    onNone: () => Context.make(SqlClient.SqlClient, sql),
+    onSome: (actors) =>
+      Context.make(SqlClient.SqlClient, sql).pipe(Context.add(InternalActors, actors)),
+  })
 
   const web = HttpRouter.toWebHandler(
-    Inspector.serve({ auth: operators }).pipe(Layer.provide(Layer.succeedContext(context))),
+    Inspector.serve({ auth: operators, runner: "runner-1", region: "test-region" }).pipe(
+      Layer.provide(Layer.succeedContext(context)),
+    ),
     { disableLogger: true },
   )
 
@@ -133,7 +175,7 @@ const serveInspector = Effect.gen(function* () {
 
   const url = `http://127.0.0.1:${port}`
 
-  return (path: string, tenant?: string, origin?: string) =>
+  const get = (path: string, tenant?: string, origin?: string) =>
     Effect.gen(function* () {
       const request = HttpClientRequest.get(`${url}/inspector${path}`, {
         headers: origin === undefined ? {} : { origin: origin === "self" ? url : origin },
@@ -145,6 +187,55 @@ const serveInspector = Effect.gen(function* () {
 
       return { status: response.status, body: yield* decodeJson(yield* response.text) }
     }).pipe(Effect.orDie)
+
+  /**
+   * Opens `/commands/stream` as `tenant` and collects its SSE messages, as
+   * `{ event, id, data }`, until the scope closes.
+   */
+  const stream = (query: string, tenant: string) =>
+    Effect.gen(function* () {
+      const received: Array<{ event: string; id: string | undefined; data: Schema.Json }> = []
+      const response = yield* client.execute(
+        HttpClientRequest.bearerToken(
+          HttpClientRequest.get(`${url}/inspector/commands/stream${query}`),
+          tenant,
+        ),
+      )
+      let buffered = ""
+
+      yield* response.stream.pipe(
+        Stream.decodeText,
+        Stream.runForEach((chunk) =>
+          Effect.sync(() => {
+            buffered += chunk
+            let end = buffered.indexOf("\n\n")
+
+            while (end !== -1) {
+              const block = buffered.slice(0, end)
+              buffered = buffered.slice(end + 2)
+              end = buffered.indexOf("\n\n")
+              const lines = block.split("\n").filter((line) => !line.startsWith(":"))
+
+              if (lines.length === 0) continue
+
+              const value = (name: string) =>
+                lines.find((line) => line.startsWith(`${name}: `))?.slice(name.length + 2)
+
+              received.push({
+                event: value("event") ?? "message",
+                id: value("id"),
+                data: decodeJsonSync(value("data") ?? "null"),
+              })
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      )
+
+      return { status: response.status, received }
+    }).pipe(Effect.orDie)
+
+  return Object.assign(get, { stream })
 })
 
 const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Json))
@@ -895,6 +986,365 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "inspector: records each receipt's start and commit time on the database clock and an actor's last command",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const get = yield* serveInspector
+          const clock = sql<{ now: number }>`
+            SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::float8 AS now`.pipe(
+            Effect.map((rows) => rows[0]!.now),
+          )
+
+          const tenant = `${test.tenant}-timed`
+          const before = yield* clock
+          const timed = yield* Inspected.get("timed").pipe(Actor.tenant(tenant))
+          yield* timed.Write("one")
+          const between = yield* clock
+          yield* timed.WriteThenReject("two").pipe(Effect.exit)
+          yield* (yield* Inspected.get("other").pipe(Actor.tenant(tenant))).Write("three")
+          const after = yield* clock
+
+          const stored = yield* sql<{
+            actor_id: string
+            command: string
+            command_id: string
+            started_at_ms: number
+            committed_at_ms: number
+          }>`SELECT actor_id, command, command_id, started_at_ms::float8 AS started_at_ms,
+                committed_at_ms::float8 AS committed_at_ms
+              FROM actor_receipts WHERE tenant_id = ${tenant} AND actor_type = 'Inspected'
+              ORDER BY committed_at_ms, command_id`
+
+          expect(stored.map((row) => [row.actor_id, row.command])).toEqual([
+            ["timed", "Write"],
+            ["timed", "WriteThenReject"],
+            ["other", "Write"],
+          ])
+
+          for (const row of stored) {
+            expect(row.started_at_ms >= before).toBe(true)
+            expect(row.committed_at_ms >= row.started_at_ms).toBe(true)
+            expect(row.committed_at_ms <= after).toBe(true)
+          }
+
+          expect(stored[0]!.committed_at_ms <= between).toBe(true)
+          expect(stored[1]!.started_at_ms >= between).toBe(true)
+
+          const [view] = yield* sql<{ duration_ms: number; committed_at: Date }>`
+            SELECT duration_ms::float8 AS duration_ms, committed_at FROM durable.receipts
+            WHERE tenant_id = ${tenant} AND command_id = ${stored[0]!.command_id}`
+          expect(view!.duration_ms).toBe(stored[0]!.committed_at_ms - stored[0]!.started_at_ms)
+          expect(view!.committed_at.getTime()).toBe(stored[0]!.committed_at_ms)
+
+          const page = yield* get("/receipts?type=Inspected&id=timed", tenant)
+          expect(
+            list(page.body, "receipts")
+              .map((row) => [
+                field(row, "commandId"),
+                field(row, "startedAtMs"),
+                field(row, "committedAtMs"),
+              ])
+              .toSorted((left, right) => Number(left[2]) - Number(right[2])),
+          ).toEqual(
+            stored
+              .filter((row) => row.actor_id === "timed")
+              .map((row) => [row.command_id, row.started_at_ms, row.committed_at_ms]),
+          )
+
+          const actors = list((yield* get("/actors?type=Inspected", tenant)).body, "actors")
+          const lastOf = (id: string) =>
+            field(actors.find((row) => field(row, "actorId") === id) ?? null, "lastCommand")
+          expect(lastOf("timed")).toEqual({
+            command: "WriteThenReject",
+            committedAtMs: stored[1]!.committed_at_ms,
+          })
+          expect(lastOf("other")).toEqual({
+            command: "Write",
+            committedAtMs: stored[2]!.committed_at_ms,
+          })
+
+          yield* sql`UPDATE actor_receipts SET committed_at_ms = NULL, started_at_ms = NULL
+            WHERE tenant_id = ${tenant} AND actor_id = 'other'`
+          const untimed = list((yield* get("/actors?type=Inspected", tenant)).body, "actors")
+          expect(
+            field(untimed.find((row) => field(row, "actorId") === "other") ?? null, "lastCommand"),
+          ).toBe(null)
+          expect(
+            list((yield* get("/receipts?type=Inspected&id=other", tenant)).body, "receipts").map(
+              (row) => [field(row, "startedAtMs"), field(row, "committedAtMs")],
+            ),
+          ).toEqual([[null, null]])
+        }),
+      ),
+  },
+  {
+    name: "inspector: counts this runner's committed turns per tenant and type, streams them with redacted previews, and reads awake activations",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const get = yield* serveInspector
+          const home = `${test.tenant}-live`
+          const abroad = `${test.tenant}-elsewhere`
+          const inHome = (id: string) => Inspected.get(id).pipe(Actor.tenant(home))
+
+          const watching = yield* get.stream("?type=Inspected", home)
+          const failures = yield* get.stream("?outcome=Failure", home)
+          const foreign = yield* get.stream("", abroad)
+          expect([watching.status, failures.status, foreign.status]).toEqual([200, 200, 200])
+
+          const a = yield* inHome("a")
+          const b = yield* inHome("b")
+          yield* a.Write("1")
+          yield* a.Write("2")
+          yield* b.Write("3")
+          yield* a.WriteThenReject("4").pipe(Effect.exit)
+          yield* a.WriteThenDie("5").pipe(Effect.exit)
+          yield* b.Sign({
+            user: "ada",
+            password: "hunter2-is-secret",
+            note: "x".repeat(40),
+            tags: ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9"],
+          })
+          yield* (yield* Inspected.get("c").pipe(Actor.tenant(abroad))).Write("abroad")
+
+          const receipts = yield* sql<{ command: string; count: number; commandIds: string }>`
+            SELECT command, count(*)::int AS count,
+              string_agg(command_id, ',' ORDER BY command_id) AS "commandIds"
+            FROM actor_receipts WHERE tenant_id = ${home} AND actor_type = 'Inspected'
+            GROUP BY command ORDER BY count(*) DESC, command COLLATE "C"`
+          expect(receipts.map(({ command, count }) => ({ command, count }))).toEqual([
+            { command: "Write", count: 3 },
+            { command: "Sign", count: 1 },
+            { command: "WriteThenReject", count: 1 },
+          ])
+          const written = receipts.reduce((sum, row) => sum + row.count, 0)
+
+          const activity = yield* get("/live/activity?type=Inspected&window=1h", home)
+          expect(activity.status).toBe(200)
+          expect(field(activity.body, "scope")).toMatchObject({
+            runner: "runner-1",
+            region: "test-region",
+          })
+          expect(
+            list(activity.body, "activity", "commands").map((row) => ({
+              command: field(row, "command"),
+              count: field(row, "count"),
+            })),
+          ).toEqual(receipts.map(({ command, count }) => ({ command, count })))
+          const points = list(activity.body, "activity", "points")
+          expect(points.length > 0).toBe(true)
+          expect(points.length <= 60).toBe(true)
+          expect(points.every((point) => Number(field(point, "perSecond")) >= 0)).toBe(true)
+
+          const latency = yield* get("/live/latency?type=Inspected&window=24h", home)
+          expect(field(latency.body, "latency", "count")).toBe(written)
+          expect(
+            list(latency.body, "latency", "buckets").reduce<number>(
+              (sum, bucket) => sum + Number(field(bucket, "count")),
+              0,
+            ),
+          ).toBe(written)
+          expect(list(latency.body, "latency", "buckets").length).toBe(16)
+          const p50 = Number(field(latency.body, "latency", "p50Ms"))
+          const p99 = Number(field(latency.body, "latency", "p99Ms"))
+          expect(p50 >= 0).toBe(true)
+          expect(p99 >= p50).toBe(true)
+
+          expect(
+            list(
+              (yield* get("/live/activity?type=Inspected&window=7d", abroad)).body,
+              "activity",
+              "commands",
+            ),
+          ).toMatchObject([{ command: "Write", count: 1 }])
+          expect(
+            list(
+              (yield* get("/live/activity?type=Inspected&window=1h", `${test.tenant}-nobody`)).body,
+              "activity",
+              "commands",
+            ),
+          ).toEqual([])
+
+          const overview = yield* get("/live/overview", home)
+          const inspectedType = list(overview.body, "actorTypes").find(
+            (row) => field(row, "actorType") === "Inspected",
+          )
+          expect(field(inspectedType ?? null, "awake")).toBe(2)
+          expect(field(overview.body, "total", "awake")).toBe(2)
+          expect(Number(field(inspectedType ?? null, "perSecond")) > 0).toBe(true)
+
+          const named = yield* get(
+            `/live/actors?type=Inspected&ids=${encodeURIComponent('["a","b","never"]')}`,
+            home,
+          )
+          expect(
+            list(named.body, "actors").map((row) => [field(row, "actorId"), field(row, "awake")]),
+          ).toEqual([
+            ["a", true],
+            ["b", true],
+            ["never", false],
+          ])
+          expect(
+            field(
+              (yield* get(`/live/actors?type=Inspected&ids=${encodeURIComponent('["a"]')}`, abroad))
+                .body,
+              "actors",
+              0,
+              "awake",
+            ),
+          ).toBe(false)
+
+          yield* eventually(
+            Effect.sync(
+              () => watching.received.filter((m) => m.event === "command").length >= written,
+            ),
+            "the home stream to receive every committed command",
+          )
+          const streamed = watching.received.filter((m) => m.event === "command")
+          expect(streamed.map((m) => text(field(m.data, "command"))).toSorted(byText)).toEqual(
+            ["Sign", "Write", "Write", "Write", "WriteThenReject"].toSorted(byText),
+          )
+          expect(streamed.map((m) => text(field(m.data, "commandId"))).toSorted(byText)).toEqual(
+            receipts.flatMap((row) => row.commandIds.split(",")).toSorted(byText),
+          )
+          expect(streamed.map((m) => m.id)).toEqual(streamed.map((m) => text(field(m.data, "id"))))
+          const signed = streamed.find((m) => field(m.data, "command") === "Sign")!
+          const preview = text(field(signed.data, "payloadPreview"))
+          expect(preview).toContain('"password":"[redacted]"')
+          expect(preview).not.toContain("hunter2")
+          expect(preview).toContain(`"note":"${"x".repeat(32)}…"`)
+          expect(preview).toContain('"t8",…]')
+          expect(preview.length <= 256).toBe(true)
+          expect(field(signed.data, "callerKey", "json", 0)).toBe("User")
+          const rejected = streamed.find((m) => field(m.data, "command") === "WriteThenReject")!
+          expect([field(rejected.data, "outcomeTag"), field(rejected.data, "errorTag")]).toEqual([
+            "Failure",
+            "Rejected",
+          ])
+          expect(Number(field(rejected.data, "durationMs")) >= 0).toBe(true)
+
+          yield* eventually(
+            Effect.sync(() => failures.received.some((m) => m.event === "command")),
+            "the failure stream to receive the declared failure",
+          )
+          expect(
+            failures.received
+              .filter((m) => m.event === "command")
+              .map((m) => field(m.data, "command")),
+          ).toEqual(["WriteThenReject"])
+          yield* eventually(
+            Effect.sync(() => foreign.received.some((m) => m.event === "command")),
+            "the other tenant's stream to receive its own command",
+          )
+          expect(
+            foreign.received
+              .filter((m) => m.event === "command")
+              .map((m) => field(m.data, "actorId")),
+          ).toEqual(["c"])
+
+          const lastId = streamed.at(-1)!.id!
+          const resumed = yield* get.stream(`?after=${encodeURIComponent(lastId)}`, home)
+          yield* b.Write("6")
+          yield* eventually(
+            Effect.sync(() => resumed.received.some((m) => m.event === "command")),
+            "a resumed stream to receive the next command",
+          )
+          expect(
+            resumed.received
+              .filter((m) => m.event === "command")
+              .map((m) => field(m.data, "payloadPreview")),
+          ).toEqual(['"6"'])
+
+          const stale = yield* get.stream("?after=elsewhere-1.3", home)
+          yield* eventually(
+            Effect.sync(() => stale.received.length > 0),
+            "a stream resumed from another epoch to answer",
+          )
+          expect(stale.received.map((m) => m.event)).toEqual(["gap", "end"])
+
+          const crossed = yield* get("/live/connections", abroad)
+          expect(field(crossed.body, "sockets")).toBe(0)
+        }).pipe(Effect.scoped),
+      ),
+  },
+  {
+    name: "inspector: lists declared schedules with the tenant's pending tick and last committed tick",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const get = yield* serveInspector
+
+          const declared = list((yield* get("/schedules", test.tenant)).body, "schedules").find(
+            (row) => field(row, "actorType") === "InspectedSchedule",
+          )
+          expect(declared).toMatchObject({
+            command: "Tick",
+            pending: 0,
+            nextDueAtMs: null,
+            lastRun: null,
+          })
+          expect(text(field(declared ?? null, "key")).startsWith("$cron:")).toBe(true)
+          expect(text(field(declared ?? null, "expression"))).toBe(
+            text(field(declared ?? null, "key")).slice("$cron:".length),
+          )
+
+          yield* (yield* Scheduled.get("clock")).Nudge()
+          yield* test.advance(0)
+
+          const [pending] = yield* sql<{ due: number }>`
+            SELECT due_at_ms::float8 AS due FROM actor_outbox
+            WHERE tenant_id = ${test.tenant} AND actor_type = 'InspectedSchedule'
+              AND timer_key LIKE '$cron:%'`
+          const ticking = list((yield* get("/schedules", test.tenant)).body, "schedules").find(
+            (row) => field(row, "actorType") === "InspectedSchedule",
+          )
+          expect(ticking).toMatchObject({ pending: 1, nextDueAtMs: pending!.due, lastRun: null })
+
+          yield* test.advance("61 seconds")
+          yield* eventually(
+            sql<{ count: number }>`SELECT count(*)::int AS count FROM actor_receipts
+              WHERE tenant_id = ${test.tenant} AND actor_type = 'InspectedSchedule'
+                AND command = 'Tick'`.pipe(Effect.map((rows) => rows[0]!.count > 0)),
+            "the cron tick to commit",
+          )
+
+          const [tick] = yield* sql<{
+            command_id: string
+            committed_at_ms: number
+            duration: number
+          }>`SELECT command_id, committed_at_ms::float8 AS committed_at_ms,
+                (committed_at_ms - started_at_ms)::float8 AS duration
+              FROM actor_receipts WHERE tenant_id = ${test.tenant}
+                AND actor_type = 'InspectedSchedule' AND command = 'Tick'
+              ORDER BY committed_at_ms DESC LIMIT 1`
+          const fired = list((yield* get("/schedules", test.tenant)).body, "schedules").find(
+            (row) => field(row, "actorType") === "InspectedSchedule",
+          )
+          expect(field(fired ?? null, "lastRun")).toEqual({
+            commandId: tick!.command_id,
+            committedAtMs: tick!.committed_at_ms,
+            durationMs: tick!.duration,
+            outcomeTag: "Success",
+          })
+          expect(
+            field(
+              list((yield* get("/schedules", `${test.tenant}-other`)).body, "schedules").find(
+                (row) => field(row, "actorType") === "InspectedSchedule",
+              ) ?? null,
+              "pending",
+            ),
+          ).toBe(0)
+        }),
+      ),
+  },
+  {
     name: "inspector: reads through the durable views only and never writes",
     run: ({ expect, environment }) =>
       environment.run(
@@ -921,6 +1371,12 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             "/receipts?type=Inspected&id=untouched",
             "/latest-events?type=Inspected&id=untouched",
             "/timeline?type=Inspected&id=untouched",
+            "/schedules",
+            "/live/overview",
+            "/live/activity?type=Inspected",
+            "/live/latency?type=Inspected&window=7d",
+            `/live/actors?type=Inspected&ids=${encodeURIComponent('["untouched"]')}`,
+            "/live/connections",
           ])
             expect((yield* get(path, test.tenant)).status).toBe(200)
 

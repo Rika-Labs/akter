@@ -48,9 +48,21 @@ export const ActorRow = Schema.Struct({
 
 export type ActorRow = typeof ActorRow.Type
 
+/**
+ * An actor as a list shows it, with its last command: the command and commit
+ * time of its receipt with the newest recorded commit time, null when no
+ * retained receipt records one.
+ */
+export const ActorListRow = Schema.Struct({
+  ...ActorRow.fields,
+  lastCommand: Schema.NullOr(Schema.Struct({ command: Schema.String, committedAtMs: Millis })),
+})
+
+export type ActorListRow = typeof ActorListRow.Type
+
 /** A page of actors; `next` is the identity to continue from, or null at the end. */
 export const ActorsPage = Schema.Struct({
-  actors: Schema.Array(ActorRow),
+  actors: Schema.Array(ActorListRow),
   next: Schema.NullOr(Schema.Struct(Identity)),
 })
 
@@ -141,7 +153,10 @@ export type WorkflowRow = typeof WorkflowRow.Type
 
 /**
  * A command receipt with its outcome, expiry in epoch milliseconds and the
- * sequences of the events it emitted.
+ * sequences of the events it emitted. `startedAtMs` is the database clock its
+ * batch's fenced read selected and `committedAtMs` the database clock when
+ * its commit wrote it; both are null on a receipt written before the runtime
+ * recorded them.
  */
 export const ReceiptRow = Schema.Struct({
   commandId: Schema.String,
@@ -150,6 +165,8 @@ export const ReceiptRow = Schema.Struct({
   outcomeTag: Schema.NullOr(Schema.String),
   outcome: Stored,
   expiresAtMs: Millis,
+  startedAtMs: Schema.NullOr(Millis),
+  committedAtMs: Schema.NullOr(Millis),
   events: Schema.Array(Schema.Finite),
 })
 
@@ -309,3 +326,183 @@ export const JobTypesPage = Schema.Struct({
   jobTypes: Schema.Array(JobTypeRow),
   next: Schema.NullOr(Schema.String),
 })
+
+/**
+ * Which runner answered a live read and what it covers: its name and region
+ * as the inspector was configured (null when not), when it began recording,
+ * and how many other runners the cluster lists (null when it could not tell).
+ * A live answer is this runner's alone; it covers the deployment only when
+ * `peers` is 0.
+ */
+export const LiveScope = Schema.Struct({
+  runner: Schema.NullOr(Schema.String),
+  region: Schema.NullOr(Schema.String),
+  startedAtMs: Millis,
+  peers: Schema.NullOr(Schema.Finite),
+})
+
+export type LiveScope = typeof LiveScope.Type
+
+/**
+ * A recent rate and turn times: commands per second over the current minute
+ * and the four before it, and the median and 99th percentile turn time over
+ * the last hour, each null when the runner cannot say (or, for a percentile,
+ * when no turn committed). Percentiles are histogram bucket bounds capped by
+ * the slowest turn seen.
+ */
+const LiveRates = {
+  perSecond: Schema.NullOr(Schema.Finite),
+  p50Ms: Schema.NullOr(Schema.Finite),
+  p99Ms: Schema.NullOr(Schema.Finite),
+}
+
+/** The deepest mailbox among resident activations, null when none is resident. */
+const MaxMailbox = Schema.NullOr(Schema.Struct({ depth: Schema.Finite, actorId: Schema.String }))
+
+/**
+ * One runner's live view of a tenant: its rates, resident activations and
+ * deepest mailbox overall, and per actor type that has either.
+ */
+export const LiveOverview = Schema.Struct({
+  scope: LiveScope,
+  total: Schema.Struct({
+    ...LiveRates,
+    awake: Schema.Finite,
+    maxMailbox: Schema.NullOr(
+      Schema.Struct({ depth: Schema.Finite, actorType: Schema.String, actorId: Schema.String }),
+    ),
+  }),
+  actorTypes: Schema.Array(
+    Schema.Struct({
+      actorType: Schema.String,
+      ...LiveRates,
+      awake: Schema.Finite,
+      maxMailbox: MaxMailbox,
+    }),
+  ),
+})
+
+export type LiveOverview = typeof LiveOverview.Type
+
+/**
+ * One actor type's commands over a window: the rate at each slot this runner
+ * observed (minutes for `1h`, hours otherwise), oldest first, and each
+ * command's volume; `activity` is null when the runner cannot say.
+ */
+export const LiveActivity = Schema.Struct({
+  scope: LiveScope,
+  activity: Schema.NullOr(
+    Schema.Struct({
+      sinceMs: Millis,
+      points: Schema.Array(Schema.Struct({ atMs: Millis, perSecond: Schema.Finite })),
+      commands: Schema.Array(
+        Schema.Struct({ command: Schema.String, count: Schema.Finite, perSecond: Schema.Finite }),
+      ),
+    }),
+  ),
+})
+
+export type LiveActivity = typeof LiveActivity.Type
+
+/** One actor type's turn times over a window as a histogram and percentiles; null when the runner cannot say. */
+export const LiveLatency = Schema.Struct({
+  scope: LiveScope,
+  latency: Schema.NullOr(
+    Schema.Struct({
+      sinceMs: Millis,
+      count: Schema.Finite,
+      buckets: Schema.Array(
+        Schema.Struct({ upToMs: Schema.NullOr(Schema.Finite), count: Schema.Finite }),
+      ),
+      p50Ms: Schema.NullOr(Schema.Finite),
+      p95Ms: Schema.NullOr(Schema.Finite),
+      p99Ms: Schema.NullOr(Schema.Finite),
+    }),
+  ),
+})
+
+export type LiveLatency = typeof LiveLatency.Type
+
+/**
+ * Named actors as this runner holds them: whether each is resident, its
+ * mailbox depth when it is, its open sockets and its open feeds per event.
+ */
+export const LiveActors = Schema.Struct({
+  scope: LiveScope,
+  actors: Schema.Array(
+    Schema.Struct({
+      actorId: Schema.String,
+      awake: Schema.Boolean,
+      mailbox: Schema.NullOr(Schema.Finite),
+      sockets: Schema.Finite,
+      feeds: Schema.Array(Schema.Struct({ event: Schema.String, subscribers: Schema.Finite })),
+    }),
+  ),
+})
+
+export type LiveActors = typeof LiveActors.Type
+
+const ConnectionCounts = {
+  sockets: Schema.Finite,
+  feeds: Schema.Finite,
+  streams: Schema.Finite,
+  watches: Schema.Finite,
+}
+
+/** The tenant's open WebSocket sessions and SSE responses on this runner, overall and per actor type. */
+export const LiveConnections = Schema.Struct({
+  scope: LiveScope,
+  ...ConnectionCounts,
+  byActorType: Schema.Array(Schema.Struct({ actorType: Schema.String, ...ConnectionCounts })),
+})
+
+export type LiveConnections = typeof LiveConnections.Type
+
+/**
+ * One committed command as the command stream sends it: its turn's time on
+ * the database clock (`atMs` read after `COMMIT`), its caller key, outcome,
+ * the declared failure's tag, and a bounded, redacted payload preview.
+ */
+export const StreamCommand = Schema.Struct({
+  id: Schema.String,
+  commandId: Schema.String,
+  atMs: Millis,
+  durationMs: Schema.Finite,
+  actorType: Schema.String,
+  actorId: Schema.String,
+  command: Schema.String,
+  callerKey: Stored,
+  outcomeTag: Schema.Literals(["Success", "Failure"]),
+  errorTag: Schema.NullOr(Schema.String),
+  payloadPreview: Schema.NullOr(Schema.String),
+})
+
+export type StreamCommand = typeof StreamCommand.Type
+
+/**
+ * Each cron entry the runtime registers, with the tenant's pending ticks of
+ * it, the soonest one's due time, and the newest committed tick among the
+ * type's newest receipts: its command id, commit time, duration and outcome.
+ */
+export const Schedules = Schema.Struct({
+  schedules: Schema.Array(
+    Schema.Struct({
+      actorType: Schema.String,
+      key: Schema.String,
+      expression: Schema.String,
+      command: Schema.String,
+      pending: Schema.Finite,
+      nextDueAtMs: Schema.NullOr(Millis),
+      lastRun: Schema.NullOr(
+        Schema.Struct({
+          commandId: Schema.String,
+          committedAtMs: Millis,
+          durationMs: Schema.NullOr(Schema.Finite),
+          outcomeTag: Schema.NullOr(Schema.String),
+        }),
+      ),
+    }),
+  ),
+})
+
+export type Schedules = typeof Schedules.Type

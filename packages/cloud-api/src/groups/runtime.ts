@@ -89,11 +89,11 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       params: actorTypeParams,
       query: { window: Schema.optional(SeriesWindow) },
       success: ActorTypeActivity,
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ).annotate(
     OpenApi.Description,
-    "Commands per second over the window (default 24h) and the volume of each command, for one actor type.",
+    "Commands per second over the window (default 24h) and the volume of each command, for one actor type, as the serving runner counted them since `since`. `NotImplemented` while more than one runner serves the environment.",
   ),
   HttpApiEndpoint.get(
     "getActorTypeLatency",
@@ -102,11 +102,11 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       params: actorTypeParams,
       query: { window: Schema.optional(SeriesWindow) },
       success: TurnLatency,
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ).annotate(
     OpenApi.Description,
-    "Turn-latency histogram over the window (default 24h) with p50, p95 and p99, for one actor type.",
+    "Turn-latency histogram over the window (default 24h) with p50, p95 and p99, for one actor type, as the serving runner measured them since `since`. `NotImplemented` while more than one runner serves the environment.",
   ),
   HttpApiEndpoint.get(
     "listActorInstances",
@@ -197,8 +197,11 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
         outcome: Schema.optional(CommandOutcome),
       },
       success: HttpApiSchema.StreamSse({ data: Schema.toCodecJson(CommandLogEntry) }),
-      error: ReadErrors,
+      error: InspectErrors,
     },
+  ).annotate(
+    OpenApi.Description,
+    "Each command the serving runner commits from now on, filtered by actor type and outcome (`replayed` is always empty, since a replay commits no turn), with a payload preview of at most 256 characters that the runner cut and redacted. The control plane resumes across the runner's credential expiry; the stream ends when the runner can no longer resume it without a gap, or the runner goes away, and a client reconnects. `NotImplemented` while more than one runner serves the environment.",
   ),
   HttpApiEndpoint.get("getJobs", "/projects/:projectId/environments/:environment/runtime/jobs", {
     params: environmentParams,
@@ -259,12 +262,12 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
     {
       params: environmentParams,
       success: Schema.Array(Schedule),
-      error: ReadErrors,
+      error: InspectErrors,
     },
   ),
   HttpApiEndpoint.get(
     "getConnections",
     "/projects/:projectId/environments/:environment/runtime/connections",
-    { params: environmentParams, success: ConnectionsSummary, error: ReadErrors },
+    { params: environmentParams, success: ConnectionsSummary, error: InspectErrors },
   ),
 ) {}

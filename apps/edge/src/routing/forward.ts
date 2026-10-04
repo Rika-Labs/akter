@@ -26,6 +26,7 @@ import {
   type Principal,
 } from "../principals/authenticate.ts"
 import {
+  isServiceRead,
   meteringOf,
   type QuotaError,
   type Quotas,
@@ -454,6 +455,15 @@ export const forward = Effect.fnUntraced(function* (
       !url.pathname.endsWith("/watch")
     )
       yield* edge.quotas.release(reservation).pipe(Effect.ignore)
+
+    if (
+      isServiceRead({
+        method: request.method,
+        path: url.pathname,
+        service: verified?.service === true,
+      })
+    )
+      return passThrough(response.value)
 
     const leased =
       held === undefined

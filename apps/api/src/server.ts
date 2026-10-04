@@ -2,10 +2,11 @@ import { CloudApi } from "@akter/cloud-api"
 import { Postgres } from "@alchemy.run/better-auth/Postgres"
 import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Effect, Layer, Option, Predicate, Redacted, Schema, Stream } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import {
   FetchHttpClient,
+  HttpBody,
   HttpEffect,
   HttpMiddleware,
   HttpRouter,
@@ -232,6 +233,47 @@ export const infrastructure = (options: ApiOptions) => {
   ).pipe(Layer.provideMerge(sql))
 }
 
+const utf8 = new TextEncoder()
+
+/** How often an event stream with nothing to send writes a comment. */
+const EVENT_STREAM_KEEPALIVE = "5 seconds"
+
+/**
+ * Writes an SSE comment at once and then every `EVENT_STREAM_KEEPALIVE` into
+ * every event-stream response. The server and the proxies in front of it close
+ * a connection that writes nothing for 10 seconds, and a stream of runtime
+ * commands can be quiet far longer than that; the comment also flushes the
+ * headers before the first event.
+ */
+const eventStreamKeepalive = HttpMiddleware.make((app) =>
+  Effect.map(app, (response) => {
+    const { body } = response
+
+    if (!Predicate.isTagged(body, "Stream") || !body.contentType.startsWith("text/event-stream"))
+      return response
+
+    return HttpServerResponse.setBody(
+      response,
+      HttpBody.stream(
+        Stream.succeed(utf8.encode(": open\n\n")).pipe(
+          Stream.concat(
+            body.stream.pipe(
+              Stream.merge(
+                Stream.tick(EVENT_STREAM_KEEPALIVE).pipe(
+                  Stream.drop(1),
+                  Stream.map(() => utf8.encode(": keepalive\n\n")),
+                ),
+                { haltStrategy: "left" },
+              ),
+            ),
+          ),
+        ),
+        body.contentType,
+      ),
+    )
+  }),
+)
+
 export const routes = Layer.mergeAll(
   apiRoutes,
   authRoutes,
@@ -243,6 +285,7 @@ export const routes = Layer.mergeAll(
     ),
     { global: true },
   ),
+  HttpRouter.middleware(eventStreamKeepalive, { global: true }),
 )
 
 export const ApiLive = (options: ApiOptions) => {

@@ -1,7 +1,10 @@
 import { Effect, Metric } from "effect"
 import { dual } from "effect/Function"
 
-const milliseconds = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000]
+/** The upper bounds, in milliseconds, of every duration histogram's buckets. */
+export const milliseconds = [
+  1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000,
+] as const
 
 /**
  * Metric names and attribute keys are public, like span names. Prometheus

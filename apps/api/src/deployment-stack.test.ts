@@ -25,6 +25,7 @@ import {
   type HttpClientResponse,
   HttpRouter,
 } from "effect/http"
+import { Sse } from "effect/encoding"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { PlatformError } from "effect/PlatformError"
 import { Pool } from "pg"
@@ -581,6 +582,7 @@ const startStack = (localBuild?: ApiOptions["localBuild"]) =>
 
     return {
       app,
+      origin,
       context,
       owned,
       suffix,
@@ -810,6 +812,13 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const inspected = yield* read(hits, Cloud.ActorInspector)
         const generation = yield* generationOf("hits")
         expect(generation).toBeGreaterThanOrEqual(1)
+        const [committed] = yield* Effect.promise(() =>
+          applicationRows.query<{ at: string }>(
+            "SELECT committed_at_ms::text AS at FROM actor_receipts WHERE command_id = $1",
+            [counted.commandId],
+          ),
+        ).pipe(Effect.map((result) => result.rows))
+        const [serving] = yield* running(first)
         expect(inspected).toEqual({
           address: "Counter/hits",
           state: { count: 3 },
@@ -821,22 +830,22 @@ layer(Layer.provideMerge(ImagesLive, services), {
               command: "Increment",
               result: "Success",
               caller: { kind: "user", subject: `user:${aliceId}`, source: null },
-              at: null,
+              at: DateTime.makeUnsafe(Number(committed?.at)),
               expiresAt: DateTime.makeUnsafe(Number(counted.commandId.split(".")[2])),
               replayed: false,
             },
           ],
           events: [],
           jobs: [],
-          connections: { sockets: null, feedCursor: null },
+          connections: { sockets: 0, feedCursor: null },
           properties: {
-            status: null,
+            status: "awake",
             type: "Counter",
             generation,
-            runner: null,
-            region: null,
+            runner: serving,
+            region,
             tenant: "default",
-            mailboxDepth: null,
+            mailboxDepth: 0,
           },
           timeline: [],
         })
@@ -1184,6 +1193,14 @@ layer(Layer.provideMerge(ImagesLive, services), {
           })
         const millis = (at: DateTime.Utc | null) =>
           at === null ? null : DateTime.toEpochMillis(at)
+        yield* poll(
+          "the cluster to list no runner but the serving one, so live reads cover the environment",
+          120,
+          call(`${runtime}/connections`, { cookie: alice }).pipe(
+            Effect.map((response) => response.status),
+          ),
+          (status) => status === 200,
+        )
         const byCodeUnit = (left: string, right: string) =>
           left < right ? -1 : left > right ? 1 : 0
         const asAlice = { kind: "user", subject: `user:${aliceId}`, source: null }
@@ -1196,7 +1213,13 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const overview = yield* get("/overview", Cloud.Overview)
         expect({
           ...overview,
-          health: { ...overview.health, lastDeployAt: millis(overview.health.lastDeployAt) },
+          commands: null,
+          actors: { ...overview.actors, awake: null },
+          health: {
+            ...overview.health,
+            maxMailbox: null,
+            lastDeployAt: millis(overview.health.lastDeployAt),
+          },
         }).toEqual({
           commands: null,
           actors: { awake: null, total: 3 },
@@ -1214,6 +1237,17 @@ layer(Layer.provideMerge(ImagesLive, services), {
           },
           recentDeployments: null,
         })
+        const awakeOverall = overview.actors.awake ?? -1
+        expect(Number.isInteger(awakeOverall) && awakeOverall >= 0 && awakeOverall <= 3).toBe(true)
+        expect(overview.health.maxMailbox).toEqual({ depth: 0, actor: null })
+        const liveCommands = overview.commands
+        expect(liveCommands).not.toBeNull()
+        expect(liveCommands?.perSecond).toBeGreaterThanOrEqual(0)
+        expect(liveCommands?.series24h.length).toBeGreaterThanOrEqual(1)
+        expect(liveCommands?.series24h.length).toBeLessThanOrEqual(24)
+        expect(liveCommands?.series24h.every((point) => point.value >= 0)).toBe(true)
+        expect(liveCommands?.p50Ms).toBeGreaterThanOrEqual(0)
+        expect(liveCommands?.p99Ms).toBeGreaterThanOrEqual(liveCommands?.p50Ms ?? 0)
         expect(yield* get("/sidebar-counts", Cloud.SidebarCounts)).toEqual({
           actorTypes: 2,
           openDeadLetters: 3,
@@ -1228,11 +1262,27 @@ layer(Layer.provideMerge(ImagesLive, services), {
           p99Ms: null,
           maxMailbox: null,
         })
-        expect(yield* get("/actor-types", Schema.Array(Cloud.ActorTypeSummary))).toEqual([
-          summary("Counter", 1),
-          summary("Ledger", 2),
-        ])
-        expect(yield* get("/actor-types/Ledger", Cloud.ActorTypeSummary)).toEqual(
+        const durable = (found: Cloud.ActorTypeSummary) => ({
+          ...found,
+          awake: null,
+          commandsPerSecond: null,
+          p99Ms: null,
+          maxMailbox: null,
+        })
+        const listedTypes = yield* get("/actor-types", Schema.Array(Cloud.ActorTypeSummary))
+        expect(listedTypes.map(durable)).toEqual([summary("Counter", 1), summary("Ledger", 2)])
+        for (const found of [
+          ...listedTypes,
+          yield* get("/actor-types/Ledger", Cloud.ActorTypeSummary),
+        ]) {
+          expect(found.awake !== null && found.awake >= 0 && found.awake <= found.instances).toBe(
+            true,
+          )
+          expect(found.commandsPerSecond).toBeGreaterThanOrEqual(0)
+          expect(found.p99Ms).toBeGreaterThanOrEqual(0)
+          expect(found.maxMailbox).toBe(0)
+        }
+        expect(durable(yield* get("/actor-types/Ledger", Cloud.ActorTypeSummary))).toEqual(
           summary("Ledger", 2),
         )
         const missingType = yield* call(`${runtime}/actor-types/Missing`, { cookie: alice })
@@ -1245,15 +1295,28 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const generations = yield* rows<{ actor_id: string; generation: number }>(
           "SELECT actor_id, generation::int AS generation FROM durable.actors WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
         )
-        expect(yield* every("/actor-types/Ledger/instances?limit=1", Cloud.ActorInstance)).toEqual(
+        const lastCommands = yield* rows<{ actor_id: string; command: string; at: string }>(
+          "SELECT DISTINCT ON (actor_id) actor_id, command, committed_at_ms::text AS at FROM actor_receipts WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND committed_at_ms IS NOT NULL ORDER BY actor_id, committed_at_ms DESC, command_id COLLATE \"C\" DESC",
+        )
+        const instances = yield* every("/actor-types/Ledger/instances?limit=1", Cloud.ActorInstance)
+        expect(
+          instances.map((instance) => ({
+            ...instance,
+            status: null,
+            lastActivityAt: millis(instance.lastActivityAt),
+          })),
+        ).toEqual(
           ["a", "b"].map((key) => ({
             key,
             status: null,
-            lastCommand: null,
-            lastActivityAt: null,
+            lastCommand: lastCommands.find((row) => row.actor_id === key)?.command,
+            lastActivityAt: Number(lastCommands.find((row) => row.actor_id === key)?.at),
             generation: generations.find((row) => row.actor_id === key)?.generation,
           })),
         )
+        expect(
+          instances.every((instance) => instance.status === "awake" || instance.status === "idle"),
+        ).toBe(true)
         expect(
           (yield* call(`${runtime}/actor-types/Ledger/instances?status=awake`, { cookie: alice }))
             .status,
@@ -1279,9 +1342,15 @@ layer(Layer.provideMerge(ImagesLive, services), {
           command: string
           outcome_tag: string
           expires_at_ms: string
+          committed_at_ms: string
+          duration_ms: string
         }>(
-          "SELECT actor_type, actor_id, command_id, command, outcome_tag, expires_at_ms::text FROM durable.receipts WHERE tenant_id = 'default'",
+          "SELECT actor_type, actor_id, command_id, command, outcome_tag, expires_at_ms::text, committed_at_ms::text, duration_ms::text FROM durable.receipts WHERE tenant_id = 'default'",
         )
+        const receiptAt = (commandId: string) =>
+          Number(receiptRows.find((row) => row.command_id === commandId)?.committed_at_ms)
+        const receiptDuration = (commandId: string) =>
+          Number(receiptRows.find((row) => row.command_id === commandId)?.duration_ms)
         const newestFirst = receiptRows.toSorted(
           (left, right) =>
             Number(right.expires_at_ms) - Number(left.expires_at_ms) ||
@@ -1309,6 +1378,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
           receipts.map((receipt) => ({
             ...receipt,
             caller: sentToA.has(receipt.commandId) ? receipt.caller : null,
+            at: millis(receipt.at),
             expiresAt: millis(receipt.expiresAt),
           })),
         ).toEqual(
@@ -1317,7 +1387,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
             command: row.command,
             result: row.outcome_tag,
             caller: sentToA.has(row.command_id) ? asAlice : null,
-            at: null,
+            at: Number(row.committed_at_ms),
             expiresAt: Number(row.expires_at_ms),
             replayed: false,
           })),
@@ -1353,8 +1423,8 @@ layer(Layer.provideMerge(ImagesLive, services), {
           Schema.Array(Cloud.ActorEvent),
         )).map((event) => ({ ...event, emittedAt: millis(event.emittedAt) }))
         expect(listedEvents).toEqual([
-          { name: "Adjusted", cursor: "4", emittedAt: emitted(4), subscribers: null },
-          { name: "Recorded", cursor: "3", emittedAt: emitted(3), subscribers: null },
+          { name: "Adjusted", cursor: "4", emittedAt: emitted(4), subscribers: 0 },
+          { name: "Recorded", cursor: "3", emittedAt: emitted(3), subscribers: 0 },
         ])
 
         const expectedTimeline = events.flatMap((event, index) => {
@@ -1516,10 +1586,14 @@ layer(Layer.provideMerge(ImagesLive, services), {
         expect(commands.map((entry) => entry.commandId)).toEqual(
           newestFirst.map((row) => row.command_id),
         )
-        expect(commands.find((entry) => entry.commandId === counted.commandId)).toEqual({
+        expect(
+          commands
+            .map((entry) => ({ ...entry, at: millis(entry.at) }))
+            .find((entry) => entry.commandId === counted.commandId),
+        ).toEqual({
           commandId: counted.commandId,
-          at: null,
-          durationMs: null,
+          at: receiptAt(counted.commandId),
+          durationMs: receiptDuration(counted.commandId),
           address: "Counter/solo",
           command: "Increment",
           caller: asAlice,
@@ -1527,11 +1601,16 @@ layer(Layer.provideMerge(ImagesLive, services), {
           outcome: "ok",
           errorTag: null,
         })
-        expect(yield* every("/commands?outcome=error", Cloud.CommandLogEntry)).toEqual([
+        expect(
+          (yield* every("/commands?outcome=error", Cloud.CommandLogEntry)).map((entry) => ({
+            ...entry,
+            at: millis(entry.at),
+          })),
+        ).toEqual([
           {
             commandId: refused.commandId,
-            at: null,
-            durationMs: null,
+            at: receiptAt(refused.commandId),
+            durationMs: receiptDuration(refused.commandId),
             address: "Ledger/a",
             command: "Refuse",
             caller: asAlice,
@@ -1563,6 +1642,11 @@ layer(Layer.provideMerge(ImagesLive, services), {
           "/dead-letters",
           "/workflows",
           "/timers",
+          "/actor-types/Ledger/activity",
+          "/actor-types/Ledger/latency?window=1h",
+          "/connections",
+          "/schedules",
+          "/commands/stream",
         ]
         for (const path of reads) {
           const refusedRead = yield* call(`${runtime}${path}`, { cookie: mallory })
@@ -1593,6 +1677,436 @@ layer(Layer.provideMerge(ImagesLive, services), {
           ).toBe(403)
         }
       }),
+    1_500_000,
+  )
+
+  it.effect(
+    "reports live telemetry of the only runner through the edge: per-type activity and latency, receipt timing, awake actors, placement, feeds, schedules and a redacted command stream, and refuses it to another organization and to a tenant key",
+    () =>
+      Effect.gen(function* () {
+        const images = yield* Images
+        const {
+          app,
+          call,
+          origin,
+          alice,
+          aliceId,
+          mallory,
+          project,
+          deploy,
+          settled,
+          running,
+          sql,
+          edgePort,
+        } = yield* startStack()
+
+        const deployed = yield* deploy("a", images.v1)
+        expect(yield* settled(deployed)).toMatchObject({ status: "live" })
+        const [serving] = yield* running(deployed)
+        expect(serving).toBeDefined()
+
+        const runtime = `/api/projects/${project.id}/environments/production/runtime`
+        yield* poll(
+          "the cluster to list no runner but the serving one, so live reads cover the environment",
+          120,
+          call(`${runtime}/connections`, { cookie: alice }).pipe(
+            Effect.map((response) => response.status),
+          ),
+          (status) => status === 200,
+        )
+        const client = yield* HttpClient.HttpClient
+        const applicationRows = yield* Effect.acquireRelease(
+          Effect.sync(() => new Pool({ connectionString: app.url, max: 1 })),
+          (pool) => Effect.promise(() => pool.end()),
+        )
+        const rows = <Row extends Record<string, unknown>>(statement: string) =>
+          Effect.promise(() => applicationRows.query<Row>(statement)).pipe(
+            Effect.map((result) => result.rows),
+          )
+        const get = <A, I>(path: string, schema: Schema.Codec<A, I>) =>
+          call(`${runtime}${path}`, { cookie: alice }).pipe(
+            Effect.tap((response) =>
+              response.text.pipe(
+                Effect.orDie,
+                Effect.tap((body) => Effect.sync(() => expect(response.status, body).toBe(200))),
+              ),
+            ),
+            Effect.flatMap((response) => read(response, schema)),
+          )
+        const millis = (at: DateTime.Utc | null) =>
+          at === null ? null : DateTime.toEpochMillis(at)
+
+        const streamed: Array<Cloud.CommandLogEntry> = []
+        const opened = yield* client
+          .execute(
+            HttpClientRequest.get(`${origin}${runtime}/commands/stream`).pipe(
+              HttpClientRequest.setHeaders({ origin: apiOrigin, cookie: alice }),
+            ),
+          )
+          .pipe(Effect.orDie)
+        expect(opened.status).toBe(200)
+        expect(opened.headers["content-type"]).toContain("text/event-stream")
+        yield* opened.stream.pipe(
+          Stream.decodeText,
+          Stream.pipeThroughChannel(Sse.decode()),
+          Stream.mapEffect((event) =>
+            Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(Cloud.CommandLogEntry)))(
+              event.data,
+            ),
+          ),
+          Stream.runForEach((entry) => Effect.sync(() => streamed.push(entry))),
+          Effect.ignore,
+          Effect.forkScoped,
+        )
+
+        const send = (address: string, command: string, payload: Schema.Json) =>
+          call(`${runtime}/commands`, {
+            method: "POST",
+            cookie: alice,
+            body: { address, command, payload },
+          })
+        const sent = (address: string, command: string, payload: Schema.Json) =>
+          send(address, command, payload).pipe(
+            Effect.tap((response) =>
+              response.text.pipe(
+                Effect.orDie,
+                Effect.tap((body) => Effect.sync(() => expect(response.status, body).toBe(200))),
+              ),
+            ),
+            Effect.flatMap((response) => read(response, Cloud.CommandSent)),
+          )
+
+        const five = yield* sent("Ledger/x", "Record", 5)
+        const seven = yield* sent("Ledger/x", "Record", 7)
+        const noted = yield* sent("Ledger/y", "Note", "hello")
+        const refusal = yield* send("Ledger/x", "Refuse", "no")
+        expect(refusal.status).toBe(422)
+        const refused = yield* read(refusal, Cloud.CommandFailed)
+        const configured = yield* sent("Beacon/b1", "Configure", {
+          label: "north",
+          password: "hunter2-very-secret",
+          apiToken: "tok-should-never-leave",
+          notes: "n".repeat(50),
+        })
+        const started = yield* sent("Ticker/t1", "Start", null)
+        const mine = [five, seven, noted, configured, started].map((found) => found.commandId)
+        mine.push(refused.commandId)
+
+        yield* poll(
+          "the console stream to carry every sent command",
+          60,
+          Effect.sync(() => streamed.length),
+          () => mine.every((id) => streamed.some((entry) => entry.commandId === id)),
+        )
+
+        const readTiming = () =>
+          rows<{
+            actor_type: string
+            actor_id: string
+            command: string
+            command_id: string
+            started: string
+            committed: string
+          }>(
+            "SELECT actor_type, actor_id, command, command_id, started_at_ms::text AS started, committed_at_ms::text AS committed FROM actor_receipts WHERE tenant_id = 'default'",
+          )
+        let timing = yield* readTiming()
+        const timingOf = (commandId: string) => {
+          const row = timing.find((found) => found.command_id === commandId)
+
+          return {
+            at: Number(row?.committed),
+            durationMs: Number(row?.committed) - Number(row?.started),
+          }
+        }
+        for (const id of mine) {
+          const entry = streamed.find((found) => found.commandId === id)!
+          const durable = timingOf(id)
+          expect(millis(entry.at)).toBeGreaterThanOrEqual(durable.at)
+          expect(entry.durationMs).toBeGreaterThanOrEqual(durable.durationMs)
+          expect(entry.caller).toEqual({ kind: "user", subject: `user:${aliceId}`, source: null })
+        }
+        const configuredEntry = streamed.find((entry) => entry.commandId === configured.commandId)!
+        expect(configuredEntry.address).toBe("Beacon/b1")
+        expect(configuredEntry.payloadPreview).toContain('"label":"north"')
+        expect(configuredEntry.payloadPreview).toContain('"password":"[redacted]"')
+        expect(configuredEntry.payloadPreview).toContain('"apiToken":"[redacted]"')
+        expect(configuredEntry.payloadPreview).toContain(`"notes":"${"n".repeat(32)}…"`)
+        expect(configuredEntry.payloadPreview).not.toContain("hunter2")
+        expect(configuredEntry.payloadPreview).not.toContain("tok-should")
+        expect(streamed.find((entry) => entry.commandId === refused.commandId)).toMatchObject({
+          outcome: "error",
+          errorTag: "Refused",
+          payloadPreview: '"no"',
+        })
+        expect(streamed.find((entry) => entry.commandId === five.commandId)?.payloadPreview).toBe(
+          "5",
+        )
+
+        const ledgerReceipts = () =>
+          rows<{ command: string; count: number; durations: string }>(
+            "SELECT command, count(*)::int AS count, string_agg((committed_at_ms - started_at_ms)::text, ',') AS durations FROM actor_receipts WHERE tenant_id = 'default' AND actor_type = 'Ledger' GROUP BY command ORDER BY count(*) DESC, command COLLATE \"C\"",
+          )
+        const activity = yield* poll(
+          "the runner's Ledger activity to count every Ledger receipt",
+          60,
+          Effect.all([
+            get("/actor-types/Ledger/activity?window=1h", Cloud.ActorTypeActivity),
+            ledgerReceipts(),
+          ]),
+          ([found, receipts]) =>
+            JSON.stringify(found.commands.map(({ command, count }) => [command, count])) ===
+            JSON.stringify(receipts.map(({ command, count }) => [command, count])),
+        )
+        const [counted, receiptCounts] = activity
+        expect(counted.window).toBe("1h")
+        expect(counted.series.length).toBeGreaterThanOrEqual(1)
+        expect(counted.series.length).toBeLessThanOrEqual(60)
+        expect(counted.series.every((point) => point.value >= 0)).toBe(true)
+        expect(counted.commands.map((volume) => volume.command)).toEqual(
+          expect.arrayContaining(["Record", "Note", "Refuse"]),
+        )
+        expect(counted.commands.find((volume) => volume.command === "Record")?.count).toBe(
+          receiptCounts.find((row) => row.command === "Record")?.count,
+        )
+
+        const ledgerCount = receiptCounts.reduce((sum, row) => sum + row.count, 0)
+        const durableDurations = receiptCounts
+          .flatMap((row) => row.durations.split(",").map(Number))
+          .toSorted((left, right) => left - right)
+        const latency = yield* get("/actor-types/Ledger/latency?window=1h", Cloud.TurnLatency)
+        expect(latency.buckets.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(ledgerCount)
+        expect(latency.buckets.at(-1)?.upToMs).toBeNull()
+        expect(latency.p50Ms).toBeGreaterThanOrEqual(
+          durableDurations[Math.ceil(durableDurations.length / 2) - 1] ?? 0,
+        )
+        expect(latency.p95Ms).toBeGreaterThanOrEqual(latency.p50Ms ?? 0)
+        expect(latency.p99Ms).toBeGreaterThanOrEqual(latency.p95Ms ?? 0)
+        expect(millis(latency.since)).toBe(millis(counted.since))
+
+        const receipts = yield* get("/actors/Ledger/x/receipts", Cloud.Page(Cloud.Receipt))
+        expect(
+          receipts.items
+            .filter((receipt) => mine.includes(receipt.commandId))
+            .map((receipt) => [receipt.commandId, millis(receipt.at)])
+            .toSorted(([left], [right]) => String(left).localeCompare(String(right))),
+        ).toEqual(
+          [five.commandId, seven.commandId, refused.commandId]
+            .map((id) => [id, timingOf(id).at])
+            .toSorted(([left], [right]) => String(left).localeCompare(String(right))),
+        )
+        const log = yield* get("/commands?actorType=Beacon", Cloud.Page(Cloud.CommandLogEntry))
+        expect(
+          log.items
+            .filter((entry) => entry.commandId === configured.commandId)
+            .map((entry) => ({ ...entry, at: millis(entry.at) })),
+        ).toEqual([
+          {
+            commandId: configured.commandId,
+            ...timingOf(configured.commandId),
+            address: "Beacon/b1",
+            command: "Configure",
+            caller: { kind: "user", subject: `user:${aliceId}`, source: null },
+            payloadPreview: null,
+            outcome: "ok",
+            errorTag: null,
+          },
+        ])
+
+        yield* sent("Ledger/x", "Note", "touch-x")
+        yield* sent("Ledger/y", "Note", "touch-y")
+        yield* sent("Beacon/b1", "Configure", {
+          label: "touch",
+          password: "p",
+          apiToken: "t",
+          notes: "n",
+        })
+        timing = yield* readTiming()
+        const newest = (actorType: string, actorId: string) =>
+          timing
+            .filter((row) => row.actor_type === actorType && row.actor_id === actorId)
+            .toSorted((left, right) => Number(right.committed) - Number(left.committed))[0]
+        const generations = yield* rows<{ actor_id: string; generation: number }>(
+          "SELECT actor_id, generation::int AS generation FROM durable.actors WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
+        )
+        const instances = yield* get(
+          "/actor-types/Ledger/instances",
+          Cloud.Page(Cloud.ActorInstance),
+        )
+        expect(
+          instances.items.map((instance) => ({
+            ...instance,
+            lastActivityAt: millis(instance.lastActivityAt),
+          })),
+        ).toEqual(
+          ["x", "y"].map((key) => ({
+            key,
+            status: "awake",
+            lastCommand: newest("Ledger", key)?.command,
+            lastActivityAt: Number(newest("Ledger", key)?.committed),
+            generation: generations.find((row) => row.actor_id === key)?.generation,
+          })),
+        )
+
+        const tenantKey = `dak_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+        yield* sql(
+          "INSERT INTO hosted_api_key (key_hash, deployment_id, tenant, subject) VALUES ($1, $2, 'default', 'tenant-app-user')",
+          [new Bun.CryptoHasher("sha256").update(tenantKey).digest("hex"), deployed],
+        )
+        const edgeOrigin = `http://127.0.0.1:${edgePort}`
+        const asTenant = {
+          host: `${project.id.replaceAll("_", "-")}-production.localhost`,
+          authorization: `Bearer ${tenantKey}`,
+        }
+        const feed = yield* client
+          .execute(
+            HttpClientRequest.get(`${edgeOrigin}/actors/Beacon/b1/events?event=Signaled`).pipe(
+              HttpClientRequest.setHeaders(asTenant),
+            ),
+          )
+          .pipe(Effect.orDie)
+        expect(feed.status).toBe(200)
+        yield* feed.stream.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped)
+
+        const connections = yield* poll(
+          "the runner to count the open feed",
+          30,
+          get("/connections", Cloud.ConnectionsSummary),
+          (found) => found.feedSubscribers === 1,
+        )
+        expect(connections).toEqual({
+          open: 1,
+          parked: null,
+          sseStreams: 1,
+          feedSubscribers: 1,
+          replayGaps: null,
+          openVersusParked: null,
+          byActorType: [{ actorType: "Beacon", open: 1, parked: null, sse: 1 }],
+        })
+
+        const beacon = yield* get("/actors/Beacon/b1", Cloud.ActorInspector)
+        expect(beacon.events.map((event) => [event.name, event.subscribers])).toEqual([
+          ["Signaled", 1],
+        ])
+        expect(beacon.connections.sockets).toBe(0)
+        expect(beacon.properties).toMatchObject({
+          status: "awake",
+          runner: serving,
+          region,
+          mailboxDepth: 0,
+          tenant: "default",
+        })
+
+        const overview = yield* get("/overview", Cloud.Overview)
+        expect(overview.actors).toEqual({ awake: 4, total: 4 })
+        expect(overview.health.maxMailbox).toEqual({ depth: 0, actor: null })
+        expect(overview.commands?.perSecond).toBeGreaterThan(0)
+        expect(overview.commands?.p50Ms).toBeGreaterThanOrEqual(0)
+        const types = yield* get("/actor-types", Schema.Array(Cloud.ActorTypeSummary))
+        expect(
+          types.map((type) => [type.name, type.instances, type.awake, type.maxMailbox]),
+        ).toEqual([
+          ["Beacon", 1, 1, 0],
+          ["Ledger", 2, 2, 0],
+          ["Ticker", 1, 1, 0],
+        ])
+        expect(types.every((type) => (type.commandsPerSecond ?? 0) > 0)).toBe(true)
+
+        const pulses = rows<{
+          command_id: string
+          committed: string
+          duration: string
+          outcome_tag: string
+        }>(
+          "SELECT command_id, committed_at_ms::text AS committed, (committed_at_ms - started_at_ms)::text AS duration, outcome::jsonb ->> '_tag' AS outcome_tag FROM actor_receipts WHERE tenant_id = 'default' AND actor_type = 'Ticker' AND command = 'Pulse' ORDER BY committed_at_ms DESC, command_id COLLATE \"C\" DESC LIMIT 1",
+        )
+        const due = rows<{ due: string }>(
+          "SELECT min(due_at_ms)::text AS due FROM actor_outbox WHERE tenant_id = 'default' AND actor_type = 'Ticker' AND timer_key LIKE '$cron:%'",
+        )
+        const expectedSchedule = Effect.gen(function* () {
+          const [tick] = yield* pulses
+          const [next] = yield* due
+
+          return [
+            {
+              name: "Pulse",
+              actorPattern: "Ticker/*",
+              cron: "@every 5000ms",
+              lastRun:
+                tick === undefined
+                  ? null
+                  : {
+                      at: Number(tick.committed),
+                      outcome: tick.outcome_tag === "Success" ? "ok" : "error",
+                      durationMs: Number(tick.duration),
+                    },
+              nextRunAt: next?.due == null ? null : Number(next.due),
+            },
+          ]
+        })
+        const listedSchedules = get("/schedules", Schema.Array(Cloud.Schedule)).pipe(
+          Effect.map((found) =>
+            found.map((schedule) => ({
+              ...schedule,
+              lastRun:
+                schedule.lastRun === null
+                  ? null
+                  : { ...schedule.lastRun, at: millis(schedule.lastRun.at) },
+              nextRunAt: millis(schedule.nextRunAt),
+            })),
+          ),
+        )
+        const agreeing = Effect.all([expectedSchedule, listedSchedules, expectedSchedule]).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("500 millis"),
+            until: ([first, found, last]) =>
+              first[0]?.lastRun !== null &&
+              JSON.stringify(first) === JSON.stringify(last) &&
+              JSON.stringify(found) === JSON.stringify(first),
+            times: 120,
+          }),
+        )
+        const [before, listed, after] = yield* agreeing
+        expect(before[0]?.lastRun).not.toBeNull()
+        expect(listed).toEqual(before)
+        expect(listed).toEqual(after)
+        expect(listed[0]?.lastRun?.outcome).toBe("ok")
+
+        for (const path of [
+          "/actor-types/Ledger/activity",
+          "/actor-types/Ledger/latency",
+          "/connections",
+          "/schedules",
+          "/commands/stream",
+          "/actors/Beacon/b1",
+        ])
+          expect([path, (yield* call(`${runtime}${path}`, { cookie: mallory })).status]).toEqual([
+            path,
+            403,
+          ])
+
+        for (const path of [
+          "/inspector/live/overview",
+          "/inspector/live/activity?type=Ledger",
+          "/inspector/commands/stream",
+          "/inspector/schedules",
+        ]) {
+          const refusedByEdge = yield* client
+            .execute(
+              HttpClientRequest.get(`${edgeOrigin}${path}`).pipe(
+                HttpClientRequest.setHeaders(asTenant),
+              ),
+            )
+            .pipe(Effect.orDie)
+          expect([path, refusedByEdge.status]).toEqual([path, 501])
+          expect(
+            (yield* read(
+              refusedByEdge,
+              Schema.Struct({ reason: Schema.Struct({ _tag: Schema.String }) }),
+            )).reason._tag,
+          ).toBe("UnsupportedBillingRoute")
+        }
+      }).pipe(Effect.scoped),
     1_500_000,
   )
 

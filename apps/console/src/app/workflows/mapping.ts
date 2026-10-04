@@ -54,8 +54,10 @@ export const toSchedule =
     lastRun:
       schedule.lastRun === null
         ? "—"
-        : `${schedule.lastRun.outcome} · ${formatDuration(schedule.lastRun.durationMs)}`,
-    nextRun: until(now)(schedule.nextRunAt),
+        : schedule.lastRun.durationMs === null
+          ? schedule.lastRun.outcome
+          : `${schedule.lastRun.outcome} · ${formatDuration(schedule.lastRun.durationMs)}`,
+    nextRun: schedule.nextRunAt === null ? "—" : until(now)(schedule.nextRunAt),
   })
 
 /** Workflows, timers and schedules as the console's page. */
@@ -70,10 +72,11 @@ export const toWorkflowsPage =
     }>,
   ): WorkflowsPage => {
     const runs = input.workflows.map(toWorkflowRun(now))
-    const soonest = [...input.schedules].sort(
-      (left, right) =>
-        DateTime.toEpochMillis(left.nextRunAt) - DateTime.toEpochMillis(right.nextRunAt),
-    )[0]
+    const soonest = input.schedules
+      .flatMap((schedule) =>
+        schedule.nextRunAt === null ? [] : [{ name: schedule.name, at: schedule.nextRunAt }],
+      )
+      .sort((left, right) => DateTime.toEpochMillis(left.at) - DateTime.toEpochMillis(right.at))[0]
     return WorkflowsPage.make({
       running: runs.filter((run) => run.status === "Running").length,
       waitingOnEvents: runs.filter((run) => run.status === "Waiting").length,
@@ -88,8 +91,7 @@ export const toWorkflowsPage =
                 DateTime.toEpochMillis(input.timers.nextFireAt) - DateTime.toEpochMillis(now),
               ),
             ),
-      nextSchedule:
-        soonest === undefined ? null : `${soonest.name} ${until(now)(soonest.nextRunAt)}`,
+      nextSchedule: soonest === undefined ? null : `${soonest.name} ${until(now)(soonest.at)}`,
       runs,
       schedules: input.schedules.map(toSchedule(now)),
     })

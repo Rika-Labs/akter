@@ -28,6 +28,7 @@ import { OutboxRuntime, textArray } from "./turn/outbox.ts"
 import { checkTables } from "./turn/rows.ts"
 import { acceptWorkflows, formatIncompatibility } from "./workflows/compatibility.ts"
 import { RECOVERY_MS } from "./workflows/engine.ts"
+import type { LiveRecorder } from "./telemetry/live.ts"
 
 /** How long registering a source waits for the subscriber types routing from it to register. */
 const ROUTED_SUBSCRIBER_WAIT_MS = 5000
@@ -67,6 +68,7 @@ export const actorRegistration = ({
   writable,
   defectLog,
   outbox,
+  recorder,
 }: {
   readonly registrations: Map<string, Registration>
   readonly queryRegistrations: Map<string, QueryRegistration>
@@ -75,7 +77,7 @@ export const actorRegistration = ({
   /** Each actor type's view of its activations, for a delivery that timed out. */
   readonly diagnostics: Map<
     string,
-    Pick<Effect.Success<ReturnType<typeof registerActor>>, "diagnose" | "restarting">
+    Pick<Effect.Success<ReturnType<typeof registerActor>>, "diagnose" | "restarting" | "resident">
   >
   readonly owners: Map<string, Owner>
   readonly heldTypes: Map<string, HeldActorType>
@@ -100,6 +102,7 @@ export const actorRegistration = ({
   readonly writable: Effect.Effect<void, ActorError>
   readonly defectLog: DefectLog["Service"]
   readonly outbox: (typeof OutboxRuntime)["Service"]
+  readonly recorder: LiveRecorder
 }): Pick<InternalActors["Service"], "register" | "registerQueries" | "registerJobs"> => {
   /** Concurrent layers can exceed checkout capacity; only a refused checkout is safe to retry here. */
   const startupSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -301,12 +304,13 @@ export const actorRegistration = ({
         }),
       )
 
-      const { isResident, owner, diagnose, restarting } = yield* registerActor(
+      const { isResident, owner, diagnose, restarting, resident } = yield* registerActor(
         registration,
         transport,
         authorize,
         gate,
         writable,
+        recorder,
       ).pipe(
         Effect.provideService(DefectLog, defectLog),
         Effect.provideContext(services),
@@ -314,7 +318,7 @@ export const actorRegistration = ({
       )
 
       residency.set(registration.name, isResident)
-      diagnostics.set(registration.name, { diagnose, restarting })
+      diagnostics.set(registration.name, { diagnose, restarting, resident })
       owners.set(registration.name, owner)
     }),
     registerQueries: Effect.fnUntraced(function* (registration: QueryRegistration) {

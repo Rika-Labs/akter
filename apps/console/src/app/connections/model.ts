@@ -4,17 +4,17 @@ import { Schema as S } from "effect"
 export const ConnectionsByType = S.Struct({
   actorType: S.String,
   sockets: S.Finite,
-  parked: S.Finite,
+  parked: S.NullOr(S.Finite),
   streams: S.Finite,
 })
 
 /** The connections page. */
 export const ConnectionsPage = S.TaggedStruct("ConnectionsPage", {
   sockets: S.Finite,
-  parked: S.Finite,
+  parked: S.NullOr(S.Finite),
   streams: S.Finite,
   subscribers: S.Finite,
-  replayGaps: S.Finite,
+  replayGaps: S.NullOr(S.Finite),
   hours: S.Array(S.String),
   open: S.Array(S.Finite),
   parkedSeries: S.Array(S.Finite),
