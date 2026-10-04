@@ -129,6 +129,21 @@ describe("overview mapping", () => {
         expect(page.previous).toEqual([])
       }),
     ))
+
+  it("addresses each deploy row by its deployment id, which rollbacks never reuse", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, {
+          ...overview,
+          recentDeployments: [
+            deployment("dep_rollback", "77be0101", "2026-10-03T10:20:00.000Z"),
+            deployment("dep_original", "77be0101", "2026-10-02T10:00:00.000Z"),
+          ],
+        })
+        const page = toOverviewPage(now)({ project: "p", overview: parsed })
+        expect(page.deploys.map((deploy) => deploy.id)).toEqual(["dep_rollback", "dep_original"])
+      }),
+    ))
 })
 
 describe("deploy markers", () => {
