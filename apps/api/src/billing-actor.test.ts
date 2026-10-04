@@ -324,10 +324,21 @@ const exhaust = ActorTest.use((test) =>
   Effect.forEach([1, 2, 3, 4, 5], () => test.advance("1 minute"), { discard: true }),
 )
 
-/** An organization whose account exists and whose customer binding has committed. */
+/**
+ * An organization whose account exists and whose customer binding has
+ * committed, created at least ten minutes before its first hourly `Refresh`.
+ * That schedule ticks on whole hours of the shared test clock, which earlier
+ * tests have moved by an amount unrelated to the wall clock; without the
+ * margin a scenario's few minutes of advances could cross a tick at some
+ * times of day and run a reconcile the scenario never asked for.
+ */
 const bound = (organizationId: string) =>
   Effect.gen(function* () {
     const test = yield* ActorTest
+    const untilTick = 3_600_000 - (DateTime.toEpochMillis(yield* test.now) % 3_600_000)
+
+    if (untilTick < 600_000) yield* test.advance(untilTick + 1_000)
+
     const actor = yield* BillingActor.get(organizationId)
 
     yield* actor.InitializeAccount({ email: `${organizationId}@example.test` })
