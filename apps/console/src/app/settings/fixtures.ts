@@ -8,7 +8,14 @@ const at = (month: number, day: number, hour = 12, minute = 0): number =>
 
 /** Pro's caps: none refusing, and only the spend limit and connections bounded. */
 const caps = [
-  { cap: "commands", limit: null, used: 206_000_000, atCap: false, refusing: false },
+  {
+    cap: "commands",
+    limit: null,
+    used: 206_000_000,
+    atCap: false,
+    refusing: false,
+    unitsPerCommand: 5,
+  },
   { cap: "spend", limit: 50_000, used: 20_670, atCap: false, refusing: false },
   { cap: "connections", limit: 5_000, used: 412, atCap: false, refusing: false },
   { cap: "storage", limit: null, used: 2_100_000_000, atCap: false, refusing: false },

@@ -228,6 +228,7 @@ describe("runtime models", () => {
         limitUnits: 5_000_000,
         usedUnits: 4_999_999,
         requestedUnits: 5,
+        unitsPerCommand: 5,
         retryAfterMs: 1_000,
       }),
       429,

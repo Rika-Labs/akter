@@ -44,6 +44,7 @@ const freeCaps = (commandUnits: number): ReadonlyArray<CapState> => [
     used: commandUnits,
     atCap: commandUnits >= 5_000_000,
     refusing: commandUnits + 5 > 5_000_000,
+    unitsPerCommand: 5,
   },
   { cap: "spend", limit: null, used: 0, atCap: false, refusing: false },
   { cap: "connections", limit: 100, used: 3, atCap: false, refusing: false },
@@ -51,12 +52,11 @@ const freeCaps = (commandUnits: number): ReadonlyArray<CapState> => [
 ]
 
 const unboundCaps: ReadonlyArray<CapState> = freeCaps(0).map((cap) => ({
-  cap: cap.cap,
+  ...cap,
   limit: null,
-  used: cap.used,
   atCap: false,
   refusing: true,
-  reason: "unbound",
+  reason: "unbound" as const,
 }))
 
 const usage = (commandsUsed: number): Usage => ({

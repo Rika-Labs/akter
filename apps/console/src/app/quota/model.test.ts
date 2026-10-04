@@ -4,7 +4,14 @@ import type { Billing } from "../settings/model.ts"
 import { CapNotice, capNotice, spendLimitReached } from "./model.ts"
 
 const clear: ReadonlyArray<CapState> = [
-  { cap: "commands", limit: 5_000_000, used: 1_200_000, atCap: false, refusing: false },
+  {
+    cap: "commands",
+    limit: 5_000_000,
+    used: 1_200_000,
+    atCap: false,
+    refusing: false,
+    unitsPerCommand: 5,
+  },
   { cap: "spend", limit: null, used: 0, atCap: false, refusing: false },
   { cap: "connections", limit: 100, used: 4, atCap: false, refusing: false },
   { cap: "storage", limit: 500_000_000, used: 120_000_000, atCap: false, refusing: false },
@@ -58,7 +65,14 @@ describe("capNotice", () => {
       { cap: "spend", limit: 0, used: 1, atCap: true, refusing: true },
       { cap: "connections", limit: 100, used: 100, atCap: true, refusing: true },
       { cap: "storage", limit: 500_000_000, used: 600_000_000, atCap: true, refusing: true },
-      { cap: "commands", limit: 5_000_000, used: 5_000_000, atCap: true, refusing: true },
+      {
+        cap: "commands",
+        limit: 5_000_000,
+        used: 5_000_000,
+        atCap: true,
+        refusing: true,
+        unitsPerCommand: 5,
+      },
     )
     expect(notice(all)).toEqual(CapNotice.CommandCap({ period: "2026-10" }))
     expect(notice(changing(...all.filter((cap) => cap.cap !== "commands")))).toEqual(
@@ -73,12 +87,11 @@ describe("capNotice", () => {
 
   it("reads an organization without a billing account as unbound, never as a reached cap", () => {
     const unbound: ReadonlyArray<CapState> = clear.map((cap) => ({
-      cap: cap.cap,
+      ...cap,
       limit: null,
-      used: cap.used,
       atCap: false,
       refusing: true,
-      reason: "unbound",
+      reason: "unbound" as const,
     }))
     expect(notice(unbound)).toEqual(CapNotice.Unbound())
     expect(notice([...unbound.slice(1), ...clear.slice(0, 1)])).toEqual(CapNotice.Unbound())
@@ -86,7 +99,16 @@ describe("capNotice", () => {
 
   it("does not quote a refusing cap that has no limit", () => {
     expect(
-      notice(changing({ cap: "commands", limit: null, used: 9, atCap: false, refusing: true })),
+      notice(
+        changing({
+          cap: "commands",
+          limit: null,
+          used: 9,
+          atCap: false,
+          refusing: true,
+          unitsPerCommand: 5,
+        }),
+      ),
     ).toBe(undefined)
   })
 })

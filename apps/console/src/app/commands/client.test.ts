@@ -392,6 +392,7 @@ describe("sendCommand over the derived API", () => {
           limitUnits: 5_000_000,
           usedUnits: 5_000_000,
           requestedUnits: 5,
+          unitsPerCommand: 5,
           retryAfterMs: 3_600_000,
         })
         const body = yield* encoded(QuotaExceeded, refusal)
@@ -402,7 +403,7 @@ describe("sendCommand over the derived API", () => {
         route(
           () =>
             new Response(
-              '{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5000000,"usedUnits":"all","requestedUnits":5,"retryAfterMs":3600000}',
+              '{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5000000,"usedUnits":"all","requestedUnits":5,"unitsPerCommand":5,"retryAfterMs":3600000}',
               { status: 429, headers: { "content-type": "application/json" } },
             ),
         )

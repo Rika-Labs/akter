@@ -6,6 +6,7 @@ import {
   Integration,
   Invitation,
   Invoice,
+  KnownPlan,
   PlanCatalog,
   Project,
   ProjectEndpoints,
@@ -278,7 +279,7 @@ describe("billing", () => {
       Effect.gen(function* () {
         const summary = yield* decode(BillingSummary)({
           plan: {
-            id: "free",
+            ...KnownPlan.make({ id: "free" }),
             name: "Free",
             basePriceCents: 0,
             currency: "usd",
@@ -314,7 +315,7 @@ describe("billing", () => {
       Effect.gen(function* () {
         const summary = yield* decode(BillingSummary)({
           plan: {
-            id: "free",
+            ...KnownPlan.make({ id: "free" }),
             subscribedId: "team",
             paymentStatus: "past_due",
             name: "Free",
@@ -354,7 +355,7 @@ describe("billing", () => {
         })
         const summary = yield* decode(BillingSummary)({
           plan: {
-            id: "free",
+            ...KnownPlan.make({ id: "free" }),
             name: "Free",
             basePriceCents: 0,
             currency: "usd",
@@ -365,7 +366,7 @@ describe("billing", () => {
           billingEmail: null,
           spendLimit: { limitCents: null, currentSpendCents: 0 },
           caps: [
-            unbound("commands", 35),
+            { ...unbound("commands", 35), unitsPerCommand: 5 },
             unbound("spend", 0),
             unbound("connections", 2),
             unbound("storage", 4_096),
@@ -379,6 +380,7 @@ describe("billing", () => {
             atCap: false,
             refusing: true,
             reason: "unbound",
+            unitsPerCommand: 5,
           },
           { cap: "spend", limit: null, used: 0, atCap: false, refusing: true, reason: "unbound" },
           {

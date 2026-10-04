@@ -83,14 +83,16 @@ export type CapName = "commands" | "spend" | "connections" | "storage"
  * only it, carries `unitsPerCommand` so a reader converts its units to
  * commands without knowing the weights.
  */
-export interface CapState {
-  readonly cap: CapName
+export type CapState =
+  | (CapFields & { readonly cap: "commands"; readonly unitsPerCommand: number })
+  | (CapFields & { readonly cap: Exclude<CapName, "commands"> })
+
+interface CapFields {
   readonly limit: number | null
   readonly used: number
   readonly atCap: boolean
   readonly refusing: boolean
   readonly reason?: "unbound"
-  readonly unitsPerCommand?: number
 }
 
 /** What edge admission reads about an organization in its current period. */
@@ -193,21 +195,15 @@ export const organizationCaps = Effect.fnUntraced(function* (organizationId: str
   const largestSampleBytes = row?.largestSampleBytes ?? undefined
 
   if (row?.plan == null || row.subscribedPlan == null) {
-    const unbound = (cap: CapName, used: number): CapState => ({
-      cap,
-      limit: null,
-      used,
-      atCap: false,
-      refusing: true,
-      reason: "unbound",
-    })
+    const unbound = (used: number) =>
+      ({ limit: null, used, atCap: false, refusing: true, reason: "unbound" }) as const
 
     return [
-      { ...unbound("commands", usedUnits), unitsPerCommand: COMMAND_UNITS },
-      unbound("spend", 0),
-      unbound("connections", openConnections),
-      unbound("storage", largestSampleBytes ?? 0),
-    ]
+      { cap: "commands", ...unbound(usedUnits), unitsPerCommand: COMMAND_UNITS },
+      { cap: "spend", ...unbound(0) },
+      { cap: "connections", ...unbound(openConnections) },
+      { cap: "storage", ...unbound(largestSampleBytes ?? 0) },
+    ] satisfies ReadonlyArray<CapState>
   }
 
   return yield* capStates({

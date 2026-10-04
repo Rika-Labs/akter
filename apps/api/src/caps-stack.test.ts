@@ -494,6 +494,7 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             limitUnits: FREE_UNITS,
             usedUnits: FREE_UNITS - 2,
             requestedUnits: 5,
+            unitsPerCommand: 5,
           })
 
           const firstRead = yield* read

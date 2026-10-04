@@ -218,10 +218,12 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
           const details =
             customer == null ? null : yield* provider.billingDetails(customer).pipe(Effect.orDie)
           return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.BillingSummary))({
-            plan: {
+            plan: Cloud.Plan.make({
               id: tier.id,
               subscribedId: priced.id,
-              paymentStatus: stored.paymentStatus,
+              paymentStatus: yield* Schema.decodeUnknownEffect(
+                Cloud.Plan.fields.paymentStatus.schema,
+              )(stored.paymentStatus).pipe(Effect.orDie),
               name: tier.name,
               basePriceCents: priced.basePriceCents,
               currency: "usd",
@@ -231,7 +233,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
                   : (details?.subscription?.currentPeriodEnd ?? null),
               monthToDateEstimateCents: estimate,
               provisional: priced.provisional,
-            },
+            }),
             paymentMethod,
             billingEmail: stored.billingEmail,
             spendLimit: {
