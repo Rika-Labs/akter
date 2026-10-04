@@ -190,6 +190,18 @@ Signed out: `/sign-in`, `/sign-up`, `/verify-email`, `/forgot-password`, `/reset
 
 Emailed invitation links use `/invitations/:id`; the earlier compatibility URL is no longer routed.
 
+Device sign-in: `/device?user_code=` is where a signed-in person approves the code `akter login`
+printed. The link only fills the field; the code is looked up through Better Auth's `GET
+/auth/device` when the person continues, which binds it to their account, and only then does the
+page show the code, the client, the account and what approving reaches, and Approve or Deny
+(`POST /auth/device/approve` and `/deny`). An unknown code and one already used read as one state,
+since the server deletes a code once it is redeemed or its denial is collected; a code the server
+reports as `expired_token`, one another account opened first, too many attempts and no answer each
+have their own. None of them offers Approve. A signed-out visitor signs in first and comes back with
+the code. An approved session is an ordinary session for the person, and the API authorizes
+sessions by membership, so the Access row names every organization it can act in (the one name, or
+"All your organizations (n)"), never only the organization active in this browser.
+
 Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
 `/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,
 `/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:deployment` (an id or a commit),
