@@ -3,6 +3,7 @@ import {
   CommandRefused,
   ConnectionLimitExceeded,
   QuotaExceeded,
+  QuotaUnbound,
   SpendLimitExceeded,
   StorageQuotaExceeded,
 } from "@akter/cloud-api"
@@ -10,26 +11,32 @@ import { Match, Option, Schema } from "effect"
 import { dollars, formatGigabytes, formatPeriod } from "../settings/format.ts"
 
 /**
- * A plan refusal of new work, with the framework's tags and fields: one of the cloud API's own
- * usage errors, or the same refusal a `CommandRefused` carries as its typed `reason`.
+ * A plan refusal of new work: one of the cloud API's own usage errors with the framework's tags and
+ * fields, the same refusal a `CommandRefused` carries as its typed `reason`, or the edge's own
+ * `QuotaUnbound` for a command it has no billing account or plan to bill to.
  */
 export type QuotaRefusal =
   | QuotaExceeded
   | SpendLimitExceeded
   | ConnectionLimitExceeded
   | StorageQuotaExceeded
+  | QuotaUnbound
   | Extract<CommandRefused["reason"], { readonly _tag: QuotaKind }>
 
-const quotaKinds = [
+const usageKinds = [
   "QuotaExceeded",
   "SpendLimitExceeded",
   "ConnectionLimitExceeded",
   "StorageQuotaExceeded",
 ] as const
-type QuotaKind = (typeof quotaKinds)[number]
+type QuotaKind = (typeof usageKinds)[number]
 
-/** Whether an error kind is a plan refusal, which a plan or spend-limit change in Billing lifts. */
-export const isQuotaKind = (kind: string): boolean => quotaKinds.some((quota) => quota === kind)
+/**
+ * Whether an error kind is a refusal Billing explains: a plan refusal, which a plan or spend-limit
+ * change lifts, or `QuotaUnbound`, which Billing shows the cause of.
+ */
+export const isQuotaKind = (kind: string): boolean =>
+  kind === "QuotaUnbound" || usageKinds.some((quota) => quota === kind)
 
 /** What the console says about one refusal: what was refused, why, what still works, and the way out. */
 export const quotaMessage = (refusal: QuotaRefusal): string =>
@@ -43,17 +50,42 @@ export const quotaMessage = (refusal: QuotaRefusal): string =>
         `This organization already has ${formatInteger(open)} of the ${formatInteger(limit)} live connections its plan allows. Try again when one closes, or upgrade for more.`,
       StorageQuotaExceeded: ({ usedBytes, limitBytes }) =>
         `This tenant stores ${formatGigabytes(usedBytes / 1e9)} of the ${formatGigabytes(limitBytes / 1e9)} its plan allows, so new commands are paused. Reads keep working; delete data or upgrade to resume.`,
+      QuotaUnbound: ({ reason }) =>
+        Match.value(reason).pipe(
+          Match.when(
+            "tenant",
+            () =>
+              "This deployment isn’t linked to an organization Akter can bill, so the command wasn’t run. Sending it again won’t help until it is; contact support.",
+          ),
+          Match.when(
+            "account",
+            () =>
+              "Billing isn’t set up for this organization, so the command wasn’t run. Choose a plan in Billing, then send it as a new command.",
+          ),
+          Match.when(
+            "plan",
+            () =>
+              "This organization’s plan isn’t recognised, so the command wasn’t run. Sending it again won’t help until the plan is fixed; contact support.",
+          ),
+          Match.exhaustive,
+        ),
     }),
   )
 
 const isUsageError = Schema.is(
-  Schema.Union([QuotaExceeded, SpendLimitExceeded, ConnectionLimitExceeded, StorageQuotaExceeded]),
+  Schema.Union([
+    QuotaExceeded,
+    SpendLimitExceeded,
+    ConnectionLimitExceeded,
+    StorageQuotaExceeded,
+    QuotaUnbound,
+  ]),
 )
 
 const isQuotaReason = (
   reason: CommandRefused["reason"],
 ): reason is Extract<CommandRefused["reason"], { readonly _tag: QuotaKind }> =>
-  isQuotaKind(reason._tag)
+  usageKinds.some((quota) => quota === reason._tag)
 
 /**
  * The plan refusal a decoded API error is, if it is one: one of the cloud API's usage errors, or a

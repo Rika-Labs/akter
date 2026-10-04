@@ -1,4 +1,4 @@
-import { ProjectId, SpendLimitExceeded, StorageQuotaExceeded } from "@akter/cloud-api"
+import { ProjectId, QuotaUnbound, SpendLimitExceeded, StorageQuotaExceeded } from "@akter/cloud-api"
 import { Option } from "effect"
 import * as Scene from "foldkit/scene"
 import type { HtmlBuilder } from "foldkit/html"
@@ -85,6 +85,29 @@ describe("send command dialog", () => {
       ),
       Scene.expect(Scene.role("link", { name: "Open Billing" })).toExist(),
     ))
+
+  it("explains a command the edge couldn't bill, for each reason, with a link to Billing", () => {
+    const wording = {
+      tenant:
+        "This deployment isn’t linked to an organization Akter can bill, so the command wasn’t run. Sending it again won’t help until it is; contact support.",
+      account:
+        "Billing isn’t set up for this organization, so the command wasn’t run. Choose a plan in Billing, then send it as a new command.",
+      plan: "This organization’s plan isn’t recognised, so the command wasn’t run. Sending it again won’t help until the plan is fixed; contact support.",
+    } as const
+    for (const reason of ["tenant", "account", "plan"] as const)
+      Scene.scene(
+        {
+          update: (model: Model, message: Message) => update(model, message),
+          view: (model: Model, h: HtmlBuilder<Message>) => view(model, h),
+        },
+        Scene.given(failed(QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }))),
+        Scene.expect(Scene.role("alert")).toHaveText(`${wording[reason]} Open Billing`),
+        Scene.expect(Scene.role("link", { name: "Open Billing" })).toHaveAttr(
+          "href",
+          "/settings/billing",
+        ),
+      )
+  })
 
   it("adds no Billing link to an error a plan change cannot fix", () =>
     Scene.scene(
