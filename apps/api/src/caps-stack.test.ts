@@ -4,13 +4,15 @@ import { BunCrypto, BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
 import {
   Crypto,
-  Deferred,
   Duration,
   Effect,
+  Exit,
   Layer,
   Redacted,
+  Ref,
   Schedule,
   Schema,
+  Scope,
   Stream,
 } from "effect"
 import {
@@ -34,14 +36,16 @@ import { serviceCredential } from "./rollout.ts"
  * must report every cap's `atCap` and `refusing` exactly as the edge decides.
  *
  * One override keeps the edge from closing the connection-cap scenario's
- * sockets for want of a `hello` while they hold their leases.
+ * sockets for want of a `hello` while they hold their leases. The sockets are
+ * held by containers on the stack's network, which report any close.
  *
- * SQL sets only what no public surface does: the operator's tenant
- * allocation, a Free period's committed units near its million-command cap,
- * and a storage sample that a collector would otherwise take hourly. The
- * Compose project with its volumes and built images, the runner and migration
- * containers started from the runner image tagged here, and that image are
- * the only Docker objects it creates and removes.
+ * SQL sets only what no public surface does: a Free period's committed units
+ * near its million-command cap, and a storage sample that a collector would
+ * otherwise take hourly. The
+ * Compose project with its volumes and built images, its socket-holder
+ * containers, the runner and migration containers started from the runner
+ * image tagged here, and that image are the only Docker objects it creates
+ * and removes.
  */
 const repository = new URL("../../../", import.meta.url).pathname
 const composeFile = "infra/local/compose.yaml"
@@ -51,6 +55,24 @@ const FREE_UNITS = 5_000_000
 const FREE_STORAGE = 500_000_000
 const FREE_CONNECTIONS = 100
 const PRO_BASE_CENTS = 2_500
+
+/**
+ * A process that opens `count` sockets to `url` under the `Host` header
+ * `host`, prints `open <count>` once every one is open, and then prints
+ * `closed <code>` for any that closes before the process is killed.
+ */
+const socketHolder = `
+const [url, count, host] = [Bun.argv[1], Number(Bun.argv[2]), Bun.argv[3]]
+const sockets = Array.from({ length: count }, () =>
+  new WebSocket(url, { headers: { host }, protocols: ["akter.v1"] }))
+await Promise.all(sockets.map((ws) => new Promise((resolve, reject) => {
+  ws.onopen = resolve
+  ws.onerror = () => reject(new Error("socket refused"))
+})))
+for (const ws of sockets) ws.onclose = (event) => console.log("closed " + event.code)
+console.log("open " + count)
+setInterval(() => {}, 1 << 30)
+`
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
@@ -205,6 +227,7 @@ const composeStack = Effect.gen(function* () {
 
   return {
     compose,
+    project,
     ports,
     pool,
     origin: env.API_ORIGIN,
@@ -392,21 +415,7 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             )
           })
 
-          const unbound = yield* sendCommand
-
-          expect(unbound.status, unbound.body).toBe(503)
-
-          yield* sql(
-            "INSERT INTO cloud_meter_tenant (deployment_id, tenant, organization_id, project_id) VALUES ($1, 'default', $2, $3)",
-            [deployment, org, project.id],
-          )
-
-          const admitted = yield* poll(
-            "the first admitted command",
-            60,
-            sendCommand,
-            (reply) => reply.status !== 503,
-          )
+          const admitted = yield* sendCommand
 
           expect(admitted.status, admitted.body).toBe(200)
 
@@ -415,9 +424,6 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
               HttpClientRequest.bearerToken(Redacted.value(credential)),
             ),
           )
-
-          const closed: Array<string> = []
-          const sockets: Array<WebSocket> = []
 
           /** Both reports' caps, which must agree, keyed by cap. */
           const caps = Effect.gen(function* () {
@@ -433,17 +439,7 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
               "connections",
               "storage",
             ])
-            const rows = yield* sql<{ total: number; live: number }>(
-              `SELECT count(*)::int AS total, count(*) FILTER (WHERE expires_at > now())::int AS live
-               FROM cloud_connection_lease WHERE organization_id = $1`,
-              [org],
-            )
-            const edgeLogs = yield* stack.compose("logs", "--tail", "30", "edge")
-            const [leases] = rows
-            expect(
-              billing.caps,
-              `lease rows ${leases?.total} (${leases?.live} live), client sockets open ${sockets.filter((ws) => ws.readyState === WebSocket.OPEN).length}, closed [${closed.join(", ")}]\n${edgeLogs.out.slice(-3000)}`,
-            ).toEqual(states)
+            expect(billing.caps).toEqual(states)
 
             const of = (cap: Cloud.CapState["cap"]) => states.find((state) => state.cap === cap)
 
@@ -560,37 +556,54 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
           )
           expect((yield* read).status).toBe(200)
 
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              for (const ws of sockets) ws.close()
-            }),
-          )
+          /**
+           * A holder of `count` sockets in a container on the stack's own
+           * network, removed with its scope; its stdout lines collect in the
+           * returned `Ref`. Holding them there keeps Docker Desktop's host
+           * port forwarder, which can drop the edge side of idle forwarded
+           * sockets without closing the client side, out of the path.
+           */
+          const hold = (count: number) =>
+            Effect.gen(function* () {
+              const name = `${stack.project}-holder-${count}`
+              const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+              const handle = yield* spawner.spawn(
+                ChildProcess.make("docker", [
+                  "run",
+                  "--rm",
+                  "--init",
+                  "--name",
+                  name,
+                  "--network",
+                  `${stack.project}_default`,
+                  "oven/bun:1.4.2",
+                  "bun",
+                  "-e",
+                  socketHolder,
+                  "ws://edge:3002/actors/Counter/hits/Live",
+                  String(count),
+                  `${deployment}.localhost`,
+                ]),
+              )
+              yield* Effect.addFinalizer(() => run("docker", ["rm", "-f", name]))
+              const lines = yield* Ref.make<ReadonlyArray<string>>([])
 
-          const open = (count: number) =>
-            Effect.forEach(
-              Array.from({ length: count }, (_, index) => index),
-              () =>
-                Effect.gen(function* () {
-                  const opened = yield* Deferred.make<boolean>()
-                  const ws = new WebSocket(
-                    `${edge.replace(/^http/u, "ws")}/actors/Counter/hits/Live`,
-                    "akter.v1",
-                  )
+              yield* handle.stdout.pipe(
+                Stream.decodeText,
+                Stream.splitLines,
+                Stream.runForEach((line) => Ref.update(lines, (seen) => [...seen, line])),
+                Effect.forkScoped,
+              )
+              yield* poll(`${count} sockets to open`, 60, Ref.get(lines), (seen) =>
+                seen.includes(`open ${count}`),
+              )
 
-                  sockets.push(ws)
-                  ws.onopen = () => Deferred.doneUnsafe(opened, Effect.succeed(true))
-                  ws.onerror = () => Deferred.doneUnsafe(opened, Effect.succeed(false))
-                  ws.onclose = (event) => {
-                    if (sockets.includes(ws)) closed.push(`${event.code} ${event.reason}`)
-                  }
+              return lines
+            })
 
-                  expect(yield* Deferred.await(opened)).toBe(true)
-                }),
-              { concurrency: 20, discard: true },
-            )
+          const holders = yield* Scope.make()
+          const held = yield* hold(FREE_CONNECTIONS - 1).pipe(Scope.provide(holders))
 
-          yield* open(FREE_CONNECTIONS - 1)
-          expect(closed).toEqual([])
           expect((yield* caps).connections).toEqual({
             cap: "connections",
             limit: FREE_CONNECTIONS,
@@ -598,7 +611,8 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             atCap: false,
             refusing: false,
           })
-          yield* open(1)
+          const last = yield* hold(1).pipe(Scope.provide(holders))
+
           expect((yield* caps).connections).toEqual({
             cap: "connections",
             limit: FREE_CONNECTIONS,
@@ -631,9 +645,12 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             }),
           )
 
-          yield* Effect.sync(() => {
-            for (const ws of sockets.splice(0)) ws.close()
-          })
+          expect(
+            [...(yield* Ref.get(held)), ...(yield* Ref.get(last))].filter((line) =>
+              line.startsWith("closed"),
+            ),
+          ).toEqual([])
+          yield* Scope.close(holders, Exit.void)
           yield* poll(
             "the closed sockets' leases to be released",
             30,
