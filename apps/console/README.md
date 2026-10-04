@@ -102,16 +102,27 @@ invoice PDF pages are accepted only by the Vite development server, and any othe
 with a message (an unlinked PDF still lists its invoice). A spend limit the month's estimate has
 already reached waits for an explicit save, because it refuses new commands right away.
 
+The sidebar, the project switcher and invitation previews name the organization's plan from its
+tagged `plan`: a known plan by its catalog name (its id, title-cased, while no catalog is loaded),
+an organization without a billing account as "no billing", never Free, and a stored plan the
+pricing configuration doesn't define as "plan not recognised".
+
 Usage, Overview and Billing show cap state exactly as the API reports it per cap (`refusing`, not
-merely `atCap`), with one quiet notice: an organization without a billing account reads as
-"Billing isn't set up", never as Free, and its usage is shown without any plan's limits; otherwise the command allowance, a tenant's storage sample
-at its cap, the spend limit, then connections, in that order. Usage also shows the latest storage
-sample across serving deployments. A `503 Unavailable` from billing or usage (such as a plan the
-pricing configuration does not know) is worded as billing being temporarily unreadable, not as a
+merely `atCap`), with one quiet notice: an organization without a billing account (billing's
+`plan` is `unbound`) reads as "Billing isn't set up", never as Free, and its usage is shown without
+any plan's allowances, prices or estimates; otherwise the command allowance, a tenant's storage
+sample at its cap, the spend limit, then connections, in that order. The command allowance is
+quoted in commands: the cap's units divided by its `unitsPerCommand`, a read weighing one unit.
+Usage also shows the latest storage sample across serving deployments. A `503 Unavailable` whose
+`reason` is `unknownPlan` still loads Billing and Usage, which say calmly that the organization's
+plan isn't recognised and to contact support, and a spend limit refused for it reads as not saved.
+Any other `503` from billing or usage is worded as billing being temporarily unreadable, not as a
 lost connection. Plan refusals (`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`,
 `StorageQuotaExceeded`) are read from the cloud API's own typed errors, or from a `CommandRefused`
 whose typed `reason` is one, and explained in place with a link to Billing; the console reads only
-errors the client decoded, never a payload by its shape. In the send dialog every other
+errors the client decoded, never a payload by its shape. A `402 QuotaUnbound` (the edge has no
+organization, billing account or known plan to bill a command to) is worded by its `reason`,
+links to Billing and is never resent with the same command ID. In the send dialog every other
 `CommandRefused` reason has its own wording; it offers a resend with the same command ID only when
 the framework marks the reason retryable, and never for a spent command ID. A `NotFound` is worded from its closed `resource` set.
 
