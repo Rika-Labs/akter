@@ -1,6 +1,6 @@
 import { KnownPlan } from "@akter/cloud-api"
 import { seededSeries } from "../workspace/series.ts"
-import type { SettingsSlice } from "./model.ts"
+import { BillingPlan, type SettingsSlice } from "./model.ts"
 
 const at = (month: number, day: number, hour = 12, minute = 0): number =>
   Date.UTC(2026, month - 1, day, hour, minute)
@@ -231,7 +231,7 @@ export const invitationsSlice: SettingsSlice = {
 
 export const billingSlice: SettingsSlice = {
   billing: {
-    plan: {
+    plan: BillingPlan.make({
       id: "pro",
       name: "Pro",
       subscribed: "pro",
@@ -240,7 +240,7 @@ export const billingSlice: SettingsSlice = {
       provisional: true,
       renewsAt: at(11, 1, 0, 0),
       monthToDateCents: 20_670,
-    },
+    }),
     card: { brand: "Visa", lastFour: "4242", expiryMonth: 8, expiryYear: 2028 },
     billingEmail: "billing@acme.dev",
     spendLimit: { limitCents: 50_000, currentCents: 20_670 },

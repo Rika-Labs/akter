@@ -16,7 +16,7 @@ import {
   UnboundPlan,
   UsageMeterName,
 } from "@akter/cloud-api"
-import { Schema as S } from "effect"
+import { Match, Schema as S } from "effect"
 
 /**
  * Timestamps are epoch milliseconds, money is whole US cents, and storage and egress are
@@ -135,9 +135,10 @@ export type PaymentStatus = typeof PaymentStatus.Type
  * The plan an organization's billing account is on. `id` is the plan whose limits apply now and
  * `subscribed` the plan the subscription bills; they differ while a payment is failing, which
  * withdraws paid limits without ending the subscription. `paymentStatus` is null when the control
- * plane does not report one.
+ * plane does not report one. It is tagged `known`, like the contract's plan, so it is told from an
+ * `unbound` one by its tag.
  */
-export const BillingPlan = S.Struct({
+export const BillingPlan = S.TaggedStruct("known", {
   id: PlanId,
   name: S.String,
   subscribed: PlanId,
@@ -169,15 +170,12 @@ export const Billing = S.Struct({
 })
 export type Billing = typeof Billing.Type
 
-/** Whether billing's plan is `unbound`: the organization has no billing account. */
-export const isUnboundPlan = S.is(UnboundPlan)
-
 /**
  * The plan billing prices the organization on, or undefined when it has no billing account. The
  * control plane reports every cap `unbound` exactly then, so pages that read only caps agree.
  */
 export const billedPlan = (billing: Billing): BillingPlan | undefined =>
-  isUnboundPlan(billing.plan) ? undefined : billing.plan
+  Match.valueTags(billing.plan, { unbound: () => undefined, known: (plan) => plan })
 
 /**
  * One plan of the control plane's catalog. `commandCap` is the hard stop in commands, null when

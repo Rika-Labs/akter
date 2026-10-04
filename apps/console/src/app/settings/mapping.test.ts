@@ -50,7 +50,7 @@ import {
   toUsage,
   toVariable,
 } from "./mapping.ts"
-import { billedPlan, emptySettings } from "./model.ts"
+import { BillingPlan, billedPlan, emptySettings } from "./model.ts"
 
 const decode =
   <T, E>(schema: Schema.Codec<T, E>) =>
@@ -293,7 +293,7 @@ describe("billing", () => {
           spendLimit: { limitCents: null, currentSpendCents: 1999 },
         })
         expect(toBilling(summary)).toEqual({
-          plan: {
+          plan: BillingPlan.make({
             id: "free",
             name: "Free",
             subscribed: "free",
@@ -302,7 +302,7 @@ describe("billing", () => {
             provisional: false,
             renewsAt: null,
             monthToDateCents: 1999,
-          },
+          }),
           card: null,
           billingEmail: null,
           spendLimit: { limitCents: null, currentCents: 1999 },
@@ -331,16 +331,18 @@ describe("billing", () => {
           billingEmail: "ops@acme.dev",
           spendLimit: { limitCents: 40_000, currentSpendCents: 31_337 },
         })
-        expect(toBilling(summary).plan).toEqual({
-          id: "free",
-          name: "Free",
-          subscribed: "team",
-          paymentStatus: "past_due",
-          basePriceCents: 24_900,
-          provisional: true,
-          renewsAt: Date.UTC(2026, 10, 1),
-          monthToDateCents: 31_337,
-        })
+        expect(toBilling(summary).plan).toEqual(
+          BillingPlan.make({
+            id: "free",
+            name: "Free",
+            subscribed: "team",
+            paymentStatus: "past_due",
+            basePriceCents: 24_900,
+            provisional: true,
+            renewsAt: Date.UTC(2026, 10, 1),
+            monthToDateCents: 31_337,
+          }),
+        )
       }),
     ))
 
@@ -819,7 +821,7 @@ describe("setting keys", () => {
       },
       notifications: [{ event: "dead_letter", email: true, slack: false }],
       billing: {
-        plan: {
+        plan: BillingPlan.make({
           id: "pro",
           name: "Pro",
           subscribed: "pro",
@@ -828,7 +830,7 @@ describe("setting keys", () => {
           provisional: false,
           renewsAt: null,
           monthToDateCents: 0,
-        },
+        }),
         card: null,
         billingEmail: null,
         spendLimit: { limitCents: null, currentCents: 0 },
