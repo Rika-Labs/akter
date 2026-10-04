@@ -32,7 +32,7 @@ import {
 } from "../quotas.ts"
 import { claimsFor } from "../signing/claims.ts"
 import type { KeyRing } from "../signing/keys.ts"
-import type { Deployment } from "./hosts.ts"
+import { type Deployment, hostOf } from "./hosts.ts"
 
 type Reason = ActorError["reason"]
 
@@ -48,6 +48,8 @@ export interface Edge {
     tenant: string,
   ) => Effect.Effect<{ readonly region: string; readonly state: "active" | "moving" } | undefined>
   readonly ready: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
+  /** Durably records that the deployment is about to serve a request or socket session, or fails. */
+  readonly touch: (deployment: string) => Effect.Effect<void, ActorUnavailable>
   /** Waits for a runner of a region with none ready; empty when none answers ready in time. */
   readonly coldStart: (deployment: string, region: string) => Effect.Effect<ReadonlyArray<string>>
   readonly quotas: Quotas
@@ -73,6 +75,35 @@ const DROPPED = new Set([
 ])
 
 const utf8 = new TextEncoder()
+/**
+ * Headers that say where a request came from. A client or an unlisted proxy
+ * can set any of them, so none passes: the edge sends its own
+ * `x-forwarded-for` and `x-forwarded-host` instead.
+ */
+const ATTRIBUTION = new Set([
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-port",
+  "x-real-ip",
+  "x-client-ip",
+  "forwarded",
+  "cf-connecting-ip",
+  "cf-connecting-ipv6",
+  "true-client-ip",
+])
+
+/** What a runner is told about where a request came from, replacing whatever the client claimed. */
+export const attribution = (options: {
+  readonly clientIp: string | undefined
+  readonly host: string
+}) => {
+  const forwarded = { "x-forwarded-host": options.host }
+
+  return options.clientIp === undefined
+    ? forwarded
+    : { ...forwarded, "x-forwarded-for": options.clientIp }
+}
 
 const encodeBody = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
 
@@ -214,6 +245,7 @@ export const forward = Effect.fnUntraced(function* (
   edge: Edge,
   deployment: Deployment,
   request: Request,
+  clientIp: string | undefined,
 ) {
   const url = new URL(request.url)
 
@@ -240,6 +272,9 @@ export const forward = Effect.fnUntraced(function* (
     credentialed: credential !== null,
   })
 
+  const touched = yield* edge.touch(deployment.id).pipe(Effect.result)
+
+  if (Result.isFailure(touched)) return yield* refusal(touched.failure)
   const chosen = yield* route(edge, deployment, verified)
 
   if (Result.isFailure(chosen)) return yield* refusal(chosen.failure)
@@ -261,7 +296,13 @@ export const forward = Effect.fnUntraced(function* (
 
   const headers: Record<string, string> = {}
 
-  for (const [name, value] of request.headers) if (!DROPPED.has(name)) headers[name] = value
+  for (const [name, value] of request.headers)
+    if (!DROPPED.has(name) && !ATTRIBUTION.has(name)) headers[name] = value
+
+  Object.assign(
+    headers,
+    attribution({ clientIp, host: hostOf(request.headers.get("host") ?? url.host) }),
+  )
 
   const tenant = verified?.tenant ?? ANONYMOUS_TENANT
 

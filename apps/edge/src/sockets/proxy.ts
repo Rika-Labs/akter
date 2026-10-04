@@ -34,6 +34,8 @@ export interface SocketData {
   /** The principal the upgrade's own credential proved, if it carried one; `hello` carries it on. */
   readonly upgrade: Principal | undefined
   readonly lease: Lease
+  /** The trusted `x-forwarded-*` headers the runner is sent, never the client's own. */
+  readonly forwarded: Readonly<Record<string, string>>
   readonly inbox: Queue.Queue<Inbound>
   /** Bytes of client messages received and not yet handed to a runner. */
   pending: number
@@ -85,7 +87,7 @@ export const proxySocket = Effect.fnUntraced(function* (
   edge: Edge,
   ws: ServerWebSocket<SocketData>,
 ) {
-  const { deployment, target, session, upgrade, inbox } = ws.data
+  const { deployment, target, session, upgrade, forwarded, inbox } = ws.data
   const path = new URL(target, "http://edge").pathname
   let upstream: WebSocket | undefined
 
@@ -197,6 +199,9 @@ export const proxySocket = Effect.fnUntraced(function* (
   }
 
   if (yield* leased.isLost) return yield* endQuota(QuotaUnavailable.make())
+  const touched = yield* edge.touch(deployment.id).pipe(Effect.result)
+
+  if (Result.isFailure(touched)) return yield* end(touched.failure)
 
   const chosen = yield* route(edge, deployment, principal)
 
@@ -206,7 +211,10 @@ export const proxySocket = Effect.fnUntraced(function* (
   const connect = (url: string) =>
     Effect.gen(function* () {
       const opened = yield* Deferred.make<boolean>()
-      const socket = new WebSocket(`${url.replace(/^http/, "ws")}${target}`, [SUBPROTOCOL])
+      const socket: WebSocket = Reflect.construct(WebSocket, [
+        `${url.replace(/^http/, "ws")}${target}`,
+        { protocols: [SUBPROTOCOL], headers: forwarded },
+      ])
 
       socket.onopen = () => Deferred.doneUnsafe(opened, Effect.succeed(true))
       socket.onclose = () => Deferred.doneUnsafe(opened, Effect.succeed(false))

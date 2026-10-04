@@ -727,7 +727,11 @@ export const registerActor = Effect.fnUntraced(function* (
             }
           }
 
-          yield* Deferred.succeed(entry.reply, { outcome, version: done.version })
+          const executed: Executed = done.replays.has(index)
+            ? { outcome, version: done.version, replayed: true }
+            : { outcome, version: done.version }
+
+          yield* Deferred.succeed(entry.reply, executed)
         }
       })
 

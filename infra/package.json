@@ -18,6 +18,7 @@
     "@distilled.cloud/planetscale": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "alchemy": "catalog:",
     "effect": "catalog:"
   },

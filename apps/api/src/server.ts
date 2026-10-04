@@ -2,7 +2,6 @@ import { CloudApi } from "@akter/cloud-api"
 import { Postgres } from "@alchemy.run/better-auth/Postgres"
 import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
 import { BunHttpServer } from "@effect/platform-bun"
-import { PgClient } from "@effect/sql-pg"
 import { Effect, Layer, Option, Redacted, Schema } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import {
@@ -24,10 +23,22 @@ import { ControlLayers } from "./control.ts"
 import { SqlClient } from "effect/sql"
 import { billingInfrastructure, BillingLive, billingWebhook, UsageLive } from "./billing.ts"
 import { LocalBillingOptions, localBillingRoutes } from "./local-billing.ts"
+import { publishedKeys } from "@akter/deployments"
+import { DeploymentsLive } from "./deployments.ts"
+import { RuntimeLive } from "./runtime.ts"
+import { cloudRuntime, runnerReconciliation, runtimeEdge } from "./cloud.ts"
 
 export const apiRoutes = HttpApiBuilder.layer(CloudApi, { openapiPath: "/api/openapi.json" }).pipe(
   Layer.provide(
-    Layer.mergeAll(AccountLayers, ControlLayers, PendingLayers, BillingLive, UsageLive),
+    Layer.mergeAll(
+      AccountLayers,
+      ControlLayers,
+      PendingLayers,
+      BillingLive,
+      UsageLive,
+      DeploymentsLive,
+      RuntimeLive,
+    ),
   ),
   Layer.provide(AccessLive),
   Layer.provide(Access.layer),
@@ -184,11 +195,21 @@ const authRoutes = HttpRouter.use((router) =>
       }),
     )
     yield* router.add("GET", "/ready", Effect.succeed(HttpServerResponse.text("ready")))
+    yield* router.add(
+      "GET",
+      "/edge/keys",
+      publishedKeys.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orDie,
+        Effect.flatMap(HttpServerResponse.json),
+        Effect.orDie,
+      ),
+    )
   }),
 )
 
 export const infrastructure = (options: ApiOptions) => {
-  const sql = PgClient.layer({ url: options.databaseUrl, maxConnections: 10 })
+  const sql = cloudRuntime(options)
   const email =
     options.emailMode === "local"
       ? localEmail
@@ -205,6 +226,8 @@ export const infrastructure = (options: ApiOptions) => {
     RepositoryLive,
     billingInfrastructure(options),
     Layer.succeed(LocalBillingOptions, options),
+    runtimeEdge(options),
+    runnerReconciliation(options),
   ).pipe(Layer.provideMerge(sql))
 }
 

@@ -5,8 +5,9 @@ import { layerNonInteractive } from "alchemy/Interaction"
 import { evalStack } from "alchemy/Stack"
 import { tryFindProviderByType } from "alchemy/Provider"
 import { inMemoryState } from "alchemy/State"
+import * as Output from "alchemy/Output"
 import { BunServices } from "@effect/platform-bun"
-import { ConfigProvider, Console, Effect, Layer, ManagedRuntime, Schema } from "effect"
+import { ConfigProvider, Console, Effect, Layer, ManagedRuntime, Predicate, Schema } from "effect"
 import type { DeploymentRegion, DeploymentStage } from "./config.ts"
 import { resources, stackProviders } from "./stack.ts"
 
@@ -16,7 +17,30 @@ export const previewLayer = Layer.mergeAll(
   inMemoryState(),
 )
 
-/** Compiles real declarations and providers with memory state; no planner or cloud lifecycle runs. */
+/** Declaration types whose network reachability and IAM grants the preview resolves. */
+const inspectedTypes = new Set([
+  "AWS.EC2.SecurityGroup",
+  "AWS.EC2.SecurityGroupRule",
+  "AWS.IAM.Role",
+  "AWS.ECS.TaskDefinition",
+  "AWS.ECS.Service",
+])
+
+/**
+ * A resource before any deploy: each attribute reads as `<logical id>.<attribute>`,
+ * so a resolved declaration names the resource it references without a cloud call.
+ */
+const symbolic = (id: string) =>
+  new Proxy(
+    {},
+    { get: (_, attribute) => (Predicate.isString(attribute) ? `${id}.${attribute}` : undefined) },
+  )
+
+/**
+ * Compiles real declarations and providers with memory state; no planner or cloud lifecycle runs.
+ * `declarations` holds the resolved props of security groups, IAM roles, task definitions and
+ * services, with references to other resources left symbolic.
+ */
 export const preview = (options: {
   readonly stage: DeploymentStage
   readonly region: DeploymentRegion
@@ -61,6 +85,21 @@ export const preview = (options: {
           if ((yield* tryFindProviderByType(resource.Type)) === undefined)
             return yield* Effect.die(new Error(`No provider registered for ${resource.Type}`))
         }
+        const upstream = Object.fromEntries(
+          Object.entries(compiled.resources).map(([id, resource]) => [resource.FQN, symbolic(id)]),
+        )
+        const declarations = Object.fromEntries(
+          yield* Effect.forEach(
+            Object.entries(compiled.resources).filter(([, resource]) =>
+              inspectedTypes.has(resource.Type),
+            ),
+            ([id, resource]) =>
+              Output.evaluate<unknown, never>(resource.Props, upstream).pipe(
+                Effect.map((props) => [id, props] as const),
+                Effect.orDie,
+              ),
+          ),
+        )
         return {
           deletionProtection: {
             nlb: compiled.resources.Nlb?.Props?.attributes?.["deletion_protection.enabled"],
@@ -72,6 +111,7 @@ export const preview = (options: {
             id,
             type: resource.Type,
           })),
+          declarations,
         }
       }),
     { stage: options.stage },
@@ -93,9 +133,14 @@ if (import.meta.main) {
       Effect.gen(function* () {
         for (const stage of ["dev", "staging", "prod"] as const) {
           for (const region of ["us-east-1", "us-west-2"] as const) {
-            const result = yield* preview({ stage, region })
+            const { deletionProtection, name, resources } = yield* preview({ stage, region })
             yield* Console.log(
-              yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result),
+              yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+                deletionProtection,
+                stage,
+                name,
+                resources,
+              }),
             )
           }
         }

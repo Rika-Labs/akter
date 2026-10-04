@@ -41,7 +41,7 @@ export type Phase = typeof Phase.Type
 export const Runner = S.Struct({
   id: S.String,
   region: S.String,
-  actors: S.Finite,
+  actors: S.NullOr(S.Finite),
   cpu: S.String,
   health: DeploymentRunner.fields.health,
 })

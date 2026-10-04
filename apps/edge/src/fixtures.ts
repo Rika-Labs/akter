@@ -104,6 +104,7 @@ export interface FixtureOptions {
   readonly unbound?: boolean
   readonly leaseTtlMillis?: number
   readonly leaseHeartbeatMillis?: number
+  readonly trustedProxies?: EdgeOptions["trustedProxies"]
 }
 
 /**
@@ -151,6 +152,7 @@ export const startEdge = Effect.fnUntraced(function* (
     coldStartTimeout: Duration.seconds(options.coldStartSeconds ?? 30),
     leaseTtl: Duration.millis(options.leaseTtlMillis ?? 30_000),
     leaseHeartbeat: Duration.millis(options.leaseHeartbeatMillis ?? 10_000),
+    trustedProxies: options.trustedProxies ?? { nlbOnly: false, cloudflare: [] },
   }
 
   const pricing = yield* Layer.build(PricingLive(options.pricing))

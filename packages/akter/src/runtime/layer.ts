@@ -729,7 +729,11 @@ export const layer = (options: Options = {}) => {
 
               if (external) yield* authorize(request)
 
-              return { outcome: retained, version: admission.version } satisfies Executed
+              return {
+                outcome: retained,
+                version: admission.version,
+                replayed: true,
+              } satisfies Executed
             }
 
             const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)

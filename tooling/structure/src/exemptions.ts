@@ -11,6 +11,12 @@ export interface Exemption {
 /** Every deviation from the structure rules, each with the reason it exists. */
 export const exemptions: ReadonlyArray<Exemption> = [
   {
+    path: "apps/api/src/deployment-stack.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "The Docker deployment E2E exercises the API, edge and runner image together rather than one source module.",
+  },
+  {
     path: "tooling/oxlint/anti-slop",
     rule: "tests-beside-sources",
     reason:

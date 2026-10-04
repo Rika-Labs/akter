@@ -3,7 +3,7 @@ import { OpenApi } from "effect/http-api"
 import { describe, expect, it } from "vitest"
 
 import { CloudApi } from "./contract.ts"
-import { DeploymentSummary } from "./deployments.ts"
+import { DeploymentRunner, DeploymentSummary, RecordBuild } from "./deployments.ts"
 
 const summary = {
   id: "dep_3",
@@ -28,6 +28,45 @@ const decode = (input: Schema.Json) =>
   )
 
 describe("deployment rollback", () => {
+  it("accepts immutable build identities and refuses mutable tags or malformed snapshots", () => {
+    const input = {
+      image: `registry.example/app@sha256:${"a".repeat(64)}`,
+      commitSha: "abcdef1234",
+      environmentSnapshot: { APP_SETTING: "asymmetric value" },
+    }
+    const valid = (value: Schema.Json) =>
+      Exit.isSuccess(Effect.runSyncExit(Schema.decodeUnknownEffect(RecordBuild)(value)))
+    expect(valid(input)).toBe(true)
+    expect(valid({ ...input, image: `sha256:${"b".repeat(64)}` })).toBe(true)
+    for (const image of [
+      "registry.example/app:latest",
+      `registry.example/app@sha256:${"a".repeat(63)}`,
+      `registry.example/app@sha256:${"A".repeat(64)}`,
+    ])
+      expect(valid({ ...input, image })).toBe(false)
+    expect(valid({ ...input, environmentSnapshot: { "BAD NAME": "lost" } })).toBe(false)
+    expect(valid({ ...input, environmentSnapshot: { APP_SETTING: 17 } })).toBe(false)
+    expect(valid({ ...input, commitSha: "not-a-commit" })).toBe(false)
+  })
+
+  it("keeps unmeasured runner metrics unknown instead of substituting zero", () => {
+    const runner = Effect.runSync(
+      Schema.decodeEffect(DeploymentRunner)({
+        id: "runner-one",
+        region: "us-east-1",
+        actorCount: null,
+        cpuPercent: null,
+        health: "healthy",
+      }),
+    )
+    expect(runner.actorCount).toBeNull()
+    expect(runner.cpuPercent).toBeNull()
+    expect(
+      Exit.isFailure(
+        Effect.runSyncExit(Schema.decodeEffect(DeploymentRunner)({ ...runner, cpuPercent: -0.25 })),
+      ),
+    ).toBe(true)
+  })
   it("records the deployment a rollback redeploys, and null for an ordinary deployment", () => {
     const rolledBack = decode(summary)
     const ordinary = decode({ ...summary, rolledBackFrom: null })

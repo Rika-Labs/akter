@@ -1,5 +1,6 @@
 import { Config, Duration, Effect, Redacted, Schema } from "effect"
 import { dual } from "effect/Function"
+import { cidrs, type TrustedProxies } from "./routing/client-ip.ts"
 
 /** One Ed25519 signing key from the edge's secret store, as a private JWK. */
 export const SigningKey = Schema.Struct({
@@ -58,6 +59,13 @@ export interface EdgeOptions {
   readonly leaseTtl: Duration.Duration
   /** How often an edge extends its live leases; at most half of `leaseTtl`. Default 10 seconds. */
   readonly leaseHeartbeat: Duration.Duration
+  /**
+   * Whether `CF-Connecting-IP` is believed. It is only when `nlbOnly` says the
+   * network admits the edge's traffic solely through an NLB that preserves
+   * client addresses, and then only from a peer in Cloudflare's ranges;
+   * otherwise the client is the TCP peer.
+   */
+  readonly trustedProxies: TrustedProxies
 }
 
 const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(SigningKey)))
@@ -121,11 +129,35 @@ export const loadOptions = Effect.gen(function* () {
     return yield* Effect.die(
       new Error("EDGE_LEASE_HEARTBEAT is positive and at most half of EDGE_LEASE_TTL"),
     )
+  const list = (name: string) =>
+    Config.String(name).pipe(
+      Config.withDefault(""),
+      Config.map((value) =>
+        value
+          .split(",")
+          .map((block) => block.trim())
+          .filter((block) => block.length > 0),
+      ),
+    )
+
+  const trustedProxies = {
+    nlbOnly: yield* Config.Boolean("EDGE_NLB_ONLY").pipe(Config.withDefault(false)),
+    cloudflare: yield* list("EDGE_CLOUDFLARE_RANGES"),
+  } satisfies TrustedProxies
+
+  yield* Effect.try(() => cidrs(trustedProxies.cloudflare)).pipe(Effect.orDie)
+
+  if (trustedProxies.nlbOnly && trustedProxies.cloudflare.length === 0)
+    return yield* Effect.die(new Error("EDGE_NLB_ONLY needs EDGE_CLOUDFLARE_RANGES"))
 
   return {
     issuer: yield* Config.String("EDGE_ISSUER"),
     controlPlaneUrl: yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL"),
-    signingKeys: yield* decodeKeys(Redacted.value(keys)).pipe(Effect.orDie),
+    signingKeys: yield* decodeKeys(Redacted.value(keys)).pipe(
+      Effect.catch(() =>
+        Effect.die(new Error("EDGE_SIGNING_KEYS must contain a valid private signing-key array")),
+      ),
+    ),
     hostname: yield* Config.String("HOST").pipe(Config.withDefault("0.0.0.0")),
     port: yield* Config.Port("PORT").pipe(Config.withDefault(8080)),
     assertionLifetime: lifetime,
@@ -143,5 +175,6 @@ export const loadOptions = Effect.gen(function* () {
     ),
     leaseTtl,
     leaseHeartbeat,
+    trustedProxies,
   } satisfies EdgeOptions
 })

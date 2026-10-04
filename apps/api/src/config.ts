@@ -1,6 +1,7 @@
 import { Config, Effect, Option, Redacted, Schema } from "effect"
 import { defaultPricingConfig, PricingConfigSchema, type PricingConfig } from "@akter/billing"
 import type { MeterCell } from "./collector.ts"
+import type { EcsOptions } from "@akter/deployments/runners"
 
 export interface ApiOptions {
   readonly databaseUrl: Redacted.Redacted<string>
@@ -21,6 +22,17 @@ export interface ApiOptions {
   readonly billingWebhookSecret?: Redacted.Redacted<string>
   readonly pricing?: PricingConfig
   readonly meterCells?: ReadonlyArray<MeterCell>
+  readonly paidOrganizations?: ReadonlyArray<string>
+  readonly runnerEnvironment?: Readonly<Record<string, string>>
+  readonly deploymentDomain?: string
+  readonly edgeOrigin?: string
+  readonly runnerPort?: number
+  readonly runnerNetwork?: string
+  readonly runnerRouteViaNetwork?: boolean
+  readonly migrationCommand?: ReadonlyArray<string>
+  readonly runnerIdleSeconds?: number
+  readonly runnerEcs?: EcsOptions
+  readonly runtimeRequestTimeoutSeconds?: number
 }
 
 export const localBillingWebhookSecret = "local-billing-signature-secret-not-for-production"
@@ -121,10 +133,67 @@ export const loadOptions = Effect.gen(function* () {
         .filter((id) => id.length > 0),
     ),
   )
+  const paidOrganizations = yield* Config.String("PAID_ORGANIZATIONS").pipe(
+    Config.withDefault(""),
+    Config.map((value) =>
+      value
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  )
+  const environment = yield* Config.Redacted("RUNNER_ENVIRONMENT").pipe(
+    Config.withDefault(Redacted.make("{}")),
+  )
+  const runnerEnvironment = yield* Schema.decodeEffect(
+    Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+  )(Redacted.value(environment)).pipe(
+    Effect.catch(() =>
+      Effect.die(new Error("RUNNER_ENVIRONMENT must be a string-valued JSON object")),
+    ),
+  )
+  const ecs = yield* Config.String("RUNNER_ECS_CONFIG").pipe(Config.option)
+  const runnerEcs = Option.isNone(ecs)
+    ? undefined
+    : yield* Schema.decodeEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            regions: Schema.Record(
+              Schema.String,
+              Schema.Struct({
+                cluster: Schema.String,
+                subnets: Schema.Array(Schema.String),
+                securityGroups: Schema.Array(Schema.String),
+              }),
+            ),
+            container: Schema.String,
+            port: Schema.Int,
+            scheme: Schema.optional(Schema.Literals(["http", "https"])),
+            definition: Schema.Struct({
+              executionRoleArn: Schema.String,
+              taskRoleArn: Schema.optional(Schema.String),
+              cpu: Schema.optional(Schema.String),
+              memory: Schema.optional(Schema.String),
+            }),
+          }),
+        ),
+      )(ecs.value).pipe(Effect.catch(() => Effect.die(new Error("RUNNER_ECS_CONFIG is invalid"))))
+  const migrationCommand = yield* Config.String("RUNNER_MIGRATION_COMMAND").pipe(
+    Config.withDefault('["bun","run","migrate"]'),
+  )
+  const parsedMigrationCommand = yield* Schema.decodeEffect(
+    Schema.fromJsonString(Schema.Array(Schema.String).check(Schema.isMinLength(1))),
+  )(migrationCommand).pipe(
+    Effect.catch(() =>
+      Effect.die(new Error("RUNNER_MIGRATION_COMMAND must be a nonempty JSON array")),
+    ),
+  )
   if (Redacted.value(secret).length < 32)
     return yield* Effect.die(new Error("AUTH_SECRET must contain at least 32 characters"))
   if (production && emailMode === "local")
     return yield* Effect.die(new Error("Production requires SES email delivery"))
+  if (production && Object.keys(runnerEnvironment).length > 0)
+    return yield* Effect.die(new Error("Production cannot use shared runner environment values"))
   if (production && Redacted.value(secret) === publishedDevelopmentSecret)
     return yield* Effect.die(new Error("Production cannot use the published development secret"))
   if (
@@ -154,6 +223,31 @@ export const loadOptions = Effect.gen(function* () {
       databaseUrl: Redacted.make(cell.databaseUrl),
     })),
     enterpriseOrganizations,
+    paidOrganizations,
+    runnerEnvironment,
+    runnerEcs,
+    migrationCommand: parsedMigrationCommand,
+    edgeOrigin: yield* Config.String("EDGE_ORIGIN").pipe(
+      Config.withDefault("http://127.0.0.1:3002"),
+    ),
+    deploymentDomain: yield* Config.String("DEPLOYMENT_DOMAIN").pipe(
+      Config.withDefault("localhost"),
+    ),
+    runnerPort: yield* Config.Port("RUNNER_PORT").pipe(Config.withDefault(8080)),
+    runnerNetwork: Option.getOrUndefined(
+      yield* Config.String("RUNNER_DOCKER_NETWORK").pipe(Config.option),
+    ),
+    runnerRouteViaNetwork: yield* Config.Boolean("RUNNER_ROUTE_VIA_NETWORK").pipe(
+      Config.withDefault(false),
+    ),
+    runnerIdleSeconds: yield* Config.schema(
+      Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+      "RUNNER_IDLE_SECONDS",
+    ).pipe(Config.withDefault(300)),
+    runtimeRequestTimeoutSeconds: yield* Config.schema(
+      Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+      "RUNTIME_REQUEST_TIMEOUT_SECONDS",
+    ).pipe(Config.withDefault(35)),
     github:
       githubId === ""
         ? undefined

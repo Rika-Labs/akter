@@ -28,7 +28,6 @@ import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } fr
 import { SqlClient } from "effect/sql"
 import { Access } from "./access.ts"
 import { BillingActor, BillingActorLive, deliverWebhook, RequestId } from "./billing-actor.ts"
-import { Actors, Database } from "@rikalabs/akter/runtime"
 import { BillingRepository } from "./billing-repository.ts"
 import { type ApiOptions, localBillingWebhookSecret } from "./config.ts"
 import { currentPeriod, usageReport } from "./usage.ts"
@@ -63,8 +62,6 @@ export const billingInfrastructure = (options: ApiOptions) => {
         )
   const cells = options.meterCells ?? []
   const runtime = Layer.mergeAll(BillingActorLive(), UsageActorLive(), CollectorLive(cells)).pipe(
-    Layer.provideMerge(Actors.layer()),
-    Layer.provideMerge(Database.postgres({ url: options.databaseUrl })),
     Layer.provideMerge(Layer.mergeAll(provider, catalog, PricingLive(pricing))),
     Layer.provideMerge(BunCrypto.layer),
     Layer.merge(
