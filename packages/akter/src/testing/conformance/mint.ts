@@ -443,6 +443,7 @@ export const mintConformance: ReadonlyArray<ConformanceCase<MintFixture>> = [
           const test = yield* ActorTest
           const planner = yield* Planner.get("derive")
           const commandId = yield* (yield* Actors).mintCommandId
+          const held = [yield* test.pauseNext("afterClaim"), yield* test.pauseNext("afterClaim")]
           const ids = yield* planner.Plan(2).pipe(Actor.commandId(commandId))
 
           expect(ids).toEqual([
@@ -450,10 +451,14 @@ export const mintConformance: ReadonlyArray<ConformanceCase<MintFixture>> = [
             yield* expected(planner.ref, commandId, 1),
           ])
           expect(new Set(ids).size).toBe(2)
+          for (const pause of held) yield* pause.reached
           expect(yield* test.inspect(planner.ref)).toMatchObject({
             receipts: 1,
             outbox: 2,
           })
+          for (const id of ids) expect(yield* created("MintTask", id)).toBe(0)
+
+          for (const pause of held) yield* pause.release
           yield* test.advance(0)
 
           for (const [index, id] of ids.entries()) {

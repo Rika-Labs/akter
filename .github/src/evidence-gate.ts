@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { Config, Effect, FileSystem, ManagedRuntime, Schema } from "effect"
-import { github } from "../../infra/src/github.ts"
+import { github } from "./github.ts"
 import { evidencePolicy } from "./policy.ts"
 
 const RunEvent = Schema.fromJsonString(
