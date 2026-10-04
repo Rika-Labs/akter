@@ -1,10 +1,15 @@
 import {
   CommandFailed,
   Conflict,
+  ConnectionLimitExceeded,
   Forbidden,
   NotFound,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
   Unavailable as CloudUnavailable,
 } from "@akter/cloud-api"
+import * as Framework from "@rikalabs/akter/client"
 import { expect, it } from "@effect/vitest"
 import { Cause, Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
@@ -19,7 +24,16 @@ interface Seen {
 
 type Answer = (request: Request) => Response
 
-type Refusal = CommandFailed | Conflict | Forbidden | NotFound | CloudUnavailable
+type Refusal =
+  | CommandFailed
+  | Conflict
+  | ConnectionLimitExceeded
+  | Forbidden
+  | NotFound
+  | QuotaExceeded
+  | SpendLimitExceeded
+  | StorageQuotaExceeded
+  | CloudUnavailable
 
 const SECRET = "dak_service_credential"
 
@@ -42,6 +56,13 @@ const InvalidInput = Schema.TaggedStruct("InvalidInput", { code: Schema.String }
 const ActorError = Schema.TaggedStruct("ActorError", {
   reason: Schema.Json,
   isRetryable: Schema.Boolean,
+})
+
+/** The envelope the edge serves a usage refusal in, with its `retry-after` in milliseconds. */
+const ServedActorError = Schema.TaggedStruct("ActorError", {
+  reason: Schema.Json,
+  isRetryable: Schema.Boolean,
+  retryAfter: Schema.Finite,
 })
 
 const refused = (reason: Schema.Json, status: number) =>
@@ -242,6 +263,98 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             .pipe(Effect.flip)
 
           expect(expected(error)).toBe(true)
+        }
+      }),
+  )
+
+  it.effect(
+    "answers each edge usage refusal as its typed error with the framework's tag and payload, never a defect",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+        const notFound = json(NotFoundBody.make({}), 404)
+        const quota = {
+          organizationId: "org1",
+          period: "2026-10",
+          limitUnits: 5_000_000,
+          usedUnits: 4_999_998,
+          requestedUnits: 5,
+          retryAfterMs: 86_400_000,
+        }
+        const spend = {
+          organizationId: "org1",
+          period: "2026-10",
+          limitCents: 1003,
+          projectedCents: 1004,
+        }
+        const connections = { organizationId: "org1", kind: "sse" as const, limit: 3, open: 3 }
+        const storage = {
+          organizationId: "org1",
+          deployment: "dep1",
+          tenant: "acme",
+          limitBytes: 500_000_000,
+          usedBytes: 500_000_001,
+        }
+        const served = <S extends Schema.Top & { readonly Type: { readonly _tag: string } }>(
+          schema: S,
+          error: S["Type"],
+          status: number,
+        ) =>
+          Schema.encodeEffect(Schema.toCodecJson(schema))(error).pipe(
+            Effect.orDie,
+            Effect.map((reason) =>
+              json(
+                ServedActorError.make({
+                  reason: reason as Schema.Json,
+                  isRetryable: false,
+                  retryAfter: 86_400_000,
+                }),
+                status,
+              ),
+            ),
+          )
+
+        const cases = [
+          [
+            yield* served(Framework.QuotaExceeded, Framework.QuotaExceeded.make(quota), 429),
+            QuotaExceeded.make(quota),
+          ],
+          [
+            yield* served(
+              Framework.SpendLimitExceeded,
+              Framework.SpendLimitExceeded.make(spend),
+              402,
+            ),
+            SpendLimitExceeded.make(spend),
+          ],
+          [
+            yield* served(
+              Framework.ConnectionLimitExceeded,
+              Framework.ConnectionLimitExceeded.make(connections),
+              429,
+            ),
+            ConnectionLimitExceeded.make(connections),
+          ],
+          [
+            yield* served(
+              Framework.StorageQuotaExceeded,
+              Framework.StorageQuotaExceeded.make(storage),
+              429,
+            ),
+            StorageQuotaExceeded.make(storage),
+          ],
+        ] as const
+
+        for (const [answer, expected] of cases) {
+          yield* edge.answer(inspector(notFound, answer))
+
+          const error = yield* runtime
+            .sendCommand({ ...command, commandId: "v1.q" })
+            .pipe(Effect.flip)
+
+          expect(error).toBeInstanceOf(expected.constructor)
+          expect(error).toEqual(expected)
         }
       }),
   )

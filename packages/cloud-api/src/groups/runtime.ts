@@ -20,6 +20,7 @@ import {
   JobsSummary,
   Overview,
   OwnedTableRows,
+  QuotaErrors,
   Receipt,
   Schedule,
   SearchResult,
@@ -162,11 +163,11 @@ export class RuntimeGroup extends HttpApiGroup.make("runtime").add(
       params: environmentParams,
       payload: SendCommand,
       success: CommandSent,
-      error: [...WriteErrors, CommandFailed],
+      error: [...WriteErrors, CommandFailed, ...QuotaErrors],
     },
   ).annotate(
     OpenApi.Description,
-    "Runs one command on one actor through the runner that owns it and answers with the actor's result. Requires write permission on the project. `commandId` defaults to a freshly minted id; resending the same id replays the stored receipt and sets `replayed`. An error the actor itself returns is a 422 `CommandFailed` carrying its tag and payload.",
+    "Runs one command on one actor through the runner that owns it and answers with the actor's result. Requires write permission on the project. `commandId` defaults to a freshly minted id; resending the same id replays the stored receipt and sets `replayed`. An error the actor itself returns is a 422 `CommandFailed` carrying its tag and payload. The edge's usage refusals keep the framework's tags and payloads: a full Free command quota is a 429 `QuotaExceeded`, a passed spend limit a 402 `SpendLimitExceeded`, a full connection allowance a 429 `ConnectionLimitExceeded` and a Free tenant at its storage cap a 429 `StorageQuotaExceeded`.",
   ),
   HttpApiEndpoint.get(
     "streamCommands",

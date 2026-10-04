@@ -42,11 +42,30 @@ export const SpendLimit = Schema.Struct({
 })
 export type SpendLimit = typeof SpendLimit.Type
 
+/**
+ * One cap as the edge's admission decides it now, whatever period is being
+ * reported. `limit` and `used` are usage units (five per command, one per
+ * read) for `commands`, cents for `spend`, open connections for
+ * `connections`, and the largest tenant's latest sampled bytes for `storage`,
+ * which is capped per tenant; `limit` is null when the cap does not apply.
+ * `atCap` means usage has reached the limit; `refusing` means the edge would
+ * refuse the next new command, or for `connections` the next new connection.
+ */
+export const CapState = Schema.Struct({
+  cap: Schema.Literals(["commands", "spend", "connections", "storage"]),
+  limit: Schema.NullOr(NonNegative),
+  used: NonNegative,
+  atCap: Schema.Boolean,
+  refusing: Schema.Boolean,
+})
+export type CapState = typeof CapState.Type
+
 export const BillingSummary = Schema.Struct({
   plan: Plan,
   paymentMethod: Schema.NullOr(PaymentMethod),
   billingEmail: Schema.NullOr(Email),
   spendLimit: SpendLimit,
+  caps: Schema.optionalKey(Schema.Array(CapState)),
 })
 export type BillingSummary = typeof BillingSummary.Type
 
@@ -80,6 +99,54 @@ export type PlanChange = typeof PlanChange.Type
 export const HostedSession = Schema.Struct({ url: Schema.String })
 export type HostedSession = typeof HostedSession.Type
 
+/**
+ * What a plan offers, derived from the pricing configuration: a hard command
+ * cap, billed command overage, billed storage overage, a storage admission
+ * cap, and a paid subscription bought through checkout.
+ */
+export const PlanFeature = Schema.Literals([
+  "command-cap",
+  "command-overage",
+  "storage-overage",
+  "storage-cap",
+  "checkout",
+])
+export type PlanFeature = typeof PlanFeature.Type
+
+/**
+ * One tier of the pricing configuration. `allowances.commands` is the
+ * included command equivalents, `allowances.commandCap` the hard stop (null
+ * when overage is billed instead) and `allowances.storageGb` decimal
+ * gigabytes. A provisional tier's prices are not yet published.
+ */
+export const CatalogPlan = Schema.Struct({
+  id: PlanId,
+  name: Schema.String,
+  basePriceCents: NonNegativeInt,
+  currency: Schema.Literal("usd"),
+  allowances: Schema.Struct({
+    commands: NonNegativeInt,
+    commandCap: Schema.NullOr(NonNegativeInt),
+    storageGb: NonNegative,
+    concurrentConnections: NonNegativeInt,
+  }),
+  overage: Schema.Struct({
+    commandCentsPerMillion: NonNegative,
+    storageCentsPerGbMonth: NonNegative,
+  }),
+  features: Schema.Array(PlanFeature),
+  provisional: Schema.Boolean,
+})
+export type CatalogPlan = typeof CatalogPlan.Type
+
+/** Every plan, cheapest first; `provisional` is true while any plan's prices are provisional. */
+export const PlanCatalog = Schema.Struct({
+  plans: Schema.Array(CatalogPlan),
+  readCommandWeight: NonNegative,
+  provisional: Schema.Boolean,
+})
+export type PlanCatalog = typeof PlanCatalog.Type
+
 export const UsageMeterName = Schema.Literals([
   "commands",
   "reads",
@@ -107,9 +174,22 @@ export const UsagePricing = Schema.Struct({
 })
 export type UsagePricing = typeof UsagePricing.Type
 
+/**
+ * The organization's latest storage sample: the sum of every tenant's latest
+ * sampled logical bytes, and the newest hour among those samples.
+ */
+export const StorageSample = Schema.Struct({ bytes: NonNegative, sampledAt: Timestamp })
+export type StorageSample = typeof StorageSample.Type
+
+/**
+ * `latestStorageSample` and `caps` describe now whatever `period` is
+ * reported; the sample is null before any tenant was sampled.
+ */
 export const Usage = Schema.Struct({
   period: BillingPeriod,
   meters: Schema.Array(UsageMeter),
+  latestStorageSample: Schema.optionalKey(Schema.NullOr(StorageSample)),
+  caps: Schema.optionalKey(Schema.Array(CapState)),
   commandsPerDay: Schema.Array(Schema.Struct({ day: CalendarDay, commands: NonNegativeInt })),
   byProject: Schema.Array(
     Schema.Struct({

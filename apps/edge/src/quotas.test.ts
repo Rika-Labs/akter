@@ -1,4 +1,10 @@
-import { type PlanId, type PricingConfig, PricingLive, type PricingTier } from "@akter/billing"
+import {
+  organizationCaps,
+  type PlanId,
+  type PricingConfig,
+  PricingLive,
+  type PricingTier,
+} from "@akter/billing"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {
@@ -1743,6 +1749,172 @@ describe("quotas service", () => {
 
           yield* live.service.releaseLease(kept)
           expect(yield* leaseCount(edge)).toBe(2)
+        }),
+      ),
+    60_000,
+  )
+})
+
+describe("cap state agrees with admission", () => {
+  const capsOf = Effect.fnUntraced(function* (edge: FixtureEdge) {
+    const priced = yield* Layer.build(PricingLive(pricing))
+    const caps = yield* organizationCaps(edge.organizationId).pipe(
+      Effect.provideService(SqlClient.SqlClient, edge.sql),
+      Effect.provideContext(priced),
+      Effect.orDie,
+    )
+
+    return Object.fromEntries(caps.map((state) => [state.cap, state]))
+  })
+
+  it(
+    "turns the Free command cap to refusing once a command no longer fits, before the units are all used",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({})
+          const key = yield* keyFor(edge, "acme")
+
+          for (let n = 0; n < 8; n++)
+            expect((yield* command(edge, key, { cid: `c${n}`, id: `o-${n}` })).status).toBe(200)
+
+          expect((yield* capsOf(edge))["commands"]).toEqual({
+            cap: "commands",
+            limit: 50,
+            used: 40,
+            atCap: false,
+            refusing: false,
+          })
+          expect((yield* command(edge, key, { cid: "ninth" })).status).toBe(200)
+          expect((yield* read(edge, key)).status).toBe(200)
+          expect((yield* capsOf(edge))["commands"]).toMatchObject({
+            used: 46,
+            atCap: false,
+            refusing: true,
+          })
+
+          const refused = yield* command(edge, key, { cid: "tenth" })
+
+          expect(refused.status).toBe(429)
+          expect(refused.reason["_tag"]).toBe("QuotaExceeded")
+
+          for (let n = 0; n < 4; n++) expect((yield* read(edge, key)).status).toBe(200)
+
+          expect((yield* capsOf(edge))["commands"]).toMatchObject({
+            used: 50,
+            atCap: true,
+            refusing: true,
+          })
+          expect((yield* read(edge, key)).status).toBe(429)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "refuses Free storage and connections exactly when their state says so",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({})
+          const key = yield* keyFor(edge, "acme")
+          const sampled = (bytes: number) =>
+            edge.sql`
+              INSERT INTO cloud_meter_storage_sample (deployment_id, tenant, hour, logical_bytes)
+              VALUES (${edge.deployment}, 'acme', date_trunc('hour', now()), ${bytes})
+              ON CONFLICT (deployment_id, tenant) DO UPDATE SET logical_bytes = excluded.logical_bytes
+            `.pipe(Effect.orDie)
+
+          expect((yield* capsOf(edge))["storage"]).toEqual({
+            cap: "storage",
+            limit: 500_000_000,
+            used: 0,
+            atCap: false,
+            refusing: false,
+          })
+
+          yield* sampled(499_999_999)
+          expect((yield* capsOf(edge))["storage"]).toMatchObject({
+            used: 499_999_999,
+            refusing: false,
+          })
+          expect((yield* command(edge, key, { cid: "under" })).status).toBe(200)
+
+          yield* sampled(500_000_000)
+          expect((yield* capsOf(edge))["storage"]).toMatchObject({
+            used: 500_000_000,
+            atCap: true,
+            refusing: true,
+          })
+
+          const refused = yield* command(edge, key, { cid: "at" })
+
+          expect(refused.status).toBe(429)
+          expect(refused.reason["_tag"]).toBe("StorageQuotaExceeded")
+          expect((yield* read(edge, key)).status).toBe(200)
+
+          const sockets = yield* Effect.forEach([0, 1], () => openSocket(edge, key))
+
+          for (const socket of sockets) expect((yield* socket.frame).t).toBe("open")
+
+          expect((yield* capsOf(edge))["connections"]).toEqual({
+            cap: "connections",
+            limit: 3,
+            used: 2,
+            atCap: false,
+            refusing: false,
+          })
+          expect((yield* (yield* openSocket(edge, key)).frame).t).toBe("open")
+          expect((yield* capsOf(edge))["connections"]).toMatchObject({
+            used: 3,
+            atCap: true,
+            refusing: true,
+          })
+          expect((yield* deniedUpgrade(edge, key)).status).toBe(429)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "prices the spend cap on the next command, and leaves a paid plan without command or storage caps",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const edge = yield* start({ plan: "pro", spendLimitCents: 1003 })
+          const key = yield* keyFor(edge, "acme")
+
+          for (let n = 0; n < 4; n++)
+            expect((yield* command(edge, key, { cid: `c${n}`, id: `o-${n}` })).status).toBe(200)
+
+          const before = yield* capsOf(edge)
+
+          expect(before["spend"]).toEqual({
+            cap: "spend",
+            limit: 1003,
+            used: 1002,
+            atCap: false,
+            refusing: false,
+          })
+          expect(before["commands"]).toEqual({
+            cap: "commands",
+            limit: null,
+            used: 20,
+            atCap: false,
+            refusing: false,
+          })
+          expect(before["storage"]).toMatchObject({ limit: null, refusing: false })
+          expect((yield* command(edge, key, { cid: "fifth" })).status).toBe(200)
+          expect((yield* capsOf(edge))["spend"]).toMatchObject({
+            used: 1003,
+            atCap: true,
+            refusing: true,
+          })
+
+          const refused = yield* command(edge, key, { cid: "sixth" })
+
+          expect(refused.status).toBe(402)
+          expect(refused.reason["_tag"]).toBe("SpendLimitExceeded")
         }),
       ),
     60_000,

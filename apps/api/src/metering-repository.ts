@@ -15,8 +15,10 @@ export interface MeterBinding {
 const SCHEMA_LOCK = 7_243_001
 
 /**
- * The metering tables in creation order. The first group repeats definitions
- * the edge and billing also create, so any process may start first.
+ * The metering tables in creation order. The first group, the latest storage
+ * samples and the edge's connection leases repeat definitions the edge and
+ * billing also create, so any process may start first and the API can read
+ * the caps the edge admits by.
  *
  * `cloud_meter_evidence`, `cloud_meter_hour`, `cloud_meter_seal` and
  * `cloud_meter_export` are the `UsageActor`'s owned tables: their first three
@@ -179,6 +181,19 @@ const migrations: ReadonlyArray<string> = [
     logical_bytes double precision NOT NULL CHECK (logical_bytes >= 0),
     PRIMARY KEY (deployment_id, tenant)
   )`,
+  `CREATE TABLE IF NOT EXISTS cloud_connection_lease (
+    lease_id text PRIMARY KEY,
+    organization_id text NOT NULL,
+    deployment_id text NOT NULL,
+    tenant text NOT NULL,
+    kind text NOT NULL CHECK (kind IN ('socket', 'sse')),
+    edge_id text NOT NULL,
+    heartbeat_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS cloud_connection_lease_live
+    ON cloud_connection_lease (organization_id, expires_at)`,
+  `CREATE INDEX IF NOT EXISTS cloud_connection_lease_edge ON cloud_connection_lease (edge_id)`,
   `CREATE OR REPLACE FUNCTION cloud_meter_storage_observe(
     observed_deployment text, observed_tenant text, observed_hour timestamptz,
     observed_bytes double precision

@@ -1,6 +1,8 @@
 import {
   defaultPricingConfig,
+  organizationCaps,
   Pricing,
+  storageLimitBytes,
   PricingLive,
   StripeBilling,
   StripeBillingDistilled,
@@ -30,7 +32,7 @@ import { Access } from "./access.ts"
 import { BillingActor, BillingActorLive, deliverWebhook, RequestId } from "./billing-actor.ts"
 import { BillingRepository } from "./billing-repository.ts"
 import { type ApiOptions, localBillingWebhookSecret } from "./config.ts"
-import { currentPeriod, usageReport } from "./usage.ts"
+import { currentPeriod, latestStorageSample, usageReport } from "./usage.ts"
 import { UsageActorLive } from "./metering-actor.ts"
 import { CollectorLive, startCollectors } from "./collector.ts"
 
@@ -143,6 +145,38 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
     const production = yield* BillingProduction
     const returnUrl = yield* BillingReturnUrl
     return handlers
+      .handle("listPlans", () =>
+        Effect.succeed({
+          plans: pricing.config.tiers
+            .toSorted((left, right) => left.basePriceCents - right.basePriceCents)
+            .map((tier) => ({
+              id: tier.id,
+              name: tier.name,
+              basePriceCents: tier.basePriceCents,
+              currency: "usd" as const,
+              allowances: {
+                commands: tier.includedCommands,
+                commandCap: tier.commandQuota,
+                storageGb: tier.includedStorageGb,
+                concurrentConnections: tier.concurrentConnections,
+              },
+              overage: {
+                commandCentsPerMillion: tier.commandOverageCentsPerMillion,
+                storageCentsPerGbMonth: tier.storageCentsPerGbMonth,
+              },
+              features: [
+                ...(tier.commandQuota === null ? [] : (["command-cap"] as const)),
+                ...(tier.commandOverageCentsPerMillion > 0 ? (["command-overage"] as const) : []),
+                ...(tier.storageCentsPerGbMonth > 0 ? (["storage-overage"] as const) : []),
+                ...(storageLimitBytes(tier) === null ? [] : (["storage-cap"] as const)),
+                ...(tier.basePriceCents > 0 ? (["checkout"] as const) : []),
+              ],
+              provisional: tier.provisional,
+            })),
+          readCommandWeight: pricing.config.readCommandWeight,
+          provisional: pricing.config.tiers.some((tier) => tier.provisional),
+        }),
+      )
       .handle("get", ({ params }) =>
         Effect.gen(function* () {
           yield* access.organization(params.organizationId)
@@ -159,6 +193,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
             customer == null ? null : yield* provider.paymentMethod(customer).pipe(Effect.orDie)
           const details =
             customer == null ? null : yield* provider.billingDetails(customer).pipe(Effect.orDie)
+          const caps = yield* organizationCaps(params.organizationId).pipe(Effect.orDie)
           return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.BillingSummary))({
             plan: {
               id: tier.id,
@@ -180,6 +215,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
               limitCents: stored?.spendLimitCents ?? null,
               currentSpendCents: estimate,
             },
+            caps,
           }).pipe(Effect.orDie)
         }),
       )
@@ -322,11 +358,16 @@ export const UsageLive = HttpApiBuilder.group(Cloud.CloudApi, "usage", (handlers
       Effect.gen(function* () {
         yield* access.organization(params.organizationId)
         const account = Option.getOrUndefined(yield* repository.account(params.organizationId))
-        return yield* usageReport(
+        const report = yield* usageReport(
           params.organizationId,
           account?.subscribedPlan ?? account?.plan ?? "free",
           query.period ?? (yield* currentPeriod),
         )
+        return {
+          ...report,
+          latestStorageSample: yield* latestStorageSample(params.organizationId),
+          caps: yield* organizationCaps(params.organizationId).pipe(Effect.orDie),
+        }
       }),
     )
   }),

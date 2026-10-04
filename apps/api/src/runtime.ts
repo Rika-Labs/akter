@@ -3,9 +3,13 @@ import {
   CloudApi,
   CommandFailed,
   Conflict,
+  ConnectionLimitExceeded,
   Forbidden,
   NotFound,
   NotImplemented,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
   Unavailable,
 } from "@akter/cloud-api"
 import {
@@ -61,12 +65,20 @@ const unavailable = (what: string) => Effect.die(new Error(`Runtime request fail
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
-/** The framework's refusals the control plane tells apart; any other reason is an outage or a defect. */
+/**
+ * The framework's refusals the control plane tells apart; any other reason is
+ * an outage or a defect. The edge's usage refusals decode straight into the
+ * API's errors, which share the framework's tags and payloads.
+ */
 const Reason = Schema.Union([
   Schema.TaggedStruct("NotCreated", {}),
   Schema.TaggedStruct("CommandConflict", {}),
   Schema.TaggedStruct("Unauthorized", { code: Schema.String }),
   Schema.TaggedStruct("InvalidInput", { code: Schema.String }),
+  QuotaExceeded,
+  SpendLimitExceeded,
+  ConnectionLimitExceeded,
+  StorageQuotaExceeded,
 ])
 
 const ActorErrorBody = Schema.TaggedStruct("ActorError", { reason: Reason })
@@ -243,6 +255,10 @@ export const makeRuntime = Effect.gen(function* () {
           code === "unknown_route"
             ? NotFound.make({ resource: "command", id: `${input.address}/${input.command}` })
             : CommandFailed.make({ commandId, errorTag: "InvalidInput", error: body, replayed }),
+        QuotaExceeded: (refused) => refused,
+        SpendLimitExceeded: (refused) => refused,
+        ConnectionLimitExceeded: (refused) => refused,
+        StorageQuotaExceeded: (refused) => refused,
       }),
     )
   })

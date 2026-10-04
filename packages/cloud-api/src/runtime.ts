@@ -1,4 +1,5 @@
-import { Schema } from "effect"
+import * as Framework from "@rikalabs/akter/client"
+import { Schema, Struct } from "effect"
 
 import { DeploymentSummary } from "./deployments.ts"
 import {
@@ -221,6 +222,49 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
   },
   { httpApiStatus: 422 },
 ) {}
+
+/**
+ * The organization's Free period quota cannot take the command's units;
+ * answered 429. It carries the framework's `QuotaExceeded` payload, including
+ * when the period resets as `retryAfterMs`.
+ */
+export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()(
+  "QuotaExceeded",
+  Struct.omit(Framework.QuotaExceeded.fields, ["_tag"]),
+  { httpApiStatus: 429 },
+) {}
+
+/** The organization's estimated period cost would pass its spend limit; answered 402. */
+export class SpendLimitExceeded extends Schema.TaggedError<SpendLimitExceeded>()(
+  "SpendLimitExceeded",
+  Struct.omit(Framework.SpendLimitExceeded.fields, ["_tag"]),
+  { httpApiStatus: 402 },
+) {}
+
+/** The organization already holds every concurrent connection its plan allows; answered 429. */
+export class ConnectionLimitExceeded extends Schema.TaggedError<ConnectionLimitExceeded>()(
+  "ConnectionLimitExceeded",
+  Struct.omit(Framework.ConnectionLimitExceeded.fields, ["_tag"]),
+  { httpApiStatus: 429 },
+) {}
+
+/**
+ * A Free tenant's latest storage sample is at or over its cap, so it takes no
+ * new command until a lower sample arrives; answered 429.
+ */
+export class StorageQuotaExceeded extends Schema.TaggedError<StorageQuotaExceeded>()(
+  "StorageQuotaExceeded",
+  Struct.omit(Framework.StorageQuotaExceeded.fields, ["_tag"]),
+  { httpApiStatus: 429 },
+) {}
+
+/** The edge's usage refusals of a new command, each with the framework's tag and payload. */
+export const QuotaErrors = [
+  QuotaExceeded,
+  SpendLimitExceeded,
+  ConnectionLimitExceeded,
+  StorageQuotaExceeded,
+] as const
 
 export const JobTypeStats = Schema.Struct({
   jobName: Schema.String,

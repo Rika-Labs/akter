@@ -1,3 +1,4 @@
+import * as Framework from "@rikalabs/akter/client"
 import { Effect, Exit, Predicate, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
@@ -10,7 +11,11 @@ import {
   CommandFailed,
   CommandLogEntry,
   CommandSent,
+  ConnectionLimitExceeded,
   OwnedTableRows,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
   SendCommand,
   TurnLatency,
   Workflow,
@@ -167,6 +172,75 @@ describe("runtime models", () => {
       CommandFailed.make({ commandId: "c", errorTag: "OutOfStock", error: null, replayed: false })
         ._tag,
     ).toBe("CommandFailed")
+  })
+
+  it("declares the edge's usage refusals on sendCommand with the framework's tags, payloads and statuses", () => {
+    const responses =
+      OpenApi.fromApi(CloudApi).paths[
+        "/api/projects/{projectId}/environments/{environment}/runtime/commands"
+      ]?.post?.responses ?? {}
+    const declared = <T extends { readonly _tag: string }, E>(
+      schema: Schema.Codec<T, E>,
+      framework: Schema.Codec<T, E>,
+      value: T,
+      status: number,
+    ) => {
+      const wire = encode(framework, value) as Schema.Json
+      expect(schema.ast.annotations?.["httpApiStatus"]).toBe(status)
+      expect(encode(schema, decode(schema, wire))).toEqual(wire)
+      expect(JSON.stringify(responses[status])).toContain(value._tag)
+    }
+
+    declared(
+      QuotaExceeded,
+      Framework.QuotaExceeded,
+      Framework.QuotaExceeded.make({
+        organizationId: "org_1",
+        period: "2026-10",
+        limitUnits: 5_000_000,
+        usedUnits: 4_999_999,
+        requestedUnits: 5,
+        retryAfterMs: 1_000,
+      }),
+      429,
+    )
+    declared(
+      SpendLimitExceeded,
+      Framework.SpendLimitExceeded,
+      Framework.SpendLimitExceeded.make({
+        organizationId: "org_1",
+        period: "2026-10",
+        limitCents: 5_000,
+        projectedCents: 5_001,
+      }),
+      402,
+    )
+    declared(
+      ConnectionLimitExceeded,
+      Framework.ConnectionLimitExceeded,
+      Framework.ConnectionLimitExceeded.make({
+        organizationId: "org_1",
+        kind: "socket",
+        limit: 100,
+        open: 100,
+      }),
+      429,
+    )
+    declared(
+      StorageQuotaExceeded,
+      Framework.StorageQuotaExceeded,
+      Framework.StorageQuotaExceeded.make({
+        organizationId: "org_1",
+        deployment: "dep_1",
+        tenant: "acme",
+        limitBytes: 500_000_000,
+        usedBytes: 500_000_000,
+      }),
+      429,
+    )
+    expect(rejects(StorageQuotaExceeded, { _tag: "StorageQuotaExceeded", tenant: "acme" })).toBe(
+      true,
+    )
   })
 
   it("carries an actor type's commands per second and per-command volume over a window", () => {

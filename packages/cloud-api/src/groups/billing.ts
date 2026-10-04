@@ -6,18 +6,23 @@ import {
   BillingSummary,
   HostedSession,
   Invoice,
+  PlanCatalog,
   PlanChange,
   SetSpendLimit,
   SpendLimit,
   StartCheckout,
   Usage,
 } from "../billing.ts"
-import { ReadErrors, WriteErrors } from "../errors.ts"
+import { ReadErrors, SelfErrors, WriteErrors } from "../errors.ts"
 import { BillingPeriod, OrganizationId, Page, pageQuery } from "../primitives.ts"
 
 const organizationParams = { organizationId: OrganizationId }
 
 export class BillingGroup extends HttpApiGroup.make("billing").add(
+  HttpApiEndpoint.get("listPlans", "/billing/plans", {
+    success: PlanCatalog,
+    error: SelfErrors,
+  }),
   HttpApiEndpoint.get("get", "/organizations/:organizationId/billing", {
     params: organizationParams,
     success: BillingSummary,

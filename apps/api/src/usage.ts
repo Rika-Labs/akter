@@ -115,4 +115,26 @@ export const usageReport = Effect.fn("Billing.usage")(function* (
   }).pipe(Effect.orDie)
 })
 
+/**
+ * The organization's latest storage: each bound tenant's latest sample
+ * summed, at the newest of their hours, or null before any was sampled. A
+ * tenant is bound by its exact mapping, else its deployment's `'*'` mapping,
+ * as metering binds it.
+ */
+export const latestStorageSample = Effect.fn("Billing.latestStorageSample")(function* (
+  organizationId: string,
+) {
+  const sql = yield* SqlClient.SqlClient
+  const [row] = yield* sql<{ readonly bytes: number | null; readonly sampledAt: Date | null }>`
+    SELECT sum(s.logical_bytes)::float8 AS bytes, max(s.hour) AS "sampledAt"
+    FROM cloud_meter_storage_sample s
+    WHERE (SELECT m.organization_id FROM cloud_meter_tenant m
+      WHERE m.deployment_id = s.deployment_id AND m.tenant IN (s.tenant, '*')
+      ORDER BY (m.tenant = '*') LIMIT 1) = ${organizationId}
+  `.pipe(Effect.orDie)
+  return row?.bytes == null || row.sampledAt === null
+    ? null
+    : { bytes: row.bytes, sampledAt: DateTime.fromDateUnsafe(row.sampledAt) }
+})
+
 export const currentPeriod = Effect.map(DateTime.now, (now) => DateTime.formatIso(now).slice(0, 7))
