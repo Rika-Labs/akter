@@ -7,10 +7,12 @@ const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(schema)))(JSON.stringify(input))
 
 const entry = (fields: Record<string, Schema.Json>) => ({
+  commandId: "v1.1791100936998.1791187336998.6f1c2a9e-4b7d-4c1e-9a3f-2d8e5b7c1a04",
   at: "2026-10-03T14:02:16.998Z",
   durationMs: 4.1,
   address: "Order/ord_8f2c",
   command: "Charged",
+  caller: { kind: "user", subject: "user:usr_ada", source: null },
   payloadPreview: '{ chargeId: "ch_3Q9xA2" }',
   outcome: "ok",
   errorTag: null,

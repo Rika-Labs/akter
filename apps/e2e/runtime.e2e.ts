@@ -140,7 +140,7 @@ test("decodes command SSE into the tail and refreshes the snapshot on reconnect"
       streams += 1
       return route.fulfill({
         contentType: "text/event-stream",
-        body: 'data: {"at":"2026-10-03T12:34:56.789Z","durationMs":7.5,"address":"Order/team/a","command":"Refund","payloadPreview":"","outcome":"error","errorTag":"Denied"}\n\n',
+        body: 'data: {"commandId":"v1.1791110096789.1791196496789.0b6e2f4a-3c8d-4e1f-a7b2-9d5c6e8f1a03","at":"2026-10-03T12:34:56.789Z","durationMs":7.5,"address":"Order/team/a","command":"Refund","caller":{"kind":"user","subject":"user:usr_ada","source":null},"payloadPreview":"","outcome":"error","errorTag":"Denied"}\n\n',
       })
     }
     return controlPlane(route)

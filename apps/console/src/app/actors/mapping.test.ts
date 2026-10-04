@@ -28,11 +28,15 @@ const inspector = {
       commandId: "cmd_7Hq2",
       command: "Place",
       result: "4200",
+      caller: { kind: "user", subject: "user:usr_ada", source: null },
       at: "2026-10-03T14:02:11.000Z",
+      expiresAt: "2026-10-04T14:02:11.000Z",
       replayed: true,
     },
   ],
-  events: [{ name: "OrderPlaced", cursor: "1184", subscribers: 3 }],
+  events: [
+    { name: "OrderPlaced", cursor: "1184", emittedAt: "2026-10-03T14:02:12.000Z", subscribers: 3 },
+  ],
   jobs: [{ name: "Charge", id: "job_44f", attempts: 2, status: "retrying" }],
   connections: { sockets: 3, feedCursor: null },
   properties: {
@@ -45,9 +49,27 @@ const inspector = {
     mailboxDepth: 5,
   },
   timeline: [
-    { at: "2026-10-03T14:02:11.000Z", kind: "command", label: "Place", detail: "3 rows" },
-    { at: "2026-10-03T14:02:12.000Z", kind: "event", label: "OrderPlaced", detail: null },
-    { at: "2026-10-03T14:02:13.000Z", kind: "job", label: "Charge", detail: "attempt 1" },
+    {
+      at: "2026-10-03T14:02:11.000Z",
+      kind: "command",
+      label: "Place",
+      detail: "3 rows",
+      caller: { kind: "user", subject: "user:usr_ada", source: null },
+    },
+    {
+      at: "2026-10-03T14:02:12.000Z",
+      kind: "event",
+      label: "OrderPlaced",
+      detail: null,
+      caller: { kind: "user", subject: "user:usr_ada", source: null },
+    },
+    {
+      at: "2026-10-03T14:02:13.000Z",
+      kind: "job",
+      label: "Charge",
+      detail: "attempt 1",
+      caller: null,
+    },
   ],
 }
 
@@ -126,7 +148,7 @@ describe("actor inspector mapping", () => {
             turn: null,
             tables: null,
             receipts: [{ ...inspector.receipts[0], result: null, at: null, replayed: false }],
-            events: [{ name: "OrderPlaced", cursor: "1184", subscribers: null }],
+            events: [{ ...inspector.events[0], subscribers: null }],
             connections: { sockets: null, feedCursor: "1184" },
             properties: { ...inspector.properties, status: null, mailboxDepth: null, region: null },
             timeline: null,
