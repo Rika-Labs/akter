@@ -279,6 +279,16 @@ export const actorTypePage =
   }
 
 /**
+ * The fixture inspector's data under any address. It fills the parts of a real actor that the
+ * runtime cannot report yet, so it is only used once the actor is known to exist.
+ */
+export const sampleActor = (input: Readonly<{ actorType: string; key: string }>): ActorPage => ({
+  ...order,
+  actorType: input.actorType,
+  key: input.key,
+})
+
+/**
  * The fixture inspector. It inspects `Order/ord_8f2c` in detail and answers other known instances
  * with the same shape of data under their own address.
  */
@@ -289,9 +299,7 @@ export const actorPage = (
   if (summary === undefined) return undefined
   const instance = instancesOf(summary).find((candidate) => candidate.key === input.key)
   return {
-    ...order,
-    actorType: input.actorType,
-    key: input.key,
+    ...sampleActor(input),
     awake: instance?.awake ?? order.awake,
     generation: instance?.generation ?? order.generation,
   }

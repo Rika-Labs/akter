@@ -544,6 +544,46 @@ test("asks before redeploying and opens the new deployment the server started", 
   expect(posts).toEqual(["/api/projects/runtime_project/deployments/deploy_live/redeploy"])
 })
 
+test("keeps live jobs and command sending on an inspector the runtime cannot inspect yet", async ({
+  page,
+}) => {
+  let sent = 0
+  await page.route("**/auth/get-session", (route) =>
+    route.fulfill({ contentType: "application/json", body: session }),
+  )
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/runtime/actors/Counter/hits/jobs"))
+      return route.fulfill({
+        json: [{ name: "Notify", id: "job_live_7", attempts: 2, status: "retrying" }],
+      })
+    if (path.endsWith("/runtime/commands") && route.request().method() === "POST") {
+      sent += 1
+      expect(route.request().postDataJSON()).toMatchObject({
+        address: "Counter/hits",
+        command: "Increment",
+        payload: 3,
+      })
+      return route.fulfill({
+        json: { commandId: "cmd_live", result: { count: 3 }, replayed: false },
+      })
+    }
+    return controlPlane(route)
+  })
+  await page.goto(`${origin}/actors/Counter/hits?tab=jobs`)
+  await expect(page.getByRole("heading", { name: "Counter/hits" })).toBeVisible()
+  await expect(page.getByRole("note")).toContainText("Sample data")
+  await expect(page.getByRole("table", { name: "Jobs" })).toContainText("job_live_7")
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Increment")
+  await dialog.getByLabel("Payload", { exact: true }).fill("3")
+  await dialog.getByRole("button", { name: "Send command" }).click()
+  await expect(dialog.getByText("Committed — returned the actor’s result.")).toBeVisible()
+  await expect(dialog.getByRole("figure")).toContainText('"count": 3')
+  expect(sent).toBe(1)
+})
+
 test("reloads the overview latency histogram window and preserves its unbounded tail", async ({
   page,
 }) => {

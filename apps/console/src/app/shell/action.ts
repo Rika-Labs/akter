@@ -32,6 +32,20 @@ export const Action = defineTaggedUnion({
 })
 export type Action = typeof Action.Type
 
+/**
+ * Whether a send-command dialog may send. Sample data sends nothing, except on an inspector that
+ * holds a real command scope: its address comes from the URL and its scope from the project, and
+ * only the parts the runtime cannot report yet are sample.
+ */
+export const canSendCommand = (
+  input: Readonly<{ page: Option.Option<PageData>; sample: boolean }>,
+) =>
+  !input.sample ||
+  Option.exists(
+    input.page,
+    (page) => Predicate.isTagged(page, "ActorPage") && page.commandScope !== undefined,
+  )
+
 /** Sample provenance blocks admission even when an event bypasses a disabled control. */
 export const canMutate = (
   input: Readonly<{

@@ -51,7 +51,9 @@ The inspector's Send command dialog accepts JSON and an optional command ID, sho
 result or typed `CommandFailed` payload, and distinguishes a replayed receipt. It starts with a
 fresh ID and generates a retained client ID if the field is cleared, so retries after a lost
 response reuse the same receipt key. The dialog captures the actor's project and environment
-and closes on every URL change; navigation can never retarget an old actor address.
+and closes on every URL change; navigation can never retarget an old actor address. When the
+runtime cannot inspect actors yet, the inspector still reads the actor's live job list; an actor
+that has one keeps the Jobs tab and Send command live while the rest of the page is sample data.
 
 Deployment detail offers earlier successful deployments in the same environment as rollback
 targets and displays `rolledBackFrom` on the newly created deployment. Redeploy starts a new
