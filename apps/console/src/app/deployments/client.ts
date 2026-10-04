@@ -40,14 +40,14 @@ export const loadDeployments: Effect.Effect<Loaded<DeploymentsPage>, ConsoleErro
   () => import("./fixtures.ts").then((fixtures) => fixtures.deploymentsPage),
 )
 
-const commitReference = /^[0-9a-f]{7,40}$/
+const commitReference = /^[0-9a-f]{7,40}$/i
 
 /**
  * Loads one deploy by its deployment id or by its abbreviated or full commit, or nothing for a
  * reference that names no deployment. An exact id always wins: it is read directly, so an unknown
  * id is not found at once and never falls back to another deployment. Only a reference shaped like
- * a commit is then searched for in the history, newest first, so a commit names its newest
- * deployment; rollbacks and redeploys reuse commits, which is why the console's own links use ids.
+ * a commit, in either case, is then searched for in the history, newest first, so a commit names its
+ * newest deployment; a deployment without a recorded commit never matches; rollbacks and redeploys reuse commits, which is why the console's own links use ids.
  * The history of the deployment's environment is also read for rollback targets: a live deploy
  * keeps paging until an earlier deployment it could roll back to turns up or the history ends,
  * stopping quietly at `maxDetailPages`. A cursor the server repeats, or a history longer than
@@ -68,6 +68,7 @@ export const loadDeployment = (
               .get({ params: { ...params, deploymentId: named.value } })
               .pipe(orUndefined)
         if (byId === undefined && !commitReference.test(reference)) return undefined
+        const commit = reference.toLowerCase()
         const seen = new Set<string>()
         const history: Array<DeploymentSummary> = []
         let hit: DeploymentSummary | undefined = byId
@@ -79,7 +80,9 @@ export const loadDeployment = (
           })
           history.push(...page.items)
           hit ??= page.items.find(
-            (item) => item.commitSha.startsWith(reference) || reference.startsWith(item.commitSha),
+            (item) =>
+              item.commitSha !== "" &&
+              (item.commitSha.startsWith(commit) || commit.startsWith(item.commitSha)),
           )
           if (
             hit !== undefined &&

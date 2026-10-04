@@ -296,6 +296,7 @@ describe("deployments client against the live API", () => {
         expect((yield* loadDeployment("dep_unknown")).data).toBeUndefined()
         expect(deploymentRequests()).toHaveLength(0)
         expect((yield* loadDeployment("ddddddd0")).data?.deploy).toMatchObject({ id: "dep_newer" })
+        expect((yield* loadDeployment("DDDDDDD0")).data?.deploy).toMatchObject({ id: "dep_newer" })
       }),
     ))
 
