@@ -91,8 +91,8 @@ and Overview show one quiet notice linking to Billing; storage has no such notic
 reports a monthly average rather than the latest sample the cap is checked against. Plan refusals
 (`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`, `StorageQuotaExceeded`) are
 recognised by the framework's tags and payloads and explained in place with a link to Billing. On
-`sendCommand` they arrive as a `CommandRefused` whose `reason` is the edge's `ActorError` envelope;
-the cloud API types that reason only as JSON, so the console reads the refusal inside it by shape.
+`sendCommand` they arrive as the cloud API's own typed errors with the same tags and payloads; a
+`CommandRefused` carries the framework's refusal itself as a typed `reason`, never the envelope.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when

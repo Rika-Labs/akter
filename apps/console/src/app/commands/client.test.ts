@@ -9,7 +9,7 @@ import {
   RunnerDefect,
   Unavailable,
 } from "@akter/cloud-api"
-import { SpendLimitExceeded } from "@rikalabs/akter/client"
+import { InvalidInput, RunnerAtCapacity, SpendLimitExceeded } from "@rikalabs/akter/client"
 import { DateTime, Effect, Schema, Stream } from "effect"
 import { ProjectId } from "@akter/cloud-api"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -129,11 +129,6 @@ const encoded = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
   Schema.encodeEffect(Schema.toCodecJson(schema))(value)
 
 const live = () => vi.stubEnv("VITE_CONSOLE_FIXTURES", "0")
-
-/** The edge's envelope around a runner refusal, as `CommandRefused.reason` forwards it. */
-const ActorError = Schema.TaggedStruct("ActorError", { reason: Schema.Json })
-const InvalidInput = Schema.TaggedStruct("InvalidInput", { code: Schema.String })
-const NotAdmitted = Schema.TaggedStruct("NotAdmitted", {})
 
 const send = {
   scope: { projectId: ProjectId.make("prj_1"), environment: "production" as const },
@@ -312,28 +307,28 @@ describe("sendCommand over the derived API", () => {
             CommandRefused.make({
               commandId: "runner-id",
               reasonTag: "InvalidInput",
-              reason: ActorError.make({ reason: InvalidInput.make({ code: "bad_payload" }) }),
+              reason: InvalidInput.make({ code: "decode" }),
             }),
             422,
           ),
         ).toMatchObject({
           kind: "CommandRefused",
           message:
-            "Order/ord_8f2c refused Charge before running it (InvalidInput: bad_payload), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
+            "Order/ord_8f2c refused Charge before running it (InvalidInput: decode), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
         })
         expect(
           yield* failure(
             CommandRefused,
             CommandRefused.make({
               commandId: "runner-id",
-              reasonTag: "NotAdmitted",
-              reason: ActorError.make({ reason: NotAdmitted.make({}) }),
+              reasonTag: "RunnerAtCapacity",
+              reason: RunnerAtCapacity.make({}),
             }),
             422,
           ),
         ).toMatchObject({
           message:
-            "Order/ord_8f2c refused Charge before running it (NotAdmitted), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
+            "Order/ord_8f2c refused Charge before running it (RunnerAtCapacity), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
         })
         expect(
           yield* failure(NotFound, NotFound.make({ resource: "actor", id: "Order/ord_8f2c" }), 404),
@@ -367,9 +362,7 @@ describe("sendCommand over the derived API", () => {
           CommandRefused.make({
             commandId: "runner-id",
             reasonTag: "SpendLimitExceeded",
-            reason: ActorError.make({
-              reason: yield* encoded(SpendLimitExceeded, refusal),
-            }),
+            reason: refusal,
           }),
         )
         route(() => json(body, 422))
