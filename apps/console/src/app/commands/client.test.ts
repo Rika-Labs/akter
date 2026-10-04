@@ -6,10 +6,11 @@ import {
   Forbidden,
   NotFound,
   NotImplemented,
+  QuotaExceeded,
   RunnerDefect,
+  SpendLimitExceeded,
   Unavailable,
 } from "@akter/cloud-api"
-import { InvalidInput, RunnerAtCapacity, SpendLimitExceeded } from "@rikalabs/akter/client"
 import { DateTime, Effect, Schema, Stream } from "effect"
 import { ProjectId } from "@akter/cloud-api"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -122,7 +123,7 @@ const commandRequests = () =>
 
 const sentBody = (call: (typeof fetch.mock.calls)[number] | undefined) =>
   Effect.promise(() => new Response(call?.[1]?.body).text()).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))),
+    Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Schema.Json))),
   )
 
 const encoded = <T, E>(schema: Schema.Codec<T, E>, value: T) =>
@@ -304,11 +305,7 @@ describe("sendCommand over the derived API", () => {
         expect(
           yield* failure(
             CommandRefused,
-            CommandRefused.make({
-              commandId: "runner-id",
-              reasonTag: "InvalidInput",
-              reason: InvalidInput.make({ code: "decode" }),
-            }),
+            yield* refused('{"_tag":"InvalidInput","code":"decode"}'),
             422,
           ),
         ).toMatchObject({
@@ -317,18 +314,29 @@ describe("sendCommand over the derived API", () => {
             "Order/ord_8f2c refused Charge before running it (InvalidInput: decode), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
         })
         expect(
+          yield* failure(CommandRefused, yield* refused('{"_tag":"RunnerAtCapacity"}'), 422),
+        ).toMatchObject({
+          kind: "CommandRefused",
+          message:
+            "Order/ord_8f2c couldn’t take Charge right now (RunnerAtCapacity), so nothing ran. Send again to retry with the same command ID; it runs at most once.",
+        })
+        expect(
           yield* failure(
             CommandRefused,
-            CommandRefused.make({
-              commandId: "runner-id",
-              reasonTag: "RunnerAtCapacity",
-              reason: RunnerAtCapacity.make({}),
-            }),
+            yield* refused('{"_tag":"InvalidCommandId","commandId":"key-1","code":"window"}'),
             422,
           ),
         ).toMatchObject({
+          kind: "InvalidCommandId",
           message:
-            "Order/ord_8f2c refused Charge before running it (RunnerAtCapacity), so nothing ran. Change the command or payload and send it again. A command ID you typed stays bound to the input it was first sent with, so clear it too.",
+            "Akter can’t use this command ID (window), so nothing ran. Clear the Command ID to send it as a new command.",
+        })
+        expect(
+          yield* failure(CommandRefused, yield* refused('{"_tag":"NotCreated"}'), 422),
+        ).toMatchObject({
+          kind: "NotFound",
+          message:
+            "Order/ord_8f2c doesn’t exist yet, and Charge doesn’t create it. Send the command that creates this actor first.",
         })
         expect(
           yield* failure(NotFound, NotFound.make({ resource: "actor", id: "Order/ord_8f2c" }), 404),
@@ -362,7 +370,9 @@ describe("sendCommand over the derived API", () => {
           CommandRefused.make({
             commandId: "runner-id",
             reasonTag: "SpendLimitExceeded",
-            reason: refusal,
+            reason: yield* refused(
+              '{"_tag":"SpendLimitExceeded","organizationId":"org_1","period":"2026-10","limitCents":12500,"projectedCents":12501}',
+            ).pipe(Effect.map((decoded) => decoded.reason)),
           }),
         )
         route(() => json(body, 422))
@@ -371,7 +381,46 @@ describe("sendCommand over the derived API", () => {
         )
       }),
     ))
+
+  it("reads the edge's typed quota error on its own status as the plan refusal", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        live()
+        const refusal = QuotaExceeded.make({
+          organizationId: "org_1",
+          period: "2026-10",
+          limitUnits: 5_000_000,
+          usedUnits: 5_000_000,
+          requestedUnits: 5,
+          retryAfterMs: 3_600_000,
+        })
+        const body = yield* encoded(QuotaExceeded, refusal)
+        route(() => json(body, 429))
+        expect(yield* sendCommand(send).pipe(Effect.flip)).toEqual(
+          expect.objectContaining({ kind: "QuotaExceeded", message: quotaMessage(refusal) }),
+        )
+        route(
+          () =>
+            new Response(
+              '{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5000000,"usedUnits":"all","requestedUnits":5,"retryAfterMs":3600000}',
+              { status: 429, headers: { "content-type": "application/json" } },
+            ),
+        )
+        expect(yield* sendCommand(send).pipe(Effect.flip)).toMatchObject({ kind: "Unavailable" })
+      }),
+    ))
 })
+
+/**
+ * A `CommandRefused` whose reason is decoded from the runner's wire JSON, so it is the framework's
+ * typed refusal without the console importing the framework.
+ */
+const refused = (reason: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(CommandRefused.fields.reason))(reason).pipe(
+    Effect.map((decoded) =>
+      CommandRefused.make({ commandId: "runner-id", reasonTag: decoded._tag, reason: decoded }),
+    ),
+  )
 
 describe("send retries", () => {
   it("offers a retry with the same command ID except after a final failure", () => {
@@ -381,11 +430,9 @@ describe("send retries", () => {
       true,
       true,
     ])
-    expect(["Conflict", "CommandExpired", "RunnerDefect"].map(retryable)).toEqual([
-      false,
-      false,
-      false,
-    ])
+    expect(
+      ["Conflict", "CommandExpired", "RunnerDefect", "InvalidCommandId"].map(retryable),
+    ).toEqual([false, false, false, false])
   })
 })
 

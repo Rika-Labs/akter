@@ -1,12 +1,15 @@
-import { CommandRefused, Forbidden, Unavailable } from "@akter/cloud-api"
 import {
+  CommandRefused,
   ConnectionLimitExceeded,
-  MailboxFull,
+  Forbidden,
+  NotFound,
+  NotFoundResource,
   QuotaExceeded,
   SpendLimitExceeded,
   StorageQuotaExceeded,
-} from "@rikalabs/akter/client"
-import { Option } from "effect"
+  Unavailable,
+} from "@akter/cloud-api"
+import { Effect, Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { consoleError } from "../api/client.ts"
 import { isQuotaKind, quotaMessage, quotaRefusal } from "./errors.ts"
@@ -43,6 +46,10 @@ const refusals = {
   }),
 }
 
+/** A `CommandRefused` as the API client decodes it from the wire, with its reason typed. */
+const refused = (body: string) =>
+  Effect.runSync(Schema.decodeEffect(Schema.fromJsonString(CommandRefused))(body))
+
 describe("quota refusals", () => {
   it("names each cap with its own figures and what still works", () => {
     expect(consoleError(refusals.command)).toMatchObject({
@@ -67,26 +74,41 @@ describe("quota refusals", () => {
     })
   })
 
-  it("reads an API error with the framework's tag and payload as the same refusal", () => {
-    const decoded = quotaRefusal(JSON.parse(JSON.stringify(refusals.spend)))
-    expect(Option.map(decoded, quotaMessage)).toEqual(Option.some(quotaMessage(refusals.spend)))
-  })
-
-  it("reads a runner's refusal forwarded as CommandRefused as the plan refusal it carries", () => {
-    const forwarded = (reason: CommandRefused["reason"]) =>
-      CommandRefused.make({ commandId: "runner-id", reasonTag: reason._tag, reason })
-    expect(consoleError(forwarded(refusals.command))).toMatchObject({
-      kind: "QuotaExceeded",
-      message: quotaMessage(refusals.command),
-    })
-    expect(quotaRefusal(forwarded(MailboxFull.make({})))).toEqual(Option.none())
-  })
-
-  it("never mistakes another error, or a quota tag without its payload, for a refusal", () => {
-    expect(quotaRefusal(Forbidden.make({ message: "Owners only." }))).toEqual(Option.none())
-    expect(quotaRefusal(JSON.parse('{"_tag":"SpendLimitExceeded","limitCents":"a lot"}'))).toEqual(
-      Option.none(),
+  it("reads a CommandRefused whose typed reason is a plan refusal as that refusal", () => {
+    const forwarded = refused(
+      '{"_tag":"CommandRefused","commandId":"runner-id","reasonTag":"StorageQuotaExceeded","reason":{"_tag":"StorageQuotaExceeded","organizationId":"org_1","deployment":"dep_1","tenant":"tenant_1","limitBytes":500000000,"usedBytes":512340000}}',
     )
+    expect(consoleError(forwarded)).toMatchObject({
+      kind: "StorageQuotaExceeded",
+      message: quotaMessage(refusals.storage),
+    })
+    expect(
+      quotaRefusal(
+        refused(
+          '{"_tag":"CommandRefused","commandId":"runner-id","reasonTag":"MailboxFull","reason":{"_tag":"MailboxFull"}}',
+        ),
+      ),
+    ).toEqual(Option.none())
+  })
+
+  it("reads only errors the client decoded, never a value shaped like one", () => {
+    const undecoded = (body: string) =>
+      Effect.runSync(Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(body))
+    expect(
+      quotaRefusal(
+        undecoded(
+          '{"_tag":"SpendLimitExceeded","organizationId":"org_1","period":"2026-10","limitCents":12500,"projectedCents":12501}',
+        ),
+      ),
+    ).toEqual(Option.none())
+    expect(
+      quotaRefusal(
+        undecoded(
+          '{"_tag":"CommandRefused","commandId":"c","reasonTag":"QuotaExceeded","reason":{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5,"usedUnits":5,"requestedUnits":5,"retryAfterMs":1}}',
+        ),
+      ),
+    ).toEqual(Option.none())
+    expect(quotaRefusal(Forbidden.make({ message: "Owners only." }))).toEqual(Option.none())
     expect(consoleError(Unavailable.make({ message: "Down", retryAfterSeconds: 1 })).message).toBe(
       generic,
     )
@@ -101,5 +123,23 @@ describe("quota refusals", () => {
       true,
     ])
     expect(["Forbidden", "Conflict", "Unavailable", "CommandFailed"].some(isQuotaKind)).toBe(false)
+  })
+})
+
+describe("missing resources", () => {
+  it("words every resource the contract can report missing, each differently", () => {
+    const messages = NotFoundResource.literals.map(
+      (resource) => consoleError(NotFound.make({ resource, id: "x" })).message,
+    )
+    expect(new Set(messages).size).toBe(NotFoundResource.literals.length)
+    expect(consoleError(NotFound.make({ resource: "live deployment", id: "prj_1/prod" }))).toEqual(
+      expect.objectContaining({
+        kind: "NotFound",
+        message: "This environment has no live deployment yet.",
+      }),
+    )
+    expect(consoleError(NotFound.make({ resource: "project", id: "prj_1" })).message).toBe(
+      "This project doesn’t exist or you no longer have access to it.",
+    )
   })
 })
