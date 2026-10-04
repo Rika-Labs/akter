@@ -313,6 +313,16 @@ export class MeteringRepository extends Context.Service<
       deployment: string,
       tenant: string,
     ) => Effect.Effect<Option.Option<MeterBinding>>
+    /**
+     * Meters every tenant of a new deployment to the organization and project
+     * that released it, through the deployment's `'*'` mapping. An existing
+     * mapping is kept, so usage already admitted never moves.
+     */
+    readonly bindDeployment: (input: {
+      readonly deployment: string
+      readonly organizationId: string
+      readonly projectId: string
+    }) => Effect.Effect<void>
     /** The provider customer the organization's billing account is durably bound to. */
     readonly customerOf: (organizationId: string) => Effect.Effect<Option.Option<string>>
     /**
@@ -366,6 +376,12 @@ export const MeteringRepositoryLive = Layer.effect(
           ),
           Effect.orDie,
         ),
+      bindDeployment: ({ deployment, organizationId, projectId }) =>
+        sql`
+          INSERT INTO cloud_meter_tenant (deployment_id, tenant, organization_id, project_id)
+          VALUES (${deployment}, '*', ${organizationId}, ${projectId})
+          ON CONFLICT (deployment_id, tenant) DO NOTHING
+        `.pipe(Effect.asVoid, Effect.orDie),
       customerOf: (organizationId) =>
         sql<{ readonly customer_id: string | null }>`
           SELECT customer_id FROM cloud_billing_account WHERE organization_id = ${organizationId}
