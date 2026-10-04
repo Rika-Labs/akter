@@ -31,10 +31,6 @@ const decodeStoredVersion = Schema.decodeEffect(
 
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Json))
 
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
-
-const decodeJsonObject = Schema.decodeEffect(Schema.fromJsonString(Schema.JsonObject))
-
 /** The runtime's encoding of one value of `schema`: a JSON object holding it under `value`. */
 export const valueCodec = (
   schema: ValueSchema,
@@ -94,6 +90,7 @@ export const stateCodec = ({
   const version = migrations.length
   const schema = Schema.Struct(fields)
   const decodeJsonState = Schema.decodeEffect(Schema.toCodecJson(schema))
+  const encodeJsonState = Schema.encodeEffect(Schema.toCodecJson(schema))
   const json = Schema.fromJsonString(Schema.toCodecJson(schema))
   const encode = Schema.encodeEffect(json)
   const decode = Schema.decodeEffect(json)
@@ -121,22 +118,31 @@ export const stateCodec = ({
     }
   })
 
-  const writes = Effect.fnUntraced(function* (current: StateValue, dirty: ReadonlySet<string>) {
-    const text = yield* encode(current).pipe(Effect.orDie)
+  /**
+   * The rows a turn writes: each dirty key's JSON as the whole state's JSON
+   * text holds it, after the whole text is checked against the size limit.
+   * The state is encoded once and each key serialized from that encoding,
+   * which is the JSON text the whole state parses back to.
+   */
+  const writes = (current: StateValue, dirty: ReadonlySet<string>) =>
+    Effect.flatMap(encodeJsonState(current).pipe(Effect.orDie), (encoded) => {
+      const text = JSON.stringify(encoded)
 
-    if (utf8.encode(text).byteLength > maxBytes)
-      return yield* Effect.die(new Error("State exceeds policy.maxStateBytes"))
+      if (utf8.encode(text).byteLength > maxBytes)
+        return Effect.die(new Error("State exceeds policy.maxStateBytes"))
 
-    const encoded = yield* decodeJsonObject(text).pipe(Effect.orDie)
-    const rows: Array<readonly [string, string]> = []
+      const rows: Array<readonly [string, string]> = []
 
-    for (const key of dirty)
-      rows.push([key, yield* encodeJson(encoded[key] ?? null).pipe(Effect.orDie)])
+      for (const key of dirty)
+        rows.push([
+          key,
+          JSON.stringify((encoded as Readonly<Record<string, Schema.Json>>)[key] ?? null),
+        ])
 
-    if (dirty.size > 0 && version > 0) rows.push([VERSION_KEY, String(version)])
+      if (dirty.size > 0 && version > 0) rows.push([VERSION_KEY, String(version)])
 
-    return rows
-  })
+      return Effect.succeed(rows)
+    })
 
   /** A decoded copy of `state` validated by the schema, so mutating the input cannot hide a change. */
   const roundTrip = (state: StateValue): Effect.Effect<StateValue> =>

@@ -66,6 +66,8 @@ const Capture = Actor.command("Capture")
 
 const Replay = Actor.command("Replay")
 
+const CaptureUnbound = Actor.command("CaptureUnbound")
+
 const Get = Actor.query("Get", { payload: Schema.String, success: Schema.Option(Schema.String) })
 
 const Size = Actor.query("Size", { payload: Schema.String, success: Schema.Int })
@@ -94,6 +96,7 @@ const Drawer = Actor.make("Drawer", {
     Large,
     Capture,
     Replay,
+    CaptureUnbound,
     Get,
     Size,
     QueryWrite,
@@ -212,6 +215,10 @@ const DrawerLive = (fixture: BlobsFixture) =>
         yield* blob.set("captured", bytes("captured"))
       }),
       Replay: () => Effect.suspend(() => fixture.escaped).pipe(Effect.asVoid),
+      CaptureUnbound: Effect.fnUntraced(function* () {
+        const turn = yield* Drawer.Turn
+        fixture.escaped = Effect.suspend(() => turn.blob(files).set("unbound", bytes("unbound")))
+      }),
     }),
   )
 
@@ -473,6 +480,14 @@ export const blobsConformance: ReadonlyArray<ConformanceCase<BlobsFixture>> = [
           expect(defect(yield* drawer.Replay().pipe(Effect.exit))).toContain(
             "Blob capability escaped its turn",
           )
+          yield* drawer.CaptureUnbound()
+          expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
+            "Blob capability escaped its turn",
+          )
+          expect(defect(yield* drawer.Replay().pipe(Effect.exit))).toContain(
+            "Blob capability escaped its turn",
+          )
+          expect(yield* drawer.Get("unbound")).toEqual(Option.none())
           expect(yield* drawer.Get("captured")).toEqual(Option.some("captured"))
           expect(yield* drawer.Get("escaped")).toEqual(Option.none())
           expect(yield* drawer.Get("from-query")).toEqual(Option.none())
@@ -489,7 +504,7 @@ export const blobsConformance: ReadonlyArray<ConformanceCase<BlobsFixture>> = [
           expect(yield* drawer.Get("forked")).toEqual(Option.none())
           expect(yield* drawer.Get("timed")).toEqual(Option.none())
           expect(yield* drawer.Get("raced")).toEqual(Option.none())
-          expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(1), receipts: 1 })
+          expect(yield* test.inspect(drawer.ref)).toMatchObject({ ...blobsOf(1), receipts: 2 })
         }),
       ),
   },

@@ -1,4 +1,4 @@
-import { Cause, DateTime, Effect, Match, Option, Schema, SchemaAST, Stream } from "effect"
+import { Cause, DateTime, Effect, Option, Schema, SchemaAST, Stream } from "effect"
 import { Headers, HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http"
 import { type ServedConnection, type ServedDefinition, type ServedMember } from "../actor/served.ts"
 import { descriptorOf } from "../actor/descriptor.ts"
@@ -569,6 +569,12 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
         if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
 
+        if (Option.isSome(length))
+          return yield* request.arrayBuffer.pipe(
+            Effect.map((buffer) => new Uint8Array(buffer)),
+            Effect.mapError(() => invalidInput("decode")),
+          )
+
         const unframed = Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
 
         let received = 0
@@ -725,14 +731,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         )
       }
 
-      const successBody = Effect.fnUntraced(function* (member: ServedMember, value: string) {
-        if (SchemaAST.isVoid(member.output.ast))
-          return { ok: true, status: 204, body: undefined } as const
-
-        const decoded = yield* decodeSuccess(value)
-
-        return { ok: true, status: 200, body: decoded.value ?? null } as const
-      }, Effect.orDie)
+      const successBody = (member: ServedMember, value: string): Effect.Effect<OutcomeBody> =>
+        SchemaAST.isVoid(member.output.ast)
+          ? Effect.succeed({ ok: true, status: 204, body: undefined })
+          : Effect.map(Effect.orDie(decodeSuccess(value)), (decoded) => ({
+              ok: true,
+              status: 200,
+              body: decoded.value ?? null,
+            }))
 
       const failureBody = Effect.fnUntraced(function* (member: ServedMember, value: string) {
         const status = yield* member.failureStatus(value)
@@ -740,16 +746,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         return { ok: false, status, body: yield* decodeJson(value) } as const
       }, Effect.orDie)
 
-      const outcomeBody = (member: ServedMember, outcome: Outcome) =>
-        Match.value(outcome).pipe(
-          Match.tagsExhaustive({
-            Success: (success): Effect.Effect<OutcomeBody> => successBody(member, success.value),
-            Failure: (failure): Effect.Effect<OutcomeBody> => failureBody(member, failure.value),
-            Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
-            Acknowledged: (acknowledged) =>
-              Effect.die(new Error(`Unexpected ${acknowledged.reason} acknowledgement`)),
-          }),
-        )
+      const outcomeBody = (member: ServedMember, outcome: Outcome): Effect.Effect<OutcomeBody> =>
+        Outcome.match(outcome, {
+          Success: (success) => successBody(member, success.value),
+          Failure: (failure) => failureBody(member, failure.value),
+          Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
+          Acknowledged: (acknowledged) =>
+            Effect.die(new Error(`Unexpected ${acknowledged.reason} acknowledgement`)),
+        })
 
       const outcomeResponse = (member: ServedMember, outcome: Outcome) =>
         Effect.map(outcomeBody(member, outcome), ({ status, body }) =>

@@ -954,7 +954,7 @@ export const registerActor = Effect.fnUntraced(function* (
                 discard: true,
               }),
             ),
-            Effect.provideContext(Context.merge(batch[0]!.context, services)),
+            Effect.provideContext(batch[0]!.context),
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => restart(batch, cause),

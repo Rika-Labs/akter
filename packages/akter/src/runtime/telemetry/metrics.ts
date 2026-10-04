@@ -129,6 +129,39 @@ export const Metrics = {
 
 type Attributes = Readonly<Record<string, string>>
 
+const attributedMetrics = new WeakMap<
+  Metric.Metric<number, unknown>,
+  Map<string, Metric.Metric<number, unknown>>
+>()
+
+/**
+ * The metric under `attributes`, made once per attribute set and reused. A
+ * fresh `Metric.withAttributes` re-derives its series key, sorting and
+ * serializing the attributes, on every update. Attribute sets are bounded by
+ * the deployment's declarations, so the cache is too.
+ */
+const attributed = (metric: Metric.Metric<number, unknown>, attributes: Attributes) => {
+  let byKey = attributedMetrics.get(metric)
+
+  if (byKey === undefined) {
+    byKey = new Map()
+    attributedMetrics.set(metric, byKey)
+  }
+
+  let key = ""
+
+  for (const name in attributes) key += `${name}\u0000${attributes[name]}\u0001`
+
+  let cached = byKey.get(key)
+
+  if (cached === undefined) {
+    cached = Metric.withAttributes(metric, attributes)
+    byKey.set(key, cached)
+  }
+
+  return cached
+}
+
 /** Adds `value` to `metric` under `attributes`; a zero adds nothing. Never fails. */
 export const count: {
   (
@@ -141,7 +174,7 @@ export const count: {
     value: number,
   ): Effect.Effect<void>
 } = dual(3, (metric: Metric.Metric<number, unknown>, attributes: Attributes, value: number) =>
-  value === 0 ? Effect.void : Metric.update(Metric.withAttributes(metric, attributes), value),
+  value === 0 ? Effect.void : Metric.update(attributed(metric, attributes), value),
 )
 
 /** Sets a gauge, or records a histogram observation, under `attributes`. */
@@ -156,5 +189,5 @@ export const record: {
     value: number,
   ): Effect.Effect<void>
 } = dual(3, (metric: Metric.Metric<number, unknown>, attributes: Attributes, value: number) =>
-  Metric.update(Metric.withAttributes(metric, attributes), value),
+  Metric.update(attributed(metric, attributes), value),
 )
