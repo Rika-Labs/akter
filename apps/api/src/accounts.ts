@@ -68,7 +68,12 @@ const organization = (row: OrganizationRow) =>
   `.pipe(Effect.orDie)
     return yield* Schema.decodeUnknownEffect(Schema.toType(Cloud.Organization))({
       ...row,
-      plan: billing?.plan ?? "free",
+      plan:
+        billing === undefined
+          ? Cloud.UnboundPlan.make({})
+          : Schema.is(Cloud.PlanId)(billing.plan)
+            ? Cloud.KnownPlan.make({ id: billing.plan })
+            : Cloud.UnknownPlan.make({ id: billing.plan }),
       createdAt: timestamp(row.createdAt),
     }).pipe(Effect.orDie)
   })

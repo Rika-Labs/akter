@@ -73,14 +73,20 @@ export const bindBlobs = Effect.fnUntraced(function* (
   const owner = sql`routing_key = ${routingKey} AND tenant_id = ${ref.tenant}
     AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`
 
-  const overQuota = Effect.die(
-    new Error(`One actor's blobs hold at most ${scope.maxBytes} bytes (policy.maxBlobBytes)`),
+  const overQuota = Effect.suspend(() =>
+    Effect.die(
+      new Error(`One actor's blobs hold at most ${scope.maxBytes} bytes (policy.maxBlobBytes)`),
+    ),
   )
 
   const references = sql`(SELECT count(*) FROM actor_content_refs WHERE ${owner})`
 
-  const tooManyEntries = Effect.die(
-    new Error(`One actor's blobs hold at most ${scope.maxEntries} entries (policy.maxBlobEntries)`),
+  const tooManyEntries = Effect.suspend(() =>
+    Effect.die(
+      new Error(
+        `One actor's blobs hold at most ${scope.maxEntries} entries (policy.maxBlobEntries)`,
+      ),
+    ),
   )
 
   const declared = Effect.fnUntraced(function* (blob: AnyBlob) {

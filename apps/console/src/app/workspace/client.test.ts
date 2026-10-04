@@ -1,4 +1,4 @@
-import { Me, NotImplemented, PinnedActor, Project } from "@akter/cloud-api"
+import { KnownPlan, Me, NotImplemented, PinnedActor, Project } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterAll, afterEach, expect, it, vi } from "vitest"
 import { loadWorkspace, workspaceFrom } from "./client.ts"
@@ -31,7 +31,7 @@ it("selects the active membership and preserves actor keys containing slashes", 
               id: "org_1",
               name: "Other",
               slug: "other",
-              plan: "free",
+              plan: KnownPlan.make({ id: "free" }),
               createdAt: "2026-01-02T03:04:05Z",
             },
           },
@@ -41,7 +41,7 @@ it("selects the active membership and preserves actor keys containing slashes", 
               id: "org_2",
               name: "Active",
               slug: "active",
-              plan: "pro",
+              plan: KnownPlan.make({ id: "pro" }),
               createdAt: "2026-02-03T04:05:06Z",
             },
           },

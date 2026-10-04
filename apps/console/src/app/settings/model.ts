@@ -52,7 +52,7 @@ export const OrganizationSummary = S.Struct({
   id: S.String,
   name: S.String,
   slug: S.String,
-  plan: PlanId,
+  plan: S.String,
   role: Role,
 })
 export type OrganizationSummary = typeof OrganizationSummary.Type

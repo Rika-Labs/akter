@@ -1,5 +1,83 @@
 # Akter benchmarks
 
+## App CPU per served command (#491, 2026-10-04)
+
+This before/after run measures the Bun app's CPU per served command, which limited throughput on `main` once Postgres work had dropped to about 0.45 ms per command. The baseline is `origin/main` `b8aa892d7`, which includes #552, #561, #551 and #575. The candidate is `fix/491-app-cpu` `4ad70716a`, the same tree plus the changes listed below; it was measured as `76b71a81b`, whose source is identical (a rebase onto #576 changed only this file). Both sides ran with default runtime, admission and pool settings. Neither side includes the cross-actor group commit (#495), which merged afterwards; these numbers were not re-measured on top of it. The wire protocol, durability (`synchronous_commit` on), receipts, generation fencing, span names and metric series are unchanged.
+
+The topology and method are those of the #529 section below: one Linux x86-64 Daytona sandbox (AMD EPYC 9354P host) with an outer limit of four CPUs (`400000 100000`) and 4 GiB RAM. App and Postgres shared one container capped at three CPUs and pinned to logical CPUs 0–2. The driver had one CPU, pinned to logical CPU 3, and used at most 20% of it. Traffic used loopback HTTP. Versions were Bun 1.4.2, Effect 4.0.0 and Postgres 18.6-bookworm with `pg_stat_statements` and logical WAL. The order was before/after, after/before, before/after. Every side got a fresh container, and every cohort got a fresh database and server process. Cohorts used a 3-second warm-up and a 20-second measurement. The 64- and 256-caller cohorts first acknowledged all 10,000 setup writes, with zero errors in every run.
+
+A sampler read the app container's cgroup CPU and each Bun thread's `utime+stime` from `/proc` every 0.5 s. App CPU covers the whole Bun process, including the JIT and GC helper threads. Main-thread CPU covers only the JavaScript thread. Postgres CPU is the container total minus Bun. Cells are the median of three repeats, with minimum–maximum in brackets.
+
+| Cohort                   | Version | Commands/s                | p50 ms                 | p99 ms                    | App CPU ms/command  | Main-thread CPU ms/command | Main thread busy  | Postgres CPU ms/command |
+| ------------------------ | ------- | ------------------------- | ---------------------- | ------------------------- | ------------------- | -------------------------- | ----------------- | ----------------------- |
+| 64 callers / 10,000 keys | Before  | 1,069.4 [1,057.9–1,084.5] | 56.695 [56.430–57.734] | 123.738 [105.738–139.659] | 1.107 [1.101–1.130] | 0.911 [0.905–0.923]        | 98.1% [96.4–98.7] | 0.479 [0.472–0.493]     |
+| 64 callers / 10,000 keys | After   | 1,132.6 [1,089.2–1,236.6] | 51.960 [48.489–53.816] | 127.415 [89.314–137.031]  | 0.964 [0.934–0.997] | 0.830 [0.798–0.832]        | 93.9% [90.6–98.7] | 0.457 [0.408–0.487]     |
+| 256 callers, admitted    | Before  | 962.7 [920.8–963.1]       | 81.822 [81.502–83.922] | 171.840 [159.670–188.572] | 1.268 [1.257–1.281] | 1.018 [1.015–1.027]        | 97.7% [94.6–98.0] | 0.517 [0.512–0.560]     |
+| 256 callers, admitted    | After   | 1,054.2 [1,013.3–1,115.0] | 72.942 [71.692–73.094] | 151.033 [139.906–192.065] | 1.068 [1.032–1.127] | 0.909 [0.879–0.941]        | 95.8% [95.3–98.0] | 0.478 [0.458–0.501]     |
+| Sequential, one key      | Before  | 516.6 [451.7–708.8]       | 1.545 [1.295–1.989]    | 5.051 [3.609–9.245]       | 1.789 [1.530–1.887] | 0.980 [0.900–1.015]        | 50.7% [45.9–63.8] | 0.597 [0.372–0.955]     |
+| Sequential, one key      | After   | 448.7 [419.6–681.3]       | 1.912 [1.187–2.001]    | 6.117 [5.342–12.549]      | 1.637 [1.397–1.738] | 0.943 [0.840–0.956]        | 42.9% [39.6–57.2] | 1.009 [0.333–1.022]     |
+
+The 64-caller and sequential cohorts had no errors or refusals: 64,416 before and 69,331 after at 64 callers, and 33,544 before and 30,996 after sequentially. With 256 callers every non-success was an explicit `503 ActorUnavailable` (37,807 before and 38,510 after; 38.9% and 37.7% of attempts), with no other errors.
+
+With 64 callers, app CPU per command fell 12.9% and main-thread CPU 8.9%. Throughput rose 5.9% and p50 fell 8.4% at the median. Every after repeat beat every before repeat on throughput, app CPU and p50, while p99 ranges overlap. With 256 callers, app CPU fell 15.8%, admitted throughput rose 9.5% and admitted p50 fell 10.9%. The main thread stayed 90–99% busy under load on both sides, so the single Bun thread still caps a process. The sequential cohort is latency-bound: its main thread was idle about half the time. App CPU per command fell there too, but throughput and p50 ranges overlap widely, with one fast repeat on each side, so no sequential latency claim is made.
+
+### Where the CPU goes
+
+A `bun --cpu-prof` run of each side at 64 callers, outside the timing table, attributes main-thread self time as follows. A native or builtin frame is charged to its nearest categorized caller, so a socket write counts as driver time and a `Map` copy as Effect runtime time.
+
+| Self time on the main thread                              | Before | After |
+| --------------------------------------------------------- | -----: | ----: |
+| Effect runtime (fibers, combinators, contexts, scheduler) |  55.7% | 55.8% |
+| Postgres driver and SQL statements                        |  16.1% | 17.2% |
+| Akter turn, state and receipts                            |   8.8% |  8.8% |
+| Schema codecs                                             |   4.0% |  3.4% |
+| HTTP server (Bun platform, routing, headers)              |   3.8% |  3.5% |
+| Cluster and RPC delivery                                  |   2.8% |  3.1% |
+| Akter admission and runtime                               |   2.3% |  2.6% |
+| Metrics                                                   |   1.5% |  0.4% |
+| Tracing                                                   |   1.2% |  1.1% |
+| Akter serve layer                                         |   1.1% |  1.0% |
+| Native, unattributed, and other                           |   2.7% |  3.0% |
+
+No single function dominates. More than half of the main thread is the Effect interpreter running the fibers, continuations and context updates that the command's own code asks for. Leaf frames show whose code ran, not which step asked for it. So a second instrumented run of each side, also outside the timing table, timed the Effect run loop by the span each operation ran under. Temporary spans split the request into phases. The instrumentation adds overhead, so its absolute microseconds overstate real CPU; the shares and operation counts are the useful part.
+
+| Phase (64 callers, instrumented)                                                   | Before µs/command | Before share | After µs/command | After share | Effect operations before → after |
+| ---------------------------------------------------------------------------------- | ----------------: | -----------: | ---------------: | ----------: | -------------------------------: |
+| SQL flights: statement building, driver encoding, reply decoding                   |             296.2 |        22.2% |            289.8 |       24.1% |                        322 → 323 |
+| HTTP request and response: routing, serve handler, body, auth, reply encoding      |             252.8 |        18.9% |            224.2 |       18.7% |                        220 → 188 |
+| Turn admission logic and receipts: fence, hashes, receipt and outbox rows          |             223.5 |        16.7% |            220.3 |       18.3% |                        198 → 198 |
+| Handler turn and state codec: capabilities, payload and state codecs, user handler |             166.9 |        12.5% |            109.3 |        9.1% |                        190 → 128 |
+| Runner admission: admission span, access and command-id checks, expiry recheck     |             164.4 |        12.3% |            167.7 |       14.0% |                        166 → 163 |
+| Cluster delivery to the owner: RPC client and entity server                        |             144.2 |        10.8% |            106.9 |        8.9% |                          97 → 84 |
+| Activation worker, publication and turn metrics                                    |              47.6 |         3.6% |             43.3 |        3.6% |                          44 → 44 |
+| Turn session lease                                                                 |              40.9 |         3.1% |             40.0 |        3.3% |                          69 → 69 |
+| Total inside the Effect run loop                                                   |           1,336.4 |         100% |          1,201.5 |        100% |                    1,307 → 1,197 |
+
+Logging adds no measurable time on this path: the benchmark app disables the HTTP request logger, a successful turn writes no log line, and no profile sample fell in the logger. Tracing and metrics together were about 2.7% of self time before and 1.5% after. Remaining time is spread over SQL flights, receipts and admission, mostly as Effect interpreter work, and none of it is one hotspot. Cutting it further means fewer fibers and combinators per turn in `runtime/turn/execute.ts` and `pipeline.ts`, which #495 is changing, or more than one process.
+
+### What changed
+
+- Attributed metrics are made once per attribute set. A fresh `Metric.withAttributes` sorted and serialized its attributes on every update, five times per command.
+- Commands delivered to an entity on the same runner skip Cluster's simulated remote serialization, a schema encode and decode of every request. Remote deliveries still serialize, and test runtimes keep the local round trip so every test delivery still checks the request schema.
+- A turn binds its owned tables and blobs on first use. Most turns use neither, and binding built row predicates, routing keys and error values every turn. The capability guards are unchanged; new conformance cases check that a capability first used after its turn dies and writes nothing.
+- State rows are serialized from one encoding of the state, instead of encoding, re-parsing the whole text and re-encoding each key. The rows are byte-identical, and the size limit still applies to the whole state's text.
+- A body with `content-length` is read into one buffer of the declared length instead of a growing list of chunks. A malformed length is refused as `decode`, and a body that runs past its declared length as `too_large`, so a host that hands the web handler an unframed request cannot bypass the limit. Unframed and chunked bodies keep the streaming, limit-checked read. The measured candidate read framed bodies with one `arrayBuffer` call; this framed stream read replaced it after review and was not re-measured.
+- The activation worker and the turn reuse the request's merged context instead of copying the runtime's services into it again. The command client is looked up once per actor type, and the served outcome no longer builds a matcher per request.
+
+### More runner processes on one host
+
+The same three-CPU container ran two and three `Runner.socket` processes of the after tree on loopback. Each had default pools and admission, and the driver sent requests round-robin across their HTTP ports, so about half or two-thirds of the commands crossed to another runner. This was one run per count, not a repeated comparison.
+
+| Runners | Commands/s | p50 ms |  p99 ms | App CPU ms/command | App cores | Postgres cores | Main thread busy per runner |
+| ------: | ---------: | -----: | ------: | -----------------: | --------: | -------------: | --------------------------- |
+|       1 |    1,132.6 | 51.960 | 127.415 |              0.964 |      1.09 |           0.52 | 93.9%                       |
+|       2 |    1,497.6 | 42.961 | 106.559 |              1.279 |      1.92 |           0.70 | 79.1%, 77.9%                |
+|       3 |    1,547.9 | 38.535 | 133.707 |              1.398 |      2.16 |           0.68 | 55.9%, 56.3%, 56.1%         |
+
+The one-runner row is the after median above. Both multi-runner runs acknowledged all 10,000 setup writes and had no errors. Two runners served 32% more commands than one, and three served 37% more. App CPU per command rose 33% and 45%, because a forwarded command is serialized, sent over the socket and answered back. With three runners the container used about 2.8 of its 3 CPUs. More processes buy throughput on spare cores, but not efficiency. The default topology is unchanged; changing it would need an ADR.
+
+These are single-node diagnostics, not production SLOs or Neki claims. The harness, source bundles, cohort JSON, samplers, CPU profiles and instrumentation are outside the repository at `~/.capy/work/akter-perf/app-cpu/`; final results are in `results/final`, and exploratory runs are in `results/profile-main`, `results/explore1` and `results/explore2`. All four sandboxes created for this task were deleted, and a final lookup found no sandbox with this task's label.
+
 ## Cross-actor group commit (#495)
 
 This before/after run measures [ADR 0084](docs/decisions/0084-cross-actor-group-commit.md): concurrent warm turns of different actors share one transaction, `COMMIT` and WAL flush on one turn session. The baseline is `origin/main` `b8aa892d7`, the candidate of the previous section. The candidate is `perf/495-group-commit` `45f93a3bb`, which changes only the turn runtime and its tests. Both sides ran with default runtime, admission, pool and group settings.

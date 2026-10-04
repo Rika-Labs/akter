@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 
-import { PlanId } from "./identity.ts"
+import { PlanId, UnboundPlan } from "./identity.ts"
 import {
   ActorReference,
   BillingPeriod,
@@ -44,8 +44,11 @@ export type SpendLimit = typeof SpendLimit.Type
 
 /**
  * One cap as the edge's admission decides it now, whatever period is being
- * reported. `limit` and `used` are usage units (five per command, one per
- * read) for `commands`, cents for `spend`, open connections for
+ * reported. `limit` and `used` are usage units for `commands`, the same units
+ * as `QuotaExceeded`'s `limitUnits` and `usedUnits`; a read weighs one unit and
+ * a command `unitsPerCommand` units, which the `commands` cap always carries
+ * and no other cap does, so commands are `used / unitsPerCommand`. They are
+ * cents for `spend`, open connections for
  * `connections`, and for `storage` the largest latest sample of a serving
  * deployment's tenant, since storage is capped per deployment and tenant;
  * `limit` is null when the cap does not apply. `atCap` means usage has
@@ -61,11 +64,17 @@ export const CapState = Schema.Struct({
   atCap: Schema.Boolean,
   refusing: Schema.Boolean,
   reason: Schema.optionalKey(Schema.Literal("unbound")),
+  unitsPerCommand: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
 })
 export type CapState = typeof CapState.Type
 
+/**
+ * `plan` is `unbound` when the organization has no billing account: it has no
+ * plan, price or allowances, and is never reported as Free. Its spend limit is
+ * then null and its current spend zero, since the edge admits nothing for it.
+ */
 export const BillingSummary = Schema.Struct({
-  plan: Plan,
+  plan: Schema.Union([Plan, UnboundPlan]),
   paymentMethod: Schema.NullOr(PaymentMethod),
   billingEmail: Schema.NullOr(Email),
   spendLimit: SpendLimit,

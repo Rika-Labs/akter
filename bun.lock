@@ -96,6 +96,7 @@
     "apps/e2e": {
       "name": "@akter/e2e",
       "devDependencies": {
+        "@akter/cloud-api": "workspace:*",
         "@akter/console": "workspace:*",
         "@playwright/test": "1.63.0",
         "effect": "catalog:",

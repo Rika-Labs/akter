@@ -1,5 +1,17 @@
 import { BunCrypto } from "@effect/platform-bun"
-import { Context, Effect, Layer, ManagedRuntime, Predicate, Result, Schema } from "effect"
+import {
+  Cause,
+  Context,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Predicate,
+  Result,
+  Schema,
+} from "effect"
+import { pgTable, text } from "drizzle-orm/pg-core"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actor, ActorError } from "../index.ts"
 import { ActorTest } from "../testing/actor-test.ts"
@@ -262,6 +274,83 @@ describe("batched reducers", () => {
         const merged = yield* commands.get("Append")!.merge!(requests, [["log", '"x"']])
 
         expect(merged.state).toEqual([["log", '"xabc"']])
+      }),
+    ))
+})
+
+describe("table and blob capabilities of a turn", () => {
+  const shelved = Actor.table(pgTable("turns_shelved", { id: text("id").primaryKey() }))
+  const covers = Actor.blob("covers")
+  const Idle = Actor.command("Idle")
+  const UseRows = Actor.command("UseRows")
+  const UseBlob = Actor.command("UseBlob")
+
+  const Shelf = Actor.make("TurnsShelf", {
+    key: Schema.String,
+    tables: [shelved],
+    blobs: [covers],
+    api: { Idle, UseRows, UseBlob },
+  })
+
+  const tableFailure = new Error("table binding failed")
+  const blobFailure = new Error("blob binding failed")
+
+  /** The running turn, read without declaring it, as an erased handler does. */
+  const turn = Effect.map(Effect.serviceOption(Shelf.Turn), Option.getOrThrow)
+
+  it("binds only what a handler uses, and a failed binding is that turn's defect", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const bound = { tables: 0, blobs: 0 }
+        const descriptor = descriptorOf(Shelf)!
+
+        const bindings: Pick<InternalActors["Service"], "tables" | "blobs"> = {
+          tables: () => {
+            bound.tables += 1
+
+            return Effect.die(tableFailure)
+          },
+          blobs: () => {
+            bound.blobs += 1
+
+            return Effect.die(blobFailure)
+          },
+        }
+
+        const commands = yield* turnsOf({
+          descriptor,
+          Turn: Shelf.Turn,
+          handlers: {
+            Idle: () => Effect.void,
+            UseRows: () => Effect.flatMap(turn, (current) => current.rows(shelved).count()),
+            UseBlob: () => Effect.flatMap(turn, (current) => current.blob(covers).get("front")),
+          },
+          services: Context.empty(),
+          actors: bindings as InternalActors["Service"],
+        })
+
+        const run = (command: string) =>
+          commands.get(command)!.run(
+            Request.make({
+              ref: ActorRef.make({ tenant: "t", actor: Shelf.name, id: "s" }),
+              caller: System.make({ source: "process" }),
+              command,
+              commandId: `${command}-1`,
+              payload: '{"value":null}',
+            }),
+            [],
+            { head: "0" },
+          )
+
+        expect(Exit.isSuccess(yield* Effect.exit(run("Idle")))).toBe(true)
+        expect(bound).toEqual({ tables: 0, blobs: 0 })
+
+        const rows = yield* Effect.exit(run("UseRows"))
+        expect(Exit.isFailure(rows) && Cause.squash(rows.cause)).toBe(tableFailure)
+
+        const blob = yield* Effect.exit(run("UseBlob"))
+        expect(Exit.isFailure(blob) && Cause.squash(blob.cause)).toBe(blobFailure)
+        expect(bound).toEqual({ tables: 1, blobs: 1 })
       }),
     ))
 })

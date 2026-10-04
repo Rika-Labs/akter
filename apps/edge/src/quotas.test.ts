@@ -2090,16 +2090,13 @@ describe("cap state agrees with admission", () => {
 
           expect(noAccount.status).toBe(503)
           expect(noAccount.reason).toMatchObject({ reason: "account" })
-          expect(Object.values(yield* capsOf(edge))).toEqual(
-            (["commands", "spend", "connections", "storage"] as const).map((cap) => ({
-              cap,
-              limit: null,
-              used: 0,
-              atCap: false,
-              refusing: true,
-              reason: "unbound",
-            })),
-          )
+          const unbound = { limit: null, used: 0, atCap: false, refusing: true, reason: "unbound" }
+          expect(Object.values(yield* capsOf(edge))).toEqual([
+            { cap: "commands", ...unbound, unitsPerCommand: 5 },
+            { cap: "spend", ...unbound },
+            { cap: "connections", ...unbound },
+            { cap: "storage", ...unbound },
+          ])
 
           yield* edge.sql`INSERT INTO cloud_billing_account (organization_id, plan) VALUES (${edge.organizationId}, 'platinum')`.pipe(
             Effect.orDie,
@@ -2139,6 +2136,7 @@ describe("cap state agrees with admission", () => {
             used: 40,
             atCap: false,
             refusing: false,
+            unitsPerCommand: 5,
           })
           expect((yield* command(edge, key, { cid: "ninth" })).status).toBe(200)
           expect((yield* read(edge, key)).status).toBe(200)
@@ -2257,6 +2255,7 @@ describe("cap state agrees with admission", () => {
             used: 20,
             atCap: false,
             refusing: false,
+            unitsPerCommand: 5,
           })
           expect(before["storage"]).toMatchObject({ limit: null, refusing: false })
           expect((yield* command(edge, key, { cid: "fifth" })).status).toBe(200)

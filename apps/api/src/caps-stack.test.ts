@@ -39,9 +39,13 @@ import { serviceCredential } from "./rollout.ts"
  * sockets for want of a `hello` while they hold their leases. The sockets are
  * held by containers on the stack's network, which report any close.
  *
+ * Last, the organization's billing account is removed, and a command must be
+ * refused with a typed `QuotaUnbound` while usage, billing and `/api/me` all
+ * report it unbound.
+ *
  * SQL sets only what no public surface does: a Free period's committed units
- * near its million-command cap, and a storage sample that a collector would
- * otherwise take hourly. The
+ * near its million-command cap, a storage sample that a collector would
+ * otherwise take hourly, and the removed billing account. The
  * Compose project with its volumes and built images, its socket-holder
  * containers, the runner and migration containers started from the runner
  * image tagged here, and that image are the only Docker objects it creates
@@ -466,6 +470,7 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             used: FREE_UNITS - 7,
             atCap: false,
             refusing: false,
+            unitsPerCommand: 5,
           })
           expect((yield* sendCommand).status).toBe(200)
           expect((yield* caps).commands).toEqual({
@@ -474,6 +479,7 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             used: FREE_UNITS - 2,
             atCap: false,
             refusing: true,
+            unitsPerCommand: 5,
           })
 
           const quota = yield* sendCommand
@@ -674,7 +680,7 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             "the Pro entitlement",
             60,
             ok(Cloud.BillingSummary, `/api/organizations/${org}/billing`, { cookie }),
-            (summary) => summary.plan.id === "pro",
+            (summary) => "id" in summary.plan && summary.plan.id === "pro",
           )
 
           const [invoice] = yield* ok(
@@ -729,6 +735,31 @@ layer(services, { excludeTestServices: true, timeout: Duration.minutes(30) })(
             limitCents: PRO_BASE_CENTS - 1,
             projectedCents: PRO_BASE_CENTS,
           })
+
+          yield* sql(`DELETE FROM cloud_billing_account WHERE organization_id = $1`, [org])
+          const unbound = yield* sendCommand
+
+          expect(unbound.status, unbound.body).toBe(402)
+
+          const refusal = yield* decode(Cloud.QuotaUnbound, unbound)
+
+          expect(refusal).toBeInstanceOf(Cloud.QuotaUnbound)
+          expect(refusal).toMatchObject({ deployment, reason: "account" })
+          expect((yield* caps).commands).toMatchObject({
+            limit: null,
+            refusing: true,
+            reason: "unbound",
+            unitsPerCommand: 5,
+          })
+          expect(
+            (yield* ok(Cloud.BillingSummary, `/api/organizations/${org}/billing`, { cookie })).plan,
+          ).toEqual(Cloud.UnboundPlan.make({}))
+          const me = yield* ok(Cloud.Me, "/api/me", { cookie })
+
+          expect(
+            me.organizations.find((membership) => membership.organization.id === org)?.organization
+              .plan,
+          ).toEqual(Cloud.UnboundPlan.make({}))
         }).pipe(Effect.scoped),
       1_800_000,
     )

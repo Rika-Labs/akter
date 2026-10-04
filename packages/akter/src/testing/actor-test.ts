@@ -38,6 +38,7 @@ import { InternalActors } from "../runtime/actors.ts"
 import { type Outcome, type Request } from "../runtime/request.ts"
 import { SeedJson } from "../runtime/operators/seed.ts"
 import { Database, layer as runtimeLayer, type Options } from "../runtime/layer.ts"
+import { LocalRequestSerialization } from "../runtime/runner.ts"
 import { compress, decompress, routingKey } from "../runtime/storage/codec.ts"
 import { recordedPlacement } from "../runtime/storage/placements.ts"
 import { VERSION_KEY } from "../state/migration.ts"
@@ -757,6 +758,7 @@ export class ActorTest extends Context.Service<
           Layer.succeed(FrameworkClock, { offsetMillis: () => clockOffset }),
         ).pipe(
           Layer.provide(hooks),
+          Layer.provide(Layer.succeed(LocalRequestSerialization, true)),
           Layer.provideMerge(
             options.database !== undefined && Redacted.isRedacted(options.database)
               ? Database.postgres({
