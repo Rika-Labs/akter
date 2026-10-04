@@ -2,13 +2,17 @@ import type { Schedule as CloudSchedule, TimersSummary, Workflow } from "@akter/
 import { formatDuration } from "@akter/ui/geometry"
 import { DateTime } from "effect"
 import { ago, splitAddress, until } from "../overview/time.ts"
+import { unknown } from "../shell/unknown.ts"
 import { type Schedule, type WorkflowRun, WorkflowsPage } from "./model.ts"
 
 /**
  * One workflow as a row. `Waiting` is a wait on an event and `Sleeping` a wait on a timer. The step
  * reads `<name> · <index> of <total>`, with the index written exactly as the contract reports it:
  * it counts from 1, so a run on its first step reads `1 of <total>` and a run on its last reads
- * `<total> of <total>`, and the console never adds or subtracts one.
+ * `<total> of <total>`, and the console never adds or subtracts one. A runner that does not know
+ * the workflow's step count gives `<name> · step <index>`, and a run that holds no recorded step,
+ * as once it finished, reads `—`. A finished run whose stored result does not decode has no
+ * status: it is unknown, never waiting.
  */
 export const toWorkflowRun =
   (now: DateTime.Utc) =>
@@ -22,9 +26,9 @@ export const toWorkflowRun =
       key,
       step:
         workflow.step === null
-          ? "—"
+          ? unknown
           : workflow.step.total === null
-            ? `${workflow.step.name} · ${String(workflow.step.index)}`
+            ? `${workflow.step.name} · step ${String(workflow.step.index)}`
             : `${workflow.step.name} · ${String(workflow.step.index)} of ${String(workflow.step.total)}`,
       waitingFor:
         workflow.waitingFor === null
@@ -32,15 +36,17 @@ export const toWorkflowRun =
           : `${workflow.waitingFor.kind} ${workflow.waitingFor.name}`,
       started: ago(now)(workflow.startedAt),
       status:
-        workflow.status === "completed"
-          ? "Done"
-          : workflow.status === "failed"
-            ? "Failed"
-            : workflow.status === "running"
-              ? "Running"
-              : timer
-                ? "Sleeping"
-                : "Waiting",
+        workflow.status === null
+          ? null
+          : workflow.status === "completed"
+            ? "Done"
+            : workflow.status === "failed"
+              ? "Failed"
+              : workflow.status === "running"
+                ? "Running"
+                : timer
+                  ? "Sleeping"
+                  : "Waiting",
     }
   }
 
@@ -60,7 +66,11 @@ export const toSchedule =
     nextRun: schedule.nextRunAt === null ? "—" : until(now)(schedule.nextRunAt),
   })
 
-/** Workflows, timers and schedules as the console's page. */
+/**
+ * Workflows, timers and schedules as the console's page. `sampleSchedules` stand in for schedules
+ * the source cannot list while its workflows and timers are live: the page shows them marked as
+ * sample and names no next schedule from them.
+ */
 export const toWorkflowsPage =
   (now: DateTime.Utc) =>
   (
@@ -69,6 +79,7 @@ export const toWorkflowsPage =
       truncated: boolean
       timers: TimersSummary
       schedules: ReadonlyArray<CloudSchedule>
+      sampleSchedules?: ReadonlyArray<Schedule> | undefined
     }>,
   ): WorkflowsPage => {
     const runs = input.workflows.map(toWorkflowRun(now))
@@ -91,8 +102,12 @@ export const toWorkflowsPage =
                 DateTime.toEpochMillis(input.timers.nextFireAt) - DateTime.toEpochMillis(now),
               ),
             ),
-      nextSchedule: soonest === undefined ? null : `${soonest.name} ${until(now)(soonest.at)}`,
+      nextSchedule:
+        soonest === undefined || input.sampleSchedules !== undefined
+          ? null
+          : `${soonest.name} ${until(now)(soonest.at)}`,
       runs,
-      schedules: input.schedules.map(toSchedule(now)),
+      schedules: input.sampleSchedules ?? input.schedules.map(toSchedule(now)),
+      schedulesSample: input.sampleSchedules !== undefined,
     })
   }

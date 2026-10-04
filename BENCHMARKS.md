@@ -1,5 +1,27 @@
 # Akter benchmarks
 
+## Runner mutual TLS on the forwarding path (#541, 2026-10-04)
+
+This run measured what `Runner.mtls` costs on the forwarding path. It used the two-runner cohort of the run below, unchanged: one Daytona sandbox with 4 CPUs, 4 GiB and 5 GiB of disk, AMD EPYC 9354P, x86-64. Two Bun runners shared a three-CPU app container with Postgres, and a one-CPU driver ran 64 closed-loop callers over 10,000 keys, alternating between the two HTTP ports. Each runner held 384 of the 768 shards, so about half the commands were forwarded to the other runner over `Runner.socket`. Both sides ran commit `273322ad3`. They differed only in transport: the platform plaintext layers, or `Runner.mtls` with a development authority. Each repeat got a fresh Postgres container and database. The order was plaintext, mTLS; mTLS, plaintext; plaintext, mTLS. Before each mTLS repeat, a plaintext NDJSON probe to a runner's peer port got a TLS alert (`15 03 01 00 02 02 46`, handshake failure); before each plaintext repeat, the same probe got `{"_tag":"Pong"}`.
+
+| Measurement                   | Plaintext                 | Mutual TLS                |
+| ----------------------------- | ------------------------- | ------------------------- |
+| per-run op/s (r1, r2, r3)     | 2,133.9, 1,368.6, 1,465.8 | 1,952.6, 1,524.6, 1,525.7 |
+| op/s                          | 1,465.8 [1,368.6–2,133.9] | 1,525.7 [1,524.6–1,952.6] |
+| p50 ms                        | 38.852 [26.969–42.008]    | 37.092 [29.418–37.664]    |
+| p99 ms                        | 122.922 [97.737–148.037]  | 129.105 [112.456–132.528] |
+| max ms                        | 224.061 [188.141–324.651] | 271.250 [242.318–325.280] |
+| measured ok / errors          | 99478 / 0                 | 100172 / 0                |
+| runner cores (both processes) | 1.55 [1.53–2.10]          | 1.61 [1.60–2.07]          |
+| runner CPU ms/op              | 1.055 [0.986–1.114]       | 1.054 [1.048–1.059]       |
+| busiest runner main thread %  | 60.4 [59.3–81.5]          | 62.7 [60.7–80.0]          |
+
+Ranges are min–max over the three repeats, and medians are shown. Every repeat acknowledged all 10,000 setup writes and had no errors.
+
+Runner CPU per command was the same with and without mutual TLS: 1.054 ms against 1.055 ms. Encryption adds no CPU this harness can resolve next to serialization, routing and the database work of a forwarded command. Throughput moved together across rounds on both sides: the first round ran near 2,000 commands/s and the later rounds near 1,450–1,525, so the sandbox, not the transport, set the variation. The mTLS medians for throughput, p50 and p99 fall inside the plaintext range, and the max latency is about 47 ms higher at the median, with overlapping ranges.
+
+This is loopback on one x86-64 host. It doesn't measure handshakes, which happen once per peer connection; cross-host latency; or TLS on Graviton, where hosted runners would run.
+
 ## Main after group commit and the app CPU cuts (#529, 2026-10-04)
 
 This before/after run measures `main` after group commit (#582, #495) and the app CPU cuts (#583, #491). The baseline is `b8aa892d7`, the "after" of the previous #529 section below. The candidate is `origin/main` `7588b9358`. `main` later moved to `b277f4f41`, which changes nothing under `packages/akter`. Both sides used default runtime, admission, pool and group settings. There was one new cohort: 64 callers against two runner processes, run on the candidate only.

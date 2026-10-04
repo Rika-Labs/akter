@@ -760,7 +760,7 @@ test("explains a typed quota refusal in the send dialog and links to Billing", a
   await dialog.getByRole("button", { name: "Send command", exact: true }).click()
   const alert = dialog.getByRole("alert")
   await expect(alert).toHaveText(
-    "This organization has used all the commands its plan includes for October 2026, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance. Open Billing",
+    "This organization has used the 1M commands its plan includes for October 2026, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance. Open Billing",
   )
   await expect(alert.getByRole("link", { name: "Open Billing" })).toHaveAttribute(
     "href",

@@ -8,14 +8,14 @@ import type { Billing } from "../settings/model.ts"
  * `Unbound` when the organization has no billing account and every new command is refused,
  * `UnknownPlan` when its stored plan isn't in the pricing configuration, which the edge refuses
  * every new command for too,
- * otherwise Free's command allowance for `period` (`commands`, null when the cap doesn't say how
- * many units a command weighs), a tenant's storage sample at its cap, the spend limit in cents, or
- * the organization's live connections (which refuse new connections, not commands).
+ * otherwise Free's command allowance for `period` in whole commands, a tenant's storage sample at
+ * its cap, the spend limit in cents, or the organization's live connections (which refuse new
+ * connections, not commands).
  */
 export const CapNotice = defineTaggedUnion({
   Unbound: {},
   UnknownPlan: {},
-  CommandCap: { period: S.String, commands: S.NullOr(S.Finite) },
+  CommandCap: { period: S.String, commands: S.Finite },
   StorageCap: { usedBytes: S.Finite, limitBytes: S.Finite },
   SpendCap: { period: S.String, limitCents: S.Finite },
   ConnectionCap: { open: S.Finite, limit: S.Finite },
@@ -49,14 +49,13 @@ export const capNotice = (input: {
     .find((cap) => cap !== undefined && cap.limit !== null)
   if (refusing === undefined || refusing.limit === null) return undefined
   const { used, limit } = refusing
+  if (refusing.cap === "commands")
+    return CapNotice.CommandCap({
+      period: input.period,
+      commands: Math.floor(limit / refusing.unitsPerCommand),
+    })
   return Match.value(refusing.cap).pipe(
     Match.withReturnType<CapNotice>(),
-    Match.when("commands", () =>
-      CapNotice.CommandCap({
-        period: input.period,
-        commands: refusing.cap === "commands" ? Math.floor(limit / refusing.unitsPerCommand) : null,
-      }),
-    ),
     Match.when("storage", () => CapNotice.StorageCap({ usedBytes: used, limitBytes: limit })),
     Match.when("spend", () => CapNotice.SpendCap({ period: input.period, limitCents: limit })),
     Match.when("connections", () => CapNotice.ConnectionCap({ open: used, limit })),

@@ -130,18 +130,77 @@ describe("workflow mapping", () => {
       }),
     ))
 
-  it("writes a step with no known total without one, and a run with no recorded step as a dash", () =>
+  it("writes a step without a known total by its index and a finished run without a step as a dash", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const parse = (fields: Record<string, Schema.Json>) =>
-          decode(Workflow, workflow(fields)).pipe(Effect.map((value) => toWorkflowRun(now)(value)))
-        expect(yield* parse({ step: { index: 2, total: null, name: "cool-off" } })).toMatchObject({
-          step: "cool-off · 2",
+        const counted = yield* decode(
+          Workflow,
+          workflow({
+            status: "running",
+            waitingFor: null,
+            step: { index: 2, total: null, name: "pay" },
+          }),
+        )
+        expect(toWorkflowRun(now)(counted).step).toBe("pay · step 2")
+        const finished = yield* decode(
+          Workflow,
+          workflow({ status: "completed", waitingFor: null, step: null }),
+        )
+        const row = toWorkflowRun(now)(finished)
+        expect(row).toMatchObject({ step: "—", status: "Done", waitingFor: "—" })
+        expect(Object.values(row).join(" ")).not.toMatch(/null|NaN|undefined/)
+      }),
+    ))
+
+  it("shows sample schedules on a live page without naming a next schedule from them", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const timers = yield* decode(TimersSummary, { pending: 0, nextFireAt: null })
+        const page = toWorkflowsPage(now)({
+          workflows: [],
+          truncated: false,
+          timers,
+          schedules: [],
+          sampleSchedules: [
+            {
+              name: "nightly",
+              target: "Report/*",
+              cron: "0 2 * * *",
+              lastRun: "—",
+              nextRun: "in 9 h",
+            },
+          ],
         })
-        expect(yield* parse({ step: null, status: "completed", waitingFor: null })).toMatchObject({
-          step: "—",
-          status: "Done",
+        expect(page).toMatchObject({ schedulesSample: true, nextSchedule: null, nextTimer: null })
+        expect(page.schedules.map((schedule) => schedule.name)).toEqual(["nightly"])
+        const live = toWorkflowsPage(now)({
+          workflows: [],
+          truncated: false,
+          timers,
+          schedules: [],
         })
+        expect(live).toMatchObject({ schedulesSample: false, schedules: [] })
+      }),
+    ))
+
+  it("leaves a run whose result does not decode without a status instead of calling it waiting", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const timers = yield* decode(TimersSummary, { pending: 0, nextFireAt: null })
+        const undecodable = yield* decode(
+          Workflow,
+          workflow({ status: null, step: null, waitingFor: null }),
+        )
+        const event = yield* decode(Workflow, workflow({ status: null, step: null }))
+        expect(toWorkflowRun(now)(undecodable).status).toBeNull()
+        expect(toWorkflowRun(now)(event).status).toBeNull()
+        const page = toWorkflowsPage(now)({
+          workflows: [undecodable, event],
+          truncated: false,
+          timers,
+          schedules: [],
+        })
+        expect(page).toMatchObject({ running: 0, waitingOnEvents: 0 })
       }),
     ))
 })

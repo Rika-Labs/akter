@@ -14,10 +14,20 @@ import { describe, expect, it } from "vitest"
 import { sendFailure } from "../commands/errors.ts"
 import { CommandSucceeded } from "../commands/model.ts"
 import { DeploymentPage } from "../deployments/model.ts"
-import { emptySettings, type Billing } from "../settings/model.ts"
+import {
+  DeviceDecided,
+  DeviceEntry,
+  DevicePage,
+  type DeviceProblem,
+  DeviceRefused,
+  DeviceReview,
+} from "../device/model.ts"
+import { JobsPage } from "../jobs/model.ts"
+import { BillingPlan, emptySettings, type Billing } from "../settings/model.ts"
 import { workspace } from "../workspace/fixtures.ts"
 import {
   AnsweredCommand,
+  AnsweredDevice,
   ChangedDeployment,
   ChangedField,
   ChangedUrl,
@@ -29,6 +39,8 @@ import {
   type Message,
   OpenedDialog,
   PreparedCommandId,
+  RetriedAllDeadLetters,
+  RetriedDeadLetter,
   SignedOut,
   SubmittedForm,
 } from "./message.ts"
@@ -36,7 +48,7 @@ import { Dialog, type Model } from "./model.ts"
 import { init, nextCommandId, resendRefused, update } from "./update.ts"
 
 const billing: Billing = {
-  plan: {
+  plan: BillingPlan.make({
     id: "pro",
     name: "Pro",
     subscribed: "pro",
@@ -45,7 +57,7 @@ const billing: Billing = {
     provisional: true,
     renewsAt: null,
     monthToDateCents: 30_000,
-  },
+  }),
   card: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 30_000 },
@@ -366,5 +378,214 @@ describe("rollback and redeploy", () => {
     expect(step(started, SignedOut()).model.changingDeployment).toEqual(Option.none())
     const switched = step(started, ChangedUrl({ url: at("/projects/another-project") })).model
     expect(switched.changingDeployment).toEqual(Option.none())
+  })
+})
+
+describe("dead letters a source cannot resolve", () => {
+  const onJobs = (resolvable: boolean): Model => {
+    const url = Option.getOrThrow(Url.fromString("http://localhost/jobs"))
+    return {
+      ...init({ workspace, theme: "light" }, url).model,
+      loading: false,
+      pageSample: false,
+      page: Option.some(
+        JobsPage.make({
+          queued: 0,
+          running: null,
+          retrying: 0,
+          deadLetters: [
+            {
+              id: "dl_1",
+              jobId: "job_1",
+              job: "Settle",
+              actorType: "Ledger",
+              key: "books",
+              attempts: 1,
+              error: "Unsettled",
+              since: "1m",
+            },
+          ],
+          resolvable,
+          types: [],
+          labels: [],
+          throughput: null,
+        }),
+      ),
+    }
+  }
+
+  it("sends nothing for a retry, retry all or confirmed discard that bypassed the disabled controls", () => {
+    for (const message of [RetriedDeadLetter({ id: "dl_1" }), RetriedAllDeadLetters()]) {
+      const result = update(onJobs(false), message)
+      expect(commandNames(result)).not.toContain("Mutate")
+      expect(result.model.toasts.at(-1)?.title).toBe("Retry and discard aren’t available yet.")
+    }
+    const discarding = {
+      ...onJobs(false),
+      dialog: Option.some(Dialog.DiscardDeadLetter({ id: "dl_1" })),
+    }
+    expect(commandNames(update(discarding, ConfirmedDialog()))).not.toContain("Mutate")
+  })
+
+  it("sends the retry when the source can resolve dead letters", () => {
+    expect(commandNames(update(onJobs(true), RetriedDeadLetter({ id: "dl_1" })))).toContain(
+      "Mutate",
+    )
+  })
+})
+
+describe("device page", () => {
+  const entry = DevicePage.make({ step: DeviceEntry.make({}) })
+
+  const reviewed = DevicePage.make({
+    step: DeviceReview.make({
+      code: "WDJBMJHT",
+      client: "Akter CLI",
+      clientDetail: "The Akter command line on your computer",
+      name: "Ada Lovelace",
+      email: "ada@acme.dev",
+      access: "All your organizations (2)",
+    }),
+  })
+
+  const refusedFor = (problem: DeviceProblem) =>
+    DevicePage.make({ step: DeviceRefused.make({ code: "WDJBMJHT", problem }) })
+
+  const onDevice = (path: string, page: DevicePage): Model => ({
+    ...init({ workspace, theme: "light" }, at(path)).model,
+    loading: false,
+    page: Option.some(page),
+  })
+
+  const requestedBy = (result: Stepped) =>
+    (result.commands ?? []).map((command) => ({ name: command.name, args: command.args }))
+
+  it("looks the linked or typed code up in its stored form, and refuses one the CLI can't print", () => {
+    const linked = update(
+      onDevice("/device?user_code=wdjb-mjht", entry),
+      SubmittedForm({ form: "device-code" }),
+    )
+    expect(requestedBy(linked)).toEqual([{ name: "LookUpDevice", args: { code: "WDJBMJHT" } }])
+    const typed = update(
+      update(
+        onDevice("/device?user_code=WDJBMJHT", entry),
+        ChangedField({ name: "device-code", value: "kplq 7rst" }),
+      ).model,
+      SubmittedForm({ form: "device-code" }),
+    )
+    expect(requestedBy(typed)).toEqual([{ name: "LookUpDevice", args: { code: "KPLQ7RST" } }])
+    const mistyped = update(
+      update(onDevice("/device", entry), ChangedField({ name: "device-code", value: "WDJB-MJH0" }))
+        .model,
+      SubmittedForm({ form: "device-code" }),
+    )
+    expect(requestedBy(mistyped)).toEqual([])
+    expect(mistyped.model.formError).toEqual(
+      Option.some("Enter the code from your terminal. It looks like ABCD-EFGH."),
+    )
+  })
+
+  it("sends no decision for a code that wasn't looked up or that the lookup refused", () => {
+    const pages = [entry, refusedFor("expired"), refusedFor("invalid"), refusedFor("elsewhere")]
+    expect(
+      pages.flatMap((page) =>
+        ["device-approve", "device-deny"].flatMap((form) =>
+          requestedBy(
+            update(onDevice("/device?user_code=WDJBMJHT", page), SubmittedForm({ form })),
+          ),
+        ),
+      ),
+    ).toEqual([])
+  })
+
+  it("approves or denies exactly the code the lookup confirmed", () => {
+    const model = onDevice("/device?user_code=KPLQ7RST", reviewed)
+    expect(requestedBy(update(model, SubmittedForm({ form: "device-approve" })))).toEqual([
+      { name: "DecideDevice", args: { code: "WDJBMJHT", decision: "approved" } },
+    ])
+    expect(requestedBy(update(model, SubmittedForm({ form: "device-deny" })))).toEqual([
+      { name: "DecideDevice", args: { code: "WDJBMJHT", decision: "denied" } },
+    ])
+  })
+
+  it("sends a decision once while it is in flight, and shows the answer that comes back", () => {
+    const sent = update(onDevice("/device", reviewed), SubmittedForm({ form: "device-approve" }))
+    expect(requestedBy(update(sent.model, SubmittedForm({ form: "device-approve" })))).toEqual([])
+    const answered = update(
+      sent.model,
+      AnsweredDevice({
+        code: "WDJBMJHT",
+        page: DevicePage.make({
+          step: DeviceDecided.make({ code: "WDJBMJHT", decision: "approved" }),
+        }),
+      }),
+    )
+    expect(answered.model.submitting).toBe(false)
+    expect(Option.map(answered.model.page, (page) => page._tag)).toEqual(Option.some("DevicePage"))
+  })
+
+  it("drops an answer for a code the page is no longer waiting on", () => {
+    const lookingUpX = update(
+      onDevice("/device", entry),
+      ChangedField({ name: "device-code", value: "WDJB-MJHT" }),
+    )
+    const sentX = update(lookingUpX.model, SubmittedForm({ form: "device-code" }))
+    const answerFor = (code: string) =>
+      AnsweredDevice({
+        code,
+        page: DevicePage.make({ step: DeviceRefused.make({ code, problem: "invalid" }) }),
+      })
+    const stale = update(sentX.model, answerFor("KPLQ7RST"))
+    expect(stale.model.page).toEqual(sentX.model.page)
+    expect(stale.model.submitting).toBe(true)
+    const settled = update(sentX.model, answerFor("WDJBMJHT"))
+    expect(settled.model.submitting).toBe(false)
+    expect(update(settled.model, answerFor("WDJBMJHT")).model.page).toEqual(settled.model.page)
+    expect(update(onDevice("/device", reviewed), answerFor("WDJBMJHT")).model.page).toEqual(
+      Option.some(reviewed),
+    )
+  })
+
+  it("lets a fresh link's code replace a code typed earlier", () => {
+    const typed = update(
+      onDevice("/device?user_code=WDJBMJHT", entry),
+      ChangedField({ name: "device-code", value: "KPLQ7RST" }),
+    )
+    const relinked = update(typed.model, ChangedUrl({ url: at("/device?user_code=QRQRJT5P") }))
+    expect(relinked.model.fields["device-code"]).toBeUndefined()
+    const loaded = { ...relinked.model, loading: false, page: Option.some(entry) }
+    expect(requestedBy(update(loaded, SubmittedForm({ form: "device-code" })))).toEqual([
+      { name: "LookUpDevice", args: { code: "QRQRJT5P" } },
+    ])
+  })
+
+  it("approves the looked-up code even after the field is edited to another", () => {
+    const sent = update(
+      update(onDevice("/device", entry), ChangedField({ name: "device-code", value: "WDJBMJHT" }))
+        .model,
+      SubmittedForm({ form: "device-code" }),
+    )
+    const reviewing = update(sent.model, AnsweredDevice({ code: "WDJBMJHT", page: reviewed }))
+    const edited = update(reviewing.model, ChangedField({ name: "device-code", value: "KPLQ7RST" }))
+    expect(requestedBy(update(edited.model, SubmittedForm({ form: "device-approve" })))).toEqual([
+      { name: "DecideDevice", args: { code: "WDJBMJHT", decision: "approved" } },
+    ])
+  })
+
+  it("retries the same code, or starts over with an empty field", () => {
+    expect(
+      requestedBy(
+        update(
+          onDevice("/device", refusedFor("unreachable")),
+          SubmittedForm({ form: "device-retry" }),
+        ),
+      ),
+    ).toEqual([{ name: "LookUpDevice", args: { code: "WDJBMJHT" } }])
+    const restarted = update(
+      onDevice("/device?user_code=WDJBMJHT", refusedFor("expired")),
+      SubmittedForm({ form: "device-restart" }),
+    )
+    expect(restarted.model.page).toEqual(Option.some(entry))
+    expect(restarted.model.fields["device-code"]).toBe("")
   })
 })

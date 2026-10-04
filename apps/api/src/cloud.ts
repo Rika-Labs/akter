@@ -17,9 +17,9 @@ import {
 } from "@akter/deployments/runners"
 import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
 import { migrate } from "@akter/postgres/migrate"
-import { Actors, Database } from "@rikalabs/akter/runtime"
+import { Actors, Database, RunnerAuthority } from "@rikalabs/akter/runtime"
 import { BunCrypto, BunServices } from "@effect/platform-bun"
-import { Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Effect, FileSystem, Layer, Option, Redacted, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import type { ApiOptions } from "./config.ts"
@@ -33,6 +33,40 @@ import {
 import { RuntimeEdge } from "./runtime.ts"
 import { MeteringRepositoryLive } from "./metering-repository.ts"
 import { RepositoryLive } from "./repository.ts"
+
+/**
+ * The local platform's runner peer authority: the one saved in `directory`,
+ * or a new one saved there on first use, or, without a directory, one that
+ * lasts as long as this process. Certificate and key share one file, which a
+ * new authority reaches only through a hard link that fails when the file
+ * exists, so processes starting together all end up with the one that won.
+ */
+export const localAuthority = (directory: string | undefined) =>
+  Effect.gen(function* () {
+    if (directory === undefined) return yield* RunnerAuthority.make()
+    const fs = yield* FileSystem.FileSystem
+    const bundle = `${directory}/authority.bundle.pem`
+    if (!(yield* fs.exists(bundle))) {
+      const created = yield* RunnerAuthority.make({ name: "akter local runner authority" })
+      yield* fs.makeDirectory(directory, { recursive: true })
+      const staging = yield* fs.makeTempDirectory({ directory, prefix: ".authority-" })
+      const staged = `${staging}/authority.bundle.pem`
+      yield* fs.writeFileString(staged, `${created.certificate}${Redacted.value(created.key)}`, {
+        mode: 0o600,
+      })
+      yield* fs.link(staged, bundle).pipe(Effect.ignore)
+      yield* fs.remove(staging, { recursive: true })
+    }
+    const text = yield* fs.readFileString(bundle)
+    const block = (label: string) =>
+      text.match(
+        new RegExp(`-----BEGIN ${label}-----[\\s\\S]+?-----END ${label}-----\\n`, "u"),
+      )?.[0] ?? ""
+    return yield* RunnerAuthority.from({
+      certificate: block("CERTIFICATE"),
+      key: Redacted.make(block("PRIVATE KEY")),
+    })
+  }).pipe(Effect.orDie)
 
 /** A caller's environment is resolved to an edge host; runner addresses and signing keys never reach API handlers. */
 export const runtimeEdge = (options: ApiOptions) =>
@@ -149,27 +183,30 @@ export const cloudRuntime = (options: ApiOptions) =>
   ).pipe(
     Layer.provide(
       options.runnerEcs === undefined
-        ? dockerRunners({
-            port: options.runnerPort ?? 8080,
-            network: options.runnerNetwork,
-            routeViaNetwork: options.runnerRouteViaNetwork,
-          }).pipe(Layer.provide(Layer.mergeAll(BunServices.layer, BunCrypto.layer)))
-        : ecsRunners(options.runnerEcs).pipe(
-            Layer.provide(
-              Layer.mergeAll(fromNodeProviderChain(), FetchHttpClient.layer, BunCrypto.layer),
+        ? Layer.unwrap(
+            Effect.map(localAuthority(options.runnerPeerAuthority), (peering) =>
+              Layer.mergeAll(
+                dockerRunners({
+                  port: options.runnerPort ?? 8080,
+                  network: options.runnerNetwork,
+                  routeViaNetwork: options.runnerRouteViaNetwork,
+                  peering,
+                }),
+                dockerMigrations({
+                  command: options.migrationCommand ?? ["bun", "run", "migrate"],
+                  network: options.runnerNetwork,
+                  peering,
+                }),
+              ),
             ),
-          ),
-    ),
-    Layer.provide(
-      options.runnerEcs === undefined
-        ? dockerMigrations({
-            command: options.migrationCommand ?? ["bun", "run", "migrate"],
-            network: options.runnerNetwork,
-          }).pipe(Layer.provide(Layer.mergeAll(BunServices.layer, BunCrypto.layer)))
-        : ecsMigrations({
-            ...options.runnerEcs,
-            command: options.migrationCommand ?? ["bun", "run", "migrate"],
-          }).pipe(
+          ).pipe(Layer.provide(Layer.mergeAll(BunServices.layer, BunCrypto.layer)))
+        : Layer.mergeAll(
+            ecsRunners(options.runnerEcs),
+            ecsMigrations({
+              ...options.runnerEcs,
+              command: options.migrationCommand ?? ["bun", "run", "migrate"],
+            }),
+          ).pipe(
             Layer.provide(
               Layer.mergeAll(fromNodeProviderChain(), FetchHttpClient.layer, BunCrypto.layer),
             ),

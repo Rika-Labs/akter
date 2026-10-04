@@ -144,7 +144,7 @@ export const instancesOf = (summary: ActorTypeSummary): ReadonlyArray<ActorInsta
     key,
     awake: summary.name !== "NightlyReport" && index < 6,
     generation: 14 + ((index * 7) % 23),
-    lastCommand: summary.commands![index % summary.commands!.length] ?? "—",
+    lastCommand: summary.commands?.[index % summary.commands.length] ?? "—",
     lastTurn: summary.name === "NightlyReport" ? "9h" : (lastTurns[index] ?? "1h"),
   }))
 
@@ -152,10 +152,15 @@ const activityPoints: Readonly<Record<SeriesWindow, number>> = { "1h": 60, "24h"
 
 const fixtureNow = DateTime.makeUnsafe("2026-10-03T14:00:00.000Z")
 
-/** A type's commands per second and the volume of each command over a window. Illustrative test data. */
+/**
+ * A type's commands per second and the volume of each command over a window. Illustrative test data;
+ * a live type whose rate and commands the runtime does not report gets a quiet base rate and no
+ * command volumes.
+ */
 export const typeActivity =
   (window: SeriesWindow) =>
   (summary: ActorTypeSummary): TypeActivity => {
+    const rate = summary.commandsPerSecond ?? 0
     const length = activityPoints[window]
     const step = (windowSeconds[window] * 1000) / (length - 1)
     const labelOf = seriesLabel(window)
@@ -168,14 +173,12 @@ export const typeActivity =
       ),
       perSecond: seededSeries({
         length,
-        base: Math.max(summary.commandsPerSecond!, 1),
-        volatility: Math.max(summary.commandsPerSecond!, 4) * 0.2,
+        base: Math.max(rate, 1),
+        volatility: Math.max(rate, 4) * 0.2,
         seed: summary.name.length * 13,
       }),
-      commands: summary.commands!.map((name, index) => {
-        const count = Math.round(
-          (summary.commandsPerSecond! * windowSeconds[window]) / (index + 1.6),
-        )
+      commands: (summary.commands ?? []).map((name, index) => {
+        const count = Math.round((rate * windowSeconds[window]) / (index + 1.6))
         return { name, count, perSecond: count / windowSeconds[window] }
       }),
     }
@@ -205,13 +208,37 @@ export const order: ActorPage = ActorPage.make({
     },
   ],
   receipts: [
-    { commandId: "cmd_7Hq2", command: "Place", result: "4200", at: "14:02:11", replayed: false },
-    { commandId: "cmd_7Hq2", command: "Place", result: "replayed", at: "14:02:12", replayed: true },
-    { commandId: "job_44f", command: "Charged", result: "ok", at: "14:02:17", replayed: false },
+    {
+      commandId: "cmd_7Hq2",
+      command: "Place",
+      result: "4200",
+      caller: { kind: "user", subject: "user:usr_dallen", source: null },
+      at: "14:02:11",
+      expires: "10-05 14:02",
+      replayed: false,
+    },
+    {
+      commandId: "cmd_7Hq2",
+      command: "Place",
+      result: "replayed",
+      caller: { kind: "user", subject: "user:usr_dallen", source: null },
+      at: "14:02:12",
+      expires: "10-05 14:02",
+      replayed: true,
+    },
+    {
+      commandId: "job_44f",
+      command: "Charged",
+      result: "ok",
+      caller: { kind: "system", subject: "user:usr_dallen", source: "job" },
+      at: "14:02:17",
+      expires: "10-05 14:02",
+      replayed: false,
+    },
   ],
   events: [
-    { cursor: "1184", name: "OrderPlaced", subscribers: 3 },
-    { cursor: "1191", name: "OrderCharged", subscribers: 2 },
+    { cursor: "1184", name: "OrderPlaced", emitted: "10-04 14:02", subscribers: 3 },
+    { cursor: "1191", name: "OrderCharged", emitted: "10-04 14:02", subscribers: 2 },
   ],
   jobs: [
     { id: "job_44f", name: "Charge", attempts: 2, status: "done" },
@@ -225,6 +252,7 @@ export const order: ActorPage = ActorPage.make({
       title: "committed",
       subject: "Place",
       detail: "receipt rc_91a · 3 rows · 6.2 ms",
+      caller: null,
       time: "14:02:11",
     },
     {
@@ -233,6 +261,7 @@ export const order: ActorPage = ActorPage.make({
       title: "emitted",
       subject: "OrderPlaced",
       detail: "cursor 1184 · 3 subscribers",
+      caller: null,
       time: "14:02:11",
     },
     {
@@ -241,6 +270,7 @@ export const order: ActorPage = ActorPage.make({
       title: "enqueued",
       subject: "Charge",
       detail: "job_44f · idempotency key is the job id",
+      caller: null,
       time: "14:02:11",
     },
     {
@@ -249,6 +279,7 @@ export const order: ActorPage = ActorPage.make({
       title: "timed out, retrying",
       subject: "Charge attempt 1",
       detail: "provider 504 · retry in 2 s",
+      caller: null,
       time: "14:02:14",
     },
     {
@@ -257,6 +288,7 @@ export const order: ActorPage = ActorPage.make({
       title: "committed",
       subject: "Charged",
       detail: "chargeId ch_3Q9xA2 · 4.1 ms",
+      caller: null,
       time: "14:02:17",
     },
   ],
@@ -276,6 +308,7 @@ export const actorTypePage =
           summary,
           instances: instancesOf(summary),
           activity: typeActivity(window)(summary),
+          activitySample: false,
         })
   }
 

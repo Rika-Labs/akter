@@ -6,6 +6,7 @@ export const jobs: JobsPage = JobsPage.make({
   queued: 88,
   running: 312,
   retrying: 17,
+  resolvable: true,
   deadLetters: [
     {
       id: "job_31c",

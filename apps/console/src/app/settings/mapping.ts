@@ -20,17 +20,17 @@ import {
   type Usage as CloudUsage,
   type UsageMeterName,
 } from "@akter/cloud-api"
-import { DateTime, Option, Schema } from "effect"
+import { DateTime, Match, Option, Schema } from "effect"
 import {
   type ApiKey,
   type AuditEntry,
   type Billing,
+  BillingPlan,
   type Domain,
   type Endpoint,
   type EnvironmentVariables,
   type Integration,
   type Invoice,
-  isUnboundPlan,
   type Member,
   type OrganizationSummary,
   PaidPlan,
@@ -202,18 +202,20 @@ export const toRegionChoices = (input: {
 
 /** An organization without a billing account keeps its `unbound` plan, which has no price or allowances. */
 export const toBilling = (billing: BillingSummary): Billing => ({
-  plan: isUnboundPlan(billing.plan)
-    ? billing.plan
-    : {
-        id: billing.plan.id,
-        name: billing.plan.name,
-        subscribed: billing.plan.subscribedId ?? billing.plan.id,
-        paymentStatus: billing.plan.paymentStatus ?? null,
-        basePriceCents: billing.plan.basePriceCents,
-        provisional: billing.plan.provisional ?? false,
-        renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
-        monthToDateCents: billing.plan.monthToDateEstimateCents,
-      },
+  plan: Match.valueTags(billing.plan, {
+    unbound: (plan) => plan,
+    known: (plan) =>
+      BillingPlan.make({
+        id: plan.id,
+        name: plan.name,
+        subscribed: plan.subscribedId ?? plan.id,
+        paymentStatus: plan.paymentStatus ?? null,
+        basePriceCents: plan.basePriceCents,
+        provisional: plan.provisional ?? false,
+        renewsAt: plan.renewsAt === null ? null : millis(plan.renewsAt),
+        monthToDateCents: plan.monthToDateEstimateCents,
+      }),
+  }),
   card:
     billing.paymentMethod === null
       ? null

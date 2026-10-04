@@ -4,6 +4,7 @@ import { UrlRequest } from "foldkit/navigation"
 import { Url } from "foldkit/url"
 import { CommandLogEntry } from "@akter/cloud-api"
 import { CommandAnswer } from "../commands/model.ts"
+import { DevicePage } from "../device/model.ts"
 import { Workspace } from "../workspace/model.ts"
 import { Dialog } from "./model.ts"
 import { PageData } from "./page.ts"
@@ -27,6 +28,8 @@ export const Message = defineMessageUnion({
   MovedPaletteSelection: { step: S.Literals([1, -1]) },
   HighlightedPaletteItem: { id: S.String },
   ChosePaletteItem: {},
+  SettledPaletteQuery: { query: S.String },
+  FoundActors: { query: S.String, actorTypes: S.Array(S.String), actors: S.Array(S.String) },
   ChoseTheme: { preference: Preference },
   ChangedField: { name: S.String, value: S.String },
   ToggledSetting: { key: S.String },
@@ -57,6 +60,7 @@ export const Message = defineMessageUnion({
   CreatedKey: { name: S.String, secret: S.String },
   SentRecoveryEmail: {},
   ResentVerification: {},
+  AnsweredDevice: { code: S.String, page: DevicePage },
   ConnectedTail: { session: S.Finite },
   StreamedTurn: { session: S.Finite, entry: CommandLogEntry },
   StoppedTail: { session: S.Finite, kind: S.String, message: S.String },
@@ -84,6 +88,8 @@ export const {
   MovedPaletteSelection,
   HighlightedPaletteItem,
   ChosePaletteItem,
+  SettledPaletteQuery,
+  FoundActors,
   ChoseTheme,
   ChangedField,
   ToggledSetting,
@@ -109,6 +115,7 @@ export const {
   CreatedKey,
   SentRecoveryEmail,
   ResentVerification,
+  AnsweredDevice,
   ConnectedTail,
   StreamedTurn,
   StoppedTail,

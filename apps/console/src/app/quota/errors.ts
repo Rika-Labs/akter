@@ -1,4 +1,4 @@
-import { formatCurrency, formatInteger } from "@akter/ui/geometry"
+import { formatCompact, formatCurrency, formatInteger } from "@akter/ui/geometry"
 import {
   CommandRefused,
   ConnectionLimitExceeded,
@@ -49,12 +49,17 @@ export const quotaKind = (refusal: QuotaRefusal): string =>
     ? "Unbillable"
     : refusal._tag
 
-/** What the console says about one refusal: what was refused, why, what still works, and the way out. */
+/**
+ * What the console says about one refusal: what was refused, why, what still works, and the way
+ * out. The command allowance counts usage units, in which a command weighs `unitsPerCommand` and a
+ * read one, so it is quoted in whole commands, rounded down; usage is not, because reads spend the
+ * same units and a count of commands used would not add up to it.
+ */
 export const quotaMessage = (refusal: QuotaRefusal): string =>
   Match.value(refusal).pipe(
     Match.tagsExhaustive({
-      QuotaExceeded: ({ period }) =>
-        `This organization has used all the commands its plan includes for ${formatPeriod(period)}, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance.`,
+      QuotaExceeded: ({ period, limitUnits, unitsPerCommand }) =>
+        `This organization has used the ${formatCompact(Math.floor(limitUnits / unitsPerCommand))} commands its plan includes for ${formatPeriod(period)}, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance.`,
       SpendLimitExceeded: ({ period, limitCents }) =>
         `This command would take ${formatPeriod(period)}’s spend past the ${formatCurrency(dollars(limitCents))} spend limit, so it wasn’t run. Raise or remove the limit in Billing to continue.`,
       ConnectionLimitExceeded: ({ open, limit }) =>

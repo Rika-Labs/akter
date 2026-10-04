@@ -1,5 +1,5 @@
 import { Schema as S } from "effect"
-import { EnvironmentName, ProjectId } from "@akter/cloud-api"
+import { CommandCaller, EnvironmentName, ProjectId } from "@akter/cloud-api"
 
 /** The server-resolved scope of the actor shown when a send dialog is opened. */
 export const CommandScope = S.Struct({ projectId: ProjectId, environment: EnvironmentName })
@@ -9,14 +9,19 @@ export type CommandScope = typeof CommandScope.Type
 export const TurnResult = S.Literals(["ok", "error", "replayed"])
 export type TurnResult = typeof TurnResult.Type
 
-/** One committed turn in the live tail. */
+/**
+ * One committed turn in the live tail. `time` and `took` read `—` when the log does not record
+ * them, and `caller` is whom the command ran as, null when unreported.
+ */
 export const TailEntry = S.Struct({
   sequence: S.Finite,
+  commandId: S.String,
   time: S.String,
   took: S.String,
   actorType: S.String,
   key: S.String,
   command: S.String,
+  caller: S.NullOr(CommandCaller),
   result: TurnResult,
   detail: S.String,
 })

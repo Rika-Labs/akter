@@ -1,10 +1,13 @@
 import { NotFound } from "@akter/cloud-api"
 import { DateTime, Effect, Schema } from "effect"
 import {
+  cloud,
   type ConsoleError,
   consoleError,
+  fixturesEnabled,
   type Loaded,
   load,
+  projectContext,
   selectedWindow,
   withProject,
 } from "../api/client.ts"
@@ -12,6 +15,41 @@ import { orUndefined } from "../overview/absent.ts"
 import { flattenLoaded, sourced } from "../overview/partial.ts"
 import { toActorInstance, toActorPage, toTypeActivity } from "./mapping.ts"
 import { type ActorPage, ActorTypePage, ActorsPage, MissingActorPage } from "./model.ts"
+
+/** The longest prefix the search endpoint accepts. */
+const searchLength = 256
+
+/** What the runtime's search found: actor type names and actor addresses, each as it ranked them. */
+export interface FoundInRuntime {
+  readonly actorTypes: ReadonlyArray<string>
+  readonly actors: ReadonlyArray<string>
+}
+
+const foundNothing: FoundInRuntime = { actorTypes: [], actors: [] }
+
+/**
+ * The actor types and actor addresses in the selected environment that start with `prefix`. The
+ * palette offers them as a convenience, so sample data searches nothing and a search that fails
+ * for any reason finds nothing instead of interrupting what the person is typing. Other kinds of
+ * hit are left to the pages that list them.
+ */
+export const searchActors = (prefix: string): Effect.Effect<FoundInRuntime> =>
+  Effect.suspend(() => {
+    const q = prefix.trim().slice(0, searchLength)
+    if (fixturesEnabled() || q === "") return Effect.succeed(foundNothing)
+    return Effect.gen(function* () {
+      const api = yield* cloud
+      const { project, environment } = yield* projectContext
+      const found = yield* api.runtime.search({
+        params: { projectId: project.id, environment },
+        query: { q },
+      })
+      return {
+        actorTypes: found.flatMap((result) => (result.kind === "actor-type" ? [result.id] : [])),
+        actors: found.flatMap((result) => (result.kind === "actor" ? [result.id] : [])),
+      }
+    }).pipe(Effect.orElseSucceed(() => foundNothing))
+  })
 
 /** Loads the project's actor types. */
 export const loadActors: Effect.Effect<Loaded<ActorsPage>, ConsoleError> = withProject(
@@ -28,7 +66,7 @@ export const loadActors: Effect.Effect<Loaded<ActorsPage>, ConsoleError> = withP
 /**
  * Loads one actor type, its activity over the selected window and the first page of its instances,
  * or nothing when there is no such type. When only the activity endpoint is not implemented, the
- * summary and instances stay live and the page is marked sample.
+ * summary and instances stay live, so the page does too, and only its activity is marked sample.
  */
 export const loadActorType = (
   name: string,
@@ -49,15 +87,16 @@ export const loadActorType = (
               import("./fixtures.ts").then((fixtures) => fixtures.typeActivity(window)(summary)),
           )
           const now = yield* DateTime.now
-          return {
-            data: ActorTypePage.make({
+          return sourced(
+            ActorTypePage.make({
               commandScope: { projectId: project.id, environment },
               summary,
               instances: instances.items.map(toActorInstance(now)),
               activity: activity.data,
+              activitySample: activity.sample,
             }),
-            sample: activity.sample,
-          }
+            false,
+          )
         }).pipe(
           orUndefined,
           Effect.map(
@@ -73,8 +112,10 @@ export const loadActorType = (
 
 /**
  * Loads one actor for the inspector. An address the runtime reports as no actor at all has simply
- * never received a command, so it loads as a `MissingActorPage` that can send the first one; any
- * other missing resource, such as an environment with no live deployment, is nothing. When the
+ * never received a command, so it loads as a `MissingActorPage` that can send the first one, but
+ * only when the live deployment serves its type: the runtime answers an unknown type's address the
+ * same way, so the type is read to tell them apart. Any other missing resource, such as an
+ * environment with no live deployment or a type nobody serves, is nothing. When the
  * runtime cannot inspect actors yet, its job list still proves the actor exists: the page then
  * shows those live jobs and keeps the real command scope, so commands can be sent, while the rest
  * of the inspector is sample data. Only when the job list is unavailable too does the whole page
@@ -107,12 +148,19 @@ export const loadActor = (
         Effect.catchIf(
           (error) => Schema.is(NotFound)(error) && error.resource === "actor",
           () =>
-            Effect.succeed(
-              sourced<ActorPage | MissingActorPage>(
-                MissingActorPage.make({ ...input, commandScope }),
-                false,
+            api.runtime
+              .getActorType({
+                params: { projectId: project.id, environment, actorType: input.actorType },
+              })
+              .pipe(
+                Effect.catchTag("NotImplemented", () => Effect.void),
+                Effect.as(
+                  sourced<ActorPage | MissingActorPage>(
+                    MissingActorPage.make({ ...input, commandScope }),
+                    false,
+                  ),
+                ),
               ),
-            ),
         ),
         orUndefined,
         Effect.map(

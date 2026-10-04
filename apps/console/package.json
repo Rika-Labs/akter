@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "bun --bun vite --host 127.0.0.1 --port ${CONSOLE_PORT:-3000}",
     "build": "bun --bun vite build",
-    "preview": "bun --bun vite preview --host 127.0.0.1 --port ${CONSOLE_PORT:-3002} --strictPort",
+    "preview": "vite preview --host 127.0.0.1 --port ${CONSOLE_PORT:-3002} --strictPort",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
     "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts"

@@ -107,5 +107,39 @@ export const authStyles = stylex.create({
   regionPlace: { color: colors.foreground, fontSize: "0.9375rem" },
 })
 
+/** The device page's code, set large so it can be compared with the terminal at a glance. */
+export const deviceStyles = stylex.create({
+  prompt: {
+    marginBlockStart: space.sm,
+    color: colors.mutedForeground,
+    fontSize: typography.small,
+    lineHeight: typography.leadingNormal,
+  },
+  code: {
+    paddingBlock: space.lg,
+    borderWidth: borders.hairline,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: colors.card,
+    fontFamily: typography.mono,
+    fontSize: typography.title,
+    fontWeight: typography.weightMedium,
+    letterSpacing: "0.12em",
+    textAlign: "center",
+  },
+  details: {
+    display: "grid",
+    gridTemplateColumns: "max-content 1fr",
+    gap: `${space.sm} ${space.lg}`,
+    marginBlock: space.sm,
+    fontSize: typography.small,
+    lineHeight: typography.leadingNormal,
+  },
+  term: { color: colors.mutedForeground },
+  detail: { margin: 0, color: colors.foreground, overflowWrap: "anywhere" },
+  email: { display: "block", color: colors.mutedForeground },
+})
+
 /** Placement for full-width controls in the auth column. */
 export const authLayout = stylex.create({ fill: { width: "100%" } })

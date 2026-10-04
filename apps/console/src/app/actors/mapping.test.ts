@@ -34,14 +34,19 @@ const inspector = {
       commandId: "cmd_7Hq2",
       command: "Place",
       result: "4200",
-      caller: { kind: "user", subject: "user:usr_ada", source: null },
+      caller: { kind: "user", subject: "api-key:key_01J9ZK3Q", source: null },
       at: "2026-10-03T14:02:11.000Z",
       expiresAt: "2026-10-04T14:02:11.000Z",
       replayed: true,
     },
   ],
   events: [
-    { name: "OrderPlaced", cursor: "1184", emittedAt: "2026-10-03T14:02:12.000Z", subscribers: 3 },
+    {
+      name: "OrderPlaced",
+      cursor: "1184",
+      emittedAt: "2026-10-03T14:02:12.000Z",
+      subscribers: 3,
+    },
   ],
   jobs: [{ name: "Charge", id: "job_44f", attempts: 2, status: "retrying" }],
   connections: { sockets: 3, feedCursor: null },
@@ -59,22 +64,22 @@ const inspector = {
       at: "2026-10-03T14:02:11.000Z",
       kind: "command",
       label: "Place",
-      detail: "3 rows",
-      caller: { kind: "user", subject: "user:usr_ada", source: null },
+      detail: "v1.1791099825418.1791186225418.5979a62a-ca7e-48a3-82b3-fff071bcd715",
+      caller: { kind: "user", subject: "user:usr_1", source: null },
     },
     {
       at: "2026-10-03T14:02:12.000Z",
       kind: "event",
       label: "OrderPlaced",
       detail: null,
-      caller: { kind: "user", subject: "user:usr_ada", source: null },
+      caller: null,
     },
     {
       at: "2026-10-03T14:02:13.000Z",
       kind: "job",
       label: "Charge",
       detail: "attempt 1",
-      caller: null,
+      caller: { kind: "system", subject: null, source: "job" },
     },
   ],
 }
@@ -98,7 +103,9 @@ describe("actor inspector mapping", () => {
         expect(
           yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(page.state ?? ""),
         ).toEqual(inspector.state)
-        expect(page.events).toEqual([{ name: "OrderPlaced", cursor: "1184", subscribers: 3 }])
+        expect(page.events).toEqual([
+          { name: "OrderPlaced", cursor: "1184", emitted: "10-03 14:02", subscribers: 3 },
+        ])
         expect(page.jobs).toEqual([
           { name: "Charge", id: "job_44f", attempts: 2, status: "retrying" },
         ])
@@ -126,7 +133,12 @@ describe("actor inspector mapping", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const page = toActorPage(yield* decode(ActorInspector, inspector))
-        expect(page.receipts[0]).toMatchObject({ at: "14:02:11", replayed: true })
+        expect(page.receipts[0]).toMatchObject({
+          at: "14:02:11",
+          expires: "10-04 14:02",
+          caller: { kind: "user", subject: "api-key:key_01J9ZK3Q", source: null },
+          replayed: true,
+        })
         const activity = page.activity ?? []
         expect(
           activity.map((entry) => [
@@ -134,12 +146,13 @@ describe("actor inspector mapping", () => {
             entry.title,
             entry.subject,
             entry.detail,
+            entry.caller?.kind ?? null,
             entry.time,
           ]),
         ).toEqual([
-          [true, "committed", "Place", "3 rows", "14:02:11"],
-          [false, "emitted", "OrderPlaced", "", "14:02:12"],
-          [false, "ran", "Charge", "attempt 1", "14:02:13"],
+          [true, "committed", "Place", "5979a62a", "user", "14:02:11"],
+          [false, "emitted", "OrderPlaced", "", null, "14:02:12"],
+          [false, "ran", "Charge", "attempt 1", "system", "14:02:13"],
         ])
         expect(new Set(activity.map((entry) => entry.key)).size).toBe(3)
       }),
@@ -153,7 +166,9 @@ describe("actor inspector mapping", () => {
             ...inspector,
             turn: null,
             tables: null,
-            receipts: [{ ...inspector.receipts[0], result: null, at: null, replayed: false }],
+            receipts: [
+              { ...inspector.receipts[0], result: null, caller: null, at: null, replayed: false },
+            ],
             events: [{ ...inspector.events[0], subscribers: null }],
             connections: { sockets: null, feedCursor: "1184" },
             properties: { ...inspector.properties, status: null, mailboxDepth: null, region: null },
@@ -170,7 +185,9 @@ describe("actor inspector mapping", () => {
           activity: null,
           connections: { sockets: null, feedCursor: "1184" },
           events: [{ name: "OrderPlaced", cursor: "1184", subscribers: null }],
-          receipts: [{ commandId: "cmd_7Hq2", command: "Place", result: "—", at: "—" }],
+          receipts: [
+            { commandId: "cmd_7Hq2", command: "Place", result: "—", caller: null, at: "—" },
+          ],
         })
       }),
     ))
@@ -235,6 +252,20 @@ describe("actor instance mapping", () => {
           generation: 7,
           lastCommand: "Add",
           lastTurn: "2m",
+        })
+        const unreported = yield* decode(ActorInstance, {
+          key: "c_3",
+          status: null,
+          lastCommand: null,
+          lastActivityAt: null,
+          generation: 2,
+        })
+        expect(toActorInstance(now)(unreported)).toEqual({
+          key: "c_3",
+          awake: null,
+          generation: 2,
+          lastCommand: "—",
+          lastTurn: "—",
         })
       }),
     ))

@@ -140,7 +140,7 @@ test("decodes command SSE into the tail and refreshes the snapshot on reconnect"
       streams += 1
       return route.fulfill({
         contentType: "text/event-stream",
-        body: 'data: {"commandId":"v1.1791110096789.1791196496789.0b6e2f4a-3c8d-4e1f-a7b2-9d5c6e8f1a03","at":"2026-10-03T12:34:56.789Z","durationMs":7.5,"address":"Order/team/a","command":"Refund","caller":{"kind":"user","subject":"user:usr_ada","source":null},"payloadPreview":"","outcome":"error","errorTag":"Denied"}\n\n',
+        body: 'data: {"commandId":"cmd_sse","at":"2026-10-03T12:34:56.789Z","durationMs":7.5,"address":"Order/team/a","command":"Refund","caller":null,"payloadPreview":"","outcome":"error","errorTag":"Denied"}\n\n',
       })
     }
     return controlPlane(route)
@@ -907,19 +907,14 @@ const unreportedInspector = (count: number) => ({
       commandId: "cmd_first",
       command: "Increment",
       result: "Success",
-      caller: { kind: "user", subject: "user:usr_ada", source: null },
+      caller: { kind: "user", subject: "user:runtime_user", source: null },
       at: null,
-      expiresAt: "2026-10-04T12:00:00.000Z",
+      expiresAt: "2026-10-05T12:00:00Z",
       replayed: false,
     },
   ],
   events: [
-    {
-      name: "Incremented",
-      cursor: "1",
-      emittedAt: "2026-10-03T12:00:00.000Z",
-      subscribers: null,
-    },
+    { name: "Incremented", cursor: "1", emittedAt: "2026-10-04T12:00:00Z", subscribers: null },
   ],
   jobs: [],
   connections: { sockets: null, feedCursor: "1" },
@@ -980,11 +975,11 @@ test("shows a live inspector without the sample notice and its unreported fields
   await expect(page.getByText("Owned rows aren’t reported")).toBeVisible()
   await inspectorTabs.getByRole("link", { name: "Receipts", exact: true }).click()
   await expect(page.getByRole("table", { name: "Receipts" }).getByRole("row").nth(1)).toHaveText(
-    "cmd_firstIncrementSuccess—",
+    "cmd_firstIncrementSuccessRuntime Operator—10-05 12:00",
   )
   await inspectorTabs.getByRole("link", { name: "Events", exact: true }).click()
   await expect(page.getByRole("table", { name: "Events" }).getByRole("row").nth(1)).toHaveText(
-    "1Incremented—",
+    "1Incremented10-04 12:00—",
   )
   await inspectorTabs.getByRole("link", { name: "Jobs", exact: true }).click()
   await expect(page.getByRole("table", { name: "Jobs" })).toContainText("No pending or dead jobs")
@@ -1042,4 +1037,228 @@ test("offers Send first command when inspection finds no actor, then inspects th
   expect(sent).toEqual([
     expect.objectContaining({ address: "Counter/hits", command: "Increment", payload: 1 }),
   ])
+})
+
+/** The runtime as the runners' durable views report it: counts are measured, rates and health are not. */
+const durableRuntime = (route: Route) => {
+  const path = new URL(route.request().url()).pathname
+  const runtime = "/api/projects/runtime_project/environments/production/runtime"
+  if (path === `${runtime}/overview`)
+    return route.fulfill({
+      json: {
+        commands: null,
+        actors: { awake: null, total: 2 },
+        jobs: { inFlight: 1, donePerHour: null },
+        deadLettersByJobType: [{ jobName: "Charge", count: 1 }],
+        throughput: null,
+        p99: null,
+        health: {
+          runners: null,
+          databaseCpuPercent: null,
+          maxMailbox: null,
+          parkedSockets: null,
+          outboxLagP99Ms: null,
+          lastDeployAt: null,
+        },
+        recentDeployments: null,
+      },
+    })
+  if (path === "/api/projects/runtime_project/deployments")
+    return route.fulfill({ json: { items: [liveDeployment], nextCursor: null } })
+  if (path === `${runtime}/actor-types`)
+    return route.fulfill({
+      json: [
+        {
+          name: "Counter",
+          commands: null,
+          instances: 2,
+          awake: null,
+          commandsPerSecond: null,
+          p99Ms: null,
+          maxMailbox: null,
+        },
+      ],
+    })
+  if (path === `${runtime}/commands`)
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            commandId: "v1.1791099825418.1791186225418.5979a62a-ca7e-48a3-82b3-fff071bcd715",
+            at: null,
+            durationMs: null,
+            address: "Counter/hits",
+            command: "Increment",
+            caller: { kind: "user", subject: "user:runtime_user", source: null },
+            payloadPreview: null,
+            outcome: "ok",
+            errorTag: null,
+          },
+          {
+            commandId: "cmd_key",
+            at: null,
+            durationMs: null,
+            address: "Counter/misses",
+            command: "Increment",
+            caller: { kind: "user", subject: "api-key:key_runtime_ci", source: null },
+            payloadPreview: null,
+            outcome: "error",
+            errorTag: "Overflow",
+          },
+        ],
+        nextCursor: null,
+      },
+    })
+  if (path === `${runtime}/jobs`)
+    return route.fulfill({
+      json: {
+        queued: 0,
+        running: null,
+        retrying: 0,
+        dead: 1,
+        byType: [{ jobName: "Charge", done: null, retried: 0, dead: 1, p99Ms: null }],
+        throughput: null,
+      },
+    })
+  if (path === `${runtime}/dead-letters`)
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: "dl_runtime",
+            jobName: "Charge",
+            jobId: "job_runtime",
+            actor: "Counter/hits",
+            attempts: 3,
+            lastError: "declined",
+            since: "2026-10-03T11:00:00Z",
+          },
+        ],
+        nextCursor: null,
+      },
+    })
+  if (path === `${runtime}/workflows`)
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: "wf_done",
+            name: "Fulfil",
+            actor: "Counter/hits",
+            step: null,
+            waitingFor: null,
+            startedAt: "2026-10-03T10:00:00Z",
+            status: "completed",
+          },
+          {
+            id: "wf_running",
+            name: "Charge",
+            actor: "Counter/misses",
+            step: { index: 2, total: null, name: "pay" },
+            waitingFor: null,
+            startedAt: "2026-10-03T11:00:00Z",
+            status: "running",
+          },
+        ],
+        nextCursor: null,
+      },
+    })
+  if (path === `${runtime}/timers`) return route.fulfill({ json: { pending: 0, nextFireAt: null } })
+  return controlPlane(route)
+}
+
+const serveDurableRuntime = async (page: Page) => {
+  await signIn(page)
+  await page.route("**/api/**", durableRuntime)
+}
+
+const noUnknownWords = async (page: Page) => {
+  await expect(page.getByRole("main")).not.toContainText(/null|NaN|undefined/)
+}
+
+test("overview reads unmeasured numbers as dashes and marks only the sample distribution", async ({
+  page,
+}) => {
+  await serveDurableRuntime(page)
+  await page.goto(origin)
+  const main = page.getByRole("main")
+  await expect(page.getByRole("region", { name: "Health" })).toContainText(
+    /Runners\s*—\s*Database\s*—\s*Mailbox depth\s*—\s*Parked sockets\s*—\s*Outbox lag\s*—\s*Dead letters\s*1 need a decision/,
+  )
+  await expect(main).toContainText(/Commands \/ s\s*—/)
+  await expect(main).toContainText(/Awake actors\s*—/)
+  await expect(page.getByRole("region", { name: "Throughput" })).toContainText(
+    "Throughput isn’t reported.",
+  )
+  await expect(page.getByRole("region", { name: "Turn latency", exact: true })).toContainText(
+    "Turn latency isn’t reported.",
+  )
+  await expect(page.getByRole("table", { name: "Recent deploys" })).toContainText("Current release")
+  await expect(page.getByRole("note")).toHaveCount(1)
+  await expect(
+    page.getByRole("region", { name: "Turn latency distribution" }).getByRole("note"),
+  ).toHaveText("Sample data — this part isn’t connected yet.")
+  await expect(page.getByRole("button", { name: "Time range: last 24 hours" })).toBeDisabled()
+  await noUnknownWords(page)
+})
+
+test("command log shows short ids and callers beside unrecorded times", async ({ page }) => {
+  await serveDurableRuntime(page)
+  await page.goto(`${origin}/commands`)
+  const table = page.getByRole("table", { name: "Committed turns, newest first" })
+  const own = table.getByRole("row").filter({ hasText: "Counter/hits" })
+  await expect(own).toContainText(
+    /—\s*5979a62a\s*—\s*Counter\/hits\s*Increment\s*Runtime Operator\s*ok/,
+  )
+  await expect(
+    own.getByTitle("v1.1791099825418.1791186225418.5979a62a-ca7e-48a3-82b3-fff071bcd715"),
+  ).toHaveText("5979a62a")
+  await expect(table.getByRole("row").filter({ hasText: "Counter/misses" })).toContainText(
+    /cmd_key\s*—\s*Counter\/misses\s*Increment\s*API key …ime_ci\s*Overflow/,
+  )
+  await expect(
+    page.getByText("Live updates aren’t connected yet. Showing the latest fetched commands."),
+  ).toBeVisible()
+  await expect(page.getByRole("note")).toHaveCount(0)
+  await noUnknownWords(page)
+})
+
+test("jobs keep live dead letters read-only with one reason and unmeasured totals as dashes", async ({
+  page,
+}) => {
+  await serveDurableRuntime(page)
+  await page.goto(`${origin}/jobs`)
+  await expect(page.getByRole("main")).toContainText(/Running\s*—/)
+  await expect(page.getByRole("table", { name: "Jobs by type" })).toContainText(
+    /Charge\s*—\s*0\s*1\s*—/,
+  )
+  await expect(page.getByRole("region", { name: "Throughput" })).toContainText(
+    "Job throughput isn’t reported.",
+  )
+  await expect(page.getByText("Retry and discard aren’t available yet.")).toHaveCount(1)
+  await expect(page.getByRole("button", { name: "Retry job_runtime" })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Discard job_runtime" })).toBeDisabled()
+  await expect(page.getByRole("button", { name: "Retry all" })).toBeDisabled()
+  await expect(page.getByRole("link", { name: "Counter/hits" })).toBeVisible()
+  await expect(page.getByRole("note")).toHaveCount(0)
+  await noUnknownWords(page)
+})
+
+test("workflows show unknown steps plainly and mark only the sample schedules", async ({
+  page,
+}) => {
+  await serveDurableRuntime(page)
+  await page.goto(`${origin}/workflows`)
+  const runs = page.getByRole("table", { name: "Workflows" })
+  await expect(runs.getByRole("row").filter({ hasText: "Fulfil" })).toContainText(
+    /Counter\/hits\s*—\s*—/,
+  )
+  await expect(runs.getByRole("row").filter({ hasText: "Charge" })).toContainText("pay · step 2")
+  await expect(page.getByRole("note")).toHaveCount(1)
+  await expect(page.getByRole("region", { name: "Schedules" }).getByRole("note")).toHaveText(
+    "Sample data — this part isn’t connected yet.",
+  )
+  await expect(page.getByRole("main")).toContainText(/Schedules\s*—/)
+  await expect(runs.getByRole("link")).toHaveCount(2)
+  await noUnknownWords(page)
 })

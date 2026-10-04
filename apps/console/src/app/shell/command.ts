@@ -17,17 +17,21 @@ import {
   newCommandId,
 } from "../api/client.ts"
 import * as Auth from "../auth/client.ts"
+import { decideDevice, lookUpDevice } from "../device/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
 import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts"
 import { sendCommand } from "../commands/client.ts"
 import { CommandScope } from "../commands/model.ts"
+import type { DevicePage } from "../device/model.ts"
+import { searchActors } from "../actors/client.ts"
 import * as Settings from "../settings/client.ts"
 import { spendLimitKey } from "../settings/keys.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
 import {
+  AnsweredDevice,
   CompletedAuth,
   CompletedEffect,
   CreatedKey,
@@ -41,7 +45,9 @@ import {
   PreparedCommandId,
   Mutated,
   FailedPage,
+  FoundActors,
   LoadedPage,
+  SettledPaletteQuery,
   LoadedWorkspace,
   ResentVerification,
   RetriedPage,
@@ -304,6 +310,35 @@ export const DeclineInvitation = Command.define("DeclineInvitation", {
 })
 
 /**
+ * Answers a device page step for `code`, or fails the page; an `Unauthorized` failure first
+ * remembers this page so signing in comes back to it.
+ */
+const answerDevice = (code: string, step: Effect.Effect<DevicePage, ConsoleError>) =>
+  step.pipe(
+    Effect.map((page) => AnsweredDevice({ code, page })),
+    Effect.tapError((error) =>
+      error.kind === "Unauthorized" ? Effect.sync(rememberAuthReturn) : Effect.void,
+    ),
+    Effect.catch((error) =>
+      Effect.succeed(FailedPage({ kind: error.kind, message: error.message })),
+    ),
+  )
+
+/** Looks a typed or linked device code up before anything about it is offered. */
+export const LookUpDevice = Command.define("LookUpDevice", {
+  args: { code: S.String },
+  messages: [AnsweredDevice, FailedPage],
+  execute: ({ code }) => answerDevice(code, lookUpDevice(code)),
+})
+
+/** Approves or denies a device code the person reviewed. */
+export const DecideDevice = Command.define("DecideDevice", {
+  args: { code: S.String, decision: S.Literals(["approved", "denied"]) },
+  messages: [AnsweredDevice, FailedPage],
+  execute: ({ code, decision }) => answerDevice(code, decideDevice({ code, decision })),
+})
+
+/**
  * Remembers the chosen environment for this tab, then asks the shell to reload the page and the
  * workspace, which belong to one environment.
  */
@@ -315,6 +350,31 @@ export const SelectEnvironment = Command.define("SelectEnvironment", {
       Effect.ignore,
       Effect.as(RetriedPage()),
     ),
+})
+
+/** How long the palette's query must stay unchanged before the runtime is searched for it. */
+const paletteSettle = Duration.millis(150)
+
+/**
+ * Waits for the palette's query to settle, so typing a word asks the runtime once rather than once
+ * per keystroke; the update searches only if the query is still the same when this answers.
+ */
+export const SettlePaletteQuery = Command.define("SettlePaletteQuery", {
+  args: { query: S.String },
+  messages: [SettledPaletteQuery],
+  execute: ({ query }) =>
+    Effect.sleep(paletteSettle).pipe(Effect.as(SettledPaletteQuery({ query }))),
+})
+
+/**
+ * Searches actor types and actor addresses that start with what the palette holds; a failed search
+ * finds none.
+ */
+export const SearchActors = Command.define("SearchActors", {
+  args: { query: S.String },
+  messages: [FoundActors],
+  execute: ({ query }) =>
+    searchActors(query).pipe(Effect.map((found) => FoundActors({ query, ...found }))),
 })
 
 /** Persists the requested chart window before reloading its endpoint data. */

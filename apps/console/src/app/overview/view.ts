@@ -25,6 +25,7 @@ import { capNoticeView } from "../quota/view.ts"
 import { CopiedText } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { DeploySummary, EmptyProjectPage, OverviewPage } from "./model.ts"
+import { orUnknown, sampleNotice, unreported } from "../shell/unknown.ts"
 import { seriesWindows, windowName } from "./time.ts"
 import { windowMenu } from "./window.ts"
 
@@ -54,7 +55,7 @@ export const deployStatus =
     status(h, { label: deploy.status, tone: deployTones[deploy.status] })
 
 const healthLinks = (page: OverviewPage, sample: boolean): ReadonlyMap<string, string> => {
-  const live = page.deploys.find((deploy) => deploy.status === "Live")
+  const live = page.deploys?.find((deploy) => deploy.status === "Live")
   return new Map([
     ["Database", Routes.regions()],
     ["Dead letters", Routes.jobs()],
@@ -78,7 +79,11 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
     title: "Overview",
     crumbs: [{ label: "Overview" }],
     actions: [
-      windowMenu(h, { id: "range-menu", selected, disabled: model.pageSample }),
+      windowMenu(h, {
+        id: "range-menu",
+        selected,
+        disabled: model.pageSample || page.distributionSample,
+      }),
       button(h, { label: "Deploy", variant: "primary", size: "sm", href: Routes.deployments() }),
     ],
     body: pageBody(h, [
@@ -100,33 +105,35 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
             title: "Throughput",
             meta: "commands per second",
             children: [
-              lineChart(h, {
-                id: "throughput",
-                label: "Commands per second over the last 24 hours",
-                categories: page.hours,
-                height: 210,
-                markers: page.markers,
-                series: [
-                  {
-                    id: "today",
-                    label: "Today",
-                    values: page.throughput,
-                    variant: "primary",
-                    area: true,
-                  },
-                  ...(page.previous.length === 0
-                    ? []
-                    : [
-                        {
-                          id: "yesterday",
-                          label: "Yesterday",
-                          values: page.previous,
-                          variant: "secondary" as const,
-                        },
-                      ]),
-                ],
-                formatValue: formatInteger,
-              }),
+              page.throughput === null
+                ? unreported(h, "Throughput isn’t reported.")
+                : lineChart(h, {
+                    id: "throughput",
+                    label: "Commands per second over the last 24 hours",
+                    categories: page.hours,
+                    height: 210,
+                    markers: page.markers,
+                    series: [
+                      {
+                        id: "today",
+                        label: "Today",
+                        values: page.throughput,
+                        variant: "primary",
+                        area: true,
+                      },
+                      ...(page.previous.length === 0
+                        ? []
+                        : [
+                            {
+                              id: "yesterday",
+                              label: "Yesterday",
+                              values: page.previous,
+                              variant: "secondary" as const,
+                            },
+                          ]),
+                    ],
+                    formatValue: formatInteger,
+                  }),
             ],
           }),
           section(h, {
@@ -136,6 +143,7 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
                 ruled: true,
                 layout: "wide",
                 items: page.health.map((fact) => {
+                  if (fact.healthy === null) return { label: fact.label, value: fact.value }
                   const word = status(h, {
                     tone: fact.healthy ? "live" : "attention",
                     label: fact.value,
@@ -159,24 +167,29 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
         children: [
           section(h, {
             title: "Turn latency",
-            meta: `p50 ${page.latency.p50 === null ? "—" : formatDuration(page.latency.p50)} · p99 ${page.latency.p99 === null ? "—" : formatDuration(page.latency.p99)} · last 24 hours`,
+            meta:
+              page.latency.p50 === null && page.latency.p99 === null
+                ? "last 24 hours"
+                : `p50 ${orUnknown(formatDuration)(page.latency.p50)} · p99 ${orUnknown(formatDuration)(page.latency.p99)} · last 24 hours`,
             children: [
-              lineChart(h, {
-                id: "latency",
-                label: "Turn latency, 99th percentile",
-                categories: page.latency.hours,
-                height: 180,
-                series: [
-                  {
-                    id: "p99",
-                    label: "p99",
-                    values: page.latency.p99Series,
-                    variant: "primary",
-                    area: true,
-                  },
-                ],
-                formatValue: formatDuration,
-              }),
+              page.latency.p99Series === null
+                ? unreported(h, "Turn latency isn’t reported.")
+                : lineChart(h, {
+                    id: "latency",
+                    label: "Turn latency, 99th percentile",
+                    categories: page.latency.hours,
+                    height: 180,
+                    series: [
+                      {
+                        id: "p99",
+                        label: "p99",
+                        values: page.latency.p99Series,
+                        variant: "primary",
+                        area: true,
+                      },
+                    ],
+                    formatValue: formatDuration,
+                  }),
             ],
           }),
           section(h, {
@@ -185,20 +198,24 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
               button(h, { label: "All deploys", variant: "link", href: Routes.deployments() }),
             ],
             children: [
-              dataTable(h, {
-                label: "Recent deploys",
-                columns: [
-                  { key: "commit", label: "Commit", width: "5.5rem", mono: true },
-                  { key: "message", label: "Message", width: "minmax(0, 1fr)" },
-                  { key: "status", label: "Status", width: "7.5rem", hideBelow: "compact" },
-                  { key: "when", label: "When", width: "3rem", align: "end" },
-                ],
-                rows: page.deploys.map((deploy) => ({
-                  key: deploy.id,
-                  href: model.pageSample ? undefined : Routes.deployment({ deployment: deploy.id }),
-                  cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
-                })),
-              }),
+              page.deploys === null
+                ? unreported(h, "Recent deploys aren’t reported.")
+                : dataTable(h, {
+                    label: "Recent deploys",
+                    columns: [
+                      { key: "commit", label: "Commit", width: "5.5rem", mono: true },
+                      { key: "message", label: "Message", width: "minmax(0, 1fr)" },
+                      { key: "status", label: "Status", width: "7.5rem", hideBelow: "compact" },
+                      { key: "when", label: "When", width: "3rem", align: "end" },
+                    ],
+                    rows: page.deploys.map((deploy) => ({
+                      key: deploy.id,
+                      href: model.pageSample
+                        ? undefined
+                        : Routes.deployment({ deployment: deploy.id }),
+                      cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
+                    })),
+                  }),
             ],
           }),
         ],
@@ -221,8 +238,9 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
             section(h, {
               title: "Turn latency distribution",
               meta: `${formatInteger(page.distribution.total)} turns · ${windowName[page.distribution.window]}`,
-              children:
-                page.distribution.total === 0
+              children: [
+                ...(page.distributionSample ? [sampleNotice(h)] : []),
+                ...(page.distribution.total === 0
                   ? [
                       h.p(
                         [...styleAttributes(h, styles.quiet)],
@@ -241,7 +259,8 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
                           highlight: bar.tail,
                         })),
                       }),
-                    ],
+                    ]),
+              ],
             }),
           ]),
     ]),

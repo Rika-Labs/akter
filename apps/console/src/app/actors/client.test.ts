@@ -9,7 +9,7 @@ import {
   notImplemented,
   signedIn,
 } from "../overview/testing.ts"
-import { loadActor, loadActorType, loadActors } from "./client.ts"
+import { loadActor, loadActorType, loadActors, searchActors } from "./client.ts"
 import { ActorPage, ActorsPage, ActorTypePage, MissingActorPage } from "./model.ts"
 
 beforeEach(() => {
@@ -129,13 +129,14 @@ describe("actor type over the live API", () => {
       }),
     ))
 
-  it("keeps the live summary and instances and marks the page sample when only activity is not implemented", () =>
+  it("keeps the page live and marks only its activity sample when only activity is not implemented", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const loaded = yield* load(
           live({ [`${base}/activity`]: notImplemented("runtime.activity") }),
         )
-        expect(loaded.sample).toBe(true)
+        expect(loaded.sample).toBe(false)
+        expect(loaded.data?.activitySample).toBe(true)
         expect(loaded.data?.summary).toMatchObject({ instances: 3, commandsPerSecond: 0.5 })
         expect(loaded.data?.instances.map((instance) => instance.key)).toEqual(["ord_1"])
         expect(loaded.data?.activity.window).toBe("1h")
@@ -193,6 +194,22 @@ describe("actor type over the live API", () => {
 
 const actor = "/api/projects/prj_1/environments/production/runtime/actors/Counter/hits"
 
+const counterType = "/api/projects/prj_1/environments/production/runtime/actor-types/Counter"
+
+const served = {
+  [counterType]: {
+    body: {
+      name: "Counter",
+      commands: null,
+      instances: 1,
+      awake: null,
+      commandsPerSecond: null,
+      p99Ms: null,
+      maxMailbox: null,
+    },
+  },
+}
+
 const inspect = (answers: Readonly<Record<string, MockedAnswer>>) => {
   const responder = apiResponder({ ...signedIn({ status: "live" }), ...answers })
   fetch.mockImplementation(responder.respond)
@@ -249,6 +266,7 @@ describe("actor inspector over the live API", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const { loaded } = inspect({
+          ...served,
           [actor]: notImplemented("runtime.inspectActor"),
           [`${actor}/jobs`]: notFound({ resource: "actor", id: "Counter/hits" }),
         })
@@ -261,9 +279,15 @@ describe("actor inspector over the live API", () => {
           sample: false,
         })
         const inspected = inspect({
+          ...served,
           [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
         })
         expect(Schema.is(MissingActorPage)((yield* inspected.loaded).data)).toBe(true)
+        const older = inspect({
+          [counterType]: notImplemented("runtime.getActorType"),
+          [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
+        })
+        expect(Schema.is(MissingActorPage)((yield* older.loaded).data)).toBe(true)
       }),
     ))
 
@@ -280,6 +304,21 @@ describe("actor inspector over the live API", () => {
           [`${actor}/jobs`]: forbidden,
         })
         expect(yield* refused.loaded.pipe(Effect.flip)).toMatchObject({ kind: "Forbidden" })
+      }),
+    ))
+
+  it("shows not found, with no first command, for an actor type the deployment doesn't serve", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { loaded } = inspect({
+          [actor]: notFound({ resource: "actor-type", id: "Counter" }),
+        })
+        expect(yield* loaded).toEqual({ data: undefined, sample: false })
+        const reportedAsActor = inspect({
+          [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
+          [counterType]: notFound({ resource: "actor-type", id: "Counter" }),
+        })
+        expect(yield* reportedAsActor.loaded).toEqual({ data: undefined, sample: false })
       }),
     ))
 
@@ -314,6 +353,54 @@ describe("actor inspector over the live API", () => {
         expect(page.sample).toBe(false)
         expect(page.data).toMatchObject({ state: '{\n  "count": 3\n}', jobs: [] })
         expect(responder.seen.some((path) => path.endsWith("/jobs"))).toBe(false)
+      }),
+    ))
+})
+
+describe("actor search over the live API", () => {
+  const search = "/api/projects/prj_1/environments/production/runtime/search"
+
+  beforeEach(() => vi.stubEnv("VITE_CONSOLE_FIXTURES", "0"))
+
+  afterEach(() => fetch.mockReset())
+
+  it("finds actor types and actor addresses by prefix and skips other kinds of result", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const responder = apiResponder({
+          ...signedIn({ status: "live" }),
+          [search]: {
+            body: [
+              { kind: "actor-type", id: "Counter", title: "Counter", subtitle: null },
+              { kind: "actor", id: "Counter/hits", title: "Counter/hits", subtitle: null },
+              { kind: "deployment", id: "dep_1", title: "deploy", subtitle: null },
+            ],
+          },
+        })
+        fetch.mockImplementation(responder.respond)
+        expect(yield* searchActors("  Counter/ ")).toEqual({
+          actorTypes: ["Counter"],
+          actors: ["Counter/hits"],
+        })
+        expect(responder.seen).toContain(`${search}?q=Counter%2F`)
+      }),
+    ))
+
+  it("finds nothing, without asking, for a blank query, and nothing when the search fails", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const responder = apiResponder({
+          ...signedIn({ status: "live" }),
+          [search]: notImplemented("runtime.search"),
+        })
+        fetch.mockImplementation(responder.respond)
+        expect(yield* searchActors("   ")).toEqual({ actorTypes: [], actors: [] })
+        expect(responder.seen).toEqual([])
+        expect(yield* searchActors("Counter")).toEqual({ actorTypes: [], actors: [] })
+        fetch.mockImplementation(
+          apiResponder({ ...signedIn({ status: "live" }), [search]: forbidden }).respond,
+        )
+        expect(yield* searchActors("Counter")).toEqual({ actorTypes: [], actors: [] })
       }),
     ))
 })
