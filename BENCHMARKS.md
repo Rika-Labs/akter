@@ -1,5 +1,68 @@
 # Akter benchmarks
 
+## Main after group commit and the app CPU cuts (#529, 2026-10-04)
+
+This before/after run measures `main` after group commit (#582, #495) and the app CPU cuts (#583, #491). The baseline is `b8aa892d7`, the "after" of the previous #529 section below. The candidate is `origin/main` `7588b9358`. `main` later moved to `b277f4f41`, which changes nothing under `packages/akter`. Both sides used default runtime, admission, pool and group settings. There was one new cohort: 64 callers against two runner processes, run on the candidate only.
+
+The sandbox, CPU split, versions, order and cohorts match the previous #529 section. One Linux x86-64 Daytona sandbox (AMD EPYC 9354P host) had a verified outer limit of four CPUs (`400000 100000`) and 4 GiB RAM. App and Postgres shared one Docker container capped at three CPUs, pinned to logical CPUs 0–2, with 3 GiB. The driver used a separate container capped at one CPU, pinned to logical CPU 3, with 512 MiB. Traffic used loopback HTTP on the Docker host network, not Daytona's HTTPS preview. These affinity sets do not establish exclusive physical-host cores. The software was Bun 1.4.2, Effect 4.0.0 and Postgres 18.6-bookworm, with `synchronous_commit` on, `pg_stat_statements` and logical WAL, and PGDATA on the Docker writable layer.
+
+The order was before/after, after/before, before/after. Every side got a fresh container and database cluster, and each cohort got its own fresh database and server processes. Sequential served commands used one caller/key with a 3-second warm-up and 20-second measurement. The other cohorts used closed-loop callers over 10,000 random keys. All 10,000 setup writes were acknowledged before a 3-second warm-up and 20-second measurement. In the 256-caller overload cohort, a refused caller waits the server's `retryAfter` before sending a new command. Admitted latency covers only the successful attempt.
+
+In the two-runner cohort, two Bun processes ran in the same three-CPU app container as Postgres. Each had its own `Runner.socket` loopback address, HTTP port and default pools. The driver sent requests to the two HTTP ports in turn. Both runners reported `/ready`, and after 10 more seconds each held 384 of the 768 shards before and after the measurement in every repeat. With round-robin routing and an even shard split, about half of the commands are expected to land on the runner that doesn't own the actor and be forwarded to its owner. This run did not count forwarded commands.
+
+Cells are the median of the three cohort statistics, with minimum–maximum in brackets; percentiles are not pooled.
+
+| Measurement                                | Before `b8aa892d7`        | After `7588b9358`         |
+| ------------------------------------------ | ------------------------- | ------------------------- |
+| Sequential served commands op/s            | 540.3 [381.5–561.7]       | 335.5 [325.8–657.1]       |
+| Sequential p50 ms                          | 1.344 [1.332–2.074]       | 1.367 [1.291–1.970]       |
+| Sequential p99 ms                          | 10.689 [8.141–15.004]     | 31.356 [4.901–40.884]     |
+| Sequential max ms                          | 184.785 [131.377–206.729] | 233.956 [60.701–376.081]  |
+| 64 callers / 10,000 keys op/s              | 1,003.4 [996.7–1,003.5]   | 1,445.2 [1,413.9–1,546.9] |
+| 64 callers / 10,000 keys p50 ms            | 59.469 [58.633–59.934]    | 40.889 [37.803–40.926]    |
+| 64 callers / 10,000 keys p99 ms            | 160.222 [153.672–161.513] | 103.474 [98.849–109.347]  |
+| 64 callers / 10,000 keys max ms            | 233.238 [224.392–256.421] | 162.362 [153.173–175.274] |
+| 256 callers / 10,000 keys admitted op/s    | 914.0 [898.5–932.9]       | 1,324.2 [1,289.2–1,384.1] |
+| 256 callers / 10,000 keys admitted p50 ms  | 85.117 [83.532–85.480]    | 46.864 [45.006–48.283]    |
+| 256 callers / 10,000 keys admitted p99 ms  | 180.390 [179.366–192.380] | 122.931 [118.337–128.571] |
+| 256 callers / 10,000 keys admitted max ms  | 382.727 [332.200–609.157] | 224.556 [181.535–260.720] |
+| 256 callers / 10,000 keys refused attempts | 40.4% [40.0–41.1]         | 34.9% [33.8–35.5]         |
+| 256 callers / 10,000 keys refusals/s       | 620.5 [619.3–625.9]       | 709.9 [706.1–711.2]       |
+| 2 runners, 64 callers / 10,000 keys op/s   | —                         | 2,053.6 [1,857.0–2,122.2] |
+| 2 runners, 64 callers p50 ms               | —                         | 28.458 [27.251–30.781]    |
+| 2 runners, 64 callers p99 ms               | —                         | 113.028 [103.814–113.537] |
+| 2 runners, 64 callers max ms               | —                         | 191.688 [162.134–395.511] |
+
+The latency cohorts had zero measured errors and no refusals. Sequential commands acknowledged 29,676 before and 26,372 after. The single-runner 64-caller cohort acknowledged 60,190 before and 88,252 after. The two-runner cohort acknowledged 120,775. Every multi-caller setup acknowledged all 10,000 writes with zero errors. In the overload cohort, every non-success was an explicit `503 ActorUnavailable`: 37,985 before and 43,318 after, with no other errors.
+
+With one runner, `main` served 44% more commands with 64 callers than `b8aa892d7`, and p50 and p99 fell 31% and 35%. With 256 callers, admitted throughput rose 45%, and admitted p99 fell from 180 to 123 ms. It refused a smaller share of attempts, 34.9% against 40.4%, and refusal p99 fell from 71 to 38 ms. Two runner processes on the same three CPUs served 2,054 commands/s, 1.42× the single-runner median, with p99 113 ms against 103 ms.
+
+The sequential cohort is inconclusive this round. The same `b8aa892d7` commit measured 653 op/s (median) with p99 4.9 ms in the previous section, and 540 op/s with p99 10.7 ms here. Two of the three candidate repeats had p99 31–41 ms while their p50 stayed near 1.4–2.0 ms. ADR 0084 never delays a lone command, and a single key cannot form a group. `IO:WalSync` waits were 8.1% of sequential backend samples after against 5.9% before. That fits commit-flush variance on the host but does not prove it. A dedicated sequential rerun is needed before claiming either a sequential regression or no change.
+
+### Where the time goes on `main` after group commit
+
+The host-side sampler now also reads each Bun server's main thread (`/proc/<pid>/task/<pid>/stat`). Busy % is main-thread CPU time over the measured window. Postgres CPU is the container total minus the Bun processes, including the sampler's own `psql` session. The driver used at most 19.7% of its CPU in any cohort.
+
+| Cohort (median [range]) | Version | App CPU ms/command  | Main thread ms/command | Main thread busy    | Postgres CPU ms/command | App cores        | Postgres cores   |
+| ----------------------- | ------- | ------------------- | ---------------------- | ------------------- | ----------------------- | ---------------- | ---------------- |
+| 64 callers, 1 runner    | Before  | 1.161 [1.152–1.181] | 0.953 [0.936–0.958]    | 95.5% [93.9–95.7]   | 0.473 [0.441–0.479]     | 1.16 [1.16–1.19] | 0.47 [0.44–0.48] |
+| 64 callers, 1 runner    | After   | 0.793 [0.759–0.823] | 0.640 [0.606–0.652]    | 92.5% [92.2–93.7]   | 0.155 [0.152–0.160]     | 1.16 [1.15–1.17] | 0.22 [0.22–0.25] |
+| 256 callers, 1 runner   | Before  | 1.300 [1.268–1.313] | 1.035 [1.031–1.064]    | 95.6% [94.2–96.6]   | 0.483 [0.438–0.494]     | 1.18 [1.18–1.19] | 0.44 [0.39–0.46] |
+| 256 callers, 1 runner   | After   | 0.897 [0.864–0.909] | 0.714 [0.704–0.729]    | 94.6% [94.0–97.4]   | 0.173 [0.167–0.190]     | 1.19 [1.17–1.20] | 0.23 [0.22–0.25] |
+| 64 callers, 2 runners   | After   | 0.993 [0.987–1.107] | 0.783 [0.775–0.849]    | 80.7% [79.3–83.4]\* | 0.161 [0.156–0.182]     | 2.06 [2.04–2.09] | 0.33 [0.33–0.34] |
+
+\* Busier of the two runners; the mean of both was 80.4% [78.8–82.3].
+
+With one runner, the Bun main thread is the limit on both sides. It was busy 92–96% of the measured window while the container used about 1.4 of its three CPUs on `main`. The app CPU cuts and group commit lowered main-thread CPU from 0.95 to 0.64 ms per command, which accounts for the higher throughput at the same busy fraction. Postgres CPU per command fell by two thirds, to 0.155 ms. The candidate's app processes use about 5× the CPU of Postgres per command.
+
+Two runners raised throughput 1.42×, not 2×. App CPU per command rose 25% (0.79 to 0.99 ms), consistent with the cost of forwarding commands to the owning runner. Neither main thread was saturated (about 80% busy each). The container was using about 2.4 of its three CPUs between the two Bun processes and Postgres. Group size also shrank. From `pg_stat_statements` counts, and assuming each setup write ran alone, one runner's shared commits averaged about 24–27 commands, while each of two runners averaged about 8. This sandbox puts both runners on the same three CPUs, so it does not show what runners on separate hosts would reach.
+
+On `main`, the receipt `INSERT`, the state upsert and the fenced generation-lock reads took 77–82% of Postgres execution time in the single-runner cohorts. These counts are cumulative and include the setup writes. Each of those statements averaged 0.03–0.04 ms. With 64 callers on one runner, `idle in transaction` waiting on the app fell from 15.7% to 7.2% of client-backend samples. `LWLock:WALWrite` was 2.9% and `IO:WalSync` 2.3%. With two runners, `idle in transaction` was 3.4%, `WALWrite` 1.9% and `WalSync` 0.9%. State reads still ran once per activation (10,000 times), not per command.
+
+These attributions come from 0.5-second CPU and wait-event samples and cumulative `pg_stat_statements`. They are diagnostics, not profiles. This is a single-node comparison of these snapshots and limits, not a production SLO, a separate-host scale-out result or a Neki claim.
+
+The harness, source bundles, cohort JSON, CPU and wait samples, statement dumps, shard counts and logs are outside the repository at `~/.capy/work/akter-perf/main-after-group-commit/`; final results are in `results/daytona`. The one sandbox created for this round was deleted, and a final lookup found it gone and no sandbox with this round's label.
+
 ## App CPU per served command (#491, 2026-10-04)
 
 This before/after run measures the Bun app's CPU per served command, which limited throughput on `main` once Postgres work had dropped to about 0.45 ms per command. The baseline is `origin/main` `b8aa892d7`, which includes #552, #561, #551 and #575. The candidate is `fix/491-app-cpu` `4ad70716a`, the same tree plus the changes listed below; it was measured as `76b71a81b`, whose source is identical (a rebase onto #576 changed only this file). Both sides ran with default runtime, admission and pool settings. Neither side includes the cross-actor group commit (#495), which merged afterwards; these numbers were not re-measured on top of it. The wire protocol, durability (`synchronous_commit` on), receipts, generation fencing, span names and metric series are unchanged.
