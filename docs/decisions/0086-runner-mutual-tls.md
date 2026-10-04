@@ -1,4 +1,4 @@
-# ADR 0085: Mutual TLS between runners
+# ADR 0086: Mutual TLS between runners
 
 **Status:** implementation decision (2026-10-04), for [#541](https://github.com/Rika-Labs/akter/issues/541); amends [ADR 0068](0068-production-multi-runner.md)'s trusted-peer transport and the runner-to-runner clause of [contract 10](../contracts/10-security.md); the hosted provisioning path below is a proposal that [ADR 0075](0075-deployment-and-runner-orchestration.md)'s gate on hosted peering still covers.
 
