@@ -1,6 +1,6 @@
 import { DeploymentId } from "@akter/cloud-api"
 import type { DeploymentSummary, ProjectId } from "@akter/cloud-api"
-import { DateTime, Effect, Schema } from "effect"
+import { DateTime, Effect, Option, Schema } from "effect"
 import {
   cloud,
   ConsoleError,
@@ -40,14 +40,19 @@ export const loadDeployments: Effect.Effect<Loaded<DeploymentsPage>, ConsoleErro
   () => import("./fixtures.ts").then((fixtures) => fixtures.deploymentsPage),
 )
 
+const commitReference = /^[0-9a-f]{7,40}$/i
+
 /**
  * Loads one deploy by its deployment id or by its abbreviated or full commit, or nothing for a
- * reference that names no deployment. A rollback or redeploy creates another deployment of an
- * earlier commit, so a commit names its newest deployment and the console's own links use the id.
- * The history is paged newest first, so the search stops at the page that holds the deployment. A live deploy keeps paging until an earlier deployment it could roll back to turns up or
- * the history ends, so its page lists them; that extra paging stops quietly at `maxDetailPages`.
- * A cursor the server repeats, or a history longer than `maxDetailPages` pages that never holds the
- * commit, fails with an `InvalidResponse` `ConsoleError` instead of looping.
+ * reference that names no deployment. An exact id always wins: it is read directly, so an unknown
+ * id is not found at once and never falls back to another deployment. Only a reference shaped like
+ * a commit, in either case, is then searched for in the history, newest first, so a commit names its
+ * newest deployment; a deployment without a recorded commit never matches; rollbacks and redeploys reuse commits, which is why the console's own links use ids.
+ * The history of the deployment's environment is also read for rollback targets: a live deploy
+ * keeps paging until an earlier deployment it could roll back to turns up or the history ends,
+ * stopping quietly at `maxDetailPages`. A cursor the server repeats, or a history longer than
+ * `maxDetailPages` pages that never holds the commit, fails with an `InvalidResponse`
+ * `ConsoleError` instead of looping.
  */
 export const loadDeployment = (
   reference: string,
@@ -56,21 +61,28 @@ export const loadDeployment = (
     (api, { project, environment }) =>
       Effect.gen(function* () {
         const params = { projectId: project.id }
+        const named = Schema.decodeOption(DeploymentId)(reference)
+        const byId = Option.isNone(named)
+          ? undefined
+          : yield* api.deployments
+              .get({ params: { ...params, deploymentId: named.value } })
+              .pipe(orUndefined)
+        if (byId === undefined && !commitReference.test(reference)) return undefined
+        const commit = reference.toLowerCase()
         const seen = new Set<string>()
         const history: Array<DeploymentSummary> = []
-        let hit: DeploymentSummary | undefined = undefined
+        let hit: DeploymentSummary | undefined = byId
         let cursor: string | undefined = undefined
         for (let pages = 0; pages < maxDetailPages; pages++) {
           const page: Page = yield* api.deployments.list({
             params,
-            query: { environment, limit: 100, cursor },
+            query: { environment: byId?.environment ?? environment, limit: 100, cursor },
           })
           history.push(...page.items)
           hit ??= page.items.find(
             (item) =>
-              item.id === reference ||
-              item.commitSha.startsWith(reference) ||
-              reference.startsWith(item.commitSha),
+              item.commitSha !== "" &&
+              (item.commitSha.startsWith(commit) || commit.startsWith(item.commitSha)),
           )
           if (
             hit !== undefined &&
@@ -93,11 +105,10 @@ export const loadDeployment = (
             kind: "InvalidResponse",
             message: "The deployment history is longer than the console can search.",
           })
-        const detail = yield* api.deployments.get({
-          params: { ...params, deploymentId: hit.id },
-        })
+        const deploymentId = hit.id
+        const detail = byId ?? (yield* api.deployments.get({ params: { ...params, deploymentId } }))
         const log = yield* api.deployments.getBuildLog({
-          params: { ...params, deploymentId: hit.id },
+          params: { ...params, deploymentId },
           query: {},
         })
         return toDeploymentPage(yield* DateTime.now)({ detail, log, history })

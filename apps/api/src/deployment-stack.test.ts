@@ -650,6 +650,40 @@ layer(Layer.provideMerge(ImagesLive, services), {
           first,
         )
 
+        const fresh = `Counter/first-${suffix}`
+        const jobsOf = (address: string) =>
+          call(
+            `/api/projects/${project.id}/environments/production/runtime/actors/${address}/jobs`,
+            { cookie: alice },
+          )
+        expect((yield* jobsOf(fresh)).status).toBe(404)
+
+        const firstKey = yield* (yield* Crypto.Crypto).randomUUIDv4
+        const sendFirst = call(
+          `/api/projects/${project.id}/environments/production/runtime/commands`,
+          {
+            method: "POST",
+            cookie: alice,
+            body: { address: fresh, command: "Increment", payload: 2, commandId: firstKey },
+          },
+        ).pipe(
+          Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+          Effect.flatMap((response) => read(response, Cloud.CommandSent)),
+        )
+        const created = yield* sendFirst
+        expect(created).toMatchObject({
+          replayed: false,
+          result: { count: 2, version: "v1", caller: "akter-control-plane" },
+        })
+        expect(yield* sendFirst).toMatchObject({
+          commandId: created.commandId,
+          replayed: true,
+          result: { count: 2, version: "v1" },
+        })
+        const listed = yield* jobsOf(fresh)
+        expect(listed.status).toBe(200)
+        expect(yield* read(listed, Schema.Array(Cloud.ActorJob))).toEqual([])
+
         expect(
           (yield* call(
             `/api/projects/${project.id}/environments/production/runtime/actors/Counter/hits/jobs`,

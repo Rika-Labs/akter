@@ -63,3 +63,16 @@ export type CommandRejected = typeof CommandRejected.Type
 
 export const CommandAnswer = S.Union([CommandSucceeded, CommandRejected])
 export type CommandAnswer = typeof CommandAnswer.Type
+
+/**
+ * The last command the send dialog sent: its command ID, its command and its payload in canonical
+ * form. `generated` marks an ID the console minted; it is reused only for the same command and
+ * canonical payload, so a retry runs at most once and changed input gets a fresh ID.
+ */
+export const CommandSubmission = S.Struct({
+  id: S.String,
+  command: S.String,
+  payload: S.String,
+  generated: S.Boolean,
+})
+export type CommandSubmission = typeof CommandSubmission.Type

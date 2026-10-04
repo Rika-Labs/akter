@@ -21,6 +21,7 @@ import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { runtimeEdge } from "./cloud.ts"
+import { MeteringRepository, MeteringRepositoryLive } from "./metering-repository.ts"
 import { Repository, RepositoryLive } from "./repository.ts"
 import { rolloutRouting, serviceCredential } from "./rollout.ts"
 import { RuntimeEdge } from "./runtime.ts"
@@ -53,7 +54,7 @@ const live = Layer.unwrap(
     base.pathname = `/${name}`
     yield* Effect.promise(() => migrate(base.href, { startAt: "0002_" }))
     return rolloutRouting(options).pipe(
-      Layer.provideMerge(RepositoryLive),
+      Layer.provideMerge(Layer.mergeAll(RepositoryLive, MeteringRepositoryLive)),
       Layer.provideMerge(PgClient.layer({ url: Redacted.make(base.href), maxConnections: 5 })),
     )
   }),
@@ -219,7 +220,9 @@ describe("rollout routing authority", () => {
           { actor_kind: "user", actor_id: "user-routing" },
           { actor_kind: "api-key", actor_id: "key-routing" },
         ])
-        const context = yield* Effect.context<SqlClient.SqlClient | Repository>()
+        const context = yield* Effect.context<
+          SqlClient.SqlClient | Repository | MeteringRepository
+        >()
         const changed = yield* Layer.build(
           rolloutRouting({
             ...options,
@@ -242,6 +245,16 @@ describe("rollout routing authority", () => {
             audience: "release-rollback",
           },
         ])
+        expect(
+          yield* sql`SELECT deployment_id, tenant, organization_id, project_id FROM cloud_meter_tenant ORDER BY deployment_id`,
+        ).toEqual(
+          ["release-one", "release-rollback", "release-two"].map((deployment_id) => ({
+            deployment_id,
+            tenant: "*",
+            organization_id: "org-routing",
+            project_id: project.id,
+          })),
+        )
       }).pipe(Effect.scoped),
     ))
 

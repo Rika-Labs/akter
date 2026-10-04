@@ -28,6 +28,7 @@ import {
 } from "@rikalabs/akter/client"
 import { actorErrorBody, statusOf } from "@rikalabs/akter/runtime"
 import {
+  Clock,
   Context,
   Crypto,
   Deferred,
@@ -65,6 +66,7 @@ import {
   quotas,
   SpendLimitExceeded,
   StorageQuotaExceeded,
+  UnsupportedBillingRoute,
 } from "./quotas.ts"
 
 const harness = ManagedRuntime.make(Layer.mergeAll(BunCrypto.layer, FetchHttpClient.layer))
@@ -435,9 +437,26 @@ const pendingSocket = Effect.fnUntraced(function* (edge: FixtureEdge) {
   return { closed: Deferred.await(closed) }
 })
 
+/** Every GET the control plane's service credential reads for free, with the query each takes. */
+const SERVICE_READS = [
+  "/ready",
+  "/inspector/overview",
+  "/inspector/actors?type=Order&limit=500",
+  "/inspector/actor?type=Order&id=o-1&limit=500",
+  "/inspector/outbox?limit=500",
+  "/inspector/jobs?limit=500",
+  "/inspector/dead-letters?limit=500",
+  "/inspector/workflows?status=open&limit=500",
+]
+
 describe("meteringOf", () => {
-  const classify = (method: string, path: string, key: string | null, credentialed = true) =>
-    meteringOf({ method, path, idempotencyKey: key, credentialed })
+  const classify = (
+    method: string,
+    path: string,
+    key: string | null,
+    credentialed = true,
+    service = false,
+  ) => meteringOf({ method, path, idempotencyKey: key, credentialed, service })
 
   it("tells commands, reads, feeds, singletons and unattributable routes apart", () => {
     expect(classify("POST", "/actors/Order/o-1/Place", "c1")).toEqual({
@@ -494,6 +513,56 @@ describe("meteringOf", () => {
       id: "o-1",
       commandId: "anon",
     })
+  })
+
+  it("frees exactly the service credential's readiness and inspector reads", () => {
+    for (const target of SERVICE_READS) {
+      const path = new URL(target, "http://edge").pathname
+
+      expect(classify("GET", path, null, true, true)).toEqual({ kind: "free" })
+      expect(classify("GET", path, null, true, false)).toEqual({ kind: "unsupported" })
+    }
+
+    const elsewhere: ReadonlyArray<readonly [string, string, string | null]> = [
+      ["GET", "/openapi.json", null],
+      ["GET", "/inspector", null],
+      ["GET", "/inspector/actor/", null],
+      ["GET", "/inspector/actor/extra", null],
+      ["GET", "/inspector%2Factor", null],
+      ["GET", "/api/ready", null],
+      ["GET", "/ready/", null],
+      ["GET", "/READY", null],
+      ["GET", "/admin/inspector/jobs", null],
+      ["POST", "/ready", null],
+      ["POST", "/inspector/actor", null],
+      ["POST", "/mcp", null],
+      ["POST", "/command-ids", null],
+      ["GET", "/protocol", null],
+      ["GET", "/actors/Order/o-1/events", null],
+      ["POST", "/actors/Order/o-1/Place", "c1"],
+      ["POST", "/actors/Order/o-1/Get", null],
+      ["POST", "/actors/Order/o-1/Get/watch", null],
+      ["POST", "/actors/Order/o-1/content/b/n/grant", null],
+    ]
+
+    for (const [method, path, key] of elsewhere)
+      expect(classify(method, path, key, true, true), `${method} ${path}`).toEqual(
+        classify(method, path, key, true, false),
+      )
+
+    expect(classify("GET", "/openapi.json", null, true, true)).toEqual({ kind: "unsupported" })
+    expect(classify("POST", "/actors/Order/o-1/Place", "c1", true, true)).toEqual({
+      kind: "command",
+      actor: "Order",
+      id: "o-1",
+      commandId: "c1",
+    })
+    expect(classify("POST", "/actors/Order/o-1/Get", null, true, true)).toEqual({
+      kind: "read",
+      actor: "Order",
+      id: "o-1",
+    })
+    expect(classify("GET", "/ready", null, false)).toEqual({ kind: "free" })
   })
 })
 
@@ -885,6 +954,133 @@ describe("fail closed", () => {
             actorId: "o-1",
             commandId: "anon-1",
           })
+        }),
+      ),
+    60_000,
+  )
+})
+
+describe("control plane service credential", () => {
+  const serviceKey = (edge: FixtureEdge) =>
+    edge.issueApiKey({ tenant: "default", subject: "akter-control-plane" })
+
+  const get = (edge: FixtureEdge, key: string, path: string) =>
+    request(edge, key, path, { method: "GET" })
+
+  /** A JWT the deployment's own issuer signs for `sub`, with the tenant fixed to `default`. */
+  const tenantJwt = Effect.fnUntraced(function* (edge: FixtureEdge, sub: string) {
+    const pair = yield* Effect.promise(() =>
+      crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]),
+    )
+    const jwk = yield* Effect.promise(() => crypto.subtle.exportKey("jwk", pair.publicKey))
+
+    const jwks = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          port: 0,
+          hostname: "127.0.0.1",
+          fetch: () => Response.json({ keys: [{ ...jwk, kid: "tenant-1", alg: "ES256" }] }),
+        }),
+      ),
+      (server) => Effect.promise(() => server.stop(true)),
+    )
+
+    yield* edge.sql`
+      INSERT INTO deployment_jwt (deployment_id, issuer, audience, jwks_url, algorithms, tenant_fixed)
+      VALUES (${edge.deployment}, 'https://tenant.example', 'akter',
+        ${`http://127.0.0.1:${jwks.port}/jwks`}, ARRAY['ES256'], 'default')
+    `.pipe(Effect.orDie)
+
+    const now = yield* Clock.currentTimeMillis
+    const part = (value: Schema.Json) =>
+      Base64Url.encode(new TextEncoder().encode(JSON.stringify(value)))
+    const signed = `${part({ alg: "ES256", kid: "tenant-1", typ: "JWT" })}.${part({
+      iss: "https://tenant.example",
+      aud: "akter",
+      sub,
+      exp: Math.floor(now / 1000) + 300,
+    })}`
+    const signature = yield* Effect.promise(() =>
+      crypto.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        pair.privateKey,
+        new TextEncoder().encode(signed),
+      ),
+    )
+
+    return `${signed}.${Base64Url.encode(new Uint8Array(signature))}`
+  })
+
+  it(
+    "forwards its readiness and inspector reads unmetered, and still meters its commands and reads",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const runner = yield* startRunner
+          const edge = yield* start({}, runner)
+          const key = yield* serviceKey(edge)
+
+          for (const path of SERVICE_READS)
+            expect((yield* get(edge, key, path)).status, path).toBe(200)
+
+          const inspected = runner.seen.filter(({ path }) => path.startsWith("/inspector/"))
+
+          expect(inspected.map(({ path, search }) => `${path}${search}`)).toEqual(
+            SERVICE_READS.filter((path) => path.startsWith("/inspector/")),
+          )
+          expect(inspected.every(({ assertion }) => assertion !== null)).toBe(true)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 0 })
+          expect(yield* reservationCount(edge)).toBe(0)
+
+          expect((yield* get(edge, key, "/openapi.json")).reason["_tag"]).toBe(
+            "UnsupportedBillingRoute",
+          )
+          expect((yield* get(edge, key, "/inspector/actor/extra")).status).toBe(501)
+          expect((yield* request(edge, key, "/inspector/actor")).status).toBe(501)
+
+          expect((yield* command(edge, key, { cid: "service-1" })).status).toBe(200)
+          expect((yield* read(edge, key)).status).toBe(200)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 6 })
+          expect(yield* reservationCount(edge)).toBe(2)
+        }),
+      ),
+    60_000,
+  )
+
+  it(
+    "refuses the same reads to a tenant's API key or JWT, even one naming the control plane",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const runner = yield* startRunner
+          const edge = yield* start({}, runner)
+          const tenant = yield* keyFor(edge, "acme")
+          const sameTenant = yield* keyFor(edge, "default")
+          const jwt = yield* tenantJwt(edge, "akter-control-plane")
+
+          for (const key of [tenant, sameTenant, jwt])
+            for (const path of SERVICE_READS) {
+              const refused = yield* get(edge, key, path)
+
+              expect(refused.status, path).toBe(501)
+              expect(refused.reason).toEqual(
+                yield* Schema.encodeEffect(UnsupportedBillingRoute)(
+                  UnsupportedBillingRoute.make({
+                    method: "GET",
+                    path: new URL(path, "http://edge").pathname,
+                  }),
+                ).pipe(Effect.orDie),
+              )
+            }
+
+          expect(runner.seen.filter(({ path }) => path.startsWith("/inspector/"))).toEqual([])
+
+          expect((yield* get(edge, "not-a-registered-key", "/ready")).status).toBe(401)
+          expect(yield* reservationCount(edge)).toBe(0)
+
+          expect((yield* read(edge, jwt)).status).toBe(200)
+          expect((yield* command(edge, tenant, { cid: "tenant-1" })).status).toBe(200)
+          expect(yield* counters(edge)).toEqual({ commandUnits: 0, reservedUnits: 6 })
         }),
       ),
     60_000,

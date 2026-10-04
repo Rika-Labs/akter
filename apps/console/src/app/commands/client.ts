@@ -9,6 +9,7 @@ import {
   projectContext,
   withProject,
 } from "../api/client.ts"
+import { sendFailure } from "./errors.ts"
 import { tailCapacity, toRecentTurns, toRejected, toSucceeded } from "./mapping.ts"
 import { type CommandAnswer, type CommandScope, CommandsPage } from "./model.ts"
 
@@ -44,7 +45,7 @@ const encodeRequest = Schema.decodeUnknownEffect(SendCommand)
 /**
  * Sends one command to one actor. Sample data never sends, and `NotImplemented` fails rather than
  * pretending the command ran. An error the actor returns is a `CommandRejected` answer; transport,
- * authorization and conflict failures are `ConsoleError`. The supplied scope is the one captured
+ * authorization, key and runner failures are `ConsoleError`s worded for the send dialog. The supplied scope is the one captured
  * from the actor page; a changed project selection never retargets the command.
  */
 export const sendCommand = (request: SendRequest): Effect.Effect<CommandAnswer, ConsoleError> =>
@@ -71,7 +72,7 @@ export const sendCommand = (request: SendRequest): Effect.Effect<CommandAnswer, 
       return yield* api.runtime.sendCommand({ params: request.scope, payload: body }).pipe(
         Effect.map(toSucceeded),
         Effect.catchTag("CommandFailed", (failed) => Effect.succeed(toRejected(failed))),
-        Effect.mapError(consoleError),
+        Effect.mapError(sendFailure(request)),
       )
     })
   })

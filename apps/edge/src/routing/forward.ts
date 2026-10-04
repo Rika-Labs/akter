@@ -270,6 +270,7 @@ export const forward = Effect.fnUntraced(function* (
     path: url.pathname,
     idempotencyKey: request.headers.get("idempotency-key"),
     credentialed: credential !== null,
+    service: verified?.service === true,
   })
 
   const touched = yield* edge.touch(deployment.id).pipe(Effect.result)

@@ -23,6 +23,7 @@ import { SqlClient } from "effect/sql"
 import type { ApiOptions } from "./config.ts"
 import { environmentHost, rolloutPlatform, rolloutRouting, serviceCredential } from "./rollout.ts"
 import { RuntimeEdge } from "./runtime.ts"
+import { MeteringRepositoryLive } from "./metering-repository.ts"
 import { RepositoryLive } from "./repository.ts"
 
 /** A caller's environment is resolved to an edge host; runner addresses and signing keys never reach API handlers. */
@@ -105,7 +106,11 @@ export const cloudRuntime = (options: ApiOptions) =>
       ).pipe(Layer.provide(runners))
       return DeploymentLifecycleLive.pipe(
         Layer.provide(platform),
-        Layer.provide(rolloutRouting(options).pipe(Layer.provide(RepositoryLive))),
+        Layer.provide(
+          rolloutRouting(options).pipe(
+            Layer.provide(Layer.mergeAll(RepositoryLive, MeteringRepositoryLive)),
+          ),
+        ),
         Layer.provideMerge(runners),
       )
     }),
