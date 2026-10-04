@@ -15,6 +15,7 @@ export const Dialog = defineTaggedUnion({
   AddVariable: {},
   SendCommand: { scope: CommandScope, address: S.String },
   RollBack: { id: S.String, commit: S.String },
+  Redeploy: { id: S.String, commit: S.String },
   DeleteProject: { project: S.String },
   KeyCreated: { name: S.String, secret: S.String },
 })

@@ -61,7 +61,7 @@ const healthLinks = (page: OverviewPage, sample: boolean): ReadonlyMap<string, s
       "Runners",
       live === undefined || sample
         ? Routes.deployments()
-        : Routes.deployment({ commit: live.commit }),
+        : Routes.deployment({ deployment: live.commit }),
     ],
   ])
 }
@@ -193,7 +193,9 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
                 ],
                 rows: page.deploys.map((deploy) => ({
                   key: deploy.commit,
-                  href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
+                  href: model.pageSample
+                    ? undefined
+                    : Routes.deployment({ deployment: deploy.commit }),
                   cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
                 })),
               }),

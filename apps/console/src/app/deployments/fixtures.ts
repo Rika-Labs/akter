@@ -124,8 +124,10 @@ const deploymentOf = (deploy: DeployRecord): DeploymentPage =>
     ].join("\n"),
   })
 
-/** The fixture detail of the deploy with `commit`, or nothing for a commit that was never deployed. */
-export const deploymentPage = (commit: string): DeploymentPage | undefined => {
-  const deploy = deploys.find((candidate) => candidate.commit === commit)
+/** The fixture detail of the deploy with id or commit `reference`, or nothing when none matches. */
+export const deploymentPage = (reference: string): DeploymentPage | undefined => {
+  const deploy = deploys.find(
+    (candidate) => candidate.id === reference || candidate.commit === reference,
+  )
   return deploy === undefined ? undefined : deploymentOf(deploy)
 }

@@ -4,13 +4,17 @@ import { Reactivity } from "effect/reactivity"
 import type { SqlClient } from "effect/sql"
 
 /**
- * The primary's WAL insert position as a decimal string. Read on a turn's
- * session after its `COMMIT` or `ROLLBACK`, it is at least the end of every
- * commit record that session could have observed, so a replica that has
- * replayed this far sees the turn's writes. An LSN cannot be known inside
- * the transaction that writes it, which is why nothing stores it.
+ * The primary's WAL insert position as a decimal string, and the database
+ * clock in epoch milliseconds. Read on a turn's session after its `COMMIT` or
+ * `ROLLBACK`, the position is at least the end of every commit record that
+ * session could have observed, so a replica that has replayed this far sees
+ * the turn's writes. An LSN cannot be known inside the transaction that
+ * writes it, which is why nothing stores it. The clock is read after the
+ * transaction ended, in the same flight, so an external caller's expiry
+ * recheck before its reply costs no round trip of its own.
  */
-export const COMMIT_VERSION = "SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version"
+export const COMMIT_VERSION = `SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version,
+  floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
 /**
  * This runner's streaming replica, if it has one. A query that carries a

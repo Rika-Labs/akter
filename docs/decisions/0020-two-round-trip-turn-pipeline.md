@@ -180,6 +180,8 @@ If N's `COMMIT` fails, the runtime rolls back N+1's transaction and restarts the
 
 ### Pre-delivery reads stay (#43's pending cuts)
 
+**Amended by [ADR 0072](0072-served-command-in-two-round-trips.md):** the pre-delivery receipt read and the post-turn clock read are gone. A replay resolves in the fenced admission read, which also checks an external id against its own database clock before releasing the receipt. The expiry recheck before the reply uses a `clock_timestamp()` read in the commit flight, after `COMMIT` or `ROLLBACK`, never the admission clock. Command id minting is unchanged. The original text below is superseded for the first two bullets.
+
 These reads happen before or after the turn, so they fall outside the two round trips:
 
 - **Pre-delivery receipt read.** It stays. It answers replays without routing to the owner. #43 proposed dropping it only as part of the fast path, which is rejected below.
