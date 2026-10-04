@@ -31,7 +31,10 @@ development proxy can also use the console origin as `API_ORIGIN`.
 Set `VITE_CONSOLE_FIXTURES=1` before starting/building, or visit `/?fixtures=1`, to run without a
 backend. The query flag and its tab storage are honoured only in Vite development mode;
 production builds ignore them. `VITE_CONSOLE_FIXTURES=1` is an explicit build-time preview switch.
-Sample pages carry a quiet notice and sample-backed controls and record links are read-only.
+Sample pages carry a quiet notice and sample-backed controls and record links are read-only. A
+live page with one part that fell back to sample data (the overview's latency distribution, an
+actor type's activity, the schedules) stays live and carries one quiet notice on that part only;
+that part's controls are fixed and it lends nothing to the page's live numbers.
 In real mode, route fixtures are imported lazily
 only when an endpoint returns the typed `NotImplemented` error; transport, permission and
 conflict errors are rendered rather than silently replaced with sample data. Missing organization
@@ -45,7 +48,10 @@ neither secret values nor masked tails are displayed.
 The commands page loads a snapshot and then receives UTC-decoded command events over SSE. Pause
 closes the stream; reconnect refreshes the snapshot before opening another stream. A stream that
 is unavailable or interrupted leaves the snapshot visible with an inline explanation. Sample
-pages never start a stream or simulate new turns.
+pages never start a stream or simulate new turns. The command log is read from receipts, so a
+command's time, duration and payload read `—` when unrecorded; untimed commands sort after timed
+ones and keep the log's order. Each row shows its shortened command id (full id as the title) and
+its caller.
 
 The inspector's Send command dialog accepts JSON and an optional command ID (the contract's
 `commandId`, the client idempotency key), shows the actor's result or typed `CommandFailed`
@@ -67,9 +73,12 @@ and activity) reads as unknown (`—` or an empty state that says it isn't repor
 A committed state with an entry that does not decode reads as unreadable rather than as `null`.
 Closing Send command after the actor answered reloads a live inspector, so it shows the new state.
 A runner-minted receipt id (`v1.<ms>.<ms>.<uuid>`) reads as its uuid's first 8 characters, with the
-full id as the cell's title; other ids read unchanged. The
-contract carries no caller on receipts, events or the timeline, so the inspector cannot show who
-sent a command.
+full id as the cell's title; other ids read unchanged. Receipts show their caller and when the
+runner stops answering retries from them, events when their newest one was emitted, and timeline
+entries their shortened command id and caller. A caller reads as the signed-in member's name for
+their own commands (the runtime pages load no member list), as the `user:<id>` subject for other
+members, as `API key …` and the end of the key id for an API key, and as `System` or `Anonymous`
+for framework deliveries and unauthenticated callers.
 Against an API that cannot inspect actors yet, the inspector still reads the actor's live job
 list; an actor that has one keeps the Jobs tab and Send command live while the rest of the page is
 sample data. An address the runtime
@@ -88,7 +97,9 @@ overview that is open. Signing out or switching project releases the in-flight h
 commits, so the console (overview included) links deployments by id. A deployment URL is read as an
 id first; an unknown id is not found, and only a commit-shaped reference (in either case) opens its
 newest deployment.
-Runner actor counts and CPU the runtime does not measure show `—`, never `0`.
+Runner actor counts and CPU the runtime does not measure show `—`, never `0`. The same holds on
+every runtime page: a value the runners do not report reads `—`, a whole chart or section reads as
+not reported, and a total over values that include an unreported one is itself unknown.
 
 Billing and Usage read the control plane's Stripe-backed records. Prices, allowances and the read
 weight come from the API (paid prices are flagged provisional); the console hardcodes none. A Free
@@ -113,10 +124,13 @@ windows and bucket boundaries match. Its unbounded tail remains explicit and it 
 combined percentiles; the older overview p50/p99 series stays labelled as 24h. A project-wide
 histogram endpoint would avoid the per-type fan-out. Workflow steps are displayed 1-based.
 Paged inspectors currently load a first page; workflow and audit truncation is labelled. Display
-times are UTC. The API serves deployments, rollback, redeploy, command sending, actor inspection
-and actor jobs from real runners; the other runtime reads (overview, actor types and instances,
-command log and stream, jobs, workflows, connections) still answer typed 501s and fall back to
-sample data.
+times are UTC. The API serves deployments, rollback, redeploy, command sending and actor
+inspection from real runners, and the overview, sidebar counts, actor search (by address prefix,
+offered in the palette), actor types and instances, the command log, jobs, dead letters, workflows
+and timers from the runners' durable views. The overview takes its recent deploys from the
+deployments list when it reports none. Type activity, latency histograms, the command stream,
+connections, schedules and owned-table listing still answer typed 501s and fall back as described
+above. Dead letters can't be retried or discarded yet, so both stay disabled with one quiet reason.
 
 ## Layout
 
