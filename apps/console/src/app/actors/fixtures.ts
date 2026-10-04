@@ -1,10 +1,14 @@
-import { hourLabels, seededSeries } from "../workspace/series.ts"
+import type { SeriesWindow } from "@akter/cloud-api"
+import { DateTime } from "effect"
+import { seriesLabel, windowSeconds } from "../overview/time.ts"
+import { seededSeries } from "../workspace/series.ts"
 import {
   type ActorInstance,
   ActorPage,
   ActorsPage,
   ActorTypePage,
   type ActorTypeSummary,
+  type TypeActivity,
 } from "./model.ts"
 
 /** Fixture actor types for `storefront`. Illustrative test data. */
@@ -144,25 +148,38 @@ export const instancesOf = (summary: ActorTypeSummary): ReadonlyArray<ActorInsta
     lastTurn: summary.name === "NightlyReport" ? "9h" : (lastTurns[index] ?? "1h"),
   }))
 
-/** Today's volume per command for a type. */
-export const commandVolumes = (summary: ActorTypeSummary) =>
-  summary.commands.map((name, index) => ({
-    name,
-    today: Math.round((summary.commandsPerSecond * 86_400) / (index + 1.6)),
-    p99: `${index === 0 ? summary.p99Ms : 2 + index * 3} ms`,
-  }))
+const activityPoints: Readonly<Record<SeriesWindow, number>> = { "1h": 60, "24h": 96, "7d": 84 }
 
-/** Commands per second for a type over the last day. */
-export const perSecondSeries = (summary: ActorTypeSummary) =>
-  seededSeries({
-    length: 96,
-    base: Math.max(summary.commandsPerSecond, 1),
-    volatility: Math.max(summary.commandsPerSecond, 4) * 0.2,
-    seed: summary.name.length * 13,
-  })
+const fixtureNow = DateTime.makeUnsafe("2026-10-03T14:00:00.000Z")
 
-/** Hour labels for type charts. */
-export const typeHours = hourLabels({ points: 96, end: 14 })
+/** A type's commands per second and the volume of each command over a window. Illustrative test data. */
+export const typeActivity =
+  (window: SeriesWindow) =>
+  (summary: ActorTypeSummary): TypeActivity => {
+    const length = activityPoints[window]
+    const step = (windowSeconds[window] * 1000) / (length - 1)
+    const labelOf = seriesLabel(window)
+    return {
+      window,
+      hours: Array.from({ length }, (_, index) =>
+        labelOf(
+          DateTime.add(fixtureNow, { milliseconds: -Math.round(step * (length - 1 - index)) }),
+        ),
+      ),
+      perSecond: seededSeries({
+        length,
+        base: Math.max(summary.commandsPerSecond, 1),
+        volatility: Math.max(summary.commandsPerSecond, 4) * 0.2,
+        seed: summary.name.length * 13,
+      }),
+      commands: summary.commands.map((name, index) => {
+        const count = Math.round(
+          (summary.commandsPerSecond * windowSeconds[window]) / (index + 1.6),
+        )
+        return { name, count, perSecond: count / windowSeconds[window] }
+      }),
+    }
+  }
 
 /** The inspected order from the product mocks. Fixture data. */
 export const order: ActorPage = ActorPage.make({
@@ -248,20 +265,28 @@ export const order: ActorPage = ActorPage.make({
 export const actorsPage: ActorsPage = ActorsPage.make({ types: actorTypes })
 
 /** The fixture page for one actor type, or nothing when the fixture project has no such type. */
-export const actorTypePage = (name: string): ActorTypePage | undefined => {
-  const summary = actorTypes.find((candidate) => candidate.name === name)
-  return summary === undefined
-    ? undefined
-    : ActorTypePage.make({
-        summary,
-        instances: instancesOf(summary),
-        activity: {
-          hours: typeHours,
-          perSecond: perSecondSeries(summary),
-          commands: commandVolumes(summary),
-        },
-      })
-}
+export const actorTypePage =
+  (window: SeriesWindow) =>
+  (name: string): ActorTypePage | undefined => {
+    const summary = actorTypes.find((candidate) => candidate.name === name)
+    return summary === undefined
+      ? undefined
+      : ActorTypePage.make({
+          summary,
+          instances: instancesOf(summary),
+          activity: typeActivity(window)(summary),
+        })
+  }
+
+/**
+ * The fixture inspector's data under any address. It fills the parts of a real actor that the
+ * runtime cannot report yet, so it is only used once the actor is known to exist.
+ */
+export const sampleActor = (input: Readonly<{ actorType: string; key: string }>): ActorPage => ({
+  ...order,
+  actorType: input.actorType,
+  key: input.key,
+})
 
 /**
  * The fixture inspector. It inspects `Order/ord_8f2c` in detail and answers other known instances
@@ -274,9 +299,7 @@ export const actorPage = (
   if (summary === undefined) return undefined
   const instance = instancesOf(summary).find((candidate) => candidate.key === input.key)
   return {
-    ...order,
-    actorType: input.actorType,
-    key: input.key,
+    ...sampleActor(input),
     awake: instance?.awake ?? order.awake,
     generation: instance?.generation ?? order.generation,
   }

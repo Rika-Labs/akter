@@ -38,6 +38,7 @@ import { migrate } from "../../runtime/database/migrations.ts"
 import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest } from "../actor-test.ts"
 import { ActorCluster } from "../cluster.ts"
+import { spawnFixture } from "./platform.ts"
 import type {
   ConformanceCase,
   ConformanceEnvironment,
@@ -508,24 +509,14 @@ const write = (admin: SqlClient.SqlClient, model: Model, tenant: string, row: Or
 
 /** Starts the maintainer fixture in its own process; the scope SIGKILLs it if it still runs. */
 const maintainerProcess = (database: Redacted.Redacted<string>, crash: boolean) =>
-  Effect.acquireRelease(
-    Effect.sync(() =>
-      Bun.spawn(["bun", new URL("./crash/fleet/maintainer.ts", import.meta.url).pathname], {
-        env: {
-          ...process.env,
-          FLEET_DATABASE_URL: Redacted.value(database),
-          FLEET_CRASH: crash ? "afterApply" : "none",
-        },
-        stdout: "pipe",
-        stderr: "inherit",
-      }),
-    ),
-    (child) => Effect.sync(() => child.kill("SIGKILL")),
-  )
+  spawnFixture(new URL("./crash/fleet/maintainer.ts", import.meta.url), {
+    FLEET_DATABASE_URL: Redacted.value(database),
+    FLEET_CRASH: crash ? "afterApply" : "none",
+  })
 
 /** Resolves once `child` prints `line`, or dies when it exits first. */
-const printed = (child: Bun.Subprocess<"ignore", "pipe", "inherit">, line: string) =>
-  Stream.fromReadableStream({ evaluate: () => child.stdout, onError: () => "unreadable" }).pipe(
+const printed = (child: Effect.Success<ReturnType<typeof maintainerProcess>>, line: string) =>
+  child.stdout.pipe(
     Stream.decodeText(),
     Stream.splitLines,
     Stream.filter((printedLine) => printedLine === line),
@@ -936,9 +927,10 @@ export const fleetConformance: ReadonlyArray<ConformanceCase> = [
               expect(yield* byStatusRows(admin)).toEqual(expectedByStatus(model))
               expect(yield* slotPosition(admin)).toBe(before)
 
-              crashing.kill("SIGKILL")
-              expect(yield* Effect.promise(() => crashing.exited)).not.toBe(0)
-              expect(crashing.signalCode).toBe("SIGKILL")
+              const exit = yield* crashing.kill
+
+              expect(exit.code).not.toBe(0)
+              expect(exit.signal).toBe("SIGKILL")
             }),
           )
 

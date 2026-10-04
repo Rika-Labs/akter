@@ -1,5 +1,115 @@
 # Akter benchmarks
 
+## Issue #493: served commands in two database flights (2026-10-03)
+
+This before/after run isolates [ADR 0072](docs/decisions/0072-served-command-in-two-round-trips.md): receipt resolution moves into fenced admission, and the expiry recheck uses a fresh clock read after the transaction ends in the commit flight. The baseline is merged `origin/main` `8c40961f0`; the candidate is the `fix/493-two-round-trips` worktree based on it. Both sides include #552's per-command CPU cuts and generator reuse. No load-shedding or fair-pool branch was included.
+
+All six measurements ran serially on one Linux x86-64 Daytona sandbox with a verified outer limit of four CPUs (`400000 100000`) and 4 GiB RAM. App and Postgres shared one Docker container capped at three CPUs, pinned to logical CPUs 0–2, with a 3 GiB memory limit. The driver used a separate container capped at one CPU, pinned to logical CPU 3, with 512 MiB RAM. Traffic used loopback HTTP on the Docker host network, not Daytona's HTTPS preview. These affinity sets keep our driver off our app/DB CPUs; they do not establish exclusive physical-host cores. Versions were Bun 1.4.2, Effect 4.0.0 and Postgres 18.6-bookworm; `synchronous_commit` stayed on, `pg_stat_statements` and logical WAL were enabled, and PGDATA used the Docker writable layer, not tmpfs.
+
+The order was before/after, after/before, before/after. Every side got a fresh database and process. Sequential served commands used one caller/key with a 3-second warm-up and 20-second measurement. Spread commands used 64 closed-loop callers over 10,000 random keys, with all 10,000 setup writes acknowledged before a 3-second warm-up and 20-second measurement on another fresh database. Every latency cohort had zero measured errors and every spread setup had zero errors. Closed-loop percentiles retain coordinated-omission limitations.
+
+The counting phase routed **both** runtime pools through a wire recorder, warmed them, measured 2,000 sequential commands with supplied ids and 2,000 replays, and subtracted background traffic at its independently measured 10-second idle rate. A flight is a client write after the server last answered on its session. A statement is a Sync-terminated extended-protocol cycle or a simple Query message. This includes transaction controls and the surrounding reads omitted by the older turn-pool-only instrument. `pg_stat_statements` corroborated 7.003→5.003 calls per fresh command; its totals in this run omit the two transaction controls, so wire counts are the total-statement measure. The exact conformance expectations independently derive three admission statements plus four commit statements, and enforce two flights across every pool.
+
+Cells are the median of the three cohort statistics, with minimum–maximum in brackets; percentiles are not pooled. This is a single-node comparison of these snapshots and limits, not a production SLO or a Neki claim.
+
+| Measurement                      | Before                    | After                     |
+| -------------------------------- | ------------------------- | ------------------------- |
+| Fresh command flights/op         | 4.002 [4.001–4.002]       | 2.001 [1.998–2.001]       |
+| Fresh command wire statements/op | 9.002 [9.002–9.003]       | 7.002 [6.999–7.003]       |
+| Warm replay flights/op           | 1.999 [1.999–2.000]       | 2.001 [1.999–2.002]       |
+| Warm replay wire statements/op   | 2.000 [2.000–2.000]       | 5.000 [5.000–5.003]       |
+| Sequential served commands op/s  | 660.4 [659.1–668.1]       | 757.5 [461.4–789.8]       |
+| Sequential p50 ms                | 1.276 [1.267–1.293]       | 1.148 [1.115–1.224]       |
+| Sequential p99 ms                | 4.685 [4.508–4.740]       | 4.073 [3.496–26.282]      |
+| Sequential max ms                | 45.701 [28.275–83.687]    | 59.179 [26.143–93.353]    |
+| 64 callers / 10,000 keys op/s    | 550.7 [516.3–592.5]       | 1,088.7 [1,087.6–1,127.1] |
+| 64 callers / 10,000 keys p50 ms  | 104.207 [95.227–115.164]  | 55.078 [54.019–55.852]    |
+| 64 callers / 10,000 keys p99 ms  | 332.098 [316.211–335.414] | 131.505 [121.517–139.275] |
+| 64 callers / 10,000 keys max ms  | 624.923 [539.913–693.121] | 252.963 [227.729–290.459] |
+
+The done condition is measured: an ordinary served command goes from four database flights to two, and nine wire statements to seven. Median sequential throughput improved 15% and spread throughput nearly doubled. Sequential p50 fell 10% and p99 fell 13% in these three repeats; the candidate had one slow sequential cohort, so neither these local tails nor the maxima establish a production latency guarantee. Replay now costs a fenced owner turn and three more statements, though it still uses two flights and never runs the handler. This is an explicit cost tradeoff, not a claim that replay became faster.
+
+The harness, source bundles, cohort JSON and logs are outside the repository at `~/.capy/work/akter-perf/493/`; final results are in `results/daytona`. Every sandbox created for this task was deleted. Earlier Mac runs under severe cross-project load, HTTPS-preview runs dominated by about 45 ms of proxy latency, and the direct-network run before the admission-proven recovery correction were retained as diagnostics and are not included above. The remainder of this report describes the earlier comparison and its distinct setup, not this 3+1 CPU split.
+
+## Served-command CPU follow-up (#491, 2026-10-03)
+
+This follow-up compares refreshed `origin/main` snapshot `ec73e6d25` with
+generator reuse in `runtime/entity/register.ts`, `runtime/turn/execute.ts`, and
+`serve/layer.ts`. The `actor/turns.ts` rewrite was removed after the bisect
+showed no reliable sequential benefit. The durable protocol, generation fence, SQL groups, receipts,
+reply ordering, observability, and request-body limits are unchanged. The harness
+and raw profiles remain outside the repository in
+`~/.capy/work/akter-perf/cpu-profile/`.
+
+The app, Postgres, and driver shared a Daytona sandbox capped at four CPUs and
+4 GiB. App and database containers each had `--cpus=3` and were pinned to CPUs
+0–2, sharing three CPUs rather than receiving three each. The driver had
+`--cpus=1` and was pinned to CPU 3. Requests used the Docker network, not the
+Daytona preview proxy. The host exposed 64 allowed CPUs, but the sandbox's
+`cpu.max` was `400000 100000`; the four-CPU quota remained the shared limit.
+Versions were Bun 1.4.2, Effect 4.0.0, and Postgres 18.6-bookworm, with normal
+durable commits and `pg_stat_statements`. The timing harness did not override
+Postgres's default `wal_level=replica`; the verification container below used
+logical WAL. Each case used a
+fresh database and runtime, a 10-second warm-up, and a 30-second measurement.
+Before/after order was forward, reverse, forward across three repeats. The
+64-caller case acknowledged all 10,000 setup commands in every run. A fourth
+profiled repeat used `bun --cpu-prof` and is excluded from the timing table.
+The final sequential profiles were retained. The final concurrent profiled
+runs completed their workload but produced no profile file before the harness's
+30-second shutdown wait ended, so that artifact is incomplete; earlier
+concurrent profiles remain diagnostic evidence only.
+The final sandbox was deleted after the round.
+
+App CPU is the change in
+`process.cpuUsage()` divided by measured successful commands; it includes JIT,
+GC, helper threads, and runtime background work. Main-thread CPU is reported
+separately from Linux task `schedstat`. These short, low-rate sequential runs
+include compilation work and are not a long-running steady-state CPU estimate.
+
+Values are the median of three runs, with the minimum–maximum in brackets.
+
+| Workload                | Version | App CPU ms/command  | Main-thread ms/command | Successful commands/s | HTTP p50 ms            | HTTP p99 ms               | HTTP max ms               |
+| ----------------------- | ------- | ------------------- | ---------------------- | --------------------- | ---------------------- | ------------------------- | ------------------------- |
+| Sequential, one key     | Before  | 2.193 [2.025–2.340] | 1.133 [1.100–1.185]    | 460.1 [434.7–552.3]   | 1.855 [1.524–1.858]    | 5.486 [4.974–11.482]      | 61.424 [54.104–65.377]    |
+| Sequential, one key     | After   | 1.640 [1.518–1.700] | 1.070 [1.055–1.102]    | 546.7 [472.3–602.1]   | 1.511 [1.396–1.815]    | 5.667 [4.111–6.380]       | 93.052 [51.856–113.474]   |
+| 64 callers, 10,000 keys | Before  | 1.315 [1.280–1.377] | 1.065 [1.046–1.081]    | 884.5 [874.7–906.6]   | 57.972 [56.595–60.032] | 194.357 [189.359–202.944] | 387.230 [370.902–440.807] |
+| 64 callers, 10,000 keys | After   | 1.219 [1.185–1.254] | 1.014 [1.004–1.025]    | 938.4 [921.6–946.6]   | 54.770 [54.698–56.501] | 182.997 [177.961–187.808] | 357.475 [339.623–463.790] |
+
+All measured requests succeeded: before/after sequential counts were 43,413 and
+48,633; 64-caller counts were 80,169 and 84,346. Median app CPU fell **25.2%**
+sequentially and **7.3%** at 64 callers. Sequential p50 improved **18.5%** and
+throughput improved **18.8%**; the 25% CPU target is met within the measured
+round's noise, while the lower-p50 and higher-throughput conditions are met.
+Concurrent p50, p99 and throughput also improved at the median. Maxima overlap,
+so no tail-latency claim is made. The final comparison is on refreshed
+`origin/main`; #493 was not present in that snapshot. Earlier preview-proxy,
+pre-lint, pre-ordering-fix and pre-main cohorts remain diagnostic raw data only.
+
+CPU profiles put most main-thread work in Effect execution and Postgres driver
+continuations rather than hashing or output JSON. Separate diagnostic JSC
+compile logs showed repeated compilation of generator bodies allocated for
+each request or turn. Reusing generator functions and replacing short-lived
+generators with ordinary Effect combinators removes that repeated work without
+changing the durable transaction. The next CPU experiment should isolate
+remaining stream-adapter and driver/Effect overhead with longer steady-state
+windows, rather than remove fences or receipts.
+
+On the final refreshed-main revision, repository typecheck (17 tasks), lint (18
+tasks), formatting, and unit suites passed. The framework unit suite passed
+871 tests with 228 existing skips. The configured integration suite passed
+854 tests with 818 existing backend/project skips; the separately executed
+Postgres crash, restore, runner-death, and failover drills passed all 15 tests.
+The five connection/fleet/progress/subscription/transport projects passed all
+168 tests in a serial regression run. One singleton takeover case timed out in
+the full parallel run and passed in three serial repetitions; it was rerun
+without changing its assertion or deadline. These checks used Bun 1.4.2 on the
+Mac and an isolated Postgres 18.6-bookworm container on port 55407 with
+`pg_stat_statements` and logical WAL enabled. The container was removed after
+verification. No Neki or streaming-replica support claim is added here.
+
+## Original comparison report (2026-10-01–02)
+
 This report measures Akter (formerly Durable Actors) and eight comparison configurations on the same cgroup-limited Daytona sandbox. It is a comparison of these single-node deployments and adapters, not a ranking of the vendors' managed services. In particular, local Cloudflare workerd does **not** run Cloudflare's production replication network, and Rivet's default state-saving policy does **not** acknowledge at the same durability boundary as the explicitly saved variant. Raw comparison records retain the system identifier `durable`; it denotes our framework, not a different competitor.
 
 Measurements were collected on 2026-10-01–02. On the current Akter snapshot, three repeat cohorts give sequential write p50 **1.62 ms**, hot-key throughput **1,647 op/s**, fresh 10,000-key throughput **791 op/s**, and fresh read p50 **0.40 ms**. Its final crash/partition control verified **192,794 acknowledged IDs with zero loss, duplicates, unknown outcomes, misrouting, or failed reads**. These are same-host observations, not production SLOs. Plain Postgres/Redis were much faster, Restate outperformed Akter across many keys, and cloud/isolate advantages are not measured here.
@@ -225,6 +335,31 @@ Cells are the median across the selected repeat cohorts followed by the minimum�
 | Redis AOF-always  | 500        | 3      | 500 [500–500]               | 0.993 [0.948–1.013]       | 23.976 [18.619–127.961]   | 0 [0–0]             | 0 [0–0]             |
 | Redis AOF-always  | 1000       | 3      | 999.9 [999.9–999.9]         | 0.942 [0.865–0.996]       | 59.066 [54.175–164.13]    | 0 [0–0]             | 0 [0–0]             |
 | Redis AOF-always  | 2000       | 3      | 1999.5 [1999.4–1999.5]      | 0.968 [0.928–1.007]       | 41.77 [2.334–295.522]     | 0 [0–0]             | 0 [0–0]             |
+
+### Admission control: bounded overload (#494)
+
+This separate 2026-10-03 experiment compares `782771f79` before admission control with the #494 implementation; it does not replace the earlier head-to-head samples. One four-CPU/four-GiB Daytona sandbox ran Postgres 18.6 and the Bun 1.4.2 app together in a `--cpus=3 --memory=3g` Docker container. A separate `--cpus=1 --memory=1g` Docker driver container reached it over loopback (`--network=host`), with no HTTPS preview proxy. These are CPU quotas, not a claim of exclusive physical host cores. Three repeats alternated before/after order (before–after, after–before, before–after). Each cohort started fresh, prepopulated the same 1,000 keys, and offered 200, 500, 1,000, 2,000, and 4,000 writes/s for 20 s each, with unique command ids, no retry, a 4,096 in-flight cap, and a 10 s timeout. The harness and raw JSON remain outside the repo at `~/.capy/work/akter-perf/494/` (`daytona/local/` contains this topology's final records).
+
+Accepted latency starts at scheduled arrival. Refusal rate uses all scheduled arrivals as its denominator. Every cell is the three-repeat median and range of the statistic, not a pooled percentile or a confidence interval. The max column is the median of each run's maximum, with the range of those maxima.
+
+| Offered/s | Variant | Accepted/s including drain | Accepted p50 ms              | Accepted p99 ms              | Accepted max ms              | Refusals                | Dropped (median) |
+| --------- | ------- | -------------------------- | ---------------------------- | ---------------------------- | ---------------------------- | ----------------------- | ---------------- |
+| 200       | Before  | 200.000 [200.000–200.000]  | 2.565 [2.507–3.274]          | 19.360 [7.274–27.041]        | 43.569 [16.721–62.050]       | 0.000 [0.000–0.000]%    | 0                |
+| 200       | After   | 200.000 [200.000–200.000]  | 2.668 [2.577–3.073]          | 10.023 [7.480–45.171]        | 69.248 [19.746–76.116]       | 0.000 [0.000–0.000]%    | 0                |
+| 500       | Before  | 500.000 [500.000–500.000]  | 2.201 [2.173–2.265]          | 41.183 [13.355–44.440]       | 71.496 [30.268–79.128]       | 0.000 [0.000–0.000]%    | 0                |
+| 500       | After   | 500.000 [500.000–500.000]  | 2.208 [2.162–2.213]          | 12.699 [10.438–40.231]       | 75.847 [28.435–105.633]      | 0.000 [0.000–0.000]%    | 0                |
+| 1000      | Before  | 994.900 [951.600–997.100]  | 50.420 [46.810–735.353]      | 677.110 [221.309–1368.627]   | 1363.460 [654.884–2192.932]  | 0.000 [0.000–0.000]%    | 0                |
+| 1000      | After   | 957.800 [956.900–988.400]  | 46.531 [22.578–49.253]       | 145.958 [109.334–151.156]    | 341.630 [296.340–367.263]    | 4.075 [1.005–4.085]%    | 0                |
+| 2000      | Before  | 996.200 [977.500–1020.200] | 3992.927 [3943.147–3993.628] | 4495.733 [4465.087–4730.552] | 5229.361 [4923.581–5404.771] | 0.000 [0.000–0.000]%    | 16039            |
+| 2000      | After   | 850.600 [820.200–880.600]  | 73.207 [70.900–75.762]       | 178.688 [162.378–184.651]    | 289.102 [288.337–299.292]    | 57.357 [55.840–58.878]% | 0                |
+| 4000      | Before  | 987.200 [968.800–1027.700] | 4051.274 [3882.808–4102.894] | 4554.435 [4386.586–4751.100] | 5739.692 [5143.208–5850.787] | 0.000 [0.000–0.000]%    | 56161            |
+| 4000      | After   | 626.600 [599.200–635.700]  | 98.847 [95.713–102.958]      | 250.860 [246.488–254.815]    | 448.941 [415.218–504.460]    | 84.264 [84.064–84.965]% | 0                |
+
+There were no refusals before the change: overload became seconds of queueing and dropped driver submissions. Afterwards, every non-success was an explicit 503 refusal, with no other errors or dropped submissions. At 2,000 and 4,000 offered/s, accepted p99 stayed below 185 and 255 ms respectively in every repeat, instead of about 4.5 seconds. The cost is lower successful throughput under extreme overload: median acknowledged rate including drain fell from 996 to 851/s at 2,000 offered/s and from 987 to 627/s at 4,000 offered/s because refusals also consume CPU. At 200 and 500/s nothing was refused and p50 stayed near 2–3 ms.
+
+These measurements select a default 64-command request gate and a 64-command runtime gate with up to 64 FIFO waiters waiting at most 100 ms. The activation/Cluster default cap is 1,024 active commands; a declared larger capacity permits a full 1,024-call merged-reducer cohort beside its current turn. Each storage pool bounds excess checkout attempts at 64, including queries and background work that bypass command admission. Across all 30 case boundaries, receipt-count deltas equalled acknowledged commands: 246,295 before and 188,703 after. The 273,297 refused attempts added no extra receipts. Separate real-Postgres tests assert no refused handler/state transition, cancellation safety, and exactly-once same-id retry; receipt totals alone are not that proof.
+
+Earlier Mac runs were polluted by competing workloads and are diagnostic only. A Daytona HTTPS preview-proxy trial queued requests before they reached the app and masked its refusals; it is also diagnostic, not a successful admission-control result. A separate direct-linked-sandbox experiment corroborated bounded accepted latency, but the table above uses only the final 3+1 CPU loopback topology. Akter bounds application request processing and pool/mailbox queues, not an operating-system socket backlog or a proxy's queue. These are single-runner counter measurements, not a production latency SLO or provider certification. Every sandbox and temporary driver snapshot created for this phase was deleted.
 
 ### Whole-process restart controls
 

@@ -13,13 +13,17 @@
     "test:integration": "CLI_BACKEND=postgres bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. apps/cli/src/commands/tenants apps/cli/src/commands/adopt apps/cli/src/commands/fleet"
   },
   "dependencies": {
+    "@akter/billing": "workspace:*",
     "@akter/deployments": "workspace:*",
+    "@distilled.cloud/stripe": "catalog:",
     "@effect/platform-bun": "catalog:",
+    "@effect/sql-pg": "catalog:",
     "@rikalabs/akter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@akter/postgres": "workspace:*",
+    "@effect/sql-pglite": "catalog:",
     "@types/pg": "8.23.1",
     "drizzle-orm": "catalog:",
     "pg": "8.23.0",

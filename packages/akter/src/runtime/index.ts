@@ -59,6 +59,10 @@ export { TelemetrySampler } from "./telemetry/sampler.ts"
 
 export { Metrics } from "./telemetry/metrics.ts"
 
+export { UsageAccounting } from "./telemetry/usage.ts"
+
+export type { UsageAccountingService, UsageCommands, UsageRead } from "./telemetry/usage.ts"
+
 export { SpanNames } from "./telemetry/spans.ts"
 
 export { Operators } from "./operators/routes.ts"

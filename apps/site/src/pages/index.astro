@@ -19,7 +19,7 @@ import Base from "../layouts/base.astro"
 import { callouts, primitives, questions, useCases as cases } from "../landing/copy.ts"
 import { orderDefinition, orderExample, withoutImports } from "../landing/readme-examples.ts"
 import { actor, code, cta, faq, hero, proof, section, useCases } from "../landing/sections.styles.ts"
-import { benchmarkReportUrl, headline } from "../site.ts"
+import { benchmarkReportUrl, docsUrl, headline, quickstartUrl } from "../site.ts"
 import { text } from "../styles/text.styles.ts"
 
 const fixed = (value: number, digits: number): string => value.toFixed(digits)
@@ -171,9 +171,9 @@ const manifest = [
           <svg viewBox="0 0 300 170" {...stylex.attrs(cta.svg)}><Drawing items={ctaStack(41)} /></svg>
         </div>
         <div {...stylex.attrs(cta.middle)}>
-          <a href="/docs" {...stylex.attrs(cta.button)}>Start building <span {...stylex.attrs(cta.buttonNote)}>(quickstart)</span></a>
+          <a href={quickstartUrl} {...stylex.attrs(cta.button)}>Start building <span {...stylex.attrs(cta.buttonNote)}>(quickstart)</span></a>
           <p {...stylex.attrs(cta.text)}>Your first actor, running on your Postgres, in a few minutes.</p>
-          <a href="/docs" {...stylex.attrs(cta.docs)}>Read the docs →</a>
+          <a href={docsUrl} {...stylex.attrs(cta.docs)}>Read the docs →</a>
         </div>
         <div {...stylex.attrs(cta.side)} aria-hidden="true">
           <svg viewBox="0 0 300 170" {...stylex.attrs(cta.svg, cta.flip)}><Drawing items={ctaStack(31)} /></svg>
@@ -185,7 +185,7 @@ const manifest = [
       <Panel>
         <div {...stylex.attrs(faq.root)}>
           <Faq entries={questions} />
-          <a href="/docs" {...stylex.attrs(faq.more)}>More questions in the docs →</a>
+          <a href={docsUrl} {...stylex.attrs(faq.more)}>More questions in the docs →</a>
         </div>
       </Panel>
     </section>

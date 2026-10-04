@@ -43,6 +43,7 @@ export const actionSections = (action: Action): ReadonlyArray<SettingsSection> =
       AddRegion: () => of("regions"),
       ConnectIntegration: () => of("integrations"),
       StartCheckout: () => of("billing"),
+      ChangePlan: () => of("billing"),
       OpenBillingPortal: () => of("billing"),
       SetVariable: () => of("environments"),
       CreateKey: () => of("keys"),

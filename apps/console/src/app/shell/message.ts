@@ -2,7 +2,8 @@ import { Schema as S } from "effect"
 import { defineMessageUnion } from "foldkit/message"
 import { UrlRequest } from "foldkit/navigation"
 import { Url } from "foldkit/url"
-import { TailEntry } from "../commands/model.ts"
+import { CommandLogEntry } from "@akter/cloud-api"
+import { CommandAnswer } from "../commands/model.ts"
 import { Workspace } from "../workspace/model.ts"
 import { Dialog } from "./model.ts"
 import { PageData } from "./page.ts"
@@ -37,7 +38,6 @@ export const Message = defineMessageUnion({
   ConfirmedDialog: {},
   CopiedText: { text: S.String, label: S.String },
   DismissedToast: { id: S.String },
-  TickedTail: {},
   ToggledTail: {},
   ChangedTailFilter: { filter: S.String },
   RetriedDeadLetter: { id: S.String },
@@ -52,11 +52,17 @@ export const Message = defineMessageUnion({
   FailedAction: { message: S.String },
   Mutated: { title: S.String, description: S.optional(S.String), reload: S.Boolean },
   FailedMutation: { message: S.String },
+  ChangedDeployment: { href: S.String, title: S.String, description: S.String },
+  FailedDeploymentChange: { message: S.String },
   CreatedKey: { name: S.String, secret: S.String },
   SentRecoveryEmail: {},
   ResentVerification: {},
-  LoadedFixtureTail: { entries: S.Array(TailEntry) },
-  ReceivedTurn: { entry: TailEntry },
+  ConnectedTail: { session: S.Finite },
+  StreamedTurn: { session: S.Finite, entry: CommandLogEntry },
+  StoppedTail: { session: S.Finite, kind: S.String, message: S.String },
+  AnsweredCommand: { session: S.Finite, answer: CommandAnswer },
+  FailedCommand: { session: S.Finite, kind: S.String, message: S.String },
+  PreparedCommandId: { session: S.Finite, id: S.String },
   CompletedEffect: {},
 })
 export type Message = typeof Message.Type
@@ -89,7 +95,6 @@ export const {
   ConfirmedDialog,
   CopiedText,
   DismissedToast,
-  TickedTail,
   ToggledTail,
   ChangedTailFilter,
   RetriedDeadLetter,
@@ -99,10 +104,16 @@ export const {
   FailedAction,
   Mutated,
   FailedMutation,
+  ChangedDeployment,
+  FailedDeploymentChange,
   CreatedKey,
   SentRecoveryEmail,
   ResentVerification,
-  LoadedFixtureTail,
-  ReceivedTurn,
+  ConnectedTail,
+  StreamedTurn,
+  StoppedTail,
+  AnsweredCommand,
+  FailedCommand,
+  PreparedCommandId,
   CompletedEffect,
 } = Message

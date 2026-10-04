@@ -26,13 +26,14 @@ import {
 import { Rpc } from "effect/rpc"
 import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
-import { Executed, Outcome, Request } from "../request.ts"
+import { DeliveryFailed, Executed, Outcome, Request } from "../request.ts"
 import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
 import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { activationMailbox } from "./mailbox.ts"
+import { overloaded } from "../admission.ts"
 import { type Done, executeBatches, type Stopped } from "../turn/execute.ts"
 import { activationOwner } from "../connections/owner.ts"
 import type { Authorize } from "../connections/streams.ts"
@@ -45,6 +46,7 @@ import { RetryTurn, TurnHooks } from "../turn/hooks.ts"
 import { OutboxRuntime } from "../turn/outbox.ts"
 import type { TurnGate } from "../drain.ts"
 import { DefectLog } from "../telemetry/defects.ts"
+import { accountsUsage, UsageAccounting } from "../telemetry/usage.ts"
 import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { requestAttributes, SpanNames, triggerOf } from "../telemetry/spans.ts"
 import { activationEngine, kickedExecution, workflowCommands } from "../workflows/engine.ts"
@@ -57,7 +59,11 @@ import { activationEngine, kickedExecution, workflowCommands } from "../workflow
  */
 const makeCommandEntity = (name: string) =>
   Entity.make(name, [
-    Rpc.make("Execute", { payload: Request, success: Executed, error: ActorError }),
+    Rpc.make("Execute", {
+      payload: Request,
+      success: Executed,
+      error: Schema.Union([ActorError, DeliveryFailed]),
+    }),
     Rpc.make("Wake"),
   ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
 
@@ -80,6 +86,14 @@ const RESTART_CAP = Duration.seconds(5)
 
 const restartDelay = (restarts: number) =>
   Duration.min(Duration.times(RESTART_BASE, 2 ** restarts), RESTART_CAP)
+
+/**
+ * The commands an activation holds, waiting and in its current batch, when its
+ * policy declares no `mailboxCapacity`. Cluster refuses the next, which
+ * dispatch answers `ActorUnavailable`: a hot actor's backlog then waits in its
+ * callers' retries, where it holds no memory or turn connection on this runner.
+ */
+export const ACTIVATION_MAILBOX = 1024
 
 /** The `outcome` attribute of `akter.turns` and of the turn span. */
 const outcomeOf = (outcome: Outcome, replayed = false) =>
@@ -138,7 +152,8 @@ interface Waiting {
   readonly request: Request
   /** Resolved against the activation that runs the command, as the worker takes it. */
   command: RegisteredCommand
-  readonly reply: Deferred.Deferred<Executed, ActorError>
+  readonly reply: Deferred.Deferred<Executed, ActorError | DeliveryFailed>
+  admitted?: boolean
   /**
    * The request's own context, under the runtime's services, as the turn ran
    * in before batching: its span is the turn span's parent.
@@ -346,6 +361,8 @@ export const registerActor = Effect.fnUntraced(function* (
   const services = yield* Effect.context<
     Effect.Services<ReturnType<typeof executeBatches<Waiting, never, never, never>>> | Crypto.Crypto
   >()
+  const usage = Context.getUnsafe(services, UsageAccounting)
+  const accounting = accountsUsage(usage) ? usage : undefined
 
   const entity = commandEntity(registration.name)
 
@@ -390,15 +407,33 @@ export const registerActor = Effect.fnUntraced(function* (
         }).pipe(Effect.andThen(Metric.modify(activations, -1))),
     )
 
+  /**
+   * Runs a delivered command's `queued` hook under the runtime's services,
+   * captures the context its turn runs in, and waits for its reply. Defined
+   * once per actor type because a generator built for every delivery is
+   * compiled again and again as the engine sees new copies of it.
+   */
+  const awaitReply = Effect.fnUntraced(function* (
+    entry: Waiting,
+    mailbox: { readonly queued: (entry: Waiting) => void },
+  ) {
+    entry.context = yield* Effect.context<never>()
+
+    yield* (yield* TurnHooks)
+      .at("queued", entry.request)
+      .pipe(Effect.ensuring(Effect.sync(() => mailbox.queued(entry))))
+
+    return yield* Deferred.await(entry.reply)
+  }, Effect.provideContext(services))
+
   /** Counts what a committed batch wrote. */
-  const countWritten = (done: Done) =>
-    Effect.gen(function* () {
-      yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
-      yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
-      yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
-      yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
-      yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.jobs)
-    })
+  const countWritten = Effect.fnUntraced(function* (done: Done) {
+    yield* count(Metrics.receiptsReplayed, typeAttributes, done.replays.size)
+    yield* count(Metrics.receiptsWritten, typeAttributes, done.written.receipts)
+    yield* count(Metrics.eventsAppended, typeAttributes, done.written.events)
+    yield* count(Metrics.outboxStaged, { kind: "intent" }, done.written.intents)
+    yield* count(Metrics.outboxStaged, { kind: "job" }, done.written.jobs)
+  })
 
   /**
    * Records a deterministic defect in the defect log under its turn span's
@@ -545,7 +580,18 @@ export const registerActor = Effect.fnUntraced(function* (
           Effect.andThen(
             Effect.forEach(
               batch,
-              (entry) => Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause))),
+              (entry) =>
+                entry.request.external !== true
+                  ? Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause)))
+                  : Deferred.fail(
+                      entry.reply,
+                      DeliveryFailed.make({
+                        error: ActorError.make({
+                          reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                        }),
+                        admitted: entry.admitted === true,
+                      }),
+                    ),
               { discard: true },
             ),
           ),
@@ -578,9 +624,17 @@ export const registerActor = Effect.fnUntraced(function* (
             reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
           })
 
-          yield* Effect.forEach(batch, (entry) => Deferred.fail(entry.reply, unavailable), {
-            discard: true,
-          })
+          yield* Effect.forEach(
+            batch,
+            (entry) =>
+              entry.request.external !== true
+                ? Deferred.fail(entry.reply, unavailable)
+                : Deferred.fail(
+                    entry.reply,
+                    DeliveryFailed.make({ error: unavailable, admitted: entry.admitted === true }),
+                  ),
+            { discard: true },
+          )
         }).pipe(
           Effect.uninterruptible,
           Effect.catchCause((failed) => restart([...batch, ...orphan], failed)),
@@ -706,17 +760,54 @@ export const registerActor = Effect.fnUntraced(function* (
             }
           }
 
-          yield* Deferred.succeed(entry.reply, { outcome, version: done.version })
+          const executed: Executed = done.replays.has(index)
+            ? { outcome, version: done.version, endedAtMs: done.endedAtMs, replayed: true }
+            : { outcome, version: done.version, endedAtMs: done.endedAtMs }
+
+          yield* Deferred.succeed(entry.reply, executed)
         }
+      })
+
+      /** Records a finished batch's turn outcomes and duration, or the defect that ended it. */
+      const observed = Effect.fnUntraced(function* (
+        batch: ReadonlyArray<Waiting>,
+        started: number,
+        exit: Exit.Exit<unknown, unknown>,
+      ) {
+        const { request } = batch[0]!
+        const lone = batch.length === 1
+        const labels = labelled.get(batch)
+        const elapsed = (yield* Clock.currentTimeMillis) - started
+
+        if (labels === undefined && Exit.isFailure(exit)) {
+          if (Cause.hasInterruptsOnly(exit.cause)) return
+
+          if (!retryable(exit.cause) && !lone) return
+
+          const deterministic = !retryable(exit.cause)
+
+          if (deterministic) yield* recordDefect(request, exit.cause)
+
+          yield* count(
+            Metrics.turns,
+            { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
+            batch.length,
+          )
+          yield* record(Metrics.turnDuration, typeAttributes, elapsed)
+
+          return
+        }
+
+        for (const label of labels ?? [])
+          yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
+
+        yield* record(Metrics.turnDuration, typeAttributes, elapsed)
       })
 
       const observe =
         (batch: ReadonlyArray<Waiting>) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>) => {
-          const { request } = batch[0]!
-          const lone = batch.length === 1
-
-          return Effect.flatMap(Clock.currentTimeMillis, (started) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.flatMap(Clock.currentTimeMillis, (started) =>
             Effect.forEach(
               batch,
               ({ request: queued }) =>
@@ -730,40 +821,10 @@ export const registerActor = Effect.fnUntraced(function* (
               { discard: true },
             ).pipe(
               Effect.andThen(effect),
-              Effect.onExit((exit) =>
-                Effect.gen(function* () {
-                  const labels = labelled.get(batch)
-                  const elapsed = (yield* Clock.currentTimeMillis) - started
-
-                  if (labels === undefined && Exit.isFailure(exit)) {
-                    if (Cause.hasInterruptsOnly(exit.cause)) return
-
-                    if (!retryable(exit.cause) && !lone) return
-
-                    const deterministic = !retryable(exit.cause)
-
-                    if (deterministic) yield* recordDefect(request, exit.cause)
-
-                    yield* count(
-                      Metrics.turns,
-                      { ...typeAttributes, outcome: deterministic ? "defect" : "retried" },
-                      batch.length,
-                    )
-                    yield* record(Metrics.turnDuration, typeAttributes, elapsed)
-
-                    return
-                  }
-
-                  for (const label of labels ?? [])
-                    yield* count(Metrics.turns, { ...typeAttributes, outcome: label }, 1)
-
-                  yield* record(Metrics.turnDuration, typeAttributes, elapsed)
-                }),
-              ),
+              Effect.onExit((exit) => observed(batch, started, exit)),
               withinTurnSpan(batch),
             ),
           )
-        }
 
       const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
         const { owned } = current
@@ -787,13 +848,27 @@ export const registerActor = Effect.fnUntraced(function* (
           waited,
           owner.hasConnections ? owner.list(owned) : undefined,
           registration.cron,
+          accounting,
         )
       }
 
       const recover: (
         stopped: Stopped<Waiting>,
       ) => Effect.Effect<void, SqlError.SqlError, Entity.CurrentAddress | Sharding.Sharding> =
-        Effect.fnUntraced(function* ({ batch, orphan, cause, committed }) {
+        Effect.fnUntraced(function* ({ batch, orphan, cause, committed, poolRefused }) {
+          if (poolRefused === true) {
+            mailbox.requeue(orphan ?? [])
+            yield* Effect.forEach(
+              batch,
+              (entry) => Deferred.fail(entry.reply, overloaded("runner")),
+              {
+                discard: true,
+              },
+            )
+
+            return
+          }
+
           if (committed || retryable(cause)) {
             if (!committed && batch.length > 1)
               mailbox.isolate(batch.map(({ request }) => request.commandId))
@@ -836,6 +911,16 @@ export const registerActor = Effect.fnUntraced(function* (
           }
         }, Effect.provideContext(services))
 
+      const turnBatch = Effect.fnUntraced(function* (batch: ReadonlyArray<Waiting>) {
+        if (refused !== undefined) return yield* restart(batch, Cause.die(refused))
+
+        yield* writable
+
+        const stopped = yield* run(batch, true)
+
+        if (stopped !== undefined) yield* recover(stopped)
+      })
+
       yield* Effect.gen(function* () {
         while (true) {
           phase = "idle"
@@ -863,30 +948,18 @@ export const registerActor = Effect.fnUntraced(function* (
             continue
           }
 
-          yield* gate
-            .run(
-              Effect.gen(function* () {
-                if (refused !== undefined) return yield* restart(batch, Cause.die(refused))
-
-                yield* writable
-
-                const stopped = yield* run(batch, true)
-
-                if (stopped !== undefined) yield* recover(stopped)
+          yield* gate.run(turnBatch(batch)).pipe(
+            Effect.catchIf(Schema.is(ActorError), (error) =>
+              Effect.forEach(taken, (entry) => Deferred.fail(entry.reply, error), {
+                discard: true,
               }),
-            )
-            .pipe(
-              Effect.catchIf(Schema.is(ActorError), (error) =>
-                Effect.forEach(taken, (entry) => Deferred.fail(entry.reply, error), {
-                  discard: true,
-                }),
-              ),
-              Effect.provideContext(Context.merge(batch[0]!.context, services)),
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) => restart(batch, cause),
-              ),
-            )
+            ),
+            Effect.provideContext(Context.merge(batch[0]!.context, services)),
+            Effect.catchCauseIf(
+              (cause) => !Cause.hasInterruptsOnly(cause),
+              (cause) => restart(batch, cause),
+            ),
+          )
         }
       }).pipe(Effect.provideContext(services), Effect.forkIn(handler))
 
@@ -922,31 +995,24 @@ export const registerActor = Effect.fnUntraced(function* (
           const entry: Waiting = {
             request: payload,
             command,
-            reply: Deferred.makeUnsafe<Executed, ActorError>(),
+            reply: Deferred.makeUnsafe<Executed, ActorError | DeliveryFailed>(),
             context: Context.empty(),
             queued: false,
           }
 
           mailbox.offer(entry)
 
-          return Rpc.fork(
-            Effect.gen(function* () {
-              entry.context = yield* Effect.context<never>()
-
-              yield* (yield* TurnHooks)
-                .at("queued", payload)
-                .pipe(Effect.ensuring(Effect.sync(() => mailbox.queued(entry))))
-
-              return yield* Deferred.await(entry.reply)
-            }).pipe(Effect.provideContext(services)),
-          )
+          return Rpc.fork(awaitReply(entry, mailbox))
         },
       })
     }),
     {
       concurrency: 1,
       maxIdleTime: registration.policy.idleMs,
-      mailboxCapacity: registration.policy.mailboxCapacity,
+      mailboxCapacity:
+        registration.policy.mailboxCapacity === "unbounded"
+          ? ACTIVATION_MAILBOX
+          : registration.policy.mailboxCapacity,
       defectRetryPolicy: Schedule.forever,
     },
   )

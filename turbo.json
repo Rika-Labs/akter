@@ -51,7 +51,16 @@
       "env": ["CI"]
     },
     "//#lint:root": {
-      "inputs": ["*.ts", ".oxlintrc.json", "tooling/oxlint/anti-slop/**", "tooling/oxlint/src/**"],
+      "inputs": [
+        "*.ts",
+        ".github/src/verify*.ts",
+        ".github/src/replica.ts",
+        ".github/src/node-postgres.ts",
+        ".github/src/release/smoke.ts",
+        ".oxlintrc.json",
+        "tooling/oxlint/anti-slop/**",
+        "tooling/oxlint/src/**"
+      ],
       "outputs": []
     },
     "dev": {

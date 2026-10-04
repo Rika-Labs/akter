@@ -2,16 +2,20 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import type { SqlClient } from "effect/sql"
-import { fairPool } from "./checkout.ts"
+import { boundedPool } from "./bounded.ts"
 
 /**
- * The primary's WAL insert position as a decimal string. Read on a turn's
- * session after its `COMMIT` or `ROLLBACK`, it is at least the end of every
- * commit record that session could have observed, so a replica that has
- * replayed this far sees the turn's writes. An LSN cannot be known inside
- * the transaction that writes it, which is why nothing stores it.
+ * The primary's WAL insert position as a decimal string, and the database
+ * clock in epoch milliseconds. Read on a turn's session after its `COMMIT` or
+ * `ROLLBACK`, the position is at least the end of every commit record that
+ * session could have observed, so a replica that has replayed this far sees
+ * the turn's writes. An LSN cannot be known inside the transaction that
+ * writes it, which is why nothing stores it. The clock is read after the
+ * transaction ended, in the same flight, so an external caller's expiry
+ * recheck before its reply costs no round trip of its own.
  */
-export const COMMIT_VERSION = "SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version"
+export const COMMIT_VERSION = `SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version,
+  floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
 /**
  * This runner's streaming replica, if it has one. A query that carries a
@@ -30,7 +34,7 @@ export const replicaLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Effect.gen(function* () {
       if (options === undefined) return undefined
 
-      return yield* fairPool(options)
+      return yield* boundedPool(options)
     }),
   ).pipe(Layer.provide(Reactivity.layer))
 
@@ -46,9 +50,9 @@ export const QueryPool = Context.Reference<SqlClient.SqlClient | undefined>(
   { defaultValue: () => undefined },
 )
 
-/** Provides `QueryPool` as a first-come, first-served pool for `options`. */
+/** Provides `QueryPool` as a bounded, first-come, first-served pool for `options`. */
 export const queryPoolLayer = (options: PgClient.PgPoolConfig) =>
-  Layer.effect(QueryPool, fairPool(options)).pipe(Layer.provide(Reactivity.layer))
+  Layer.effect(QueryPool, boundedPool(options)).pipe(Layer.provide(Reactivity.layer))
 
 /**
  * Whether the replica has replayed WAL through `version`. A server not in

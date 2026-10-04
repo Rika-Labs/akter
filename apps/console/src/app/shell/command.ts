@@ -1,5 +1,5 @@
 import { closeDialog, openDialog } from "@akter/ui"
-import { Duration, Effect, Match, Schema as S } from "effect"
+import { Cause, Duration, Effect, Match, Option, Predicate, Schema as S } from "effect"
 import * as Command from "foldkit/command"
 import * as Navigation from "foldkit/navigation"
 import {
@@ -14,13 +14,19 @@ import {
   fixturesEnabled,
   rememberAuthReturn,
   signInDestination,
+  newCommandId,
 } from "../api/client.ts"
 import * as Auth from "../auth/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import { discardDeadLetter, retryDeadLetter } from "../jobs/client.ts"
-import { rollBackDeployment } from "../deployments/client.ts"
+import { redeployDeployment, rollBackDeployment } from "../deployments/client.ts"
+import { sendCommand } from "../commands/client.ts"
+import { CommandScope } from "../commands/model.ts"
 import * as Settings from "../settings/client.ts"
+import { titleCase } from "../settings/format.ts"
+import { spendLimitKey } from "../settings/keys.ts"
+import type { PaidPlan } from "../settings/model.ts"
 import { loadWorkspace } from "../workspace/client.ts"
 import { Action } from "./action.ts"
 import {
@@ -30,12 +36,15 @@ import {
   DismissedToast,
   FailedAction,
   FailedMutation,
+  ChangedDeployment,
+  FailedDeploymentChange,
+  AnsweredCommand,
+  FailedCommand,
+  PreparedCommandId,
   Mutated,
   FailedPage,
-  LoadedFixtureTail,
   LoadedPage,
   LoadedWorkspace,
-  ReceivedTurn,
   ResentVerification,
   RetriedPage,
   SentRecoveryEmail,
@@ -310,21 +319,49 @@ export const SelectEnvironment = Command.define("SelectEnvironment", {
     ),
 })
 
-/** Fixture mode only: the commands page's opening tail, imported when it is asked for. */
-export const LoadFixtureTail = Command.define("LoadFixtureTail", {
-  messages: [LoadedFixtureTail],
-  execute: Effect.promise(() => import("../commands/fixtures.ts")).pipe(
-    Effect.map((module) => LoadedFixtureTail({ entries: module.openingTail })),
-  ),
+/** Persists the requested chart window before reloading its endpoint data. */
+export const SelectSeriesWindow = Command.define("SelectSeriesWindow", {
+  args: { value: S.String },
+  messages: [RetriedPage],
+  execute: ({ value }) =>
+    Effect.try(() => sessionStorage.setItem("console-series-window", value)).pipe(
+      Effect.ignore,
+      Effect.as(RetriedPage()),
+    ),
 })
 
-/** Fixture mode only: the next replayed turn for the live tail. */
-export const NextFixtureTurn = Command.define("NextFixtureTurn", {
-  args: { sequence: S.Finite },
-  messages: [ReceivedTurn],
-  execute: ({ sequence }) =>
-    Effect.promise(() => import("../commands/fixtures.ts")).pipe(
-      Effect.map((module) => ReceivedTurn({ entry: module.tailEntry(sequence) })),
+/** Sends a command without closing the dialog so its result or typed refusal stays visible. */
+export const SendActorCommand = Command.define("SendActorCommand", {
+  args: {
+    session: S.Finite,
+    scope: CommandScope,
+    address: S.String,
+    command: S.String,
+    payload: S.String,
+    commandId: S.String.pipe(S.check(S.isMinLength(1))),
+  },
+  messages: [AnsweredCommand, FailedCommand],
+  execute: (request) =>
+    sendCommand(request).pipe(
+      Effect.map((answer) => AnsweredCommand({ session: request.session, answer })),
+      Effect.catch((error) =>
+        Effect.succeed(
+          FailedCommand({ session: request.session, kind: error.kind, message: error.message }),
+        ),
+      ),
+    ),
+})
+
+/** Mints the command ID of a new submission; retrying that submission reuses it, so it runs at most once. */
+export const NewCommandId = Command.define("NewCommandId", {
+  args: { session: S.Finite },
+  messages: [PreparedCommandId, FailedCommand],
+  execute: ({ session }) =>
+    newCommandId.pipe(
+      Effect.map((id) => PreparedCommandId({ session, id })),
+      Effect.catch((error) =>
+        Effect.succeed(FailedCommand({ session, kind: error.kind, message: error.message })),
+      ),
     ),
 })
 
@@ -335,6 +372,7 @@ const choose = <A>(schema: S.Codec<A, string>, value: string, message: string) =
 
 type Settled =
   | ReturnType<typeof Mutated>
+  | ReturnType<typeof ChangedDeployment>
   | ReturnType<typeof CreatedKey>
   | ReturnType<typeof CompletedAuth>
   | ReturnType<typeof CompletedEffect>
@@ -345,13 +383,52 @@ const done = (title: string, description?: string, reload = true): Effect.Effect
 const leave = (url: string): Effect.Effect<Settled> =>
   Navigation.load(url).pipe(Effect.as(CompletedEffect()))
 
+/**
+ * Opens a hosted page in a new tab. The tab opens before its URL is fetched, while the click still
+ * counts as user activation, so the browser does not block it as a popup; it closes again when no
+ * URL comes back. A browser that refuses the tab gets the page in this one instead.
+ */
+const leaveInNewTab = (
+  hosted: Effect.Effect<{ readonly url: string }, ConsoleError>,
+): Effect.Effect<Settled, ConsoleError> =>
+  Effect.suspend(() => {
+    const tab = window.open("", "_blank")
+    if (tab === null) return hosted.pipe(Effect.flatMap(({ url }) => leave(url)))
+    tab.opener = null
+    return hosted.pipe(
+      Effect.tap(({ url }) => Effect.sync(() => tab.location.replace(url))),
+      Effect.as(CompletedEffect()),
+      Effect.tapError(() => Effect.sync(() => tab.close())),
+    )
+  })
+
+const planChanged = (
+  plan: PaidPlan,
+  status: Effect.Success<ReturnType<typeof Settings.changePlan>>,
+): Effect.Effect<Settled, ConsoleError> => {
+  const name = titleCase(plan)
+  if (status === "completed") return done(`You’re on ${name} now`)
+  if (status === "pending")
+    return done(`Changing to ${name}`, `${name} applies once the payment goes through.`)
+  return Effect.fail(
+    ConsoleError.make({
+      kind: "Conflict",
+      message: `The change to ${name} didn’t go through; your plan is unchanged.`,
+    }),
+  )
+}
+
 const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
   Match.value(action).pipe(
     Match.tagsExhaustive({
       SaveToggle: ({ key, enabled }) =>
         Settings.saveToggle({ key, enabled }).pipe(Effect.as(CompletedEffect())),
       SaveChoice: ({ key, value }) =>
-        Settings.saveChoice({ key, value }).pipe(Effect.as(CompletedEffect())),
+        Settings.saveChoice({ key, value }).pipe(
+          Effect.andThen(
+            key === spendLimitKey ? done("Spend limit saved") : Effect.succeed(CompletedEffect()),
+          ),
+        ),
       UpdateProfile: ({ name }) =>
         Settings.updateProfile({ name: name.trim() }).pipe(Effect.andThen(done("Profile saved"))),
       SendPasswordReset: ({ email }) =>
@@ -394,8 +471,9 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         ),
       StartCheckout: ({ plan }) =>
         Settings.startCheckout(plan).pipe(Effect.flatMap(({ url }) => leave(url))),
-      OpenBillingPortal: () =>
-        Settings.openBillingPortal.pipe(Effect.flatMap(({ url }) => leave(url))),
+      ChangePlan: ({ plan }) =>
+        Settings.changePlan(plan).pipe(Effect.flatMap((status) => planChanged(plan, status))),
+      OpenBillingPortal: () => leaveInNewTab(Settings.openBillingPortal),
       SetVariable: ({ environment, name, value }) =>
         choose(EnvironmentName, environment, "Choose an environment.").pipe(
           Effect.flatMap((chosen) =>
@@ -439,23 +517,62 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         discardDeadLetter(id).pipe(
           Effect.andThen(done(`Discarded ${id}`, "The job will not run again.")),
         ),
-      RollBack: ({ id, commit }) =>
+      RollBack: ({ id }) =>
         rollBackDeployment(id).pipe(
-          Effect.andThen(
-            done(`Rolling back to ${commit}`, "Actors move to the previous runners as they drain."),
+          Effect.map(({ deploy }) =>
+            ChangedDeployment({
+              href: Routes.deployment({ deployment: deploy.id }),
+              title: deploy.message,
+              description: "Rolling out now. The live deployment keeps serving until it’s live.",
+            }),
+          ),
+        ),
+      Redeploy: ({ id }) =>
+        redeployDeployment(id).pipe(
+          Effect.map((deploy) =>
+            ChangedDeployment({
+              href: Routes.deployment({ deployment: deploy.id }),
+              title: deploy.message,
+              description: "The new deployment is building.",
+            }),
           ),
         ),
     }),
   )
 
-/** Runs one change through the cloud API; a refusal becomes a message the shell shows, never a silent success. */
+/**
+ * Runs one change through the cloud API; a refusal becomes a message the shell shows, never a silent
+ * success. Every other ending, a defect or an interruption inside the change included, is reported
+ * too, and a rollback or redeploy that did not succeed has its own message, so the shell always
+ * releases the deployment change it was holding.
+ */
 export const Mutate = Command.define("Mutate", {
   args: { action: Action },
-  messages: [Mutated, CreatedKey, CompletedAuth, CompletedEffect, FailedMutation],
+  messages: [
+    Mutated,
+    ChangedDeployment,
+    CreatedKey,
+    CompletedAuth,
+    CompletedEffect,
+    FailedMutation,
+    FailedDeploymentChange,
+  ],
   execute: ({ action }) =>
     Effect.suspend(() =>
       fixturesEnabled()
         ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data is read-only." }))
         : perform(action),
-    ).pipe(Effect.catch((error) => Effect.succeed(FailedMutation({ message: error.message })))),
+    ).pipe(
+      Effect.catchCause((cause) => {
+        const message = Option.match(Cause.findErrorOption(cause), {
+          onNone: () => "The change didn’t finish. Reload to see where it stands.",
+          onSome: (error) => error.message,
+        })
+        return Effect.succeed(
+          Predicate.isTagged(action, "RollBack") || Predicate.isTagged(action, "Redeploy")
+            ? FailedDeploymentChange({ message })
+            : FailedMutation({ message }),
+        )
+      }),
+    ),
 })

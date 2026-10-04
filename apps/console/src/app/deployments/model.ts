@@ -41,17 +41,37 @@ export type Phase = typeof Phase.Type
 export const Runner = S.Struct({
   id: S.String,
   region: S.String,
-  actors: S.Finite,
+  actors: S.NullOr(S.Finite),
   cpu: S.String,
   health: DeploymentRunner.fields.health,
 })
 export type Runner = typeof Runner.Type
 
 /**
+ * The earlier deployment a rollback deployment redeployed. `id` is the contract's reference and
+ * `commit` is its abbreviated commit, present only when that deployment is in the history the
+ * console has read, so an unknown reference shows its id.
+ */
+export const RolledBackFrom = S.Struct({ id: S.String, commit: S.optional(S.String) })
+export type RolledBackFrom = typeof RolledBackFrom.Type
+
+/**
+ * What a rollback created: the new deployment, which starts rolling out, and the earlier
+ * deployment it redeploys. The console reads the new deployment's commit to navigate to it.
+ */
+export const RolledBack = S.Struct({
+  deploy: DeployRecord,
+  rolledBackFrom: S.NullOr(RolledBackFrom),
+})
+export type RolledBack = typeof RolledBack.Type
+
+/**
  * One deploy in detail: its rollout steps, its runners and its build log. `shift` and `liveAt` draw
  * the rollout timeline and exist only when the source measured them; without them the steps are a
- * table. `rollbackTo` is the commit a rollback returns to, `null` when there is none, and `diffUrl`
- * links the commit when the source knows the repository.
+ * table. `rollbackTargets` are the earlier successful deployments of the same environment that a
+ * rollback can restore, newest first and empty when the deploy is not live or has none, and
+ * `rolledBackFrom` is set when this deploy was created by a rollback. `diffUrl` links the commit
+ * when the source knows the repository.
  */
 export const DeploymentPage = S.TaggedStruct("DeploymentPage", {
   deploy: DeployRecord,
@@ -60,7 +80,8 @@ export const DeploymentPage = S.TaggedStruct("DeploymentPage", {
   liveAt: S.optional(S.Finite),
   runners: S.Array(Runner),
   log: S.String,
-  rollbackTo: S.NullOr(S.String),
+  rollbackTargets: S.Array(DeployRecord),
+  rolledBackFrom: S.NullOr(RolledBackFrom),
   diffUrl: S.optional(S.String),
 })
 export type DeploymentPage = typeof DeploymentPage.Type

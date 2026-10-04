@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { ActorRef, Caller } from "../identity/caller.ts"
+import { ActorError } from "../errors/actor.ts"
 
 /**
  * How a command or query ended, with its value or declared failure still
@@ -23,15 +24,26 @@ export type Outcome = typeof Outcome.Type
 
 /**
  * A command's outcome, with the commit version its caller's later queries
- * wait for once the turn committed or replayed a receipt. A defect carries none.
+ * wait for once the turn committed or replayed a receipt, and the database
+ * clock read on the turn's session after its transaction ended, which an
+ * external caller's expiry recheck uses before the reply. A defect carries
+ * neither.
  */
 export const Executed = Schema.Struct({
   outcome: Outcome,
   version: Schema.optionalKey(Schema.String),
+  endedAtMs: Schema.optionalKey(Schema.Finite),
+  replayed: Schema.optionalKey(Schema.Boolean),
 })
 
 /** A command's outcome and the commit version its caller's later queries wait for. */
 export type Executed = typeof Executed.Type
+
+/** An owner's retryable delivery failure, with whether fenced admission validated the id. */
+export class DeliveryFailed extends Schema.TaggedError<DeliveryFailed>()("DeliveryFailed", {
+  error: ActorError,
+  admitted: Schema.Boolean,
+}) {}
 
 /**
  * What a subscription delivery carries beside its command id: the source-side
@@ -64,11 +76,22 @@ export const Request = Schema.Struct({
   commandId: Schema.String,
   payload: Schema.String,
   /**
-   * Set only by the runtime on external admission. Such a turn rejects an
-   * expired id that has no receipt, so pruning a receipt while its retry
-   * waits for the turn cannot run the command again.
+   * Set only by the runtime on external admission. On its first delivery such
+   * a turn checks the id against its fenced read's database clock before it
+   * releases a receipt or runs the handler. Any turn of it rejects an expired
+   * id that has no receipt once retention may have pruned one, so pruning a
+   * receipt while its retry waits for the turn cannot run the command again.
    */
   external: Schema.optionalKey(Schema.Boolean),
+  /** Runtime-only framework-clock offset carried across a test/runner hop. */
+  clockOffset: Schema.optionalKey(Schema.Finite),
+  /**
+   * Set by the runtime only once an owner reported that an earlier attempt
+   * passed fenced admission. That attempt was admitted within the id's
+   * window, so expiry alone does not reject it before receipt resolution or
+   * the retention safety check. Invalid and future identities still fail.
+   */
+  redelivered: Schema.optionalKey(Schema.Boolean),
   /**
    * The sender of the committed outbox row the relay claimed. The rest of
    * that row's delivery is this request's target, caller, command id,
@@ -83,6 +106,12 @@ export const Request = Schema.Struct({
    * the command's identity.
    */
   queuedAtMs: Schema.optionalKey(Schema.Finite),
+  /**
+   * Names one read attempt for the host's usage accounting; a watch reuses it
+   * for every rerun. A host that supplies it must have bound it to an
+   * authenticated assertion. Not part of the request's identity.
+   */
+  usageToken: Schema.optionalKey(Schema.NonEmptyString),
 })
 
 /** One command or query addressed to an actor. */

@@ -23,6 +23,7 @@ import { InternalActors } from "../runtime/actors.ts"
 import type { ActorRef } from "../identity/caller.ts"
 import { Database } from "../runtime/layer.ts"
 import { RunnerWiring } from "../runtime/runner.ts"
+import { admissionSharding } from "../runtime/topology/admission.ts"
 import { ActorTest, ClusterMember, type TestOptions } from "./actor-test.ts"
 
 /** Enough shards that every runner of a small cluster owns several, so actors spread and a killed runner's actors move. */
@@ -229,7 +230,9 @@ const makeNetwork = Effect.sync(() => {
   })
 
   const runner = (address: RunnerAddress.RunnerAddress) =>
-    RunnerServer.layerWithClients.pipe(
+    RunnerServer.layer.pipe(
+      Layer.provideMerge(admissionSharding),
+      Layer.provideMerge(Runners.layerRpc),
       Layer.provide(RpcServer.layerProtocolSocketServer),
       Layer.provide(Layer.effect(SocketServer.SocketServer, listen(address))),
       Layer.provide(Layer.succeed(Runners.RpcClientProtocol, clients)),

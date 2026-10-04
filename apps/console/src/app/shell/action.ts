@@ -1,5 +1,6 @@
 import { Option, Predicate, Schema as S } from "effect"
 import { defineTaggedUnion } from "foldkit/schema"
+import { PaidPlan } from "../settings/model.ts"
 import { blockedBySample } from "../settings/sample.ts"
 import type { PageData } from "./page.ts"
 
@@ -19,7 +20,8 @@ export const Action = defineTaggedUnion({
   VerifyDomain: { id: S.String },
   AddRegion: { region: S.String },
   ConnectIntegration: { kind: S.String },
-  StartCheckout: { plan: S.Literals(["pro", "enterprise"]) },
+  StartCheckout: { plan: PaidPlan },
+  ChangePlan: { plan: PaidPlan },
   OpenBillingPortal: {},
   SetVariable: { environment: S.String, name: S.String, value: S.String },
   CreateKey: { name: S.String, permission: S.String, projectScoped: S.Boolean },
@@ -28,8 +30,23 @@ export const Action = defineTaggedUnion({
   RetryDeadLetters: { ids: S.Array(S.String) },
   DiscardDeadLetter: { id: S.String },
   RollBack: { id: S.String, commit: S.String },
+  Redeploy: { id: S.String, commit: S.String },
 })
 export type Action = typeof Action.Type
+
+/**
+ * Whether a send-command dialog may send. Sample data sends nothing, except on an inspector that
+ * holds a real command scope: its address comes from the URL and its scope from the project, and
+ * only the parts the runtime cannot report yet are sample.
+ */
+export const canSendCommand = (
+  input: Readonly<{ page: Option.Option<PageData>; sample: boolean }>,
+) =>
+  !input.sample ||
+  Option.exists(
+    input.page,
+    (page) => Predicate.isTagged(page, "ActorPage") && page.commandScope !== undefined,
+  )
 
 /** Sample provenance blocks admission even when an event bypasses a disabled control. */
 export const canMutate = (

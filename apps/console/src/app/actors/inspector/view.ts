@@ -5,6 +5,7 @@ import {
   codeBlock,
   dataTable,
   emptyState,
+  pageBody,
   pageHeader,
   propertyList,
   section,
@@ -21,7 +22,13 @@ import { AppRoute } from "../../navigation/routes.ts"
 import * as Routes from "../../navigation/routes.ts"
 import { CopiedText, type Message, OpenedDialog } from "../../shell/message.ts"
 import type { Screen, ScreenInput } from "../../shell/screen.ts"
-import { type ActorPage, type InspectorTab, inspectorTab, inspectorTabs } from "../model.ts"
+import {
+  type ActorPage,
+  type InspectorTab,
+  inspectorTab,
+  inspectorTabs,
+  type MissingActorPage,
+} from "../model.ts"
 
 const styles = stylex.create({
   split: {
@@ -83,6 +90,9 @@ const jobLabels: Readonly<Record<ActorPage["jobs"][number]["status"], string>> =
   dead: "Dead",
 }
 
+/** A count or flag the runner does not report reads as unknown, never as zero. */
+const known = (value: number | null) => (value === null ? "—" : String(value))
+
 const panel = (
   h: HtmlBuilder<Message>,
   page: ActorPage,
@@ -92,44 +102,52 @@ const panel = (
   Match.value(tab).pipe(
     Match.when("state", () =>
       codeBlock(h, {
-        title: `Committed state · turn ${String(page.turn)}`,
+        title:
+          page.turn === null ? "Committed state" : `Committed state · turn ${String(page.turn)}`,
         code: page.state,
         language: "json",
         onCopy: sample ? undefined : CopiedText({ text: page.state, label: "state" }),
       }),
     ),
     Match.when("rows", () =>
-      page.tables.length === 0
+      page.tables === null
         ? emptyState(h, {
-            title: "No owned tables",
-            description: "This actor keeps its data in state.",
+            title: "Owned rows aren’t reported",
+            description:
+              "The runner’s inspector reads state, receipts, events and jobs, not owned tables.",
             align: "start",
           })
-        : h.div(
-            [...styleAttributes(h, styles.panel)],
-            page.tables.map((table) =>
-              section(h, {
-                title: table.name,
-                meta: `owned table · ${String(table.rows.length)} rows`,
-                children: [
-                  dataTable(h, {
-                    label: table.name,
-                    columns: table.columns.map((name, index) => ({
-                      key: name,
-                      label: name,
-                      width: index === 0 ? "minmax(0, 1fr)" : "7rem",
-                      mono: true,
-                      align: index === 0 ? "start" : "end",
-                    })),
-                    rows: table.rows.map((row, index) => ({
-                      key: String(index),
-                      cells: row.cells,
-                    })),
-                  }),
-                ],
-              }),
+        : page.tables.length === 0
+          ? emptyState(h, {
+              title: "No owned tables",
+              description: "This actor keeps its data in state.",
+              align: "start",
+            })
+          : h.div(
+              [...styleAttributes(h, styles.panel)],
+              page.tables.map((table) =>
+                section(h, {
+                  title: table.name,
+                  meta: `owned table · ${String(table.rows.length)} rows`,
+                  children: [
+                    dataTable(h, {
+                      label: table.name,
+                      columns: table.columns.map((name, index) => ({
+                        key: name,
+                        label: name,
+                        width: index === 0 ? "minmax(0, 1fr)" : "7rem",
+                        mono: true,
+                        align: index === 0 ? "start" : "end",
+                      })),
+                      rows: table.rows.map((row, index) => ({
+                        key: String(index),
+                        cells: row.cells,
+                      })),
+                    }),
+                  ],
+                }),
+              ),
             ),
-          ),
     ),
     Match.when("receipts", () =>
       dataTable(h, {
@@ -157,7 +175,7 @@ const panel = (
         ],
         rows: page.events.map((event) => ({
           key: `${event.name}-${event.cursor}`,
-          cells: [event.cursor, event.name, String(event.subscribers)],
+          cells: [event.cursor, event.name, known(event.subscribers)],
         })),
       }),
     ),
@@ -192,7 +210,7 @@ const panel = (
         ruled: true,
         layout: "wide",
         items: [
-          { label: "Sockets", value: String(page.connections.sockets) },
+          { label: "Sockets", value: known(page.connections.sockets) },
           { label: "Event feed cursor", value: page.connections.feedCursor ?? "—", mono: true },
         ],
       }),
@@ -215,14 +233,17 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
         label: "Copy address",
         variant: "ghost",
         size: "sm",
-        disabled: model.pageSample,
+        disabled: model.pageSample && page.commandScope === undefined,
         onClick: CopiedText({ text: address, label: "address" }),
       }),
       button(h, {
         label: "Send command",
         size: "sm",
-        disabled: model.pageSample,
-        onClick: OpenedDialog({ dialog: Dialog.SendCommand({ address }) }),
+        disabled: page.commandScope === undefined,
+        onClick:
+          page.commandScope === undefined
+            ? undefined
+            : OpenedDialog({ dialog: Dialog.SendCommand({ address, scope: page.commandScope }) }),
       }),
     ],
     body: h.div(
@@ -253,19 +274,25 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
               title: "Activity",
               meta: "this turn and its follow-ups",
               children: [
-                activityFeed(h, {
-                  label: `${address} activity`,
-                  entries: page.activity.map((entry) => ({
-                    key: entry.key,
-                    tone: entry.committed ? "live" : "idle",
-                    title: [
-                      h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
-                      ` ${entry.title}`,
-                    ],
-                    detail: entry.detail,
-                    time: entry.time,
-                  })),
-                }),
+                page.activity === null
+                  ? emptyState(h, {
+                      title: "Activity isn’t reported",
+                      description: "The runner doesn’t keep a timeline for this actor.",
+                      align: "start",
+                    })
+                  : activityFeed(h, {
+                      label: `${address} activity`,
+                      entries: page.activity.map((entry) => ({
+                        key: entry.key,
+                        tone: entry.committed ? "live" : "idle",
+                        title: [
+                          h.span([...styleAttributes(h, styles.strong)], [entry.subject]),
+                          ` ${entry.title}`,
+                        ],
+                        detail: entry.detail,
+                        time: entry.time,
+                      })),
+                    }),
               ],
             }),
           ],
@@ -277,23 +304,58 @@ export const actorScreen = ({ h, model, page }: ScreenInput<ActorPage>): Screen 
               items: [
                 {
                   label: "Status",
-                  value: status(h, {
-                    tone: page.awake ? "live" : "idle",
-                    label: page.awake ? "Awake" : "Asleep",
-                  }),
+                  value:
+                    page.awake === null
+                      ? "—"
+                      : status(h, {
+                          tone: page.awake ? "live" : "idle",
+                          label: page.awake ? "Awake" : "Asleep",
+                        }),
                 },
                 { label: "Type", value: page.actorType },
                 { label: "Generation", value: String(page.generation) },
-                { label: "Turn", value: String(page.turn) },
+                { label: "Turn", value: known(page.turn) },
                 { label: "Runner", value: page.runner, mono: true },
                 { label: "Tenant", value: page.tenant },
-                { label: "Mailbox", value: String(page.mailbox) },
-                { label: "Sockets", value: String(page.connections.sockets) },
+                { label: "Mailbox", value: known(page.mailbox) },
+                { label: "Sockets", value: known(page.connections.sockets) },
               ],
             }),
           ],
         ),
       ],
     ),
+  }
+}
+
+/**
+ * An address no command has reached yet. Nothing is wrong with it: the command that creates the
+ * actor brings it into being, so the page offers to send that first command to this address.
+ */
+export const missingActorScreen = ({ h, page }: ScreenInput<MissingActorPage>): Screen => {
+  const address = `${page.actorType}/${page.key}`
+  return {
+    title: address,
+    crumbs: [
+      { label: "Actors", href: Routes.actors() },
+      { label: page.actorType, href: Routes.actorType({ actorType: page.actorType }) },
+      { label: page.key, mono: true },
+    ],
+    body: pageBody(h, [
+      emptyState(h, {
+        title: `${address} hasn’t received a command yet`,
+        description:
+          "Actors come into being with their first command. Send the command that creates this one and the inspector shows it from its first turn.",
+        actions: [
+          button(h, {
+            label: "Send first command",
+            variant: "primary",
+            onClick: OpenedDialog({
+              dialog: Dialog.SendCommand({ address, scope: page.commandScope }),
+            }),
+          }),
+        ],
+      }),
+    ]),
   }
 }

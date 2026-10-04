@@ -101,6 +101,8 @@ export class TransportError extends Schema.TaggedError<TransportError>()("Transp
 /** The runtime could not run the command now, for example an unreachable owner or database; `cause` says why. Retry with the same command id. */
 export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
   cause: Schema.Defect(),
+  /** Preserved across runner RPCs so a pre-turn refusal is not retried inside the receiving runtime. */
+  overloaded: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** The caller stopped waiting for a reply (`deliveryTimeout`, or `commandTimeout` for a query). The turn is not cancelled and may still commit, so retry with the same command id. */
@@ -122,6 +124,54 @@ export class MailboxFull extends Schema.TaggedError<MailboxFull>()("MailboxFull"
 export class RunnerAtCapacity extends Schema.TaggedError<RunnerAtCapacity>()(
   "RunnerAtCapacity",
   {},
+) {}
+
+/** The hosted organization's period usage would exceed its plan's hard quota. */
+export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()("QuotaExceeded", {
+  organizationId: Schema.String,
+  period: Schema.String,
+  limitUnits: Schema.Finite,
+  usedUnits: Schema.Finite,
+  requestedUnits: Schema.Finite,
+  retryAfterMs: Schema.Finite,
+}) {}
+
+/** The hosted organization's estimated period cost would exceed its spend limit. */
+export class SpendLimitExceeded extends Schema.TaggedError<SpendLimitExceeded>()(
+  "SpendLimitExceeded",
+  {
+    organizationId: Schema.String,
+    period: Schema.String,
+    limitCents: Schema.Finite,
+    projectedCents: Schema.Finite,
+  },
+) {}
+
+/** The hosted organization already holds its plan's allowed concurrent connections. */
+export class ConnectionLimitExceeded extends Schema.TaggedError<ConnectionLimitExceeded>()(
+  "ConnectionLimitExceeded",
+  {
+    organizationId: Schema.String,
+    kind: Schema.Literals(["socket", "sse"]),
+    limit: Schema.Finite,
+    open: Schema.Finite,
+  },
+) {}
+
+/**
+ * A Free tenant's latest storage sample is at or over its plan's included
+ * bytes. Waiting for the next period does not lift it; the tenant must hold
+ * less data before new commands are admitted, so it carries no retry time.
+ */
+export class StorageQuotaExceeded extends Schema.TaggedError<StorageQuotaExceeded>()(
+  "StorageQuotaExceeded",
+  {
+    organizationId: Schema.String,
+    deployment: Schema.String,
+    tenant: Schema.String,
+    limitBytes: Schema.Finite,
+    usedBytes: Schema.Finite,
+  },
 ) {}
 
 const RETRYABLE_SESSION_ENDS = new Set([
@@ -169,6 +219,10 @@ export const Reason = Schema.Union([
   NotCreated,
   MailboxFull,
   RunnerAtCapacity,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  ConnectionLimitExceeded,
+  StorageQuotaExceeded,
   SessionEnded,
   InvalidInput,
   TransportError,
@@ -200,6 +254,8 @@ export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", {
    * `MailboxFull`, each with ±50% jitter drawn once per error.
    */
   get retryAfter(): Option.Option<number> {
+    if (Schema.is(QuotaExceeded)(this.reason)) return Option.some(this.reason.retryAfterMs)
+
     if (Schema.is(SessionEnded)(this.reason))
       return Option.fromUndefinedOr(this.reason.retryAfterMs)
 
@@ -225,13 +281,14 @@ export class ActorError extends Schema.TaggedError<ActorError>()("ActorError", {
 const isTransportError = Schema.is(TransportError)
 
 const isRetryableReason = Schema.is(
-  Schema.Union([ActorUnavailable, Timeout, MailboxFull, RunnerAtCapacity]),
+  Schema.Union([ActorUnavailable, Timeout, MailboxFull, RunnerAtCapacity, ConnectionLimitExceeded]),
 )
 
 const NOMINAL_RETRY_AFTER: Partial<Record<Reason["_tag"], number>> = {
   ActorUnavailable: 250,
   RunnerAtCapacity: 1_000,
   MailboxFull: 100,
+  ConnectionLimitExceeded: 1_000,
 }
 
 const jittered = new WeakMap<ActorError, number>()

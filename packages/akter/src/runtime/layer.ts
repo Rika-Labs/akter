@@ -7,11 +7,13 @@ import {
   Context,
   Crypto,
   Duration,
+  Deferred,
   Effect,
   Fiber,
   Layer,
   Option,
   Result,
+  Schedule,
   Schema,
   Stream,
 } from "effect"
@@ -37,13 +39,13 @@ import {
 } from "../errors/actor.ts"
 import { Actors } from "../handles/actors.ts"
 import { type JobRegistration, type QueryRegistration, type Registration } from "./members.ts"
-import type { Executed, Request } from "./request.ts"
+import { DeliveryFailed, type Executed, type Request } from "./request.ts"
 import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
-import { fairLayer } from "./database/checkout.ts"
+import { NekiTurnSessions } from "./database/neki/session.ts"
 import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
@@ -57,7 +59,7 @@ import { holderShardGroups, holderTransport, type Transport } from "./connection
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./jobs/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
-import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock } from "./turn/admission.ts"
 import { routingKey } from "./storage/codec.ts"
 import { recordedPlacement } from "./storage/placements.ts"
 import { TurnHooks } from "./turn/hooks.ts"
@@ -65,7 +67,6 @@ import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { seedRuntime } from "./operators/seed.ts"
-import { count, Metrics } from "./telemetry/metrics.ts"
 import { TelemetrySampler } from "./telemetry/sampler.ts"
 import { TurnConnections, turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
@@ -77,7 +78,7 @@ import {
 import type { Placement } from "./storage/codec.ts"
 import { DEFAULT_WRITER_WINDOW_MS, refreshWriters } from "./payloads/versions.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
-import { ExecutionTarget, INTERRUPT, RESUME } from "../handles/workflow.ts"
+import { ExecutionTarget, INTERRUPT } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import {
   coordinatedRunnerStorage,
@@ -86,6 +87,7 @@ import {
   tableShardLease,
 } from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
+import { MailboxRefusals, mailboxRefusals } from "./topology/admission.ts"
 import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
 import { ContentStore } from "../handles/content.ts"
 import { isContent } from "../members/blob.ts"
@@ -94,7 +96,8 @@ import { MAX_CONTENT_BYTES, tenantContent } from "./content/store.ts"
 import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
-import { checkReceipt } from "./turn/receipt.ts"
+import { admissionLimit, isOverloaded, overloaded } from "./admission.ts"
+import { boundedLayer, isPoolRefusal } from "./database/bounded.ts"
 import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
@@ -132,6 +135,28 @@ export interface Options {
    * process.
    */
   readonly maxResidentActors?: number
+  /**
+   * How this runner refuses external commands it cannot serve promptly. A
+   * refused command gets `ActorUnavailable` with a `retryAfter` before any of
+   * it runs, so load past capacity waits in callers' retries under the same
+   * command id instead of in this runner's queues.
+   */
+  readonly admission?: {
+    /** External commands worked on at once, from admission to reply. Default 64. */
+    readonly concurrency?: number
+    /**
+     * How long a command past `concurrency` waits for a slot, in arrival
+     * order, before it is refused; at most `concurrency` commands wait.
+     * Default 100 milliseconds.
+     */
+    readonly wait?: Duration.Input
+    /**
+     * Served command requests processed at once, including authentication and
+     * body parsing. The next is refused before either starts. Shared across
+     * this runtime's serve layers. Default 64.
+     */
+    readonly requests?: number
+  }
   /** The outbox relay of this runner; every default equals the single-runner M1 behaviour. */
   readonly relay?: {
     /** Durable polling interval, jittered by ±10% per wait. Default 1 second. */
@@ -339,6 +364,12 @@ export const layer = (options: Options = {}) => {
     Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }),
   ).make(options.maxResidentActors ?? 10_000)
 
+  const admissionSettings = {
+    concurrency: Count.make(options.admission?.concurrency ?? 64),
+    wait: Duration.millis(millis(options.admission?.wait ?? "100 millis")),
+    requests: Count.make(options.admission?.requests ?? 64),
+  }
+
   const executorLeaseMs = millis(options.executors?.lease ?? "60 seconds")
 
   if (executorLeaseMs < 3000) throw new Error("executors.lease must be at least 3 seconds")
@@ -408,6 +439,19 @@ export const layer = (options: Options = {}) => {
       })
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const refusals = yield* MailboxRefusals
+      refusals.refuse = (address) => {
+        const registration = registrations.get(address.entityType)
+        if (
+          registration === undefined ||
+          residency.get(address.entityType)?.(address.entityId) !== true
+        )
+          return undefined
+
+        return registration.policy.mailboxCapacity === "unbounded"
+          ? overloaded("activation")
+          : ActorError.make({ reason: MailboxFull.make({}) })
+      }
       const diagnostics: Parameters<typeof actorRegistration>[0]["diagnostics"] = new Map()
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
@@ -467,6 +511,12 @@ export const layer = (options: Options = {}) => {
         })
 
       const gate = turnGate()
+
+      const admission = admissionLimit({
+        limit: admissionSettings.concurrency,
+        wait: admissionSettings.wait,
+      })
+      const requests = admissionLimit({ limit: admissionSettings.requests, wait: Duration.zero })
 
       let holder: Holder | undefined
 
@@ -589,9 +639,27 @@ export const layer = (options: Options = {}) => {
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
-      const authorize = Effect.fnUntraced(function* (request: Request) {
+      /**
+       * Rechecks access and expiry before an external caller gets its outcome.
+       * `endedAtMs` is the clock the turn read after its transaction ended;
+       * an outcome without one, a defect, reads the clock again. A reply may
+       * already have committed, so a full clock-read pool must wait, never
+       * report pre-turn refusal.
+       */
+      const authorize = Effect.fnUntraced(function* (request: Request, endedAtMs?: number) {
         yield* allow(request, "command")
-        yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
+        yield* checkIdentity(
+          request.commandId,
+          retryWindowMs,
+          endedAtMs === undefined
+            ? yield* databaseTime.pipe(
+                Effect.retry({
+                  while: isPoolRefusal,
+                  schedule: Schedule.spaced("10 millis"),
+                }),
+              )
+            : endedAtMs + frameworkClock.offsetMillis(),
+        )
       })
 
       const refreshing = Semaphore.makeUnsafe(1)
@@ -674,7 +742,11 @@ export const layer = (options: Options = {}) => {
         })
 
       const dispatch = Effect.fnUntraced(
-        function* (request: Request, external: boolean) {
+        function* (
+          request: Request,
+          external: boolean,
+          pending?: Set<Fiber.Fiber<unknown, unknown>>,
+        ) {
           const registration = registrations.get(request.ref.actor)
 
           if (registration === undefined)
@@ -697,6 +769,8 @@ export const layer = (options: Options = {}) => {
               external &&
               (request.intent !== undefined ||
                 request.delivery !== undefined ||
+                request.redelivered !== undefined ||
+                request.clockOffset !== undefined ||
                 (Schema.is(System)(request.caller) &&
                   (request.caller.mint !== undefined || request.caller.source === "subscription")))
             )
@@ -704,56 +778,69 @@ export const layer = (options: Options = {}) => {
                 reason: Unauthorized.make({ code: "access_denied" }),
               })
 
-            if (external) yield* allow(request, "command")
-
-            const admission = yield* readAdmission(
-              request,
-              routingKey({ ref: request.ref, placement: registration.placement }),
-            ).pipe(
-              Effect.tapError(() =>
-                external
-                  ? Effect.flatMap(databaseTime, (now) =>
-                      checkIdentity(request.commandId, retryWindowMs, now),
-                    )
-                  : Effect.void,
-              ),
-            )
-
-            if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
-
-            if (admission.receipt !== undefined && request.command !== RESUME) {
-              const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
-
-              yield* Effect.annotateCurrentSpan({ "admission.replayed": true })
-              yield* count(Metrics.receiptsReplayed, { actor_type: request.ref.actor }, 1)
-
-              if (external) yield* authorize(request)
-
-              return { outcome: retained, version: admission.version } satisfies Executed
+            if (external) {
+              yield* allow(request, "command")
+              yield* checkIdentity(request.commandId, retryWindowMs)
             }
 
             const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
 
             yield* (yield* TurnHooks).at("beforeDelivery", request)
 
+            let admitted = false
+
             const deliver = Clock.currentTimeMillis.pipe(
               Effect.flatMap((queuedAtMs) =>
                 client
                   .Execute(
-                    external ? { ...request, external, queuedAtMs } : { ...request, queuedAtMs },
+                    !external
+                      ? { ...request, queuedAtMs }
+                      : !admitted
+                        ? {
+                            ...request,
+                            external,
+                            clockOffset: frameworkClock.offsetMillis(),
+                            queuedAtMs,
+                          }
+                        : {
+                            ...request,
+                            external,
+                            redelivered: true,
+                            clockOffset: frameworkClock.offsetMillis(),
+                            queuedAtMs,
+                          },
                   )
-                  .pipe(Effect.forkIn(scope)),
+                  .pipe(
+                    Effect.interruptible,
+                    Effect.forkIn(scope),
+                    Effect.tap((fiber) =>
+                      Effect.sync(() => {
+                        pending?.add(fiber)
+                      }),
+                    ),
+                    Effect.uninterruptible,
+                  ),
               ),
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {
                 const failure = Cause.findErrorOption(cause)
 
+                if (Option.isSome(failure) && Schema.is(DeliveryFailed)(failure.value)) {
+                  admitted ||= failure.value.admitted
+
+                  return Effect.fail(failure.value.error)
+                }
+
                 if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
                   return Effect.fail(failure.value)
 
                 if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value)) {
-                  if (registration.policy.mailboxCapacity !== "unbounded" && isResident())
-                    return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+                  if (isResident())
+                    return Effect.fail(
+                      registration.policy.mailboxCapacity === "unbounded"
+                        ? overloaded("activation")
+                        : ActorError.make({ reason: MailboxFull.make({}) }),
+                    )
 
                   rejectedAtCapacity = true
 
@@ -772,7 +859,7 @@ export const layer = (options: Options = {}) => {
               deliver.pipe(
                 Effect.catchIf(
                   (error) =>
-                    Schema.is(ActorUnavailable)(error.reason) ||
+                    (Schema.is(ActorUnavailable)(error.reason) && !isOverloaded(error)) ||
                     Schema.is(RunnerAtCapacity)(error.reason),
                   (error) =>
                     Effect.sleep(retryDelay(attempt)(error)).pipe(
@@ -783,7 +870,7 @@ export const layer = (options: Options = {}) => {
 
             const executed = yield* retrying(0)
 
-            if (external) yield* authorize(request)
+            if (external) yield* authorize(request, executed.endedAtMs)
 
             return executed
           }).pipe(
@@ -808,7 +895,7 @@ export const layer = (options: Options = {}) => {
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
-        (effect, request, external) =>
+        (effect, ...[request, external]: [Request, boolean, Set<Fiber.Fiber<unknown, unknown>>?]) =>
           effect.pipe(
             Effect.withSpan(
               SpanNames.admission,
@@ -1120,7 +1207,35 @@ export const layer = (options: Options = {}) => {
             entityId(ref),
             (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
           ).pipe(Effect.provideContext(services)),
-        execute: (request) => Effect.tap(dispatch(request, true), observe),
+        execute: (request) =>
+          Effect.gen(function* () {
+            const reply = yield* Deferred.make<Executed, ActorError>()
+            const pending = new Set<Fiber.Fiber<unknown, unknown>>()
+
+            yield* admission
+              .admit(
+                dispatch(request, true, pending).pipe(
+                  Effect.tap(observe),
+                  Effect.onExit((exit) =>
+                    [...pending].some((fiber) => fiber.pollUnsafe() === undefined)
+                      ? Deferred.done(reply, exit)
+                      : Effect.void,
+                  ),
+                  Effect.ensuring(
+                    Effect.suspend(() => Effect.forEach(pending, Fiber.await, { discard: true })),
+                  ),
+                ),
+              )
+              .pipe(
+                Effect.onExit((exit) => Deferred.done(reply, exit)),
+                Effect.ignoreCause,
+                Effect.forkIn(scope),
+              )
+
+            return yield* Deferred.await(reply)
+          }),
+        overloaded: admission.full,
+        admitRequest: requests.admit,
         deliver: (request) =>
           dispatch(request, false).pipe(
             Effect.tap(observe),
@@ -1316,6 +1431,7 @@ export const layer = (options: Options = {}) => {
           ),
         ),
         Layer.provideMerge(directMessages),
+        Layer.provideMerge(mailboxRefusals),
         Layer.provide([
           runnerStorage === "memory"
             ? Layer.effect(
@@ -1392,8 +1508,9 @@ export const Database = {
    * off-turn pool, `offTurnConnections` (default 10), unless `coordination`
    * moves Cluster storage and deployment locks to an independent unsharded
    * primary. All runners must designate the same authority. Every pool opens
-   * connections only as load needs them and hands its connections out first
-   * come, first served. Keep the sum across runners below the server's
+   * connections only as load needs them, refuses checkouts past its
+   * connections plus a bounded waiter allowance, and hands its connections out
+   * first come, first served. Keep the sum across runners below the server's
    * `max_connections`.
    *
    * `replica` is this runner's nearest streaming replica of the same primary.
@@ -1411,6 +1528,7 @@ export const Database = {
     options: Omit<PgClient.PgPoolConfig, "types"> & {
       readonly offTurnConnections?: number
       readonly queryConnections?: number
+      readonly neki?: boolean
       readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
       /** An unsharded primary shared by every runner; owns coordination rows and Cluster and fleet locks. */
       readonly coordination?: Omit<PgClient.PgPoolConfig, "types"> | undefined
@@ -1427,11 +1545,12 @@ export const Database = {
           : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
     })
 
-    const { offTurnConnections, queryConnections, replica, coordination, ...configured } = options
+    const { offTurnConnections, queryConnections, replica, neki, coordination, ...configured } =
+      options
     const pool = withKeepalives(configured)
 
-    return Layer.mergeAll(
-      fairLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+    const database = Layer.mergeAll(
+      boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
       queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
@@ -1439,6 +1558,9 @@ export const Database = {
         coordination === undefined ? undefined : { ...withKeepalives(coordination), types },
       ),
     )
+    return neki === undefined
+      ? database
+      : database.pipe(Layer.provideMerge(Layer.succeed(NekiTurnSessions, neki)))
   },
   pglite,
 }

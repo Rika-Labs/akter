@@ -20,7 +20,7 @@ export const AppRoute = Route.defineRouteUnion({
   Workflows: {},
   Connections: {},
   Deployments: {},
-  Deployment: { commit: S.String },
+  Deployment: { deployment: S.String },
   Regions: {},
   SettingsGeneral: {},
   SettingsAppearance: {},
@@ -105,15 +105,6 @@ export const acceptInvitation = pipe(
   Route.mapTo(construct.AcceptInvitation),
 )
 
-/** The accounts backend's emailed invitation URL, mapped to the console's canonical route. */
-const invitationLink = pipe(
-  page("accept-invitation"),
-  Route.query(S.Struct({ invitationId: S.String.pipe(S.check(S.isMinLength(1))) })),
-  Route.mapTo({
-    make: ({ invitationId }: Readonly<{ invitationId: string }>) =>
-      AppRoute.AcceptInvitation({ invitation: invitationId }),
-  }),
-)
 export const onboarding = pipe(
   page("onboarding"),
   Route.query(S.Struct({ step: S.optional(S.String) })),
@@ -145,7 +136,7 @@ export const connections = pipe(page("connections"), Route.mapTo(construct.Conne
 export const deployments = pipe(page("deployments"), Route.mapTo(construct.Deployments))
 export const deployment = pipe(
   page("deployments"),
-  Route.slash(Route.string("commit")),
+  Route.slash(Route.string("deployment")),
   Route.mapTo(construct.Deployment),
 )
 export const regions = pipe(page("regions"), Route.mapTo(construct.Regions))
@@ -186,7 +177,6 @@ const parser = Route.oneOf(
   forgotPassword,
   resetPassword,
   acceptInvitation,
-  invitationLink,
   onboarding,
   project,
   actor,

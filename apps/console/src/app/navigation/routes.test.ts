@@ -14,7 +14,7 @@ describe("console routes", () => {
       Routes.project({ project: "support-bot" }),
       Routes.actorType({ actorType: "Order" }),
       Routes.actor({ actorType: "Order", key: "ord_8f2c", tab: "receipts" }),
-      Routes.deployment({ commit: "a3f9c21" }),
+      Routes.deployment({ deployment: "a3f9c21" }),
       Routes.acceptInvitation({ invitation: "inv_42" }),
       Routes.onboarding({ step: "deploy" }),
       Routes.settingsGeneral(),
@@ -47,12 +47,13 @@ describe("console routes", () => {
     expect(parse("/onboarding")).toEqual(AppRoute.Onboarding({}))
   })
 
-  it("accepts the backend's emailed invitation link without changing canonical invitation URLs", () => {
-    expect(parse("/accept-invitation?invitationId=inv_537")).toEqual(
+  it("uses the canonical invitation URL now used by account emails", () => {
+    expect(parse("/invitations/inv_537")).toEqual(
       AppRoute.AcceptInvitation({ invitation: "inv_537" }),
     )
     expect(Routes.acceptInvitation({ invitation: "inv_537" })).toBe("/invitations/inv_537")
     expect(parse("/accept-invitation")._tag).toBe("NotFound")
+    expect(parse("/accept-invitation?invitationId=inv_537")._tag).toBe("NotFound")
   })
 
   it("sends deeper or unknown paths to the not-found page with the path that missed", () => {

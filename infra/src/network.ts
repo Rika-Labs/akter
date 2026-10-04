@@ -96,12 +96,23 @@ export const network = (config: Deployment) =>
     })
     const servicesGroup = yield* AWS.EC2.SecurityGroup("ServicesGroup", {
       vpcId: vpc.vpcId,
-      ingress: [3000, 3001, 3002].map((port) => ({
+      ingress: [3000, 3001].map((port) => ({
         ipProtocol: "tcp",
         fromPort: port,
         toPort: port,
         referencedGroupId: loadBalancerGroup.groupId,
       })),
+    })
+    const edgeGroup = yield* AWS.EC2.SecurityGroup("EdgeGroup", {
+      vpcId: vpc.vpcId,
+      ingress: [
+        {
+          ipProtocol: "tcp",
+          fromPort: 3002,
+          toPort: 3002,
+          referencedGroupId: loadBalancerGroup.groupId,
+        },
+      ],
     })
     const loadBalancer = yield* AWS.ELBv2.LoadBalancer("Nlb", {
       name: config.name,
@@ -114,5 +125,5 @@ export const network = (config: Deployment) =>
         "deletion_protection.enabled": config.stage === "prod" ? "true" : "false",
       },
     })
-    return { vpc, subnets, loadBalancer, servicesGroup }
+    return { vpc, subnets, loadBalancer, servicesGroup, edgeGroup }
   })

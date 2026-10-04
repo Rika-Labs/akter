@@ -1,4 +1,5 @@
 import { migrate } from "@akter/postgres/migrate"
+import { Anonymous } from "@rikalabs/akter"
 import { edgeKey } from "@rikalabs/akter/testing"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
@@ -55,16 +56,64 @@ const optionsFor = Effect.fnUntraced(function* (url: string, kid: string) {
     port: 0,
     assertionLifetime: Duration.seconds(10),
     apiKeySession: Duration.minutes(5),
+    helloTimeout: Duration.seconds(30),
     pollEvery: Duration.seconds(5),
     publicationLead: Duration.zero,
     requestBytes: 1024 * 1024,
     socketMessageBytes: 64 * 1024,
     socketBufferBytes: 1024 * 1024,
     coldStartTimeout: Duration.seconds(30),
+    leaseTtl: Duration.seconds(30),
+    leaseHeartbeat: Duration.seconds(10),
+    trustedProxies: { nlbOnly: false, cloudflare: [] },
   } satisfies EdgeOptions
 })
 
 describe("the edge key ring", () => {
+  it("refuses young published keys and signs only after the configured production lead", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* controlPlane
+          const database = yield* Layer.build(
+            PgClient.layer({ url: Redacted.make(url), maxConnections: 2 }),
+          ).pipe(Effect.orDie)
+          const options = {
+            ...(yield* optionsFor(url, "edge-lead")),
+            publicationLead: Duration.minutes(5),
+          }
+          const sign = Effect.scoped(
+            Effect.gen(function* () {
+              const ring = yield* keyRing(options)
+              return yield* ring.sign({
+                iss: options.issuer,
+                aud: "deployment",
+                region: "us-east-1",
+                iat: 1,
+                exp: 2,
+                tenant: "tenant",
+                caller: Anonymous.make({}),
+                req: "0".repeat(64),
+              })
+            }),
+          ).pipe(Effect.provideContext(database), Effect.orDie)
+
+          expect(yield* sign).toBeUndefined()
+
+          const sql = Context.get(database, SqlClient.SqlClient)
+          yield* sql`UPDATE edge_key SET published_at = now() - interval '4 minutes' WHERE kid = 'edge-lead'`.pipe(
+            Effect.orDie,
+          )
+          expect(yield* sign).toBeUndefined()
+
+          yield* sql`UPDATE edge_key SET published_at = now() - interval '6 minutes' WHERE kid = 'edge-lead'`.pipe(
+            Effect.orDie,
+          )
+          expect(yield* sign).toEqual(expect.any(String))
+        }),
+      ),
+    ))
+
   it("publishes a new kid, starts again with the same key, and refuses a different key under a published kid", () =>
     runtime.runPromise(
       Effect.scoped(

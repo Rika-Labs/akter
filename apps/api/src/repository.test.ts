@@ -2,6 +2,7 @@ import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {
   Cause,
+  Clock,
   Config,
   Context,
   Crypto,
@@ -11,12 +12,15 @@ import {
   ManagedRuntime,
   Redacted,
   Result,
+  Schema,
 } from "effect"
 import { SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import {
   type Audited,
+  type CommandKey,
+  commandPayloadHash,
   EnvironmentInUse,
   EnvironmentNameTaken,
   EnvironmentNotFound,
@@ -122,7 +126,9 @@ describe("migrations", () => {
 
         yield* Effect.all(
           Array.from({ length: 4 }, () =>
-            Effect.scoped(Layer.build(RepositoryLive.pipe(Layer.provide(client(url, 2))))),
+            Effect.scoped(
+              Layer.build(RepositoryLive.pipe(Layer.provide(client(url, 2)), Layer.fresh)),
+            ),
           ),
           { concurrency: "unbounded", discard: true },
         )
@@ -752,6 +758,365 @@ describe("preferences", () => {
 
         const pinned = yield* repository.listPinnedActors({ userId })
         expect(pinned.map(({ address }) => address).sort()).toEqual([...addresses].sort())
+      }),
+    ))
+})
+
+describe("command assignments", () => {
+  it("hashes canonical JSON semantics without losing escapes or array order", () => {
+    const first = { b: { z: -0, a: "\u0000" }, a: [2, 1] }
+    const reordered = { a: [2, 1], b: { a: "\u0000", z: 0 } }
+    const expected = "f9a83063af44ea50d78207d8c6c3998df1c8fae7637eab1c4e31cfd835019f52"
+    expect(commandPayloadHash(first)).toBe(expected)
+    expect(commandPayloadHash(reordered)).toBe(expected)
+    expect(commandPayloadHash({ ...reordered, a: [1, 2] })).not.toBe(expected)
+    expect(commandPayloadHash({ ...reordered, b: { a: "", z: 0 } })).not.toBe(expected)
+  })
+
+  const expiresAt = Effect.runSync(Clock.currentTimeMillis) + 86_400_000
+  const assignment = (commandId: string, payload: Schema.Json) => ({
+    commandId,
+    payloadHash: commandPayloadHash(payload),
+    expiresAt,
+    expired: false,
+  })
+  const assign = (
+    repository: Repository["Service"],
+    input: CommandKey & { payload: Schema.Json; mintedCommandId: string },
+  ) => {
+    const { payload, ...rest } = input
+    return repository.assignCommand({
+      ...rest,
+      payloadHash: commandPayloadHash(payload),
+      expiresAt,
+    })
+  }
+  const key = (organizationId: string) => ({
+    organizationId,
+    projectId: "p1",
+    environment: "production",
+    address: "Order/o/1",
+    command: "Cancel",
+    commandId: "client-key",
+  })
+
+  it("let exactly one of several concurrent first sends win, and every racer gets the winner", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const minted = yield* Effect.all(Array.from({ length: 8 }, () => unique))
+
+        const assigned = yield* Effect.forEach(
+          minted,
+          (mintedCommandId) =>
+            assign(repository, {
+              ...key(organizationId),
+              payload: { reason: "late" },
+              mintedCommandId,
+            }),
+          { concurrency: "unbounded" },
+        )
+
+        const winner = assigned[0]!
+        expect(minted).toContain(winner.commandId)
+        for (const row of assigned)
+          expect(row).toEqual(assignment(winner.commandId!, { reason: "late" }))
+        expect(yield* repository.findCommand(key(organizationId))).toEqual(winner)
+      }),
+    ))
+
+  it("keep the first payload when a later assignment under the same key carries another", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const [first, second] = [yield* unique, yield* unique]
+
+        expect(yield* repository.findCommand(key(organizationId))).toBeUndefined()
+
+        const stored = yield* assign(repository, {
+          ...key(organizationId),
+          payload: { reason: "late", detail: { by: "ops" } },
+          mintedCommandId: first,
+        })
+        const again = yield* assign(repository, {
+          ...key(organizationId),
+          payload: { reason: "early" },
+          mintedCommandId: second,
+        })
+
+        expect(stored).toEqual(assignment(first, { reason: "late", detail: { by: "ops" } }))
+        expect(again).toEqual(stored)
+        expect(yield* repository.findCommand(key(organizationId))).toEqual(stored)
+      }),
+    ))
+
+  it("survive a restart: a newly built repository on the same database reads the same assignment", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const url = yield* Effect.service(DatabaseUrl)
+        const minted = yield* unique
+
+        const stored = yield* assign(repository, {
+          ...key(organizationId),
+          payload: { reason: "late" },
+          mintedCommandId: minted,
+        })
+
+        const restarted = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const context = yield* Layer.build(
+              RepositoryLive.pipe(Layer.provide(client(url, 2)), Layer.fresh),
+            )
+            const fresh = Context.get(context, Repository)
+
+            return {
+              found: yield* fresh.findCommand(key(organizationId)),
+              assigned: yield* assign(fresh, {
+                ...key(organizationId),
+                payload: { reason: "late" },
+                mintedCommandId: yield* unique,
+              }),
+            }
+          }),
+        )
+
+        expect(restarted).toEqual({ found: stored, assigned: stored })
+        expect(stored.commandId).toBe(minted)
+      }),
+    ))
+
+  it("keep every scope field independent, so a key reused under another scope gets its own command", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const base = key(organizationId)
+        const scopes = [
+          base,
+          { ...base, organizationId: yield* unique },
+          { ...base, projectId: "p2" },
+          { ...base, environment: "staging" },
+          { ...base, address: "Order/o/2" },
+          { ...base, command: "Ship" },
+          { ...base, commandId: "client-other" },
+        ]
+
+        const assigned = []
+        for (const scope of scopes) {
+          const mintedCommandId = yield* unique
+          const row = yield* assign(repository, {
+            ...scope,
+            payload: { scope: mintedCommandId },
+            mintedCommandId,
+          })
+
+          expect(row).toEqual(assignment(mintedCommandId, { scope: mintedCommandId }))
+          assigned.push(row)
+        }
+
+        for (const [index, scope] of scopes.entries())
+          expect(yield* repository.findCommand(scope)).toEqual(assigned[index])
+      }),
+    ))
+
+  it("compare payload hashes without retaining the request body", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const mintedCommandId = yield* unique
+        const payload = { text: "before\u0000after", surrogate: "\ud800", values: ["\u0000"] }
+
+        expect(
+          yield* assign(repository, { ...key(organizationId), payload, mintedCommandId }),
+        ).toEqual(assignment(mintedCommandId, payload))
+        expect(yield* repository.findCommand(key(organizationId))).toEqual(
+          assignment(mintedCommandId, payload),
+        )
+      }),
+    ))
+
+  it("turns an expired assignment into a tombstone and prunes it after 30 days", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const scope = key(organizationId)
+        const assigned = yield* repository.assignCommand({
+          ...scope,
+          payloadHash: commandPayloadHash({ reason: "late" }),
+          mintedCommandId: yield* unique,
+          expiresAt: (yield* Clock.currentTimeMillis) + 86_400_000,
+        })
+        expect(assigned.commandId).not.toBeNull()
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`UPDATE cloud_command_idempotency SET expires_at_ms = ${(yield* Clock.currentTimeMillis) - 1}
+          WHERE organization_id = ${organizationId}`
+        expect(yield* repository.sweepCommands).toMatchObject({ expired: 1 })
+        expect(yield* repository.findCommand(scope)).toMatchObject({
+          commandId: null,
+          payloadHash: null,
+          expired: true,
+        })
+        yield* sql`UPDATE cloud_command_idempotency SET expires_at_ms = ${(yield* Clock.currentTimeMillis) - 31 * 86_400_000}
+          WHERE organization_id = ${organizationId}`
+        expect(yield* repository.sweepCommands).toMatchObject({ pruned: 1 })
+        expect(yield* repository.findCommand(scope)).toBeUndefined()
+      }),
+    ))
+
+  it("races expiry sweep and reuse without reminting or duplicating the key", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const scope = key(organizationId)
+        yield* repository.assignCommand({
+          ...scope,
+          payloadHash: commandPayloadHash({ reason: "late" }),
+          mintedCommandId: yield* unique,
+          expiresAt: (yield* Clock.currentTimeMillis) - 1,
+        })
+        const replacement = yield* unique
+        const [swept, reused] = yield* Effect.all(
+          [
+            repository.sweepCommands,
+            repository.assignCommand({
+              ...scope,
+              payloadHash: commandPayloadHash({ reason: "late" }),
+              mintedCommandId: replacement,
+              expiresAt: (yield* Clock.currentTimeMillis) + 86_400_000,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        )
+        expect(reused.commandId).toBeNull()
+        expect(reused.expired).toBe(true)
+        const next = yield* repository.sweepCommands
+        expect(swept.expired + next.expired).toBe(1)
+        const sql = yield* SqlClient.SqlClient
+        const rows = yield* sql<{ readonly count: string }>`
+          SELECT count(*)::text AS count FROM cloud_command_idempotency
+          WHERE organization_id = ${scope.organizationId} AND project_id = ${scope.projectId}
+            AND environment = ${scope.environment} AND address = ${scope.address}
+            AND command = ${scope.command}
+        `
+        expect(Number(rows[0]?.count)).toBe(1)
+      }),
+    ))
+
+  it("clears expired assignments and prunes old tombstones in batches of at most 1,000", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const sql = yield* SqlClient.SqlClient
+        const repository = yield* Effect.service(Repository)
+        const oldExpiry = (yield* Clock.currentTimeMillis) - 31 * 86_400_000
+        yield* sql`
+        INSERT INTO cloud_command_idempotency
+          (organization_id, project_id, environment, address, command, key_hash, command_id, payload_hash, expires_at_ms)
+        SELECT ${organizationId}, 'p1', 'production', 'Order/batched', 'Cancel',
+          encode(sha256(convert_to(n::text, 'UTF8')), 'hex'),
+          ${organizationId} || n::text, 'old-hash', ${(yield* Clock.currentTimeMillis) - 86_400_000}
+        FROM generate_series(1, 1005) AS n
+      `
+        const first = yield* repository.sweepCommands
+        expect(first).toEqual({ expired: 1000, pruned: 0 })
+        const full = yield* sql<{ n: string }>`
+        SELECT count(*)::text AS n FROM cloud_command_idempotency
+        WHERE organization_id = ${organizationId} AND command_id IS NOT NULL
+      `
+        expect(Number(full[0]?.n)).toBe(5)
+        expect(yield* repository.sweepCommands).toEqual({ expired: 5, pruned: 0 })
+        yield* sql`UPDATE cloud_command_idempotency SET expires_at_ms = ${oldExpiry}
+        WHERE organization_id = ${organizationId}`
+        expect(yield* repository.sweepCommands).toEqual({ expired: 0, pruned: 1000 })
+        const remaining = yield* sql<{
+          n: string
+        }>`SELECT count(*)::text AS n FROM cloud_command_idempotency WHERE organization_id = ${organizationId}`
+        expect(Number(remaining[0]?.n)).toBe(5)
+        expect(yield* repository.sweepCommands).toEqual({ expired: 0, pruned: 5 })
+      }),
+    ))
+
+  it("migrates legacy JSON assignments to immutable hashes without retaining payloads or raw keys", () =>
+    run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* database
+          const db = yield* Layer.build(client(url, 2).pipe(Layer.fresh))
+          const sql = Context.get(db, SqlClient.SqlClient)
+          const mintedCommandId = `v1.1.${expiresAt}.00000000-0000-4000-8000-000000000001`
+          const payload = { nested: { z: 2, a: "\u0000" }, list: [3, 1] }
+          yield* sql`CREATE TABLE cloud_command_idempotency (
+        organization_id text NOT NULL, project_id text NOT NULL, environment text NOT NULL,
+        address text NOT NULL, command text NOT NULL, idempotency_key text NOT NULL,
+        command_id text NOT NULL UNIQUE, payload json NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (organization_id, project_id, environment, address, command, idempotency_key)
+      )`
+          yield* sql`INSERT INTO cloud_command_idempotency VALUES (
+        'legacy-org', 'p1', 'production', 'Order/o/1', 'Cancel', 'client-key',
+        ${mintedCommandId}, ${yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Json))(payload)}::json, now()
+      )`
+          const context = yield* Layer.build(
+            RepositoryLive.pipe(Layer.provide(client(url, 2)), Layer.fresh),
+          )
+          const fresh = Context.get(context, Repository)
+          expect(yield* fresh.findCommand(key("legacy-org"))).toEqual(
+            assignment(mintedCommandId, payload),
+          )
+          const columns = yield* sql<{ column_name: string }>`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'cloud_command_idempotency'
+      `
+          expect(columns.map((row) => row.column_name)).not.toContain("payload")
+          expect(columns.map((row) => row.column_name)).not.toContain("idempotency_key")
+          expect(
+            yield* assign(fresh, {
+              ...key("legacy-org"),
+              payload: { nested: { a: "\u0000", z: 2 }, list: [3, 1] },
+              mintedCommandId: yield* unique,
+            }),
+          ).toEqual(assignment(mintedCommandId, payload))
+        }),
+      ),
+    ))
+
+  it("rolls back both retention phases when a prune fails", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const sql = yield* SqlClient.SqlClient
+        const minted = yield* unique
+        yield* repository.assignCommand({
+          ...key(organizationId),
+          address: "Order/fail-prune",
+          payloadHash: commandPayloadHash("old"),
+          mintedCommandId: minted,
+          expiresAt: (yield* Clock.currentTimeMillis) - 31 * 86_400_000,
+        })
+        yield* sql.unsafe(`CREATE FUNCTION reject_command_prune() RETURNS trigger AS $$
+        BEGIN IF OLD.address = 'Order/fail-prune' THEN RAISE EXCEPTION 'prune refused'; END IF;
+        RETURN OLD; END $$ LANGUAGE plpgsql`)
+        yield* sql`CREATE TRIGGER reject_command_prune BEFORE DELETE ON cloud_command_idempotency
+        FOR EACH ROW EXECUTE FUNCTION reject_command_prune()`
+        expect(yield* defect(repository.sweepCommands)).toBe(true)
+        const rows = yield* sql<{ command_id: string; payload_hash: string }>`
+        SELECT command_id, payload_hash FROM cloud_command_idempotency
+        WHERE organization_id = ${organizationId} AND address = 'Order/fail-prune'
+      `
+        expect(rows).toEqual([{ command_id: minted, payload_hash: commandPayloadHash("old") }])
+        yield* sql`DROP TRIGGER reject_command_prune ON cloud_command_idempotency`
+        expect(yield* repository.sweepCommands).toEqual({ expired: 1, pruned: 1 })
+        expect(
+          yield* repository.findCommand({ ...key(organizationId), address: "Order/fail-prune" }),
+        ).toBeUndefined()
       }),
     ))
 })

@@ -5,10 +5,13 @@ import {
   IntegrationKind,
   InviteRole,
   NotificationPreference,
+  Plan,
   PlanId,
   Preferences,
   RegionId,
   Role,
+  StartCheckout,
+  UsageMeterName,
 } from "@akter/cloud-api"
 import { Schema as S } from "effect"
 
@@ -117,12 +120,28 @@ export const RegionChoice = S.Struct({
 })
 export type RegionChoice = typeof RegionChoice.Type
 
-/** The Stripe subscription as the control plane reports it. */
+/** A plan that is paid for through a Stripe subscription. */
+export const PaidPlan = StartCheckout.fields.plan
+export type PaidPlan = typeof PaidPlan.Type
+
+/** Where the subscription's payments stand; `free` means there is no paid subscription. */
+export const PaymentStatus = Plan.fields.paymentStatus.schema
+export type PaymentStatus = typeof PaymentStatus.Type
+
+/**
+ * The Stripe subscription as the control plane reports it. `id` is the plan whose limits apply now
+ * and `subscribed` the plan the subscription bills; they differ while a payment is failing, which
+ * withdraws paid limits without ending the subscription. `paymentStatus` is null when the control
+ * plane does not report one.
+ */
 export const Billing = S.Struct({
   plan: S.Struct({
     id: PlanId,
     name: S.String,
+    subscribed: PlanId,
+    paymentStatus: S.NullOr(PaymentStatus),
     basePriceCents: S.Finite,
+    provisional: S.Boolean,
     renewsAt: S.NullOr(S.Finite),
     monthToDateCents: S.Finite,
   }),
@@ -150,23 +169,46 @@ export const Invoice = S.Struct({
 })
 export type Invoice = typeof Invoice.Type
 
-/** One usage meter against what the plan includes. */
+/**
+ * One usage meter against what the plan includes. The `commands` meter counts command equivalents:
+ * commands plus reads at the pricing's read weight. The `reads` meter is informational, and its
+ * allowance is what is left of the shared one in read units.
+ */
 export const UsageMeter = S.Struct({
+  meter: UsageMeterName,
   label: S.String,
   used: S.Finite,
   included: S.Finite,
+  overage: S.Finite,
+  overageCostCents: S.Finite,
   unit: S.Literals(["count", "hours", "gigabytes"]),
 })
 export type UsageMeter = typeof UsageMeter.Type
 
-/** Usage for one billing period. */
+/** The rules usage is priced by, as the control plane reports them with each period. */
+export const UsagePricing = S.Struct({
+  freeCommands: S.Finite,
+  readCommandWeight: S.Finite,
+  storagePerGbCents: S.Finite,
+  provisional: S.Boolean,
+})
+export type UsagePricing = typeof UsagePricing.Type
+
+/** Usage for one billing period; a project's `reads` is null when the control plane omits it. */
 export const Usage = S.Struct({
   period: S.String,
   meters: S.Array(UsageMeter),
   commandsPerDay: S.Array(S.Struct({ day: S.String, commands: S.Finite })),
   projects: S.Array(
-    S.Struct({ id: S.String, name: S.String, commands: S.Finite, estimatedCostCents: S.Finite }),
+    S.Struct({
+      id: S.String,
+      name: S.String,
+      commands: S.Finite,
+      reads: S.NullOr(S.Finite),
+      estimatedCostCents: S.Finite,
+    }),
   ),
+  pricing: UsagePricing,
 })
 export type Usage = typeof Usage.Type
 

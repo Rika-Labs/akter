@@ -3,14 +3,18 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./lifecycle": "./src/lifecycle/index.ts",
+    "./runners": "./src/runners/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src/runners/ecs.test.ts packages/deployments/src/runners/migrations.test.ts",
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src"
   },
   "dependencies": {
+    "@distilled.cloud/aws": "catalog:",
     "@rikalabs/akter": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"
@@ -19,6 +23,7 @@
     "@akter/postgres": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/sql-pg": "catalog:",
+    "@effect/vitest": "catalog:",
     "@types/pg": "8.23.1",
     "pg": "8.23.0",
     "vitest": "catalog:"

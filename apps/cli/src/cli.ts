@@ -23,6 +23,7 @@ import { skipCommand } from "./commands/subscriptions/skip.ts"
 import { createCommand } from "./commands/tenants/create.ts"
 import { checkCommand as workflowsCheckCommand } from "./commands/workflows/check.ts"
 import { CommandFailed } from "./failure.ts"
+import { billingSetupCommand } from "./commands/billing/setup.ts"
 
 const group = <const Subcommands extends ReadonlyArray<Command.Command.SubcommandEntry>>(
   name: string,
@@ -88,7 +89,10 @@ export const durable = Command.make("durable").pipe(
     },
     {
       group: "Control plane",
-      commands: [group("tenants", "Manage the tenant directory", [createCommand])],
+      commands: [
+        group("tenants", "Manage the tenant directory", [createCommand]),
+        group("billing", "Set up the billing catalog", [billingSetupCommand]),
+      ],
     },
   ]),
 )

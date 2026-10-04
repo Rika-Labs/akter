@@ -9,7 +9,7 @@ import {
 } from "@akter/ui"
 import { Function, Option } from "effect"
 import type { Document, Html, HtmlBuilder } from "foldkit/html"
-import { actorScreen } from "../actors/inspector/view.ts"
+import { actorScreen, missingActorScreen } from "../actors/inspector/view.ts"
 import { actorTypeScreen } from "../actors/type/view.ts"
 import { actorsScreen } from "../actors/view.ts"
 import { authScreen } from "../auth/view.ts"
@@ -115,10 +115,14 @@ const routeScreen = (h: HtmlBuilder<Message>, model: Model): Screen =>
         render: (page) => actorTypeScreen({ h, model, page }),
       }),
     Actor: () =>
-      withPage(h, model, {
-        tag: "ActorPage",
-        title: "Actor",
-        render: (page) => actorScreen({ h, model, page }),
+      Option.match(pageOf("MissingActorPage")(model), {
+        onSome: (page) => missingActorScreen({ h, model, page }),
+        onNone: () =>
+          withPage(h, model, {
+            tag: "ActorPage",
+            title: "Actor",
+            render: (page) => actorScreen({ h, model, page }),
+          }),
       }),
     Commands: () =>
       withPage(h, model, {

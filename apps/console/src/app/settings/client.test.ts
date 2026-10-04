@@ -89,13 +89,32 @@ describe("loadSettings", () => {
               byProject: [],
               pricing: { freeCommands: 0, readCommandWeight: 1, storagePerGbCents: 0 },
             }),
+          "/api/organizations/org_1/billing": () =>
+            json({
+              plan: {
+                id: "free",
+                name: "Free",
+                basePriceCents: 0,
+                currency: "usd",
+                renewsAt: null,
+                monthToDateEstimateCents: 0,
+              },
+              paymentMethod: null,
+              billingEmail: null,
+              spendLimit: { limitCents: null, currentSpendCents: 0 },
+            }),
         })
         const { data: page, sample } = yield* loadSettings(AppRoute.SettingsUsage())
         expect(page.usage?.period).toBe("2026-09")
-        expect(page.billing).toBeNull()
+        expect(page.billing?.plan.id).toBe("free")
+        expect(page.members).toEqual([])
         expect(sample).toBe(false)
         expect(page.sampleSections).toEqual([])
-        expect(requested()).toEqual(["/api/me", "/api/organizations/org_1/usage"])
+        expect(requested().toSorted()).toEqual([
+          "/api/me",
+          "/api/organizations/org_1/billing",
+          "/api/organizations/org_1/usage",
+        ])
       }),
     ))
 
@@ -316,6 +335,14 @@ describe("loadSettings", () => {
           ...identity,
           "/api/organizations/org_1/billing": () => reply(forbidden, 403),
           "/api/organizations/org_1/billing/invoices": () => json([]),
+          "/api/organizations/org_1/usage": () =>
+            json({
+              period: "2026-09",
+              meters: [],
+              commandsPerDay: [],
+              byProject: [],
+              pricing: { freeCommands: 0, readCommandWeight: 1, storagePerGbCents: 0 },
+            }),
         })
         const error = yield* Effect.flip(loadSettings(AppRoute.SettingsBilling()))
         expect(error.kind).toBe("Forbidden")

@@ -1,5 +1,10 @@
-import { ActorTypeSummary as CloudActorTypeSummary, JobStatus } from "@akter/cloud-api"
+import {
+  ActorTypeSummary as CloudActorTypeSummary,
+  JobStatus,
+  SeriesWindow,
+} from "@akter/cloud-api"
 import { Schema as S } from "effect"
+import { CommandScope } from "../commands/model.ts"
 
 /** One actor type deployed in the project and how busy it is, exactly as the runtime API reports it. */
 export const ActorTypeSummary = CloudActorTypeSummary
@@ -21,31 +26,31 @@ export const ActorInstance = S.Struct({
 })
 export type ActorInstance = typeof ActorInstance.Type
 
-/** A command the type accepts and how often it ran today. */
-export const CommandVolume = S.Struct({ name: S.String, today: S.Finite, p99: S.String })
+/** A command the type handled over the window: its total and its mean rate. */
+export const CommandVolume = S.Struct({ name: S.String, count: S.Finite, perSecond: S.Finite })
 
-/** A type's day: commands per second by hour and the volume of each command. */
+/** A type's window: commands per second at each UTC instant and the volume of each command. */
 export const TypeActivity = S.Struct({
+  window: SeriesWindow,
   hours: S.Array(S.String),
   perSecond: S.Array(S.Finite),
   commands: S.Array(CommandVolume),
 })
+export type TypeActivity = typeof TypeActivity.Type
 
-/**
- * One actor type in detail: its numbers and the instances on its first page. `activity` is drawn
- * when the source reports a per-type history.
- */
+/** One actor type in detail: its numbers, its activity over the window, and the instances on its first page. */
 export const ActorTypePage = S.TaggedStruct("ActorTypePage", {
+  commandScope: S.optional(CommandScope),
   summary: ActorTypeSummary,
   instances: S.Array(ActorInstance),
-  activity: S.optional(TypeActivity),
+  activity: TypeActivity,
 })
 export type ActorTypePage = typeof ActorTypePage.Type
 
 /** A row in the actor's owned table. */
 export const OwnedRow = S.Struct({ cells: S.Array(S.String) })
 
-/** A stored command result that a retry returns. */
+/** A stored command receipt; `result` and `at` read `—` when the runner does not report them. */
 export const Receipt = S.Struct({
   commandId: S.String,
   command: S.String,
@@ -54,11 +59,11 @@ export const Receipt = S.Struct({
   replayed: S.Boolean,
 })
 
-/** An event class the actor emitted, with the cursor of its newest event and its subscribers. */
+/** An event class the actor emitted, with the cursor of its newest event and its subscribers, null when unreported. */
 export const EmittedEvent = S.Struct({
   cursor: S.String,
   name: S.String,
-  subscribers: S.Finite,
+  subscribers: S.NullOr(S.Finite),
 })
 
 /** Work the actor handed off after a commit; `status` is the contract's job status. */
@@ -69,9 +74,9 @@ export const ActorJob = S.Struct({
   status: JobStatus,
 })
 
-/** The actor's live connections: how many sockets it holds and the cursor of its event feed. */
+/** The actor's live connections: how many sockets it holds, null when unreported, and the cursor of its event feed. */
 export const ActorConnections = S.Struct({
-  sockets: S.Finite,
+  sockets: S.NullOr(S.Finite),
   feedCursor: S.NullOr(S.String),
 })
 
@@ -92,25 +97,40 @@ export const OwnedTable = S.Struct({
   rows: S.Array(OwnedRow),
 })
 
-/** Everything the actor inspector shows about one instance. */
+/**
+ * Everything the actor inspector shows about one instance. A null is a fact
+ * the runner does not report, shown as unknown rather than as zero or empty.
+ */
 export const ActorPage = S.TaggedStruct("ActorPage", {
+  commandScope: S.optional(CommandScope),
   actorType: S.String,
   key: S.String,
-  awake: S.Boolean,
+  awake: S.NullOr(S.Boolean),
   generation: S.Finite,
-  turn: S.Finite,
+  turn: S.NullOr(S.Finite),
   runner: S.String,
   tenant: S.String,
-  mailbox: S.Finite,
+  mailbox: S.NullOr(S.Finite),
   state: S.String,
-  tables: S.Array(OwnedTable),
+  tables: S.NullOr(S.Array(OwnedTable)),
   receipts: S.Array(Receipt),
   events: S.Array(EmittedEvent),
   jobs: S.Array(ActorJob),
   connections: ActorConnections,
-  activity: S.Array(ActorActivity),
+  activity: S.NullOr(S.Array(ActorActivity)),
 })
 export type ActorPage = typeof ActorPage.Type
+
+/**
+ * An actor address that has never received a command. It is not an error: sending the command that
+ * creates the actor is how it comes to exist, so the inspector offers exactly that.
+ */
+export const MissingActorPage = S.TaggedStruct("MissingActorPage", {
+  commandScope: CommandScope,
+  actorType: S.String,
+  key: S.String,
+})
+export type MissingActorPage = typeof MissingActorPage.Type
 
 /** The inspector's tabs, in order. */
 export const inspectorTabs = ["state", "rows", "receipts", "events", "jobs", "connections"] as const

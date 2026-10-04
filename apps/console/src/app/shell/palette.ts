@@ -45,12 +45,12 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
       onSelect: RequestedHref({ href: Routes.actorType({ actorType: type.name }) }),
     })),
     ...deploys.slice(0, 3).map((deploy) => ({
-      id: `deploy-${deploy.commit}`,
+      id: `deploy-${deploy.id}`,
       label: deploy.message,
       group: "Deployments",
       icon: "deployments" as const,
       detail: deploy.commit,
-      onSelect: RequestedHref({ href: Routes.deployment({ commit: deploy.commit }) }),
+      onSelect: RequestedHref({ href: Routes.deployment({ deployment: deploy.id }) }),
     })),
     ...settingsGroups.flatMap((group) =>
       group.items.map((item) => ({
@@ -63,7 +63,7 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
         onSelect: RequestedHref({ href: item.href }),
       })),
     ),
-    ...(sender === undefined
+    ...(sender === undefined || sender.commandScope === undefined
       ? []
       : [
           {
@@ -72,7 +72,9 @@ export const paletteItems = (model: Model): ReadonlyArray<PaletteItem<Message>> 
             group: "Actions",
             icon: "commands" as const,
             keywords: "call actor",
-            onSelect: OpenedDialog({ dialog: Dialog.SendCommand({ address: address(sender) }) }),
+            onSelect: OpenedDialog({
+              dialog: Dialog.SendCommand({ address: address(sender), scope: sender.commandScope }),
+            }),
           },
         ]),
     {

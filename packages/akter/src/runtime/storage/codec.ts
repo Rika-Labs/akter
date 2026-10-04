@@ -1,5 +1,6 @@
 import type { ActorRef } from "../../identity/caller.ts"
 import { parseChildId } from "../../identity/child.ts"
+import { compressBytes, decompressBytes, hash64 } from "./platform.ts"
 
 /** Increment only with a migration: every stored `routing_key` depends on this encoding. */
 export const PLACEMENT_ENCODING = 1
@@ -59,15 +60,14 @@ export const routingKey = ({
 export const tenantRoutingKey = (tenant: string): bigint => placementHash(["tenant", tenant])
 
 const placementHash = (parts: ReadonlyArray<string>) =>
-  BigInt.asIntN(64, Bun.hash.xxHash3(JSON.stringify([PLACEMENT_ENCODING, ...parts])))
+  BigInt.asIntN(64, hash64(JSON.stringify([PLACEMENT_ENCODING, ...parts])))
 
 /**
  * Stored state values are opaque zstd-compressed JSON: SQL never reads state,
  * and anything worth querying belongs in an actor table.
  */
-export const compress = (json: string): Uint8Array =>
-  Bun.zstdCompressSync(new TextEncoder().encode(json))
+export const compress = (json: string): Uint8Array => compressBytes(new TextEncoder().encode(json))
 
 /** Inverse of `compress`; throws on bytes that are not zstd-compressed UTF-8. */
 export const decompress = (bytes: Uint8Array): string =>
-  new TextDecoder().decode(Bun.zstdDecompressSync(bytes))
+  new TextDecoder().decode(decompressBytes(bytes))

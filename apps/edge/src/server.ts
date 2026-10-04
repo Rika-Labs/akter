@@ -3,10 +3,14 @@ import type { Server } from "bun"
 import { Crypto, Effect, Layer, Predicate, Queue, Result } from "effect"
 import { Base64Url } from "effect/encoding"
 import { HttpClient } from "effect/http"
+import { SqlClient } from "effect/sql"
 import type { EdgeOptions } from "./config.ts"
+import { quotas } from "./quotas.ts"
 import { authenticator } from "./principals/authenticate.ts"
 import { directory } from "./routing/directory.ts"
-import { type Edge, forward, refusal } from "./routing/forward.ts"
+import { activity } from "./routing/activity.ts"
+import { clientIps } from "./routing/client-ip.ts"
+import { attribution, quotaRefusal, type Edge, forward, refusal } from "./routing/forward.ts"
 import { hostOf, hosts } from "./routing/hosts.ts"
 import { runners } from "./routing/runners.ts"
 import { keyRing } from "./signing/keys.ts"
@@ -32,6 +36,7 @@ const isUpgrade = (request: Request) =>
  * An unknown host is refused before anything is authenticated.
  */
 export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
+  const sql = yield* SqlClient.SqlClient
   const random = yield* Crypto.Crypto
 
   const client = yield* HttpClient.HttpClient
@@ -50,19 +55,29 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
     home: (yield* directory(options)).home,
     ready: pool.ready,
     coldStart: pool.coldStart,
+    quotas: yield* quotas(options),
+    touch: (yield* activity(options)).touch,
   }
+
+  const clientIp = clientIps(options.trustedProxies)
 
   const run = Effect.runPromiseWith(yield* Effect.context<never>())
 
   const handle = (request: Request, server: Server<SocketData>) =>
     Effect.gen(function* () {
       const url = new URL(request.url)
+      if (url.pathname === "/health" && request.method === "GET") {
+        const healthy = yield* sql`SELECT 1`.pipe(Effect.isSuccess)
+        return new Response(healthy ? "ready" : "unavailable", { status: healthy ? 200 : 503 })
+      }
       const deployment = yield* edge.resolveHost(hostOf(request.headers.get("host") ?? url.host))
 
       if (deployment === undefined)
         return yield* refusal(InvalidInput.make({ code: "unknown_route" }))
 
-      if (!isUpgrade(request)) return yield* forward(edge, deployment, request)
+      const client = clientIp(server.requestIP(request)?.address, request.headers)
+
+      if (!isUpgrade(request)) return yield* forward(edge, deployment, request, client)
 
       const credential = request.headers.get("authorization")
       let upgrade: SocketData["upgrade"]
@@ -76,6 +91,16 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
         upgrade = proved.success
       }
 
+      const lease = yield* edge.quotas
+        .acquireLease({
+          deployment: deployment.id,
+          tenant: upgrade?.tenant ?? "default",
+          kind: "socket",
+        })
+        .pipe(Effect.result)
+
+      if (Result.isFailure(lease)) return yield* quotaRefusal(lease.failure)
+
       const session = Base64Url.encode(yield* random.randomBytes(16).pipe(Effect.orDie))
 
       const data: SocketData = {
@@ -83,12 +108,19 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
         target: `${url.pathname}${url.search}`,
         session,
         upgrade,
+        lease: lease.success,
+        forwarded: attribution({
+          clientIp: client,
+          host: hostOf(request.headers.get("host") ?? url.host),
+        }),
         inbox: yield* Queue.unbounded<Inbound>(),
         pending: 0,
       }
 
       if (server.upgrade(request, { data, headers: { "sec-websocket-protocol": SUBPROTOCOL } }))
         return undefined
+
+      if (data.lease !== undefined) yield* edge.quotas.releaseLease(data.lease).pipe(Effect.ignore)
 
       return yield* refusal(InvalidInput.make({ code: "unsupported_protocol" }))
     })
@@ -99,7 +131,16 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
     fetch: (request, served) => run(handle(request, served)),
     websocket: {
       maxPayloadLength: options.socketMessageBytes,
-      open: (ws) => void run(proxySocket(edge, ws)),
+      open: (ws) =>
+        void run(
+          Effect.scoped(proxySocket(edge, ws)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Socket proxy failed", cause).pipe(
+                Effect.andThen(Effect.sync(() => ws.close(1011))),
+              ),
+            ),
+          ),
+        ),
       message: (ws, message) => {
         const data = Predicate.isString(message) ? message : new Uint8Array(message)
         const bytes = Predicate.isString(data) ? utf8.encode(data).byteLength : data.byteLength

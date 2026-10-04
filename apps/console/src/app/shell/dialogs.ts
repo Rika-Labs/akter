@@ -10,7 +10,7 @@ import {
 } from "@akter/ui"
 import { colors, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
-import { Match, Option } from "effect"
+import { Match, Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
 import {
   ChangedField,
@@ -20,14 +20,18 @@ import {
   CopiedText,
   type Message,
 } from "./message.ts"
+import { isQuotaKind } from "../quota/errors.ts"
+import { billingLink } from "../quota/view.ts"
+import { canSendCommand } from "./action.ts"
 import type { Dialog, Model } from "./model.ts"
-import { dialogId } from "./update.ts"
+import { dialogId, nextCommandId, resendRefused } from "./update.ts"
 
 const styles = stylex.create({
   note: { color: colors.mutedForeground, fontSize: typography.small },
   mono: { fontFamily: typography.mono, fontSize: typography.small, color: colors.foreground },
   pair: { display: "grid", gap: space.lg },
   full: { width: "100%" },
+  inputFrame: { borderWidth: 0, padding: 0, margin: 0, minWidth: 0 },
 })
 
 /** One dialog's copy, body and confirm action. */
@@ -53,6 +57,7 @@ const text = (
       value: model.fields[config.id] ?? "",
       placeholder: config.placeholder,
       mono: config.mono === true,
+      disabled: model.sendingCommand,
       onInput: (value) => ChangedField({ name: config.id, value }),
     }),
   })
@@ -143,9 +148,9 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         danger: false,
         ready: true,
       }),
-      SendCommand: ({ address }) => ({
+      SendCommand: ({ address, scope }) => ({
         title: "Send a command",
-        description: `To ${address}. It runs as one turn and returns its result.`,
+        description: `To ${address} in ${scope.environment} (${scope.projectId}). Sending the same command again reuses its command ID, so it runs at most once.`,
         body: [
           text(h, model, {
             id: "command-name",
@@ -157,26 +162,104 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
             id: "command-payload",
             label: "Payload",
             description: "JSON, decoded with the command's schema.",
-            control: textarea(h, {
-              name: "command-payload",
-              value: model.fields["command-payload"] ?? '{ "amount": 1200 }',
-              rows: 4,
-              mono: true,
-              describedBy: "command-payload-description",
-              onInput: (value) => ChangedField({ name: "command-payload", value }),
-            }),
+            control: h.fieldset(
+              [h.Disabled(model.sendingCommand), ...styleAttributes(h, styles.inputFrame)],
+              [
+                textarea(h, {
+                  name: "command-payload",
+                  value: model.fields["command-payload"] ?? "{}",
+                  rows: 4,
+                  mono: true,
+                  describedBy: "command-payload-description",
+                  onInput: (value) => ChangedField({ name: "command-payload", value }),
+                }),
+              ],
+            ),
+          }),
+          text(h, model, {
+            id: "command-id",
+            label: "Command ID (optional)",
+            placeholder: "Generated when you send",
+            mono: true,
+          }),
+          (model.fields["command-id"] ?? "").trim() !== "" && Option.isNone(nextCommandId(model))
+            ? h.p(
+                [...styleAttributes(h, styles.note)],
+                ["The command or payload changed, so sending it uses a new command ID."],
+              )
+            : h.empty,
+          model.sendingCommand
+            ? h.p(
+                [h.Role("status"), ...styleAttributes(h, styles.note)],
+                ["Sending… Closing this dialog does not cancel the actor’s turn."],
+              )
+            : h.empty,
+          Option.match(model.commandError, {
+            onNone: () => h.empty,
+            onSome: ({ kind, message }) =>
+              h.p(
+                [h.Role("alert"), ...styleAttributes(h, styles.note)],
+                isQuotaKind(kind) ? [`${message} `, billingLink(h, "Open Billing")] : [message],
+              ),
+          }),
+          Option.match(model.commandSubmission, {
+            onNone: () => h.empty,
+            onSome: ({ id }) =>
+              h.p([...styleAttributes(h, styles.mono)], [`Command ID used: ${id}`]),
+          }),
+          Option.match(model.commandAnswer, {
+            onNone: () => h.empty,
+            onSome: (answer) =>
+              h.div(
+                [h.Role(Predicate.isTagged(answer, "CommandRejected") ? "alert" : "status")],
+                [
+                  h.p(
+                    [...styleAttributes(h, styles.note)],
+                    [
+                      Predicate.isTagged(answer, "CommandRejected")
+                        ? `CommandFailed · ${answer.errorTag}${answer.replayed ? " · replayed receipt" : ""}`
+                        : answer.replayed
+                          ? "Replayed — returned the stored receipt."
+                          : "Committed — returned the actor’s result.",
+                    ],
+                  ),
+                  codeBlock(h, {
+                    language: "json",
+                    code: JSON.stringify(
+                      Predicate.isTagged(answer, "CommandRejected") ? answer.error : answer.result,
+                      null,
+                      2,
+                    ),
+                  }),
+                  h.p([...styleAttributes(h, styles.mono)], [`Command ID: ${answer.commandId}`]),
+                ],
+              ),
           }),
         ],
         confirm: "Send command",
         danger: false,
-        ready: true,
+        ready:
+          !model.sendingCommand &&
+          !resendRefused(model) &&
+          canSendCommand({ page: model.page, sample: model.pageSample }) &&
+          (model.fields["command-name"] ?? "").trim() !== "",
       }),
       RollBack: ({ commit }) => ({
         title: `Roll back to ${commit}?`,
-        description: "New runners start on the previous build and actors move back as they drain.",
+        description:
+          "A new deployment uses that image and environment snapshot. The current deployment stays live until it succeeds.",
         body: [],
         confirm: "Roll back",
         danger: true,
+        ready: true,
+      }),
+      Redeploy: ({ commit }) => ({
+        title: `Redeploy ${commit}?`,
+        description:
+          "A new deployment builds this commit again and rolls it out. The live deployment keeps serving until the new one is live.",
+        body: [],
+        confirm: "Redeploy",
+        danger: false,
         ready: true,
       }),
       KeyCreated: ({ name, secret }) => ({

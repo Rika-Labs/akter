@@ -102,6 +102,11 @@ const encoder = new TextEncoder()
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
 
+const sha256Hex = (bytes: Uint8Array) =>
+  Effect.promise(() => globalThis.crypto.subtle.digest("SHA-256", new Uint8Array(bytes))).pipe(
+    Effect.map((digest) => hex(new Uint8Array(digest))),
+  )
+
 const concat = (parts: ReadonlyArray<Uint8Array>) => {
   const bytes = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0))
   let offset = 0
@@ -165,10 +170,9 @@ const reads = Effect.succeed({
   Digest: Effect.fnUntraced(function* (name: string) {
     const found = yield* (yield* Document.Read).blob(Attachments).get(name)
 
-    return Option.map(found, (bytes) => ({
-      size: bytes.byteLength,
-      sha: hex(new Bun.CryptoHasher("sha256").update(bytes).digest()),
-    }))
+    if (Option.isNone(found)) return Option.none()
+
+    return Option.some({ size: found.value.byteLength, sha: yield* sha256Hex(found.value) })
   }),
 })
 
@@ -336,7 +340,7 @@ export const contentConformance: ReadonlyArray<ConformanceCase<ContentFixture>> 
           expect(yield* doc.Digest("big")).toEqual(
             Option.some({
               size: bytes.byteLength,
-              sha: hex(new Bun.CryptoHasher("sha256").update(bytes).digest()),
+              sha: yield* sha256Hex(bytes),
             }),
           )
 

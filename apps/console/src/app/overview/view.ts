@@ -3,7 +3,6 @@ import {
   codeBlock,
   columns,
   dataTable,
-  dropdownMenu,
   emptyState,
   illustration,
   pageBody,
@@ -16,15 +15,18 @@ import {
   styleAttributes,
 } from "@akter/ui"
 import { waitingQuay } from "@akter/ui/brand"
-import { lifecycleDiagram, lineChart } from "@akter/ui/charts"
+import { barChart, lifecycleDiagram, lineChart } from "@akter/ui/charts"
 import { formatDuration, formatInteger } from "@akter/ui/geometry"
 import * as stylex from "@stylexjs/stylex"
 import { colors, space } from "@akter/ui/tokens.stylex"
 import type { HtmlBuilder } from "foldkit/html"
 import * as Routes from "../navigation/routes.ts"
-import { CopiedText, type Message, RequestedHref } from "../shell/message.ts"
+import { capNoticeView } from "../quota/view.ts"
+import { CopiedText } from "../shell/message.ts"
 import type { Screen, ScreenInput } from "../shell/screen.ts"
 import type { DeploySummary, EmptyProjectPage, OverviewPage } from "./model.ts"
+import { seriesWindows, windowName } from "./time.ts"
+import { windowMenu } from "./window.ts"
 
 const styles = stylex.create({
   link: {
@@ -35,15 +37,6 @@ const styles = stylex.create({
   steps: { display: "grid", gap: space.lg, maxWidth: "40rem" },
   quiet: { color: colors.mutedForeground },
   art: { maxWidth: "26rem", width: "100%", justifySelf: "center" },
-  trigger: {
-    display: "inline-flex",
-    alignItems: "center",
-    height: "1.75rem",
-    paddingInline: "0.625rem",
-    borderRadius: "6px",
-    color: { default: colors.mutedForeground, ":hover": colors.foreground },
-    backgroundColor: { default: "transparent", ":hover": colors.accent },
-  },
 })
 
 const deployTones: Readonly<Record<DeploySummary["status"], StatusTone>> = {
@@ -69,51 +62,28 @@ const healthLinks = (page: OverviewPage, sample: boolean): ReadonlyMap<string, s
       "Runners",
       live === undefined || sample
         ? Routes.deployments()
-        : Routes.deployment({ commit: live.commit }),
+        : Routes.deployment({ deployment: live.id }),
     ],
   ])
 }
 
-const rangeMenu = (h: HtmlBuilder<Message>, sample: boolean) =>
-  dropdownMenu(h, {
-    id: "range-menu",
-    label: "Time range",
-    placement: "below-end",
-    entries: [
-      { kind: "item", label: "Last hour", onSelect: RequestedHref({ href: Routes.overview() }) },
-      {
-        kind: "item",
-        label: "Last 24 hours",
-        checked: true,
-        onSelect: RequestedHref({ href: Routes.overview() }),
-      },
-      { kind: "item", label: "Last 7 days", onSelect: RequestedHref({ href: Routes.overview() }) },
-    ],
-    trigger: (attributes) =>
-      h.button(
-        [
-          h.Type("button"),
-          h.Disabled(sample),
-          ...attributes,
-          h.AriaLabel("Time range: last 24 hours"),
-          ...styleAttributes(h, styles.trigger),
-        ],
-        ["24h"],
-      ),
-  })
-
 /** The project overview: headline numbers, throughput, health, latency and recent deploys. */
 export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): Screen => {
   const links = healthLinks(page, model.pageSample)
+  const selected =
+    page.distribution?.window ??
+    seriesWindows.find((window) => window === model.choices["seriesWindow"]) ??
+    "24h"
   return {
     title: "Overview",
     crumbs: [{ label: "Overview" }],
     actions: [
-      rangeMenu(h, model.pageSample),
+      windowMenu(h, { id: "range-menu", selected, disabled: model.pageSample }),
       button(h, { label: "Deploy", variant: "primary", size: "sm", href: Routes.deployments() }),
     ],
     body: pageBody(h, [
       pageHeader(h, { title: "Overview" }),
+      ...(page.cap === undefined ? [] : [capNoticeView(h, page.cap)]),
       statRow(h, {
         label: "Last 24 hours",
         stats: page.stats.map((stat) => ({
@@ -189,7 +159,7 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
         children: [
           section(h, {
             title: "Turn latency",
-            meta: `p50 ${formatDuration(page.latency.p50)} · p99 ${formatDuration(page.latency.p99)}`,
+            meta: `p50 ${formatDuration(page.latency.p50)} · p99 ${formatDuration(page.latency.p99)} · last 24 hours`,
             children: [
               lineChart(h, {
                 id: "latency",
@@ -224,8 +194,8 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
                   { key: "when", label: "When", width: "3rem", align: "end" },
                 ],
                 rows: page.deploys.map((deploy) => ({
-                  key: deploy.commit,
-                  href: model.pageSample ? undefined : Routes.deployment({ commit: deploy.commit }),
+                  key: deploy.id,
+                  href: model.pageSample ? undefined : Routes.deployment({ deployment: deploy.id }),
                   cells: [deploy.commit, deploy.message, deployStatus(h)(deploy), deploy.when],
                 })),
               }),
@@ -233,6 +203,47 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
           }),
         ],
       }),
+      ...(page.distribution === undefined
+        ? [
+            section(h, {
+              title: "Turn latency distribution",
+              children: [
+                h.p(
+                  [...styleAttributes(h, styles.quiet)],
+                  [
+                    "The runtime returned incompatible histogram windows or bucket bounds. No combined distribution is shown.",
+                  ],
+                ),
+              ],
+            }),
+          ]
+        : [
+            section(h, {
+              title: "Turn latency distribution",
+              meta: `${formatInteger(page.distribution.total)} turns · ${windowName[page.distribution.window]}`,
+              children:
+                page.distribution.total === 0
+                  ? [
+                      h.p(
+                        [...styleAttributes(h, styles.quiet)],
+                        ["No turns finished in this window."],
+                      ),
+                    ]
+                  : [
+                      barChart(h, {
+                        label: `Turns by latency, ${windowName[page.distribution.window]}`,
+                        height: 180,
+                        xTicks: page.distribution.bars.length,
+                        data: page.distribution.bars.map((bar) => ({
+                          key: bar.label,
+                          label: bar.label,
+                          value: bar.count,
+                          highlight: bar.tail,
+                        })),
+                      }),
+                    ],
+            }),
+          ]),
     ]),
   }
 }
@@ -258,6 +269,7 @@ export const emptyProjectScreen = ({ h, model, page }: ScreenInput<EmptyProjectP
       title: "Ship your first actor",
       description: `${page.project} is ready in ${page.region}. Nothing is running yet.`,
     }),
+    ...(page.cap === undefined ? [] : [capNoticeView(h, page.cap)]),
     columns(h, {
       layout: "wide-left",
       children: [

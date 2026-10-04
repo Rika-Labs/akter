@@ -1,9 +1,11 @@
 import { PgPool, type PgConnection } from "@effect/sql-pg"
-import { Context, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Context, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import type { Scope } from "effect"
-import type { SqlConnection, SqlError } from "effect/sql"
+import type { SqlError } from "effect/sql"
 import { fairGate } from "../database/gate.ts"
 import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
+import { admissionLimit } from "../admission.ts"
+import { POOL_WAITERS, poolRefusal } from "../database/bounded.ts"
 
 /**
  * Connections a turn leases for itself alone. Each one is multiplexed and
@@ -34,8 +36,11 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
 /**
  * The turn pool: `maxConnections` sessions, each handed to one turn at a
  * time. A concurrency of one keeps the lease exclusive while the session
- * stays unpinned. Turns wait for a session first come, first served, so a
- * turn never waits behind turns that asked after it.
+ * stays unpinned. A lease first takes a bounded admission slot, refused at
+ * once past `maxConnections` plus the waiter allowance, then waits for a
+ * session first come, first served, so a turn never waits behind turns that
+ * asked after it. Both slots stay with the lease's scope and return with the
+ * session.
  *
  * On Neki, each session first runs the Neki session settings.
  */
@@ -54,7 +59,9 @@ export const turnConnections = (options: PgPool.Config) =>
         multiplexConcurrency: 1,
       })
 
-      const gate = fairGate(config.maxConnections ?? 10)
+      const slots = config.maxConnections ?? 10
+      const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
+      const gate = fairGate(slots)
       const acquire = Effect.andThen(gate.take, neki ? nekiLease(pool) : pool.get)
       let leased = 0
       let waiting = 0
@@ -63,7 +70,7 @@ export const turnConnections = (options: PgPool.Config) =>
         lease: Effect.suspend(() => {
           waiting += 1
 
-          return acquire.pipe(
+          return Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), acquire).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 waiting -= 1
@@ -96,41 +103,7 @@ export type Send = <A>(
   statement: Effect.Effect<A, SqlError.SqlError>,
 ) => Effect.Effect<A, SqlError.SqlError>
 
-/** A leased session as a `SqlClient` connection, so the runtime's statements reach it. */
-export const asSqlConnection = ({
-  connection,
-  send,
-}: {
-  readonly connection: PgConnection.PgConnection
-  readonly send: Send
-}): SqlConnection.Connection => {
-  const rows =
-    (prepare: boolean): SqlConnection.Connection["execute"] =>
-    (sql, params, transformRows) => {
-      const found = send(
-        Effect.map(connection.query(sql, params, prepare), (result) => result.rows),
-      )
-
-      return transformRows === undefined ? found : Effect.map(found, transformRows)
-    }
-
-  return {
-    execute: rows(true),
-    executeRaw: (sql, params) => send(connection.query(sql, params)),
-    executeStream: (sql, params, transformRows) =>
-      Stream.unwrap(
-        Effect.as(
-          send(Effect.void),
-          transformRows === undefined
-            ? connection.stream(sql, params)
-            : Stream.map(connection.stream(sql, params), (row) => transformRows([row])[0]!),
-        ),
-      ),
-    executeValues: (sql, params) => send(connection.queryValues(sql, params)),
-    executeValuesUnprepared: (sql, params) => send(connection.queryValues(sql, params, false)),
-    executeUnprepared: rows(false),
-  }
-}
+export { asSqlConnection } from "../database/connection.ts"
 
 /**
  * Queues a group of statements for one flight without waiting for replies.

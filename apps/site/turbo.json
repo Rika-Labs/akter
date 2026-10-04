@@ -9,8 +9,7 @@
         "$TURBO_DEFAULT$",
         "!**/*.test.ts",
         "$TURBO_ROOT$/BENCHMARKS.md",
-        "$TURBO_ROOT$/README.md",
-        "$TURBO_ROOT$/docs/**"
+        "$TURBO_ROOT$/README.md"
       ],
       "env": ["NODE_ENV"]
     }

@@ -13,6 +13,8 @@ The runtime MUST decode caller identity per request and serialize it into the en
 
 Commands MUST map committed outputs and declared failures through receipts. Framework failures MUST use the [single error envelope](error-model.md). Queries read committed rows without waking an activation. Event streams MUST carry cursors. Connections declared by `Actor.connection` MUST carry typed frames and restore parked connection state. They also carry framework control frames outside each member's frame unions: `Resync { after, reason, deadline }` and `ResyncReplayed { through }` from server to client after an ungraceful owner death, and `ResyncDone { through }` from client to server, in an envelope variant separate from member frames; only the holder creates `Resync` and consumes `ResyncDone` ([ADR 0023](../decisions/0023-connections-parking-and-streams.md)).
 
+Every HTTP command response that committed or replayed a receipt MUST carry `durable-replayed`: `false` for a newly committed command and `true` for an authorized receipt replay, including declared failures. The marker comes from receipt admission or the committed batch's replay classification, never from a separate inspection before the command. Queries and refusals before execution carry no marker. Hosted forwarding MUST preserve it, and the cloud API uses it for `CommandSent.replayed` rather than guessing from receipt-list pages ([ADR 0075](../decisions/0075-deployment-and-runner-orchestration.md)).
+
 The Effect handle, Promise client from `@rikalabs/akter/client`, HTTP, WebSocket, and SSE adapters MUST preserve these semantics rather than define independent lifecycle states. Public spans MUST use `akter.<Actor>/<Command>`.
 
 ## Hosted assertions ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md))
@@ -33,6 +35,8 @@ Both sides also decode percent-escapes of RFC 3986 unreserved characters in the 
 A runner with a key-set URL also answers `POST <basePath>/assertion-keys/refresh`, the edge's push after a signing key is revoked. The push carries, in `durable-assertion`, a JWS of `typ` `durable-key-refresh+jwt` with `iss`, `aud` (the deployment), `iat`, and `exp` (at most 60 seconds apart), signed by a key the runner holds. The runner rereads its key set at once and answers `204`. Any other push is `401`, and repeating one only rereads again.
 
 ## Served mapping ([ADR 0027](../decisions/0027-served-protocol.md))
+
+The served mapping is the same on Bun 1.4.2+ and Node 24+. A same-origin check MUST use the actual transport scheme and the request's Host; a client-supplied `x-forwarded-proto` or absolute request target MUST NOT make a cleartext Node socket into an HTTPS origin. Explicitly listed application origins remain supported. Platform HTTP layers do not change command identity, authentication, receipt replay or stream control frames.
 
 M3.2 implements the HTTP command and query routes, `/protocol`, `/command-ids`, and OpenAPI; M4.2 adds `GET /ready` ([ADR 0053](../decisions/0053-served-readiness-route.md)); M3.3 serves connection members as WebSocket sessions, declared `feeds` as SSE event feeds, and `Actor.stream` members over SSE. Evidence: `conformance/http.ts` and `conformance/transports.ts`.
 

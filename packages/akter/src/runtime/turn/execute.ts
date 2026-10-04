@@ -19,14 +19,16 @@ import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
+import { isPoolRefusal } from "../database/bounded.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
+import type { UsageAccountingService } from "../telemetry/usage.ts"
 import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
-import { databaseTime, FrameworkClock } from "./admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock } from "./admission.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
 import {
@@ -127,6 +129,18 @@ const acknowledgement = (
   return BigInt(admission.sub_applied!) >= BigInt(delivery.position) ? "AlreadyApplied" : undefined
 }
 
+/** The first cron ticks a newly created actor stages, read against the database clock. */
+const cronTicks = Effect.fnUntraced(function* (
+  routingKey: bigint,
+  ref: Request["ref"],
+  cron: ReadonlyArray<CronEntry>,
+) {
+  const now = yield* databaseTime
+  const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
+
+  return [writeTicks(routingKey, ref, cron, now).pipe(Effect.provideContext(services))]
+})
+
 /**
  * True when `request` is a minted actor's creating intent: its caller carries
  * the parent's mint proof for the actor's id, and its delivery carries the
@@ -179,6 +193,8 @@ interface Session {
 export interface Delivery {
   readonly request: Request
   readonly command: RegisteredCommand
+  /** Set only after this external id passes the fenced admission check. */
+  admitted?: boolean
 }
 
 /**
@@ -267,6 +283,8 @@ export interface Done {
   readonly written: Written
   /** The commit version each caller's later queries wait for. */
   readonly version: string
+  /** The database clock read on the turn's session after the transaction ended. */
+  readonly endedAtMs: number
   /** What the batch changed that a watched query may have read; nothing when it rolled back. */
   readonly wrote: WriteSet
   /** The commit made outbox or subscription work due now, so the relay should claim it at once. */
@@ -283,6 +301,7 @@ export interface Done {
 interface Ended<W extends Delivery, P> {
   readonly plan: Plan
   readonly version: string
+  readonly endedAtMs: number
   readonly following?: ReadonlyArray<W> | undefined
   readonly chained?: P | undefined
 }
@@ -320,10 +339,16 @@ export interface Stopped<W extends Delivery> {
   readonly orphan: ReadonlyArray<W> | undefined
   readonly cause: Cause.Cause<unknown>
   readonly committed: boolean
+  /** The turn never leased a session, so no fence statement or handler was run. */
+  readonly poolRefused?: boolean
 }
 
 class RolledBack {
-  constructor(readonly plan: Plan) {}
+  readonly plan: Plan
+
+  constructor(plan: Plan) {
+    this.plan = plan
+  }
 }
 
 const HANDLER_SAVEPOINT = "durable_handler"
@@ -369,9 +394,14 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * nothing runs, the activation drops its cache, and the retry reloads under a
  * new generation.
  *
- * Admission checks. An external command still runs past expiry, but not once
- * retention cleanup may have pruned a receipt of its id that committed
- * meanwhile, or the expired id would run again. Only the relay's subscription
+ * Admission checks. The generation row is locked in a materialized input
+ * before the read evaluates its clock, so time spent waiting for the fence
+ * cannot admit an identity that expired meanwhile. External ids are validated
+ * against the fenced read's clock before their receipt is released or a handler
+ * runs. An owner reports
+ * that admission on a retryable failure, so only a previously admitted
+ * redelivery can run past expiry, and not once retention could have pruned
+ * its receipt. No pre-delivery receipt read is needed. Only the relay's subscription
  * deliveries reach a handler, and only a handler takes one, so no caller
  * reaches it around the cursor or route. A routed event for a subscriber its
  * creating command has not created is skipped, and its cursor keeps a stale
@@ -414,7 +444,9 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * receipt replies arrive. If N's commit fails, the next batch's transaction
  * is rolled back unseen with it. The commit version is read on the same
  * session after the transaction ends, in the same flight, so it covers the
- * batch's commit record and any receipt it replayed.
+ * batch's commit record and any receipt it replayed. The same statement reads
+ * a fresh clock after the transaction ended for the external expiry recheck,
+ * never reusing admission time.
  *
  * The session is unsafe from the moment a `BEGIN` may be queued until a
  * transaction-ending reply with nothing queued behind it. Any other exit
@@ -436,6 +468,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   waited: ReadonlySet<string> = new Set(),
   connections?: ConnectionLister,
   cron: ReadonlyArray<CronEntry> = [],
+  accounting?: UsageAccountingService,
 ) {
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
@@ -521,19 +554,24 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         : Effect.asVoid(sql`SELECT ${timeouts}`),
       Effect.map(
         sql<Admission>`
+          WITH locked AS MATERIALIZED (
+            SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id,
+              g.generation, g.created, g.event_sequence
+            FROM actor_generations g
+            WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
+            FOR UPDATE OF g
+          )
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
             c.payload::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
             ${cursorColumns}
-          FROM actor_generations g
+          FROM locked g
           CROSS JOIN ${values}
           LEFT JOIN actor_receipts r ON r.routing_key = g.routing_key AND r.tenant_id = g.tenant_id
             AND r.actor_type = g.actor_type AND r.actor_id = g.actor_id AND r.command_id = c.command_id
           ${cursorJoin}
-          WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
-          ORDER BY c.ordinal
-          FOR UPDATE OF g`,
+          ORDER BY c.ordinal`,
         (rows) => {
           admissions = rows
         },
@@ -583,14 +621,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         retryWindowMs,
       })
 
-      const ticks = Effect.gen(function* () {
-        if (!cold || cron.length === 0) return []
-
-        const now = yield* databaseTime
-        const services = yield* Effect.context<SqlClient.SqlClient | Crypto.Crypto>()
-
-        return [writeTicks(routingKey, ref, cron, now).pipe(Effect.provideContext(services))]
-      })
+      const ticks =
+        !cold || cron.length === 0 ? Effect.succeed([]) : cronTicks(routingKey, ref, cron)
 
       const settled: Array<Settled> = Array.from({ length: batch.length })
       let next: Map<string, string> | undefined
@@ -625,39 +657,46 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
       const outboxes: Array<OutboxReplies> = []
 
-      const admitOne = Effect.fnUntraced(function* (index: number) {
+      /**
+       * Admits one command of the batch once its payload hash is known: settles
+       * a replay, an expiry, or a refusal and yields nothing, or yields the
+       * hash its receipt records. A plain function rather than a generator,
+       * because a generator built for every turn is compiled again and again as
+       * the engine sees new copies of it.
+       */
+      const admitHashed = (index: number, hash: string) => {
         const { request, command } = batch[index]!
         const admitted = admissions[index]!
-        const hash = yield* hashCanonical(admitted.canonical)
 
-        if (admitted.outcome !== null) {
-          const replay = yield* checkReceipt(request, hash, admitted as StoredReceipt).pipe(
-            Effect.result,
+        if (admitted.outcome !== null)
+          return Effect.map(
+            checkReceipt(request, hash, admitted as StoredReceipt).pipe(Effect.result),
+            (replay) => {
+              if (Result.isSuccess(replay)) {
+                replayed = true
+                replays.add(index)
+              }
+
+              settled[index] = replay
+
+              return undefined
+            },
           )
-
-          if (Result.isSuccess(replay)) {
-            replayed = true
-            replays.add(index)
-          }
-
-          settled[index] = replay
-
-          return undefined
-        }
 
         if (
           request.external === true &&
-          now >= commandTimes(request.commandId).expiresAt + expiryMarginMs
+          Number(admitted.now) + (request.clockOffset ?? clock.offsetMillis()) >=
+            commandTimes(request.commandId).expiresAt + expiryMarginMs
         ) {
           settled[index] = Result.fail(
             ActorError.make({ reason: CommandExpired.make({ commandId: request.commandId }) }),
           )
 
-          return undefined
+          return Effect.undefined
         }
 
         if (command.internal && !isSystem(request.caller))
-          return yield* Effect.die(new Error("Internal commands require a System caller"))
+          return Effect.die(new Error("Internal commands require a System caller"))
 
         const { delivery } = request
 
@@ -677,19 +716,19 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             caller.ref?.actor !== delivery.sourceType ||
             caller.ref.id !== delivery.sourceId
           )
-            return yield* Effect.die(
+            return Effect.die(
               new Error("Subscription handlers accept only subscription deliveries"),
             )
 
           if (caller.ref.tenant !== tenant)
-            return yield* Effect.die(new Error("A subscription delivery crosses tenants"))
+            return Effect.die(new Error("A subscription delivery crosses tenants"))
 
           const reason = acknowledgement(delivery, cursorAt(index, delivery))
 
           if (reason !== undefined) {
             acknowledge(reason)
 
-            return undefined
+            return Effect.undefined
           }
         }
 
@@ -699,21 +738,23 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             apply(index, delivery)
             acknowledge("NotCreated")
 
-            return undefined
+            return Effect.undefined
           }
 
           settled[index] = Result.fail(ActorError.make({ reason: NotCreated.make({}) }))
 
-          return undefined
+          return Effect.undefined
         }
 
         if (
-          mintable &&
-          policy.createdBy === request.command &&
-          !created &&
-          isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? "")) &&
-          !(yield* committedMintIntent(request, parent))
-        ) {
+          !mintable ||
+          policy.createdBy !== request.command ||
+          created ||
+          !isMintedId(parent === undefined ? id : (parseChildId(id)?.local ?? ""))
+        )
+          return Effect.succeed(hash)
+
+        const refuse = () => {
           settled[index] = Result.fail(
             ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) }),
           )
@@ -721,8 +762,41 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           return undefined
         }
 
-        return hash
-      })
+        return request.external === true
+          ? Effect.sync(refuse)
+          : Effect.map(committedMintIntent(request, parent), (committed) =>
+              committed ? hash : refuse(),
+            )
+      }
+
+      const admitOne = (index: number) => {
+        const request = batch[index]!.request
+        const identityNow =
+          Number(admissions[index]!.now) + (request.clockOffset ?? clock.offsetMillis())
+        const hashed = Effect.flatMap(hashCanonical(admissions[index]!.canonical), (hash) =>
+          admitHashed(index, hash),
+        )
+
+        if (request.external !== true) return hashed
+
+        return Effect.flatMap(
+          checkIdentity(request.commandId, retryWindowMs, identityNow).pipe(Effect.result),
+          (identity) => {
+            if (
+              Result.isFailure(identity) &&
+              (request.redelivered !== true || !Schema.is(CommandExpired)(identity.failure.reason))
+            ) {
+              settled[index] = Result.fail(identity.failure)
+
+              return Effect.undefined
+            }
+
+            batch[index]!.admitted = true
+
+            return hashed
+          },
+        )
+      }
 
       let index = 0
 
@@ -763,16 +837,18 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         if (statements && start > 0) yield* session.defer(savepoint)
 
-        const business = yield* Effect.gen(function* () {
-          yield* hooks.at("beforeHandler", request)
-
-          return members.length === 1
-            ? yield* command.run(request, [...given], { head, connections })
-            : yield* command.merge!(
-                members.map((member) => member.request),
-                [...given],
-              )
-        }).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), Effect.result)
+        const business = yield* hooks.at("beforeHandler", request).pipe(
+          Effect.andThen(() =>
+            members.length === 1
+              ? command.run(request, [...given], { head, connections })
+              : command.merge!(
+                  members.map((member) => member.request),
+                  [...given],
+                ),
+          ),
+          Effect.catchIf(SqlError.isSqlError, Effect.die),
+          Effect.result,
+        )
 
         const result: BusinessResult = Result.isSuccess(business)
           ? business.success
@@ -929,8 +1005,18 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           Effect.asVoid(sql`UPDATE actor_generations SET created = true WHERE ${actorRow}`),
         )
 
-      if (receipts.length > 0)
+      if (receipts.length > 0) {
         writes.push(Effect.asVoid(sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`))
+
+        if (accounting !== undefined)
+          writes.push(
+            accounting.commands({
+              ref,
+              commandIds: receipts.map((receipt) => receipt.command_id),
+              sql,
+            }),
+          )
+      }
 
       writes.push(...(yield* ticks))
 
@@ -974,6 +1060,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   let current: ReadonlyArray<W> = run.first
   let orphan: ReadonlyArray<W> | undefined
   let answering = false
+  let poolRefused = false
 
   const locate = (batch: ReadonlyArray<W>, following: ReadonlyArray<W> | undefined) => {
     current = batch
@@ -984,41 +1071,43 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
    * Remembers what a commit proved and hands the ended batch to the
    * activation, which publishes it. Only a commit replaces the cache.
    */
-  const finish = Effect.fnUntraced(function* (
-    batch: ReadonlyArray<W>,
-    plan: Plan,
-    version: string,
-  ) {
-    if (plan.writes !== undefined) {
-      cache.generation = plan.generation
-      cache.state = plan.state
-    }
+  const finish = (batch: ReadonlyArray<W>, plan: Plan, version: string, endedAtMs: number) =>
+    Effect.suspend(() => {
+      if (plan.writes !== undefined) {
+        cache.generation = plan.generation
+        cache.state = plan.state
+      }
 
-    answering = true
+      answering = true
 
-    yield* run.committed(batch, {
-      settled: plan.settled,
-      broadcasts: plan.broadcasts,
-      head: plan.head,
-      committed: plan.committed.map((entry, index): CommittedEvents => ({
-        ...entry,
-        emittedAtMs: plan.emitted[index]!.emittedAtMs,
-      })),
-      cancelledJobs: plan.outbox.flatMap((replies) => replies.cancelledIds),
-      generation: plan.generation,
-      replays: plan.replays,
-      written: plan.writes === undefined ? nothingWritten : plan.written,
-      version,
-      wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
-      wake:
-        plan.wake ||
-        plan.outbox.some((replies) => replies.wake) ||
-        plan.emitted.some((stamp) => stamp.fed),
-      cancelled: plan.outbox.some((replies) => replies.cancelled),
-    })
-
-    answering = false
-  })
+      return run.committed(batch, {
+        settled: plan.settled,
+        broadcasts: plan.broadcasts,
+        head: plan.head,
+        committed: plan.committed.map((entry, index): CommittedEvents => ({
+          ...entry,
+          emittedAtMs: plan.emitted[index]!.emittedAtMs,
+        })),
+        cancelledJobs: plan.outbox.flatMap((replies) => replies.cancelledIds),
+        generation: plan.generation,
+        replays: plan.replays,
+        written: plan.writes === undefined ? nothingWritten : plan.written,
+        version,
+        endedAtMs,
+        wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
+        wake:
+          plan.wake ||
+          plan.outbox.some((replies) => replies.wake) ||
+          plan.emitted.some((stamp) => stamp.fed),
+        cancelled: plan.outbox.some((replies) => replies.cancelled),
+      })
+    }).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          answering = false
+        }),
+      ),
+    )
 
   /**
    * The one batch lifecycle both backends share. Each batch is located, so a
@@ -1028,35 +1117,39 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
    * own span before the next is taken. The next batch is the one `transact`
    * took while committing, whose admission may already ride behind this
    * `COMMIT`, else whatever is waiting once this batch was answered.
+   * Opening stays lazy because preparation may acquire a generation and fill
+   * the cache whose view admission uses.
    */
   const drive = <P, EO, RO, ET, RT>(
     open: (batch: ReadonlyArray<W>) => Effect.Effect<P, EO, RO>,
     transact: (batch: ReadonlyArray<W>, pending: P) => Effect.Effect<Ended<W, P>, ET, RT>,
-  ) =>
-    Effect.gen(function* () {
-      let batch: ReadonlyArray<W> | undefined = run.first
-      let pending: P | undefined
+  ) => {
+    const step = (
+      admitting: ReadonlyArray<W>,
+      pending: P | undefined,
+    ): Effect.Effect<void, EO | ET, RO | RT | RN | RP | RC> => {
+      locate(admitting, undefined)
 
-      while (batch !== undefined) {
-        const admitting: ReadonlyArray<W> = batch
-        locate(admitting, undefined)
+      return run.prepare.pipe(
+        Effect.andThen(() => (pending === undefined ? open(admitting) : Effect.succeed(pending))),
+        Effect.flatMap((admitted) =>
+          transact(admitting, admitted).pipe(
+            Effect.tap((ended) => finish(admitting, ended.plan, ended.version, ended.endedAtMs)),
+            run.observe(admitting),
+          ),
+        ),
+        Effect.flatMap((ended) =>
+          ended.following === undefined
+            ? Effect.flatMap(run.next, (next) =>
+                next === undefined ? Effect.void : step(next, ended.chained),
+              )
+            : step(ended.following, ended.chained),
+        ),
+      )
+    }
 
-        yield* run.prepare
-        pending ??= yield* open(admitting)
-
-        const admitted = pending
-
-        const ended: Ended<W, P> = yield* Effect.gen(function* () {
-          const step: Ended<W, P> = yield* transact(admitting, admitted)
-          yield* finish(admitting, step.plan, step.version)
-
-          return step
-        }).pipe(run.observe(admitting))
-
-        pending = ended.chained
-        batch = ended.following ?? (yield* run.next)
-      }
-    })
+    return Effect.suspend(() => step(run.first, undefined))
+  }
 
   /**
    * Postgres: a leased session per chain of batches. A batch is opened by
@@ -1086,6 +1179,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             const held = yield* Scope.fork(scope)
             const leasing = yield* Clock.currentTimeMillis
             const connection = yield* Scope.provide(turns.lease, held).pipe(
+              Effect.tapError((error) =>
+                Effect.sync(() => {
+                  poolRefused = isPoolRefusal(error)
+                }),
+              ),
               Effect.onError((cause) => Scope.close(held, Exit.failCause(cause))),
             )
             yield* record(Metrics.poolWait, {}, (yield* Clock.currentTimeMillis) - leasing)
@@ -1152,82 +1250,100 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
 
         const queue = (batch: ReadonlyArray<W>, view: View, ahead: ReadonlyArray<Statement>) =>
-          Effect.gen(function* () {
-            const admission = admit(batch, yield* canonicalsOf(batch), view, pipeline, [begin])
-            const flight = yield* queueStatements({ scope, group: [...ahead, ...admission.group] })
+          Effect.flatMap(canonicalsOf(batch), (canonicals) => {
+            const admission = admit(batch, canonicals, view, pipeline, [begin])
 
-            return { admission, flight }
+            return Effect.map(
+              queueStatements({ scope, group: [...ahead, ...admission.group] }),
+              (flight) => ({ admission, flight }),
+            )
           })
 
-        const transact = (batch: ReadonlyArray<W>, { admission, admitted }: Admitting) =>
-          Effect.gen(function* () {
-            const stepped = yield* Effect.gen(function* () {
-              yield* awaitReplies(admitted)
-              const plan = yield* admission.resume()
-              const following = yield* run.next
-              const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
+        /**
+         * Queues a batch's commit group, and the next batch's admission behind
+         * it when the cache stays warm, then waits for the commit replies.
+         */
+        const commitPlan = (
+          batch: ReadonlyArray<W>,
+          plan: Plan,
+          following: ReadonlyArray<W> | undefined,
+        ) => {
+          const ending = plan.writes === undefined ? "ROLLBACK" : "COMMIT"
 
-              const after: View =
-                plan.writes === undefined
-                  ? view()
-                  : { generation: plan.generation, state: plan.state }
+          const after: View =
+            plan.writes === undefined ? view() : { generation: plan.generation, state: plan.state }
 
-              const chained =
-                following !== undefined &&
-                after.generation !== undefined &&
-                after.state !== undefined &&
-                !run.publishesUnderLock(batch)
+          const chained =
+            following !== undefined &&
+            after.generation !== undefined &&
+            after.state !== undefined &&
+            !run.publishesUnderLock(batch)
 
-              let tag: string | undefined
-              let version = ""
+          let tag: string | undefined
+          let version = ""
+          let endedAtMs = 0
 
-              const commit: ReadonlyArray<Statement> = [
-                ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
-                Effect.map(control(ending), (result) => {
-                  tag = result.command
+          const commit: ReadonlyArray<Statement> = [
+            ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
+            Effect.map(control(ending), (result) => {
+              tag = result.command
 
-                  if (!chained) open = false
-                }),
-                Effect.map(session().query(COMMIT_VERSION, [], true), (result) => {
-                  version = (result.rows[0] as { version: string }).version
-                }),
-              ]
+              if (!chained) open = false
+            }),
+            Effect.map(session().query(COMMIT_VERSION, [], true), (result) => {
+              const ended = result.rows[0] as { version: string; now: string }
+              version = ended.version
+              endedAtMs = Number(ended.now)
+            }),
+          ]
 
-              locate(batch, following)
+          locate(batch, following)
 
-              const upcoming = chained
-                ? yield* queue(following, after, commit)
-                : { admission: undefined, flight: yield* queueStatements({ scope, group: commit }) }
+          const upcoming: Effect.Effect<{
+            readonly admission: Admitting["admission"] | undefined
+            readonly flight: Admitting["admitted"]
+          }> = chained
+            ? queue(following, after, commit)
+            : Effect.map(queueStatements({ scope, group: commit }), (flight) => ({
+                admission: undefined,
+                flight,
+              }))
 
-              const answered = awaitReplies(upcoming.flight.slice(0, commit.length))
+          return Effect.flatMap(upcoming, ({ admission: next, flight }) => {
+            const answered = awaitReplies(flight.slice(0, commit.length))
 
-              yield* ending === "COMMIT"
-                ? answered.pipe(Effect.withSpan(SpanNames.commit))
-                : answered
-
-              return {
+            return Effect.map(
+              ending === "COMMIT" ? answered.pipe(Effect.withSpan(SpanNames.commit)) : answered,
+              () => ({
                 plan,
                 version,
+                endedAtMs,
                 ending,
                 tag,
                 following,
                 chained:
-                  upcoming.admission === undefined
+                  next === undefined
                     ? undefined
-                    : {
-                        admission: upcoming.admission,
-                        admitted: upcoming.flight.slice(commit.length),
-                      },
-              }
-            }).pipe(inTurn, bounded)
-
-            if (stepped.ending === "COMMIT" && stepped.tag !== "COMMIT")
-              return yield* Effect.die(RetryTurn.make({ message: "Turn commit rolled back" }))
-
-            if (stepped.chained === undefined) yield* release
-
-            return stepped
+                    : { admission: next, admitted: flight.slice(commit.length) },
+              }),
+            )
           })
+        }
+
+        const transact = (batch: ReadonlyArray<W>, { admission, admitted }: Admitting) =>
+          awaitReplies(admitted).pipe(
+            Effect.andThen(() => admission.resume()),
+            Effect.flatMap((plan) =>
+              Effect.flatMap(run.next, (following) => commitPlan(batch, plan, following)),
+            ),
+            inTurn,
+            bounded,
+            Effect.filterOrElse(
+              (stepped) => stepped.ending !== "COMMIT" || stepped.tag === "COMMIT",
+              () => Effect.die(RetryTurn.make({ message: "Turn commit rolled back" })),
+            ),
+            Effect.tap((stepped) => (stepped.chained === undefined ? release : Effect.void)),
+          )
 
         return yield* drive(
           (batch) =>
@@ -1296,9 +1412,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             ),
         )
 
-        const rows = yield* sql.unsafe<{ version: string }>(COMMIT_VERSION)
+        const [ended] = yield* sql.unsafe<{ version: string; now: string }>(COMMIT_VERSION)
 
-        return { plan, version: rows[0]!.version }
+        return {
+          plan,
+          version: ended!.version,
+          endedAtMs: Number(ended!.now),
+        }
       }),
   )
 
@@ -1317,5 +1437,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
   if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.failCause(exit.cause)
 
-  return { batch: current, orphan, cause: exit.cause, committed: answering } satisfies Stopped<W>
+  return {
+    batch: current,
+    orphan,
+    cause: exit.cause,
+    committed: answering,
+    poolRefused,
+  } satisfies Stopped<W>
 })

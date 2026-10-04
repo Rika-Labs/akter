@@ -3,11 +3,13 @@ import { DateTime, Effect, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import {
   deployStatusOf,
+  rollbackCandidates,
   shortCommit,
   toDeploymentPage,
   toDeploymentsPage,
   toDeployRecord,
   toPhases,
+  toRolledBack,
 } from "./mapping.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
@@ -142,6 +144,36 @@ describe("deployment detail", () => {
       }),
     ))
 
+  it("keeps unmeasured runner telemetry unknown while preserving measured zeroes", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(
+          DeploymentDetail,
+          detail({
+            runners: [
+              {
+                id: "unknown",
+                region: "us-east-1",
+                actorCount: null,
+                cpuPercent: null,
+                health: "healthy",
+              },
+              { id: "zero", region: "us-west-2", actorCount: 0, cpuPercent: 0, health: "healthy" },
+            ],
+          }),
+        )
+        const page = toDeploymentPage(now)({
+          detail: parsed,
+          log: yield* decode(BuildLog, { lines: [], complete: true }),
+          history: [],
+        })
+        expect(page.runners).toEqual([
+          { id: "unknown", region: "us-east-1", actors: null, cpu: "—", health: "healthy" },
+          { id: "zero", region: "us-west-2", actors: 0, cpu: "0%", health: "healthy" },
+        ])
+      }),
+    ))
+
   it("draws runners, the build log in order and no measured shift the API does not report", () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -156,6 +188,7 @@ describe("deployment detail", () => {
         const page = toDeploymentPage(now)({
           detail: parsed,
           log: yield* decode(BuildLog, log),
+          history: [],
         })
         expect(page.log).toBe("$ bun install\nwarn: lockfile")
         expect(page.runners).toEqual([
@@ -164,8 +197,132 @@ describe("deployment detail", () => {
         ])
         expect(page.shift).toBeUndefined()
         expect(page.liveAt).toBeUndefined()
-        expect(page.rollbackTo).toBeNull()
+        expect(page.rollbackTargets).toEqual([])
+        expect(page.rolledBackFrom).toBeNull()
         expect(page.deploy.commit).toBe("a3f9c21")
+      }),
+    ))
+})
+
+describe("rollback targets", () => {
+  const current = {
+    id: "dep_now",
+    commitSha: "a3f9c21d5e8b7a0c4f6d1e2b3a495867c0d1e2f3",
+    status: "live",
+    createdAt: "2026-10-03T10:00:00.000Z",
+  }
+  const history = (...entries: ReadonlyArray<Record<string, Schema.Json>>) =>
+    Effect.forEach(entries, (fields) => decode(DeploymentSummary, summary(fields)))
+  const candidateIds = (
+    viewed: Record<string, Schema.Json>,
+    others: ReadonlyArray<Record<string, Schema.Json>>,
+  ) =>
+    Effect.gen(function* () {
+      const [target] = yield* history(viewed)
+      const rest = yield* history(...others)
+      return target === undefined
+        ? []
+        : rollbackCandidates(target)([...rest, target]).map((deployment) => deployment.id)
+    })
+
+  it("offers earlier drained, rolled-back and earlier live deployments newest first, never the current one", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        expect(
+          yield* candidateIds(current, [
+            { id: "dep_older", status: "drained", createdAt: "2026-09-01T10:00:00.000Z" },
+            { id: "dep_live", status: "live", createdAt: "2026-10-01T10:00:00.000Z" },
+            { id: "dep_drained", status: "drained", createdAt: "2026-10-02T10:00:00.000Z" },
+            { id: "dep_rolled", status: "rolled-back", createdAt: "2026-10-03T09:00:00.000Z" },
+          ]),
+        ).toEqual(["dep_rolled", "dep_drained", "dep_live", "dep_older"])
+      }),
+    ))
+
+  it("skips failed, rolling out, cross-environment, later and equal-time deployments", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        expect(
+          yield* candidateIds(current, [
+            { id: "dep_failed", status: "failed", createdAt: "2026-10-02T10:00:00.000Z" },
+            { id: "dep_rolling", status: "in-progress", createdAt: "2026-10-02T11:00:00.000Z" },
+            {
+              id: "dep_staging",
+              status: "drained",
+              environment: "staging",
+              createdAt: "2026-10-02T12:00:00.000Z",
+            },
+            { id: "dep_later", status: "drained", createdAt: "2026-10-03T11:00:00.000Z" },
+            { id: "dep_same", status: "drained", createdAt: current.createdAt },
+            { id: "dep_ok", status: "drained", createdAt: "2026-10-02T13:00:00.000Z" },
+          ]),
+        ).toEqual(["dep_ok"])
+      }),
+    ))
+
+  it("offers nothing from a deployment that is not live", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        expect(
+          yield* candidateIds({ ...current, status: "drained" }, [
+            { id: "dep_earlier", status: "drained", createdAt: "2026-10-01T10:00:00.000Z" },
+          ]),
+        ).toEqual([])
+      }),
+    ))
+
+  it("puts targets and the resolved rolledBackFrom commit on the page", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const detail = (fields: Record<string, Schema.Json>) =>
+          decode(DeploymentDetail, {
+            ...summary({ ...current, ...fields }),
+            steps: [],
+            runners: [],
+          })
+        const log = yield* decode(BuildLog, { lines: [], complete: true })
+        const earlier = yield* history({
+          id: "dep_earlier",
+          commitSha: "77be0101234567890123456789012345678901ab",
+          status: "drained",
+          createdAt: "2026-10-01T10:00:00.000Z",
+        })
+        const resolved = toDeploymentPage(now)({
+          detail: yield* detail({ rolledBackFrom: "dep_earlier" }),
+          log,
+          history: earlier,
+        })
+        expect(resolved.rollbackTargets).toMatchObject([
+          { id: "dep_earlier", commit: "77be010", status: "Drained" },
+        ])
+        expect(resolved.rolledBackFrom).toEqual({ id: "dep_earlier", commit: "77be010" })
+        const unknown = toDeploymentPage(now)({
+          detail: yield* detail({ rolledBackFrom: "dep_unseen" }),
+          log,
+          history: earlier,
+        })
+        expect(unknown.rolledBackFrom).toEqual({ id: "dep_unseen" })
+      }),
+    ))
+
+  it("maps a rollback's new deployment with the id it redeploys", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const created = yield* decode(DeploymentDetail, {
+          ...summary({
+            id: "dep_new",
+            commitSha: "77be0101234567890123456789012345678901ab",
+            status: "in-progress",
+            durationMs: null,
+            rolledBackFrom: "dep_target",
+          }),
+          steps: [],
+          runners: [],
+        })
+        expect(toRolledBack(now)(created)).toMatchObject({
+          deploy: { id: "dep_new", commit: "77be010", status: "Rolling out" },
+          rolledBackFrom: { id: "dep_target" },
+        })
       }),
     ))
 })

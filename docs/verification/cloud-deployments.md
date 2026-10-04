@@ -1,0 +1,15 @@
+# Cloud deployment verification
+
+Before claiming the local deployment loop works, run the affected suites on the assigned local Postgres and the built local application image. A provider fake is not evidence for Docker, and Docker is not evidence for Fargate or Neki.
+
+Required negative evidence includes: one winner under concurrent environment rollouts; no provider call before a wake commits; an identical build result that enqueues no new job; a changed build result refused; failed migration/start/activation leaving the prior deployment live; rollback copying the earlier image and snapshot; an audit failure rolling back activation; concurrent wakes starting one runner; ingress withdrawn before drain; a startup-time drain retained; paid tiers not idling; and stale task observations not deleting a replacement.
+
+Review regression cases also reject a stale poller wake resurrecting a retired release, a wake abandoning a failed stop, interruption stopping accepted capacity, failed cleanup disappearing from the rollout, public HTTP or socket traffic failing to record activity, cross-organization runtime resolution, and unmeasured runner telemetry displayed as zero. Credential-free infrastructure declarations must reject public or cross-deployment peer ingress, API access to platform execution roles, unconstrained runner task launch, and a runner execution role capable of reading platform secrets.
+
+The local stack scenario must create a project through the API, register a locally built digest, observe a ready runner, send a command through the API and edge, retry it with the same client key, reject a changed payload, send to a never-created actor, roll forward and back, then withdraw Free capacity and answer the next command after a wake without duplicate execution. Exercise migration and runner interruption, not only success. Keep state and receipt expectations independent of the implementation's own counters.
+
+Before the first successful command, denied callers must leave the actor absent. Runtime mapping evidence must reject terminal handling of `MailboxFull`, keep defects opaque and non-retryable, and verify typed command-expiry refusals. Repository evidence must cover payload-hash conflicts, tombstone expiry, bounded 1,000-row sweeps, and a concurrent sweep/reuse race.
+
+Use the repository's `bun install`, typecheck, lint, formatting, unit and relevant Postgres integration commands. Local container tests require Docker and remove only the exact resources they created. Do not prune the shared daemon. On a shared Mac, correctness checks must use the shared heavy-run slots and the agreed load gate; infrastructure timeouts require a clean rerun, not weaker assertions. Test durations are not deployment performance measurements.
+
+Real ECS/ECR, GitHub App installation, Cloudflare/NLB streaming, hosted TLS, Neki and Fargate cold-start bounds require authorized credentials and provider-specific evidence. The credential-free slice makes no claim for them. Performance measurements belong on isolated sandboxes, not the shared Mac.

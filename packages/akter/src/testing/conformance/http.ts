@@ -44,6 +44,7 @@ import { buildServedApi, openApiDocument } from "../../serve/api.ts"
 import { ActorTest } from "../actor-test.ts"
 import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { Auth } from "../../runtime/index.ts"
+import { serveFetch } from "./platform.ts"
 
 export class Full extends Schema.TaggedError<Full>()("Full", { capacity: Schema.Int }) {}
 
@@ -313,7 +314,7 @@ export interface Server {
   readonly mint: (offsetMs?: number, windowMs?: number) => Effect.Effect<string>
 }
 
-/** Serves the HTTP actors from a real listening Bun server for the rest of the scope. */
+/** Serves the HTTP actors from a real listening server for the rest of the scope. */
 export const serveHttp = Effect.fnUntraced(function* (
   options?: Partial<ServeOptions<never>>,
 ): Effect.fn.Return<
@@ -332,19 +333,10 @@ export const serveHttp = Effect.fnUntraced(function* (
 
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: (request) => web.handler(request),
-  })
+  yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
+  const port = yield* serveFetch((request) => web.handler(request))
 
-  yield* Effect.addFinalizer(() =>
-    Effect.promise(() => server.stop(true)).pipe(
-      Effect.andThen(Effect.promise(() => web.dispose())),
-    ),
-  )
-
-  const url = `http://127.0.0.1:${server.port}`
+  const url = `http://127.0.0.1:${port}`
 
   return {
     url,
@@ -674,6 +666,8 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             }
 
             expect(runs.count).toBe(before)
+            expect(first.headers.get("durable-replayed")).toBe("false")
+            expect(replay.headers.get("durable-replayed")).toBe("true")
           }
         }),
       ),
@@ -693,7 +687,9 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             body: { text: "hi" },
           })
 
-          expect((yield* call).body).toBe(1)
+          const first = yield* call
+          expect(first.body).toBe(1)
+          expect(first.headers.get("durable-replayed")).toBe("false")
           const before = runs.count
 
           const retry = yield* server.send("/actors/HttpRoom/replay/Post", {
@@ -704,8 +700,37 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(retry).toMatchObject({ status: 200, body: 1 })
           expect(retry.headers.get("x-request-id")).toBe(key)
+          expect(retry.headers.get("durable-replayed")).toBe("true")
           expect(runs.count).toBe(before)
           expect(yield* receipts(tenant, "HttpRoom", "replay")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "reports one commit and receipt replays for concurrent HTTP retries under one command id",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+          const key = yield* server.mint()
+          const replies = yield* Effect.forEach(
+            Array.from({ length: 8 }),
+            () =>
+              server.send("/actors/HttpRoom/concurrent-replay/Post", {
+                token: `${tenant}:alice`,
+                key,
+                body: { text: "only once" },
+              }),
+            { concurrency: "unbounded" },
+          )
+          expect(replies.map((reply) => reply.body)).toEqual(Array.from({ length: 8 }, () => 1))
+          expect(
+            replies
+              .map((reply) => reply.headers.get("durable-replayed"))
+              .sort((left, right) => (left ?? "").localeCompare(right ?? "")),
+          ).toEqual(["false", "true", "true", "true", "true", "true", "true", "true"])
+          expect(yield* receipts(tenant, "HttpRoom", "concurrent-replay")).toBe(1)
         }),
       ),
   },
@@ -855,6 +880,132 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
           expect(Object.keys((reply.body as { readonly reason: object }).reason)).toEqual(["_tag"])
           expect(body.retryAfter >= 125 && body.retryAfter <= 375).toBe(true)
           expect(reply.headers.get("retry-after")).toBe("1")
+        }),
+      ),
+  },
+  {
+    name: "refuses a served command with 503 ActorUnavailable and retry-after before authenticating or reading it while the runtime is overloaded, and still serves queries",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const actors = yield* InternalActors
+          let overloaded = false
+
+          const server = yield* serveHttp().pipe(
+            Effect.provideService(
+              InternalActors,
+              InternalActors.of({ ...actors, overloaded: () => overloaded }),
+            ),
+          )
+
+          const tenant = yield* tenantOf
+          const token = `${tenant}:alice`
+
+          const first = yield* server.send("/actors/HttpRoom/shed/Post", {
+            token,
+            key: yield* server.mint(),
+            body: { text: "a" },
+          })
+
+          expect(first).toMatchObject({ status: 200, body: 1 })
+
+          overloaded = true
+          const key = yield* server.mint()
+          const refused = yield* server.send("/actors/HttpRoom/shed/Post", {
+            key,
+            raw: "{not json",
+          })
+
+          expect(refused.status).toBe(503)
+          expect(yield* reasonOf(refused.body)).toEqual({ tag: "ActorUnavailable" })
+          expect(refused.body).toMatchObject({ isRetryable: true })
+          expect(refused.headers.get("retry-after")).toBe("1")
+          expect(yield* receipts(tenant, "HttpRoom", "shed")).toBe(1)
+
+          expect(yield* server.send("/actors/HttpRoom/shed/Count", { token })).toMatchObject({
+            status: 200,
+            body: 1,
+          })
+
+          overloaded = false
+
+          const retried = yield* server.send("/actors/HttpRoom/shed/Post", {
+            token,
+            key,
+            body: { text: "b" },
+          })
+
+          expect(retried).toMatchObject({ status: 200, body: 2 })
+          expect(yield* receipts(tenant, "HttpRoom", "shed")).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "bounds served command authentication across serve layers and retries a refused id without a receipt or duplicate transition",
+    timeoutMs: 30_000,
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const release = yield* Deferred.make<void>()
+          const reached = yield* Deferred.make<void>()
+          let authenticating = 0
+          const auth: AuthProvider<never> = {
+            ...tokens,
+            authenticate: (request) =>
+              tokens.authenticate(request).pipe(
+                Effect.tap(() =>
+                  Effect.gen(function* () {
+                    authenticating += 1
+                    if (authenticating === 64) yield* Deferred.succeed(reached, undefined)
+                    yield* Deferred.await(release)
+                  }),
+                ),
+              ),
+          }
+          const a = yield* serveHttp({ auth })
+          const b = yield* serveHttp({ auth })
+          const tenant = yield* tenantOf
+          const token = `${tenant}:alice`
+          const keys = yield* Effect.forEach(Array.from({ length: 65 }), () => a.mint())
+          const held = yield* Effect.forEach(
+            keys.slice(0, 64),
+            (key, index) =>
+              (index % 2 === 0 ? a : b).send("/actors/HttpRoom/accept-bound/Post", {
+                token,
+                key,
+                body: { text: "accepted" },
+              }),
+            { concurrency: "unbounded" },
+          ).pipe(Effect.forkScoped)
+          yield* Deferred.await(reached)
+          const refused = yield* b.send("/actors/HttpRoom/accept-bound/Post", {
+            token,
+            key: keys[64]!,
+            body: { text: "refused" },
+          })
+          expect(refused.status).toBe(503)
+          expect(refused.headers.get("retry-after")).toBe("1")
+          expect(yield* reasonOf(refused.body)).toEqual({ tag: "ActorUnavailable" })
+          expect(authenticating).toBe(64)
+          expect(yield* receipts(tenant, "HttpRoom", "accept-bound")).toBe(0)
+          yield* Deferred.succeed(release, undefined)
+          const replies = yield* Fiber.join(held)
+          expect(replies.every((reply) => reply.status === 200)).toBe(true)
+          expect(yield* receipts(tenant, "HttpRoom", "accept-bound")).toBe(64)
+          for (const server of [a, b]) {
+            expect(
+              yield* server.send("/actors/HttpRoom/accept-bound/Post", {
+                token,
+                key: keys[64]!,
+                body: { text: "refused" },
+              }),
+            ).toMatchObject({ status: 200, body: 65 })
+          }
+          expect(yield* receipts(tenant, "HttpRoom", "accept-bound")).toBe(65)
+          expect(yield* a.send("/actors/HttpRoom/accept-bound/Count", { token })).toMatchObject({
+            status: 200,
+            body: 65,
+          })
         }),
       ),
   },

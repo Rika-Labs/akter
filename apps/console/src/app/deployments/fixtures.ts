@@ -105,7 +105,13 @@ const deploymentOf = (deploy: DeployRecord): DeploymentPage =>
       { id: "r5", region: "eu-west-1", actors: 6_077, cpu: "21%", health: "healthy" as const },
       { id: "r6", region: "eu-west-1", actors: 6_300, cpu: "24%", health: "healthy" as const },
     ].slice(0, deploy.runners),
-    rollbackTo: deploy.status === "Live" ? "77be010" : null,
+    rollbackTargets:
+      deploy.status === "Live"
+        ? deploys
+            .slice(deploys.indexOf(deploy) + 1)
+            .filter((earlier) => earlier.status === "Drained" || earlier.status === "Rolled back")
+        : [],
+    rolledBackFrom: null,
     diffUrl: `https://github.com/acme/storefront/commit/${deploy.commit}`,
     log: [
       "$ bun install            ok  2.1 s",
@@ -118,8 +124,10 @@ const deploymentOf = (deploy: DeployRecord): DeploymentPage =>
     ].join("\n"),
   })
 
-/** The fixture detail of the deploy with `commit`, or nothing for a commit that was never deployed. */
-export const deploymentPage = (commit: string): DeploymentPage | undefined => {
-  const deploy = deploys.find((candidate) => candidate.commit === commit)
+/** The fixture detail of the deploy with id `reference`, else with that commit, or nothing when none matches. */
+export const deploymentPage = (reference: string): DeploymentPage | undefined => {
+  const deploy =
+    deploys.find((candidate) => candidate.id === reference) ??
+    deploys.find((candidate) => candidate.commit === reference)
   return deploy === undefined ? undefined : deploymentOf(deploy)
 }

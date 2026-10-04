@@ -30,7 +30,7 @@ export interface Policy {
   readonly deliveryTimeout?: Duration.Input
   /** Maximum UTF-8 bytes of the encoded state object. Default 65,536. */
   readonly maxStateBytes?: number
-  /** Maximum queued commands per activation. Default unbounded. */
+  /** Declared mailbox capacity; omitted, the runtime bounds active commands at 1,024 and refuses overload. */
   readonly mailboxCapacity?: number
   /**
    * How long a receipt is kept after its command id is issued; a timer's

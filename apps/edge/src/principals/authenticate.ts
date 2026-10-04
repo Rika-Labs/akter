@@ -1,6 +1,6 @@
-import { Unauthorized, User } from "@rikalabs/akter"
+import { InvalidInput, Unauthorized, User } from "@rikalabs/akter"
 import { Auth, type Authenticated, type AuthProvider } from "@rikalabs/akter/runtime"
-import { Clock, Duration, Effect, Option, Schema } from "effect"
+import { Clock, Duration, Effect, Option, Result, Schema } from "effect"
 import { Headers, type HttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
 import type { EdgeOptions } from "../config.ts"
@@ -11,6 +11,56 @@ export interface Principal {
   readonly caller: typeof User.Type
   /** Epoch milliseconds; caps a session the assertion opens. */
   readonly expiresAt: number
+  /**
+   * The credential is the control plane's deployment service credential: a
+   * hosted API key the control plane registered under `CONTROL_PLANE_SUBJECT`.
+   * A JWT never is, because its issuer, not the control plane, picks its subject.
+   */
+  readonly service: boolean
+}
+
+/** The subject the control plane registers its deployment service credential under. */
+export const CONTROL_PLANE_SUBJECT = "akter-control-plane"
+
+/**
+ * The header naming whom the control plane acts for on a request it sends
+ * with its service credential, such as a console user's `user:<id>`. It is
+ * the control plane's word, and the control plane authorized the request, so
+ * the edge signs it as the caller only on that credential; every other
+ * request has it stripped, so no tenant can choose the caller a runner sees.
+ */
+export const ON_BEHALF_OF_HEADER = "akter-on-behalf-of"
+
+/** The control-plane identities a request may be attributed to: a user's or an API key's id, never an application's own subject. */
+const isAttributedSubject = Schema.is(
+  Schema.String.check(Schema.isPattern(/^(?:user|api-key):[A-Za-z0-9._~-]{1,128}$/u)),
+)
+
+/**
+ * The principal an assertion attributes `principal`'s request to. The
+ * control plane's service credential may name a control-plane identity in
+ * `onBehalfOf`, which becomes the caller while the tenant, expiry and the
+ * service flag stay the credential's; a malformed one is refused. Any other
+ * principal keeps its own caller whatever the header says.
+ */
+export const attributed = ({
+  principal,
+  onBehalfOf,
+}: {
+  readonly principal: Principal | undefined
+  readonly onBehalfOf: string | null
+}): Result.Result<Principal | undefined, InvalidInput> => {
+  if (principal?.service !== true || onBehalfOf === null) return Result.succeed(principal)
+
+  if (!isAttributedSubject(onBehalfOf))
+    return Result.fail(
+      InvalidInput.make({
+        code: "decode",
+        issues: [{ path: ON_BEHALF_OF_HEADER, message: "Expected user:<id> or api-key:<id>" }],
+      }),
+    )
+
+  return Result.succeed({ ...principal, caller: User.make({ subject: onBehalfOf }) })
 }
 
 /** Proves a credential for a deployment. */
@@ -164,6 +214,7 @@ export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) 
       tenant: row.tenant,
       caller: User.make({ subject: row.subject }),
       expiresAt: (yield* Clock.currentTimeMillis) + session,
+      service: row.subject === CONTROL_PLANE_SUBJECT,
     } satisfies Principal
   })
 
@@ -192,6 +243,7 @@ export const authenticator = Effect.fnUntraced(function* (options: EdgeOptions) 
         onNone: () => Number.MAX_SAFE_INTEGER,
         onSome: (at) => at.epochMilliseconds,
       }),
+      service: false,
     } satisfies Principal
   })
 

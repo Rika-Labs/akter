@@ -4,18 +4,26 @@
 
 ## Local stack
 
-From the repository root:
+The edge refuses to start without `EDGE_SIGNING_KEYS`, a JSON array of Ed25519 private JWKs `{ kid, x, d }`. Generate a local-only key into your shell, never into a committed file, and don't print or paste it into issues or logs:
+
+```sh
+export EDGE_SIGNING_KEYS="$(bun -e 'const k = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign"]); const { x, d } = await crypto.subtle.exportKey("jwk", k.privateKey); console.log(JSON.stringify([{ kid: `local-${crypto.randomUUID()}`, x, d }]))')"
+```
+
+Then, from the repository root and in the same shell:
 
 ```sh
 bun run dev
 ```
 
-This runs the three services in `infra/local/compose.yaml`: Postgres 18.6 on `127.0.0.1:55431`, the API on `http://localhost:3001`, and the readable email outbox on `http://localhost:3002`. Docker must be running. The API applies Better Auth and control-plane migrations before `/ready` succeeds; the mailbox starts after the API is ready. Source mounts reload the API and mailbox after an edit. Postgres uses a named volume, so accounts survive restarts. The default signing secret and database password are deliberately local-only credentials, never production settings.
+This runs `infra/local/compose.yaml`: Postgres 18.6 on `127.0.0.1:55431`, a one-shot `application-database` job that creates the `local_app` database runners migrate into, the API on `http://localhost:3001`, the readable email outbox on `http://localhost:3003`, and the edge on `http://localhost:3002`. Docker must be running. The API is the stack's builder: with `RUNNER_BUILD_CONTEXT` (the repository, mounted read-only at `/source`) and `RUNNER_BUILD_DOCKERFILE` set, every new deployment and redeploy builds the example runner image (`infra/local/runner/Dockerfile`) with the API image's Docker CLI and BuildKit, tags it `akter-build:<deployment id>`, passes the commit's short SHA as `RUNNER_VERSION`, and rolls out the built image id, so nobody records a build by hand. Production refuses `RUNNER_BUILD_CONTEXT`; CI builds hosted images. The API applies Better Auth and control-plane migrations before `/ready` succeeds; the mailbox and the edge start after the API is ready. Source mounts reload the API and mailbox after an edit. Postgres uses a named volume, so accounts and published edge keys survive restarts. The default signing secret, database password and generated edge key are deliberately local-only credentials, never production settings.
+
+The edge publishes each key's public half at startup and signs only with a key published for `EDGE_PUBLICATION_LEAD`, default `5 minutes`, the runners' default key-set refresh interval. Until then the edge refuses authenticated requests with `ActorUnavailable` ("No signing key is usable"), so a fresh key leaves the stack unable to serve deployments for five minutes. Reuse the same `EDGE_SIGNING_KEYS` value across restarts: its `kid` stays published in the volume and keeps its age, while a new key restarts the wait. A `kid` names one key for good, so never put a different key under a published `kid`; the edge refuses to start. For local development only, you may shorten the lead, for example `EDGE_PUBLICATION_LEAD="0 seconds" bun run dev`. Fresh runners fetch the published key set, but warm runners rate-limit unknown-key refreshes to once per minute and can temporarily refuse a rotated key. Keep the default in production and ensure the lead covers every runner's configured refresh interval.
 
 If those ports are already in use, choose free ones first. On a shared Docker daemon use a unique Compose project and never remove somebody else's containers or volumes:
 
 ```sh
-CONTROL_PLANE_PG_PORT=55431 API_HTTP_PORT=55432 OUTBOX_HTTP_PORT=55433 \
+CONTROL_PLANE_PG_PORT=55431 API_HTTP_PORT=55432 EDGE_HTTP_PORT=55434 OUTBOX_HTTP_PORT=55433 \
   API_ORIGIN=http://localhost:55432 \
   docker compose -p akter-cp-local -f infra/local/compose.yaml up --build
 ```
@@ -50,7 +58,7 @@ API keys are organization-owned, hashed by the Better Auth plugin, and shown in 
 
 Implemented: session/me, profile, organizations, members and role changes, invitations, API keys, projects and their three initial environments, environment creation/deletion, user settings, pins, notification settings, and paged organization audit logs. Project/environment changes and API-key revocations commit atomically with their audit entries. Better Auth changes write `requested` and completion entries around Better Auth's separate transaction; an uncompleted request has an unknown outcome, not a fabricated success.
 
-Deployments, runtime inspection/SSE, regions and databases, endpoints, environment variables, domains, integrations, usage and Stripe billing have final schemas but return typed HTTP 501 `NotImplemented`. The API does not manufacture metrics or provider data. Runtime routes will reach runners through the hosted edge, not with customer credentials sent directly to runners.
+Deployment creation, build results, lifecycle reads, redeploy and rollback are implemented through durable actors. Runtime command sending, actor inspection and actor-job reads reach runners only through the edge with a deployment-bound credential, never the caller's session or key. A command is attributed to the signed-in user (`user:<id>`) or API key (`api-key:<id>`) that sent it; the edge signs that identity as the runner's caller only on the control plane's own credential. Inspection reports `null` for what the runner's inspector does not hold. Runtime inspection/SSE surfaces that require unavailable telemetry, regions and databases, endpoints, environment variables, domains, integrations, usage and Stripe billing retain typed HTTP 501 `NotImplemented` responses. The API does not manufacture metrics or provider data.
 
 ## Email
 
@@ -73,3 +81,10 @@ TEST_DATABASE_URL=postgres://project:project@127.0.0.1:55430/postgres \
 ```
 
 The HTTP suite exercises actual Bun HTTP and Postgres: verification through stored email, wrong passwords, organization/invitation isolation, control-plane persistence, key hashing, scope, expiry, denied writes, audit rollback and immediate revocation. The OIDC suite runs discovery, redirects, PKCE, signed tokens and userinfo through an actual test IdP; forged/replayed state, invalid tokens, cross-domain identities, unverified providers and non-Enterprise sign-ins are refused. Real Neki, AWS, SES, GitHub/Google and SAML support remain unverified.
+
+The local deployment-stack E2E builds two example runner images, migrates isolated databases, starts actual Docker runners and a real edge process, then deploys, rolls forward, rolls back, sleeps and wakes through the public API. It inspects a live actor's state and generation, checks that commands reach the actor as the signed-in user and that a tenant credential cannot claim that user, and runs a second stack whose API builds every deployment itself, through a redeploy of a rollback. It requires Docker and a host Postgres port reachable by containers through `host.docker.internal`; it uses no provider credentials and removes only the exact containers and databases it creates.
+
+```sh
+TEST_DATABASE_URL=postgres://project:project@127.0.0.1:55433/project \
+  bun run --cwd apps/api test:stack
+```

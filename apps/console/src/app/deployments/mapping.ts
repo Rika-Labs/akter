@@ -15,6 +15,8 @@ import {
   DeploymentsPage,
   type DeployStatus,
   type Phase,
+  type RolledBack,
+  type RolledBackFrom,
 } from "./model.ts"
 
 const statuses: Readonly<Record<DeploymentStatus, DeployStatus>> = {
@@ -87,9 +89,51 @@ export const toPhases = (steps: DeploymentDetail["steps"]): ReadonlyArray<Phase>
   })
 }
 
+const restorable: ReadonlySet<DeploymentStatus> = new Set(["live", "drained", "rolled-back"])
+
 /**
- * One deployment in detail: its steps, runners and build output. `rollbackTo` is always `null`:
- * the contract names no rollback destination, so the console offers none.
+ * The deployments a rollback from `current` can restore, newest first. A rollback is offered only
+ * from the live deployment, and may restore any earlier deployment of its environment that reached
+ * `live` (status `live`, `drained` or `rolled-back`); a failed or still rolling deployment, a
+ * deployment of another environment, `current` itself and anything created after it never qualify.
+ */
+export const rollbackCandidates =
+  (current: DeploymentSummary) =>
+  (history: ReadonlyArray<DeploymentSummary>): ReadonlyArray<DeploymentSummary> =>
+    current.status !== "live"
+      ? []
+      : history
+          .filter(
+            (candidate) =>
+              candidate.id !== current.id &&
+              candidate.environment === current.environment &&
+              restorable.has(candidate.status) &&
+              DateTime.toEpochMillis(candidate.createdAt) <
+                DateTime.toEpochMillis(current.createdAt),
+          )
+          .sort(newestFirst)
+
+const toRolledBackFrom = (
+  id: DeploymentSummary["rolledBackFrom"],
+  history: ReadonlyArray<DeploymentSummary>,
+): RolledBackFrom | null => {
+  if (id === null) return null
+  const origin = history.find((deployment) => deployment.id === id)
+  return origin === undefined ? { id } : { id, commit: shortCommit(origin.commitSha) }
+}
+
+/** The deployment a rollback created, with the reference to the deployment it redeploys. */
+export const toRolledBack =
+  (now: DateTime.Utc) =>
+  (detail: DeploymentDetail): RolledBack => ({
+    deploy: toDeployRecord(now)(detail),
+    rolledBackFrom: toRolledBackFrom(detail.rolledBackFrom, []),
+  })
+
+/**
+ * One deployment in detail: its steps, runners and build output. `history` is the deployments the
+ * console has read for the environment; it supplies the rollback targets and resolves the commit of
+ * `rolledBackFrom` when that deployment is in it.
  */
 export const toDeploymentPage =
   (now: DateTime.Utc) =>
@@ -97,6 +141,7 @@ export const toDeploymentPage =
     input: Readonly<{
       detail: DeploymentDetail
       log: BuildLog
+      history: ReadonlyArray<DeploymentSummary>
     }>,
   ): DeploymentPage =>
     DeploymentPage.make({
@@ -106,9 +151,10 @@ export const toDeploymentPage =
         id: runner.id,
         region: runner.region,
         actors: runner.actorCount,
-        cpu: `${String(Math.round(runner.cpuPercent))}%`,
+        cpu: runner.cpuPercent === null ? "—" : `${String(Math.round(runner.cpuPercent))}%`,
         health: runner.health,
       })),
       log: input.log.lines.map((line) => line.text).join("\n"),
-      rollbackTo: null,
+      rollbackTargets: rollbackCandidates(input.detail)(input.history).map(toDeployRecord(now)),
+      rolledBackFrom: toRolledBackFrom(input.detail.rolledBackFrom, input.history),
     })

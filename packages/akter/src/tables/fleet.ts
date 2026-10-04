@@ -1,4 +1,6 @@
 import { getTableColumns, sql } from "drizzle-orm"
+import { sha256Bytes } from "../identity/digest.ts"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import { Effect, Predicate, Schema, Stream } from "effect"
 import { FLEET_PAGE_DEFAULT, FleetPageJson, fleetFilterText } from "../client/fleet-page.ts"
 import { InternalActors } from "../runtime/actors.ts"
@@ -356,18 +358,20 @@ const view = <
 
   const where = definition.where
 
-  const definitionHash = new Bun.CryptoHasher("sha256")
-    .update(
-      canonical({
-        source: source.name,
-        owner: [routingColumn, tenantColumn],
-        where: (where ?? null) as Canonical,
-        groupBy: groupColumns,
-        select: aggregates.map(({ key, kind, column }) => ({ key, kind, column })),
-        table: tableName,
-      }),
-    )
-    .digest("hex")
+  const definitionHash = bytesToHex(
+    sha256Bytes(
+      new TextEncoder().encode(
+        canonical({
+          source: source.name,
+          owner: [routingColumn, tenantColumn],
+          where: (where ?? null) as Canonical,
+          groupBy: groupColumns,
+          select: aggregates.map(({ key, kind, column }) => ({ key, kind, column })),
+          table: tableName,
+        }),
+      ),
+    ),
+  )
 
   return {
     name,

@@ -33,6 +33,7 @@ import type { ConformanceCase, ConformanceSuite } from "../conformance.ts"
 import { gate, HttpRoom, receipts, runs, tenantOf, httpSuite } from "./http.ts"
 import { endReason, opened, serveSockets, socket } from "./transports/wire.ts"
 import { transportsSuite } from "./transports/actors.ts"
+import { serveFetch, silentListener } from "./platform.ts"
 import { serve } from "../../serve/layer.ts"
 import { Auth } from "../../runtime/index.ts"
 
@@ -178,7 +179,7 @@ const sendTo = (client: HttpClient.HttpClient, url: string) => (request: Sent) =
     return { status: response.status, body: text === "" ? undefined : yield* decodeJson(text) }
   }).pipe(Effect.orDie)
 
-/** Serves `HttpRoom` with `auth` from a real listening Bun server for the rest of the scope. */
+/** Serves `HttpRoom` with `auth` from a real listening server for the rest of the scope. */
 const serveAsserted = Effect.fnUntraced(function* (
   auth: AuthProvider<HttpClient.HttpClient> | AuthProvider,
 ): Effect.fn.Return<
@@ -199,19 +200,10 @@ const serveAsserted = Effect.fnUntraced(function* (
 
   const web = HttpRouter.toWebHandler(app, { disableLogger: true })
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: (request) => web.handler(request),
-  })
+  yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
+  const port = yield* serveFetch((request) => web.handler(request))
 
-  yield* Effect.addFinalizer(() =>
-    Effect.promise(() => server.stop(true)).pipe(
-      Effect.andThen(Effect.promise(() => web.dispose())),
-    ),
-  )
-
-  const url = `http://127.0.0.1:${server.port}`
+  const url = `http://127.0.0.1:${port}`
 
   return {
     url,
@@ -293,16 +285,10 @@ const asserted = (server: AssertedServer, request: Sent, assertion: string) =>
 const keySetServer = Effect.fnUntraced(function* (initial: ReadonlyArray<EdgeKey>) {
   let keys = initial
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => Response.json({ keys: keys.map((key) => key.publicKey) }),
-  })
-
-  yield* Effect.addFinalizer(() => Effect.promise(() => server.stop(true)))
+  const port = yield* serveFetch(() => Response.json({ keys: keys.map((key) => key.publicKey) }))
 
   return {
-    url: new URL(`http://127.0.0.1:${server.port}/keys`),
+    url: new URL(`http://127.0.0.1:${port}/keys`),
     publish: (next: ReadonlyArray<EdgeKey>) =>
       Effect.sync(() => {
         keys = next
@@ -877,16 +863,10 @@ export const delayingProxy = Effect.fnUntraced(function* (target: string) {
       })
     }).pipe(Effect.orDie)
 
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: (request) => Effect.runPromiseWith(context)(hold(request)),
-  })
-
-  yield* Effect.addFinalizer(() => Effect.promise(() => server.stop(true)))
+  const port = yield* serveFetch((request) => Effect.runPromiseWith(context)(hold(request)))
 
   return {
-    url: `http://127.0.0.1:${server.port}`,
+    url: `http://127.0.0.1:${port}`,
     delay: (id: string, ms: number) => Effect.sync(() => delays.set(id, ms)),
     /** Answers the next `times` requests for `path` with 503. */
     fail: (path: string, times: number) => Effect.sync(() => failures.set(path, times)),
@@ -991,14 +971,9 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const edge = yield* (yield* edgeOf(environment.edge)).start({ primaryRegion: REGION })
 
-          const silent = Bun.listen({
-            hostname: "127.0.0.1",
-            port: 0,
-            socket: { data: () => undefined },
-          })
+          const silent = yield* silentListener
 
-          yield* Effect.addFinalizer(() => Effect.sync(() => silent.stop(true)))
-          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${silent.port}` })
+          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${silent}` })
 
           const host = new URL(edge.url).host
           const oversized = yield* socket(host, "oversized")
@@ -1292,15 +1267,9 @@ export const edgeConformance: ReadonlyArray<ConformanceCase> = [
             }),
           })
 
-          const hole = Bun.listen({
-            hostname: "127.0.0.1",
-            port: 0,
-            socket: { data: () => undefined },
-          })
-
-          yield* Effect.addFinalizer(() => Effect.sync(() => hole.stop(true)))
+          const hole = yield* silentListener
           yield* edge.addRunner({ region: REGION, url: `http://${host}`, basePath: "/api" })
-          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${hole.port}` })
+          yield* edge.addRunner({ region: REGION, url: `http://127.0.0.1:${hole}` })
 
           const tenant = yield* tenantOf
           const key = yield* edge.issueApiKey({ tenant, subject: "alice" })

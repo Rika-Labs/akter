@@ -2,6 +2,7 @@ import { eq, inArray, Param, SQL, sql as drizzleSql, StringChunk } from "drizzle
 import { index, integer, pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 import { Actor } from "../../index.ts"
 import type { AnyOwnedTable, ScopedRows } from "../../tables/owned.ts"
 import { ActorTest } from "../actor-test.ts"
@@ -346,8 +347,9 @@ const NotebookReads = Notebook.toQueryLayer(
     }),
     QueryWrite: Effect.fnUntraced(function* () {
       const rows = (yield* Notebook.Read).rows(notes) as ScopedRows<typeof notes>
+      const attempted = rows.insert({ id: "from-query", body: "from-query" })
 
-      yield* rows.insert({ id: "from-query", body: "from-query" })
+      yield* attempted
     }),
     Catalog: Effect.fnUntraced(function* (left) {
       return yield* (yield* Notebook.Read).group((db) => {
@@ -495,10 +497,11 @@ export const tablesLayer = (fixture: TablesFixture) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
 
-      const existing = yield* sql<{ relname: string }>`
-        SELECT relname FROM pg_class WHERE relname = 'conformance_notes'`
+      const existing = yield* retryPoolRefusal(sql<{ relname: string }>`
+        SELECT relname FROM pg_class WHERE relname = 'conformance_notes'`)
 
-      if (existing.length === 0) for (const statement of tablesDdl) yield* sql.unsafe(statement)
+      if (existing.length === 0)
+        for (const statement of tablesDdl) yield* retryPoolRefusal(sql.unsafe(statement))
 
       return Layer.mergeAll(NotebookLive(fixture), NotebookReads, ShelfLive)
     }).pipe(Effect.orDie),
