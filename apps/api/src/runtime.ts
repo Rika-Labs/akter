@@ -12,6 +12,7 @@ import {
   NotFound,
   NotImplemented,
   QuotaExceeded,
+  QuotaUnbound,
   SpendLimitExceeded,
   StorageQuotaExceeded,
   RunnerDefect,
@@ -80,7 +81,8 @@ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json)
  * reason answered 4xx reaches the console as a `CommandRefused` carrying it;
  * anything else is an outage or a defect. The edge's usage refusals decode
  * straight into the API's errors, which share the framework's tags and
- * payloads, so no caller reads the envelope.
+ * payloads, so no caller reads the envelope. The edge serves its own
+ * `QuotaUnbound` with a 503, so it is read before the status says outage.
  */
 const Reason = Schema.Union([
   Schema.TaggedStruct("NotCreated", {}),
@@ -92,6 +94,7 @@ const Reason = Schema.Union([
   SpendLimitExceeded,
   ConnectionLimitExceeded,
   StorageQuotaExceeded,
+  QuotaUnbound,
 ])
 
 const ActorErrorBody = Schema.TaggedStruct("ActorError", { reason: Reason })
@@ -254,7 +257,10 @@ export const makeRuntime = Effect.gen(function* () {
     const body = Option.getOrUndefined(decodeJson(text))
     if (Schema.is(DefectBody)(body)) return yield* RunnerDefect.make({})
 
-    if ([502, 503, 504].includes(response.status))
+    if (
+      [502, 503, 504].includes(response.status) &&
+      Option.getOrUndefined(decodeActorError(body))?.reason._tag !== "QuotaUnbound"
+    )
       return yield* Unavailable.make({
         message: "The deployment is temporarily unavailable",
         retryAfterSeconds: 1,
@@ -431,6 +437,7 @@ export const makeRuntime = Effect.gen(function* () {
         SpendLimitExceeded: (refused) => refused,
         ConnectionLimitExceeded: (refused) => refused,
         StorageQuotaExceeded: (refused) => refused,
+        QuotaUnbound: (refused) => refused,
       }),
     )
   })

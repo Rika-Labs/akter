@@ -11,7 +11,7 @@ import {
 } from "@akter/cloud-api"
 import { InvalidInput, RunnerAtCapacity, SpendLimitExceeded } from "@rikalabs/akter/client"
 import { DateTime, Effect, Schema, Stream } from "effect"
-import { ProjectId } from "@akter/cloud-api"
+import { KnownPlan, ProjectId } from "@akter/cloud-api"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { quotaMessage } from "../quota/errors.ts"
 import { loadCommands, openTurns, sendCommand, streamTurns } from "./client.ts"
@@ -86,7 +86,7 @@ const me = {
         id: "org_1",
         name: "Acme",
         slug: "acme",
-        plan: "pro",
+        plan: KnownPlan.make({ id: "pro" }),
         createdAt: "2026-10-01T00:00:00.000Z",
       },
       role: "admin",

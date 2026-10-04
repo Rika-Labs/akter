@@ -79,7 +79,9 @@ export type CapName = "commands" | "spend" | "connections" | "storage"
  * usage has reached the limit, and `refusing` that the edge would refuse the
  * next new command (for `connections`, the next new connection). `reason` is
  * `unbound` when the edge refuses every metered request regardless of usage,
- * because the organization has no billing account.
+ * because the organization has no billing account. The `commands` cap, and
+ * only it, carries `unitsPerCommand` so a reader converts its units to
+ * commands without knowing the weights.
  */
 export interface CapState {
   readonly cap: CapName
@@ -88,6 +90,7 @@ export interface CapState {
   readonly atCap: boolean
   readonly refusing: boolean
   readonly reason?: "unbound"
+  readonly unitsPerCommand?: number
 }
 
 /** What edge admission reads about an organization in its current period. */
@@ -115,6 +118,7 @@ export const capStates = Effect.fnUntraced(function* (usage: AdmissionUsage) {
       used: usage.usedUnits,
       atCap: units !== null && usage.usedUnits >= units,
       refusing: refusesUnits({ ...usage, requestedUnits: COMMAND_UNITS }),
+      unitsPerCommand: COMMAND_UNITS,
     },
     {
       cap: "spend",
@@ -199,7 +203,7 @@ export const organizationCaps = Effect.fnUntraced(function* (organizationId: str
     })
 
     return [
-      unbound("commands", usedUnits),
+      { ...unbound("commands", usedUnits), unitsPerCommand: COMMAND_UNITS },
       unbound("spend", 0),
       unbound("connections", openConnections),
       unbound("storage", largestSampleBytes ?? 0),

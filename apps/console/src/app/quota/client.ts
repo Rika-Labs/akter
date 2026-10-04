@@ -19,8 +19,10 @@ export const organizationCap: Effect.Effect<Option.Option<CapNotice>> = Effect.s
           [api.billing.get({ params }), api.usage.get({ params, query: {} })],
           { concurrency: 2 },
         )
+        const { plan } = billing
+        if (!("id" in plan)) return Option.none()
         return Option.fromUndefinedOr(
-          capReached({ billing: toBilling(billing), usage: toUsage(usage) }),
+          capReached({ billing: toBilling({ ...billing, plan }), usage: toUsage(usage) }),
         )
       }).pipe(Effect.orElseSucceed(Option.none)),
 )

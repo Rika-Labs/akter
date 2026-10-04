@@ -1,4 +1,10 @@
-import { Forbidden, NotFound, type NotFoundResource, NotImplemented } from "@akter/cloud-api"
+import {
+  Forbidden,
+  KnownPlan,
+  NotFound,
+  type NotFoundResource,
+  NotImplemented,
+} from "@akter/cloud-api"
 
 /** What a mocked API answers for one path: a JSON body and its status. */
 export interface MockedAnswer {
@@ -61,7 +67,7 @@ export const signedIn = (project: Readonly<{ status: "empty" | "live"; slug?: st
             id: "org_1",
             name: "Acme",
             slug: "acme",
-            plan: "pro",
+            plan: KnownPlan.make({ id: "pro" }),
             createdAt: "2026-10-01T00:00:00.000Z",
           },
           role: "owner",

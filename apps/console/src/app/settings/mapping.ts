@@ -3,6 +3,7 @@ import type {
   ApiKey as CloudApiKey,
   AuditEntry as CloudAuditEntry,
   BillingSummary,
+  Plan,
   Domain as CloudDomain,
   EnvVariable,
   Environment,
@@ -81,7 +82,7 @@ export const toOrganizationSummary = (input: {
   id: input.organization.id,
   name: input.organization.name,
   slug: input.organization.slug,
-  plan: input.organization.plan,
+  plan: "id" in input.organization.plan ? input.organization.plan.id : "unbound",
   role: input.role,
 })
 
@@ -196,7 +197,7 @@ export const toRegionChoices = (input: {
   return [...inUse, ...available]
 }
 
-export const toBilling = (billing: BillingSummary): Billing => ({
+export const toBilling = (billing: BillingSummary & { readonly plan: Plan }): Billing => ({
   plan: {
     id: billing.plan.id,
     name: billing.plan.name,

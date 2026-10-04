@@ -33,7 +33,9 @@ export const loadInvitation = (id: string): Effect.Effect<Loaded<InvitationPage>
         id,
         organization: preview.organization.name,
         members: preview.organization.memberCount,
-        plan: capitalized(preview.organization.plan),
+        plan: capitalized(
+          "id" in preview.organization.plan ? preview.organization.plan.id : "unbound",
+        ),
         inviter: preview.inviterName,
         email: preview.email,
         role: capitalized(preview.role),

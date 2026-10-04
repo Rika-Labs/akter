@@ -428,7 +428,7 @@ it.layer(TestLive, { excludeTestServices: true })(
             cookie: alice.cookie,
           })
           expect(billing.status).toBe(200)
-          expect((yield* read(billing, Cloud.BillingSummary)).plan.id).toBe("free")
+          expect((yield* read(billing, Cloud.BillingSummary)).plan).toMatchObject({ id: "free" })
           const blockedAuthMutation = yield* request({
             path: "/auth/organization/create",
             method: "POST",

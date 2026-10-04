@@ -308,12 +308,34 @@ export class StorageQuotaExceeded extends Schema.TaggedError<StorageQuotaExceede
   { httpApiStatus: 429 },
 ) {}
 
-/** The edge's usage refusals of a new command, each with the framework's tag and payload. */
+/**
+ * The edge refused a metered command because it cannot bill it: no
+ * organization is bound to the deployment's tenant (`tenant`), the
+ * organization has no billing account (`account`), or its stored plan is not
+ * in the pricing configuration (`plan`); answered 402. It carries the edge's
+ * own `QuotaUnbound` tag and payload. Retrying will not succeed until the
+ * binding is fixed, which is why it is not an `Unavailable`.
+ */
+export class QuotaUnbound extends Schema.TaggedError<QuotaUnbound>()(
+  "QuotaUnbound",
+  {
+    deployment: Schema.String,
+    tenant: Schema.String,
+    reason: Schema.Literals(["tenant", "account", "plan"]),
+  },
+  { httpApiStatus: 402 },
+) {}
+
+/**
+ * The edge's usage refusals of a new command: the framework's four, each with
+ * its tag and payload, and the edge's own `QuotaUnbound`.
+ */
 export const QuotaErrors = [
   QuotaExceeded,
   SpendLimitExceeded,
   ConnectionLimitExceeded,
   StorageQuotaExceeded,
+  QuotaUnbound,
 ] as const
 
 export const JobTypeStats = Schema.Struct({

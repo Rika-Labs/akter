@@ -1,7 +1,17 @@
 import { DateTime, Effect, Exit, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { ApiKey, CreateApiKey, CreatedApiKey, CreateInvitation, Me } from "./identity.ts"
+import {
+  ApiKey,
+  CreateApiKey,
+  CreatedApiKey,
+  CreateInvitation,
+  KnownPlan,
+  Me,
+  Organization,
+  UnboundPlan,
+  UnknownPlan,
+} from "./identity.ts"
 
 const decode = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   Effect.runSync(
@@ -22,7 +32,7 @@ const organization = {
   id: "org_1",
   name: "Acme",
   slug: "acme",
-  plan: "pro",
+  plan: KnownPlan.make({ id: "pro" }),
   createdAt: "2026-10-01T12:00:00.000Z",
 }
 
@@ -42,6 +52,26 @@ const key = {
 }
 
 describe("identity models", () => {
+  it("carries an unbound, known or unknown plan, keeping an unknown plan's stored id", () => {
+    for (const plan of [
+      UnboundPlan.make({}),
+      KnownPlan.make({ id: "team" }),
+      UnknownPlan.make({ id: "legacy" }),
+    ])
+      expect(encode(Organization, decode(Organization, { ...organization, plan }))).toEqual({
+        ...organization,
+        plan,
+      })
+
+    expect(
+      rejects(Organization, {
+        ...organization,
+        plan: { ...KnownPlan.make({ id: "pro" }), id: "legacy" },
+      }),
+    ).toBe(true)
+    expect(rejects(Organization, { ...organization, plan: "free" })).toBe(true)
+  })
+
   it("lets an API key's Me have no person but never lets the field disappear", () => {
     const base = {
       identityKind: "api-key",

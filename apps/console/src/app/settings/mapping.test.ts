@@ -2,6 +2,7 @@ import {
   ApiKey,
   AuditEntry,
   BillingSummary,
+  Plan,
   EnvVariable,
   Integration,
   Invitation,
@@ -45,6 +46,8 @@ import {
   toVariable,
 } from "./mapping.ts"
 import { emptySettings } from "./model.ts"
+
+const BoundBillingSummary = Schema.Struct({ ...BillingSummary.fields, plan: Plan })
 
 const decode =
   <T, E>(schema: Schema.Codec<T, E>) =>
@@ -273,7 +276,7 @@ describe("billing", () => {
   it("keeps cents whole and leaves a missing card, email and renewal null", () =>
     run(
       Effect.gen(function* () {
-        const summary = yield* decode(BillingSummary)({
+        const summary = yield* decode(BoundBillingSummary)({
           plan: {
             id: "free",
             name: "Free",
@@ -308,7 +311,7 @@ describe("billing", () => {
   it("keeps the billed plan apart from the plan whose limits apply while payment fails", () =>
     run(
       Effect.gen(function* () {
-        const summary = yield* decode(BillingSummary)({
+        const summary = yield* decode(BoundBillingSummary)({
           plan: {
             id: "free",
             subscribedId: "team",

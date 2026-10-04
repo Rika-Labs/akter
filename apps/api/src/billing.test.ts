@@ -34,6 +34,9 @@ const pricing: PricingConfig = {
   ),
 }
 
+/** A billing summary of an organization with a billing account, whose plan has an id. */
+const BoundSummary = Schema.Struct({ ...Cloud.BillingSummary.fields, plan: Cloud.Plan })
+
 const webhookSecret = Redacted.make(localBillingWebhookSecret)
 
 const PlanChange = Schema.Struct({
@@ -134,7 +137,7 @@ const world = Effect.gen(function* () {
   const summary = Effect.fn(function* (org: string, cookie: string) {
     const response = yield* request({ path: `/api/organizations/${org}/billing`, cookie })
     expect(response.status).toBe(200)
-    return yield* read(response, Cloud.BillingSummary)
+    return yield* read(response, BoundSummary)
   })
 
   const membershipPlan = Effect.fn(function* (org: string, cookie: string) {
@@ -387,7 +390,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
           expect(free.spendLimit).toEqual({ limitCents: null, currentSpendCents: 0 })
           expect((yield* w.summary(org, bob.cookie)).plan.id).toBe("free")
           expect((yield* w.request({ path: base, key })).status).toBe(200)
-          expect(yield* w.membershipPlan(org, alice.cookie)).toBe("free")
+          expect(yield* w.membershipPlan(org, alice.cookie)).toEqual(
+            Cloud.KnownPlan.make({ id: "free" }),
+          )
 
           const denied = yield* Effect.forEach(
             [{ cookie: bob.cookie }, { cookie: outsider.cookie }, { key }, {}],
@@ -606,7 +611,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             expiryMonth: 11,
             expiryYear: 2037,
           })
-          expect(yield* w.membershipPlan(org, bob.cookie)).toBe("pro")
+          expect(yield* w.membershipPlan(org, bob.cookie)).toEqual(
+            Cloud.KnownPlan.make({ id: "pro" }),
+          )
           expect(yield* w.events(org)).toEqual([
             { event_id: created, event_type: "customer.subscription.created" },
           ])
@@ -782,7 +789,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             id: "team",
             basePriceCents: 24_900,
           })
-          expect(yield* w.membershipPlan(org, alice.cookie)).toBe("team")
+          expect(yield* w.membershipPlan(org, alice.cookie)).toEqual(
+            Cloud.KnownPlan.make({ id: "team" }),
+          )
           const upgradeRetry = yield* w.request({
             path: `${base}/plan`,
             method: "POST",
@@ -853,7 +862,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             subscription_id: subscription.subscriptionId,
           })
           expect((yield* w.summary(org, alice.cookie)).plan.id).toBe("free")
-          expect(yield* w.membershipPlan(org, bob.cookie)).toBe("free")
+          expect(yield* w.membershipPlan(org, bob.cookie)).toEqual(
+            Cloud.KnownPlan.make({ id: "free" }),
+          )
 
           yield* completeLocalCheckout(sessionIdOf(proUrl)).pipe(Effect.orDie)
           yield* w.deliver(org, "invoice.paid", {
@@ -895,7 +906,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             subscription_id: null,
           })
           expect((yield* w.summary(org, alice.cookie)).plan.id).toBe("free")
-          expect(yield* w.membershipPlan(org, alice.cookie)).toBe("free")
+          expect(yield* w.membershipPlan(org, alice.cookie)).toEqual(
+            Cloud.KnownPlan.make({ id: "free" }),
+          )
         }),
       { timeout: 120_000 },
     )
@@ -940,7 +953,9 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             customer_id: customerB.customer_id,
           })
           expect((yield* w.summary(b, bob.cookie)).plan.id).toBe("free")
-          expect(yield* w.membershipPlan(b, bob.cookie)).toBe("free")
+          expect(yield* w.membershipPlan(b, bob.cookie)).toEqual(
+            Cloud.KnownPlan.make({ id: "free" }),
+          )
 
           const sessionsB = yield* w.sessions(b)
           const limitBefore = (yield* w.account(b))?.spend_limit_cents ?? null
@@ -1269,7 +1284,14 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             sampledAt: DateTime.makeUnsafe("2026-09-11T05:00:00Z"),
           })
           const caps = [
-            { cap: "commands", limit: null, used: 50, atCap: false, refusing: false },
+            {
+              cap: "commands",
+              limit: null,
+              used: 50,
+              atCap: false,
+              refusing: false,
+              unitsPerCommand: 5,
+            },
             { cap: "spend", limit: 2_549, used: 2_500, atCap: false, refusing: true },
             { cap: "connections", limit: 5_000, used: 2, atCap: false, refusing: false },
             { cap: "storage", limit: null, used: 2_160_000_000_000, atCap: false, refusing: false },
@@ -1277,7 +1299,14 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
           expect(now.caps).toEqual(caps)
           expect((yield* w.summary(org, bob.cookie)).caps).toEqual(caps)
           expect((yield* w.summary(noise, outsider.cookie)).caps).toEqual([
-            { cap: "commands", limit: 5_000_000, used: 0, atCap: false, refusing: false },
+            {
+              cap: "commands",
+              limit: 5_000_000,
+              used: 0,
+              atCap: false,
+              refusing: false,
+              unitsPerCommand: 5,
+            },
             { cap: "spend", limit: null, used: 0, atCap: false, refusing: false },
             { cap: "connections", limit: 100, used: 1, atCap: false, refusing: false },
             { cap: "storage", limit: 500_000_000, used: 500_000_000, atCap: true, refusing: true },
@@ -1316,16 +1345,21 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
           })
 
           yield* w.sql`DELETE FROM cloud_billing_account WHERE organization_id = ${noise}`
-          expect((yield* w.summary(noise, outsider.cookie)).caps).toEqual(
-            (["commands", "spend", "connections", "storage"] as const).map((cap) => ({
-              cap,
-              limit: null,
-              used: { commands: 0, spend: 0, connections: 1, storage: 499_999_999 }[cap],
-              atCap: false,
-              refusing: true,
-              reason: "unbound",
-            })),
+          const unbound = yield* read(
+            yield* w.request({
+              path: `/api/organizations/${noise}/billing`,
+              cookie: outsider.cookie,
+            }),
+            Cloud.BillingSummary,
           )
+          expect(unbound.plan).toEqual(Cloud.UnboundPlan.make({}))
+          const refusedAll = { limit: null, atCap: false, refusing: true, reason: "unbound" }
+          expect(unbound.caps).toEqual([
+            { cap: "commands", ...refusedAll, used: 0, unitsPerCommand: 5 },
+            { cap: "spend", ...refusedAll, used: 0 },
+            { cap: "connections", ...refusedAll, used: 1 },
+            { cap: "storage", ...refusedAll, used: 499_999_999 },
+          ])
 
           yield* w.sql`UPDATE cloud_billing_account SET plan = 'platinum' WHERE organization_id = ${org}`
           for (const path of [
@@ -1351,6 +1385,99 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
           expect(empty.meters.find((candidate) => candidate.meter === "commands")).toMatchObject({
             used: 0,
             overageCostCents: 0,
+          })
+        }),
+      { timeout: 120_000 },
+    )
+
+    it.effect(
+      "keeps org context loading for an unknown or unbound plan, tells an unknown plan from an outage, and refuses its spend limit before storing it",
+      () =>
+        Effect.gen(function* () {
+          const w = yield* world
+          const alice = yield* w.signup("plans")
+          const org = yield* w.organization(alice, "Legacy plan")
+          const other = yield* w.organization(alice, "Unbound plan")
+          const base = `/api/organizations/${org}/billing`
+
+          const plans = Effect.gen(function* () {
+            const response = yield* w.request({ path: "/api/me", cookie: alice.cookie })
+            expect(response.status).toBe(200)
+            const me = yield* read(response, Cloud.Me)
+            return Object.fromEntries(
+              me.organizations.map(({ organization }) => [organization.id, organization.plan]),
+            )
+          })
+          const activate = Effect.fn(function* (organizationId: string) {
+            const response = yield* w.request({
+              path: "/api/me/active-organization",
+              method: "PUT",
+              cookie: alice.cookie,
+              body: { organizationId },
+            })
+            expect(response.status).toBe(200)
+            return (yield* read(response, Cloud.OrganizationMembership)).organization.plan
+          })
+          const limit = (limitCents: number | null) =>
+            w.request({
+              path: `${base}/spend-limit`,
+              method: "PUT",
+              cookie: alice.cookie,
+              body: { limitCents },
+            })
+
+          expect(yield* plans).toEqual({
+            [org]: Cloud.KnownPlan.make({ id: "free" }),
+            [other]: Cloud.KnownPlan.make({ id: "free" }),
+          })
+          expect((yield* limit(1_234)).status).toBe(200)
+
+          yield* w.sql`UPDATE cloud_billing_account SET plan = 'legacy' WHERE organization_id = ${org}`
+          expect((yield* plans)[org]).toEqual(Cloud.UnknownPlan.make({ id: "legacy" }))
+          expect(yield* activate(org)).toEqual(Cloud.UnknownPlan.make({ id: "legacy" }))
+
+          for (const path of [base, `/api/organizations/${org}/usage`]) {
+            const refused = yield* w.request({ path, cookie: alice.cookie })
+            expect(refused.status).toBe(503)
+            expect(yield* read(refused, Cloud.Unavailable)).toMatchObject({
+              message: "The organization's plan legacy is not in the pricing configuration",
+              reason: "unknownPlan",
+            })
+          }
+
+          for (const cents of [99, null]) {
+            const refused = yield* limit(cents)
+            expect(refused.status).toBe(503)
+            expect(yield* read(refused, Cloud.Unavailable)).toMatchObject({ reason: "unknownPlan" })
+          }
+          expect(yield* w.account(org)).toMatchObject({ plan: "legacy", spend_limit_cents: 1_234 })
+          const [state] = yield* w.sql<{ readonly cents: number | null }>`
+            SELECT spend_limit_cents::float8 AS cents FROM cloud_billing_state
+            WHERE organization_id = ${org}
+          `
+          expect(state?.cents).toBe(1_234)
+
+          yield* w.sql`DELETE FROM cloud_billing_account WHERE organization_id = ${other}`
+          expect((yield* plans)[other]).toEqual(Cloud.UnboundPlan.make({}))
+          expect(yield* activate(other)).toEqual(Cloud.UnboundPlan.make({}))
+
+          const unbound = yield* w.request({
+            path: `/api/organizations/${other}/billing`,
+            cookie: alice.cookie,
+          })
+          expect(unbound.status).toBe(200)
+          const summary = yield* read(unbound, Cloud.BillingSummary)
+          expect(summary.plan).toEqual(Cloud.UnboundPlan.make({}))
+          expect(summary.paymentMethod).toBeNull()
+          expect(summary.spendLimit).toEqual({ limitCents: null, currentSpendCents: 0 })
+          expect(summary.caps?.find((state) => state.cap === "commands")).toEqual({
+            cap: "commands",
+            limit: null,
+            used: 0,
+            atCap: false,
+            refusing: true,
+            reason: "unbound",
+            unitsPerCommand: 5,
           })
         }),
       { timeout: 120_000 },

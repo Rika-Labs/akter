@@ -83,6 +83,30 @@ describe("errors", () => {
     expect(accepts("access_denied")).toBe(false)
   })
 
+  it("gives Unavailable a reason only from its closed set, and none for a generic outage", () => {
+    const codec = Schema.toCodecJson(Unavailable)
+    const outage = Effect.runSync(
+      Schema.encodeEffect(codec)(
+        Unavailable.make({ message: "No ready capacity", retryAfterSeconds: 1 }),
+      ),
+    )
+    const decodes = (input: Schema.Json) =>
+      Exit.isSuccess(
+        Effect.runSyncExit(
+          Schema.decodeEffect(Schema.fromJsonString(codec))(JSON.stringify(input)),
+        ),
+      )
+
+    expect(outage).not.toHaveProperty("reason")
+    expectRoundTrip(
+      Unavailable,
+      Unavailable.make({ message: "Unknown plan", retryAfterSeconds: 60, reason: "unknownPlan" }),
+    )
+    expect(
+      decodes({ ...(outage as { readonly [key: string]: Schema.Json }), reason: "outage" }),
+    ).toBe(false)
+  })
+
   it("can be failed with and recovered by tag", () => {
     const recovered = Effect.runSync(
       Effect.fail(NotFound.make({ resource: "domain", id: "d_9" })).pipe(
