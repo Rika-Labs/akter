@@ -22,7 +22,7 @@
 
 Temporary edge or capacity failure is `Unavailable` (503), with `retryAfterSeconds`. Command retries MUST retain their supplied `commandId`; a new id would be a new command. Invalid runner admission is a typed 4xx `CommandRefused`, not a 500; actor access denial maps to `Forbidden`, while a refused deployment credential remains `Unavailable` so an operator can repair rotation or reachability. The API's request timeout defaults to 35 seconds, leaving response slack around the edge's 30-second cold-start bound. Operators who change that edge bound must configure `RUNTIME_REQUEST_TIMEOUT_SECONDS` accordingly. A malformed runner response remains an opaque defect.
 
-Actor-mailbox backpressure also maps to `Unavailable`, including a runner's HTTP 429 `MailboxFull`. Keyed sends support the same JSON payload values as unkeyed sends. Durable client-key assignments currently have no cleanup; bounded retention remains required before claiming bounded control-plane command storage.
+Actor-mailbox backpressure also maps to `Unavailable`, including a runner's HTTP 429 `MailboxFull`. A remote runner `Defect` maps to an opaque, non-retryable 502 `RunnerDefect`; trace details and response bodies never reach the client. Keyed sends store only canonical payload hashes and retain expired keys as 410 tombstones for 30 days, so clients must not reuse a key for at least the retry window plus 30 days.
 
 ## Durable records behind it
 
