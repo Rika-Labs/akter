@@ -901,9 +901,24 @@ const unreportedInspector = (count: number) => ({
   turn: null,
   tables: null,
   receipts: [
-    { commandId: "cmd_first", command: "Increment", result: "Success", at: null, replayed: false },
+    {
+      commandId: "cmd_first",
+      command: "Increment",
+      result: "Success",
+      caller: { kind: "user", subject: "user:usr_ada", source: null },
+      at: null,
+      expiresAt: "2026-10-04T12:00:00.000Z",
+      replayed: false,
+    },
   ],
-  events: [{ name: "Incremented", cursor: "1", subscribers: null }],
+  events: [
+    {
+      name: "Incremented",
+      cursor: "1",
+      emittedAt: "2026-10-03T12:00:00.000Z",
+      subscribers: null,
+    },
+  ],
   jobs: [],
   connections: { sockets: null, feedCursor: "1" },
   properties: {
