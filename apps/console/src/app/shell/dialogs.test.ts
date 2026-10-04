@@ -86,7 +86,7 @@ describe("send command dialog", () => {
       Scene.expect(Scene.role("link", { name: "Open Billing" })).toExist(),
     ))
 
-  it("explains a command the edge couldn't bill, for each reason, with a link to Billing", () => {
+  it("explains a command the edge couldn't bill, linking to Billing only when it lacks an account", () => {
     const wording = {
       tenant:
         "This deployment isn’t linked to an organization Akter can bill, so the command wasn’t run. Sending it again won’t help until it is; contact support.",
@@ -101,11 +101,18 @@ describe("send command dialog", () => {
           view: (model: Model, h: HtmlBuilder<Message>) => view(model, h),
         },
         Scene.given(failed(QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }))),
-        Scene.expect(Scene.role("alert")).toHaveText(`${wording[reason]} Open Billing`),
-        Scene.expect(Scene.role("link", { name: "Open Billing" })).toHaveAttr(
-          "href",
-          "/settings/billing",
-        ),
+        ...(reason === "account"
+          ? [
+              Scene.expect(Scene.role("alert")).toHaveText(`${wording[reason]} Open Billing`),
+              Scene.expect(Scene.role("link", { name: "Open Billing" })).toHaveAttr(
+                "href",
+                "/settings/billing",
+              ),
+            ]
+          : [
+              Scene.expect(Scene.role("alert")).toHaveText(wording[reason]),
+              Scene.expect(Scene.role("link", { name: "Open Billing" })).toBeAbsent(),
+            ]),
       )
   })
 

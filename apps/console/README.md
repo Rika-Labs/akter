@@ -112,17 +112,20 @@ merely `atCap`), with one quiet notice: an organization without a billing accoun
 `plan` is `unbound`) reads as "Billing isn't set up", never as Free, and its usage is shown without
 any plan's allowances, prices or estimates; otherwise the command allowance, a tenant's storage
 sample at its cap, the spend limit, then connections, in that order. The command allowance is
-quoted in commands: the cap's units divided by its `unitsPerCommand`, a read weighing one unit.
+quoted in whole commands: the cap's units divided by its `unitsPerCommand` and rounded down, a
+read weighing one unit.
 Usage also shows the latest storage sample across serving deployments. A `503 Unavailable` whose
 `reason` is `unknownPlan` still loads Billing and Usage, which say calmly that the organization's
-plan isn't recognised and to contact support, and a spend limit refused for it reads as not saved.
+plan isn't recognised and to contact support, a spend limit refused for it reads as not saved, and
+the overview's one notice says new commands are refused, with no Billing link.
 Any other `503` from billing or usage is worded as billing being temporarily unreadable, not as a
 lost connection. Plan refusals (`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`,
 `StorageQuotaExceeded`) are read from the cloud API's own typed errors, or from a `CommandRefused`
 whose typed `reason` is one, and explained in place with a link to Billing; the console reads only
 errors the client decoded, never a payload by its shape. A `402 QuotaUnbound` (the edge has no
-organization, billing account or known plan to bill a command to) is worded by its `reason`,
-links to Billing and is never resent with the same command ID. In the send dialog every other
+organization, billing account or known plan to bill a command to) is worded by its `reason`, is
+never resent with the same command ID, and links to Billing only for a missing billing account;
+the other reasons say to contact support. In the send dialog every other
 `CommandRefused` reason has its own wording; it offers a resend with the same command ID only when
 the framework marks the reason retryable, and never for a spent command ID. A `NotFound` is worded from its closed `resource` set.
 

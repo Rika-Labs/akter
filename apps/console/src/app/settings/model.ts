@@ -169,7 +169,8 @@ export const Billing = S.Struct({
 })
 export type Billing = typeof Billing.Type
 
-const isUnboundPlan = S.is(UnboundPlan)
+/** Whether billing's plan is `unbound`: the organization has no billing account. */
+export const isUnboundPlan = S.is(UnboundPlan)
 
 /**
  * The plan billing prices the organization on, or undefined when it has no billing account. The

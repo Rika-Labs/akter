@@ -102,6 +102,15 @@ const freeBilling = {
   caps: caps({ plan: "free", commandUnits: 600_000 }),
 }
 
+/** An organization without a billing account, as billing reports it: no plan, limit or spend. */
+const unboundBilling = {
+  plan: UnboundPlan.make({}),
+  paymentMethod: null,
+  billingEmail: null,
+  spendLimit: { limitCents: null, currentSpendCents: 0 },
+  caps: unboundCaps,
+}
+
 /** The catalog the API serves; Team is renamed so a hardcoded plan name would show. */
 const catalog = {
   plans: [
@@ -575,13 +584,7 @@ test("names an unbound organization's plan as no billing and prices nothing for 
     "**/api/**",
     controlPlane({
       plan: "unbound",
-      billing: () => ({
-        plan: UnboundPlan.make({}),
-        paymentMethod: null,
-        billingEmail: null,
-        spendLimit: { limitCents: null, currentSpendCents: 0 },
-        caps: unboundCaps,
-      }),
+      billing: () => unboundBilling,
       usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
     }),
   )
@@ -640,6 +643,13 @@ test("says an unknown plan isn't recognised, calmly, while org context still loa
     page.getByText("This organization’s plan isn’t recognised. Contact support."),
   ).toBeVisible()
   await expect(page.getByRole("meter")).toHaveCount(0)
+  await page.goto(`${origin}/`)
+  await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
+  const notice = page.getByRole("note")
+  await expect(notice).toHaveText(
+    "This organization’s plan isn’t recognised, so new commands are refused. Contact support.",
+  )
+  await expect(notice.getByRole("link")).toHaveCount(0)
 })
 
 test("explains a tenant at Free's storage cap from the latest sample", async ({ page }) => {
@@ -763,7 +773,7 @@ test("explains a command the edge couldn't bill and offers no resend with the sa
     "**/api/**",
     controlPlane({
       plan: "unbound",
-      billing: () => freeBilling,
+      billing: () => unboundBilling,
       usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
       extra: (route, path) => {
         if (path === "/api/organizations/org_bill/projects")

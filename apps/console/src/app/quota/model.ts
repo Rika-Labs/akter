@@ -6,12 +6,15 @@ import type { Billing } from "../settings/model.ts"
 /**
  * The one cap a page explains while the edge refuses at it, as the control plane reports it:
  * `Unbound` when the organization has no billing account and every new command is refused,
+ * `UnknownPlan` when its stored plan isn't in the pricing configuration, which the edge refuses
+ * every new command for too,
  * otherwise Free's command allowance for `period` (`commands`, null when the cap doesn't say how
  * many units a command weighs), a tenant's storage sample at its cap, the spend limit in cents, or
  * the organization's live connections (which refuse new connections, not commands).
  */
 export const CapNotice = defineTaggedUnion({
   Unbound: {},
+  UnknownPlan: {},
   CommandCap: { period: S.String, commands: S.NullOr(S.Finite) },
   StorageCap: { usedBytes: S.Finite, limitBytes: S.Finite },
   SpendCap: { period: S.String, limitCents: S.Finite },
@@ -34,7 +37,7 @@ const precedence: ReadonlyArray<CapState["cap"]> = ["commands", "storage", "spen
  * is merely reached (`atCap`) still admits work the edge would take. An `unbound` cap outranks the
  * rest, because every new command is refused whatever the usage, and has no limit to quote. The
  * command cap counts usage units, in which a read weighs one and a command `unitsPerCommand`, so
- * its limit is quoted in commands by dividing by that weight.
+ * its limit is quoted in whole commands: the commands that fit in it, rounded down.
  */
 export const capNotice = (input: {
   readonly caps: ReadonlyArray<CapState>
@@ -51,7 +54,10 @@ export const capNotice = (input: {
     Match.when("commands", () =>
       CapNotice.CommandCap({
         period: input.period,
-        commands: refusing.unitsPerCommand === undefined ? null : limit / refusing.unitsPerCommand,
+        commands:
+          refusing.unitsPerCommand === undefined
+            ? null
+            : Math.floor(limit / refusing.unitsPerCommand),
       }),
     ),
     Match.when("storage", () => CapNotice.StorageCap({ usedBytes: used, limitBytes: limit })),

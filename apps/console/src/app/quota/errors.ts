@@ -7,7 +7,7 @@ import {
   SpendLimitExceeded,
   StorageQuotaExceeded,
 } from "@akter/cloud-api"
-import { Match, Option, Schema } from "effect"
+import { Match, Option, Predicate, Schema } from "effect"
 import { dollars, formatGigabytes, formatPeriod } from "../settings/format.ts"
 
 /**
@@ -32,11 +32,22 @@ const usageKinds = [
 type QuotaKind = (typeof usageKinds)[number]
 
 /**
- * Whether an error kind is a refusal Billing explains: a plan refusal, which a plan or spend-limit
- * change lifts, or `QuotaUnbound`, which Billing shows the cause of.
+ * Whether an error kind is a refusal Billing lifts: a plan refusal, which a plan or spend-limit
+ * change lifts, or `QuotaUnbound` for an organization without a billing account, which choosing a
+ * plan sets up.
  */
 export const isQuotaKind = (kind: string): boolean =>
   kind === "QuotaUnbound" || usageKinds.some((quota) => quota === kind)
+
+/**
+ * The error kind a refusal is shown under. A `QuotaUnbound` for a deployment with no organization
+ * or a plan the pricing doesn't define is `Unbillable`, since only support can fix it and Billing
+ * offers no way out; one for a missing billing account keeps its tag, which links to Billing.
+ */
+export const quotaKind = (refusal: QuotaRefusal): string =>
+  Predicate.isTagged(refusal, "QuotaUnbound") && refusal.reason !== "account"
+    ? "Unbillable"
+    : refusal._tag
 
 /** What the console says about one refusal: what was refused, why, what still works, and the way out. */
 export const quotaMessage = (refusal: QuotaRefusal): string =>

@@ -119,7 +119,7 @@ describe("quota refusals", () => {
   it("words each reason the edge couldn't bill a command differently, never as an outage", () => {
     const messages = (["tenant", "account", "plan"] as const).map((reason) => {
       const error = consoleError(QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }))
-      expect(error.kind).toBe("QuotaUnbound")
+      expect(error.kind).toBe(reason === "account" ? "QuotaUnbound" : "Unbillable")
       expect(error.message).not.toBe(generic)
       return error.message
     })
@@ -143,6 +143,7 @@ describe("quota refusals", () => {
       true,
     ])
     expect(isQuotaKind("QuotaUnbound")).toBe(true)
+    expect(isQuotaKind("Unbillable")).toBe(false)
     expect(["Forbidden", "Conflict", "Unavailable", "CommandFailed"].some(isQuotaKind)).toBe(false)
   })
 })

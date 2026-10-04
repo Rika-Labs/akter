@@ -17,7 +17,6 @@ import {
   type ProjectEndpoints,
   type Region,
   type Role,
-  UnboundPlan,
   type Usage as CloudUsage,
   type UsageMeterName,
 } from "@akter/cloud-api"
@@ -31,6 +30,7 @@ import {
   type EnvironmentVariables,
   type Integration,
   type Invoice,
+  isUnboundPlan,
   type Member,
   type OrganizationSummary,
   PaidPlan,
@@ -45,8 +45,6 @@ import {
 import { browserContext, hostedPageUrl } from "./stripe.ts"
 
 const millis = (instant: DateTime.Utc): number => DateTime.toEpochMillis(instant)
-
-const isUnboundPlan = Schema.is(UnboundPlan)
 
 /** The name to show for who did something; a nameless key is still known to be a key. */
 export const actorName = (actor: ActorReference): string | null =>

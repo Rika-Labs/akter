@@ -87,6 +87,12 @@ describe("capNotice", () => {
     expect(notice(changing(commands(4_999_997, 4)))).toEqual(
       CapNotice.CommandCap({ period: "2026-10", commands: 1_250_000 }),
     )
+    expect(notice(changing({ ...commands(4_999_999, 4), limit: 4_999_999 }))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: 1_249_999 }),
+    )
+    expect(notice(changing({ ...commands(5_000_003, 5), limit: 5_000_003 }))).toEqual(
+      CapNotice.CommandCap({ period: "2026-10", commands: 1_000_000 }),
+    )
     const { unitsPerCommand: _weight, ...unweighed } = commands(4_999_999, 5)
     expect(notice(changing(unweighed))).toEqual(
       CapNotice.CommandCap({ period: "2026-10", commands: null }),

@@ -222,7 +222,7 @@ describe("send command keys", () => {
         QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }),
       )
       expect(Option.map(failed.commandError, ({ kind }) => kind)).toEqual(
-        Option.some("QuotaUnbound"),
+        Option.some(reason === "account" ? "QuotaUnbound" : "Unbillable"),
       )
       expect(resendRefused(failed)).toBe(true)
       expect(step(failed, ConfirmedDialog()).commands ?? []).toEqual([])
