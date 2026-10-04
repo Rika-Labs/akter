@@ -1,6 +1,9 @@
 import { Schema as S } from "effect"
 
-/** A running or finished workflow owned by an actor. A workflow waiting on a timer reads `Sleeping`. */
+/**
+ * A running or finished workflow owned by an actor. A workflow waiting on a timer reads `Sleeping`,
+ * and `status` is null when the run's stored result does not decode.
+ */
 export const WorkflowRun = S.Struct({
   id: S.String,
   workflow: S.String,
@@ -9,7 +12,7 @@ export const WorkflowRun = S.Struct({
   step: S.String,
   waitingFor: S.String,
   started: S.String,
-  status: S.Literals(["Waiting", "Running", "Sleeping", "Done", "Failed"]),
+  status: S.NullOr(S.Literals(["Waiting", "Running", "Sleeping", "Done", "Failed"])),
 })
 export type WorkflowRun = typeof WorkflowRun.Type
 

@@ -23,6 +23,16 @@ const page = (schedulesSample: boolean) =>
         started: "2h",
         status: "Done",
       },
+      {
+        id: "wf_2",
+        workflow: "Doomed",
+        actorType: "Order",
+        key: "ord_2",
+        step: "—",
+        waitingFor: "—",
+        started: "1h",
+        status: null,
+      },
     ],
     schedules: [
       { name: "nightly", target: "Report/*", cron: "0 2 * * *", lastRun: "—", nextRun: "in 9 h" },
@@ -51,5 +61,14 @@ describe("workflows with sample schedules", () => {
       { path: "/workflows", screen: workflowsScreen, page: page(false) },
       Scene.expectAll(Scene.all.role("note")).toHaveCount(0),
       Scene.expect(screenRoot).toContainText("Schedules1none scheduled"),
+    ))
+
+  it("writes an undecodable run's status as a dash, never as waiting", () =>
+    screenScene(
+      { path: "/workflows", screen: workflowsScreen, page: page(false) },
+      Scene.expect(Scene.role("table", { name: "Workflows" })).toContainText(
+        "DoomedOrder/ord_2——1h—",
+      ),
+      Scene.expect(Scene.role("table", { name: "Workflows" })).not.toContainText("1hWaiting"),
     ))
 })

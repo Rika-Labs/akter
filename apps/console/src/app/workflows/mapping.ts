@@ -11,7 +11,8 @@ import { type Schedule, type WorkflowRun, WorkflowsPage } from "./model.ts"
  * it counts from 1, so a run on its first step reads `1 of <total>` and a run on its last reads
  * `<total> of <total>`, and the console never adds or subtracts one. A runner that does not know
  * the workflow's step count gives `<name> · step <index>`, and a run that holds no recorded step,
- * as once it finished, reads `—`.
+ * as once it finished, reads `—`. A finished run whose stored result does not decode has no
+ * status: it is unknown, never waiting.
  */
 export const toWorkflowRun =
   (now: DateTime.Utc) =>
@@ -35,15 +36,17 @@ export const toWorkflowRun =
           : `${workflow.waitingFor.kind} ${workflow.waitingFor.name}`,
       started: ago(now)(workflow.startedAt),
       status:
-        workflow.status === "completed"
-          ? "Done"
-          : workflow.status === "failed"
-            ? "Failed"
-            : workflow.status === "running"
-              ? "Running"
-              : timer
-                ? "Sleeping"
-                : "Waiting",
+        workflow.status === null
+          ? null
+          : workflow.status === "completed"
+            ? "Done"
+            : workflow.status === "failed"
+              ? "Failed"
+              : workflow.status === "running"
+                ? "Running"
+                : timer
+                  ? "Sleeping"
+                  : "Waiting",
     }
   }
 

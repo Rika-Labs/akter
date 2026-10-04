@@ -15,7 +15,7 @@ import type { Screen, ScreenInput } from "../shell/screen.ts"
 import { sampleNotice, unknown } from "../shell/unknown.ts"
 import type { WorkflowsPage } from "./model.ts"
 
-const tones: Readonly<Record<WorkflowsPage["runs"][number]["status"], StatusTone>> = {
+const tones: Readonly<Record<NonNullable<WorkflowsPage["runs"][number]["status"]>, StatusTone>> = {
   Waiting: "attention",
   Running: "pending",
   Sleeping: "idle",
@@ -139,7 +139,9 @@ export const workflowsScreen = ({ h, model, page }: ScreenInput<WorkflowsPage>):
                 run.step,
                 run.waitingFor,
                 run.started,
-                status(h, { tone: tones[run.status], label: run.status }),
+                run.status === null
+                  ? unknown
+                  : status(h, { tone: tones[run.status], label: run.status }),
               ],
             })),
           }),

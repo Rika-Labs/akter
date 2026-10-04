@@ -182,4 +182,25 @@ describe("workflow mapping", () => {
         expect(live).toMatchObject({ schedulesSample: false, schedules: [] })
       }),
     ))
+
+  it("leaves a run whose result does not decode without a status instead of calling it waiting", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const timers = yield* decode(TimersSummary, { pending: 0, nextFireAt: null })
+        const undecodable = yield* decode(
+          Workflow,
+          workflow({ status: null, step: null, waitingFor: null }),
+        )
+        const event = yield* decode(Workflow, workflow({ status: null, step: null }))
+        expect(toWorkflowRun(now)(undecodable).status).toBeNull()
+        expect(toWorkflowRun(now)(event).status).toBeNull()
+        const page = toWorkflowsPage(now)({
+          workflows: [undecodable, event],
+          truncated: false,
+          timers,
+          schedules: [],
+        })
+        expect(page).toMatchObject({ running: 0, waitingOnEvents: 0 })
+      }),
+    ))
 })
