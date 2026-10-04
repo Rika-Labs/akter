@@ -724,7 +724,7 @@ export const bindTables = Effect.fnUntraced(function* (
 /**
  * Refuses an adopted table whose physical state does not match its
  * declaration: a writable one needs its `actor_adoptions` row (which
- * `durable adopt observe` writes) with the declared type and columns and a
+ * `akter adopt observe` writes) with the declared type and columns and a
  * bigint `routing_key`; every adopted table needs mapped columns of a mappable
  * type and an index that leads with them. Each message names the fix.
  */
@@ -791,7 +791,7 @@ const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
 
     if (recorded === undefined)
       return yield* refuse(
-        `has no adoption record; run durable adopt observe ${info.table} before serving it`,
+        `has no adoption record; run akter adopt observe ${info.table} before serving it`,
       )
 
     if (recorded.actor_type !== actor)
@@ -799,7 +799,7 @@ const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
 
     if (recorded.tenant_column !== tenantColumn || recorded.actor_column !== actorColumn)
       return yield* refuse(
-        `was adopted with columns (${recorded.tenant_column}, ${recorded.actor_column}) but declares (${tenantColumn}, ${actorColumn}); run durable adopt observe ${info.table} again`,
+        `was adopted with columns (${recorded.tenant_column}, ${recorded.actor_column}) but declares (${tenantColumn}, ${actorColumn}); run akter adopt observe ${info.table} again`,
       )
 
     if (recorded.mode === "enforce")
@@ -808,7 +808,7 @@ const checkAdoptedDeclaration = Effect.fnUntraced(function* ({
     const routing = physical.find((candidate) => candidate.name === "routing_key")
 
     if (routing?.type !== "int8")
-      return yield* refuse(`has no bigint routing_key; run durable adopt observe ${info.table}`)
+      return yield* refuse(`has no bigint routing_key; run akter adopt observe ${info.table}`)
   }
 
   const target = {

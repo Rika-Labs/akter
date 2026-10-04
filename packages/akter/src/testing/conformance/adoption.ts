@@ -818,7 +818,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
           const exit = yield* runtimeOn(target).pipe(Effect.exit)
 
           expect(defect(exit)).toContain(
-            "conformance_invoices has no adoption record; run durable adopt observe conformance_invoices before serving it",
+            "conformance_invoices has no adoption record; run akter adopt observe conformance_invoices before serving it",
           )
         }),
       ),

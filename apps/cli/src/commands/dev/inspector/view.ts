@@ -559,7 +559,7 @@ export const deadLettersView = ({
     h(
       "p",
       { class: "hint" },
-      "Retry or discard a dead letter with durable dead-letters, under operator authority.",
+      "Retry or discard a dead letter with akter dead-letters, under operator authority.",
     ),
     truncated(rows.length, total),
     table(

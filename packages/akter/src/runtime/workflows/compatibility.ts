@@ -455,7 +455,7 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
 })
 
 /**
- * The deploy check `durable workflows check` runs: every actor type in the
+ * The deploy check `akter workflows check` runs: every actor type in the
  * database against `actors`, in one read-only snapshot.
  */
 export const checkWorkflows = (

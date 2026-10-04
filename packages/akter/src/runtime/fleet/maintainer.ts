@@ -168,7 +168,7 @@ type GroupKey = readonly [tenant: string, ...values: Array<string>]
  * the two replays a batch whose recompute is idempotent. When no change is
  * waiting it rebuilds `building` and `stale` views a few tenants at a time.
  * A view whose recompute fails is marked stale with its error and skipped
- * until `durable fleet rebuild`, so it never stops the others. A slot that
+ * until `akter fleet rebuild`, so it never stops the others. A slot that
  * is missing, lost, or moved by anyone else marks every view stale. The
  * runner that cannot take the lock retries every `LOCK_RETRY`.
  */

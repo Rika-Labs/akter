@@ -65,7 +65,7 @@ const operators = OperatorAuth.tokens([
   },
 ])
 
-describe("durable export", () => {
+describe("akter export", () => {
   it("parses an actor name, tenant, and output file, and needs all three", () =>
     Effect.gen(function* () {
       const runner = recordingFetch({})

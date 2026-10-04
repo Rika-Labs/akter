@@ -154,7 +154,7 @@ export const check = ({
     Effect.map((incompatibilities) => report({ incompatibilities, json })),
   )
 
-/** `durable workflows check`: exits 1 when an open execution needs a step the entry removed. */
+/** `akter workflows check`: exits 1 when an open execution needs a step the entry removed. */
 export const checkCommand = Command.make("check", entryFlags, (options) =>
   entryCommand({
     options,

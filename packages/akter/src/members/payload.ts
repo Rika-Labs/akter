@@ -260,7 +260,7 @@ export interface PayloadDeclaration {
   readonly writes: boolean
 }
 
-/** What `durable payloads check` and `clear` need of an actor definition. */
+/** What `akter payloads check` and `clear` need of an actor definition. */
 export interface DefinitionPayloads {
   readonly declarations: ReadonlyArray<PayloadDeclaration>
   readonly keepEventsMs: number

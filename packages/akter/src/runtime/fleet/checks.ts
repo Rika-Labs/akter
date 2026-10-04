@@ -88,12 +88,12 @@ export const checkFleet = Effect.fnUntraced(function* (
 
     if (!table.published)
       return yield* refuse(
-        `${source} is not in publication ${FLEET_PUBLICATION}; run durable fleet setup`,
+        `${source} is not in publication ${FLEET_PUBLICATION}; run akter fleet setup`,
       )
 
     if (table.identity !== "f")
       return yield* refuse(
-        `${source} does not have full replica identity; run durable fleet setup (ALTER TABLE ${source} REPLICA IDENTITY FULL)`,
+        `${source} does not have full replica identity; run akter fleet setup (ALTER TABLE ${source} REPLICA IDENTITY FULL)`,
       )
 
     const leading = [view.routingColumn, view.tenantColumn, ...view.groupColumns]
@@ -144,11 +144,11 @@ export const checkFleet = Effect.fnUntraced(function* (
     WHERE slot_name = ${FLEET_SLOT} AND database = current_database() AND slot_type = 'logical'`
 
   if (slot === undefined)
-    return yield* refuse(`replication slot ${FLEET_SLOT} does not exist; run durable fleet setup`)
+    return yield* refuse(`replication slot ${FLEET_SLOT} does not exist; run akter fleet setup`)
 
   if (slot.wal_status === "lost")
     return yield* refuse(
-      `replication slot ${FLEET_SLOT} is lost; run durable fleet setup to recreate it, and every view rebuilds`,
+      `replication slot ${FLEET_SLOT} is lost; run akter fleet setup to recreate it, and every view rebuilds`,
     )
 
   const at = yield* Clock.currentTimeMillis

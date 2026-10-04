@@ -75,7 +75,7 @@ export const exportSeed = Effect.fnUntraced(function* ({
   } satisfies typeof ExportAnswer.Type
 })
 
-/** The one line `durable export` prints for its answer. */
+/** The one line `akter export` prints for its answer. */
 export const formatExport = (answer: Schema.Json) =>
   Effect.map(Schema.decodeUnknownEffect(ExportAnswer)(answer), (exported) =>
     [
@@ -85,7 +85,7 @@ export const formatExport = (answer: Schema.Json) =>
     ].join("\n"),
   )
 
-/** `durable export <Type>/<id> --output <file>`: one actor's seed, written to a new file. */
+/** `akter export <Type>/<id> --output <file>`: one actor's seed, written to a new file. */
 export const exportCommand = Command.make("export", flags, (options) =>
   operatorCommand({ options, request: exportSeed, format: formatExport }),
 ).pipe(

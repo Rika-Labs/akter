@@ -61,7 +61,7 @@ afterAll(() => runtime.dispose())
 
 const postgres = runtime.runSync(Config.String("CLI_BACKEND")) === "postgres"
 
-describe("durable adopt arguments", () => {
+describe("akter adopt arguments", () => {
   it("reads a table, the window, and every flag of each command", () =>
     Effect.gen(function* () {
       const fs = Context.get(yield* Layer.build(BunFileSystem.layer), FileSystem.FileSystem)
@@ -205,7 +205,7 @@ const provisioned = Effect.gen(function* () {
   return { layer: ActorTest.layer({ database: Redacted.make(base.href), as }), url: base.href }
 })
 
-describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
+describe(`akter adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
   it("plans, observes, reports legacy writers, backfills, and reports status; each refusal exits 1", () =>
     Effect.gen(function* () {
       const database = yield* provisioned
@@ -237,8 +237,7 @@ describe(`durable adopt against ${postgres ? "Postgres" : "PGlite"}`, () => {
         })
 
         expect(early).toEqual({
-          output:
-            "public.cli_invoices is not observed; run durable adopt observe cli_invoices first",
+          output: "public.cli_invoices is not observed; run akter adopt observe cli_invoices first",
           exitCode: 1,
         })
 

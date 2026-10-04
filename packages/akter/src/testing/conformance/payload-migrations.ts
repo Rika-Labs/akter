@@ -745,7 +745,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(shortened.map(formatPayloadProblem)).toEqual([
-            "Ledger/Placed (event)  version 0 may still be stored below this chain's first version 1; run durable payloads clear once its events are gone",
+            "Ledger/Placed (event)  version 0 may still be stored below this chain's first version 1; run akter payloads clear once its events are gone",
             "Ledger/Charge (job)  version 0 stored in 1 pending job or dead letter row below this chain's first version 1",
           ])
 
@@ -770,7 +770,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "payload migrations: refuses a shortened chain after the retention horizon until durable payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear",
+    name: "payload migrations: refuses a shortened chain after the retention horizon until akter payloads clear finds no row of the dropped version, and refuses again after restoring a snapshot taken before the clear",
     run: ({ expect, environment }) =>
       withCase(environment, (database) =>
         Effect.gen(function* () {
@@ -841,7 +841,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
   {
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
-    name: "payload migrations: refuses durable payloads clear while a runtime writing that version refreshed within the window, and a runtime past its window refuses new turns until it refreshes",
+    name: "payload migrations: refuses akter payloads clear while a runtime writing that version refreshed within the window, and a runtime past its window refuses new turns until it refreshes",
     run: ({ expect, environment }) =>
       environment.run(
         Effect.gen(function* () {

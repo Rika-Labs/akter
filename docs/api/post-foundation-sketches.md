@@ -27,11 +27,11 @@ Ship: Effect.fn(function* (order) {
 // export const AwaitPaid = Ship.wait("paid", Paid)
 ```
 
-[ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) replaces the earlier `wf.version(name, n)` sketch. Markers are declared on `Actor.workflow`, and every marker's `current` value is recorded when an execution starts. `wf.version(name)` returns the recorded value, or 0 for executions that predate the marker, so in-flight executions keep their branch even before they reach it. `durable workflows check` and startup compare the manifest derived from the registered step constructors and `versions` with open executions and the manifests they started under, and refuse removed or renamed steps (reached or not) and markers outside `min..current`.
+[ADR 0022](../decisions/0022-workflow-engine-storage-and-version-markers.md) replaces the earlier `wf.version(name, n)` sketch. Markers are declared on `Actor.workflow`, and every marker's `current` value is recorded when an execution starts. `wf.version(name)` returns the recorded value, or 0 for executions that predate the marker, so in-flight executions keep their branch even before they reach it. `akter workflows check` and startup compare the manifest derived from the registered step constructors and `versions` with open executions and the manifests they started under, and refuse removed or renamed steps (reached or not) and markers outside `min..current`.
 
 ## Inspect and reproduce
 
-`durable inspect Chat/room-42` and `durable export Chat/room-42 --output room-42.seed` shipped, with `test.actor(Chat, "room-42", { seed: "room-42.seed" })` ([server API](01-server-api.md)). The baseline export is current actor state plus pending intents and jobs; arbitrary past-turn rewind, and so a `--turns` option, requires a separately costed history feature.
+`akter inspect Chat/room-42` and `akter export Chat/room-42 --output room-42.seed` shipped, with `test.actor(Chat, "room-42", { seed: "room-42.seed" })` ([server API](01-server-api.md)). The baseline export is current actor state plus pending intents and jobs; arbitrary past-turn rewind, and so a `--turns` option, requires a separately costed history feature.
 
 ## Derive protocols
 

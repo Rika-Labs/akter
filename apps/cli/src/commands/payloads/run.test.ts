@@ -49,8 +49,8 @@ const Current = renamed([Actor.migration(V0, V1, (v0) => ({ text: v0.body }))])
 
 const Shortened = renamed({ from: 1, steps: [] })
 
-describe("durable payloads", () => {
-  it("durable payloads check exits 1 for a chain that drops a stored version and 0 for the full chain", () =>
+describe("akter payloads", () => {
+  it("akter payloads check exits 1 for a chain that drops a stored version and 0 for the full chain", () =>
     Effect.gen(function* () {
       const board = yield* Old.Board.get("b")
       yield* board.Post("hello")
@@ -62,7 +62,7 @@ describe("durable payloads", () => {
       const refused = yield* payloads({ command: "check", actors: [Shortened], json: false })
       expect(refused.exitCode).toBe(1)
       expect(refused.output.split("\n")).toEqual([
-        "Board/Posted (event)  version 0 may still be stored below this chain's first version 1; run durable payloads clear once its events are gone",
+        "Board/Posted (event)  version 0 may still be stored below this chain's first version 1; run akter payloads clear once its events are gone",
         "1 problem; deploy refused (exit 1)",
       ])
 

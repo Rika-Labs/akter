@@ -53,10 +53,11 @@
       "name": "@akter/cli",
       "version": "0.1.0-alpha.0",
       "bin": {
-        "durable": "./src/main.ts",
+        "akter": "./src/main.ts",
       },
       "dependencies": {
         "@akter/billing": "workspace:*",
+        "@akter/cloud-api": "workspace:*",
         "@akter/deployments": "workspace:*",
         "@distilled.cloud/stripe": "catalog:",
         "@effect/platform-bun": "catalog:",
@@ -67,6 +68,7 @@
       "devDependencies": {
         "@akter/postgres": "workspace:*",
         "@effect/sql-pglite": "catalog:",
+        "@effect/vitest": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-orm": "catalog:",
         "pg": "8.23.0",

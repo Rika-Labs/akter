@@ -486,7 +486,7 @@ export type Declared<
  * `tenant` and `actor` columns, which must be text, varchar, or uuid, hold the
  * tenant and the actor's key, and nothing else about the table changes, so
  * foreign keys stay. A writable adopted table gains a nullable `routing_key`
- * and starts only after `durable adopt observe`; its primary key stays global,
+ * and starts only after `akter adopt observe`; its primary key stays global,
  * so a key another actor already holds fails the turn. `access: "read"` maps
  * the two columns for reading and adds nothing.
  *

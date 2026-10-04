@@ -28,7 +28,7 @@ const operators = OperatorAuth.tokens([
   },
 ])
 
-describe("durable subscriptions list --lagging", () => {
+describe("akter subscriptions list --lagging", () => {
   it("parses the tenant, thresholds, and the required --lagging switch", () =>
     Effect.gen(function* () {
       const runner = recordingFetch([])

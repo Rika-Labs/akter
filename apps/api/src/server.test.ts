@@ -3,7 +3,35 @@ import * as Cloud from "@akter/cloud-api"
 import { Crypto, Effect, Schedule, Schema } from "effect"
 import { Cookies } from "effect/http"
 import { SqlClient } from "effect/sql"
-import { enterpriseOrganizations, read, signupWith, TestLive, testServer } from "./fixtures.ts"
+import { CLI_CLIENT_ID } from "./device.ts"
+import {
+  baseOrigin,
+  enterpriseOrganizations,
+  isolatedLive,
+  read,
+  signupWith,
+  stalledRequest,
+  TestLive,
+  testServer,
+} from "./fixtures.ts"
+
+const DeviceCode = Schema.Struct({
+  device_code: Schema.String,
+  user_code: Schema.String,
+  verification_uri: Schema.String,
+  expires_in: Schema.Finite,
+  interval: Schema.Finite,
+})
+
+const DeviceToken = Schema.Struct({
+  access_token: Schema.String,
+  token_type: Schema.String,
+  expires_in: Schema.Finite,
+})
+
+const DeviceError = Schema.Struct({ error: Schema.String })
+
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 it.layer(TestLive, { excludeTestServices: true })(
   "cloud API over real Postgres and Bun HTTP",
@@ -562,5 +590,430 @@ it.layer(TestLive, { excludeTestServices: true })(
         }),
       { timeout: 60000 },
     )
+
+    it.effect(
+      "signs a CLI in through the device grant: the viewer claims a code, another account is refused it, approval yields a session in the approver's active organization, and denial and expiry yield none",
+      () =>
+        Effect.gen(function* () {
+          const { request } = yield* testServer
+          const sql = yield* SqlClient.SqlClient
+          const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+          const signup = signupWith({ request, sql, suffix })
+          const alice = yield* signup("device-alice")
+          const bob = yield* signup("device-bob")
+          const start = (body: Schema.Json) =>
+            request({ path: "/auth/device/code", method: "POST", body })
+          const code = Effect.gen(function* () {
+            const response = yield* start({ client_id: CLI_CLIENT_ID })
+            expect(response.status).toBe(200)
+            return yield* read(response, DeviceCode)
+          })
+          const errorOf = Effect.fn(function* (response: Parameters<typeof read>[0], status = 400) {
+            expect(response.status).toBe(status)
+            return (yield* read(response, DeviceError)).error
+          })
+          const poll = (deviceCode: string) =>
+            request({
+              path: "/auth/device/token",
+              method: "POST",
+              body: { grant_type: DEVICE_GRANT, device_code: deviceCode, client_id: CLI_CLIENT_ID },
+            })
+          const settled = (deviceCode: string) =>
+            poll(deviceCode).pipe(
+              Effect.flatMap((response) =>
+                Effect.map(
+                  response.status === 200 ? Effect.succeed("granted") : errorOf(response),
+                  (error) => ({ response, error }),
+                ),
+              ),
+              Effect.filterOrFail(
+                ({ error }) => error !== "slow_down" && error !== "authorization_pending",
+              ),
+              Effect.retry({ times: 20, schedule: Schedule.spaced("1 second") }),
+              Effect.map(({ response }) => response),
+              Effect.orDie,
+            )
+          const lookup = (userCode: string, cookie?: string) =>
+            request({ path: `/auth/device?user_code=${encodeURIComponent(userCode)}`, cookie })
+          const decide = (decision: "approve" | "deny", userCode: string, cookie: string) =>
+            request({
+              path: `/auth/device/${decision}`,
+              method: "POST",
+              cookie,
+              body: { userCode },
+            })
+          const boundTo = (deviceCode: string) =>
+            sql<{
+              userId: string | null
+            }>`SELECT "userId" FROM "deviceCode" WHERE "deviceCode" = ${deviceCode}`.pipe(
+              Effect.map((rows) => rows[0]?.userId ?? null),
+            )
+          const me = (token: string) =>
+            request({ path: "/api/me", headers: { authorization: `Bearer ${token}` } })
+
+          expect(yield* errorOf(yield* start({ client_id: "someone-else" }))).toBe("invalid_client")
+          expect(
+            yield* errorOf(yield* start({ client_id: CLI_CLIENT_ID, user_id: alice.id })),
+            "nobody binds a code to an account before that account looks it up",
+          ).toBe("invalid_request")
+          expect(
+            (yield* request({
+              path: "/auth/device/code",
+              method: "POST",
+              raw: `client_id=${CLI_CLIENT_ID}&user_id=${alice.id}`,
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+            })).status,
+          ).toBe(400)
+          expect(yield* sql`SELECT 1 FROM "deviceCode" WHERE "userId" = ${alice.id}`).toEqual([])
+
+          const organization = yield* read(
+            yield* request({
+              path: "/api/organizations",
+              method: "POST",
+              cookie: alice.cookie,
+              body: { name: "Device organization", slug: `device-${suffix}` },
+            }),
+            Cloud.OrganizationMembership,
+          )
+          expect(
+            (yield* request({
+              path: "/api/me/active-organization",
+              method: "PUT",
+              cookie: alice.cookie,
+              body: { organizationId: organization.organization.id },
+            })).status,
+          ).toBe(200)
+
+          const approved = yield* code
+          expect(approved.user_code).toMatch(/^[A-Z2-9]{8}$/u)
+          expect(approved.verification_uri).toBe(`${baseOrigin}/device`)
+          expect(yield* errorOf(yield* poll(approved.device_code))).toBe("authorization_pending")
+          expect((yield* lookup(approved.user_code)).status).toBe(200)
+          expect(
+            yield* boundTo(approved.device_code),
+            "an anonymous lookup binds nobody",
+          ).toBeNull()
+          const dashed = `${approved.user_code.slice(0, 4)}-${approved.user_code.slice(4)}`
+          expect((yield* lookup(dashed, alice.cookie)).status).toBe(200)
+          expect(yield* boundTo(approved.device_code)).toBe(alice.id)
+          expect(
+            yield* errorOf(yield* lookup(approved.user_code, bob.cookie), 403),
+            "a pending code another account claimed is refused, not described",
+          ).toBe("access_denied")
+          expect(yield* boundTo(approved.device_code)).toBe(alice.id)
+          expect((yield* decide("approve", approved.user_code, bob.cookie)).status).toBe(403)
+          expect((yield* decide("approve", approved.user_code, alice.cookie)).status).toBe(200)
+          const granted = yield* settled(approved.device_code)
+          expect(granted.status).toBe(200)
+          const token = yield* read(granted, DeviceToken)
+          expect(token.token_type).toBe("Bearer")
+          expect(token.expires_in).toBeGreaterThan(0)
+
+          const signedIn = yield* read(yield* me(token.access_token), Cloud.Me)
+          expect(signedIn.user?.email).toBe(alice.email)
+          expect(signedIn.identityKind).toBe("session")
+          expect(
+            signedIn.activeOrganizationId,
+            "the device session starts in the approver's active organization",
+          ).toBe(organization.organization.id)
+          expect((yield* me(`${token.access_token}x`)).status).toBe(401)
+          expect(
+            yield* errorOf(yield* settled(approved.device_code)),
+            "a redeemed device code grants no second session",
+          ).toBe("invalid_grant")
+
+          const elsewhere = yield* code
+          expect((yield* lookup(elsewhere.user_code, bob.cookie)).status).toBe(200)
+          expect((yield* decide("approve", elsewhere.user_code, bob.cookie)).status).toBe(200)
+          const bobToken = yield* read(yield* settled(elsewhere.device_code), DeviceToken)
+          expect(
+            (yield* read(yield* me(bobToken.access_token), Cloud.Me)).activeOrganizationId,
+            "an approver with no active organization gives none",
+          ).toBeNull()
+
+          const denied = yield* code
+          expect((yield* lookup(denied.user_code, bob.cookie)).status).toBe(200)
+          expect((yield* decide("deny", denied.user_code, bob.cookie)).status).toBe(200)
+          expect(yield* errorOf(yield* settled(denied.device_code))).toBe("access_denied")
+
+          const expired = yield* code
+          expect((yield* lookup(expired.user_code, alice.cookie)).status).toBe(200)
+          yield* sql`UPDATE "deviceCode" SET "expiresAt" = now() - interval '1 second' WHERE "deviceCode" = ${expired.device_code}`
+          expect(yield* errorOf(yield* lookup(expired.user_code, alice.cookie))).toBe(
+            "expired_token",
+          )
+          expect(yield* errorOf(yield* decide("approve", expired.user_code, alice.cookie))).toBe(
+            "expired_token",
+          )
+          expect(yield* errorOf(yield* settled(expired.device_code))).toBe("expired_token")
+
+          const browserSignIn = yield* request({
+            path: "/auth/sign-in/email",
+            method: "POST",
+            body: { email: alice.email, password: "correct-horse-battery-staple-42" },
+          })
+          expect(browserSignIn.status).toBe(200)
+          expect(browserSignIn.headers["set-auth-token"]).toBeUndefined()
+
+          const signedOut = yield* request({
+            path: "/auth/sign-out",
+            method: "POST",
+            headers: { authorization: `Bearer ${token.access_token}` },
+            body: {},
+          })
+          expect(signedOut.status).toBe(200)
+          expect((yield* me(token.access_token)).status).toBe(401)
+          expect((yield* request({ path: "/api/me", cookie: alice.cookie })).status).toBe(200)
+        }),
+      { timeout: 120000 },
+    )
+
+    it.effect(
+      "lets a bearer token alone authenticate a request that carries one, so neither a cookie nor an API key beside it can stand in for it",
+      () =>
+        Effect.gen(function* () {
+          const { request } = yield* testServer
+          const sql = yield* SqlClient.SqlClient
+          const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+          const signup = signupWith({ request, sql, suffix })
+          const alice = yield* signup("bearer-alice")
+          const bob = yield* signup("bearer-bob")
+          const code = yield* read(
+            yield* request({
+              path: "/auth/device/code",
+              method: "POST",
+              body: { client_id: CLI_CLIENT_ID },
+            }),
+            DeviceCode,
+          )
+          yield* request({ path: `/auth/device?user_code=${code.user_code}`, cookie: bob.cookie })
+          yield* request({
+            path: "/auth/device/approve",
+            method: "POST",
+            cookie: bob.cookie,
+            body: { userCode: code.user_code },
+          })
+          const bobToken = (yield* read(
+            yield* request({
+              path: "/auth/device/token",
+              method: "POST",
+              body: {
+                grant_type: DEVICE_GRANT,
+                device_code: code.device_code,
+                client_id: CLI_CLIENT_ID,
+              },
+            }),
+            DeviceToken,
+          )).access_token
+          const org = (yield* read(
+            yield* request({
+              path: "/api/organizations",
+              method: "POST",
+              cookie: alice.cookie,
+              body: { name: "Bearer organization", slug: `bearer-${suffix}` },
+            }),
+            Cloud.OrganizationMembership,
+          )).organization.id
+          const key = (yield* read(
+            yield* request({
+              path: `/api/organizations/${org}/api-keys`,
+              method: "POST",
+              cookie: alice.cookie,
+              body: { name: "Bearer test", permission: "read" },
+            }),
+            Cloud.CreatedApiKey,
+          )).secret
+          const whoIs = (headers: Readonly<Record<string, string>>) =>
+            request({ path: "/api/me", headers }).pipe(
+              Effect.flatMap((response) =>
+                response.status === 200
+                  ? read(response, Cloud.Me).pipe(
+                      Effect.map((me): string | number => me.user?.email ?? "api-key"),
+                    )
+                  : Effect.succeed<string | number>(response.status),
+              ),
+            )
+
+          const bearer = (token: string) => `Bearer ${token}`
+
+          expect(yield* whoIs({ cookie: alice.cookie })).toBe(alice.email)
+          expect(yield* whoIs({ authorization: bearer(bobToken) })).toBe(bob.email)
+          expect(
+            yield* whoIs({ cookie: alice.cookie, authorization: bearer("garbage.garbage") }),
+            "an invalid bearer never falls back to the cookie beside it",
+          ).toBe(401)
+          expect(yield* whoIs({ cookie: alice.cookie, authorization: bearer("garbage") })).toBe(401)
+          expect(
+            yield* whoIs({ cookie: alice.cookie, authorization: bearer(bobToken) }),
+            "a valid bearer is the request's only credential",
+          ).toBe(bob.email)
+          expect(yield* whoIs({ "x-api-key": key })).toBe("api-key")
+          expect(
+            yield* whoIs({ "x-api-key": key, authorization: bearer(bobToken) }),
+            "an API key beside a bearer token is refused",
+          ).toBe(401)
+        }),
+      { timeout: 60000 },
+    )
+
+    it.effect(
+      "refuses a source upload to a control plane without a builder before reading its body",
+      () =>
+        Effect.gen(function* () {
+          const { request, origin } = yield* testServer
+          const sql = yield* SqlClient.SqlClient
+          const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+          const owner = yield* signupWith({ request, sql, suffix })("upload-owner")
+          const org = (yield* read(
+            yield* request({
+              path: "/api/organizations",
+              method: "POST",
+              cookie: owner.cookie,
+              body: { name: "Upload organization", slug: `upload-${suffix}` },
+            }),
+            Cloud.OrganizationMembership,
+          )).organization.id
+          const project = yield* read(
+            yield* request({
+              path: `/api/organizations/${org}/projects`,
+              method: "POST",
+              cookie: owner.cookie,
+              body: { name: "Upload project", slug: "upload", homeRegion: "us-east-1" },
+            }),
+            Cloud.Project,
+          )
+          const stalled = yield* stalledRequest({
+            origin,
+            head: `POST /api/projects/${project.id}/sources HTTP/1.1\r\nhost: localhost\r\ncookie: ${owner.cookie}\r\ncontent-type: application/gzip\r\ntransfer-encoding: chunked\r\n\r\n`,
+            body: new TextEncoder().encode("4\r\nabcd\r\n"),
+          }).pipe(Effect.timeout("10 seconds"))
+          expect(stalled.status).toBe(501)
+          expect(stalled.elapsedMs).toBeLessThan(5_000)
+          expect(
+            (yield* request({
+              path: `/api/projects/${project.id}/deployments`,
+              method: "POST",
+              cookie: owner.cookie,
+              body: {
+                environment: "production",
+                commitSha: "abcdef1",
+                source: { digest: `sha256:${"d".repeat(64)}`, dockerfile: "Dockerfile" },
+              },
+            })).status,
+          ).toBe(501)
+        }),
+      { timeout: 60000 },
+    )
   },
 )
+
+it.layer(
+  isolatedLive({ localBuild: { context: "/nonexistent-build-context", dockerfile: "Dockerfile" } }),
+  { excludeTestServices: true },
+)("source uploads on a control plane that builds", (it) => {
+  it.effect(
+    "answers an over-limit or stalled upload at once, checking access before any byte is read, and stores what fits under its digest",
+    () =>
+      Effect.gen(function* () {
+        const { request, origin } = yield* testServer
+        const sql = yield* SqlClient.SqlClient
+        const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+        const signup = signupWith({ request, sql, suffix })
+        const owner = yield* signup("builder-owner")
+        const outsider = yield* signup("builder-outsider")
+        const org = (yield* read(
+          yield* request({
+            path: "/api/organizations",
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: "Builder organization", slug: `builder-${suffix}` },
+          }),
+          Cloud.OrganizationMembership,
+        )).organization.id
+        const project = yield* read(
+          yield* request({
+            path: `/api/organizations/${org}/projects`,
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: "Builder project", slug: "builder", homeRegion: "us-east-1" },
+          }),
+          Cloud.Project,
+        )
+        const head = (input: {
+          readonly cookie: string
+          readonly framing: string
+          readonly projectId?: string
+        }) =>
+          `POST /api/projects/${input.projectId ?? project.id}/sources HTTP/1.1\r\nhost: localhost\r\ncookie: ${input.cookie}\r\ncontent-type: application/gzip\r\n${input.framing}\r\n\r\n`
+        const chunked = (bytes: number) => {
+          const size = 1024 * 1024
+          const parts: Array<Uint8Array> = []
+          for (let sent = 0; sent < bytes; sent += size)
+            parts.push(
+              new TextEncoder().encode(`${size.toString(16)}\r\n`),
+              new Uint8Array(size),
+              new TextEncoder().encode("\r\n"),
+            )
+          const body = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0))
+          let offset = 0
+          for (const part of parts) {
+            body.set(part, offset)
+            offset += part.byteLength
+          }
+          return body
+        }
+        const send = (input: Parameters<typeof head>[0], body: Uint8Array) =>
+          stalledRequest({ origin, head: head(input), body }).pipe(Effect.timeout("20 seconds"))
+
+        const declared = yield* send(
+          { cookie: owner.cookie, framing: `content-length: ${Cloud.MAX_SOURCE_BYTES + 1}` },
+          new Uint8Array(1024),
+        )
+        expect(declared.status, "a declared length over the limit is refused unread").toBe(413)
+        expect(declared.elapsedMs).toBeLessThan(5_000)
+
+        const streamed = yield* send(
+          { cookie: owner.cookie, framing: "transfer-encoding: chunked" },
+          chunked(Cloud.MAX_SOURCE_BYTES + 1024 * 1024),
+        )
+        expect(streamed.status, "a streamed body is cut off once it passes the limit").toBe(413)
+        expect(streamed.elapsedMs).toBeLessThan(15_000)
+
+        for (const [input, status] of [
+          [{ cookie: outsider.cookie, framing: "transfer-encoding: chunked" }, 403],
+          [
+            {
+              cookie: owner.cookie,
+              framing: "transfer-encoding: chunked",
+              projectId: "prj_does_not_exist",
+            },
+            403,
+          ],
+        ] as const) {
+          const refused = yield* send(input, new TextEncoder().encode("4\r\nabcd\r\n"))
+          expect(refused.status, "access is decided before the body is read").toBe(status)
+          expect(refused.elapsedMs).toBeLessThan(5_000)
+        }
+
+        const archive = new TextEncoder().encode("a small archive's bytes")
+        const stored = yield* read(
+          yield* request({
+            path: `/api/projects/${project.id}/sources`,
+            method: "POST",
+            cookie: owner.cookie,
+            raw: new TextDecoder().decode(archive),
+            headers: { "content-type": "application/gzip" },
+          }),
+          Cloud.SourceArchive,
+        )
+        expect(stored).toEqual({
+          digest: `sha256:${new Bun.CryptoHasher("sha256").update(archive).digest("hex")}`,
+          sizeBytes: archive.byteLength,
+        })
+        expect(
+          yield* sql`SELECT size_bytes FROM cloud_source_archive WHERE project_id = ${project.id}`,
+        ).toEqual([{ size_bytes: archive.byteLength }])
+      }),
+    { timeout: 120000 },
+  )
+})

@@ -177,7 +177,7 @@ export interface Descriptor {
   readonly registeredSubscriptions: ReadonlyArray<RegisteredSubscription>
   /** Event and job chains this actor writes (or only reads, with `writes` false). */
   readonly payloads: (writes: boolean) => ReadonlyArray<PayloadDeclaration>
-  /** What `durable payloads check` and `clear` read. */
+  /** What `akter payloads check` and `clear` read. */
   readonly definitionPayloads: DefinitionPayloads
   readonly served: ServedDefinition
   /** The handle that reaches `internal` commands too, for test harnesses. */

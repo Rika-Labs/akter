@@ -15,7 +15,7 @@ const entry = fileURLToPath(
   new URL("../../../../../packages/akter/src/testing/conformance/fleet.ts", import.meta.url),
 )
 
-describe("durable fleet arguments", () => {
+describe("akter fleet arguments", () => {
   it("refuses a missing flag or view with exit status 2", () =>
     runtime.runPromise(
       Effect.gen(function* () {
@@ -39,7 +39,7 @@ describe("durable fleet arguments", () => {
  */
 const SETUP_TIMEOUT_MS = 90_000
 
-describe.skipIf(!postgres)("durable fleet setup on Postgres", () => {
+describe.skipIf(!postgres)("akter fleet setup on Postgres", () => {
   it(
     "gives the entry's sources full replica identity, publishes them, creates the slot once, and refuses an unknown rebuild",
     () =>

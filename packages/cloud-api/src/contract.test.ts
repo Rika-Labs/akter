@@ -60,17 +60,23 @@ describe("CloudApi", () => {
     expect(open).toEqual([])
   })
 
-  it("makes Authentication a security middleware over session cookies and the x-api-key header", () => {
+  it("makes Authentication a security middleware over session cookies, the x-api-key header and a bearer session token", () => {
     expect(Object.keys(Authentication.security).toSorted()).toEqual([
       "apiKey",
+      "bearer",
       "secureSession",
       "session",
     ])
     expect(Object.keys(spec.components.securitySchemes).toSorted()).toEqual([
       "apiKey",
+      "bearer",
       "secureSession",
       "session",
     ])
+    expect(spec.components.securitySchemes["bearer"]).toMatchObject({
+      type: "http",
+      scheme: "Bearer",
+    })
     expect(spec.components.securitySchemes["apiKey"]).toMatchObject({
       type: "apiKey",
       in: "header",

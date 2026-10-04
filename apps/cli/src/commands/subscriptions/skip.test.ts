@@ -22,7 +22,7 @@ const base = [
   "bad payload",
 ]
 
-describe("durable subscriptions skip", () => {
+describe("akter subscriptions skip", () => {
   it("parses the source, subscriber, subscription, cursor, and reason", () =>
     Effect.gen(function* () {
       const runner = recordingFetch({ skipped: true })

@@ -95,7 +95,7 @@ const enforcementRefusals = Effect.fnUntraced(function* (
 
   if (Number(counts!.unfilled) > 0)
     refusals.push(
-      `${counts!.unfilled} rows of ${name} have no routing_key; run durable adopt backfill ${target.table}`,
+      `${counts!.unfilled} rows of ${name} have no routing_key; run akter adopt backfill ${target.table}`,
     )
 
   if (Number(counts!.unowned) > 0)
@@ -262,7 +262,7 @@ export const enforceAdoption = Effect.fnUntraced(function* (
 
         if (adoption === undefined)
           return yield* AdoptionRefused.make({
-            message: `${name} is not observed; run durable adopt observe ${target.table} first`,
+            message: `${name} is not observed; run akter adopt observe ${target.table} first`,
           })
 
         if (adoption.mode === "enforce")

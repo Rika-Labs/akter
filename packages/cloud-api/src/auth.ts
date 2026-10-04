@@ -13,7 +13,7 @@ export const secureSessionCookieName = "__Secure-better-auth.session_token"
 /** The request header that carries an organization API key. */
 export const apiKeyHeaderName = "x-api-key"
 
-/** A signed-in person, resolved from the session cookie. */
+/** A signed-in person, resolved from the session cookie or a CLI's bearer session token. */
 export const SessionIdentity = Schema.TaggedStruct("session", {
   userId: UserId,
   sessionId: Schema.String,
@@ -40,7 +40,8 @@ export class CurrentIdentity extends Context.Service<CurrentIdentity, Identity>(
  * scheme and fails `Unauthorized` when a scheme's credential is missing or
  * invalid; the first scheme that succeeds provides `CurrentIdentity`. A cookie
  * browser client sends credentials automatically, so no client implementation
- * is required.
+ * is required. `bearer` carries the session token a CLI receives from Better
+ * Auth's device authorization grant.
  *
  * @effect-expect-leaking HttpServerRequest | ParsedSearchParams | RouteContext
  */
@@ -52,6 +53,7 @@ export class Authentication extends HttpApiMiddleware.Service<
     session: HttpApiSecurity.apiKey({ key: sessionCookieName, in: "cookie" }),
     secureSession: HttpApiSecurity.apiKey({ key: secureSessionCookieName, in: "cookie" }),
     apiKey: HttpApiSecurity.apiKey({ key: apiKeyHeaderName, in: "header" }),
+    bearer: HttpApiSecurity.bearer,
   },
   error: [Unauthorized, Forbidden],
 }) {}

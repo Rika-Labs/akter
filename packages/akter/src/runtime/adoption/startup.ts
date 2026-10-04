@@ -70,7 +70,7 @@ export const checkEnforcedTable = Effect.fnUntraced(function* ({
 
     if (found === undefined)
       return yield* refuse(
-        `is enforced but its guard trigger ${name} is missing; run durable adopt release ${target.table} --to observe and enforce it again`,
+        `is enforced but its guard trigger ${name} is missing; run akter adopt release ${target.table} --to observe and enforce it again`,
       )
 
     if (found.enabled !== "A")

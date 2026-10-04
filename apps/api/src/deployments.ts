@@ -7,14 +7,51 @@ import {
   type DeploymentDetail,
 } from "@akter/deployments/lifecycle"
 import { Actor, Actors, System } from "@rikalabs/akter"
-import { Crypto, Effect, Option, Predicate, Schema } from "effect"
+import { Crypto, Effect, Option, Predicate, Schema, Stream } from "effect"
 import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
+import type { HttpServerRequest } from "effect/http"
 import { Access, attributedSubject } from "./access.ts"
+import { Sources } from "./sources.ts"
 
 const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String }))
 
 const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String))
+
+/**
+ * Reads a request body of at most `limit` bytes. A declared `content-length`
+ * over the limit is refused before a byte is read, and a streamed body is
+ * cancelled as soon as it passes the limit, so a client can make the API hold
+ * at most one limit of body, however long it stalls.
+ */
+const boundedBody = (request: HttpServerRequest.HttpServerRequest, limit: number) =>
+  Effect.gen(function* () {
+    const tooLarge = Cloud.PayloadTooLarge.make({ limitBytes: limit })
+    const declared = request.headers["content-length"]
+    if (declared !== undefined && /^\d+$/u.test(declared) && Number(declared) > limit)
+      return yield* tooLarge
+    const read = yield* request.stream.pipe(
+      Stream.runFoldEffect(
+        () => ({ size: 0, chunks: new Array<Uint8Array>() }),
+        (acc, chunk) => {
+          const size = acc.size + chunk.byteLength
+          if (size > limit) return Effect.fail(tooLarge)
+          acc.chunks.push(chunk)
+          return Effect.succeed({ size, chunks: acc.chunks })
+        },
+      ),
+      Effect.catchTag("HttpServerError", () =>
+        Effect.fail(Cloud.Conflict.make({ message: "The upload ended before it was complete" })),
+      ),
+    )
+    const bytes = new Uint8Array(read.size)
+    let offset = 0
+    for (const chunk of read.chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return bytes
+  })
 
 /** Names a commit by its short SHA and message, as rollback and redeploy labels show it. */
 const commitLabel = (commitSha: string, message: string) =>
@@ -24,6 +61,7 @@ const commitLabel = (commitSha: string, message: string) =>
 export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments", (handlers) =>
   Effect.gen(function* () {
     const access = yield* Access
+    const sources = yield* Sources
     const sql = yield* SqlClient.SqlClient
     const detail = Effect.fnUntraced(function* (value: DeploymentDetail) {
       if (value.status !== "live")
@@ -138,6 +176,15 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
       )
 
     return handlers
+      .handleRaw("uploadSource", ({ params, request }) =>
+        Effect.gen(function* () {
+          const organizationId = yield* access.project(params.projectId, "write")
+          if (!sources.builds)
+            return yield* Cloud.NotImplemented.make({ operation: "deployments.uploadSource" })
+          const archive = yield* boundedBody(request, Cloud.MAX_SOURCE_BYTES)
+          return yield* sources.store({ organizationId, projectId: params.projectId, archive })
+        }),
+      )
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
           const organizationId = yield* access.project(params.projectId, "write")
@@ -146,6 +193,24 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             return yield* Cloud.Conflict.make({
               message: "A deployment must name exactly one home region",
             })
+          const deploymentId = yield* id
+          if (payload.source !== undefined) {
+            if (!sources.builds)
+              return yield* Cloud.NotImplemented.make({ operation: "deployments.create.source" })
+            yield* sources
+              .attach({
+                organizationId,
+                projectId: params.projectId,
+                deploymentId,
+                digest: payload.source.digest,
+                dockerfile: payload.source.dockerfile,
+              })
+              .pipe(
+                Effect.catchTag("SourceNotFound", (missing) =>
+                  Cloud.NotFound.make({ resource: "source", id: missing.digest }),
+                ),
+              )
+          }
           const actor = yield* actorOf(organizationId, params.projectId, payload.environment)
           const [project] = yield* sql<{
             homeRegion: "us-east-1" | "us-west-2"
@@ -154,7 +219,7 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
           )
           return yield* actor
             .Create({
-              deploymentId: yield* id,
+              deploymentId,
               commitSha: payload.commitSha,
               message: payload.message ?? "",
               author: yield* author,
@@ -250,9 +315,11 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
           )
           const actor = yield* actorOf(organizationId, params.projectId, environment)
           const source = yield* actor.Get({ deploymentId: params.deploymentId }).pipe(expected)
+          const deploymentId = yield* id
+          yield* sources.copy({ from: params.deploymentId, to: deploymentId })
           return yield* actor
             .Redeploy({
-              deploymentId: yield* id,
+              deploymentId,
               source: params.deploymentId,
               message: `Redeploy ${yield* sourceLabel(source)}`,
               author: yield* author,

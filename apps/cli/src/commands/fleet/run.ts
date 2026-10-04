@@ -69,7 +69,7 @@ const databaseUrl = Flag.Redacted("database-url").pipe(
   Flag.withDescription("The application's Postgres URL"),
 )
 
-/** `durable fleet setup`: full replica identity, publication, and slot for the entry's views. */
+/** `akter fleet setup`: full replica identity, publication, and slot for the entry's views. */
 export const setupCommand = Command.make(
   "setup",
   {
@@ -103,7 +103,7 @@ export const setupCommand = Command.make(
   ),
 )
 
-/** `durable fleet rebuild <View>`: clears a view's error and rebuilds it; exits 1 for an unknown view. */
+/** `akter fleet rebuild <View>`: clears a view's error and rebuilds it; exits 1 for an unknown view. */
 export const rebuildCommand = Command.make(
   "rebuild",
   {

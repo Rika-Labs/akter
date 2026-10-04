@@ -117,7 +117,7 @@ export const observeAdoption = Effect.fnUntraced(function* (
 
       if (existing?.mode === "enforce")
         return yield* AdoptionRefused.make({
-          message: `${name} is enforced; run durable adopt release ${target.table} --to observe first`,
+          message: `${name} is enforced; run akter adopt release ${target.table} --to observe first`,
         })
 
       const [column] = yield* sql<{ type: string }>`

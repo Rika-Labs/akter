@@ -136,7 +136,7 @@ A command the old process had not committed is not applied. Retrying the same co
 Before you release:
 
 1. Apply owned-table migrations that the old and new code both accept (expand before contract).
-2. If you changed a workflow, check that no open execution needs a removed or renamed step. Startup refuses such a deploy. `durable workflows check --entry <module> --database-url <url>`, from `apps/cli` in the repository (not yet published), runs the same check first.
+2. If you changed a workflow, check that no open execution needs a removed or renamed step. Startup refuses such a deploy. `akter workflows check --entry <module> --database-url <url>`, from `apps/cli` in the repository (not yet published), runs the same check first.
 3. Keep every event, job, and workflow payload decodable until the records that use it have passed their retention.
 
 See [migrations](../operations/02-migrations.md) and [backup and restore](../operations/04-backup-restore.md).
