@@ -312,6 +312,11 @@ export interface Server {
   ) => Effect.Effect<Reply>
   /** A v1 id issued `offsetMs` from the database clock, in the runtime's window. */
   readonly mint: (offsetMs?: number, windowMs?: number) => Effect.Effect<string>
+  /**
+   * Answers a request the host built, handed to the web handler without a
+   * listening server, so nothing frames its body by its headers.
+   */
+  readonly handle: (request: Request) => Effect.Effect<Reply>
 }
 
 /** Serves the HTTP actors from a real listening server for the rest of the scope. */
@@ -340,6 +345,18 @@ export const serveHttp = Effect.fnUntraced(function* (
 
   return {
     url,
+    handle: (request) =>
+      Effect.gen(function* () {
+        const response = yield* Effect.promise(() => web.handler(request))
+        const text = yield* Effect.promise(() => response.text())
+
+        return {
+          status: response.status,
+          headers: response.headers,
+          text,
+          body: text === "" ? undefined : yield* decodeJson(text),
+        }
+      }).pipe(Effect.orDie),
     send: (path, init) =>
       Effect.gen(function* () {
         const body =
@@ -1559,6 +1576,51 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
             code: "unsupported_protocol",
           })
           expect(runs.count).toBe(before)
+        }),
+      ),
+  },
+  {
+    name: "refuses a host-built body that passes its declared content-length, or a content-length that is not a number, before any turn",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp({ limits: { requestBytes: 64 } })
+          const token = `${yield* tenantOf}:alice`
+          const before = runs.count
+
+          const post = (length: string, body: string) =>
+            Effect.gen(function* () {
+              return yield* server.handle(
+                new Request(`${server.url}/actors/HttpRoom/body/Post`, {
+                  method: "POST",
+                  headers: {
+                    authorization: `Bearer ${token}`,
+                    "idempotency-key": yield* server.mint(),
+                    "content-type": "application/json",
+                    "content-length": length,
+                  },
+                  body,
+                }),
+              )
+            })
+
+          const huge = yield* post("5", `{"text":"${"x".repeat(3 * 1024 * 1024)}"}`)
+          expect(huge.status).toBe(413)
+          expect(yield* reasonOf(huge.body)).toEqual({ tag: "InvalidInput", code: "too_large" })
+
+          const longer = yield* post("12", '{"text":"abcdefgh"}')
+          expect(longer.status).toBe(413)
+          expect(yield* reasonOf(longer.body)).toEqual({ tag: "InvalidInput", code: "too_large" })
+
+          for (const length of ["abc", "-1", "1e1", ""]) {
+            const malformed = yield* post(length, '{"text":"a"}')
+            expect(malformed.status).toBe(400)
+            expect(yield* reasonOf(malformed.body)).toEqual({ tag: "InvalidInput", code: "decode" })
+          }
+
+          const exact = yield* post("12", '{"text":"a"}')
+          expect(exact.status).toBe(200)
+          expect(runs.count).toBe(before + 1)
         }),
       ),
   },

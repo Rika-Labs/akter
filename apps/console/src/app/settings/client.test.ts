@@ -1,9 +1,9 @@
-import { Forbidden, NotImplemented } from "@akter/cloud-api"
+import { Forbidden, KnownPlan, NotImplemented, Unavailable } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { AppRoute } from "../navigation/routes.ts"
 import { Action } from "../shell/action.ts"
-import { loadSettings } from "./client.ts"
+import { loadSettings, setSpendLimit } from "./client.ts"
 import { endpointsSlice, environmentsSlice, keysSlice } from "./fixtures.ts"
 import { SettingsSection } from "./model.ts"
 import { blockedBySample, isSample } from "./sample.ts"
@@ -25,7 +25,7 @@ const organization = {
   id: "org_1",
   name: "Acme",
   slug: "acme",
-  plan: "pro",
+  plan: KnownPlan.make({ id: "pro" }),
   createdAt: "2026-09-01T00:00:00.000Z",
 }
 
@@ -75,46 +75,167 @@ const liveEndpoints = {
     }),
 }
 
+const usageBody = {
+  period: "2026-09",
+  meters: [],
+  commandsPerDay: [],
+  byProject: [],
+  pricing: { freeCommands: 0, readCommandWeight: 1, storagePerGbCents: 0 },
+}
+
+const billingBody = {
+  plan: {
+    id: "free",
+    name: "Free",
+    basePriceCents: 0,
+    currency: "usd",
+    renewsAt: null,
+    monthToDateEstimateCents: 0,
+  },
+  paymentMethod: null,
+  billingEmail: null,
+  spendLimit: { limitCents: null, currentSpendCents: 0 },
+}
+
+const tier = (
+  id: string,
+  name: string,
+  basePriceCents: number,
+  features: ReadonlyArray<string>,
+) => ({
+  id,
+  name,
+  basePriceCents,
+  currency: "usd",
+  allowances: { commands: 1_000_000, commandCap: null, storageGb: 1, concurrentConnections: 10 },
+  overage: { commandCentsPerMillion: 0, storageCentsPerGbMonth: 0 },
+  features,
+  provisional: basePriceCents > 0,
+})
+
+const catalogBody = {
+  plans: [tier("free", "Free", 0, []), tier("pro", "Pro", 2_500, ["checkout"])],
+  readCommandWeight: 0.2,
+  provisional: true,
+}
+
 describe("loadSettings", () => {
   it("reads only the endpoints the route renders", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         respond({
           ...identity,
-          "/api/organizations/org_1/usage": () =>
-            json({
-              period: "2026-09",
-              meters: [],
-              commandsPerDay: [],
-              byProject: [],
-              pricing: { freeCommands: 0, readCommandWeight: 1, storagePerGbCents: 0 },
-            }),
-          "/api/organizations/org_1/billing": () =>
-            json({
-              plan: {
-                id: "free",
-                name: "Free",
-                basePriceCents: 0,
-                currency: "usd",
-                renewsAt: null,
-                monthToDateEstimateCents: 0,
-              },
-              paymentMethod: null,
-              billingEmail: null,
-              spendLimit: { limitCents: null, currentSpendCents: 0 },
-            }),
+          "/api/organizations/org_1/usage": () => json(usageBody),
+          "/api/organizations/org_1/billing": () => json(billingBody),
+          "/api/organizations/org_1/billing/invoices": () => json([]),
+          "/api/billing/plans": () => json(catalogBody),
         })
         const { data: page, sample } = yield* loadSettings(AppRoute.SettingsUsage())
         expect(page.usage?.period).toBe("2026-09")
-        expect(page.billing?.plan.id).toBe("free")
+        expect(page.billing).toBe(null)
         expect(page.members).toEqual([])
         expect(sample).toBe(false)
         expect(page.sampleSections).toEqual([])
+        expect(requested().toSorted()).toEqual(["/api/me", "/api/organizations/org_1/usage"])
+        fetch.mockClear()
+        const { data: billing } = yield* loadSettings(AppRoute.SettingsBilling())
+        expect(billing.plans?.plans.map((plan) => [plan.name, plan.checkout])).toEqual([
+          ["Free", null],
+          ["Pro", "pro"],
+        ])
+        expect(billing.billing?.plan).toMatchObject({ id: "free", name: "Free" })
         expect(requested().toSorted()).toEqual([
+          "/api/billing/plans",
           "/api/me",
           "/api/organizations/org_1/billing",
+          "/api/organizations/org_1/billing/invoices",
           "/api/organizations/org_1/usage",
         ])
+      }),
+    ))
+
+  it("words a 503 from billing calmly instead of as a lost connection", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const unavailable = yield* Schema.encodeEffect(Schema.fromJsonString(Unavailable))(
+          Unavailable.make({
+            message: "The organization's plan legacy is not in the pricing configuration",
+            retryAfterSeconds: 60,
+          }),
+        )
+        respond({
+          ...identity,
+          "/api/organizations/org_1/usage": () => reply(unavailable, 503),
+          "/api/organizations/org_1/billing": () => reply(unavailable, 503),
+          "/api/organizations/org_1/billing/invoices": () => json([]),
+          "/api/billing/plans": () => json(catalogBody),
+        })
+        for (const route of [AppRoute.SettingsUsage(), AppRoute.SettingsBilling()]) {
+          const error = yield* Effect.flip(loadSettings(route))
+          expect(error).toMatchObject({
+            kind: "Unavailable",
+            message:
+              "Billing can’t be read right now, so plan and usage figures aren’t shown. Try again in a minute.",
+          })
+        }
+      }),
+    ))
+
+  it("loads Billing and Usage for a plan the pricing doesn't know instead of failing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const unknownPlan = yield* Schema.encodeEffect(Schema.fromJsonString(Unavailable))(
+          Unavailable.make({
+            message: "The organization's plan legacy is not in the pricing configuration",
+            retryAfterSeconds: 60,
+            reason: "unknownPlan",
+          }),
+        )
+        respond({
+          ...identity,
+          "/api/organizations/org_1/usage": () => reply(unknownPlan, 503),
+          "/api/organizations/org_1/billing": () => reply(unknownPlan, 503),
+          "/api/organizations/org_1/billing/invoices": () => json([]),
+          "/api/billing/plans": () => json(catalogBody),
+        })
+        for (const route of [AppRoute.SettingsUsage(), AppRoute.SettingsBilling()]) {
+          const { data: page, sample } = yield* loadSettings(route)
+          expect(page.unknownPlan).toBe(true)
+          expect(page.billing).toBe(null)
+          expect(page.usage).toBe(null)
+          expect(sample).toBe(false)
+        }
+      }),
+    ))
+
+  it("says a spend limit wasn't saved for an unknown plan, and is unconfirmed in an outage", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const encode = Schema.encodeEffect(Schema.fromJsonString(Unavailable))
+        const unknownPlan = yield* encode(
+          Unavailable.make({
+            message: "Unknown plan",
+            retryAfterSeconds: 60,
+            reason: "unknownPlan",
+          }),
+        )
+        const outage = yield* encode(Unavailable.make({ message: "Down", retryAfterSeconds: 60 }))
+        let body = unknownPlan
+        respond({
+          ...identity,
+          "/api/organizations/org_1/billing/spend-limit": () => reply(body, 503),
+        })
+        expect(yield* Effect.flip(setSpendLimit(50_000))).toMatchObject({
+          kind: "Unavailable",
+          message:
+            "This organization’s plan isn’t recognised, so the spend limit wasn’t saved. Contact support.",
+        })
+        body = outage
+        expect(yield* Effect.flip(setSpendLimit(50_000))).toMatchObject({
+          kind: "Unavailable",
+          message:
+            "Billing couldn’t confirm the spend limit right now. Reload in a minute to see whether it was saved.",
+        })
       }),
     ))
 
@@ -335,14 +456,8 @@ describe("loadSettings", () => {
           ...identity,
           "/api/organizations/org_1/billing": () => reply(forbidden, 403),
           "/api/organizations/org_1/billing/invoices": () => json([]),
-          "/api/organizations/org_1/usage": () =>
-            json({
-              period: "2026-09",
-              meters: [],
-              commandsPerDay: [],
-              byProject: [],
-              pricing: { freeCommands: 0, readCommandWeight: 1, storagePerGbCents: 0 },
-            }),
+          "/api/billing/plans": () => json(catalogBody),
+          "/api/organizations/org_1/usage": () => json(usageBody),
         })
         const error = yield* Effect.flip(loadSettings(AppRoute.SettingsBilling()))
         expect(error.kind).toBe("Forbidden")

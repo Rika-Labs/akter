@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Predicate, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import type * as Inspection from "../../protocol/inspection.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
@@ -428,44 +428,81 @@ export const deadLetters = ({ tenant, limit, after }: DeadLettersPage) =>
 
 /** A tenant-wide keyset page of workflow executions. */
 interface WorkflowsPage extends Page {
-  /** `open` is every execution not yet finished; the others name one stored status. */
-  readonly status: "open" | "all" | "running" | "suspended" | "finished"
+  /**
+   * `open` is every execution not yet finished; `running`, `suspended` and
+   * `finished` name one stored status; `completed` and `failed` are finished
+   * executions whose result is, or is not, a success.
+   */
+  readonly status: "open" | "all" | "running" | "suspended" | "finished" | "completed" | "failed"
   /** Keyset cursor: the last execution of the previous page. */
   readonly after?: { readonly startedAtMs: number; readonly executionId: string } | undefined
 }
 
+/** Whether a finished execution's stored result is a success, or `undefined` when it does not decode. */
+const succeeded = (row: WorkflowRow) => {
+  const result = decodeBytes(row.result)
+
+  if (result === null || !("json" in result) || !isTaggedJson(result.json)) return undefined
+
+  return Predicate.isTagged(result.json, "Success")
+}
+
+const isTaggedJson = Schema.is(Schema.Struct({ _tag: Schema.String }))
+
 /**
  * The tenant's workflow executions, newest first, one page after `after`, each
  * with its recorded steps. The steps are read for the same page of executions,
- * so each listed execution has all its steps.
+ * so each listed execution has all its steps. A finished execution's result
+ * is compressed, so `completed` and `failed` read finished executions
+ * `MAX_LIMIT` at a time and keep those whose result matches until the page is
+ * full; a result that does not decode matches neither.
  */
 export const workflows = ({ tenant, limit, status, after }: WorkflowsPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
+    const stored = status === "completed" || status === "failed" ? "finished" : status
 
     const page = `tenant_id = $1
       AND ($2 = 'all' OR ($2 = 'open' AND status <> 'finished') OR status = $2)
       AND ($3::int8 IS NULL OR started_at_ms < $3::int8
         OR (started_at_ms = $3::int8 AND execution_id COLLATE "C" > $4))`
 
-    const params = [tenant, status, after?.startedAtMs ?? null, after?.executionId ?? "", limit + 1]
+    const read = (from: WorkflowsPage["after"], size: number) =>
+      sql.unsafe<WorkflowRow>(
+        `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows WHERE ${page}
+          ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5`,
+        [tenant, stored, from?.startedAtMs ?? null, from?.executionId ?? "", size],
+      )
 
-    const rows = yield* sql.unsafe<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows WHERE ${page}
-        ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5`,
-      params,
-    )
+    const rows: Array<WorkflowRow> = []
 
-    const steps = yield* sql.unsafe<StepRow>(
-      `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
-        WHERE tenant_id = $1 AND execution_id IN (SELECT execution_id FROM durable.workflows
-          WHERE ${page} ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5)
-        ORDER BY started_at_ms, step COLLATE "C", attempt`,
-      params,
-    )
+    if (stored === status) rows.push(...(yield* read(after, limit + 1)))
+    else {
+      let from = after
+
+      while (rows.length <= limit) {
+        const batch = yield* read(from, MAX_LIMIT)
+        rows.push(...batch.filter((row) => succeeded(row) === (status === "completed")))
+        const last = batch.at(-1)
+
+        if (batch.length < MAX_LIMIT || last === undefined) break
+
+        from = { startedAtMs: last.startedAtMs, executionId: last.executionId }
+      }
+    }
 
     const items = rows.slice(0, limit)
     const last = items.at(-1)
+
+    const steps =
+      items.length === 0
+        ? []
+        : yield* sql.unsafe<StepRow>(
+            `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
+              WHERE tenant_id = $1 AND execution_id IN (${items.map((_, index) => `$${String(index + 2)}`).join(", ")})
+              ORDER BY started_at_ms, step COLLATE "C", attempt`,
+            [tenant, ...items.map((row) => row.executionId)],
+          )
 
     return {
       workflows: items.map((row) => workflowOf(row, steps)),
@@ -476,16 +513,18 @@ export const workflows = ({ tenant, limit, status, after }: WorkflowsPage) =>
     } satisfies typeof Inspection.WorkflowsPage.Type
   })
 
-/** A keyset page of names, optionally one name only. */
+/** A keyset page of names, optionally one name only or those starting with a prefix. */
 interface NamesPage extends Page {
   /** Reads only this name. */
   readonly name?: string | undefined
+  /** Reads only names starting with it. */
+  readonly prefix?: string | undefined
   /** Keyset cursor: the last name of the previous page. */
   readonly after?: string | undefined
 }
 
 /** The tenant's actor types by name, each with how many actors it has, one page after `after`. */
-export const actorTypes = ({ tenant, limit, name, after }: NamesPage) =>
+export const actorTypes = ({ tenant, limit, name, prefix, after }: NamesPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
@@ -494,6 +533,7 @@ export const actorTypes = ({ tenant, limit, name, after }: NamesPage) =>
       FROM durable.actors
       WHERE tenant_id = ${tenant}
         AND ${name === undefined ? sql`TRUE` : sql`actor_type = ${name}`}
+        AND ${prefix === undefined ? sql`TRUE` : sql`starts_with(actor_type, ${prefix})`}
         AND ${after === undefined ? sql`TRUE` : sql`actor_type COLLATE "C" > ${after}`}
       GROUP BY actor_type
       ORDER BY actor_type COLLATE "C"

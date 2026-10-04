@@ -14,12 +14,18 @@ import {
   CommandExpired,
   CommandRefused,
   Conflict,
+  ConnectionLimitExceeded,
   Forbidden,
   NotFound,
   NotImplemented,
+  QuotaExceeded,
+  QuotaUnbound,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
   RunnerDefect,
   Unavailable,
 } from "@akter/cloud-api"
+import * as Framework from "@rikalabs/akter/client"
 import {
   Context,
   DateTime,
@@ -33,6 +39,7 @@ import {
   Schema,
 } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
+import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
 import { Inspection } from "@rikalabs/akter/client"
 import { Access, attributedSubject } from "./access.ts"
@@ -78,18 +85,30 @@ const unavailable = (what: string) => Effect.die(new Error(`Runtime request fail
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
-/** The framework's refusals the control plane tells apart; any other reason is an outage or a defect. */
+/**
+ * The framework's refusals the control plane tells apart. Any other framework
+ * reason answered 4xx reaches the console as a `CommandRefused` carrying it;
+ * anything else is an outage or a defect. The edge's usage refusals decode
+ * straight into the API's errors, which share the framework's tags and
+ * payloads, so no caller reads the envelope. The edge serves its own
+ * `QuotaUnbound` with a 503, so it is read before the status says outage.
+ */
 const Reason = Schema.Union([
   Schema.TaggedStruct("NotCreated", {}),
   Schema.TaggedStruct("CommandConflict", {}),
   Schema.TaggedStruct("CommandExpired", {}),
   Schema.TaggedStruct("Unauthorized", { code: Schema.String }),
-  Schema.TaggedStruct("InvalidInput", { code: Schema.String }),
+  Framework.InvalidInput,
+  QuotaExceeded,
+  SpendLimitExceeded,
+  ConnectionLimitExceeded,
+  StorageQuotaExceeded,
+  QuotaUnbound,
 ])
 
 const ActorErrorBody = Schema.TaggedStruct("ActorError", { reason: Reason })
-const GenericActorErrorBody = Schema.TaggedStruct("ActorError", {
-  reason: Schema.Struct({ _tag: Schema.String }),
+const FrameworkActorErrorBody = Schema.TaggedStruct("ActorError", {
+  reason: Framework.ActorError.fields.reason,
 })
 
 const DefectBody = Schema.TaggedStruct("Defect", {})
@@ -101,7 +120,7 @@ const Job = Schema.Struct({ job: Schema.String, jobId: Schema.String, attempts: 
 const ActorJobs = Schema.Struct({ jobs: Schema.Array(Job), deadLetters: Schema.Array(Job) })
 
 const decodeActorError = Schema.decodeUnknownOption(ActorErrorBody)
-const decodeGenericActorError = Schema.decodeUnknownOption(GenericActorErrorBody)
+const decodeFrameworkActorError = Schema.decodeUnknownOption(FrameworkActorErrorBody)
 const decodeCommandId = Schema.decodeUnknownEffect(CommandId)
 
 /** The most rows the runners' inspector returns for one list. */
@@ -177,81 +196,99 @@ const timelineOf = (entry: Inspection.TimelineRow): ActorTimelineEntry => ({
   caller: callerOf(entry.callerKey),
 })
 
-/** Each event name's newest retained event, from rows the inspector lists newest first. */
-const latestOf = (events: ReadonlyArray<Inspection.EventRow>): Array<ActorEvent> => {
-  const latest = new Map<string, Inspection.EventRow>()
-
-  for (const event of events) if (!latest.has(event.event)) latest.set(event.event, event)
-
-  return [...latest.values()].map((event) => ({
-    name: event.event,
-    cursor: String(event.sequence),
-    emittedAt: instant(event.emittedAtMs),
-    subscribers: null,
-  }))
-}
+const eventOf = (event: Inspection.LatestEventRow): ActorEvent => ({
+  name: event.event,
+  cursor: String(event.sequence),
+  emittedAt: instant(event.emittedAtMs),
+  subscribers: null,
+})
 
 /**
  * One workflow run as the console reads it. The step is the one the run
  * started last, numbered by the distinct steps it has recorded; the runner
  * does not know how many steps the workflow has. A suspended run waits on its
  * unsettled clock step (a timer) or wait step (an event). A finished run
- * completed when its stored result is a success and failed otherwise.
+ * completed when its stored result is a success and failed otherwise; its
+ * status is null when the result does not decode.
  */
-const workflowOf = (row: Inspection.WorkflowRow) =>
-  Effect.gen(function* () {
-    const names: Array<string> = []
+const workflowOf = (row: Inspection.WorkflowRow): Workflow => {
+  const names: Array<string> = []
 
-    for (const step of row.steps.toSorted((left, right) => left.startedAtMs - right.startedAtMs))
-      if (!names.includes(step.step)) names.push(step.step)
+  for (const step of row.steps.toSorted((left, right) => left.startedAtMs - right.startedAtMs))
+    if (!names.includes(step.step)) names.push(step.step)
 
-    const last = row.steps.reduce<Inspection.StepRow | undefined>(
-      (latest, step) =>
-        latest === undefined || step.startedAtMs >= latest.startedAtMs ? step : latest,
-      undefined,
-    )
+  const last = row.steps.reduce<Inspection.StepRow | undefined>(
+    (latest, step) =>
+      latest === undefined || step.startedAtMs >= latest.startedAtMs ? step : latest,
+    undefined,
+  )
 
-    const pending = row.steps.find((step) => step.settledAtMs === null)
+  const pending = row.steps.find((step) => step.settledAtMs === null)
 
-    const waitingFor: Workflow["waitingFor"] =
-      row.status !== "suspended" || pending === undefined
+  const waitingFor: Workflow["waitingFor"] =
+    row.status !== "suspended" || pending === undefined
+      ? null
+      : pending.kind === "clock"
+        ? { kind: "timer", name: pending.step }
+        : pending.kind === "wait"
+          ? { kind: "event", name: pending.waitEvent ?? pending.step }
+          : null
+
+  const status: Workflow["status"] =
+    row.status === "running"
+      ? "running"
+      : row.status === "suspended"
+        ? "waiting"
+        : row.status === "finished" &&
+            row.result !== null &&
+            "json" in row.result &&
+            isTaggedJson(row.result.json)
+          ? Predicate.isTagged(row.result.json, "Success")
+            ? "completed"
+            : "failed"
+          : null
+
+  return {
+    id: row.executionId,
+    name: row.workflow,
+    actor: `${row.actorType}/${row.actorId}`,
+    step:
+      last === undefined
         ? null
-        : pending.kind === "clock"
-          ? { kind: "timer", name: pending.step }
-          : pending.kind === "wait"
-            ? { kind: "event", name: pending.waitEvent ?? pending.step }
-            : null
+        : { index: names.indexOf(last.step) + 1, total: null, name: last.step },
+    waitingFor,
+    startedAt: instant(row.startedAtMs),
+    status,
+  }
+}
 
-    let status: Workflow["status"]
+const isTaggedJson = Schema.is(Schema.Struct({ _tag: Schema.String }))
 
-    if (row.status === "running") status = "running"
-    else if (row.status === "suspended") status = "waiting"
-    else if (row.status === "finished" && row.result !== null && "json" in row.result)
-      status = Predicate.isTagged(row.result.json, "Success") ? "completed" : "failed"
-    else return yield* unavailable(`workflow ${row.executionId} has status ${row.status}`)
-
-    return {
-      id: row.executionId,
-      name: row.workflow,
-      actor: `${row.actorType}/${row.actorId}`,
-      step:
-        last === undefined
-          ? null
-          : { index: names.indexOf(last.step) + 1, total: null, name: last.step },
-      waitingFor,
-      startedAt: instant(row.startedAtMs),
-      status,
-    } satisfies Workflow
-  })
+/**
+ * A stored failure cause as a tenant may read it: its first line, the error's
+ * tag and message, without the stack frames or file paths the runner's
+ * pretty-printed cause carries, which name the deployment's own files.
+ */
+export const redactCause = (cause: string) =>
+  (cause.split("\n").find((line) => line.trim() !== "") ?? "")
+    .replace(/\s+at\s+\(?(?:file:\/\/)?\/\S*/gu, "")
+    .replace(/\(?(?:file:\/\/)?(?:\/[\w.@+-]+){2,}\.[cm]?[jt]sx?(?::\d+){0,2}\)?/gu, "")
+    .replace(/:\s*$/u, "")
+    .trim()
 
 /** A page cursor the console passes back: the runner's own `next`, opaque to the caller. */
 const cursorOf = (next: Schema.Json | null) =>
   next === null ? null : Buffer.from(JSON.stringify(next), "utf8").toString("base64url")
 
+/** An epoch millisecond or event sequence a cursor carries; the inspector refuses anything else. */
+const Position = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+)
+
 const ReceiptCursor = Schema.Struct({
   actorType: Schema.String,
   actorId: Schema.String,
-  expiresAtMs: Schema.Finite,
+  expiresAtMs: Position,
   commandId: Schema.String,
 })
 
@@ -326,14 +363,16 @@ const stateOf = (entries: Inspection.ActorDetail["state"]): Schema.Json => {
  * inspector reads only the durable views, which hold no turn count, owned
  * rows, subscriber or socket counts, activation, placement on a runner or
  * mailbox, and keep no commit time on a receipt, so those are null. Each
- * event name keeps its newest retained cursor and emission time, the event
- * feed's cursor is the actor's last event sequence, and the timeline is its
- * newest page.
+ * event name keeps its newest retained cursor and emission time, read like
+ * the event list so no name older than the detail's newest events is lost,
+ * the event feed's cursor is the actor's last event sequence, and the
+ * timeline is its newest page.
  */
 const toInspector = (
   address: string,
   tenant: string,
   detail: Inspection.ActorDetail,
+  events: ReadonlyArray<ActorEvent>,
   timeline: ReadonlyArray<Inspection.TimelineRow>,
 ): ActorInspector => ({
   address,
@@ -341,7 +380,7 @@ const toInspector = (
   turn: null,
   tables: null,
   receipts: detail.receipts.map(receiptOf),
-  events: latestOf(detail.events),
+  events,
   jobs: jobsOf(detail),
   connections: {
     sockets: null,
@@ -402,7 +441,10 @@ export const makeRuntime = Effect.gen(function* () {
     const body = Option.getOrUndefined(decodeJson(text))
     if (Schema.is(DefectBody)(body)) return yield* RunnerDefect.make({})
 
-    if ([502, 503, 504].includes(response.status))
+    if (
+      [502, 503, 504].includes(response.status) &&
+      Option.getOrUndefined(decodeActorError(body))?.reason._tag !== "QuotaUnbound"
+    )
       return yield* Unavailable.make({
         message: "The deployment is temporarily unavailable",
         retryAfterSeconds: 1,
@@ -580,18 +622,18 @@ export const makeRuntime = Effect.gen(function* () {
     const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
 
     if (refusal === undefined) {
-      const generic = Option.getOrUndefined(decodeGenericActorError(body))
-      if (generic?.reason._tag === "MailboxFull")
+      const framework = Option.getOrUndefined(decodeFrameworkActorError(body))?.reason
+      if (framework?._tag === "MailboxFull")
         return yield* Unavailable.make({
           message: "The actor mailbox is temporarily full",
           retryAfterSeconds: 1,
         })
 
-      if (generic !== undefined && status >= 400 && status < 500)
+      if (framework !== undefined && status >= 400 && status < 500)
         return yield* CommandRefused.make({
           commandId,
-          reasonTag: generic.reason._tag,
-          reason: body,
+          reasonTag: framework._tag,
+          reason: framework,
         })
 
       if (
@@ -627,10 +669,15 @@ export const makeRuntime = Effect.gen(function* () {
                 message: "The deployment could not authorize the request",
                 retryAfterSeconds: 1,
               }),
-        InvalidInput: ({ code }) =>
-          code === "unknown_route"
+        InvalidInput: (invalid) =>
+          invalid.code === "unknown_route"
             ? NotFound.make({ resource: "command", id: `${input.address}/${input.command}` })
-            : CommandRefused.make({ commandId, reasonTag: "InvalidInput", reason: body }),
+            : CommandRefused.make({ commandId, reasonTag: "InvalidInput", reason: invalid }),
+        QuotaExceeded: (refused) => refused,
+        SpendLimitExceeded: (refused) => refused,
+        ConnectionLimitExceeded: (refused) => refused,
+        StorageQuotaExceeded: (refused) => refused,
+        QuotaUnbound: (refused) => refused,
       }),
     )
   })
@@ -655,6 +702,38 @@ export const makeRuntime = Effect.gen(function* () {
     return jobsOf(found)
   })
 
+  /**
+   * The newest retained event of each name one actor emitted, every page of
+   * it, or `undefined` when the tenant has no such actor.
+   */
+  const latestEvents = Effect.fn("Runtime.latestEvents")(function* (
+    target: RuntimeTarget,
+    type: string,
+    id: string,
+  ) {
+    const events: Array<ActorEvent> = []
+    let after: string | undefined
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const found = yield* read(
+        target,
+        "/latest-events",
+        { type, id, after, limit: String(INSPECTOR_ROWS) },
+        Inspection.LatestEventsPage,
+      )
+
+      if (found === undefined) return undefined
+
+      events.push(...found.events.map(eventOf))
+
+      if (found.next === null) return events
+
+      after = found.next
+    }
+
+    return yield* unavailable(`inspector /latest-events had more than ${MAX_PAGES} pages`)
+  })
+
   const inspectActor = Effect.fn("Runtime.inspectActor")(function* (input: {
     readonly organizationId: string
     readonly projectId: string
@@ -668,6 +747,7 @@ export const makeRuntime = Effect.gen(function* () {
 
     if (found === undefined) return yield* NotFound.make({ resource: "actor", id: input.address })
 
+    const events = yield* latestEvents(target, type, id)
     const timeline = yield* read(
       target,
       "/timeline",
@@ -675,13 +755,14 @@ export const makeRuntime = Effect.gen(function* () {
       Inspection.TimelinePage,
     )
 
-    return toInspector(input.address, target.tenant, found, timeline?.entries ?? [])
+    return toInspector(input.address, target.tenant, found, events ?? [], timeline?.entries ?? [])
   })
 
   return {
     sendCommand,
     actorJobs,
     inspectActor,
+    latestEvents,
     read,
     readAll,
     everyName,
@@ -693,20 +774,20 @@ const notImplemented = (operation: string) => Effect.fail(NotImplemented.make({ 
 const ActorCursor = Schema.Struct({ actorType: Schema.String, actorId: Schema.String })
 
 const TimelineCursor = Schema.Struct({
-  sequence: Schema.Finite,
+  sequence: Position,
   kind: Schema.Literals(["command", "event"]),
 })
 
-const DeadLetterCursor = Schema.Struct({ deadAtMs: Schema.Finite, jobId: Schema.String })
+const DeadLetterCursor = Schema.Struct({ deadAtMs: Position, jobId: Schema.String })
 
-const WorkflowCursor = Schema.Struct({ startedAtMs: Schema.Finite, executionId: Schema.String })
+const WorkflowCursor = Schema.Struct({ startedAtMs: Position, executionId: Schema.String })
 
-/** The stored status a console workflow status reads; a finished run is then told apart by its result. */
-const storedStatus = {
+/** The inspector status a console workflow status reads. */
+const inspectorStatus = {
   running: "running",
   waiting: "suspended",
-  completed: "finished",
-  failed: "finished",
+  completed: "completed",
+  failed: "failed",
 } as const
 
 const decodeDeadLetterId = Schema.decodeUnknownEffect(DeadLetterId)
@@ -728,6 +809,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
     const access = yield* Access
     const edge = yield* RuntimeEdge
     const runtime = yield* makeRuntime
+    const sql = yield* SqlClient.SqlClient
 
     const environment = (params: { readonly projectId: string; readonly environment: string }) =>
       access
@@ -763,18 +845,13 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
     })
 
     const actorPage = <A, I>(
-      params: {
-        readonly projectId: string
-        readonly environment: string
-        readonly actorType: string
-        readonly key: string
-      },
+      target: RuntimeTarget,
+      params: { readonly actorType: string; readonly key: string },
       path: string,
       extra: Readonly<Record<string, string | undefined>>,
       schema: Schema.Codec<A, I>,
     ) =>
       Effect.gen(function* () {
-        const target = yield* environment(params)
         const found = yield* runtime.read(
           target,
           path,
@@ -794,9 +871,16 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
     return handlers
       .handle("getOverview", ({ params }) =>
         Effect.gen(function* () {
-          const target = yield* environment(params)
+          const organizationId = yield* access.project(params.projectId)
+          const target = yield* edge.resolve({ ...params, organizationId })
           const { counts } = yield* overview(target)
           const jobs = yield* jobTypes(target)
+          const [deployed] = yield* sql<{ at: Date | null }>`
+            SELECT max(created_at) AS at FROM deployment_rollout
+            WHERE organization_id = ${organizationId} AND tenant_id = ${organizationId}
+              AND project_id = ${params.projectId} AND environment = ${params.environment}`.pipe(
+            Effect.orDie,
+          )
 
           return {
             commands: null,
@@ -813,7 +897,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
               maxMailbox: null,
               parkedSockets: null,
               outboxLagP99Ms: null,
-              lastDeployAt: null,
+              lastDeployAt: deployed?.at == null ? null : DateTime.fromDateUnsafe(deployed.at),
             },
             recentDeployments: null,
           }
@@ -832,6 +916,12 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("search", ({ params, query }) =>
         Effect.gen(function* () {
           const target = yield* environment(params)
+          const types = yield* runtime.readAll(
+            target,
+            "/actor-types",
+            { prefix: query.q, limit: String(SEARCH_ROWS) },
+            Inspection.ActorTypesPage,
+          )
           const found = yield* runtime.readAll(
             target,
             "/actors",
@@ -839,12 +929,20 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
             Inspection.ActorsPage,
           )
 
-          return found.actors.map((actor) => ({
-            kind: "actor" as const,
-            id: `${actor.actorType}/${actor.actorId}`,
-            title: `${actor.actorType}/${actor.actorId}`,
-            subtitle: null,
-          }))
+          return [
+            ...types.actorTypes.map((type) => ({
+              kind: "actor-type" as const,
+              id: type.actorType,
+              title: type.actorType,
+              subtitle: null,
+            })),
+            ...found.actors.map((actor) => ({
+              kind: "actor" as const,
+              id: `${actor.actorType}/${actor.actorId}`,
+              title: `${actor.actorType}/${actor.actorId}`,
+              subtitle: null,
+            })),
+          ]
         }),
       )
       .handle("listActorTypes", ({ params }) =>
@@ -858,7 +956,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
           const [row] = yield* actorTypes(yield* environment(params), params.actorType)
 
           if (row === undefined)
-            return yield* NotFound.make({ resource: "actorType", id: params.actorType })
+            return yield* NotFound.make({ resource: "actor-type", id: params.actorType })
 
           return summaryOf(row)
         }),
@@ -914,8 +1012,10 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       .handle("listActorTables", ({ params }) => allowed(params, "runtime.listActorTables"))
       .handle("listActorReceipts", ({ params, query }) =>
         Effect.gen(function* () {
+          const target = yield* environment(params)
           const after = yield* cursor(ReceiptCursor, query.cursor)
           const page = yield* actorPage(
+            target,
             params,
             "/receipts",
             { limit: String(query.limit ?? PAGE_ROWS), ...receiptParams(after) },
@@ -927,30 +1027,19 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       )
       .handle("listActorEvents", ({ params }) =>
         Effect.gen(function* () {
-          const events: Array<Inspection.LatestEventRow> = []
-          let after: string | undefined
+          const events = yield* runtime.latestEvents(
+            yield* environment(params),
+            params.actorType,
+            params.key,
+          )
 
-          for (let page = 0; page < MAX_PAGES; page++) {
-            const found = yield* actorPage(
-              params,
-              "/latest-events",
-              { after, limit: String(INSPECTOR_ROWS) },
-              Inspection.LatestEventsPage,
-            )
-            events.push(...found.events)
+          if (events === undefined)
+            return yield* NotFound.make({
+              resource: "actor",
+              id: `${params.actorType}/${params.key}`,
+            })
 
-            if (found.next === null)
-              return events.map((event) => ({
-                name: event.event,
-                cursor: String(event.sequence),
-                emittedAt: instant(event.emittedAtMs),
-                subscribers: null,
-              }))
-
-            after = found.next
-          }
-
-          return yield* unavailable(`inspector /latest-events had more than ${MAX_PAGES} pages`)
+          return events
         }),
       )
       .handle("listActorJobs", ({ params }) =>
@@ -967,8 +1056,10 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
       )
       .handle("listActorTimeline", ({ params, query }) =>
         Effect.gen(function* () {
+          const target = yield* environment(params)
           const before = yield* cursor(TimelineCursor, query.cursor)
           const page = yield* actorPage(
+            target,
             params,
             "/timeline",
             {
@@ -1068,7 +1159,7 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
                 jobId: letter.jobId,
                 actor: `${letter.actorType}/${letter.actorId}`,
                 attempts: letter.attempts,
-                lastError: letter.cause,
+                lastError: redactCause(letter.cause),
                 since: instant(letter.deadAtMs),
               })),
             ),
@@ -1094,19 +1185,14 @@ export const RuntimeLive = HttpApiBuilder.group(CloudApi, "runtime", (handlers) 
             target,
             "/workflows",
             {
-              status: query.status === undefined ? "all" : storedStatus[query.status],
+              status: query.status === undefined ? "all" : inspectorStatus[query.status],
               limit: String(query.limit ?? PAGE_ROWS),
               afterStartedAtMs: after === undefined ? undefined : String(after.startedAtMs),
               afterExecutionId: after?.executionId,
             },
             Inspection.WorkflowsPage,
           )
-          const runs = yield* Effect.forEach(page.workflows, workflowOf)
-
-          return {
-            items: runs.filter((run) => query.status === undefined || run.status === query.status),
-            nextCursor: cursorOf(page.next),
-          }
+          return { items: page.workflows.map(workflowOf), nextCursor: cursorOf(page.next) }
         }),
       )
       .handle("getTimers", ({ params }) =>

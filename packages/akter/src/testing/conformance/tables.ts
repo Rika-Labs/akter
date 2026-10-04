@@ -138,6 +138,8 @@ const Capture = Actor.command("Capture")
 
 const CaptureGroup = Actor.command("CaptureGroup")
 
+const CaptureUnbound = Actor.command("CaptureUnbound")
+
 const Replay = Actor.command("Replay")
 
 const List = Actor.query("List", { success: Schema.Array(Note) })
@@ -197,6 +199,7 @@ export const Notebook = Actor.make("Notebook", {
     WriteThenHold,
     Capture,
     CaptureGroup,
+    CaptureUnbound,
     Replay,
     List,
     Get,
@@ -321,6 +324,12 @@ const NotebookLive = (fixture: TablesFixture) =>
       CaptureGroup: Effect.fnUntraced(function* () {
         fixture.escaped = (yield* Notebook.Turn).group((db) =>
           db.select({ id: notes.id }).from(notes),
+        )
+      }),
+      CaptureUnbound: Effect.fnUntraced(function* () {
+        const turn = yield* Notebook.Turn
+        fixture.escaped = Effect.suspend(() =>
+          turn.rows(notes).insert({ id: "unbound", body: "unbound" }),
         )
       }),
       Replay: () => Effect.suspend(() => fixture.escaped).pipe(Effect.asVoid),
@@ -656,8 +665,15 @@ export const tablesConformance: ReadonlyArray<ConformanceCase<TablesFixture>> = 
           expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
             "Table capability escaped its turn",
           )
+          yield* notebook.CaptureUnbound()
+          expect(defect(yield* fixture.escaped.pipe(Effect.exit))).toContain(
+            "Table capability escaped its turn",
+          )
+          expect(defect(yield* notebook.Replay().pipe(Effect.exit))).toContain(
+            "Table capability escaped its turn",
+          )
           expect(yield* notebook.List()).toEqual([{ id: "captured", body: "captured", rank: 0 }])
-          expect(yield* test.inspect(notebook.ref)).toMatchObject({ ...rowsOf(1), receipts: 2 })
+          expect(yield* test.inspect(notebook.ref)).toMatchObject({ ...rowsOf(1), receipts: 3 })
         }),
       ),
   },

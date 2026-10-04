@@ -1,12 +1,17 @@
-import type { RegionId } from "@akter/cloud-api"
+import { OrganizationPlan, type RegionId } from "@akter/cloud-api"
 import { Schema as S } from "effect"
+import { PlanName } from "../workspace/model.ts"
 
-/** An invitation to join an organization, as shown before accepting it. */
+/**
+ * An invitation to join an organization, as shown before accepting it. `catalog` names the plans
+ * when the plan catalog could be read, and is empty otherwise.
+ */
 export const InvitationPage = S.TaggedStruct("InvitationPage", {
   id: S.String,
   organization: S.String,
   members: S.Finite,
-  plan: S.String,
+  plan: OrganizationPlan,
+  catalog: S.Array(PlanName),
   inviter: S.String,
   email: S.String,
   role: S.String,

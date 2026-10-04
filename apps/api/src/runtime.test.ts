@@ -3,16 +3,33 @@ import {
   CommandExpired as ExpiredKey,
   CommandRefused,
   Conflict,
+  ConnectionLimitExceeded,
   Forbidden,
   NotFound,
+  QuotaExceeded,
+  QuotaUnbound,
+  SpendLimitExceeded,
+  StorageQuotaExceeded,
   RunnerDefect,
   Unavailable as CloudUnavailable,
 } from "@akter/cloud-api"
+import * as Framework from "@rikalabs/akter/client"
 import { expect, it } from "@effect/vitest"
-import { Cause, Clock, Context, DateTime, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import {
+  Cause,
+  Clock,
+  Context,
+  DateTime,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Redacted,
+  Schema,
+} from "effect"
 import { FetchHttpClient } from "effect/http"
 import { type CommandAssignment, commandPayloadHash, Repository } from "./repository.ts"
-import { makeRuntime, RuntimeEdge } from "./runtime.ts"
+import { makeRuntime, redactCause, RuntimeEdge } from "./runtime.ts"
 
 interface Seen {
   readonly method: string
@@ -27,8 +44,13 @@ type Refusal =
   | CommandFailed
   | CommandRefused
   | Conflict
+  | ConnectionLimitExceeded
   | Forbidden
   | NotFound
+  | QuotaExceeded
+  | QuotaUnbound
+  | SpendLimitExceeded
+  | StorageQuotaExceeded
   | CloudUnavailable
   | ExpiredKey
   | RunnerDefect
@@ -80,6 +102,13 @@ const MailboxFull = Schema.TaggedStruct("MailboxFull", {})
 const ActorError = Schema.TaggedStruct("ActorError", {
   reason: Schema.Json,
   isRetryable: Schema.Boolean,
+})
+
+/** The envelope the edge serves a usage refusal in, with its `retry-after` in milliseconds. */
+const ServedActorError = Schema.TaggedStruct("ActorError", {
+  reason: Schema.Json,
+  isRetryable: Schema.Boolean,
+  retryAfter: Schema.Finite,
 })
 
 const refused = (reason: Schema.Json, status: number) =>
@@ -577,14 +606,20 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           [refused(CommandExpired.make({ commandId: "v1.expired" }), 410), Schema.is(ExpiredKey)],
           [
             refused(InvalidCommandId.make({ commandId: "v1.bad", code: "malformed" }), 400),
-            (error) => Schema.is(CommandRefused)(error) && error.reasonTag === "InvalidCommandId",
+            (error) =>
+              Schema.is(CommandRefused)(error) &&
+              error.reasonTag === "InvalidCommandId" &&
+              Schema.is(Framework.InvalidCommandId)(error.reason) &&
+              error.reason.code === "malformed",
           ],
           [
             refused(InvalidInput.make({ code: "decode" }), 400),
             (error) =>
               Schema.is(CommandRefused)(error) &&
               error.commandId === mintedId(1) &&
-              error.reasonTag === "InvalidInput",
+              error.reasonTag === "InvalidInput" &&
+              Schema.is(Framework.InvalidInput)(error.reason) &&
+              error.reason.code === "decode",
           ],
         ]
 
@@ -596,6 +631,97 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             .pipe(Effect.flip)
 
           expect(expected(error)).toBe(true)
+        }
+      }),
+  )
+
+  it.effect(
+    "answers each edge usage refusal as its typed error with the framework's tag and payload, never a defect",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+        const quota = {
+          organizationId: "org1",
+          period: "2026-10",
+          limitUnits: 5_000_000,
+          usedUnits: 4_999_998,
+          requestedUnits: 5,
+          retryAfterMs: 86_400_000,
+        }
+        const spend = {
+          organizationId: "org1",
+          period: "2026-10",
+          limitCents: 1003,
+          projectedCents: 1004,
+        }
+        const connections = { organizationId: "org1", kind: "sse" as const, limit: 3, open: 3 }
+        const storage = {
+          organizationId: "org1",
+          deployment: "dep1",
+          tenant: "acme",
+          limitBytes: 500_000_000,
+          usedBytes: 500_000_001,
+        }
+        const served = <S extends Schema.Top & { readonly Type: { readonly _tag: string } }>(
+          schema: S,
+          error: S["Type"],
+          status: number,
+        ) =>
+          Schema.encodeEffect(Schema.toCodecJson(schema))(error).pipe(
+            Effect.orDie,
+            Effect.map((reason) =>
+              json(
+                ServedActorError.make({
+                  reason: reason as Schema.Json,
+                  isRetryable: false,
+                  retryAfter: 86_400_000,
+                }),
+                status,
+              ),
+            ),
+          )
+
+        const cases = [
+          [
+            yield* served(Framework.QuotaExceeded, Framework.QuotaExceeded.make(quota), 429),
+            QuotaExceeded.make(quota),
+          ],
+          [
+            yield* served(
+              Framework.SpendLimitExceeded,
+              Framework.SpendLimitExceeded.make(spend),
+              402,
+            ),
+            SpendLimitExceeded.make(spend),
+          ],
+          [
+            yield* served(
+              Framework.ConnectionLimitExceeded,
+              Framework.ConnectionLimitExceeded.make(connections),
+              429,
+            ),
+            ConnectionLimitExceeded.make(connections),
+          ],
+          [
+            yield* served(
+              Framework.StorageQuotaExceeded,
+              Framework.StorageQuotaExceeded.make(storage),
+              429,
+            ),
+            StorageQuotaExceeded.make(storage),
+          ],
+        ] as const
+
+        for (const [index, [answer, expected]] of cases.entries()) {
+          yield* edge.answer(runner(() => answer.clone()))
+
+          const error = yield* runtime
+            .sendCommand({ ...command, commandId: `client-usage-${index}` })
+            .pipe(Effect.flip)
+
+          expect(error).toBeInstanceOf(expected.constructor)
+          expect(error).toEqual(expected)
         }
       }),
   )
@@ -676,6 +802,41 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           yield* runtime.sendCommand({ ...command, commandId: "expired-race" }).pipe(Effect.flip),
         ).toEqual(ExpiredKey.make({ commandId: "expired-race" }))
         expect(forwarded(edge.seen)).toEqual([])
+      }),
+  )
+
+  it.effect(
+    "answers the edge's 503 QuotaUnbound as a typed 402 refusal for each reason, while the edge's quota outage stays a reasonless Unavailable",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+
+        for (const reason of ["tenant", "account", "plan"] as const) {
+          const unbound = { deployment: "dep1", tenant: "acme", reason }
+          const served = yield* Schema.encodeEffect(Schema.toCodecJson(QuotaUnbound))(
+            QuotaUnbound.make(unbound),
+          ).pipe(Effect.orDie)
+          yield* edge.answer(runner(() => refused(served, 503)))
+
+          const error = yield* runtime
+            .sendCommand({ ...command, commandId: `client-unbound-${reason}` })
+            .pipe(Effect.flip)
+
+          expect(error).toBeInstanceOf(QuotaUnbound)
+          expect(error).toEqual(QuotaUnbound.make(unbound))
+        }
+
+        yield* edge.answer(
+          runner(() => refused(Schema.TaggedStruct("QuotaUnavailable", {}).make({}), 503)),
+        )
+
+        const outage = yield* runtime
+          .sendCommand({ ...command, commandId: "client-quota-outage" })
+          .pipe(Effect.flip)
+
+        expect(outage).toBeInstanceOf(CloudUnavailable)
+        expect(outage).not.toHaveProperty("reason")
       }),
   )
 
@@ -891,8 +1052,22 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           next: { sequence: 4, kind: "event" },
         }
 
+        const latest: Schema.Json = {
+          events: [
+            { event: "Charged", sequence: 7, emittedAtMs: 2 },
+            { event: "Opened", sequence: 1, emittedAtMs: 0 },
+            { event: "Placed", sequence: 6, emittedAtMs: 1 },
+          ],
+          next: null,
+        }
         yield* edge.answer((request) =>
-          json(new URL(request.url).pathname === "/inspector/timeline" ? timeline : detail),
+          json(
+            Match.value(new URL(request.url).pathname).pipe(
+              Match.when("/inspector/timeline", () => timeline),
+              Match.when("/inspector/latest-events", () => latest),
+              Match.orElse(() => detail),
+            ),
+          ),
         )
 
         const inspected = yield* runtime.inspectActor({ ...target, address: "Order/o/1" })
@@ -925,6 +1100,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           ],
           events: [
             { name: "Charged", cursor: "7", emittedAt: DateTime.makeUnsafe(2), subscribers: null },
+            { name: "Opened", cursor: "1", emittedAt: DateTime.makeUnsafe(0), subscribers: null },
             { name: "Placed", cursor: "6", emittedAt: DateTime.makeUnsafe(1), subscribers: null },
           ],
           jobs: [{ name: "Email", id: "j1", attempts: 0, status: "queued" }],
@@ -964,6 +1140,7 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         })
         expect(edge.seen.map(({ method, path }) => `${method} ${path}`)).toEqual([
           "GET /inspector/actor?type=Order&id=o%2F1&limit=500",
+          "GET /inspector/latest-events?type=Order&id=o%2F1&limit=500",
           "GET /inspector/timeline?type=Order&id=o%2F1&limit=50",
         ])
         expect(edge.seen[0]!.headers.get("authorization")).toBe(`Bearer ${SECRET}`)
@@ -971,15 +1148,17 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
 
         yield* edge.answer((request) =>
           json(
-            new URL(request.url).pathname === "/inspector/timeline"
-              ? { entries: [], next: null }
-              : {
-                  ...detail,
-                  actor: { ...actor, lastEventSequence: 0 },
-                  state: [{ key: "total", bytes: 4, value: { undecodable: "not zstd" } }],
-                  receipts: [{ ...detail.receipts[0], callerKey: { json: ["Robot", "r2"] } }],
-                  events: [],
-                },
+            Match.value(new URL(request.url).pathname).pipe(
+              Match.when("/inspector/timeline", () => ({ entries: [], next: null })),
+              Match.when("/inspector/latest-events", () => ({ events: [], next: null })),
+              Match.orElse(() => ({
+                ...detail,
+                actor: { ...actor, lastEventSequence: 0 },
+                state: [{ key: "total", bytes: 4, value: { undecodable: "not zstd" } }],
+                receipts: [{ ...detail.receipts[0], callerKey: { json: ["Robot", "r2"] } }],
+                events: [],
+              })),
+            ),
           ),
         )
 
@@ -998,4 +1177,24 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         ).toEqual(NotFound.make({ resource: "actor", id: "Order/nope" }))
       }),
   )
+})
+
+it("redacts a stored cause to its error's tag and message, without stack frames or file paths", () => {
+  const frame =
+    "\n    at /workspace/node_modules/.bun/effect@4.0.0/node_modules/effect/dist/Schema.js:8958:81"
+  const redacted = [
+    redactCause(`Unsettled: ${frame}${frame}`),
+    redactCause(`Error: card declined at /workspace/app/src/billing.ts:12:4${frame}`),
+    redactCause("Order/o-1 refused: insufficient funds"),
+    redactCause("\n\nSucceeded after it was cancelled"),
+  ]
+
+  expect(redacted).toEqual([
+    "Unsettled",
+    "Error: card declined",
+    "Order/o-1 refused: insufficient funds",
+    "Succeeded after it was cancelled",
+  ])
+  for (const text of redacted)
+    expect(text).not.toMatch(/\bat\s|node_modules|\.[jt]s:\d|\/workspace/u)
 })

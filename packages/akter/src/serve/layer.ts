@@ -1,4 +1,4 @@
-import { Cause, DateTime, Effect, Match, Option, Schema, SchemaAST, Stream } from "effect"
+import { Cause, DateTime, Effect, Option, Schema, SchemaAST, Stream } from "effect"
 import { Headers, HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http"
 import { type ServedConnection, type ServedDefinition, type ServedMember } from "../actor/served.ts"
 import { descriptorOf } from "../actor/descriptor.ts"
@@ -137,6 +137,9 @@ const JSON_TYPE = /^application\/json[ ]*(;.*)?$/i
 
 /** A quoted value is the idempotency-key draft's structured-field string. */
 const QUOTED = /^"(.*)"$/
+
+/** A `content-length` value: decimal digits only, so a sign, a fraction or `NaN` is malformed framing. */
+const DECIMAL = /^[0-9]+$/
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true })
 
@@ -564,10 +567,35 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
       ) {
         const length = Headers.get(request.headers, "content-length")
 
-        if (Option.isSome(length) && Number(length.value) > limit)
-          return yield* invalidInput("too_large")
+        if (Option.isSome(length)) {
+          if (!DECIMAL.test(length.value)) return yield* invalidInput("decode")
 
-        if (Option.isSome(length) && Number(length.value) === 0) return new Uint8Array(0)
+          const declared = Number(length.value)
+
+          if (declared > limit) return yield* invalidInput("too_large")
+
+          if (declared === 0) return new Uint8Array(0)
+
+          const framed = new Uint8Array(declared)
+          let filled = 0
+
+          yield* request.stream.pipe(
+            Stream.mapError(() => invalidInput("decode")),
+            Stream.runForEach((chunk) => {
+              if (filled + chunk.byteLength > declared)
+                return Effect.fail(invalidInput("too_large"))
+
+              framed.set(chunk, filled)
+              filled += chunk.byteLength
+
+              return Effect.void
+            }),
+          )
+
+          if (filled !== declared) return yield* invalidInput("decode")
+
+          return framed
+        }
 
         const unframed = Option.isNone(length) && !Headers.has(request.headers, "transfer-encoding")
 
@@ -725,14 +753,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         )
       }
 
-      const successBody = Effect.fnUntraced(function* (member: ServedMember, value: string) {
-        if (SchemaAST.isVoid(member.output.ast))
-          return { ok: true, status: 204, body: undefined } as const
-
-        const decoded = yield* decodeSuccess(value)
-
-        return { ok: true, status: 200, body: decoded.value ?? null } as const
-      }, Effect.orDie)
+      const successBody = (member: ServedMember, value: string): Effect.Effect<OutcomeBody> =>
+        SchemaAST.isVoid(member.output.ast)
+          ? Effect.succeed({ ok: true, status: 204, body: undefined })
+          : Effect.map(Effect.orDie(decodeSuccess(value)), (decoded) => ({
+              ok: true,
+              status: 200,
+              body: decoded.value ?? null,
+            }))
 
       const failureBody = Effect.fnUntraced(function* (member: ServedMember, value: string) {
         const status = yield* member.failureStatus(value)
@@ -740,16 +768,14 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
         return { ok: false, status, body: yield* decodeJson(value) } as const
       }, Effect.orDie)
 
-      const outcomeBody = (member: ServedMember, outcome: Outcome) =>
-        Match.value(outcome).pipe(
-          Match.tagsExhaustive({
-            Success: (success): Effect.Effect<OutcomeBody> => successBody(member, success.value),
-            Failure: (failure): Effect.Effect<OutcomeBody> => failureBody(member, failure.value),
-            Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
-            Acknowledged: (acknowledged) =>
-              Effect.die(new Error(`Unexpected ${acknowledged.reason} acknowledgement`)),
-          }),
-        )
+      const outcomeBody = (member: ServedMember, outcome: Outcome): Effect.Effect<OutcomeBody> =>
+        Outcome.match(outcome, {
+          Success: (success) => successBody(member, success.value),
+          Failure: (failure) => failureBody(member, failure.value),
+          Defect: (defect) => Effect.failCause(Cause.die(defect.cause)),
+          Acknowledged: (acknowledged) =>
+            Effect.die(new Error(`Unexpected ${acknowledged.reason} acknowledgement`)),
+        })
 
       const outcomeResponse = (member: ServedMember, outcome: Outcome) =>
         Effect.map(outcomeBody(member, outcome), ({ status, body }) =>

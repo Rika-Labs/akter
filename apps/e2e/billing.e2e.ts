@@ -1,3 +1,4 @@
+import { KnownPlan, UnboundPlan, UnknownPlan } from "@akter/cloud-api"
 import { expect, type Page, type Route, test } from "@playwright/test"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
@@ -5,11 +6,16 @@ const session = {
   user: { id: "u_bill", name: "Billing Owner", email: "owner@example.com", emailVerified: true },
   session: { id: "s_bill" },
 }
+const organizationPlan = (plan: string) => {
+  if (plan === "free" || plan === "pro") return KnownPlan.make({ id: plan })
+  if (plan === "legacy") return UnknownPlan.make({ id: plan })
+  return UnboundPlan.make({})
+}
 const organization = (plan: string) => ({
   id: "org_bill",
   name: "Billing Org",
   slug: "billing-org",
-  plan,
+  plan: organizationPlan(plan),
   createdAt: "2026-01-01T00:00:00Z",
 })
 const project = {
@@ -34,11 +40,143 @@ const plan = (input: { id: string; name: string; basePriceCents: number; estimat
   provisional: true,
 })
 
+type Cap = "commands" | "spend" | "connections" | "storage"
+
+/** Caps as the control plane reports them; `refusing` names the ones the edge refuses at now. */
+const caps = (input: {
+  readonly plan: "free" | "pro"
+  readonly commandUnits: number
+  readonly storageBytes?: number
+  readonly spendLimitCents?: number | null
+  readonly refusing?: ReadonlyArray<Cap>
+}) => {
+  const refusing = (cap: Cap) => input.refusing?.includes(cap) ?? false
+  const free = input.plan === "free"
+  return [
+    {
+      cap: "commands",
+      limit: free ? 5_000_000 : null,
+      used: input.commandUnits,
+      atCap: refusing("commands"),
+      refusing: refusing("commands"),
+      unitsPerCommand: 5,
+    },
+    {
+      cap: "spend",
+      limit: input.spendLimitCents ?? null,
+      used: free ? 0 : 3_102,
+      atCap: refusing("spend"),
+      refusing: refusing("spend"),
+    },
+    {
+      cap: "connections",
+      limit: free ? 100 : 5_000,
+      used: 2,
+      atCap: false,
+      refusing: false,
+    },
+    {
+      cap: "storage",
+      limit: free ? 500_000_000 : null,
+      used: input.storageBytes ?? 120_000_000,
+      atCap: refusing("storage"),
+      refusing: refusing("storage"),
+    },
+  ]
+}
+
+/** An organization without a billing account: every cap refuses, with no limit to quote. */
+const unboundCaps = caps({ plan: "free", commandUnits: 600 }).map((cap) => ({
+  ...cap,
+  limit: null,
+  atCap: false,
+  refusing: true,
+  reason: "unbound",
+}))
+
 const freeBilling = {
   plan: plan({ id: "free", name: "Free", basePriceCents: 0, estimate: 0 }),
   paymentMethod: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentSpendCents: 0 },
+  caps: caps({ plan: "free", commandUnits: 600_000 }),
+}
+
+/** An organization without a billing account, as billing reports it: no plan, limit or spend. */
+const unboundBilling = {
+  plan: UnboundPlan.make({}),
+  paymentMethod: null,
+  billingEmail: null,
+  spendLimit: { limitCents: null, currentSpendCents: 0 },
+  caps: unboundCaps,
+}
+
+/** The catalog the API serves; Team is renamed so a hardcoded plan name would show. */
+const catalog = {
+  plans: [
+    {
+      id: "free",
+      name: "Free",
+      basePriceCents: 0,
+      currency: "usd",
+      allowances: {
+        commands: 1_000_000,
+        commandCap: 1_000_000,
+        storageGb: 0.5,
+        concurrentConnections: 100,
+      },
+      overage: { commandCentsPerMillion: 0, storageCentsPerGbMonth: 0 },
+      features: ["command-cap", "storage-cap"],
+      provisional: false,
+    },
+    {
+      id: "pro",
+      name: "Pro",
+      basePriceCents: 2_731,
+      currency: "usd",
+      allowances: {
+        commands: 25_000_000,
+        commandCap: null,
+        storageGb: 10,
+        concurrentConnections: 5_000,
+      },
+      overage: { commandCentsPerMillion: 100, storageCentsPerGbMonth: 30 },
+      features: ["command-overage", "storage-overage", "checkout"],
+      provisional: true,
+    },
+    {
+      id: "team",
+      name: "Studio",
+      basePriceCents: 19_900,
+      currency: "usd",
+      allowances: {
+        commands: 300_000_000,
+        commandCap: null,
+        storageGb: 100,
+        concurrentConnections: 50_000,
+      },
+      overage: { commandCentsPerMillion: 60, storageCentsPerGbMonth: 30 },
+      features: ["command-overage", "storage-overage", "checkout"],
+      provisional: true,
+    },
+    {
+      id: "enterprise",
+      name: "Enterprise",
+      basePriceCents: 250_000,
+      currency: "usd",
+      allowances: {
+        commands: 5_000_000_000,
+        commandCap: null,
+        storageGb: 1_000,
+        concurrentConnections: 100_000,
+      },
+      overage: { commandCentsPerMillion: 50, storageCentsPerGbMonth: 30 },
+      features: ["command-overage", "storage-overage", "checkout"],
+      provisional: true,
+    },
+  ],
+  readCommandWeight: 0.2,
+  provisional: true,
 }
 
 const proBilling = (limitCents: number | null) => ({
@@ -46,10 +184,28 @@ const proBilling = (limitCents: number | null) => ({
   paymentMethod: { brand: "visa", lastFour: "4242", expiryMonth: 4, expiryYear: 2031 },
   billingEmail: "owner@example.com",
   spendLimit: { limitCents, currentSpendCents: 3_102 },
+  caps: caps({ plan: "pro", commandUnits: 600_000, spendLimitCents: limitCents }),
 })
 
-const usage = (input: { commands: number; included: number }) => ({
+const usage = (input: {
+  commands: number
+  included: number
+  caps?: ReadonlyArray<object>
+  storageBytes?: number
+}) => ({
   period: "2026-10",
+  latestStorageSample: {
+    bytes: input.storageBytes ?? 120_000_000,
+    sampledAt: "2026-10-04T09:00:00Z",
+  },
+  caps:
+    input.caps ??
+    caps({
+      plan: input.included === 1_000_000 ? "free" : "pro",
+      commandUnits: input.commands * 5,
+      refusing:
+        input.included === 1_000_000 && input.commands >= input.included ? ["commands"] : [],
+    }),
   meters: [
     {
       meter: "commands",
@@ -83,6 +239,28 @@ const usage = (input: { commands: number; included: number }) => ({
   },
 })
 
+/** An actor as the inspector reads it; only its address and type matter to the send dialog. */
+const inspector = {
+  address: "Order/ord-quota",
+  state: { total: 3 },
+  turn: null,
+  tables: null,
+  receipts: [],
+  events: [],
+  jobs: [],
+  connections: { sockets: null, feedCursor: null },
+  properties: {
+    status: null,
+    type: "Order",
+    generation: 1,
+    runner: null,
+    region: null,
+    tenant: "org_bill",
+    mailboxDepth: null,
+  },
+  timeline: null,
+}
+
 const invoices = [
   {
     id: "in_1",
@@ -93,6 +271,16 @@ const invoices = [
     currency: "usd",
     status: "paid",
     pdfUrl: "https://pay.stripe.com/invoice/acct_562/in_1/pdf",
+  },
+  {
+    id: "in_local_0",
+    number: "LOCAL-0",
+    periodStart: "2026-08-01T00:00:00Z",
+    periodEnd: "2026-09-01T00:00:00Z",
+    amountCents: 2_731,
+    currency: "usd",
+    status: "paid",
+    pdfUrl: `${origin}/billing/invoices/in_local_0/pdf`,
   },
 ]
 
@@ -124,6 +312,7 @@ const controlPlane =
     if (path === "/api/organizations/org_bill/billing/invoices")
       return route.fulfill({ json: input.plan === "free" ? [] : invoices })
     if (path === "/api/organizations/org_bill/usage") return route.fulfill({ json: input.usage })
+    if (path === "/api/billing/plans") return route.fulfill({ json: catalog })
     return route.fulfill({
       status: 501,
       contentType: "application/json",
@@ -138,6 +327,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   page,
 }) => {
   const checkouts: Array<unknown> = []
+  await page.setViewportSize({ width: 1280, height: 900 })
   await signIn(page)
   await page.route("https://checkout.stripe.com/c/pay/cs_test_562", (route) =>
     route.fulfill({ contentType: "text/html", body: "<h1>Checkout stand-in</h1>" }),
@@ -157,7 +347,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   )
   await page.goto(`${origin}/settings/billing`)
   await expect(page.getByRole("heading", { level: 1, name: "Billing" })).toBeVisible()
-  await expect(page.getByText("No monthly charge")).toBeVisible()
+  await expect(page.getByText("No monthly charge")).toHaveCount(1)
   await expect(
     page.getByText(
       "1M commands a month (a read counts as 0.2 of a command) and 0.5 GB of storage. Both are hard caps",
@@ -165,7 +355,38 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   ).toBeVisible()
   await expect(page.getByText("No invoices yet")).toBeVisible()
   await expect(page.getByRole("note")).toHaveCount(0)
-  await page.getByRole("combobox", { name: "Plan to upgrade to" }).selectOption("team")
+  const picker = page.getByRole("combobox", { name: "Plan to upgrade to" })
+  await expect(picker.getByRole("option")).toHaveText([
+    "Pro · $27.31 / mo (provisional)",
+    "Studio · $199 / mo (provisional)",
+    "Enterprise · $2,500 / mo (provisional)",
+  ])
+  const comparison = page.getByRole("table", { name: "Plan comparison" })
+  await expect(comparison.getByRole("row")).toHaveCount(5)
+  for (const cell of await comparison.getByRole("cell").all())
+    expect(
+      await cell.evaluate((element) => element.scrollWidth <= element.clientWidth),
+      (await cell.textContent()) ?? "",
+    ).toBe(true)
+  await expect(comparison.getByRole("row").nth(2).getByRole("cell").nth(1)).toHaveText(
+    "$27.31 / mo",
+  )
+  await expect(comparison.getByRole("row").nth(1).getByRole("cell")).toHaveText([
+    "Free (current)",
+    "$0",
+    "1Mhard cap",
+    "0.5 GBhard cap",
+    "100",
+  ])
+  await expect(comparison.getByRole("row").nth(3)).toContainText(
+    "Studio$199 / mo300Mthen $0.60 per million",
+  )
+  await expect(
+    page.getByText(
+      "Pro, Studio, and Enterprise prices are provisional: they aren’t final and may change before they are published.",
+    ),
+  ).toBeVisible()
+  await picker.selectOption("team")
   await page.getByRole("button", { name: "Continue to checkout" }).click()
   await expect(page).toHaveURL("https://checkout.stripe.com/c/pay/cs_test_562")
   await expect(page.getByRole("heading", { name: "Checkout stand-in" })).toBeVisible()
@@ -197,6 +418,10 @@ test("opens the billing portal in a new tab and links invoice PDFs", async ({ pa
   const pdf = page.getByRole("link", { name: "Invoice AKT-0001 PDF, opens in a new tab" })
   await expect(pdf).toHaveAttribute("href", "https://pay.stripe.com/invoice/acct_562/in_1/pdf")
   await expect(pdf).toHaveAttribute("target", "_blank")
+  await expect(page.getByText("LOCAL-0 · paid", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "Invoice LOCAL-0 PDF, opens in a new tab" }),
+  ).toHaveCount(0)
   const opened = context.waitForEvent("page")
   await page.getByRole("button", { name: "Update" }).click()
   const portal = await opened
@@ -265,7 +490,7 @@ test("shows live usage and one quiet notice at Free's command cap", async ({ pag
   const notice = page.getByRole("note")
   await expect(notice).toHaveCount(1)
   await expect(notice).toContainText(
-    "This organization has used the 1M commands Free includes for October 2026.",
+    "This organization has used the 1M commands its plan includes for October 2026.",
   )
   await expect(notice.getByRole("link", { name: "Upgrade" })).toHaveAttribute(
     "href",
@@ -281,7 +506,7 @@ test("shows live usage and one quiet notice at Free's command cap", async ({ pag
   await expect(table.getByRole("row").nth(1)).toHaveText(["Ledger992K40K$0.00"])
   await page.goto(`${origin}/`)
   await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
-  await expect(page.getByRole("note")).toContainText("1M commands Free includes")
+  await expect(page.getByRole("note")).toContainText("used the 1M commands its plan includes")
 })
 
 test("refuses a billing link off Stripe and closes the tab it opened", async ({
@@ -310,4 +535,278 @@ test("refuses a billing link off Stripe and closes the tab it opened", async ({
   ).toBeVisible()
   await expect.poll(() => tab.isClosed()).toBe(true)
   await expect(page).toHaveURL(`${origin}/settings/billing`)
+})
+
+test("never shows an organization without a billing account as Free", async ({ page }) => {
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "unbound",
+      billing: () => ({ ...freeBilling, plan: UnboundPlan.make({}), caps: unboundCaps }),
+      usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
+    }),
+  )
+  await page.goto(`${origin}/settings/usage`)
+  const notice = page.getByRole("note")
+  await expect(notice).toHaveCount(1)
+  await expect(notice).toHaveText(
+    "Billing isn’t set up for this organization, so new commands are refused. Set up billing",
+  )
+  await expect(notice.getByRole("link", { name: "Set up billing" })).toHaveAttribute(
+    "href",
+    "/settings/billing",
+  )
+  await expect(page.getByRole("meter")).toHaveCount(0)
+  await expect(page.getByRole("main")).not.toContainText("of 1M")
+  await page.goto(`${origin}/`)
+  await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
+  await expect(page.getByRole("note")).toHaveText(
+    "Billing isn’t set up for this organization, so new commands are refused. Set up billing",
+  )
+  await page.getByRole("link", { name: "Set up billing" }).click()
+  await expect(page.getByRole("heading", { level: 1, name: "Billing" })).toBeVisible()
+  await expect(page.getByText("Billing isn’t set up", { exact: true })).toBeVisible()
+  await expect(page.getByRole("table", { name: "Plan comparison" })).not.toContainText("current")
+  await expect(page.getByText("No monthly charge")).toHaveCount(0)
+  await expect(page.getByText("Free", { exact: true })).toHaveCount(1)
+  await expect(
+    page.getByRole("table", { name: "Plan comparison" }).getByText("Free", { exact: true }),
+  ).toHaveCount(1)
+  await expect(page.getByRole("combobox", { name: "Plan to upgrade to" })).toBeVisible()
+})
+
+test("names an unbound organization's plan as no billing and prices nothing for it", async ({
+  page,
+}) => {
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "unbound",
+      billing: () => unboundBilling,
+      usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
+    }),
+  )
+  await page.goto(`${origin}/`)
+  const account = page.getByRole("button", { name: "Account: Billing Owner" })
+  await expect(account).toContainText("Billing Org · no billing")
+  await expect(account).not.toContainText("Free")
+  await page.goto(`${origin}/settings/billing`)
+  await expect(page.getByText("Billing isn’t set up", { exact: true })).toBeVisible()
+  await expect(account).toContainText("Billing Org · no billing")
+  await expect(page.getByText("This month so far")).toHaveCount(0)
+  await expect(page.getByText("No monthly charge")).toHaveCount(0)
+  await page.goto(`${origin}/settings/usage`)
+  await expect(page.getByRole("table", { name: "Usage by project" })).toContainText("Ledger")
+  await expect(page.getByRole("columnheader", { name: "Estimate" })).toHaveCount(0)
+  await expect(page.getByRole("main")).not.toContainText("$")
+  await expect(page.getByRole("main")).not.toContainText("provisional")
+})
+
+test("says an unknown plan isn't recognised, calmly, while org context still loads", async ({
+  page,
+}) => {
+  const unknownPlan = {
+    status: 503,
+    contentType: "application/json",
+    body: '{"_tag":"Unavailable","message":"The organization\'s plan legacy is not in the pricing configuration","retryAfterSeconds":60,"reason":"unknownPlan"}',
+  }
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "legacy",
+      billing: () => freeBilling,
+      usage: usage({ commands: 120_000, included: 1_000_000 }),
+      extra: (route, path) =>
+        path === "/api/organizations/org_bill/billing" ||
+        path === "/api/organizations/org_bill/usage"
+          ? route.fulfill(unknownPlan)
+          : undefined,
+    }),
+  )
+  await page.goto(`${origin}/settings/billing`)
+  await expect(page.getByRole("heading", { level: 1, name: "Billing" })).toBeVisible()
+  await expect(
+    page.getByText("This organization’s plan isn’t recognised. Contact support."),
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Account: Billing Owner" })).toContainText(
+    "Billing Org · plan not recognised",
+  )
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0)
+  await expect(page.getByText("Billing can’t be read right now")).toHaveCount(0)
+  await expect(page.getByRole("main")).not.toContainText("legacy")
+  await page.goto(`${origin}/settings/usage`)
+  await expect(page.getByRole("heading", { level: 1, name: "Usage" })).toBeVisible()
+  await expect(
+    page.getByText("This organization’s plan isn’t recognised. Contact support."),
+  ).toBeVisible()
+  await expect(page.getByRole("meter")).toHaveCount(0)
+  await page.goto(`${origin}/`)
+  await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
+  const notice = page.getByRole("note")
+  await expect(notice).toHaveText(
+    "This organization’s plan isn’t recognised, so new commands are refused. Contact support.",
+  )
+  await expect(notice.getByRole("link")).toHaveCount(0)
+})
+
+test("explains a tenant at Free's storage cap from the latest sample", async ({ page }) => {
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "free",
+      billing: () => freeBilling,
+      usage: usage({
+        commands: 120_000,
+        included: 1_000_000,
+        storageBytes: 640_000_000,
+        caps: caps({
+          plan: "free",
+          commandUnits: 600_000,
+          storageBytes: 512_340_000,
+          refusing: ["storage"],
+        }),
+      }),
+    }),
+  )
+  await page.goto(`${origin}/settings/usage`)
+  const notice = page.getByRole("note")
+  await expect(notice).toHaveCount(1)
+  await expect(notice).toContainText(
+    "A tenant stores 0.51 GB of the 0.5 GB its plan allows, so new commands are paused; reads keep working.",
+  )
+  await expect(notice.getByRole("link", { name: "Upgrade" })).toHaveAttribute(
+    "href",
+    "/settings/billing",
+  )
+  await expect(
+    page.getByText(
+      "Latest sample across serving deployments, taken Oct 4, 09:00 UTC. The largest tenant holds 0.51 GB of the 0.5 GB each tenant may store",
+    ),
+  ).toBeVisible()
+  await expect(page.getByText("0.64 GB")).toBeVisible()
+})
+
+test("explains a plan the pricing doesn't know calmly instead of as an outage", async ({
+  page,
+}) => {
+  const unavailable = {
+    status: 503,
+    contentType: "application/json",
+    body: '{"_tag":"Unavailable","message":"The organization\'s plan legacy is not in the pricing configuration","retryAfterSeconds":60}',
+  }
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "free",
+      billing: () => freeBilling,
+      usage: usage({ commands: 120_000, included: 1_000_000 }),
+      extra: (route, path) =>
+        path === "/api/organizations/org_bill/billing" ||
+        path === "/api/organizations/org_bill/usage"
+          ? route.fulfill(unavailable)
+          : undefined,
+    }),
+  )
+  await page.goto(`${origin}/settings/billing`)
+  await expect(
+    page.getByText(
+      "Billing can’t be read right now, so plan and usage figures aren’t shown. Try again in a minute.",
+    ),
+  ).toBeVisible()
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible()
+  await expect(page.getByText("We couldn’t reach Akter")).toHaveCount(0)
+})
+
+test("explains a typed quota refusal in the send dialog and links to Billing", async ({ page }) => {
+  let sends = 0
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "free",
+      billing: () => freeBilling,
+      usage: usage({ commands: 120_000, included: 1_000_000 }),
+      extra: (route, path) => {
+        if (path === "/api/organizations/org_bill/projects")
+          return route.fulfill({ json: [{ ...project, status: "live" }] })
+        if (path.endsWith("/runtime/actors/Order/ord-quota"))
+          return route.fulfill({ json: inspector })
+        if (!path.endsWith("/runtime/commands") || route.request().method() !== "POST")
+          return undefined
+        sends += 1
+        return route.fulfill({
+          status: 429,
+          contentType: "application/json",
+          body: '{"_tag":"QuotaExceeded","organizationId":"org_bill","period":"2026-10","limitUnits":5000000,"usedUnits":5000000,"requestedUnits":5,"retryAfterMs":2419200000}',
+        })
+      },
+    }),
+  )
+  await page.goto(`${origin}/actors/Order/ord-quota`)
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Refund")
+  await dialog.getByLabel("Payload", { exact: true }).fill('{"amount":17}')
+  await dialog.getByRole("button", { name: "Send command", exact: true }).click()
+  const alert = dialog.getByRole("alert")
+  await expect(alert).toHaveText(
+    "This organization has used all the commands its plan includes for October 2026, so new commands are refused until the month ends. Reads keep working; upgrading raises the allowance. Open Billing",
+  )
+  await expect(alert.getByRole("link", { name: "Open Billing" })).toHaveAttribute(
+    "href",
+    "/settings/billing",
+  )
+  expect(sends).toBe(1)
+})
+
+test("explains a command the edge couldn't bill and offers no resend with the same ID", async ({
+  page,
+}) => {
+  let sends = 0
+  await signIn(page)
+  await page.route(
+    "**/api/**",
+    controlPlane({
+      plan: "unbound",
+      billing: () => unboundBilling,
+      usage: usage({ commands: 120, included: 1_000_000, caps: unboundCaps }),
+      extra: (route, path) => {
+        if (path === "/api/organizations/org_bill/projects")
+          return route.fulfill({ json: [{ ...project, status: "live" }] })
+        if (path.endsWith("/runtime/actors/Order/ord-quota"))
+          return route.fulfill({ json: inspector })
+        if (!path.endsWith("/runtime/commands") || route.request().method() !== "POST")
+          return undefined
+        sends += 1
+        return route.fulfill({
+          status: 402,
+          contentType: "application/json",
+          body: '{"_tag":"QuotaUnbound","deployment":"dep_bill","tenant":"org_bill","reason":"account"}',
+        })
+      },
+    }),
+  )
+  await page.goto(`${origin}/actors/Order/ord-quota`)
+  await page.getByRole("button", { name: "Send command", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Send a command" })
+  await dialog.getByLabel("Command", { exact: true }).fill("Refund")
+  await dialog.getByLabel("Payload", { exact: true }).fill('{"amount":17}')
+  const send = dialog.getByRole("button", { name: "Send command", exact: true })
+  await send.click()
+  const alert = dialog.getByRole("alert")
+  await expect(alert).toHaveText(
+    "Billing isn’t set up for this organization, so the command wasn’t run. Choose a plan in Billing, then send it as a new command. Open Billing",
+  )
+  await expect(alert.getByRole("link", { name: "Open Billing" })).toHaveAttribute(
+    "href",
+    "/settings/billing",
+  )
+  await expect(alert).not.toContainText("couldn’t reach Akter")
+  await expect(send).toBeDisabled()
+  expect(sends).toBe(1)
 })

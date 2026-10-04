@@ -1,4 +1,5 @@
-import { Schema } from "effect"
+import * as Framework from "@rikalabs/akter/client"
+import { Schema, Struct } from "effect"
 
 import { DeploymentSummary } from "./deployments.ts"
 import {
@@ -22,9 +23,10 @@ export type SidebarCounts = typeof SidebarCounts.Type
  * to retry) and the dead letters by job name. Each nullable field is null when
  * the runners do not report it, never zero or empty: command rates and
  * latencies, throughput and p99 series, awake actors, jobs done per hour and
- * the runner, database, mailbox, socket and outbox-lag health. The overview
- * does not read deployments, so `lastDeployAt` and `recentDeployments` are
- * null here; the deployments list reports them.
+ * the runner, database, mailbox, socket and outbox-lag health.
+ * `lastDeployAt` is when the environment's newest deployment was created, null
+ * when it has none. `recentDeployments` is null here; the deployments list
+ * reports them with their rollout state.
  */
 export const Overview = Schema.Struct({
   commands: Schema.NullOr(
@@ -300,10 +302,18 @@ export class RunnerDefect extends Schema.TaggedError<RunnerDefect>()(
   { httpApiStatus: 502 },
 ) {}
 
-/** The runner refused admission without committing a command receipt; answered 422. */
+/**
+ * The runner refused admission without committing a command receipt; answered
+ * 422. `reason` is the framework's own refusal, already taken out of the
+ * runner's `ActorError` envelope, and `reasonTag` its tag.
+ */
 export class CommandRefused extends Schema.TaggedError<CommandRefused>()(
   "CommandRefused",
-  { commandId: Schema.String, reasonTag: Schema.String, reason: Schema.Json },
+  {
+    commandId: Schema.String,
+    reasonTag: Schema.String,
+    reason: Framework.ActorError.fields.reason,
+  },
   { httpApiStatus: 422 },
 ) {}
 
@@ -321,6 +331,71 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
   },
   { httpApiStatus: 422 },
 ) {}
+
+/**
+ * The organization's Free period quota cannot take the command's units;
+ * answered 429. It carries the framework's `QuotaExceeded` payload, including
+ * when the period resets as `retryAfterMs`.
+ */
+export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()(
+  "QuotaExceeded",
+  Struct.omit(Framework.QuotaExceeded.fields, ["_tag"]),
+  { httpApiStatus: 429 },
+) {}
+
+/** The organization's estimated period cost would pass its spend limit; answered 402. */
+export class SpendLimitExceeded extends Schema.TaggedError<SpendLimitExceeded>()(
+  "SpendLimitExceeded",
+  Struct.omit(Framework.SpendLimitExceeded.fields, ["_tag"]),
+  { httpApiStatus: 402 },
+) {}
+
+/** The organization already holds every concurrent connection its plan allows; answered 429. */
+export class ConnectionLimitExceeded extends Schema.TaggedError<ConnectionLimitExceeded>()(
+  "ConnectionLimitExceeded",
+  Struct.omit(Framework.ConnectionLimitExceeded.fields, ["_tag"]),
+  { httpApiStatus: 429 },
+) {}
+
+/**
+ * A Free tenant's latest storage sample is at or over its cap, so it takes no
+ * new command until a lower sample arrives; answered 429.
+ */
+export class StorageQuotaExceeded extends Schema.TaggedError<StorageQuotaExceeded>()(
+  "StorageQuotaExceeded",
+  Struct.omit(Framework.StorageQuotaExceeded.fields, ["_tag"]),
+  { httpApiStatus: 429 },
+) {}
+
+/**
+ * The edge refused a metered command because it cannot bill it: no
+ * organization is bound to the deployment's tenant (`tenant`), the
+ * organization has no billing account (`account`), or its stored plan is not
+ * in the pricing configuration (`plan`); answered 402. It carries the edge's
+ * own `QuotaUnbound` tag and payload. Retrying will not succeed until the
+ * binding is fixed, which is why it is not an `Unavailable`.
+ */
+export class QuotaUnbound extends Schema.TaggedError<QuotaUnbound>()(
+  "QuotaUnbound",
+  {
+    deployment: Schema.String,
+    tenant: Schema.String,
+    reason: Schema.Literals(["tenant", "account", "plan"]),
+  },
+  { httpApiStatus: 402 },
+) {}
+
+/**
+ * The edge's usage refusals of a new command: the framework's four, each with
+ * its tag and payload, and the edge's own `QuotaUnbound`.
+ */
+export const QuotaErrors = [
+  QuotaExceeded,
+  SpendLimitExceeded,
+  ConnectionLimitExceeded,
+  StorageQuotaExceeded,
+  QuotaUnbound,
+] as const
 
 /**
  * One job name: `retried` counts its pending jobs that have failed at least
@@ -368,7 +443,8 @@ export type DeadLetter = typeof DeadLetter.Type
  * `index` n and `total` m, and `index` never exceeds `total`. `total` is null
  * when the runner does not know how many steps the workflow has, and `step`
  * is null when the run holds no recorded step, as once it finished. A failed
- * run ended with a declared failure, a defect or an interruption.
+ * run ended with a declared failure, a defect or an interruption. `status` is
+ * null for a finished run whose stored result does not decode.
  */
 export const Workflow = Schema.Struct({
   id: Schema.String,
@@ -394,7 +470,7 @@ export const Workflow = Schema.Struct({
     Schema.Struct({ kind: Schema.Literals(["event", "timer"]), name: Schema.String }),
   ),
   startedAt: Timestamp,
-  status: Schema.Literals(["running", "waiting", "completed", "failed"]),
+  status: Schema.NullOr(Schema.Literals(["running", "waiting", "completed", "failed"])),
 })
 export type Workflow = typeof Workflow.Type
 
@@ -439,9 +515,13 @@ export const ConnectionsSummary = Schema.Struct({
 })
 export type ConnectionsSummary = typeof ConnectionsSummary.Type
 
-/** A command-palette hit among the runtime's own data; pages and settings are searched client side. */
+/**
+ * A command-palette hit among the runtime's own data; pages and settings are
+ * searched client side. An `actor-type` hit's `id` is the type's name and an
+ * `actor` hit's its address.
+ */
 export const SearchResult = Schema.Struct({
-  kind: Schema.Literals(["actor", "deployment"]),
+  kind: Schema.Literals(["actor-type", "actor", "deployment"]),
   id: Schema.String,
   title: Schema.String,
   subtitle: Schema.NullOr(Schema.String),

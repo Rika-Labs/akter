@@ -2,6 +2,8 @@ import {
   CloudApi,
   Conflict,
   type EnvironmentName,
+  NotFound,
+  type NotFoundResource,
   type Project,
   type SeriesWindow,
 } from "@akter/cloud-api"
@@ -19,7 +21,7 @@ import {
 import { BrowserCrypto } from "@effect/platform-browser"
 import { FetchHttpClient } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
-import { quotaMessage, quotaRefusal } from "../quota/errors.ts"
+import { quotaKind, quotaMessage, quotaRefusal } from "../quota/errors.ts"
 
 /** The public API mount; the contract already owns its `/api` prefix. */
 export const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api"
@@ -86,6 +88,26 @@ export class ConsoleError extends Schema.TaggedError<ConsoleError>()("ConsoleErr
   message: Schema.String,
 }) {}
 
+/**
+ * What a missing resource is called when it is reported missing. The contract's closed set of
+ * resources makes a new one fail to compile here until it has its own wording.
+ */
+const missing: Readonly<Record<NotFoundResource, string>> = {
+  actor: "This actor doesn’t exist.",
+  "actor-type": "This deployment doesn’t serve that actor type.",
+  "api-key": "This API key no longer exists.",
+  command: "The actor has no command by that name.",
+  cursor: "This page of results has expired. Reload to start from the newest.",
+  deployment: "This deployment doesn’t exist.",
+  domain: "This domain is no longer attached.",
+  environment: "This environment doesn’t exist.",
+  invitation: "This invitation no longer exists.",
+  "live deployment": "This environment has no live deployment yet.",
+  member: "This person is no longer a member.",
+  organization: "This organization doesn’t exist or you’re no longer a member.",
+  project: "This project doesn’t exist or you no longer have access to it.",
+}
+
 /** Preserves contract error categories while keeping transport details out of the UI. */
 export const consoleError = (cause: unknown): ConsoleError => {
   if (Schema.is(ConsoleError)(cause)) return cause
@@ -97,8 +119,8 @@ export const consoleError = (cause: unknown): ConsoleError => {
       kind: "Forbidden",
       message: "You don’t have permission to view or change this.",
     })
-  if (Predicate.isTagged(cause, "NotFound"))
-    return ConsoleError.make({ kind: "NotFound", message: "This resource is no longer available." })
+  if (Schema.is(NotFound)(cause))
+    return ConsoleError.make({ kind: "NotFound", message: missing[cause.resource] })
   if (Schema.is(Conflict)(cause))
     return ConsoleError.make({ kind: "Conflict", message: cause.message })
   if (Predicate.isTagged(cause, "CommandExpired"))
@@ -119,7 +141,10 @@ export const consoleError = (cause: unknown): ConsoleError => {
     })
   const refusal = quotaRefusal(cause)
   if (Option.isSome(refusal))
-    return ConsoleError.make({ kind: refusal.value._tag, message: quotaMessage(refusal.value) })
+    return ConsoleError.make({
+      kind: quotaKind(refusal.value),
+      message: quotaMessage(refusal.value),
+    })
   return ConsoleError.make({
     kind: "Unavailable",
     message: "We couldn’t reach Akter. Please try again.",

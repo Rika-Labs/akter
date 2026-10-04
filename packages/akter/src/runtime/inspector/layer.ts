@@ -35,7 +35,18 @@ const Limit = Schema.FiniteFromString.check(
 
 const PageParams = Schema.Struct({ limit: Limit })
 
-const Millis = Schema.FiniteFromString.check(Schema.isInt())
+const Millis = Schema.FiniteFromString.check(
+  Schema.isInt(),
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+)
+
+/** Refuses a keyset cursor that names only some of its fields, which would silently restart the list. */
+const whole = <Key extends string>(...keys: ReadonlyArray<Key>) =>
+  Schema.makeFilter((params: Readonly<Partial<Record<Key, string | number>>>) => {
+    const named = keys.filter((key) => params[key] !== undefined).length
+
+    return named === 0 || named === keys.length || `${keys.join(", ")} go together`
+  })
 
 const ActorsParams = Schema.Struct({
   limit: Limit,
@@ -43,15 +54,18 @@ const ActorsParams = Schema.Struct({
   prefix: Schema.optional(Schema.NonEmptyString),
   afterType: Schema.optional(Schema.String),
   afterId: Schema.optional(Schema.String),
-})
+}).check(whole("afterType", "afterId"))
 
 const ActorParams = Schema.Struct({ limit: Limit, type: Schema.String, id: Schema.String })
 
-const NamesParams = Schema.Struct({
+const ActorTypesParams = Schema.Struct({
   limit: Limit,
   type: Schema.optional(Schema.String),
+  prefix: Schema.optional(Schema.NonEmptyString),
   after: Schema.optional(Schema.String),
 })
+
+const JobTypesParams = Schema.Struct({ limit: Limit, after: Schema.optional(Schema.String) })
 
 const LatestEventsParams = Schema.Struct({
   ...ActorParams.fields,
@@ -62,7 +76,7 @@ const TimelineParams = Schema.Struct({
   ...ActorParams.fields,
   beforeSequence: Schema.optional(Millis),
   beforeKind: Schema.optional(Schema.Literals(["command", "event"])),
-})
+}).check(whole("beforeSequence", "beforeKind"))
 
 const ReceiptsParams = Schema.Struct({
   limit: Limit,
@@ -75,20 +89,23 @@ const ReceiptsParams = Schema.Struct({
   afterCommandId: Schema.optional(Schema.String),
 }).check(
   Schema.makeFilter(({ type, id }) => id === undefined || type !== undefined || "id needs type"),
+  whole("afterExpiresAtMs", "afterType", "afterId", "afterCommandId"),
 )
 
 const DeadLettersParams = Schema.Struct({
   limit: Limit,
   afterDeadAtMs: Schema.optional(Millis),
   afterJobId: Schema.optional(Schema.String),
-})
+}).check(whole("afterDeadAtMs", "afterJobId"))
 
 const WorkflowsParams = Schema.Struct({
   limit: Limit,
-  status: Schema.optional(Schema.Literals(["open", "all", "running", "suspended", "finished"])),
+  status: Schema.optional(
+    Schema.Literals(["open", "all", "running", "suspended", "finished", "completed", "failed"]),
+  ),
   afterStartedAtMs: Schema.optional(Millis),
   afterExecutionId: Schema.optional(Schema.String),
-})
+}).check(whole("afterStartedAtMs", "afterExecutionId"))
 
 const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
 
@@ -106,7 +123,8 @@ const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
  *   at a time, optionally those whose `type/id` address starts with `prefix`.
  * - `GET /actor?type&id&limit`: one actor's state, receipts with the events
  *   each committed, events, outbox, jobs, dead letters, and workflows with steps.
- * - `GET /actor-types?type&after&limit`: actor types with their actor counts.
+ * - `GET /actor-types?type&prefix&after&limit`: actor types with their actor
+ *   counts, optionally one type or those whose name starts with `prefix`.
  * - `GET /receipts?type&id&outcome&afterExpiresAtMs&afterType&afterId&afterCommandId&limit`:
  *   receipts of one actor, one type or the tenant, the latest expiry first.
  * - `GET /latest-events?type&id&after&limit`: one actor's newest event of each name.
@@ -114,7 +132,7 @@ const isPrincipal = Schema.is(Schema.Union([User, Anonymous]))
  *   and the commands that emitted them, newest first.
  * - `GET /job-types?after&limit`: pending jobs and dead letters by job name.
  * - `GET /outbox`, `/jobs`, `/dead-letters?afterDeadAtMs&afterJobId`,
- *   `/workflows?status=open|all|running|suspended|finished&afterStartedAtMs&afterExecutionId`:
+ *   `/workflows?status=open|all|running|suspended|finished|completed|failed&afterStartedAtMs&afterExecutionId`:
  *   tenant-wide lists; the paged ones answer the `next` cursor to pass back.
  */
 const serve = <R = never>(options: InspectorOptions<R>) =>
@@ -247,11 +265,11 @@ const serve = <R = never>(options: InspectorOptions<R>) =>
           ),
       )
 
-      yield* route("/actor-types", NamesParams, (tenant, { limit, type, after }) =>
-        Effect.asSome(Queries.actorTypes({ tenant, limit, name: type, after })),
+      yield* route("/actor-types", ActorTypesParams, (tenant, { limit, type, prefix, after }) =>
+        Effect.asSome(Queries.actorTypes({ tenant, limit, name: type, prefix, after })),
       )
 
-      yield* route("/job-types", NamesParams, (tenant, { limit, after }) =>
+      yield* route("/job-types", JobTypesParams, (tenant, { limit, after }) =>
         Effect.asSome(Queries.jobTypes({ tenant, limit, after })),
       )
 

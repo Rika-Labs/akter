@@ -1,4 +1,4 @@
-import { Conflict, NotImplemented } from "@akter/cloud-api"
+import { Conflict, KnownPlan, NotImplemented } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -73,7 +73,7 @@ const me = {
         id: "org_1",
         name: "Acme",
         slug: "acme",
-        plan: "pro",
+        plan: KnownPlan.make({ id: "pro" }),
         createdAt: "2026-01-02T03:04:05Z",
       },
     },

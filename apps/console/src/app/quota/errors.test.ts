@@ -1,22 +1,21 @@
-import { CommandRefused, Forbidden, Unavailable } from "@akter/cloud-api"
 import {
+  CommandRefused,
   ConnectionLimitExceeded,
+  Forbidden,
+  NotFound,
+  NotFoundResource,
   QuotaExceeded,
+  QuotaUnbound,
   SpendLimitExceeded,
   StorageQuotaExceeded,
-} from "@rikalabs/akter/client"
-import { Option, Schema } from "effect"
+  Unavailable,
+} from "@akter/cloud-api"
+import { Effect, Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 import { consoleError } from "../api/client.ts"
 import { isQuotaKind, quotaMessage, quotaRefusal } from "./errors.ts"
 
 const generic = "We couldn’t reach Akter. Please try again."
-
-/** The edge's envelope around a runner refusal, as `CommandRefused.reason` forwards it. */
-const ActorError = Schema.TaggedStruct("ActorError", {
-  reason: Schema.Json,
-  isRetryable: Schema.Boolean,
-})
 
 const refusals = {
   command: QuotaExceeded.make({
@@ -48,6 +47,10 @@ const refusals = {
   }),
 }
 
+/** A `CommandRefused` as the API client decodes it from the wire, with its reason typed. */
+const refused = (body: string) =>
+  Effect.runSync(Schema.decodeEffect(Schema.fromJsonString(CommandRefused))(body))
+
 describe("quota refusals", () => {
   it("names each cap with its own figures and what still works", () => {
     expect(consoleError(refusals.command)).toMatchObject({
@@ -72,52 +75,93 @@ describe("quota refusals", () => {
     })
   })
 
-  it("reads an API error with the framework's tag and payload as the same refusal", () => {
-    const decoded = quotaRefusal(JSON.parse(JSON.stringify(refusals.spend)))
-    expect(Option.map(decoded, quotaMessage)).toEqual(Option.some(quotaMessage(refusals.spend)))
-  })
-
-  it("reads a runner's refusal forwarded as CommandRefused as the plan refusal inside it", () => {
-    const forwarded = (reason: Schema.Json) =>
-      CommandRefused.make({
-        commandId: "runner-id",
-        reasonTag: "QuotaExceeded",
-        reason: ActorError.make({ reason, isRetryable: false }),
-      })
-    const command = Schema.TaggedStruct("QuotaExceeded", QuotaExceeded.fields).make({
-      organizationId: "org_1",
-      period: "2026-10",
-      limitUnits: 5_000_000,
-      usedUnits: 4_999_999,
-      requestedUnits: 5,
-      retryAfterMs: 86_400_000,
-    })
-    expect(consoleError(forwarded(command))).toMatchObject({
-      kind: "QuotaExceeded",
-      message: quotaMessage(refusals.command),
-    })
-    const full = Schema.TaggedStruct("MailboxFull", {}).make({})
-    expect(quotaRefusal(forwarded(full))).toEqual(Option.none())
-  })
-
-  it("never mistakes another error, or a quota tag without its payload, for a refusal", () => {
-    expect(quotaRefusal(Forbidden.make({ message: "Owners only." }))).toEqual(Option.none())
-    expect(quotaRefusal(JSON.parse('{"_tag":"SpendLimitExceeded","limitCents":"a lot"}'))).toEqual(
-      Option.none(),
+  it("reads a CommandRefused whose typed reason is a plan refusal as that refusal", () => {
+    const forwarded = refused(
+      '{"_tag":"CommandRefused","commandId":"runner-id","reasonTag":"StorageQuotaExceeded","reason":{"_tag":"StorageQuotaExceeded","organizationId":"org_1","deployment":"dep_1","tenant":"tenant_1","limitBytes":500000000,"usedBytes":512340000}}',
     )
+    expect(consoleError(forwarded)).toMatchObject({
+      kind: "StorageQuotaExceeded",
+      message: quotaMessage(refusals.storage),
+    })
+    expect(
+      quotaRefusal(
+        refused(
+          '{"_tag":"CommandRefused","commandId":"runner-id","reasonTag":"MailboxFull","reason":{"_tag":"MailboxFull"}}',
+        ),
+      ),
+    ).toEqual(Option.none())
+  })
+
+  it("reads only errors the client decoded, never a value shaped like one", () => {
+    const undecoded = (body: string) =>
+      Effect.runSync(Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(body))
+    expect(
+      quotaRefusal(
+        undecoded(
+          '{"_tag":"SpendLimitExceeded","organizationId":"org_1","period":"2026-10","limitCents":12500,"projectedCents":12501}',
+        ),
+      ),
+    ).toEqual(Option.none())
+    expect(
+      quotaRefusal(
+        undecoded(
+          '{"_tag":"CommandRefused","commandId":"c","reasonTag":"QuotaExceeded","reason":{"_tag":"QuotaExceeded","organizationId":"org_1","period":"2026-10","limitUnits":5,"usedUnits":5,"requestedUnits":5,"retryAfterMs":1}}',
+        ),
+      ),
+    ).toEqual(Option.none())
+    expect(quotaRefusal(Forbidden.make({ message: "Owners only." }))).toEqual(Option.none())
     expect(consoleError(Unavailable.make({ message: "Down", retryAfterSeconds: 1 })).message).toBe(
       generic,
     )
     expect(consoleError(Forbidden.make({ message: "Owners only." })).kind).toBe("Forbidden")
   })
 
-  it("links to Billing only for the kinds a plan or limit change lifts", () => {
+  it("words each reason the edge couldn't bill a command differently, never as an outage", () => {
+    const messages = (["tenant", "account", "plan"] as const).map((reason) => {
+      const error = consoleError(QuotaUnbound.make({ deployment: "dep_1", tenant: "acme", reason }))
+      expect(error.kind).toBe(reason === "account" ? "QuotaUnbound" : "Unbillable")
+      expect(error.message).not.toBe(generic)
+      return error.message
+    })
+    expect(new Set(messages).size).toBe(3)
+    expect(messages[0]).toContain("isn’t linked to an organization")
+    expect(messages[1]).toContain("Billing isn’t set up")
+    expect(messages[2]).toContain("plan isn’t recognised")
+    const undecoded = Effect.runSync(
+      Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(
+        '{"_tag":"QuotaUnbound","deployment":"dep_1","tenant":"acme","reason":"plan"}',
+      ),
+    )
+    expect(quotaRefusal(undecoded)).toEqual(Option.none())
+  })
+
+  it("links to Billing only for the kinds a plan or limit change lifts, or Billing explains", () => {
     expect(Object.values(refusals).map((refusal) => isQuotaKind(refusal._tag))).toEqual([
       true,
       true,
       true,
       true,
     ])
+    expect(isQuotaKind("QuotaUnbound")).toBe(true)
+    expect(isQuotaKind("Unbillable")).toBe(false)
     expect(["Forbidden", "Conflict", "Unavailable", "CommandFailed"].some(isQuotaKind)).toBe(false)
+  })
+})
+
+describe("missing resources", () => {
+  it("words every resource the contract can report missing, each differently", () => {
+    const messages = NotFoundResource.literals.map(
+      (resource) => consoleError(NotFound.make({ resource, id: "x" })).message,
+    )
+    expect(new Set(messages).size).toBe(NotFoundResource.literals.length)
+    expect(consoleError(NotFound.make({ resource: "live deployment", id: "prj_1/prod" }))).toEqual(
+      expect.objectContaining({
+        kind: "NotFound",
+        message: "This environment has no live deployment yet.",
+      }),
+    )
+    expect(consoleError(NotFound.make({ resource: "project", id: "prj_1" })).message).toBe(
+      "This project doesn’t exist or you no longer have access to it.",
+    )
   })
 })

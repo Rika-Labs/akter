@@ -21,7 +21,7 @@ export const Action = defineTaggedUnion({
   AddRegion: { region: S.String },
   ConnectIntegration: { kind: S.String },
   StartCheckout: { plan: PaidPlan },
-  ChangePlan: { plan: PaidPlan },
+  ChangePlan: { plan: PaidPlan, name: S.String },
   OpenBillingPortal: {},
   SetVariable: { environment: S.String, name: S.String, value: S.String },
   CreateKey: { name: S.String, permission: S.String, projectScoped: S.Boolean },

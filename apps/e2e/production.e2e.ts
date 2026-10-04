@@ -4,7 +4,7 @@ const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
 const session =
   '{"user":{"id":"u_real","name":"Real Session User","email":"real@example.com","emailVerified":true},"session":{"id":"s_real"}}'
 const me =
-  '{"user":{"id":"u_real","name":"Real Session User","email":"real@example.com","emailVerified":true,"image":null},"identityKind":"session","activeOrganizationId":"org_real","organizations":[{"role":"owner","organization":{"id":"org_real","name":"Real Organization","slug":"real-org","plan":"free","createdAt":"2026-01-01T00:00:00Z"}}]}'
+  '{"user":{"id":"u_real","name":"Real Session User","email":"real@example.com","emailVerified":true,"image":null},"identityKind":"session","activeOrganizationId":"org_real","organizations":[{"role":"owner","organization":{"id":"org_real","name":"Real Organization","slug":"real-org","plan":{"_tag":"known","id":"free"},"createdAt":"2026-01-01T00:00:00Z"}}]}'
 const projects =
   '[{"id":"project_real","organizationId":"org_real","name":"Real Project","slug":"real-project","status":"live","homeRegion":"us-west-2","createdAt":"2026-01-01T00:00:00Z"}]'
 const unimplemented = '{"_tag":"NotImplemented","operation":"pending.endpoint"}'

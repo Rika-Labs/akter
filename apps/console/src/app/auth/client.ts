@@ -16,7 +16,8 @@ const capitalized = (word: string): string => `${word.charAt(0).toUpperCase()}${
 
 /**
  * Loads the invitation the signed-in person was sent. An invitation that is no longer pending is
- * an error rather than a form that could not succeed.
+ * an error rather than a form that could not succeed. The plan catalog only names the plan, so an
+ * unreadable catalog leaves its id to name it.
  */
 export const loadInvitation = (id: string): Effect.Effect<Loaded<InvitationPage>, ConsoleError> =>
   load(
@@ -24,6 +25,10 @@ export const loadInvitation = (id: string): Effect.Effect<Loaded<InvitationPage>
       const api = yield* cloud
       const invitationId = yield* S.decodeEffect(InvitationId)(id)
       const preview = yield* api.invitations.preview({ params: { invitationId } })
+      const catalog = yield* api.billing.listPlans().pipe(
+        Effect.map(({ plans }) => plans.map(({ id, name }) => ({ id, name }))),
+        Effect.orElseSucceed(() => []),
+      )
       if (preview.status !== "pending")
         return yield* ConsoleError.make({
           kind: "Conflict",
@@ -33,7 +38,8 @@ export const loadInvitation = (id: string): Effect.Effect<Loaded<InvitationPage>
         id,
         organization: preview.organization.name,
         members: preview.organization.memberCount,
-        plan: capitalized(preview.organization.plan),
+        plan: preview.organization.plan,
+        catalog,
         inviter: preview.inviterName,
         email: preview.email,
         role: capitalized(preview.role),

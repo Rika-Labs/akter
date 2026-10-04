@@ -5,6 +5,7 @@ import type { EnqueueOptions } from "../contexts/job.ts"
 import { Due, emptyOutbox, InTurn, jobKey, openOutbox } from "../handles/intents.ts"
 import { ActorRef, principal } from "../identity/caller.ts"
 import { childId } from "../identity/child.ts"
+import type { AnyBlob } from "../members/blob.ts"
 import type { AnyConnection } from "../members/connection.ts"
 import type { EventClass } from "../members/event.ts"
 import type { AnySubscription, SubscribeFrom } from "../members/subscription.ts"
@@ -18,6 +19,8 @@ import type {
   RegisteredCommand,
 } from "../runtime/members.ts"
 import { Outcome, type Request } from "../runtime/request.ts"
+import type { BlobAccess } from "../state/blob.ts"
+import type { AnyOwnedTable, Group, TableAccess } from "../tables/owned.ts"
 import type { Decoded, Failure, Handler, MemberCodecs, StateValue } from "./codecs.ts"
 import { broadcastsTo } from "./connections.ts"
 import { type Descriptor, descriptorOf } from "./descriptor.ts"
@@ -184,30 +187,46 @@ const commandTurn = (
     const wroteTables = new Set<string>()
     const wroteBlobs = new Set<string>()
 
-    const access = yield* actors.tables(
-      {
-        ref: request.ref,
-        placement: descriptor.placement,
-        tables: descriptor.tables,
-        guard: escaped("Table"),
-        wrote: (table) => wroteTables.add(table),
-      },
-      true,
-    )
+    const bindings = yield* Effect.context<never>()
+    let tables: TableAccess | undefined
+    let blobs: BlobAccess | undefined
 
-    const blob = yield* actors.blobs(
-      {
-        ref: request.ref,
-        placement: descriptor.placement,
-        blobs: descriptor.blobs,
-        guard: escaped("Blob"),
-        wrote: (blobName) => wroteBlobs.add(blobName),
-        maxBytes: descriptor.policy.blobMaxBytes,
-        maxEntries: descriptor.policy.blobMaxEntries,
-        timeoutMs: descriptor.policy.executionMs,
-      },
-      true,
-    )
+    /**
+     * Binds the turn's owned tables on first use, in the context the turn
+     * started with. Most turns touch no table, and binding builds the
+     * actor's row predicates.
+     */
+    const tableAccess = () =>
+      (tables ??= Effect.runSyncWith(bindings)(
+        actors.tables(
+          {
+            ref: request.ref,
+            placement: descriptor.placement,
+            tables: descriptor.tables,
+            guard: escaped("Table"),
+            wrote: (table) => wroteTables.add(table),
+          },
+          true,
+        ),
+      ))
+
+    /** Binds the turn's blobs on first use, like `tableAccess`. */
+    const blobAccess = () =>
+      (blobs ??= Effect.runSyncWith(bindings)(
+        actors.blobs(
+          {
+            ref: request.ref,
+            placement: descriptor.placement,
+            blobs: descriptor.blobs,
+            guard: escaped("Blob"),
+            wrote: (blobName) => wroteBlobs.add(blobName),
+            maxBytes: descriptor.policy.blobMaxBytes,
+            maxEntries: descriptor.policy.blobMaxEntries,
+            timeoutMs: descriptor.policy.executionMs,
+          },
+          true,
+        ),
+      ))
 
     for (const key of Object.keys(fields))
       Object.defineProperty(view, key, { enumerable: true, get: () => current[key] })
@@ -331,9 +350,9 @@ const commandTurn = (
       commandId: request.commandId,
       state: Object.freeze(view),
       emit,
-      rows: access.rows,
-      group: access.group,
-      blob,
+      rows: (table: AnyOwnedTable) => tableAccess().rows(table),
+      group: ((build) => Effect.suspend(() => tableAccess().group(build))) satisfies Group,
+      blob: (declared: AnyBlob) => blobAccess()(declared),
       mint,
       enqueue,
       cancelJob,
@@ -394,7 +413,8 @@ const commandTurn = (
         }),
       ),
       Effect.provideContext(
-        Context.merge(Context.make(InsideTurn, turn), services).pipe(
+        services.pipe(
+          Context.add(InsideTurn, turn),
           Context.add(InTurn, outbox.marker),
           Context.add(Turn, context),
         ),

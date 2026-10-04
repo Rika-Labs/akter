@@ -416,6 +416,42 @@ const rival = (database: Redacted.Redacted<string>) =>
     }),
   )
 
+/**
+ * Warms each `Plain` actor with one `Add(1)`; `start` then sends one call to
+ * each with a fresh command id and holds every turn before its handler until
+ * all of them arrived, so they joined one group before any handed over.
+ */
+const gathered = Effect.fnUntraced(function* (keys: ReadonlyArray<string>) {
+  const test = yield* ActorTest
+  const actors = yield* Actors
+
+  for (const key of keys) yield* (yield* Plain.get(key)).Add(1)
+
+  const ids = yield* Effect.forEach(keys, () => actors.mintCommandId)
+
+  return {
+    start: <A, E>(
+      call: (plain: Effect.Success<ReturnType<typeof Plain.get>>) => Effect.Effect<A, E>,
+    ) =>
+      Effect.gen(function* () {
+        const pauses = yield* Effect.forEach(ids, (commandId) =>
+          test.pauseNext("beforeHandler", { commandId }),
+        )
+        const fibers = yield* Effect.forEach(keys, (key, index) =>
+          Effect.flatMap(Plain.get(key), (plain) =>
+            Effect.forkChild(call(plain).pipe(Actor.commandId(ids[index]!), Effect.orDie)),
+          ),
+        )
+        yield* Effect.forEach(pauses, ({ reached }) => reached, { concurrency: "unbounded" })
+
+        return {
+          fibers,
+          release: Effect.forEach(pauses, ({ release }) => release, { discard: true }),
+        }
+      }),
+  }
+})
+
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
@@ -1389,6 +1425,63 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 20 },
             receipts: 5,
           })
+        }),
+      ),
+  },
+  {
+    name: "pipeline: concurrent warm turns of three actors share one BEGIN, settings statement, COMMIT and version read: thirteen statements",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ids = yield* gathered(["shared-a", "shared-b", "shared-c"])
+          const statements = probe.statements
+          const sent = probe.sent.length
+          const { fibers, release } = yield* ids.start((plain) => plain.Add(1))
+          yield* release
+
+          expect(yield* Effect.forEach(fibers, Fiber.join)).toEqual([2, 2, 2])
+          expect(probe.statements - statements).toBe(13)
+
+          const wired = probe.sent.slice(sent).map(wire).join("")
+          expect(wired.split("BEGIN").length - 1).toBe(1)
+          expect(wired.split("COMMIT").length - 1).toBe(1)
+          expect(wired.split("pg_current_wal_insert_lsn").length - 1).toBe(1)
+          expect(yield* test.receiptsFor((yield* Plain.get("shared-a")).ref, "Add")).toBe(2)
+        }),
+      ),
+  },
+  {
+    name: "pipeline: a group whose COMMIT applied but whose reply was lost answers every member from its receipt, with one handler run each",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { prepare: false }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const ids = yield* gathered(["lost-a", "lost-b", "lost-c"])
+          const handled = probe.handled
+          const { fibers, release } = yield* ids.start((plain) =>
+            plain.Add(2).pipe(Effect.timeoutOption("20 seconds")),
+          )
+          relayed.loseCommitReply()
+          yield* release
+
+          expect(yield* Effect.forEach(fibers, Fiber.join)).toEqual([
+            Option.some(3),
+            Option.some(3),
+            Option.some(3),
+          ])
+          expect(relayed.lostCommits()).toBe(1)
+          expect(probe.handled - handled).toBe(3)
+
+          for (const key of ["lost-a", "lost-b", "lost-c"])
+            expect(yield* test.inspect((yield* Plain.get(key)).ref)).toMatchObject({
+              state: { count: 3 },
+              receipts: 2,
+            })
         }),
       ),
   },

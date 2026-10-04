@@ -8,7 +8,7 @@ import type { Workspace } from "./model.ts"
 export const emptyWorkspace: Workspace = {
   person: { name: "", email: "", role: "" },
   organization: "",
-  plan: "",
+  plan: null,
   projects: [],
   pinned: [],
   deadLetters: 0,
@@ -46,7 +46,7 @@ export const workspaceFrom: {
         role: membership?.role ?? "",
       },
       organization: membership?.organization.name ?? "",
-      plan: membership?.organization.plan ?? "",
+      plan: membership?.organization.plan ?? null,
       projects: projects.map((project) => ({
         slug: project.slug,
         deployed: project.status !== "empty",

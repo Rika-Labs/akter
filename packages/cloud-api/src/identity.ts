@@ -21,6 +21,32 @@ import {
 export const PlanId = Schema.Literals(["free", "pro", "team", "enterprise"])
 export type PlanId = typeof PlanId.Type
 
+/** An organization with no billing account; the edge refuses every metered request it makes. */
+export const UnboundPlan = Schema.TaggedStruct("unbound", {})
+export type UnboundPlan = typeof UnboundPlan.Type
+
+/** A plan the pricing configuration defines. */
+export const KnownPlan = Schema.TaggedStruct("known", { id: PlanId })
+export type KnownPlan = typeof KnownPlan.Type
+
+/**
+ * A stored plan id the pricing configuration does not define, kept as the
+ * stored string.
+ */
+export const UnknownPlan = Schema.TaggedStruct("unknown", { id: Schema.String })
+export type UnknownPlan = typeof UnknownPlan.Type
+
+/**
+ * The plan an organization is on. `unbound` means it has no billing account,
+ * so it has no plan at all and is never reported as Free. `known` carries a
+ * plan the pricing configuration defines. `unknown` carries a stored plan id
+ * the pricing configuration does not define, kept as the stored string so
+ * org context still loads while billing and usage answer `Unavailable` with
+ * reason `unknownPlan`.
+ */
+export const OrganizationPlan = Schema.Union([UnboundPlan, KnownPlan, UnknownPlan])
+export type OrganizationPlan = typeof OrganizationPlan.Type
+
 export const User = Schema.Struct({
   id: UserId,
   name: Schema.String,
@@ -34,7 +60,7 @@ export const Organization = Schema.Struct({
   id: OrganizationId,
   name: Schema.String,
   slug: Slug,
-  plan: PlanId,
+  plan: OrganizationPlan,
   createdAt: Timestamp,
 })
 export type Organization = typeof Organization.Type
@@ -131,7 +157,7 @@ export const InvitationPreview = Schema.Struct({
     id: OrganizationId,
     name: Schema.String,
     slug: Slug,
-    plan: PlanId,
+    plan: OrganizationPlan,
     memberCount: NonNegativeInt,
   }),
 })

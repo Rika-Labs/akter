@@ -1,4 +1,4 @@
-import { Crypto, DateTime, Effect, Layer, Schema } from "effect"
+import { Crypto, DateTime, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 
 import {
@@ -547,7 +547,7 @@ export const StripeBillingLocal = (config: LocalBillingConfig) =>
             amountCents: row.amount_cents,
             currency: row.currency,
             status: "paid" as const,
-            pdfUrl: null,
+            pdfUrl: `${hostedBaseUrl}/billing/invoices/${encodeURIComponent(row.id)}/pdf`,
             hostedUrl: null,
           }))
         })
@@ -593,6 +593,56 @@ export const StripeBillingLocal = (config: LocalBillingConfig) =>
       })
     }),
   )
+
+const pdfText = (text: string) => text.replaceAll(/[\\()]/gu, (character) => `\\${character}`)
+
+/**
+ * A one-page PDF of a simulated invoice in the standard Helvetica font, built
+ * byte for byte so its cross-reference offsets are exact and any PDF reader
+ * opens it. Every value is ASCII, so string length is byte length.
+ */
+const invoiceDocument = (invoice: InvoiceRow): Uint8Array => {
+  const day = (date: Date) => DateTime.formatIso(DateTime.fromDateUnsafe(date)).slice(0, 10)
+  const lines = [
+    "Akter Cloud invoice",
+    `Invoice ${invoice.number}`,
+    `Period ${day(invoice.period_start)} to ${day(invoice.period_end)}`,
+    `Amount ${(invoice.amount_cents / 100).toFixed(2)} ${invoice.currency.toUpperCase()}`,
+    "Status paid",
+    "Simulated by the local Stripe stand-in: no payment was taken and no tax was calculated.",
+  ]
+  const content = `BT /F1 12 Tf 72 720 Td 16 TL ${lines.map((line) => `(${pdfText(line)}) Tj T*`).join(" ")} ET`
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+  ]
+  let body = "%PDF-1.4\n"
+  const offsets: Array<number> = []
+  for (const [index, object] of objects.entries()) {
+    offsets.push(body.length)
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`
+  }
+  const xref = body.length
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  body += offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return new TextEncoder().encode(body)
+}
+
+/**
+ * The PDF of a locally simulated invoice, which its `pdfUrl` serves, or
+ * `None` when no such invoice exists.
+ */
+export const localInvoicePdf = Effect.fn("localInvoicePdf")(function* (invoiceId: string) {
+  const sql = yield* SqlClient.SqlClient
+  const [row] = yield* sql<InvoiceRow>`
+    SELECT id, number, period_start, period_end, amount_cents, currency
+    FROM cloud_billing_invoice WHERE id = ${invoiceId}`
+  return Option.map(Option.fromUndefinedOr(row), invoiceDocument)
+})
 
 /**
  * Completes a local checkout the way Stripe would after payment: the session's

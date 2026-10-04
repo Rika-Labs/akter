@@ -9,6 +9,7 @@ import { canonicalPayload, toOpeningTail, toTailEntry } from "../commands/mappin
 import { settingsSeed } from "../settings/keys.ts"
 import {
   choiceFields,
+  hasPaidPlan,
   parseMemberRoleKey,
   parseNotificationKey,
   parseSpendLimit,
@@ -18,6 +19,7 @@ import {
   toggleFields,
 } from "../settings/keys.ts"
 import { slugify } from "../auth/model.ts"
+import { billedPlan } from "../settings/model.ts"
 import { spendLimitReached } from "../quota/model.ts"
 import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
@@ -560,19 +562,21 @@ const submit = (model: Model, form: string): Result => {
       )
     }),
     Match.when("change-plan", () => {
-      const billing = Option.flatMap(settingsPage(model), (page) =>
-        Option.fromNullishOr(page.billing),
-      )
-      const subscribed = Option.match(billing, {
-        onNone: () => "free" as const,
-        onSome: (found) => found.plan.subscribed,
+      const page = Option.getOrUndefined(settingsPage(model))
+      const billing = page?.billing
+      if (billing == null) return unavailable(model, "Another plan")
+      const choices = planChoices({
+        subscribed: billedPlan(billing)?.subscribed ?? null,
+        plans: page?.plans ?? null,
       })
-      const choices = planChoices(subscribed)
-      const plan = choices.find((choice) => choice === model.choices[planChoiceKey]) ?? choices[0]
-      if (plan === undefined) return unavailable(model, "Another plan")
+      const choice = choices.find(({ plan }) => plan === model.choices[planChoiceKey]) ?? choices[0]
+      if (choice === undefined) return unavailable(model, "Another plan")
+      const { plan, offer } = choice
       return mutate(
         model,
-        subscribed === "free" ? Action.StartCheckout({ plan }) : Action.ChangePlan({ plan }),
+        hasPaidPlan(billing)
+          ? Action.ChangePlan({ plan, name: offer.name })
+          : Action.StartCheckout({ plan }),
       )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),

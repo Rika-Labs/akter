@@ -270,4 +270,37 @@ describe("deploy markers", () => {
         expect(deployMarkers(deployments)([])).toEqual([])
       }),
     ))
+
+  it("writes what the runners do not report as a dash instead of throwing or showing zero", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const parsed = yield* decode(Overview, {
+          ...overview,
+          commands: null,
+          actors: { awake: null, total: 3 },
+          jobs: { inFlight: 0, donePerHour: null },
+          throughput: null,
+          p99: null,
+          health: {
+            runners: null,
+            databaseCpuPercent: null,
+            maxMailbox: null,
+            parkedSockets: null,
+            outboxLagP99Ms: null,
+            lastDeployAt: null,
+          },
+          recentDeployments: null,
+        })
+        const page = toOverviewPage(now)({ project: "storefront", overview: parsed })
+        expect(page.stats.slice(0, 2)).toMatchObject([
+          { label: "Commands / s", value: "—", trend: [] },
+          { label: "Awake actors", value: "—" },
+        ])
+        expect(page.throughput).toBeNull()
+        expect(page.latency).toMatchObject({ p50: null, p99: null, p99Series: null })
+        expect(page.health.slice(0, 5).map((row) => row.value)).toEqual(["—", "—", "—", "—", "—"])
+        expect(page.deploys).toBeNull()
+        expect(page.markers).toEqual([])
+      }),
+    ))
 })

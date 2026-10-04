@@ -12,7 +12,7 @@ const StreamStats = Schema.Struct({
 const session =
   '{"user":{"id":"runtime_user","name":"Runtime Operator","email":"runtime@example.com","emailVerified":true},"session":{"id":"runtime_session"}}'
 const me =
-  '{"user":{"id":"runtime_user","name":"Runtime Operator","email":"runtime@example.com","emailVerified":true,"image":null},"identityKind":"session","activeOrganizationId":"runtime_org","organizations":[{"role":"owner","organization":{"id":"runtime_org","name":"Runtime Org","slug":"runtime-org","plan":"free","createdAt":"2026-01-01T00:00:00Z"}}]}'
+  '{"user":{"id":"runtime_user","name":"Runtime Operator","email":"runtime@example.com","emailVerified":true,"image":null},"identityKind":"session","activeOrganizationId":"runtime_org","organizations":[{"role":"owner","organization":{"id":"runtime_org","name":"Runtime Org","slug":"runtime-org","plan":{"_tag":"known","id":"free"},"createdAt":"2026-01-01T00:00:00Z"}}]}'
 const projects =
   '[{"id":"runtime_project","organizationId":"runtime_org","name":"Runtime Project","slug":"runtime-project","status":"live","homeRegion":"us-west-2","createdAt":"2026-01-01T00:00:00Z"}]'
 const actorType = {

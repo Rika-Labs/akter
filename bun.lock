@@ -78,7 +78,6 @@
         "@akter/cloud-api": "workspace:*",
         "@akter/ui": "workspace:*",
         "@effect/platform-browser": "catalog:",
-        "@rikalabs/akter": "workspace:*",
         "@stylexjs/stylex": "catalog:",
         "better-auth": "1.7.7",
         "effect": "catalog:",
@@ -97,6 +96,7 @@
     "apps/e2e": {
       "name": "@akter/e2e",
       "devDependencies": {
+        "@akter/cloud-api": "workspace:*",
         "@akter/console": "workspace:*",
         "@playwright/test": "1.63.0",
         "effect": "catalog:",
@@ -208,6 +208,7 @@
     "packages/cloud-api": {
       "name": "@akter/cloud-api",
       "dependencies": {
+        "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {

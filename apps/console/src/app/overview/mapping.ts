@@ -41,7 +41,7 @@ export const deployMarkers =
     if (first === undefined || last === undefined) return []
     const start = DateTime.toEpochMillis(first.at)
     const end = DateTime.toEpochMillis(last.at)
-    return deployments.flatMap((deployment) => {
+    return (deployments ?? []).flatMap((deployment) => {
       const at = DateTime.toEpochMillis(deployment.createdAt)
       if (at < start || at > end) return []
       const distances = series.map((point) => Math.abs(DateTime.toEpochMillis(point.at) - at))

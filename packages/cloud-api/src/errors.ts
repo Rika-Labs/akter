@@ -17,10 +17,33 @@ export class Forbidden extends Schema.TaggedError<Forbidden>()(
   { httpApiStatus: 403 },
 ) {}
 
+/**
+ * What a `NotFound` names. `actor` is an actor address the live deployment
+ * does not have, `actor-type` a type it does not serve, `live deployment` an
+ * environment with nothing deployed, and `command` a command the actor does
+ * not declare, so a caller tells them apart without reading `id`.
+ */
+export const NotFoundResource = Schema.Literals([
+  "actor",
+  "actor-type",
+  "api-key",
+  "command",
+  "cursor",
+  "deployment",
+  "domain",
+  "environment",
+  "invitation",
+  "live deployment",
+  "member",
+  "organization",
+  "project",
+])
+export type NotFoundResource = typeof NotFoundResource.Type
+
 /** The resource does not exist or is not visible to the caller; answered 404. */
 export class NotFound extends Schema.TaggedError<NotFound>()(
   "NotFound",
-  { resource: Schema.String, id: Schema.String },
+  { resource: NotFoundResource, id: Schema.String },
   { httpApiStatus: 404 },
 ) {}
 
@@ -38,10 +61,27 @@ export class NotImplemented extends Schema.TaggedError<NotImplemented>()(
   { httpApiStatus: 501 },
 ) {}
 
-/** A deployment or its edge is temporarily unavailable; callers retry with the same command identity. */
+/**
+ * Why a request is `Unavailable` when the cause is known and not an outage.
+ * `unknownPlan` means the organization's stored plan is not in the pricing
+ * configuration, an operator fault that retrying will not clear until the
+ * plan or the configuration is fixed.
+ */
+export const UnavailableReason = Schema.Literals(["unknownPlan"])
+export type UnavailableReason = typeof UnavailableReason.Type
+
+/**
+ * A deployment, its edge or a dependency is temporarily unavailable; callers
+ * retry with the same command identity. `reason` is set only when the cause
+ * is a known condition rather than an outage; a generic outage has none.
+ */
 export class Unavailable extends Schema.TaggedError<Unavailable>()(
   "Unavailable",
-  { message: Schema.String, retryAfterSeconds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)) },
+  {
+    message: Schema.String,
+    retryAfterSeconds: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+    reason: Schema.optionalKey(UnavailableReason),
+  },
   { httpApiStatus: 503 },
 ) {}
 

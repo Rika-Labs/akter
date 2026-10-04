@@ -62,8 +62,8 @@ hashes it. So a retry after a lost response or a `503 Unavailable`, even with th
 reformatted or edited and changed back, runs at most once and answers `replayed`, while changed
 input is sent as a new command. An ID the operator typed is always used as typed. Each refusal has its own wording: `409` (the key is bound to other input),
 `410 CommandExpired` (the key's retry window closed), `CommandRefused` with the runner's reason,
-`503 Unavailable` (send again with the same key) and `502 RunnerDefect`. After a `409`, `410` or
-`RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
+`503 Unavailable` (send again with the same key) and `502 RunnerDefect`. After a `409`, `410`, an
+unusable command ID or `RunnerDefect` the dialog does not offer to resend that submission; clearing the ID or changing the
 input makes a new one. The dialog captures the actor's project and environment and closes on every
 URL change; navigation can never retarget an old actor address. The inspector shows the actor as
 the runner reports it: committed state, generation, receipts (with their `Success` or `Failure`
@@ -103,22 +103,44 @@ Runner actor counts and CPU the runtime does not measure show `—`, never `0`. 
 every runtime page: a value the runners do not report reads `—`, a whole chart or section reads as
 not reported, and a total over values that include an unreported one is itself unknown.
 
-Billing and Usage read the control plane's Stripe-backed records. Prices, allowances and the read
-weight come from the API (paid prices are flagged provisional); the console hardcodes none. A Free
-organization upgrades through Stripe Checkout in the same tab; a paid one changes plan through the
-plan endpoint, which may stay pending until payment succeeds. The billing portal opens in a new tab
-and invoice PDFs open in their own. Only `https:` links on Stripe's Checkout, billing, invoice and
-pay hosts are opened or linked; the local stand-in's same-origin `/billing` pages are accepted only
-by the Vite development server, and any other link is refused with a message. A spend limit the
-month's estimate has already reached waits for an explicit save, because it refuses new commands
-right away. Free's included commands and storage are shown as the hard caps
-they are. When Free's commands are used up, or the month's estimate is past the spend limit, Usage
-and Overview show one quiet notice linking to Billing; storage has no such notice because usage
-reports a monthly average rather than the latest sample the cap is checked against. Plan refusals
-(`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`, `StorageQuotaExceeded`) are
-recognised by the framework's tags and payloads and explained in place with a link to Billing. On
-`sendCommand` they arrive as a `CommandRefused` whose `reason` is the edge's `ActorError` envelope;
-the cloud API types that reason only as JSON, so the console reads the refusal inside it by shape.
+Billing and Usage read the control plane's Stripe-backed records. The plan picker and the plan
+comparison come from the API's plan catalog (`/billing/plans`): names, prices, allowances and
+overage, with provisional prices labelled as the catalog marks them; the console hardcodes no plan,
+and without a catalog it offers none. Only plans the catalog sells through Checkout can be chosen. A
+Free organization upgrades through Stripe Checkout in the same tab; a paid one changes plan through
+the plan endpoint, which may stay pending until payment succeeds. The billing portal opens in a new
+tab and invoice PDFs open in their own. Only `https:` links on Stripe's Checkout, billing, invoice
+and pay hosts are opened or linked; the local stand-in's same-origin `/billing` Checkout, portal and
+invoice PDF pages are accepted only by the Vite development server, and any other link is refused
+with a message (an unlinked PDF still lists its invoice). A spend limit the month's estimate has
+already reached waits for an explicit save, because it refuses new commands right away.
+
+The sidebar, the project switcher and invitation previews name the organization's plan from its
+tagged `plan`: a known plan by its catalog name (its id, title-cased, while no catalog is loaded),
+an organization without a billing account as "no billing", never Free, and a stored plan the
+pricing configuration doesn't define as "plan not recognised".
+
+Usage, Overview and Billing show cap state exactly as the API reports it per cap (`refusing`, not
+merely `atCap`), with one quiet notice: an organization without a billing account (billing's
+`plan` is `unbound`) reads as "Billing isn't set up", never as Free, and its usage is shown without
+any plan's allowances, prices or estimates; otherwise the command allowance, a tenant's storage
+sample at its cap, the spend limit, then connections, in that order. The command allowance is
+quoted in whole commands: the cap's units divided by its `unitsPerCommand` and rounded down, a
+read weighing one unit.
+Usage also shows the latest storage sample across serving deployments. A `503 Unavailable` whose
+`reason` is `unknownPlan` still loads Billing and Usage, which say calmly that the organization's
+plan isn't recognised and to contact support, a spend limit refused for it reads as not saved, and
+the overview's one notice says new commands are refused, with no Billing link.
+Any other `503` from billing or usage is worded as billing being temporarily unreadable, not as a
+lost connection. Plan refusals (`QuotaExceeded`, `SpendLimitExceeded`, `ConnectionLimitExceeded`,
+`StorageQuotaExceeded`) are read from the cloud API's own typed errors, or from a `CommandRefused`
+whose typed `reason` is one, and explained in place with a link to Billing; the console reads only
+errors the client decoded, never a payload by its shape. A `402 QuotaUnbound` (the edge has no
+organization, billing account or known plan to bill a command to) is worded by its `reason`, is
+never resent with the same command ID, and links to Billing only for a missing billing account;
+the other reasons say to contact support. In the send dialog every other
+`CommandRefused` reason has its own wording; it offers a resend with the same command ID only when
+the framework marks the reason retryable, and never for a spent command ID. A `NotFound` is worded from its closed `resource` set.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when
