@@ -118,6 +118,17 @@ export const ActorPage = S.TaggedStruct("ActorPage", {
 })
 export type ActorPage = typeof ActorPage.Type
 
+/**
+ * An actor address that has never received a command. It is not an error: sending the command that
+ * creates the actor is how it comes to exist, so the inspector offers exactly that.
+ */
+export const MissingActorPage = S.TaggedStruct("MissingActorPage", {
+  commandScope: CommandScope,
+  actorType: S.String,
+  key: S.String,
+})
+export type MissingActorPage = typeof MissingActorPage.Type
+
 /** The inspector's tabs, in order. */
 export const inspectorTabs = ["state", "rows", "receipts", "events", "jobs", "connections"] as const
 

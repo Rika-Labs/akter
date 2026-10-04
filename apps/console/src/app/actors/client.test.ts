@@ -1,3 +1,4 @@
+import { ProjectId } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -9,7 +10,7 @@ import {
   signedIn,
 } from "../overview/testing.ts"
 import { loadActor, loadActorType, loadActors } from "./client.ts"
-import { ActorPage, ActorsPage, ActorTypePage } from "./model.ts"
+import { ActorPage, ActorsPage, ActorTypePage, MissingActorPage } from "./model.ts"
 
 beforeEach(() => {
   vi.stubEnv("VITE_CONSOLE_FIXTURES", "1")
@@ -243,14 +244,41 @@ describe("actor inspector over the live API", () => {
       }),
     ))
 
-  it("answers an actor the runner does not have with nothing", () =>
+  it("answers an actor no command has reached with a live page that can send the first one", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const { loaded } = inspect({
           [actor]: notImplemented("runtime.inspectActor"),
           [`${actor}/jobs`]: notFound({ resource: "actor", id: "Counter/hits" }),
         })
-        expect(yield* loaded).toEqual({ data: undefined, sample: false })
+        expect(yield* loaded).toEqual({
+          data: MissingActorPage.make({
+            actorType: "Counter",
+            key: "hits",
+            commandScope: { projectId: ProjectId.make("prj_1"), environment: "production" },
+          }),
+          sample: false,
+        })
+        const inspected = inspect({
+          [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
+        })
+        expect(Schema.is(MissingActorPage)((yield* inspected.loaded).data)).toBe(true)
+      }),
+    ))
+
+  it("offers no first command when the environment itself is missing or the read is refused", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const undeployed = inspect({
+          [actor]: notImplemented("runtime.inspectActor"),
+          [`${actor}/jobs`]: notFound({ resource: "live deployment", id: "prj_1/production" }),
+        })
+        expect(yield* undeployed.loaded).toEqual({ data: undefined, sample: false })
+        const refused = inspect({
+          [actor]: notImplemented("runtime.inspectActor"),
+          [`${actor}/jobs`]: forbidden,
+        })
+        expect(yield* refused.loaded.pipe(Effect.flip)).toMatchObject({ kind: "Forbidden" })
       }),
     ))
 
