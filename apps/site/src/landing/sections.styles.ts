@@ -13,10 +13,14 @@ export const section = stylex.create({
 })
 
 export const hero = stylex.create({
-  root: { textAlign: "center", paddingTop: "2.5rem", display: "grid", justifyItems: "center" },
+  root: {
+    textAlign: "center",
+    paddingTop: { default: "5rem", [queries.phoneDown]: "3rem" },
+    display: "grid",
+    justifyItems: "center",
+  },
   headline: {
     maxWidth: "50rem",
-    marginTop: "2.125rem",
     fontSize: { default: typography.displaySm, [queries.phoneDown]: "1.5625rem" },
     lineHeight: 1.25,
     letterSpacing: "-0.012em",
