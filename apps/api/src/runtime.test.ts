@@ -58,6 +58,8 @@ const InvalidCommandId = Schema.TaggedStruct("InvalidCommandId", {
   commandId: Schema.String,
   code: Schema.String,
 })
+const CommandExpired = Schema.TaggedStruct("CommandExpired", { commandId: Schema.String })
+const MailboxFull = Schema.TaggedStruct("MailboxFull", {})
 
 const ActorError = Schema.TaggedStruct("ActorError", {
   reason: Schema.Json,
@@ -534,7 +536,23 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           ],
           [refused(CommandConflict.make({}), 409), Schema.is(Conflict)],
           [refused(Unauthorized.make({ code: "access_denied" }), 403), Schema.is(Forbidden)],
-          [refused(Unauthorized.make({ code: "invalid_credentials" }), 401), Schema.is(Forbidden)],
+          [
+            refused(Unauthorized.make({ code: "receipt_access_denied" }), 403),
+            Schema.is(Forbidden),
+          ],
+          [
+            refused(Unauthorized.make({ code: "invalid_credentials" }), 401),
+            Schema.is(CloudUnavailable),
+          ],
+          [refused(Unauthorized.make({ code: "expired" }), 401), Schema.is(CloudUnavailable)],
+          [
+            refused(Unauthorized.make({ code: "reauthorization_unavailable" }), 403),
+            Schema.is(CloudUnavailable),
+          ],
+          [
+            refused(CommandExpired.make({ commandId: "v1.expired" }), 410),
+            (error) => Schema.is(CommandRefused)(error) && error.reasonTag === "CommandExpired",
+          ],
           [
             refused(InvalidCommandId.make({ commandId: "v1.bad", code: "malformed" }), 400),
             (error) => Schema.is(CommandRefused)(error) && error.reasonTag === "InvalidCommandId",
@@ -557,6 +575,43 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
 
           expect(expected(error)).toBe(true)
         }
+      }),
+  )
+
+  it.effect(
+    "reports refused deployment credentials during minting as an outage, never a caller authentication error or defect",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+
+        yield* edge.answer(() => refused(Unauthorized.make({ code: "invalid_credentials" }), 401))
+
+        expect(yield* runtime.sendCommand(command).pipe(Effect.flip)).toEqual(
+          CloudUnavailable.make({
+            message: "The deployment could not authorize the request",
+            retryAfterSeconds: 1,
+          }),
+        )
+        expect(forwarded(edge.seen)).toEqual([])
+      }),
+  )
+
+  it.effect(
+    "keeps a full actor mailbox retryable instead of reporting a terminal admission refusal",
+    () =>
+      Effect.gen(function* () {
+        const edge = yield* StandInEdge
+        const runtime = yield* makeRuntime
+
+        yield* edge.answer(runner(() => refused(MailboxFull.make({}), 429)))
+
+        expect(yield* runtime.sendCommand(command).pipe(Effect.flip)).toEqual(
+          CloudUnavailable.make({
+            message: "The actor mailbox is temporarily full",
+            retryAfterSeconds: 1,
+          }),
+        )
       }),
   )
 

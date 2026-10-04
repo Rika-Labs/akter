@@ -181,11 +181,16 @@ export const makeRuntime = Effect.gen(function* () {
     const { type, id } = split(input.address)
 
     const mint = call(target, HttpClientRequest.post(url(target, "/command-ids"))).pipe(
-      Effect.flatMap(({ status, body }) =>
-        status === 200
-          ? decodeCommandId(body).pipe(Effect.orDie)
-          : unavailable(`command id mint answered ${status}`),
-      ),
+      Effect.flatMap(({ status, body }) => {
+        if (status === 200) return decodeCommandId(body).pipe(Effect.orDie)
+        const refusal = Option.getOrUndefined(decodeActorError(body))?.reason
+        if (refusal?._tag === "Unauthorized")
+          return Unavailable.make({
+            message: "The deployment could not authorize the request",
+            retryAfterSeconds: 1,
+          })
+        return unavailable(`command id mint answered ${status}`)
+      }),
     )
 
     const clientKey = input.commandId
@@ -244,6 +249,12 @@ export const makeRuntime = Effect.gen(function* () {
       if (Schema.is(DefectBody)(body)) return yield* unavailable(`command answered ${status}`)
 
       const generic = Option.getOrUndefined(decodeGenericActorError(body))
+      if (generic?.reason._tag === "MailboxFull")
+        return yield* Unavailable.make({
+          message: "The actor mailbox is temporarily full",
+          retryAfterSeconds: 1,
+        })
+
       if (generic !== undefined && status >= 400 && status < 500)
         return yield* CommandRefused.make({
           commandId,
@@ -276,7 +287,13 @@ export const makeRuntime = Effect.gen(function* () {
           Conflict.make({
             message: `The command id ${commandId} was already used for another command`,
           }),
-        Unauthorized: () => Forbidden.make({ message: "The actor refused the command" }),
+        Unauthorized: ({ code }) =>
+          code === "access_denied" || code === "receipt_access_denied"
+            ? Forbidden.make({ message: "The actor refused the command" })
+            : Unavailable.make({
+                message: "The deployment could not authorize the request",
+                retryAfterSeconds: 1,
+              }),
         InvalidInput: ({ code }) =>
           code === "unknown_route"
             ? NotFound.make({ resource: "command", id: `${input.address}/${input.command}` })

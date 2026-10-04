@@ -9,7 +9,7 @@ Better Auth is the authority for users, sessions, organizations, teams, members,
 
 ## Records
 
-The `Repository` service (`apps/api/src/repository.ts`) owns four tables, created by `CREATE TABLE IF NOT EXISTS` migrations that run, serialized by an advisory lock, when its layer is built. Running them again, or from several processes at once, MUST leave existing rows untouched.
+The `Repository` service (`apps/api/src/repository.ts`) owns five tables, created by migrations that run, serialized by an advisory lock, when its layer is built. Running them again, or from several processes at once, MUST preserve existing records.
 
 | Table                       | Holds                                                                                                                                                                                                                                                                              |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -44,6 +44,8 @@ Activation MUST compare-and-set the environment's current deployment from the ex
 A rollback MUST target an earlier deployment that reached live and is not currently live. It creates a new deployment from that target's image and immutable environment snapshot, sets `rolledBackFrom`, and skips build and migrate. Only after that replacement is live may the replaced deployment become rolled-back. The target retains its status.
 
 The runtime command endpoint accepts an optional `commandId` as a client idempotency key. The key is not a runner command id: the control plane durably assigns the runner-minted id under the organization, project, environment, actor address and command scope, and retries reuse that assignment after an API restart. The original JSON payload is bound to the assignment; reusing the key with a different payload fails with `Conflict`. A command may target an address that has never been created, because delivery itself creates the actor. Inspector reads are not part of command admission. Runner admission refusals, including malformed, future, expired or otherwise invalid command ids, are typed 4xx responses and never control-plane defects.
+
+Command-assignment retention is not implemented yet: `cloud_command_idempotency` retains every key and its payload indefinitely. Bounded storage needs a finite client-key admission policy that still rejects an old key after pruning; deleting an expired runner assignment alone would remint its client key and permit duplicate execution. Production operation needs that retention design and cleanup before claiming bounded control-plane command storage. Runner receipt retention remains finite and independent.
 
 Concurrent wakes for one release-region MUST enqueue one provisioning job. Registration and wake deletion MUST commit with the runner actor's result. Drain MUST withdraw registration before asking the platform to stop. A drain requested while provisioning MUST be retained and stop the task when it appears. Reconciliation MUST not remove a replacement because a stale observation reported that an earlier task stopped.
 

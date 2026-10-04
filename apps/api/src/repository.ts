@@ -340,11 +340,20 @@ const migrations: ReadonlyArray<string> = [
     command text NOT NULL CHECK (command <> ''),
     idempotency_key text NOT NULL CHECK (idempotency_key <> ''),
     command_id text NOT NULL CHECK (command_id <> ''),
-    payload jsonb NOT NULL,
+    payload json NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (organization_id, project_id, environment, address, command, idempotency_key),
     UNIQUE (command_id)
   )`,
+  `DO $$ BEGIN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'cloud_command_idempotency'
+        AND column_name = 'payload' AND data_type = 'jsonb'
+    ) THEN
+      ALTER TABLE cloud_command_idempotency ALTER COLUMN payload TYPE json USING payload::json;
+    END IF;
+  END $$`,
 ]
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
@@ -527,7 +536,7 @@ export const RepositoryLive = Layer.effect(
             ) VALUES (
               ${input.organizationId}, ${input.projectId}, ${input.environment},
               ${input.address}, ${input.command}, ${input.commandId},
-              ${input.mintedCommandId}, ${payload}::jsonb
+              ${input.mintedCommandId}, ${payload}::json
             )
             ON CONFLICT (organization_id, project_id, environment, address, command, idempotency_key)
             DO UPDATE SET idempotency_key = cloud_command_idempotency.idempotency_key

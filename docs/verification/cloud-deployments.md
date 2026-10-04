@@ -8,6 +8,8 @@ Review regression cases also reject a stale poller wake resurrecting a retired r
 
 The local stack scenario must create a project through the API, register a locally built digest, observe a ready runner, send a command through the API and edge, retry it with the same client key, reject a changed payload, send to a never-created actor, roll forward and back, then withdraw Free capacity and answer the next command after a wake without duplicate execution. Exercise migration and runner interruption, not only success. Keep state and receipt expectations independent of the implementation's own counters.
 
+Before the first successful command, denied callers must leave the actor absent. Runtime mapping evidence must reject terminal handling of `MailboxFull` and verify typed command-expiry refusals. Repository evidence must preserve escaped JSON values and ids across the `jsonb`-to-`json` upgrade. Command-assignment storage remains unbounded until a safe retention policy is implemented.
+
 Use the repository's `bun install`, typecheck, lint, formatting, unit and relevant Postgres integration commands. Local container tests require Docker and remove only the exact resources they created. Do not prune the shared daemon. On a shared Mac, correctness checks must use the shared heavy-run slots and the agreed load gate; infrastructure timeouts require a clean rerun, not weaker assertions. Test durations are not deployment performance measurements.
 
 Real ECS/ECR, GitHub App installation, Cloudflare/NLB streaming, hosted TLS, Neki and Fargate cold-start bounds require authorized credentials and provider-specific evidence. The credential-free slice makes no claim for them. Performance measurements belong on isolated sandboxes, not the shared Mac.

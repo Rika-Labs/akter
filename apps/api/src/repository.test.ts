@@ -122,7 +122,9 @@ describe("migrations", () => {
 
         yield* Effect.all(
           Array.from({ length: 4 }, () =>
-            Effect.scoped(Layer.build(RepositoryLive.pipe(Layer.provide(client(url, 2))))),
+            Effect.scoped(
+              Layer.build(RepositoryLive.pipe(Layer.provide(client(url, 2)), Layer.fresh)),
+            ),
           ),
           { concurrency: "unbounded", discard: true },
         )
@@ -837,7 +839,9 @@ describe("command assignments", () => {
 
         const restarted = yield* Effect.scoped(
           Effect.gen(function* () {
-            const context = yield* Layer.build(RepositoryLive.pipe(Layer.provide(client(url, 2))))
+            const context = yield* Layer.build(
+              RepositoryLive.pipe(Layer.provide(client(url, 2)), Layer.fresh),
+            )
             const fresh = Context.get(context, Repository)
 
             return {
@@ -887,6 +891,64 @@ describe("command assignments", () => {
 
         for (const [index, scope] of scopes.entries())
           expect(yield* repository.findCommand(scope)).toEqual(assigned[index])
+      }),
+    ))
+
+  it("upgrade existing jsonb assignments without losing their ids or rejecting escaped JSON", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const sql = yield* SqlClient.SqlClient
+        const url = yield* Effect.service(DatabaseUrl)
+        const mintedCommandId = yield* unique
+        const existing = yield* repository.assignCommand({
+          ...key(organizationId),
+          payload: { reason: "late" },
+          mintedCommandId,
+        })
+
+        yield* sql`ALTER TABLE cloud_command_idempotency ALTER COLUMN payload TYPE jsonb USING payload::jsonb`
+
+        const migrated = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const context = yield* Layer.build(
+              RepositoryLive.pipe(Layer.provide(client(url, 2)), Layer.fresh),
+            )
+            const fresh = Context.get(context, Repository)
+
+            return {
+              existing: yield* fresh.findCommand(key(organizationId)),
+              escaped: yield* fresh.assignCommand({
+                ...key(organizationId),
+                commandId: "escaped-key",
+                payload: "\u0000",
+                mintedCommandId: yield* unique,
+              }),
+            }
+          }),
+        )
+
+        expect(migrated.existing).toEqual(existing)
+        expect(migrated.escaped.payload).toBe("\u0000")
+      }),
+    ))
+
+  it("preserve valid JSON escape sequences that jsonb cannot store", () =>
+    run(
+      Effect.gen(function* () {
+        const organizationId = yield* unique
+        const repository = yield* Effect.service(Repository)
+        const mintedCommandId = yield* unique
+        const payload = { text: "before\u0000after", surrogate: "\ud800", values: ["\u0000"] }
+
+        expect(
+          yield* repository.assignCommand({ ...key(organizationId), payload, mintedCommandId }),
+        ).toEqual({ commandId: mintedCommandId, payload })
+        expect(yield* repository.findCommand(key(organizationId))).toEqual({
+          commandId: mintedCommandId,
+          payload,
+        })
       }),
     ))
 })

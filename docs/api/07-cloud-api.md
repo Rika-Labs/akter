@@ -20,7 +20,9 @@
 
 `Unauthorized` (401) comes from the authentication middleware. A caller without the role or key permission an operation needs gets `Forbidden` (403); the project access barrier gives that same answer for a missing project or one in another organization. After access is established, a resource absent from that scope is `NotFound` (404). A taken project slug or environment name is `Conflict` (409). An endpoint declared but not yet implemented answers `NotImplemented` (501).
 
-Temporary edge or capacity failure is `Unavailable` (503), with `retryAfterSeconds`. Command retries MUST retain their supplied `commandId`; a new id would be a new command. Invalid runner admission is a typed 4xx `CommandRefused`, not a 500; runner authorization refusals map to `Forbidden`. The API's request timeout defaults to 35 seconds, leaving response slack around the edge's 30-second cold-start bound. Operators who change that edge bound must configure `RUNTIME_REQUEST_TIMEOUT_SECONDS` accordingly. A malformed runner response remains an opaque defect.
+Temporary edge or capacity failure is `Unavailable` (503), with `retryAfterSeconds`. Command retries MUST retain their supplied `commandId`; a new id would be a new command. Invalid runner admission is a typed 4xx `CommandRefused`, not a 500; actor access denial maps to `Forbidden`, while a refused deployment credential remains `Unavailable` so an operator can repair rotation or reachability. The API's request timeout defaults to 35 seconds, leaving response slack around the edge's 30-second cold-start bound. Operators who change that edge bound must configure `RUNTIME_REQUEST_TIMEOUT_SECONDS` accordingly. A malformed runner response remains an opaque defect.
+
+Actor-mailbox backpressure also maps to `Unavailable`, including a runner's HTTP 429 `MailboxFull`. Keyed sends support the same JSON payload values as unkeyed sends. Durable client-key assignments currently have no cleanup; bounded retention remains required before claiming bounded control-plane command storage.
 
 ## Durable records behind it
 
