@@ -311,42 +311,67 @@ const allowances = (offer: PlanOffer, readCommandWeight: number): string => {
   return [`${commands} and ${storage}.`, ...caps].join(" ")
 }
 
-/** Every plan in the catalog side by side, so a choice in the picker can be compared first. */
-const planComparison = (h: H, input: { readonly plans: Plans; readonly current: string | null }) =>
-  settingsGroup(h, {
+/** A monthly price as the comparison lists it: whole dollars unless there are cents, `$0` for none. */
+const shortPrice = (cents: number): string =>
+  `${formatCurrency(dollars(cents)).replace(/\.00$/u, "")}${cents === 0 ? "" : " / mo"}`
+
+/** A comparison cell: the allowance, and underneath it, quietly, what happens beyond it. */
+const allowanceCell = (h: H, amount: string, beyond: string): Html =>
+  h.span([], [amount, h.span([...styleAttributes(h, styles.detail)], [beyond])])
+
+/**
+ * Every plan in the catalog side by side, so a choice in the picker can be compared first. Cells
+ * wrap rather than truncate, and provisional prices are named once in the footnote.
+ */
+const planComparison = (
+  h: H,
+  input: { readonly plans: Plans; readonly current: string | null },
+) => {
+  const provisional = input.plans.plans.flatMap((offer) => (offer.provisional ? [offer.name] : []))
+  return settingsGroup(h, {
     title: "Plans",
-    footnote: input.plans.provisional
-      ? "Provisional prices aren’t final and may change before they are published."
-      : undefined,
+    footnote:
+      provisional.length === 0
+        ? undefined
+        : `${new Intl.ListFormat("en-US").format(provisional)} prices are provisional: they aren’t final and may change before they are published.`,
     rows: [
       dataTable(h, {
         label: "Plan comparison",
         bare: true,
         empty: "No plans are offered.",
         columns: [
-          { key: "plan", label: "Plan", width: "minmax(0, 1fr)" },
-          { key: "price", label: "Price", width: "minmax(0, 1.2fr)" },
-          { key: "commands", label: "Commands a month", width: "minmax(0, 1.2fr)" },
-          { key: "storage", label: "Storage", width: "minmax(0, 1.2fr)" },
+          { key: "plan", label: "Plan", width: "minmax(0, 1fr)", wrap: true },
+          { key: "price", label: "Price", width: "minmax(0, 0.8fr)", wrap: true },
+          { key: "commands", label: "Commands a month", width: "minmax(0, 1.3fr)", wrap: true },
+          { key: "storage", label: "Storage", width: "minmax(0, 1.3fr)", wrap: true },
           { key: "connections", label: "Connections", width: "6.5rem", align: "end" },
         ],
         rows: input.plans.plans.map((offer) => ({
           key: offer.id,
           cells: [
             offer.id === input.current ? `${offer.name} (current)` : offer.name,
-            monthlyPrice(offer),
+            shortPrice(offer.basePriceCents),
             offer.commandCap === null
-              ? `${formatCompact(offer.includedCommands)}, then ${formatCents(offer.commandCentsPerMillion)} per million`
-              : `${formatCompact(offer.commandCap)}, hard cap`,
+              ? allowanceCell(
+                  h,
+                  formatCompact(offer.includedCommands),
+                  `then ${formatCents(offer.commandCentsPerMillion)} per million`,
+                )
+              : allowanceCell(h, formatCompact(offer.commandCap), "hard cap"),
             offer.storageCap
-              ? `${formatGigabytes(offer.storageGb)}, hard cap`
-              : `${formatGigabytes(offer.storageGb)}, then ${formatCents(offer.storageCentsPerGbMonth)} per GB-month`,
+              ? allowanceCell(h, formatGigabytes(offer.storageGb), "hard cap")
+              : allowanceCell(
+                  h,
+                  formatGigabytes(offer.storageGb),
+                  `then ${formatCents(offer.storageCentsPerGbMonth)} per GB-month`,
+                ),
             formatCompact(offer.connections),
           ],
         })),
       }),
     ],
   })
+}
 
 /**
  * Organization › Billing: the plan and its change, the catalog to compare plans in, payment method,

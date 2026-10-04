@@ -140,8 +140,15 @@ describe("billing", () => {
         "Free (current)",
       ),
       Scene.expect(Scene.role("table", { name: "Plan comparison" })).toContainText(
-        "25M, then $1.00 per million",
+        "25Mthen $1.00 per million",
       ),
+      Scene.expect(Scene.role("cell", { name: "$249 / mo" })).toExist(),
+      Scene.expect(Scene.role("cell", { name: "$0" })).toExist(),
+      Scene.expect(
+        Scene.text(
+          "Pro, Team, and Enterprise prices are provisional: they aren’t final and may change before they are published.",
+        ),
+      ).toExist(),
       Scene.expect(Scene.text("No invoices yet")).toExist(),
       Scene.expect(Scene.role("note")).toBeAbsent(),
     ))

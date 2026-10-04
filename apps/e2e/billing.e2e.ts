@@ -311,6 +311,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   page,
 }) => {
   const checkouts: Array<unknown> = []
+  await page.setViewportSize({ width: 1280, height: 900 })
   await signIn(page)
   await page.route("https://checkout.stripe.com/c/pay/cs_test_562", (route) =>
     route.fulfill({ contentType: "text/html", body: "<h1>Checkout stand-in</h1>" }),
@@ -330,8 +331,7 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   )
   await page.goto(`${origin}/settings/billing`)
   await expect(page.getByRole("heading", { level: 1, name: "Billing" })).toBeVisible()
-  await expect(page.getByText("No monthly charge")).toHaveCount(2)
-  await expect(page.getByRole("cell", { name: "No monthly charge" })).toHaveCount(1)
+  await expect(page.getByText("No monthly charge")).toHaveCount(1)
   await expect(
     page.getByText(
       "1M commands a month (a read counts as 0.2 of a command) and 0.5 GB of storage. Both are hard caps",
@@ -347,13 +347,28 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   ])
   const comparison = page.getByRole("table", { name: "Plan comparison" })
   await expect(comparison.getByRole("row")).toHaveCount(5)
-  await expect(comparison.getByRole("row").nth(1)).toContainText("Free (current)")
-  await expect(comparison.getByRole("row").nth(1)).toContainText("1M, hard cap")
+  for (const cell of await comparison.getByRole("cell").all())
+    expect(
+      await cell.evaluate((element) => element.scrollWidth <= element.clientWidth),
+      (await cell.textContent()) ?? "",
+    ).toBe(true)
+  await expect(comparison.getByRole("row").nth(2).getByRole("cell").nth(1)).toHaveText(
+    "$27.31 / mo",
+  )
+  await expect(comparison.getByRole("row").nth(1).getByRole("cell")).toHaveText([
+    "Free (current)",
+    "$0",
+    "1Mhard cap",
+    "0.5 GBhard cap",
+    "100",
+  ])
   await expect(comparison.getByRole("row").nth(3)).toContainText(
-    "Studio$199.00 a month (provisional)300M, then $0.60 per million",
+    "Studio$199 / mo300Mthen $0.60 per million",
   )
   await expect(
-    page.getByText("Provisional prices aren’t final and may change before they are published."),
+    page.getByText(
+      "Pro, Studio, and Enterprise prices are provisional: they aren’t final and may change before they are published.",
+    ),
   ).toBeVisible()
   await picker.selectOption("team")
   await page.getByRole("button", { name: "Continue to checkout" }).click()
@@ -535,8 +550,7 @@ test("never shows an organization without a billing account as Free", async ({ p
   await expect(page.getByRole("heading", { level: 1, name: "Billing" })).toBeVisible()
   await expect(page.getByText("Billing isn’t set up", { exact: true })).toBeVisible()
   await expect(page.getByRole("table", { name: "Plan comparison" })).not.toContainText("current")
-  await expect(page.getByText("No monthly charge")).toHaveCount(1)
-  await expect(page.getByRole("cell", { name: "No monthly charge" })).toHaveCount(1)
+  await expect(page.getByText("No monthly charge")).toHaveCount(0)
   await expect(page.getByText("Free", { exact: true })).toHaveCount(1)
   await expect(
     page.getByRole("table", { name: "Plan comparison" }).getByText("Free", { exact: true }),

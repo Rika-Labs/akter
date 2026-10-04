@@ -47,4 +47,5 @@ export const settingsStyles = stylex.create({
   planName: { fontSize: "0.9375rem", fontWeight: typography.weightStrong },
   integration: { display: "inline-flex" },
   dns: { display: "grid", gap: space.sm },
+  detail: { display: "block", color: colors.mutedForeground, fontSize: typography.small },
 })
