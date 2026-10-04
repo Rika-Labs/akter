@@ -336,6 +336,31 @@ Cells are the median across the selected repeat cohorts followed by the minimum�
 | Redis AOF-always  | 1000       | 3      | 999.9 [999.9–999.9]         | 0.942 [0.865–0.996]       | 59.066 [54.175–164.13]    | 0 [0–0]             | 0 [0–0]             |
 | Redis AOF-always  | 2000       | 3      | 1999.5 [1999.4–1999.5]      | 0.968 [0.928–1.007]       | 41.77 [2.334–295.522]     | 0 [0–0]             | 0 [0–0]             |
 
+### Admission control: bounded overload (#494)
+
+This separate 2026-10-03 experiment compares `782771f79` before admission control with the #494 implementation; it does not replace the earlier head-to-head samples. One four-CPU/four-GiB Daytona sandbox ran Postgres 18.6 and the Bun 1.4.2 app together in a `--cpus=3 --memory=3g` Docker container. A separate `--cpus=1 --memory=1g` Docker driver container reached it over loopback (`--network=host`), with no HTTPS preview proxy. These are CPU quotas, not a claim of exclusive physical host cores. Three repeats alternated before/after order (before–after, after–before, before–after). Each cohort started fresh, prepopulated the same 1,000 keys, and offered 200, 500, 1,000, 2,000, and 4,000 writes/s for 20 s each, with unique command ids, no retry, a 4,096 in-flight cap, and a 10 s timeout. The harness and raw JSON remain outside the repo at `~/.capy/work/akter-perf/494/` (`daytona/local/` contains this topology's final records).
+
+Accepted latency starts at scheduled arrival. Refusal rate uses all scheduled arrivals as its denominator. Every cell is the three-repeat median and range of the statistic, not a pooled percentile or a confidence interval. The max column is the median of each run's maximum, with the range of those maxima.
+
+| Offered/s | Variant | Accepted/s including drain | Accepted p50 ms              | Accepted p99 ms              | Accepted max ms              | Refusals                | Dropped (median) |
+| --------- | ------- | -------------------------- | ---------------------------- | ---------------------------- | ---------------------------- | ----------------------- | ---------------- |
+| 200       | Before  | 200.000 [200.000–200.000]  | 2.565 [2.507–3.274]          | 19.360 [7.274–27.041]        | 43.569 [16.721–62.050]       | 0.000 [0.000–0.000]%    | 0                |
+| 200       | After   | 200.000 [200.000–200.000]  | 2.668 [2.577–3.073]          | 10.023 [7.480–45.171]        | 69.248 [19.746–76.116]       | 0.000 [0.000–0.000]%    | 0                |
+| 500       | Before  | 500.000 [500.000–500.000]  | 2.201 [2.173–2.265]          | 41.183 [13.355–44.440]       | 71.496 [30.268–79.128]       | 0.000 [0.000–0.000]%    | 0                |
+| 500       | After   | 500.000 [500.000–500.000]  | 2.208 [2.162–2.213]          | 12.699 [10.438–40.231]       | 75.847 [28.435–105.633]      | 0.000 [0.000–0.000]%    | 0                |
+| 1000      | Before  | 994.900 [951.600–997.100]  | 50.420 [46.810–735.353]      | 677.110 [221.309–1368.627]   | 1363.460 [654.884–2192.932]  | 0.000 [0.000–0.000]%    | 0                |
+| 1000      | After   | 957.800 [956.900–988.400]  | 46.531 [22.578–49.253]       | 145.958 [109.334–151.156]    | 341.630 [296.340–367.263]    | 4.075 [1.005–4.085]%    | 0                |
+| 2000      | Before  | 996.200 [977.500–1020.200] | 3992.927 [3943.147–3993.628] | 4495.733 [4465.087–4730.552] | 5229.361 [4923.581–5404.771] | 0.000 [0.000–0.000]%    | 16039            |
+| 2000      | After   | 850.600 [820.200–880.600]  | 73.207 [70.900–75.762]       | 178.688 [162.378–184.651]    | 289.102 [288.337–299.292]    | 57.357 [55.840–58.878]% | 0                |
+| 4000      | Before  | 987.200 [968.800–1027.700] | 4051.274 [3882.808–4102.894] | 4554.435 [4386.586–4751.100] | 5739.692 [5143.208–5850.787] | 0.000 [0.000–0.000]%    | 56161            |
+| 4000      | After   | 626.600 [599.200–635.700]  | 98.847 [95.713–102.958]      | 250.860 [246.488–254.815]    | 448.941 [415.218–504.460]    | 84.264 [84.064–84.965]% | 0                |
+
+There were no refusals before the change: overload became seconds of queueing and dropped driver submissions. Afterwards, every non-success was an explicit 503 refusal, with no other errors or dropped submissions. At 2,000 and 4,000 offered/s, accepted p99 stayed below 185 and 255 ms respectively in every repeat, instead of about 4.5 seconds. The cost is lower successful throughput under extreme overload: median acknowledged rate including drain fell from 996 to 851/s at 2,000 offered/s and from 987 to 627/s at 4,000 offered/s because refusals also consume CPU. At 200 and 500/s nothing was refused and p50 stayed near 2–3 ms.
+
+These measurements select a default 64-command request gate and a 64-command runtime gate with up to 64 FIFO waiters waiting at most 100 ms. The activation/Cluster default cap is 1,024 active commands; a declared larger capacity permits a full 1,024-call merged-reducer cohort beside its current turn. Each storage pool bounds excess checkout attempts at 64, including queries and background work that bypass command admission. Across all 30 case boundaries, receipt-count deltas equalled acknowledged commands: 246,295 before and 188,703 after. The 273,297 refused attempts added no extra receipts. Separate real-Postgres tests assert no refused handler/state transition, cancellation safety, and exactly-once same-id retry; receipt totals alone are not that proof.
+
+Earlier Mac runs were polluted by competing workloads and are diagnostic only. A Daytona HTTPS preview-proxy trial queued requests before they reached the app and masked its refusals; it is also diagnostic, not a successful admission-control result. A separate direct-linked-sandbox experiment corroborated bounded accepted latency, but the table above uses only the final 3+1 CPU loopback topology. Akter bounds application request processing and pool/mailbox queues, not an operating-system socket backlog or a proxy's queue. These are single-runner counter measurements, not a production latency SLO or provider certification. Every sandbox and temporary driver snapshot created for this phase was deleted.
+
 ### Whole-process restart controls
 
 | System            | Post-performance round-median restart ms | Fresh-storage restart median [range] ms | Fresh samples |

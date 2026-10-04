@@ -13,6 +13,7 @@ import {
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { SocketServer } from "effect/socket"
 import { SqlClient } from "effect/sql"
+import { admissionSharding, MailboxRefusals } from "./topology/admission.ts"
 
 /** Package-internal wiring shared by production runners and fault-injecting test runners. */
 export class RunnerWiring extends Context.Service<
@@ -26,6 +27,7 @@ export class RunnerWiring extends Context.Service<
       | MessageStorage.MessageStorage
       | RunnerStorage.RunnerStorage
       | RunnerHealth.RunnerHealth
+      | MailboxRefusals
     >
     readonly storage: (
       storage: RunnerStorage.RunnerStorage["Service"],
@@ -174,7 +176,9 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
     ),
   }
 
-  const sharding = RunnerServer.layerWithClients.pipe(
+  const sharding = RunnerServer.layer.pipe(
+    Layer.provideMerge(admissionSharding),
+    Layer.provideMerge(Runners.layerRpc),
     Layer.provide(RpcServer.layerProtocolSocketServer),
     Layer.provide(options.transport),
     Layer.provide(RpcSerialization.layerNdjson),

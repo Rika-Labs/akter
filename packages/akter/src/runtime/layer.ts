@@ -7,11 +7,13 @@ import {
   Context,
   Crypto,
   Duration,
+  Deferred,
   Effect,
   Fiber,
   Layer,
   Option,
   Result,
+  Schedule,
   Schema,
   Stream,
 } from "effect"
@@ -85,6 +87,7 @@ import {
   tableShardLease,
 } from "./topology/locks.ts"
 import { directMessages } from "./topology/messages.ts"
+import { MailboxRefusals, mailboxRefusals } from "./topology/admission.ts"
 import { bindBlobs, type ContentBinding } from "./turn/blobs.ts"
 import { ContentStore } from "../handles/content.ts"
 import { isContent } from "../members/blob.ts"
@@ -93,6 +96,8 @@ import { MAX_CONTENT_BYTES, tenantContent } from "./content/store.ts"
 import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
+import { admissionLimit, isOverloaded, overloaded } from "./admission.ts"
+import { boundedLayer, isPoolRefusal } from "./database/bounded.ts"
 import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
@@ -130,6 +135,28 @@ export interface Options {
    * process.
    */
   readonly maxResidentActors?: number
+  /**
+   * How this runner refuses external commands it cannot serve promptly. A
+   * refused command gets `ActorUnavailable` with a `retryAfter` before any of
+   * it runs, so load past capacity waits in callers' retries under the same
+   * command id instead of in this runner's queues.
+   */
+  readonly admission?: {
+    /** External commands worked on at once, from admission to reply. Default 64. */
+    readonly concurrency?: number
+    /**
+     * How long a command past `concurrency` waits for a slot, in arrival
+     * order, before it is refused; at most `concurrency` commands wait.
+     * Default 100 milliseconds.
+     */
+    readonly wait?: Duration.Input
+    /**
+     * Served command requests processed at once, including authentication and
+     * body parsing. The next is refused before either starts. Shared across
+     * this runtime's serve layers. Default 64.
+     */
+    readonly requests?: number
+  }
   /** The outbox relay of this runner; every default equals the single-runner M1 behaviour. */
   readonly relay?: {
     /** Durable polling interval, jittered by ±10% per wait. Default 1 second. */
@@ -337,6 +364,12 @@ export const layer = (options: Options = {}) => {
     Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }),
   ).make(options.maxResidentActors ?? 10_000)
 
+  const admissionSettings = {
+    concurrency: Count.make(options.admission?.concurrency ?? 64),
+    wait: Duration.millis(millis(options.admission?.wait ?? "100 millis")),
+    requests: Count.make(options.admission?.requests ?? 64),
+  }
+
   const executorLeaseMs = millis(options.executors?.lease ?? "60 seconds")
 
   if (executorLeaseMs < 3000) throw new Error("executors.lease must be at least 3 seconds")
@@ -406,6 +439,19 @@ export const layer = (options: Options = {}) => {
       })
       const registrations = new Map<string, Registration>()
       const residency = new Map<string, (entityId: string) => boolean>()
+      const refusals = yield* MailboxRefusals
+      refusals.refuse = (address) => {
+        const registration = registrations.get(address.entityType)
+        if (
+          registration === undefined ||
+          residency.get(address.entityType)?.(address.entityId) !== true
+        )
+          return undefined
+
+        return registration.policy.mailboxCapacity === "unbounded"
+          ? overloaded("activation")
+          : ActorError.make({ reason: MailboxFull.make({}) })
+      }
       const diagnostics: Parameters<typeof actorRegistration>[0]["diagnostics"] = new Map()
       const owners = new Map<string, Owner>()
       const sweepsWorkflows = new Set<string>()
@@ -465,6 +511,12 @@ export const layer = (options: Options = {}) => {
         })
 
       const gate = turnGate()
+
+      const admission = admissionLimit({
+        limit: admissionSettings.concurrency,
+        wait: admissionSettings.wait,
+      })
+      const requests = admissionLimit({ limit: admissionSettings.requests, wait: Duration.zero })
 
       let holder: Holder | undefined
 
@@ -590,14 +642,23 @@ export const layer = (options: Options = {}) => {
       /**
        * Rechecks access and expiry before an external caller gets its outcome.
        * `endedAtMs` is the clock the turn read after its transaction ended;
-       * an outcome without one, a defect, reads the clock again.
+       * an outcome without one, a defect, reads the clock again. A reply may
+       * already have committed, so a full clock-read pool must wait, never
+       * report pre-turn refusal.
        */
       const authorize = Effect.fnUntraced(function* (request: Request, endedAtMs?: number) {
         yield* allow(request, "command")
         yield* checkIdentity(
           request.commandId,
           retryWindowMs,
-          endedAtMs === undefined ? yield* databaseTime : endedAtMs + frameworkClock.offsetMillis(),
+          endedAtMs === undefined
+            ? yield* databaseTime.pipe(
+                Effect.retry({
+                  while: isPoolRefusal,
+                  schedule: Schedule.spaced("10 millis"),
+                }),
+              )
+            : endedAtMs + frameworkClock.offsetMillis(),
         )
       })
 
@@ -681,7 +742,11 @@ export const layer = (options: Options = {}) => {
         })
 
       const dispatch = Effect.fnUntraced(
-        function* (request: Request, external: boolean) {
+        function* (
+          request: Request,
+          external: boolean,
+          pending?: Set<Fiber.Fiber<unknown, unknown>>,
+        ) {
           const registration = registrations.get(request.ref.actor)
 
           if (registration === undefined)
@@ -745,7 +810,16 @@ export const layer = (options: Options = {}) => {
                             queuedAtMs,
                           },
                   )
-                  .pipe(Effect.forkIn(scope)),
+                  .pipe(
+                    Effect.interruptible,
+                    Effect.forkIn(scope),
+                    Effect.tap((fiber) =>
+                      Effect.sync(() => {
+                        pending?.add(fiber)
+                      }),
+                    ),
+                    Effect.uninterruptible,
+                  ),
               ),
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {
@@ -761,8 +835,12 @@ export const layer = (options: Options = {}) => {
                   return Effect.fail(failure.value)
 
                 if (Option.isSome(failure) && Schema.is(ClusterError.MailboxFull)(failure.value)) {
-                  if (registration.policy.mailboxCapacity !== "unbounded" && isResident())
-                    return Effect.fail(ActorError.make({ reason: MailboxFull.make({}) }))
+                  if (isResident())
+                    return Effect.fail(
+                      registration.policy.mailboxCapacity === "unbounded"
+                        ? overloaded("activation")
+                        : ActorError.make({ reason: MailboxFull.make({}) }),
+                    )
 
                   rejectedAtCapacity = true
 
@@ -781,7 +859,7 @@ export const layer = (options: Options = {}) => {
               deliver.pipe(
                 Effect.catchIf(
                   (error) =>
-                    Schema.is(ActorUnavailable)(error.reason) ||
+                    (Schema.is(ActorUnavailable)(error.reason) && !isOverloaded(error)) ||
                     Schema.is(RunnerAtCapacity)(error.reason),
                   (error) =>
                     Effect.sleep(retryDelay(attempt)(error)).pipe(
@@ -817,7 +895,7 @@ export const layer = (options: Options = {}) => {
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
-        (effect, request, external) =>
+        (effect, ...[request, external]: [Request, boolean, Set<Fiber.Fiber<unknown, unknown>>?]) =>
           effect.pipe(
             Effect.withSpan(
               SpanNames.admission,
@@ -1129,7 +1207,35 @@ export const layer = (options: Options = {}) => {
             entityId(ref),
             (id) => owners.get(ref.actor)?.hibernate(id) ?? Effect.void,
           ).pipe(Effect.provideContext(services)),
-        execute: (request) => Effect.tap(dispatch(request, true), observe),
+        execute: (request) =>
+          Effect.gen(function* () {
+            const reply = yield* Deferred.make<Executed, ActorError>()
+            const pending = new Set<Fiber.Fiber<unknown, unknown>>()
+
+            yield* admission
+              .admit(
+                dispatch(request, true, pending).pipe(
+                  Effect.tap(observe),
+                  Effect.onExit((exit) =>
+                    [...pending].some((fiber) => fiber.pollUnsafe() === undefined)
+                      ? Deferred.done(reply, exit)
+                      : Effect.void,
+                  ),
+                  Effect.ensuring(
+                    Effect.suspend(() => Effect.forEach(pending, Fiber.await, { discard: true })),
+                  ),
+                ),
+              )
+              .pipe(
+                Effect.onExit((exit) => Deferred.done(reply, exit)),
+                Effect.ignoreCause,
+                Effect.forkIn(scope),
+              )
+
+            return yield* Deferred.await(reply)
+          }),
+        overloaded: admission.full,
+        admitRequest: requests.admit,
         deliver: (request) =>
           dispatch(request, false).pipe(
             Effect.tap(observe),
@@ -1325,6 +1431,7 @@ export const layer = (options: Options = {}) => {
           ),
         ),
         Layer.provideMerge(directMessages),
+        Layer.provideMerge(mailboxRefusals),
         Layer.provide([
           runnerStorage === "memory"
             ? Layer.effect(
@@ -1436,7 +1543,7 @@ export const Database = {
     const pool = withKeepalives(configured)
 
     const database = Layer.mergeAll(
-      PgClient.layer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+      boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
       replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
       coordinationLayer(

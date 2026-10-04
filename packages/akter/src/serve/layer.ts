@@ -1,15 +1,4 @@
-import {
-  Cause,
-  DateTime,
-  Effect,
-  Exit,
-  Fiber,
-  Match,
-  Option,
-  Schema,
-  SchemaAST,
-  Stream,
-} from "effect"
+import { Cause, DateTime, Effect, Match, Option, Schema, SchemaAST, Stream } from "effect"
 import { Headers, HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http"
 import { type ServedConnection, type ServedDefinition, type ServedMember } from "../actor/served.ts"
 import { descriptorOf } from "../actor/descriptor.ts"
@@ -21,6 +10,7 @@ import {
   Unauthorized,
 } from "../errors/actor.ts"
 import { InternalActors } from "../runtime/actors.ts"
+import { overloaded } from "../runtime/admission.ts"
 import { Outcome, Request } from "../runtime/request.ts"
 import { ContentStore } from "../handles/content.ts"
 import { MAX_CONTENT_BYTES } from "../runtime/content/store.ts"
@@ -265,7 +255,7 @@ const resolve = (actor: { readonly name: string }): ServedDefinition => {
  * - A malformed `durable-min-version` is refused, because ignoring it would
  *   silently drop the caller's read-your-writes guarantee.
  * - A command accepted for execution continues if the client disconnects: the
- *   turn runs in the layer's scope and only the caller's wait is interrupted.
+ *   runtime owns its execution and only the caller's wait is interrupted.
  * - A request with neither `content-length` nor `transfer-encoding` may carry
  *   no body stream at all, and is read as empty.
  * - A connection is a WebSocket upgrade; nothing is authorized or woken before
@@ -387,7 +377,6 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
 
       const clock = yield* databaseClock
       const context = yield* Effect.context<R>()
-      const scope = yield* Effect.scope
       const origins = new Set(options.origins ?? [])
       const requestBytes = options.limits?.requestBytes ?? 1024 * 1024
       const credentialBytes = options.limits?.credentialBytes ?? CREDENTIAL_BYTES
@@ -796,16 +785,13 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
             replayed: undefined,
           }
 
-        const fiber = yield* actors.execute(call).pipe(Effect.exit, Effect.forkIn(scope))
-        const exit = yield* Fiber.join(fiber)
-
-        if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
-
-        return exit.value
+        return yield* actors.execute(call)
       })
 
       const memberHandler = (definition: ServedDefinition, member: ServedMember) =>
         Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
+          if (member.kind !== "query" && actors.overloaded()) return yield* overloaded("runner")
+
           const id = yield* pathId(definition)
 
           const authenticated = yield* authenticate(request)
@@ -1203,7 +1189,11 @@ export const serve = <R = never>(options: ServeOptions<R>) =>
           yield* route(
             "POST",
             memberPath({ definition, member }),
-            memberHandler(definition, member),
+            (request) => {
+              const handle = memberHandler(definition, member)(request)
+
+              return member.kind === "query" ? handle : actors.admitRequest(handle)
+            },
             requestId(member),
           )
 

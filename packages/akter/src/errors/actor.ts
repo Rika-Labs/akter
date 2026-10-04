@@ -101,6 +101,8 @@ export class TransportError extends Schema.TaggedError<TransportError>()("Transp
 /** The runtime could not run the command now, for example an unreachable owner or database; `cause` says why. Retry with the same command id. */
 export class ActorUnavailable extends Schema.TaggedError<ActorUnavailable>()("ActorUnavailable", {
   cause: Schema.Defect(),
+  /** Preserved across runner RPCs so a pre-turn refusal is not retried inside the receiving runtime. */
+  overloaded: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** The caller stopped waiting for a reply (`deliveryTimeout`, or `commandTimeout` for a query). The turn is not cancelled and may still commit, so retry with the same command id. */

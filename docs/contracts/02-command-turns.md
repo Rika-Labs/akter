@@ -7,6 +7,10 @@
 
 External admission MUST check current authorization and command expiry under the [receipt contract](04-receipts.md). Trusted internal redelivery of accepted work remains recoverable after originating-caller revocation or external retry expiry.
 
+A runner MAY refuse overload before durable admission. Such a refusal MUST run no handler and write no receipt, MUST be retryable `ActorUnavailable` with a retry delay, and MUST preserve the caller's command identity on retry. Accepted turns retain every transaction and receipt guarantee below. A caller stopping its wait MUST NOT free the executing attempt's admission slot or cancel its turn. The runtime's bounded command queue and each storage checkout queue are transient scheduling controls, never durable authority.
+
+Concurrent actor, query, and job layer registration MUST retry a pre-statement pool checkout refusal with backoff instead of converting it into a startup defect. Registration MUST still reject incompatible placement, tables, workflows, and payload versions; it MUST NOT retry statement failures or unknown commit outcomes as checkout refusals. This startup retry does not change external command overload responses.
+
 Authorization precedes delivery. The first external delivery MAY validate command expiry and resolve a replay in the turn's fenced admission read instead of an off-turn receipt read. That admission clock MUST be read after any wait to acquire the generation fence. The expiry recheck before result delivery MAY use a database clock read on the turn's session after `COMMIT` or `ROLLBACK`, in the same flight; it MUST NOT use the admission clock ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).
 
 Every admitted command attempt MUST execute within one framework-owned transaction, in this order:

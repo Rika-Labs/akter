@@ -1,6 +1,7 @@
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Cause, Effect, Exit, Fiber, Layer, Result, Schema } from "effect"
 import { SqlClient } from "effect/sql"
+import { retryPoolRefusal } from "../../runtime/database/bounded.ts"
 import { Actor, Actors, Intent } from "../../index.ts"
 import type { ActorRef } from "../../identity/caller.ts"
 import { BATCH_CAP, MERGE_CAP } from "../../runtime/entity/mailbox.ts"
@@ -62,6 +63,7 @@ const Ledger = Actor.make("BatchLedger", {
   tables: [marks],
   api: { Append, Refuse, Explode, Bump, Fragile },
   internal: { Noted },
+  policy: { mailboxCapacity: 2048 },
 })
 
 const runs = new Map<string, number>()
@@ -71,9 +73,11 @@ const ran = (label: string) => runs.set(label, (runs.get(label) ?? 0) + 1)
 export const batchesLayer = Layer.unwrap(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    yield* sql.unsafe(`CREATE TABLE IF NOT EXISTS batch_marks (
+    yield* retryPoolRefusal(
+      sql.unsafe(`CREATE TABLE IF NOT EXISTS batch_marks (
       routing_key bigint, tenant_id text, actor_id text, id text,
-      PRIMARY KEY (routing_key, tenant_id, actor_id, id))`)
+      PRIMARY KEY (routing_key, tenant_id, actor_id, id))`),
+    )
 
     return Ledger.toLayer(
       Effect.succeed({
@@ -446,36 +450,48 @@ export const batchesConformance: ReadonlyArray<ConformanceCase> = [
     requiresIndependentConnections: true,
     timeoutMs: 120_000,
     run: ({ expect, environment }) =>
-      environment.run(
+      Effect.runPromise(
         Effect.gen(function* () {
-          const ledger = yield* Ledger.get("merge-cap")
-          const ids = yield* mint(MERGE_CAP + 6)
-          const first = yield* holding(ledger.Append("merge-cap-first"))
+          yield* environment.stop
+          const runtime = environment.build({ admission: { concurrency: 2048 } })
+          yield* Effect.promise(() =>
+            runtime
+              .runPromise(
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    const ledger = yield* Ledger.get("merge-cap")
+                    const ids = yield* mint(MERGE_CAP + 6)
+                    const first = yield* holding(ledger.Append("merge-cap-first"))
 
-          const waiting = yield* enqueue(
-            ids.map((id) => ledger.Bump(1).pipe(Actor.commandId(id), Effect.orDie)),
-          )
+                    const waiting = yield* enqueue(
+                      ids.map((id) => ledger.Bump(1).pipe(Actor.commandId(id), Effect.orDie)),
+                    )
 
-          const before = reductions.count
-          yield* first.release
-          yield* Fiber.join(first.fiber)
-          yield* Effect.forEach(waiting, Fiber.join)
+                    const before = reductions.count
+                    yield* first.release
+                    yield* Fiber.join(first.fiber)
+                    yield* Effect.forEach(waiting, Fiber.join)
 
-          expect(reductions.count - before).toBe(2)
-          const committed = yield* transactions(ledger.ref)
-          expect(new Set(ids.map((id) => committed.get(id))).size).toBe(1)
+                    expect(reductions.count - before).toBe(2)
+                    const committed = yield* transactions(ledger.ref)
+                    expect(new Set(ids.map((id) => committed.get(id))).size).toBe(1)
 
-          const [state] = yield* SqlClient.SqlClient.pipe(
-            Effect.flatMap(
-              (sql) => sql<{ receipts: number }>`SELECT count(*)::integer AS receipts
+                    const [state] = yield* SqlClient.SqlClient.pipe(
+                      Effect.flatMap(
+                        (sql) => sql<{ receipts: number }>`SELECT count(*)::integer AS receipts
                 FROM actor_receipts WHERE actor_type = 'BatchLedger' AND actor_id = ${ledger.ref.id}
                   AND command = 'Bump'`,
-            ),
-            Effect.orDie,
-          )
+                      ),
+                      Effect.orDie,
+                    )
 
-          expect(state!.receipts).toBe(MERGE_CAP + 6)
-        }),
+                    expect(state!.receipts).toBe(MERGE_CAP + 6)
+                  }),
+                ),
+              )
+              .finally(() => runtime.dispose()),
+          )
+        }).pipe(Effect.ensuring(environment.restart)),
       ),
   },
   {

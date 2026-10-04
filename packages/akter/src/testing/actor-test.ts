@@ -86,6 +86,7 @@ export interface TestOptions {
   readonly authorize?: Options["authorize"]
   readonly retryWindowMs?: number
   readonly maxResidentActors?: number
+  readonly admission?: Options["admission"]
   readonly relay?: Options["relay"]
   readonly executors?: Options["executors"]
   readonly observability?: Options["observability"]
@@ -737,6 +738,7 @@ export class ActorTest extends Context.Service<
           authorize: options.authorize,
           retryWindowMs: options.retryWindowMs,
           maxResidentActors: options.maxResidentActors,
+          admission: options.admission,
           relay: options.relay,
           executors: options.executors,
           observability: options.observability,

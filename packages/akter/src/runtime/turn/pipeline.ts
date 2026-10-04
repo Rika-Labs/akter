@@ -1,8 +1,10 @@
 import { PgPool, type PgConnection } from "@effect/sql-pg"
-import { Context, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Context, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import type { Scope } from "effect"
-import type { SqlConnection, SqlError } from "effect/sql"
+import type { SqlError } from "effect/sql"
 import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
+import { admissionLimit } from "../admission.ts"
+import { POOL_WAITERS, poolRefusal } from "../database/bounded.ts"
 
 /**
  * Connections a turn leases for itself alone. Each one is multiplexed and
@@ -52,6 +54,10 @@ export const turnConnections = (options: PgPool.Config) =>
       })
 
       const acquire = neki ? nekiLease(pool) : pool.get
+      const admission = admissionLimit({
+        limit: (settings.maxConnections ?? options.maxConnections ?? 10) + POOL_WAITERS,
+        wait: Duration.zero,
+      })
       let leased = 0
       let waiting = 0
 
@@ -59,7 +65,7 @@ export const turnConnections = (options: PgPool.Config) =>
         lease: Effect.suspend(() => {
           waiting += 1
 
-          return acquire.pipe(
+          return Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), acquire).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 waiting -= 1
@@ -92,41 +98,7 @@ export type Send = <A>(
   statement: Effect.Effect<A, SqlError.SqlError>,
 ) => Effect.Effect<A, SqlError.SqlError>
 
-/** A leased session as a `SqlClient` connection, so the runtime's statements reach it. */
-export const asSqlConnection = ({
-  connection,
-  send,
-}: {
-  readonly connection: PgConnection.PgConnection
-  readonly send: Send
-}): SqlConnection.Connection => {
-  const rows =
-    (prepare: boolean): SqlConnection.Connection["execute"] =>
-    (sql, params, transformRows) => {
-      const found = send(
-        Effect.map(connection.query(sql, params, prepare), (result) => result.rows),
-      )
-
-      return transformRows === undefined ? found : Effect.map(found, transformRows)
-    }
-
-  return {
-    execute: rows(true),
-    executeRaw: (sql, params) => send(connection.query(sql, params)),
-    executeStream: (sql, params, transformRows) =>
-      Stream.unwrap(
-        Effect.as(
-          send(Effect.void),
-          transformRows === undefined
-            ? connection.stream(sql, params)
-            : Stream.map(connection.stream(sql, params), (row) => transformRows([row])[0]!),
-        ),
-      ),
-    executeValues: (sql, params) => send(connection.queryValues(sql, params)),
-    executeValuesUnprepared: (sql, params) => send(connection.queryValues(sql, params, false)),
-    executeUnprepared: rows(false),
-  }
-}
+export { asSqlConnection } from "../database/connection.ts"
 
 /**
  * Queues a group of statements for one flight without waiting for replies.

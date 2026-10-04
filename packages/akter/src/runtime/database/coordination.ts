@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { Migrator, SqlClient } from "effect/sql"
+import { boundedPool } from "./bounded.ts"
 import { NekiTurnSessions } from "./neki/session.ts"
 import {
   MigrationBarrier,
@@ -53,7 +54,7 @@ export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Coordination,
     Effect.gen(function* () {
       if (options === undefined) return undefined
-      const sql = yield* PgClient.make(options)
+      const sql = yield* boundedPool(options)
       const neki = yield* NekiTurnSessions
       yield* withMigrationCoordination(
         neki
