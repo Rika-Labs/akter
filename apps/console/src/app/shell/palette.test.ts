@@ -2,7 +2,12 @@ import { Option } from "effect"
 import * as Url from "foldkit/url"
 import { describe, expect, it } from "vitest"
 import { workspace } from "../workspace/fixtures.ts"
-import { ChangedPaletteQuery, FoundActors, OpenedPalette } from "./message.ts"
+import {
+  ChangedPaletteQuery,
+  FoundActors,
+  MovedPaletteSelection,
+  OpenedPalette,
+} from "./message.ts"
 import type { Model } from "./model.ts"
 import { paletteResults } from "./palette.ts"
 import { init, update } from "./update.ts"
@@ -72,5 +77,13 @@ describe("palette actor search", () => {
       ["Actors", "Counter/hits"],
     ])
     expect(runtime[0]?.onSelect).toMatchObject({ href: "/actors/Counter" })
+  })
+
+  it("highlights the best result once the search answers, unless the person moved the selection", () => {
+    const typedCo = typed(open(), "Le").model
+    const answer = FoundActors({ query: "Le", actorTypes: ["Ledger"], actors: ["Ledger/books"] })
+    expect(update(typedCo, answer).model.palette.active).toBe("type-Ledger")
+    const moved = update(typedCo, MovedPaletteSelection({ step: 1 })).model
+    expect(update(moved, answer).model.palette.active).toBe(moved.palette.active)
   })
 })

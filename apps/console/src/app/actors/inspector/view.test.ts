@@ -236,4 +236,17 @@ describe("actor inspector", () => {
       Scene.expect(Scene.text("Nothing has reached this actor’s timeline yet.")).toExist(),
       Scene.expect(Scene.text("Activity isn’t reported")).toBeAbsent(),
     ))
+
+  it("shortens a runner-minted job id and keeps the full id in its title", () => {
+    const full = "v1.1791125701166.1791215731166.f6f589c8-c515-4d13-a8b9-f2800b9d18c9"
+    return scene(
+      "/actors/Counter/hits?tab=jobs",
+      toActorPage({
+        ...unreported,
+        jobs: [{ id: full, name: "Later", attempts: 0, status: "queued" }],
+      }),
+      Scene.expect(Scene.role("table", { name: "Jobs" })).toContainText("f6f589c8Later0Queued"),
+      Scene.expect(Scene.title(full)).toHaveText("f6f589c8"),
+    )
+  })
 })

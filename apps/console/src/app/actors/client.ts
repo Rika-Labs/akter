@@ -112,8 +112,10 @@ export const loadActorType = (
 
 /**
  * Loads one actor for the inspector. An address the runtime reports as no actor at all has simply
- * never received a command, so it loads as a `MissingActorPage` that can send the first one; any
- * other missing resource, such as an environment with no live deployment, is nothing. When the
+ * never received a command, so it loads as a `MissingActorPage` that can send the first one, but
+ * only when the live deployment serves its type: the runtime answers an unknown type's address the
+ * same way, so the type is read to tell them apart. Any other missing resource, such as an
+ * environment with no live deployment or a type nobody serves, is nothing. When the
  * runtime cannot inspect actors yet, its job list still proves the actor exists: the page then
  * shows those live jobs and keeps the real command scope, so commands can be sent, while the rest
  * of the inspector is sample data. Only when the job list is unavailable too does the whole page
@@ -146,12 +148,19 @@ export const loadActor = (
         Effect.catchIf(
           (error) => Schema.is(NotFound)(error) && error.resource === "actor",
           () =>
-            Effect.succeed(
-              sourced<ActorPage | MissingActorPage>(
-                MissingActorPage.make({ ...input, commandScope }),
-                false,
+            api.runtime
+              .getActorType({
+                params: { projectId: project.id, environment, actorType: input.actorType },
+              })
+              .pipe(
+                Effect.catchTag("NotImplemented", () => Effect.void),
+                Effect.as(
+                  sourced<ActorPage | MissingActorPage>(
+                    MissingActorPage.make({ ...input, commandScope }),
+                    false,
+                  ),
+                ),
               ),
-            ),
         ),
         orUndefined,
         Effect.map(

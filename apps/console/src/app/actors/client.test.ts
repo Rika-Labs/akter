@@ -193,6 +193,22 @@ describe("actor type over the live API", () => {
 
 const actor = "/api/projects/prj_1/environments/production/runtime/actors/Counter/hits"
 
+const counterType = "/api/projects/prj_1/environments/production/runtime/actor-types/Counter"
+
+const served = {
+  [counterType]: {
+    body: {
+      name: "Counter",
+      commands: null,
+      instances: 1,
+      awake: null,
+      commandsPerSecond: null,
+      p99Ms: null,
+      maxMailbox: null,
+    },
+  },
+}
+
 const inspect = (answers: Readonly<Record<string, MockedAnswer>>) => {
   const responder = apiResponder({ ...signedIn({ status: "live" }), ...answers })
   fetch.mockImplementation(responder.respond)
@@ -249,6 +265,7 @@ describe("actor inspector over the live API", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const { loaded } = inspect({
+          ...served,
           [actor]: notImplemented("runtime.inspectActor"),
           [`${actor}/jobs`]: notFound({ resource: "actor", id: "Counter/hits" }),
         })
@@ -261,9 +278,15 @@ describe("actor inspector over the live API", () => {
           sample: false,
         })
         const inspected = inspect({
+          ...served,
           [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
         })
         expect(Schema.is(MissingActorPage)((yield* inspected.loaded).data)).toBe(true)
+        const older = inspect({
+          [counterType]: notImplemented("runtime.getActorType"),
+          [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
+        })
+        expect(Schema.is(MissingActorPage)((yield* older.loaded).data)).toBe(true)
       }),
     ))
 
@@ -290,6 +313,11 @@ describe("actor inspector over the live API", () => {
           [actor]: notFound({ resource: "actor-type", id: "Counter" }),
         })
         expect(yield* loaded).toEqual({ data: undefined, sample: false })
+        const reportedAsActor = inspect({
+          [actor]: notFound({ resource: "actor", id: "Counter/hits" }),
+          [counterType]: notFound({ resource: "actor-type", id: "Counter" }),
+        })
+        expect(yield* reportedAsActor.loaded).toEqual({ data: undefined, sample: false })
       }),
     ))
 

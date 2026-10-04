@@ -217,7 +217,7 @@ const panel = (h: HtmlBuilder<Message>, model: Model, page: ActorPage, tab: Insp
         rows: page.jobs.map((job) => ({
           key: job.id,
           cells: [
-            job.id,
+            h.span([h.Title(job.id)], [shortCommandId(job.id)]),
             job.name,
             String(job.attempts),
             status(h, { tone: jobTones[job.status], label: jobLabels[job.status] }),

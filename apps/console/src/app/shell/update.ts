@@ -720,10 +720,15 @@ const step = (model: Model, message: Message): Result =>
     FoundActors: ({ query, actorTypes, actors }) => {
       if (!model.palette.open || !model.palette.query.trim().startsWith(query)) return { model }
       const next = { ...model, palette: { ...model.palette, found: { query, actorTypes, actors } } }
+      const chosen =
+        model.palette.active !== undefined && model.palette.active !== paletteResults(model)[0]?.id
       return {
         model: {
           ...next,
-          palette: { ...next.palette, active: next.palette.active ?? paletteResults(next)[0]?.id },
+          palette: {
+            ...next.palette,
+            active: chosen ? model.palette.active : paletteResults(next)[0]?.id,
+          },
         },
       }
     },
