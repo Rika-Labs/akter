@@ -189,6 +189,7 @@ describe("actor inspector", () => {
       Scene.expect(Scene.title("api-key:key_01J9ZK3QWX")).toHaveText("API key …ZK3QWX"),
       Scene.expect(Scene.title("user:usr_dallen")).toHaveText("Dallen Pyrah"),
       Scene.expect(receipts).toContainText("cmd_timerIncrementSuccessSystem"),
+      Scene.expect(Scene.title("timer")).toHaveText("System"),
       Scene.expect(receipts).toContainText("cmd_anonIncrementSuccessAnonymous"),
       Scene.expect(receipts).not.toContainText("null"),
     ))
@@ -249,4 +250,20 @@ describe("actor inspector", () => {
       Scene.expect(Scene.title(full)).toHaveText("f6f589c8"),
     )
   })
+
+  it("titles a system delivery by its source and the subject it acted for when they differ", () =>
+    scene(
+      "/actors/Counter/hits?tab=receipts",
+      toActorPage({
+        ...unreported,
+        receipts: [
+          {
+            ...receipt,
+            commandId: "cmd_job",
+            caller: { kind: "system", subject: "user:usr_lee", source: "job" },
+          },
+        ],
+      }),
+      Scene.expect(Scene.title("job · user:usr_lee")).toHaveText("System"),
+    ))
 })

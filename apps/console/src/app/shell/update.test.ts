@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest"
 import { sendFailure } from "../commands/errors.ts"
 import { CommandSucceeded } from "../commands/model.ts"
 import { DeploymentPage } from "../deployments/model.ts"
+import { JobsPage } from "../jobs/model.ts"
 import { emptySettings, type Billing } from "../settings/model.ts"
 import { workspace } from "../workspace/fixtures.ts"
 import {
@@ -29,6 +30,8 @@ import {
   type Message,
   OpenedDialog,
   PreparedCommandId,
+  RetriedAllDeadLetters,
+  RetriedDeadLetter,
   SignedOut,
   SubmittedForm,
 } from "./message.ts"
@@ -366,5 +369,58 @@ describe("rollback and redeploy", () => {
     expect(step(started, SignedOut()).model.changingDeployment).toEqual(Option.none())
     const switched = step(started, ChangedUrl({ url: at("/projects/another-project") })).model
     expect(switched.changingDeployment).toEqual(Option.none())
+  })
+})
+
+describe("dead letters a source cannot resolve", () => {
+  const onJobs = (resolvable: boolean): Model => {
+    const url = Option.getOrThrow(Url.fromString("http://localhost/jobs"))
+    return {
+      ...init({ workspace, theme: "light" }, url).model,
+      loading: false,
+      pageSample: false,
+      page: Option.some(
+        JobsPage.make({
+          queued: 0,
+          running: null,
+          retrying: 0,
+          deadLetters: [
+            {
+              id: "dl_1",
+              jobId: "job_1",
+              job: "Settle",
+              actorType: "Ledger",
+              key: "books",
+              attempts: 1,
+              error: "Unsettled",
+              since: "1m",
+            },
+          ],
+          resolvable,
+          types: [],
+          labels: [],
+          throughput: null,
+        }),
+      ),
+    }
+  }
+
+  it("sends nothing for a retry, retry all or confirmed discard that bypassed the disabled controls", () => {
+    for (const message of [RetriedDeadLetter({ id: "dl_1" }), RetriedAllDeadLetters()]) {
+      const result = update(onJobs(false), message)
+      expect(commandNames(result)).not.toContain("Mutate")
+      expect(result.model.toasts.at(-1)?.title).toBe("Retry and discard aren’t available yet.")
+    }
+    const discarding = {
+      ...onJobs(false),
+      dialog: Option.some(Dialog.DiscardDeadLetter({ id: "dl_1" })),
+    }
+    expect(commandNames(update(discarding, ConfirmedDialog()))).not.toContain("Mutate")
+  })
+
+  it("sends the retry when the source can resolve dead letters", () => {
+    expect(commandNames(update(onJobs(true), RetriedDeadLetter({ id: "dl_1" })))).toContain(
+      "Mutate",
+    )
   })
 })

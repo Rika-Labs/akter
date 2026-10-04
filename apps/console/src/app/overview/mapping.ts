@@ -98,7 +98,7 @@ export const toLatencyDistribution =
  * not report reads `—`, or as an unreported section, never as zero: command rates and latencies,
  * the throughput and p99 series, awake actors and each health fact but dead letters. The overview's
  * own deployments win; `deployments`, read from the deployments list, stand in when it reports
- * none.
+ * none, and are null when that list could not be read either, so the deploys are unreported.
  */
 export const toOverviewPage =
   (now: DateTime.Utc) =>
@@ -106,7 +106,7 @@ export const toOverviewPage =
     input: Readonly<{
       project: string
       overview: Overview
-      deployments?: ReadonlyArray<DeploymentSummary> | undefined
+      deployments?: ReadonlyArray<DeploymentSummary> | null | undefined
       distribution?: LatencyDistribution | undefined
       distributionSample?: boolean | undefined
     }>,

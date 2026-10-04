@@ -14,6 +14,16 @@ describe("caller words", () => {
     )
   })
 
+  it("never matches a member without an id, even against a subject naming undefined", () => {
+    expect(
+      callerText({ name: "Dallen Pyrah" })({
+        kind: "user",
+        subject: "user:undefined",
+        source: null,
+      }),
+    ).toBe("user:undefined")
+  })
+
   it("writes the subject when the session has no member to compare with", () => {
     const keySession = callerText({ name: "" })
     expect(keySession({ kind: "user", subject: "user:usr_dallen", source: null })).toBe(

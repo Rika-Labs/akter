@@ -20,10 +20,12 @@ const loadSelected = (fixture: () => Promise<OverviewPage | EmptyProjectPage>) =
         })
         const deployments =
           overview.recentDeployments === null
-            ? (yield* api.deployments.list({
-                params: { projectId: project.id },
-                query: { environment, limit: 3 },
-              })).items
+            ? yield* api.deployments
+                .list({ params: { projectId: project.id }, query: { environment, limit: 3 } })
+                .pipe(
+                  Effect.map((page) => page.items),
+                  Effect.orElseSucceed(() => null),
+                )
             : undefined
         const distribution = yield* load(
           Effect.gen(function* () {

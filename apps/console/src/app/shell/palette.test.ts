@@ -7,6 +7,7 @@ import {
   FoundActors,
   MovedPaletteSelection,
   OpenedPalette,
+  SettledPaletteQuery,
 } from "./message.ts"
 import type { Model } from "./model.ts"
 import { paletteResults } from "./palette.ts"
@@ -26,11 +27,52 @@ const found = (model: Model) =>
     .map((item) => item.label)
 
 describe("palette actor search", () => {
-  it("searches the runtime for what is typed, and not for an empty query", () => {
-    const searched = typed(open(), " Counter/ ")
-    expect(searched.commands?.map((command) => command.name)).toEqual(["SearchActors"])
-    expect(searched.commands?.[0]).toMatchObject({ args: { query: "Counter/" } })
+  it("searches the runtime once the typed query settles, and not for an empty query", () => {
+    const typing = typed(open(), " Counter/ ")
+    expect(typing.commands?.map((command) => command.name)).toEqual(["SettlePaletteQuery"])
+    expect(typing.commands?.[0]).toMatchObject({ args: { query: "Counter/" } })
+    const settled = update(typing.model, SettledPaletteQuery({ query: "Counter/" }))
+    expect(settled.commands?.map((command) => command.name)).toEqual(["SearchActors"])
+    expect(settled.commands?.[0]).toMatchObject({ args: { query: "Counter/" } })
     expect(typed(open(), "  ").commands ?? []).toEqual([])
+  })
+
+  it("skips the search for a query the person has already typed past", () => {
+    const typing = typed(typed(open(), "Co").model, "Cou").model
+    expect(update(typing, SettledPaletteQuery({ query: "Co" })).commands ?? []).toEqual([])
+  })
+
+  it("ignores an answer to a shorter query than the one already answered", () => {
+    const longer = update(
+      typed(open(), "Coun").model,
+      FoundActors({ query: "Coun", actorTypes: [], actors: ["Counter/hits"] }),
+    ).model
+    const stale = update(
+      longer,
+      FoundActors({ query: "Co", actorTypes: [], actors: ["Collector/a", "Counter/hits"] }),
+    ).model
+    expect(stale.palette.found?.query).toBe("Coun")
+    expect(found(stale)).toEqual(["Counter/hits"])
+  })
+
+  it("keeps a moved highlight the new answer still holds and drops one it no longer does", () => {
+    const first = update(
+      typed(open(), "Co").model,
+      FoundActors({ query: "Co", actorTypes: [], actors: ["Collector/a", "Counter/hits"] }),
+    ).model
+    const moved = { ...first, palette: { ...first.palette, active: "found-Collector/a" } }
+    expect(paletteResults(moved)[0]?.id).not.toBe("found-Collector/a")
+    const kept = update(
+      moved,
+      FoundActors({ query: "Co", actorTypes: [], actors: ["Collector/a", "Counter/hits"] }),
+    ).model
+    expect(kept.palette.active).toBe("found-Collector/a")
+    const dropped = update(
+      moved,
+      FoundActors({ query: "Co", actorTypes: [], actors: ["Counter/hits"] }),
+    ).model
+    expect(dropped.palette.active).toBe(paletteResults(dropped)[0]?.id)
+    expect(dropped.palette.active).not.toBe("found-Collector/a")
   })
 
   it("offers found actors as links, without repeating a pinned one", () => {

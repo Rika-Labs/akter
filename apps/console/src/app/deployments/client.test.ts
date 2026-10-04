@@ -365,6 +365,35 @@ describe("deployments client against the live API", () => {
       }),
     ))
 
+  it("asks to try again, not not-found, when the cursor goes stale twice before the deployment turns up", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        fetch.mockImplementation((input) => {
+          const url = new URL(input instanceof Request ? input.url : String(input))
+          if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+          const detail = url.pathname.match(/\/deployments\/([^/]+)$/)?.[1]
+          if (detail !== undefined) return Promise.resolve(missing(detail))
+          if (url.pathname.endsWith("/deployments"))
+            return Promise.resolve(
+              url.searchParams.get("cursor") === null
+                ? json(
+                    JSON.stringify({
+                      items: [deployment({ id: "dep_other", commitSha: "bbbbbbb" })],
+                      nextCursor: "p1",
+                    }),
+                  )
+                : json('{"_tag":"NotFound","resource":"cursor","id":"p1"}', 404),
+            )
+          return Promise.resolve(json(JSON.stringify([project])))
+        })
+        const error = yield* loadDeployment("a3f9c21").pipe(Effect.flip)
+        expect(error).toMatchObject({
+          kind: "IncompleteHistory",
+          message: "Couldn’t finish searching the deployment history. Try again.",
+        })
+      }),
+    ))
+
   it("ends the search with the history read so far when the first page's cursor goes stale twice", () =>
     Effect.runPromise(
       Effect.gen(function* () {

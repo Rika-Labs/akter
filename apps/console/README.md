@@ -159,7 +159,8 @@ types and instances, the command log, jobs, dead letters, workflows and timers f
 durable views. An actor type the deployment does not serve opens the not-found page, without Send
 first command; since the runtime reports an unknown type's address as a missing actor, the inspector
 reads the type before offering a first command. The overview takes its recent deploys from the
-deployments list when it reports none. Type activity, latency histograms, the command stream,
+deployments list when it reports none, and says they aren't reported when that list can't be read
+either. Type activity, latency histograms, the command stream,
 connections, schedules and owned-table listing still answer typed 501s and fall back as described
 above. Dead letters can't be retried or discarded yet, so both stay disabled with one quiet reason.
 

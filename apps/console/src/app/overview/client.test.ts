@@ -197,6 +197,23 @@ describe("overview over the live API", () => {
       }),
     ))
 
+  it("keeps the overview live and its deploys unreported when the deployments list can't be read", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        for (const refusal of [notImplemented("deployments.list"), forbidden]) {
+          const loaded = yield* load(
+            live({
+              [`${base}/overview`]: { body: { ...overviewBody, recentDeployments: null } },
+              "/api/projects/prj_1/deployments": refusal,
+            }),
+          )
+          expect(loaded.sample).toBe(false)
+          expect(page(loaded.data).deploys).toBeNull()
+          expect(page(loaded.data).stats[0]).toMatchObject({ value: "77" })
+        }
+      }),
+    ))
+
   it("uses the whole sample page when the overview itself is not implemented", () =>
     Effect.runPromise(
       Effect.gen(function* () {

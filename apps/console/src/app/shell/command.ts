@@ -44,6 +44,7 @@ import {
   FailedPage,
   FoundActors,
   LoadedPage,
+  SettledPaletteQuery,
   LoadedWorkspace,
   ResentVerification,
   RetriedPage,
@@ -317,6 +318,20 @@ export const SelectEnvironment = Command.define("SelectEnvironment", {
       Effect.ignore,
       Effect.as(RetriedPage()),
     ),
+})
+
+/** How long the palette's query must stay unchanged before the runtime is searched for it. */
+const paletteSettle = Duration.millis(150)
+
+/**
+ * Waits for the palette's query to settle, so typing a word asks the runtime once rather than once
+ * per keystroke; the update searches only if the query is still the same when this answers.
+ */
+export const SettlePaletteQuery = Command.define("SettlePaletteQuery", {
+  args: { query: S.String },
+  messages: [SettledPaletteQuery],
+  execute: ({ query }) =>
+    Effect.sleep(paletteSettle).pipe(Effect.as(SettledPaletteQuery({ query }))),
 })
 
 /**

@@ -32,7 +32,10 @@ export const callerText =
         if (subject === null) return unknown
         if (subject.startsWith(apiKeyPrefix)) return `API key …${subject.slice(-6)}`
         const own =
-          person.id !== "" && person.name !== "" && subject === `${userPrefix}${person.id}`
+          person.id !== undefined &&
+          person.id !== "" &&
+          person.name !== "" &&
+          subject === `${userPrefix}${person.id}`
         return own ? person.name : subject
       }),
       Match.exhaustive,
@@ -40,8 +43,9 @@ export const callerText =
   }
 
 /**
- * Whom a command ran as, as a table cell. Its title holds the full identity, the subject or the
- * source of a system delivery, which the words may shorten or replace with a name.
+ * Whom a command ran as, as a table cell. Its title holds the full identity the words may shorten
+ * or replace with a name: the subject, or for a system delivery its source, followed by the subject
+ * it was made on behalf of when that differs.
  */
 export const callerCell: {
   <Message>(
@@ -61,7 +65,14 @@ export const callerCell: {
     caller: CommandCaller | null,
   ): Html | string => {
     const text = callerText(person)(caller)
-    const title = caller?.subject ?? caller?.source ?? null
+    const title =
+      caller === null
+        ? null
+        : caller.kind === "system" && caller.source !== null
+          ? caller.subject === null || caller.subject === caller.source
+            ? caller.source
+            : `${caller.source} · ${caller.subject}`
+          : caller.subject
     return title === null ? text : h.span([h.Title(title)], [text])
   },
 )
