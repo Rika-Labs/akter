@@ -27,7 +27,7 @@ export const Message = defineMessageUnion({
   MovedPaletteSelection: { step: S.Literals([1, -1]) },
   HighlightedPaletteItem: { id: S.String },
   ChosePaletteItem: {},
-  FoundActors: { query: S.String, actors: S.Array(S.String) },
+  FoundActors: { query: S.String, actorTypes: S.Array(S.String), actors: S.Array(S.String) },
   ChoseTheme: { preference: Preference },
   ChangedField: { name: S.String, value: S.String },
   ToggledSetting: { key: S.String },

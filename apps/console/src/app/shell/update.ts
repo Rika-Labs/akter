@@ -717,9 +717,9 @@ const step = (model: Model, message: Message): Result =>
         commands: query.trim() === "" ? [] : [SearchActors({ query: query.trim() })],
       }
     },
-    FoundActors: ({ query, actors }) => {
+    FoundActors: ({ query, actorTypes, actors }) => {
       if (!model.palette.open || !model.palette.query.trim().startsWith(query)) return { model }
-      const next = { ...model, palette: { ...model.palette, found: { query, actors } } }
+      const next = { ...model, palette: { ...model.palette, found: { query, actorTypes, actors } } }
       return {
         model: {
           ...next,

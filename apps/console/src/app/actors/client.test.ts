@@ -283,6 +283,16 @@ describe("actor inspector over the live API", () => {
       }),
     ))
 
+  it("shows not found, with no first command, for an actor type the deployment doesn't serve", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { loaded } = inspect({
+          [actor]: notFound({ resource: "actor-type", id: "Counter" }),
+        })
+        expect(yield* loaded).toEqual({ data: undefined, sample: false })
+      }),
+    ))
+
   it("reads a fully inspected actor as live without asking for jobs separately", () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -325,20 +335,24 @@ describe("actor search over the live API", () => {
 
   afterEach(() => fetch.mockReset())
 
-  it("finds actor addresses by prefix and skips other kinds of result", () =>
+  it("finds actor types and actor addresses by prefix and skips other kinds of result", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const responder = apiResponder({
           ...signedIn({ status: "live" }),
           [search]: {
             body: [
+              { kind: "actor-type", id: "Counter", title: "Counter", subtitle: null },
               { kind: "actor", id: "Counter/hits", title: "Counter/hits", subtitle: null },
               { kind: "deployment", id: "dep_1", title: "deploy", subtitle: null },
             ],
           },
         })
         fetch.mockImplementation(responder.respond)
-        expect(yield* searchActors("  Counter/ ")).toEqual(["Counter/hits"])
+        expect(yield* searchActors("  Counter/ ")).toEqual({
+          actorTypes: ["Counter"],
+          actors: ["Counter/hits"],
+        })
         expect(responder.seen).toContain(`${search}?q=Counter%2F`)
       }),
     ))
@@ -351,13 +365,13 @@ describe("actor search over the live API", () => {
           [search]: notImplemented("runtime.search"),
         })
         fetch.mockImplementation(responder.respond)
-        expect(yield* searchActors("   ")).toEqual([])
+        expect(yield* searchActors("   ")).toEqual({ actorTypes: [], actors: [] })
         expect(responder.seen).toEqual([])
-        expect(yield* searchActors("Counter")).toEqual([])
+        expect(yield* searchActors("Counter")).toEqual({ actorTypes: [], actors: [] })
         fetch.mockImplementation(
           apiResponder({ ...signedIn({ status: "live" }), [search]: forbidden }).respond,
         )
-        expect(yield* searchActors("Counter")).toEqual([])
+        expect(yield* searchActors("Counter")).toEqual({ actorTypes: [], actors: [] })
       }),
     ))
 })

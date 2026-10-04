@@ -319,12 +319,15 @@ export const SelectEnvironment = Command.define("SelectEnvironment", {
     ),
 })
 
-/** Searches actor addresses that start with what the palette holds; a failed search finds none. */
+/**
+ * Searches actor types and actor addresses that start with what the palette holds; a failed search
+ * finds none.
+ */
 export const SearchActors = Command.define("SearchActors", {
   args: { query: S.String },
   messages: [FoundActors],
   execute: ({ query }) =>
-    searchActors(query).pipe(Effect.map((actors) => FoundActors({ query, actors }))),
+    searchActors(query).pipe(Effect.map((found) => FoundActors({ query, ...found }))),
 })
 
 /** Persists the requested chart window before reloading its endpoint data. */

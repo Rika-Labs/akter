@@ -19,15 +19,24 @@ import { type ActorPage, ActorTypePage, ActorsPage, MissingActorPage } from "./m
 /** The longest prefix the search endpoint accepts. */
 const searchLength = 256
 
+/** What the runtime's search found: actor type names and actor addresses, each as it ranked them. */
+export interface FoundInRuntime {
+  readonly actorTypes: ReadonlyArray<string>
+  readonly actors: ReadonlyArray<string>
+}
+
+const foundNothing: FoundInRuntime = { actorTypes: [], actors: [] }
+
 /**
- * The addresses of actors in the selected environment whose address starts with `prefix`. The
+ * The actor types and actor addresses in the selected environment that start with `prefix`. The
  * palette offers them as a convenience, so sample data searches nothing and a search that fails
- * for any reason finds nothing instead of interrupting what the person is typing.
+ * for any reason finds nothing instead of interrupting what the person is typing. Other kinds of
+ * hit are left to the pages that list them.
  */
-export const searchActors = (prefix: string): Effect.Effect<ReadonlyArray<string>> =>
+export const searchActors = (prefix: string): Effect.Effect<FoundInRuntime> =>
   Effect.suspend(() => {
     const q = prefix.trim().slice(0, searchLength)
-    if (fixturesEnabled() || q === "") return Effect.succeed([])
+    if (fixturesEnabled() || q === "") return Effect.succeed(foundNothing)
     return Effect.gen(function* () {
       const api = yield* cloud
       const { project, environment } = yield* projectContext
@@ -35,8 +44,11 @@ export const searchActors = (prefix: string): Effect.Effect<ReadonlyArray<string
         params: { projectId: project.id, environment },
         query: { q },
       })
-      return found.flatMap((result) => (result.kind === "actor" ? [result.id] : []))
-    }).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
+      return {
+        actorTypes: found.flatMap((result) => (result.kind === "actor-type" ? [result.id] : [])),
+        actors: found.flatMap((result) => (result.kind === "actor" ? [result.id] : [])),
+      }
+    }).pipe(Effect.orElseSucceed(() => foundNothing))
   })
 
 /** Loads the project's actor types. */

@@ -34,7 +34,11 @@ describe("palette actor search", () => {
     const model = typed(open(), "C").model
     const answered = update(
       model,
-      FoundActors({ query: "C", actors: ["Counter/hits", `${pinned.actorType}/${pinned.key}`] }),
+      FoundActors({
+        query: "C",
+        actorTypes: [],
+        actors: ["Counter/hits", `${pinned.actorType}/${pinned.key}`],
+      }),
     ).model
     expect(found(answered)).toEqual(["Counter/hits"])
     const chosen = paletteResults(answered).find((item) => item.label === "Counter/hits")
@@ -44,14 +48,29 @@ describe("palette actor search", () => {
   it("keeps an earlier answer while the query narrows and drops one for a different query", () => {
     const answered = update(
       typed(open(), "Co").model,
-      FoundActors({ query: "Co", actors: ["Counter/hits", "Collector/a"] }),
+      FoundActors({ query: "Co", actorTypes: [], actors: ["Counter/hits", "Collector/a"] }),
     ).model
     expect(found(typed(answered, "Cou").model)).toEqual(["Counter/hits"])
     expect(found(typed(answered, "Or").model)).toEqual([])
     const stale = update(
       typed(open(), "Or").model,
-      FoundActors({ query: "Co", actors: ["Counter/hits"] }),
+      FoundActors({ query: "Co", actorTypes: [], actors: ["Counter/hits"] }),
     ).model
     expect(found(stale)).toEqual([])
+  })
+
+  it("offers found actor types ahead of found actors, linking to the type page", () => {
+    const answered = update(
+      typed(open(), "Co").model,
+      FoundActors({ query: "Co", actorTypes: ["Counter"], actors: ["Counter/hits"] }),
+    ).model
+    const runtime = paletteResults(answered).filter(
+      (item) => item.group === "Actor types" || item.group === "Actors",
+    )
+    expect(runtime.map((item) => [item.group, item.label])).toEqual([
+      ["Actor types", "Counter"],
+      ["Actors", "Counter/hits"],
+    ])
+    expect(runtime[0]?.onSelect).toMatchObject({ href: "/actors/Counter" })
   })
 })
