@@ -75,10 +75,12 @@ Closing Send command after the actor answered reloads a live inspector, so it sh
 A runner-minted receipt id (`v1.<ms>.<ms>.<uuid>`) reads as its uuid's first 8 characters, with the
 full id as the cell's title; other ids read unchanged. Receipts show their caller and when the
 runner stops answering retries from them, events when their newest one was emitted, and timeline
-entries their shortened command id and caller. A caller reads as the signed-in member's name for
-their own commands (the runtime pages load no member list), as the `user:<id>` subject for other
-members, as `API key …` and the end of the key id for an API key, and as `System` or `Anonymous`
-for framework deliveries and unauthenticated callers.
+entries their shortened command id and caller. A caller is the attribution the runner recorded, not
+proof of who sent the command, so only its subject's prefix decides the wording and the full
+subject stays in the cell's title: a `user:<id>` subject naming the signed-in member reads as their
+name (the runtime pages load no member list), other subjects read as written, an `api-key:<id>`
+subject reads as `API key …` and its last six characters, and framework deliveries and
+unauthenticated callers read `System` and `Anonymous`.
 Against an API that cannot inspect actors yet, the inspector still reads the actor's live job
 list; an actor that has one keeps the Jobs tab and Send command live while the rest of the page is
 sample data. An address the runtime

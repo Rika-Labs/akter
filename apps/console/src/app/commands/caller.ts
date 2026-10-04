@@ -4,19 +4,21 @@ import type { Html, HtmlBuilder } from "foldkit/html"
 import { unknown } from "../shell/unknown.ts"
 import type { Person } from "../workspace/model.ts"
 
-/** The subject prefix the control plane gives a command an API key sent. */
+/** The subject prefix of a command attributed to an API key. */
 const apiKeyPrefix = "api-key:"
 
-/** The subject prefix the control plane gives a command a signed-in member sent. */
+/** The subject prefix of a command attributed to a member. */
 const userPrefix = "user:"
 
 /**
- * Whom a command ran as, in words. The control plane attributes a console command to `user:<id>`
- * or `api-key:<id>`. The runtime pages know one member, the signed-in person, so their own commands
- * read as their name and any other member's as the subject; no API key names are loaded here, so a
- * key reads as `API key …` and the end of its id. Any other subject, such as one an application's
- * own authentication chose, reads as written. Deliveries the framework made read `System`, and
- * unauthenticated callers `Anonymous`.
+ * Whom a command ran as, in words. A subject is the attribution the runner recorded, not proof of
+ * who sent it: the control plane attributes console commands to `user:<id>` or `api-key:<id>`, but
+ * an application's own authentication can carry the same subject. So only the subject's prefix
+ * decides the wording, the words never claim more than the attribution, and the cell's title keeps
+ * the full subject. The runtime pages know one member, the signed-in person, so a subject naming
+ * them reads as their name and any other member's as written; no API key names are loaded here, so
+ * an `api-key:` subject reads as `API key …` and its last six characters. Any other subject reads
+ * as written. Deliveries the framework made read `System`, and unauthenticated callers `Anonymous`.
  */
 export const callerText =
   (person: Pick<Person, "id" | "name">) =>
