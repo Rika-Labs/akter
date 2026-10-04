@@ -31,8 +31,8 @@ export type DeploySummary = typeof DeploySummary.Type
 
 /** Turn latency over the day: the current median and 99th percentile, and the p99 line, in milliseconds. */
 export const Latency = S.Struct({
-  p50: S.Finite,
-  p99: S.Finite,
+  p50: S.NullOr(S.Finite),
+  p99: S.NullOr(S.Finite),
   hours: S.Array(S.String),
   p99Series: S.Array(S.Finite),
 })

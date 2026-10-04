@@ -48,7 +48,10 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
         label: "Job queue",
         stats: [
           { label: "Queued", value: formatInteger(page.queued) },
-          { label: "Running", value: formatInteger(page.running) },
+          {
+            label: "Running",
+            value: page.running === null ? "—" : formatInteger(page.running),
+          },
           { label: "Retrying", value: formatInteger(page.retrying) },
           {
             label: "Dead letters",
@@ -158,7 +161,7 @@ export const jobsScreen = ({ h, model, page }: ScreenInput<JobsPage>): Screen =>
                   key: type.name,
                   cells: [
                     type.name,
-                    formatInteger(type.done),
+                    type.done === null ? "—" : formatInteger(type.done),
                     formatInteger(type.retried),
                     String(type.dead),
                     type.p99,

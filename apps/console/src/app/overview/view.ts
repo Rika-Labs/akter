@@ -159,7 +159,7 @@ export const overviewScreen = ({ h, model, page }: ScreenInput<OverviewPage>): S
         children: [
           section(h, {
             title: "Turn latency",
-            meta: `p50 ${formatDuration(page.latency.p50)} · p99 ${formatDuration(page.latency.p99)} · last 24 hours`,
+            meta: `p50 ${page.latency.p50 === null ? "—" : formatDuration(page.latency.p50)} · p99 ${page.latency.p99 === null ? "—" : formatDuration(page.latency.p99)} · last 24 hours`,
             children: [
               lineChart(h, {
                 id: "latency",

@@ -175,6 +175,10 @@ const list = (value: Schema.Json, ...path: ReadonlyArray<string | number>) => {
 
 const text = (value: Schema.Json) => (Schema.is(Schema.String)(value) ? value : "")
 
+const byText = (left: string, right: string) => left.localeCompare(right)
+
+const numeral = (value: Schema.Json) => (isNumber(value) ? String(value) : "")
+
 const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 
 const decodeJsonSync = (json: string) => Option.getOrThrow(parseJson(json))
@@ -363,6 +367,257 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "inspector: pages an actor's receipts, timeline and latest events, counts actor and job types, and finds actors by address prefix",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const sql = yield* SqlClient.SqlClient
+          const get = yield* serveInspector
+          const tenant = `${test.tenant}-paged`
+          const paged = yield* Inspected.get("paged").pipe(Actor.tenant(tenant))
+          yield* paged.Write("one")
+          yield* paged.Write("two")
+          yield* paged.WriteThenReject("three").pipe(Effect.exit)
+          yield* (yield* Inspected.get("pages").pipe(Actor.tenant(tenant))).Write("other")
+          yield* (yield* Inspected.get("unpaged").pipe(Actor.tenant(tenant))).Write("apart")
+          yield* test.advance(0)
+
+          const byCodeUnit = (left: string, right: string) =>
+            left < right ? -1 : left > right ? 1 : 0
+
+          const stored = yield* sql<{
+            actor_id: string
+            command_id: string
+            command: string
+            caller_key: string
+            outcome_tag: string
+            expires_at_ms: string
+          }>`SELECT actor_id, command_id, command, caller_key, outcome_tag, expires_at_ms::text
+              FROM durable.receipts WHERE tenant_id = ${tenant}`
+
+          const receiptOrder = (left: (typeof stored)[number], right: (typeof stored)[number]) =>
+            Number(right.expires_at_ms) - Number(left.expires_at_ms) ||
+            byCodeUnit(left.actor_id, right.actor_id) ||
+            byCodeUnit(left.command_id, right.command_id)
+
+          const expectedReceipts = (rows: typeof stored) =>
+            rows.toSorted(receiptOrder).map((row) => ({
+              actorId: row.actor_id,
+              commandId: row.command_id,
+              command: row.command,
+              outcomeTag: row.outcome_tag,
+              callerKey: { json: decodeJsonSync(row.caller_key) },
+              expiresAtMs: Number(row.expires_at_ms),
+            }))
+
+          const pages = Effect.fnUntraced(function* (
+            path: string,
+            key: string,
+            cursor: (next: Schema.Json) => string,
+          ) {
+            const rows: Array<Schema.Json> = []
+            let after = ""
+
+            for (let page = 0; page < 50; page++) {
+              const reply = yield* get(`${path}${after}`, tenant)
+              expect([path, reply.status]).toEqual([path, 200])
+              rows.push(...list(reply.body, key))
+              const next = field(reply.body, "next")
+
+              if (next === null) return rows
+
+              after = cursor(next)
+            }
+
+            return yield* Effect.die(new Error(`${path} never reached its last page`))
+          })
+
+          const receiptCursor = (next: Schema.Json) =>
+            `&afterExpiresAtMs=${numeral(field(next, "expiresAtMs"))}&afterType=${encodeURIComponent(text(field(next, "actorType")))}&afterId=${encodeURIComponent(text(field(next, "actorId")))}&afterCommandId=${encodeURIComponent(text(field(next, "commandId")))}`
+
+          const ownReceipts = yield* pages(
+            "/receipts?type=Inspected&id=paged&limit=1",
+            "receipts",
+            receiptCursor,
+          )
+          expect(ownReceipts.length).toBe(3)
+          expect(ownReceipts).toMatchObject(
+            expectedReceipts(stored.filter((row) => row.actor_id === "paged")),
+          )
+
+          expect(yield* pages("/receipts?limit=2", "receipts", receiptCursor)).toMatchObject(
+            expectedReceipts(stored),
+          )
+          expect(
+            list((yield* get("/receipts?outcome=Failure", tenant)).body, "receipts"),
+          ).toMatchObject(expectedReceipts(stored.filter((row) => row.outcome_tag === "Failure")))
+          expect((yield* get("/receipts?type=Inspected&id=never", tenant)).status).toBe(404)
+          expect((yield* get("/receipts?id=paged", tenant)).status).toBe(400)
+
+          const cursorTail = "&afterType=Inspected&afterId=paged&afterCommandId=c"
+          for (const path of [
+            `/receipts?afterExpiresAtMs=1.5${cursorTail}`,
+            `/receipts?afterExpiresAtMs=1e21${cursorTail}`,
+            "/receipts?afterExpiresAtMs=1&afterType=Inspected",
+            "/actors?afterType=Inspected",
+            "/dead-letters?afterDeadAtMs=1",
+            "/workflows?afterExecutionId=x",
+            "/timeline?type=Inspected&id=paged&beforeSequence=2",
+          ])
+            expect([path, (yield* get(path, tenant)).status]).toEqual([path, 400])
+
+          const events = yield* sql<{
+            sequence: number
+            event: string
+            command_id: string
+            emitted_at_ms: string
+          }>`SELECT sequence::int AS sequence, event, command_id, emitted_at_ms::text
+              FROM durable.events
+              WHERE tenant_id = ${tenant} AND actor_type = 'Inspected' AND actor_id = 'paged'`
+          expect(events.length).toBe(2)
+
+          const callerOf = (commandId: string) => {
+            const receipt = stored.find(
+              (row) => row.actor_id === "paged" && row.command_id === commandId,
+            )
+
+            return receipt === undefined ? null : { json: decodeJsonSync(receipt.caller_key) }
+          }
+
+          const commands = [...new Set(events.map((event) => event.command_id))].map(
+            (commandId) => {
+              const own = events.filter((event) => event.command_id === commandId)
+
+              return {
+                kind: "command",
+                sequence: Math.min(...own.map((event) => event.sequence)),
+                name: stored.find((row) => row.command_id === commandId)!.command,
+                commandId,
+                callerKey: callerOf(commandId),
+                atMs: Math.min(...own.map((event) => Number(event.emitted_at_ms))),
+              }
+            },
+          )
+
+          const expectedTimeline = [
+            ...events.map((event) => ({
+              kind: "event",
+              sequence: event.sequence,
+              name: event.event,
+              commandId: event.command_id,
+              callerKey: callerOf(event.command_id),
+              atMs: Number(event.emitted_at_ms),
+            })),
+            ...commands,
+          ].toSorted(
+            (left, right) =>
+              right.sequence - left.sequence ||
+              Number(right.kind === "event") - Number(left.kind === "event"),
+          )
+          expect(expectedTimeline.map((entry) => entry.kind)).toEqual([
+            "event",
+            "command",
+            "event",
+            "command",
+          ])
+
+          expect(
+            yield* pages(
+              "/timeline?type=Inspected&id=paged&limit=3",
+              "entries",
+              (next) =>
+                `&beforeSequence=${numeral(field(next, "sequence"))}&beforeKind=${text(field(next, "kind"))}`,
+            ),
+          ).toEqual(expectedTimeline)
+
+          const newest = events.toSorted((left, right) => right.sequence - left.sequence)[0]!
+          expect(
+            yield* pages(
+              "/latest-events?type=Inspected&id=paged&limit=1",
+              "events",
+              (next) => `&after=${encodeURIComponent(text(next))}`,
+            ),
+          ).toEqual([
+            {
+              event: "Noted",
+              sequence: newest.sequence,
+              emittedAtMs: Number(newest.emitted_at_ms),
+            },
+          ])
+
+          const prefixed = (prefix: string) =>
+            get(`/actors?prefix=${encodeURIComponent(prefix)}`, tenant).pipe(
+              Effect.map((reply) => list(reply.body, "actors").map((row) => field(row, "actorId"))),
+            )
+
+          expect(yield* prefixed("Inspected/page")).toEqual(["paged", "pages"])
+          expect(yield* prefixed("Inspected/paged")).toEqual(["paged"])
+          expect(yield* prefixed("Insp")).toEqual(["paged", "pages", "unpaged"])
+          expect(yield* prefixed("Inspected/zz")).toEqual([])
+          expect(yield* prefixed("Other")).toEqual([])
+
+          expect(
+            yield* pages("/actor-types?limit=1", "actorTypes", (next) => `&after=${text(next)}`),
+          ).toEqual([{ actorType: "Inspected", actors: 3 }])
+          expect(
+            field((yield* get("/actor-types?prefix=Insp", tenant)).body, "actorTypes"),
+          ).toEqual([{ actorType: "Inspected", actors: 3 }])
+          expect(field((yield* get("/actor-types?prefix=Zed", tenant)).body, "actorTypes")).toEqual(
+            [],
+          )
+          expect(field((yield* get("/actor-types?type=Missing", tenant)).body)).toMatchObject({
+            actorTypes: [],
+            next: null,
+          })
+
+          const pending = yield* sql<{ job: string; attempts: number }>`
+            SELECT job, attempts::int AS attempts FROM durable.jobs WHERE tenant_id = ${tenant}`
+          const dead = yield* sql<{ job: string; job_id: string; dead_at_ms: string }>`
+            SELECT job, job_id, dead_at_ms::text FROM durable.dead_letters
+            WHERE tenant_id = ${tenant}`
+          expect(dead.length).toBe(4)
+
+          expect(
+            yield* pages("/job-types?limit=1", "jobTypes", (next) => `&after=${text(next)}`),
+          ).toEqual(
+            [...new Set([...pending, ...dead].map((row) => row.job))]
+              .toSorted(byCodeUnit)
+              .map((job) => ({
+                job,
+                queued: pending.filter((row) => row.job === job && row.attempts === 0).length,
+                retrying: pending.filter((row) => row.job === job && row.attempts > 0).length,
+                deadLetters: dead.filter((row) => row.job === job).length,
+              })),
+          )
+
+          expect(
+            (yield* pages(
+              "/dead-letters?limit=1",
+              "deadLetters",
+              (next) =>
+                `&afterDeadAtMs=${numeral(field(next, "deadAtMs"))}&afterJobId=${encodeURIComponent(text(field(next, "jobId")))}`,
+            )).map((row) => field(row, "jobId")),
+          ).toEqual(
+            dead
+              .toSorted(
+                (left, right) =>
+                  Number(right.dead_at_ms) - Number(left.dead_at_ms) ||
+                  byCodeUnit(left.job_id, right.job_id),
+              )
+              .map((row) => row.job_id),
+          )
+
+          const [timer] = yield* sql<{ due: string | null }>`
+            SELECT min(due_at_ms)::text AS due FROM durable.timers WHERE tenant_id = ${tenant}`
+          expect(timer!.due).not.toBe(null)
+          expect(field((yield* get("/overview", tenant)).body, "nextTimerDueAtMs")).toBe(
+            Number(timer!.due),
+          )
+        }),
+      ),
+  },
+  {
     name: "inspector: shows a workflow's step history while open and its result once finished",
     run: ({ expect, environment }) =>
       environment.run(
@@ -439,6 +694,47 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           ])
           expect(yield* listed("open")).not.toContain(run.executionId)
           expect(yield* listed("all")).toContain(run.executionId)
+          expect(yield* listed("finished")).toContain(run.executionId)
+          expect(yield* listed("completed")).toContain(run.executionId)
+          expect(yield* listed("failed")).not.toContain(run.executionId)
+          expect(yield* listed("suspended")).not.toContain(run.executionId)
+
+          const flows = `${test.tenant}-flows`
+          const listedIn = (status: string) =>
+            get(`/workflows?status=${status}`, flows).pipe(
+              Effect.map((reply) =>
+                list(reply.body, "workflows").map((workflow) => field(workflow, "executionId")),
+              ),
+            )
+          const starts = yield* Effect.forEach(["a", "b"], (order) =>
+            Inspected.get(`flow-${order}`).pipe(
+              Effect.flatMap((actor) => actor.Settle({ order: `o-${order}` })),
+              Actor.tenant(flows),
+            ),
+          )
+          const executions = starts.map((start) => start.executionId)
+
+          yield* eventually(
+            Effect.map(listedIn("suspended"), (ids) => executions.every((id) => ids.includes(id))),
+            "both executions to suspend",
+          )
+          expect(yield* listedIn("running")).toEqual([])
+
+          const everyExecution: Array<Schema.Json> = []
+          let after = ""
+
+          for (let page = 0; page < 10; page++) {
+            const reply = (yield* get(`/workflows?status=all&limit=1${after}`, flows)).body
+            everyExecution.push(...list(reply, "workflows").map((row) => field(row, "executionId")))
+            const next = field(reply, "next")
+
+            if (next === null) break
+
+            after = `&afterStartedAtMs=${numeral(field(next, "startedAtMs"))}&afterExecutionId=${text(field(next, "executionId"))}`
+          }
+
+          expect(everyExecution).toEqual(yield* listedIn("all"))
+          expect(everyExecution.map(text).toSorted(byText)).toEqual(executions.toSorted(byText))
         }),
       ),
   },
@@ -449,9 +745,9 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const get = yield* serveInspector
-          const home = test.tenant
+          const home = `${test.tenant}-home`
           const abroad = `${test.tenant}-inspected`
-          yield* (yield* Inspected.get("shared")).Write("home")
+          yield* (yield* Inspected.get("shared").pipe(Actor.tenant(home))).Write("home")
           yield* (yield* Inspected.get("shared").pipe(Actor.tenant(abroad))).Write("abroad")
           yield* (yield* Inspected.get("only-abroad").pipe(Actor.tenant(abroad))).Write("abroad")
           yield* test.advance(0)
@@ -488,6 +784,72 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
               .map((row) => text(field(row, "actorId")))
               .toSorted((left, right) => left.localeCompare(right)),
           ).toEqual(["only-abroad", "shared"])
+
+          for (const path of [
+            "/receipts?type=Inspected&id=only-abroad",
+            "/latest-events?type=Inspected&id=only-abroad",
+            "/timeline?type=Inspected&id=only-abroad",
+          ])
+            expect((yield* get(path, home)).status).toBe(404)
+
+          const sql = yield* SqlClient.SqlClient
+          const commandsOf = (tenant: string) =>
+            sql<{ command_id: string }>`
+              SELECT command_id FROM durable.receipts
+              WHERE tenant_id = ${tenant} AND actor_type = 'Inspected' AND actor_id = 'shared'`.pipe(
+              Effect.map((rows) => rows.map((row) => row.command_id)),
+            )
+          const homeCommands = yield* commandsOf(home)
+          const abroadCommands = yield* commandsOf(abroad)
+          expect(homeCommands.length).toBe(1)
+          expect(abroadCommands.length).toBe(1)
+          expect(homeCommands).not.toEqual(abroadCommands)
+
+          const [homeEvent] = yield* sql<{ sequence: number; command_id: string }>`
+            SELECT sequence::int AS sequence, command_id FROM durable.events
+            WHERE tenant_id = ${home} AND actor_type = 'Inspected' AND actor_id = 'shared'`
+          expect(homeEvent!.command_id).toBe(homeCommands[0])
+
+          const sharedAt = (path: string, key: string, name: string) =>
+            get(`/${path}?type=Inspected&id=shared`, home).pipe(
+              Effect.map((reply) => list(reply.body, key).map((row) => field(row, name))),
+            )
+
+          expect(yield* sharedAt("receipts", "receipts", "commandId")).toEqual(homeCommands)
+          expect(yield* sharedAt("timeline", "entries", "commandId")).toEqual([
+            homeCommands[0],
+            homeCommands[0],
+          ])
+          expect(yield* sharedAt("latest-events", "events", "sequence")).toEqual([
+            homeEvent!.sequence,
+          ])
+
+          const receiptActors = (tenant: string) =>
+            get("/receipts", tenant).pipe(
+              Effect.map((reply) =>
+                list(reply.body, "receipts")
+                  .map((row) => text(field(row, "actorId")))
+                  .toSorted((left, right) => left.localeCompare(right)),
+              ),
+            )
+
+          expect(yield* receiptActors(abroad)).toEqual(["only-abroad", "shared"])
+          expect(yield* receiptActors(home)).toEqual(["shared"])
+          expect(field((yield* get("/actor-types", abroad)).body, "actorTypes")).toEqual([
+            { actorType: "Inspected", actors: 2 },
+          ])
+          expect(field((yield* get("/actor-types", home)).body, "actorTypes")).toEqual([
+            { actorType: "Inspected", actors: 1 },
+          ])
+          expect(field((yield* get("/job-types", abroad)).body, "jobTypes")).toEqual([
+            { job: "Notify", queued: 0, retrying: 0, deadLetters: 2 },
+          ])
+          expect(field((yield* get("/job-types", home)).body, "jobTypes")).toEqual([
+            { job: "Notify", queued: 0, retrying: 0, deadLetters: 1 },
+          ])
+          expect(list((yield* get("/actors?prefix=Inspected/only", home)).body, "actors")).toEqual(
+            [],
+          )
 
           for (const path of ["/overview", "/actors", "/actor?type=Inspected&id=shared"]) {
             const anonymous = yield* get(path)
@@ -553,6 +915,12 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             "/jobs",
             "/dead-letters",
             "/workflows?status=all",
+            "/actor-types",
+            "/job-types",
+            "/receipts",
+            "/receipts?type=Inspected&id=untouched",
+            "/latest-events?type=Inspected&id=untouched",
+            "/timeline?type=Inspected&id=untouched",
           ])
             expect((yield* get(path, test.tenant)).status).toBe(200)
 
@@ -576,6 +944,13 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
                 yield* Queries.jobs(page)
                 yield* Queries.deadLetters(page)
                 yield* Queries.workflows({ ...page, status: "all" })
+                yield* Queries.actorTypes(page)
+                yield* Queries.jobTypes(page)
+                yield* Queries.receipts(page)
+                const untouched = { ...page, actorType: "Inspected", actorId: "untouched" }
+                yield* Queries.receipts(untouched)
+                yield* Queries.latestEvents(untouched)
+                yield* Queries.timeline(untouched)
 
                 const found = yield* Queries.actor({
                   ...page,

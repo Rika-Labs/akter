@@ -15,10 +15,21 @@ import {
 } from "@akter/cloud-api"
 import * as Framework from "@rikalabs/akter/client"
 import { expect, it } from "@effect/vitest"
-import { Cause, Clock, Context, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import {
+  Cause,
+  Clock,
+  Context,
+  DateTime,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Redacted,
+  Schema,
+} from "effect"
 import { FetchHttpClient } from "effect/http"
 import { type CommandAssignment, commandPayloadHash, Repository } from "./repository.ts"
-import { makeRuntime, RuntimeEdge } from "./runtime.ts"
+import { makeRuntime, redactCause, RuntimeEdge } from "./runtime.ts"
 
 interface Seen {
   readonly method: string
@@ -1011,9 +1022,56 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           totals: { receipts: 2, events: 3, outbox: 0, jobs: 1, deadLetters: 0, workflows: 0 },
         }
 
-        yield* edge.answer(() => json(detail))
+        const timeline: Schema.Json = {
+          entries: [
+            {
+              kind: "event",
+              sequence: 7,
+              name: "Charged",
+              commandId: "v1.c1",
+              callerKey: { json: ["System", "timer", null, "user:u1"] },
+              atMs: 2,
+            },
+            {
+              kind: "command",
+              sequence: 6,
+              name: "Place",
+              commandId: "v1.c1",
+              callerKey: { json: ["Anonymous"] },
+              atMs: 1,
+            },
+            {
+              kind: "event",
+              sequence: 4,
+              name: "Charged",
+              commandId: "v1.c0",
+              callerKey: { undecodable: "not JSON" },
+              atMs: 0,
+            },
+          ],
+          next: { sequence: 4, kind: "event" },
+        }
+
+        const latest: Schema.Json = {
+          events: [
+            { event: "Charged", sequence: 7, emittedAtMs: 2 },
+            { event: "Opened", sequence: 1, emittedAtMs: 0 },
+            { event: "Placed", sequence: 6, emittedAtMs: 1 },
+          ],
+          next: null,
+        }
+        yield* edge.answer((request) =>
+          json(
+            Match.value(new URL(request.url).pathname).pipe(
+              Match.when("/inspector/timeline", () => timeline),
+              Match.when("/inspector/latest-events", () => latest),
+              Match.orElse(() => detail),
+            ),
+          ),
+        )
 
         const inspected = yield* runtime.inspectActor({ ...target, address: "Order/o/1" })
+        const ada = { kind: "user", subject: "ada", source: null }
 
         expect(inspected).toEqual({
           address: "Order/o/1",
@@ -1021,12 +1079,29 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
           turn: null,
           tables: null,
           receipts: [
-            { commandId: "v1.c2", command: "Refund", result: "Failure", at: null, replayed: false },
-            { commandId: "v1.c1", command: "Place", result: "Success", at: null, replayed: false },
+            {
+              commandId: "v1.c2",
+              command: "Refund",
+              result: "Failure",
+              caller: ada,
+              at: null,
+              expiresAt: DateTime.makeUnsafe(1_900_000_000_000),
+              replayed: false,
+            },
+            {
+              commandId: "v1.c1",
+              command: "Place",
+              result: "Success",
+              caller: ada,
+              at: null,
+              expiresAt: DateTime.makeUnsafe(1_800_000_000_000),
+              replayed: false,
+            },
           ],
           events: [
-            { name: "Charged", cursor: "7", subscribers: null },
-            { name: "Placed", cursor: "6", subscribers: null },
+            { name: "Charged", cursor: "7", emittedAt: DateTime.makeUnsafe(2), subscribers: null },
+            { name: "Opened", cursor: "1", emittedAt: DateTime.makeUnsafe(0), subscribers: null },
+            { name: "Placed", cursor: "6", emittedAt: DateTime.makeUnsafe(1), subscribers: null },
           ],
           jobs: [{ name: "Email", id: "j1", attempts: 0, status: "queued" }],
           connections: { sockets: null, feedCursor: "7" },
@@ -1039,26 +1114,59 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
             tenant: "default",
             mailboxDepth: null,
           },
-          timeline: null,
+          timeline: [
+            {
+              at: DateTime.makeUnsafe(2),
+              kind: "event",
+              label: "Charged",
+              detail: "v1.c1",
+              caller: { kind: "system", subject: "user:u1", source: "timer" },
+            },
+            {
+              at: DateTime.makeUnsafe(1),
+              kind: "command",
+              label: "Place",
+              detail: "v1.c1",
+              caller: { kind: "anonymous", subject: null, source: null },
+            },
+            {
+              at: DateTime.makeUnsafe(0),
+              kind: "event",
+              label: "Charged",
+              detail: "v1.c0",
+              caller: null,
+            },
+          ],
         })
         expect(edge.seen.map(({ method, path }) => `${method} ${path}`)).toEqual([
           "GET /inspector/actor?type=Order&id=o%2F1&limit=500",
+          "GET /inspector/latest-events?type=Order&id=o%2F1&limit=500",
+          "GET /inspector/timeline?type=Order&id=o%2F1&limit=50",
         ])
         expect(edge.seen[0]!.headers.get("authorization")).toBe(`Bearer ${SECRET}`)
         expect(edge.seen[0]!.headers.has("akter-on-behalf-of")).toBe(false)
 
-        yield* edge.answer(() =>
-          json({
-            ...detail,
-            actor: { ...actor, lastEventSequence: 0 },
-            state: [{ key: "total", bytes: 4, value: { undecodable: "not zstd" } }],
-            events: [],
-          }),
+        yield* edge.answer((request) =>
+          json(
+            Match.value(new URL(request.url).pathname).pipe(
+              Match.when("/inspector/timeline", () => ({ entries: [], next: null })),
+              Match.when("/inspector/latest-events", () => ({ events: [], next: null })),
+              Match.orElse(() => ({
+                ...detail,
+                actor: { ...actor, lastEventSequence: 0 },
+                state: [{ key: "total", bytes: 4, value: { undecodable: "not zstd" } }],
+                receipts: [{ ...detail.receipts[0], callerKey: { json: ["Robot", "r2"] } }],
+                events: [],
+              })),
+            ),
+          ),
         )
 
         expect(yield* runtime.inspectActor({ ...target, address: "Order/o/1" })).toMatchObject({
           state: null,
+          receipts: [{ commandId: "v1.c2", caller: null }],
           events: [],
+          timeline: [],
           connections: { sockets: null, feedCursor: null },
         })
 
@@ -1069,4 +1177,24 @@ it.layer(live)("runtime forwarding through the edge", (it) => {
         ).toEqual(NotFound.make({ resource: "actor", id: "Order/nope" }))
       }),
   )
+})
+
+it("redacts a stored cause to its error's tag and message, without stack frames or file paths", () => {
+  const frame =
+    "\n    at /workspace/node_modules/.bun/effect@4.0.0/node_modules/effect/dist/Schema.js:8958:81"
+  const redacted = [
+    redactCause(`Unsettled: ${frame}${frame}`),
+    redactCause(`Error: card declined at /workspace/app/src/billing.ts:12:4${frame}`),
+    redactCause("Order/o-1 refused: insufficient funds"),
+    redactCause("\n\nSucceeded after it was cancelled"),
+  ]
+
+  expect(redacted).toEqual([
+    "Unsettled",
+    "Error: card declined",
+    "Order/o-1 refused: insufficient funds",
+    "Succeeded after it was cancelled",
+  ])
+  for (const text of redacted)
+    expect(text).not.toMatch(/\bat\s|node_modules|\.[jt]s:\d|\/workspace/u)
 })
