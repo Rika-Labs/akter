@@ -1,6 +1,12 @@
 import { Option } from "effect"
 import { describe, expect, it } from "vitest"
-import { clientLabel, deviceProblem, displayUserCode, normalizeUserCode } from "./model.ts"
+import {
+  accessScope,
+  clientLabel,
+  deviceProblem,
+  displayUserCode,
+  normalizeUserCode,
+} from "./model.ts"
 
 describe("device user codes", () => {
   it("reads a code in any case, with or without its dash or stray spaces", () => {
@@ -33,23 +39,22 @@ describe("device user codes", () => {
 })
 
 describe("device refusals", () => {
-  const lookup = (status: number, error?: string) =>
-    deviceProblem({ failure: { status, error }, stage: "lookup" })
-  const decision = (status: number, error?: string) =>
-    deviceProblem({ failure: { status, error }, stage: "decision" })
+  const refusal = (status: number, error?: string) => deviceProblem({ status, error })
 
-  it("names each refusal the lookup can answer", () => {
+  it("names each refusal the device routes answer", () => {
     expect([
-      lookup(400, "invalid_request"),
-      lookup(400, "expired_token"),
-      lookup(429),
-      lookup(401, "unauthorized"),
-      lookup(0),
-      lookup(500, "server_error"),
-      lookup(404),
+      refusal(400, "invalid_request"),
+      refusal(400, "expired_token"),
+      refusal(403, "access_denied"),
+      refusal(429),
+      refusal(401, "unauthorized"),
+      refusal(0),
+      refusal(500, "server_error"),
+      refusal(404),
     ]).toEqual([
       "invalid",
       "expired",
+      "elsewhere",
       "slowDown",
       "Unauthorized",
       "unreachable",
@@ -58,20 +63,27 @@ describe("device refusals", () => {
     ])
   })
 
-  it("reads a decision's invalid request as a code decided or redeemed since it was looked up", () => {
-    expect([
-      decision(400, "invalid_request"),
-      decision(400, "expired_token"),
-      decision(403, "access_denied"),
-      decision(401, "unauthorized"),
-      decision(429),
-      decision(502),
-    ]).toEqual(["used", "expired", "elsewhere", "Unauthorized", "slowDown", "unreachable"])
+  it("calls a code expired only when the server says expired_token", () => {
+    expect([refusal(400, "invalid_request"), refusal(400), refusal(400, "expired_token")]).toEqual([
+      "invalid",
+      "unreachable",
+      "expired",
+    ])
   })
 
   it("lets the status decide before the error, so a rate limit is never read as a bad code", () => {
-    expect(lookup(429, "invalid_request")).toBe("slowDown")
-    expect(decision(401, "access_denied")).toBe("Unauthorized")
+    expect(refusal(429, "invalid_request")).toBe("slowDown")
+    expect(refusal(401, "access_denied")).toBe("Unauthorized")
+  })
+})
+
+describe("device access", () => {
+  it("names one organization, counts several, and says when there are none", () => {
+    expect([
+      accessScope([]),
+      accessScope(["Acme"]),
+      accessScope(["Acme", "Globex", "Initech"]),
+    ]).toEqual(["No organizations yet", "Acme", "All your organizations (3)"])
   })
 })
 

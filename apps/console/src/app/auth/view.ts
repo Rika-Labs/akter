@@ -572,7 +572,7 @@ const deviceRow = (
 
 /**
  * A looked-up code: who is asking, the code itself to compare with the terminal, and the account
- * and organization approving it signs in. Approve and Deny appear only here.
+ * and organizations approving it signs in to. Approve and Deny appear only here.
  */
 const deviceReview = (h: H, model: Model, step: DeviceReview): Screen =>
   deviceColumn(h, [
@@ -594,9 +594,7 @@ const deviceReview = (h: H, model: Model, step: DeviceReview): Screen =>
             ? h.empty
             : h.span([...styleAttributes(h, deviceStyles.email)], [step.email]),
         ]),
-        ...(step.organization === undefined
-          ? []
-          : deviceRow(h, "Organization", [step.organization])),
+        ...deviceRow(h, "Access", [step.access]),
       ],
     ),
     deviceAction(h, model, { label: "Approve", form: "device-approve" }),
@@ -608,18 +606,13 @@ const deviceProblems: Readonly<
   Record<DeviceProblem, Readonly<{ title: string; lead: string; retry: boolean }>>
 > = {
   invalid: {
-    title: "We don’t recognise this code",
-    lead: "Check it against the code in your terminal and enter it again.",
+    title: "This code isn’t valid",
+    lead: "It may have expired or already been used. Check it against the code in your terminal, or start the sign-in again.",
     retry: false,
   },
   expired: {
     title: "This code has expired",
     lead: "Start the sign-in again in your terminal to get a new code.",
-    retry: false,
-  },
-  used: {
-    title: "This code has already been used",
-    lead: "Each code works once. Start the sign-in again in your terminal if you still need to.",
     retry: false,
   },
   elsewhere: {

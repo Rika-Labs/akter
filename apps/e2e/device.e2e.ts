@@ -100,7 +100,7 @@ test("approves a code the link prefilled, only after looking it up", async ({ pa
   const account = page.getByRole("definition")
   await expect(account.first()).toContainText("Ada Lovelace")
   await expect(account.first()).toContainText("ada@acme.dev")
-  await expect(account.nth(1)).toHaveText("Acme")
+  await expect(account.nth(1)).toHaveText("All your organizations (2)")
 
   await page.getByRole("button", { name: "Approve" }).click()
   await expect(page.getByRole("heading", { name: "You can return to your terminal" })).toBeVisible()

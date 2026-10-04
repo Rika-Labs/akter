@@ -310,16 +310,17 @@ export const DeclineInvitation = Command.define("DeclineInvitation", {
 })
 
 /**
- * Answers a device page step, or sends the person to sign in when their session ended, remembering
- * this page so they come back to it.
+ * Answers a device page step for `code`, or fails the page; an `Unauthorized` failure first
+ * remembers this page so signing in comes back to it.
  */
-const answerDevice = (step: Effect.Effect<DevicePage, ConsoleError>) =>
+const answerDevice = (code: string, step: Effect.Effect<DevicePage, ConsoleError>) =>
   step.pipe(
-    Effect.map((page) => AnsweredDevice({ page })),
+    Effect.map((page) => AnsweredDevice({ code, page })),
+    Effect.tapError((error) =>
+      error.kind === "Unauthorized" ? Effect.sync(rememberAuthReturn) : Effect.void,
+    ),
     Effect.catch((error) =>
-      Effect.sync(rememberAuthReturn).pipe(
-        Effect.as(FailedPage({ kind: error.kind, message: error.message })),
-      ),
+      Effect.succeed(FailedPage({ kind: error.kind, message: error.message })),
     ),
   )
 
@@ -327,14 +328,14 @@ const answerDevice = (step: Effect.Effect<DevicePage, ConsoleError>) =>
 export const LookUpDevice = Command.define("LookUpDevice", {
   args: { code: S.String },
   messages: [AnsweredDevice, FailedPage],
-  execute: ({ code }) => answerDevice(lookUpDevice(code)),
+  execute: ({ code }) => answerDevice(code, lookUpDevice(code)),
 })
 
 /** Approves or denies a device code the person reviewed. */
 export const DecideDevice = Command.define("DecideDevice", {
   args: { code: S.String, decision: S.Literals(["approved", "denied"]) },
   messages: [AnsweredDevice, FailedPage],
-  execute: ({ code, decision }) => answerDevice(decideDevice({ code, decision })),
+  execute: ({ code, decision }) => answerDevice(code, decideDevice({ code, decision })),
 })
 
 /**

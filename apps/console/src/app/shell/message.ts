@@ -60,7 +60,7 @@ export const Message = defineMessageUnion({
   CreatedKey: { name: S.String, secret: S.String },
   SentRecoveryEmail: {},
   ResentVerification: {},
-  AnsweredDevice: { page: DevicePage },
+  AnsweredDevice: { code: S.String, page: DevicePage },
   ConnectedTail: { session: S.Finite },
   StreamedTurn: { session: S.Finite, entry: CommandLogEntry },
   StoppedTail: { session: S.Finite, kind: S.String, message: S.String },

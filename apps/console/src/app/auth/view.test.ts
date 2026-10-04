@@ -23,7 +23,7 @@ const reviewed = DevicePage.make({
     clientDetail: "The Akter command line on your computer",
     name: "Ada Lovelace",
     email: "ada@acme.dev",
-    organization: "Acme",
+    access: "All your organizations (3)",
   }),
 })
 
@@ -53,7 +53,7 @@ describe("device page before a lookup", () => {
 })
 
 describe("device page after a lookup", () => {
-  it("shows the looked-up code large, the client, the account and organization, then Approve and Deny", () =>
+  it("shows the looked-up code large, the client, the account and its whole access, then Approve and Deny", () =>
     shown(
       "/device?user_code=KPLQ7RST",
       reviewed,
@@ -64,7 +64,9 @@ describe("device page after a lookup", () => {
       Scene.expect(screenRoot).not.toContainText("KPLQ"),
       Scene.expect(Scene.text("Ada Lovelace")).toExist(),
       Scene.expect(Scene.text("ada@acme.dev")).toExist(),
-      Scene.expect(Scene.text("Acme")).toExist(),
+      Scene.expect(Scene.text("All your organizations (3)")).toExist(),
+      Scene.expect(Scene.text("Access")).toExist(),
+      Scene.expect(Scene.text("Organization")).toBeAbsent(),
       Scene.expect(Scene.role("button", { name: "Approve" })).toExist(),
       Scene.expect(Scene.role("button", { name: "Deny" })).toExist(),
     ))
@@ -88,9 +90,8 @@ describe("device page after a lookup", () => {
 
 describe("device page refusals", () => {
   const states: ReadonlyArray<readonly [DeviceProblem, string, string]> = [
-    ["invalid", "We don’t recognise this code", "Enter another code"],
+    ["invalid", "This code isn’t valid", "Enter another code"],
     ["expired", "This code has expired", "Enter another code"],
-    ["used", "This code has already been used", "Enter another code"],
     ["elsewhere", "This code belongs to another account", "Enter another code"],
     ["slowDown", "Too many attempts", "Try again"],
     ["unreachable", "We couldn’t reach Akter", "Try again"],

@@ -20,13 +20,14 @@ export const normalizeUserCode = (typed: string): Option.Option<string> => {
 export const displayUserCode = (code: string): string => `${code.slice(0, 4)}-${code.slice(4)}`
 
 /**
- * Why a code can't be approved here: unknown, past its lifetime, already approved or denied,
+ * Why a code can't be approved here: not valid, past its lifetime as the server reports it,
  * claimed by another signed-in account, refused for too many attempts, or not answered at all.
+ * An unknown code and one already approved or denied are one state, because the server deletes a
+ * code once the CLI redeems or learns of its denial, so a used code usually reads as unknown.
  */
 export const DeviceProblem = S.Literals([
   "invalid",
   "expired",
-  "used",
   "elsewhere",
   "slowDown",
   "unreachable",
@@ -37,8 +38,8 @@ export type DeviceProblem = typeof DeviceProblem.Type
 export const DeviceEntry = S.TaggedStruct("DeviceEntry", {})
 
 /**
- * A code the control plane confirmed is pending and bound to this account: who asked, and the
- * account and organization approving it would sign in.
+ * A code the control plane confirmed is pending and bound to this account: who asked, the account
+ * approving it signs in as, and the organizations that session can act in.
  */
 export const DeviceReview = S.TaggedStruct("DeviceReview", {
   code: S.String,
@@ -46,7 +47,7 @@ export const DeviceReview = S.TaggedStruct("DeviceReview", {
   clientDetail: S.optional(S.String),
   name: S.String,
   email: S.String,
-  organization: S.optional(S.String),
+  access: S.String,
 })
 export type DeviceReview = typeof DeviceReview.Type
 
@@ -62,9 +63,13 @@ export const DeviceDecided = S.TaggedStruct("DeviceDecided", {
   decision: S.Literals(["approved", "denied"]),
 })
 
-/** The device sign-in page at one of its steps. */
+/**
+ * The device sign-in page at one of its steps. `pending` is the code a lookup or decision is in
+ * flight for, so only the answer for that code can replace the step.
+ */
 export const DevicePage = S.TaggedStruct("DevicePage", {
   step: S.Union([DeviceEntry, DeviceReview, DeviceRefused, DeviceDecided]),
+  pending: S.optional(S.String),
 })
 export type DevicePage = typeof DevicePage.Type
 
@@ -76,23 +81,29 @@ export interface DeviceFailure {
 
 /**
  * What a refused lookup (`GET /device`) or decision (`POST /device/approve` or `/deny`) means for
- * the person, or `Unauthorized` when the session ended. The lookup answers `invalid_request` only
- * for an unknown code. A decision follows a lookup that found the code pending and claimed, so its
- * `invalid_request` means the code was decided or redeemed since; redemption deletes the record.
+ * the person, or `Unauthorized` when the session ended. `invalid_request` covers an unknown code
+ * and one already decided or redeemed, which the server can't tell apart once it deletes the code.
  */
-export const deviceProblem = (
-  input: Readonly<{ failure: DeviceFailure; stage: "lookup" | "decision" }>,
-): DeviceProblem | "Unauthorized" =>
-  Match.value(input.failure).pipe(
+export const deviceProblem = (failure: DeviceFailure): DeviceProblem | "Unauthorized" =>
+  Match.value(failure).pipe(
     Match.when({ status: 401 }, () => "Unauthorized" as const),
     Match.when({ status: 429 }, () => "slowDown" as const),
     Match.when({ error: "expired_token" }, () => "expired" as const),
     Match.when({ error: "access_denied" }, () => "elsewhere" as const),
-    Match.when({ error: "invalid_request" }, () =>
-      input.stage === "lookup" ? ("invalid" as const) : ("used" as const),
-    ),
+    Match.when({ error: "invalid_request" }, () => "invalid" as const),
     Match.orElse(() => "unreachable" as const),
   )
+
+/**
+ * What an approved session can reach. Better Auth mints it as a session for the person, and the API
+ * authorizes sessions by membership alone, so it can act in every organization they belong to,
+ * whichever one is active in this browser.
+ */
+export const accessScope = (organizations: ReadonlyArray<string>): string => {
+  if (organizations.length === 0) return "No organizations yet"
+  if (organizations.length === 1) return organizations[0] ?? ""
+  return `All your organizations (${String(organizations.length)})`
+}
 
 /**
  * Names the clients the control plane accepts. Better Auth reports only a client id, so the

@@ -468,18 +468,31 @@ const deviceStep = (model: Model) =>
  */
 const deviceForm = (model: Model, form: string): Result | undefined => {
   const step = deviceStep(model)
+  const awaiting = (code: string, command: NonNullable<Result["commands"]>[number]): Result =>
+    pending(
+      {
+        ...model,
+        page: Option.some(
+          DevicePage.make({
+            step: Option.getOrElse(step, () => DeviceEntry.make({})),
+            pending: code,
+          }),
+        ),
+      },
+      [command],
+    )
   return Match.value(form).pipe(
     Match.when("device-code", () => {
       const linked = AppRoute.isAnyOf(["Device"])(model.route) ? model.route.user_code : undefined
       return Option.match(normalizeUserCode(model.fields["device-code"] ?? linked ?? ""), {
         onNone: () => reject(model, "Enter the code from your terminal. It looks like ABCD-EFGH."),
-        onSome: (code) => pending(model, [LookUpDevice({ code })]),
+        onSome: (code) => awaiting(code, LookUpDevice({ code })),
       })
     }),
     Match.when("device-retry", () =>
       Option.match(Option.filter(step, S.is(DeviceRefused)), {
         onNone: () => ({ model }),
-        onSome: ({ code }) => pending(model, [LookUpDevice({ code })]),
+        onSome: ({ code }) => awaiting(code, LookUpDevice({ code })),
       }),
     ),
     Match.when("device-restart", () => ({
@@ -494,9 +507,10 @@ const deviceForm = (model: Model, form: string): Result | undefined => {
       Option.match(Option.filter(step, S.is(DeviceReview)), {
         onNone: () => ({ model }),
         onSome: ({ code }) =>
-          pending(model, [
+          awaiting(
+            code,
             DecideDevice({ code, decision: form === "device-approve" ? "approved" : "denied" }),
-          ]),
+          ),
       }),
     ),
     Match.orElse(() => undefined),
@@ -702,7 +716,11 @@ const step = (model: Model, message: Message): Result =>
           pageSample: false,
           formError: Option.none(),
           submitting: false,
-          fields: withoutPasswords(model.fields),
+          fields: Object.fromEntries(
+            Object.entries(withoutPasswords(model.fields)).filter(
+              ([name]) => name !== "device-code",
+            ),
+          ),
         },
         commands: [
           LoadPage({ route, allowSignIn: model.allowSignIn }),
@@ -1116,8 +1134,12 @@ const step = (model: Model, message: Message): Result =>
           tone: "live",
         },
       ),
-    AnsweredDevice: ({ page }) =>
-      AppRoute.isAnyOf(["Device"])(model.route)
+    AnsweredDevice: ({ code, page }) =>
+      AppRoute.isAnyOf(["Device"])(model.route) &&
+      Option.exists(
+        model.page,
+        (open) => Predicate.isTagged(open, "DevicePage") && open.pending === code,
+      )
         ? {
             model: {
               ...model,
