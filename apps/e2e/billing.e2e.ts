@@ -341,9 +341,9 @@ test("shows Free's caps from the API and sends the chosen plan to Stripe Checkou
   await expect(page.getByRole("note")).toHaveCount(0)
   const picker = page.getByRole("combobox", { name: "Plan to upgrade to" })
   await expect(picker.getByRole("option")).toHaveText([
-    "Pro · $27.31 a month (provisional)",
-    "Studio · $199.00 a month (provisional)",
-    "Enterprise · $2,500.00 a month (provisional)",
+    "Pro · $27.31 / mo (provisional)",
+    "Studio · $199 / mo (provisional)",
+    "Enterprise · $2,500 / mo (provisional)",
   ])
   const comparison = page.getByRole("table", { name: "Plan comparison" })
   await expect(comparison.getByRole("row")).toHaveCount(5)
@@ -541,6 +541,8 @@ test("never shows an organization without a billing account as Free", async ({ p
     "href",
     "/settings/billing",
   )
+  await expect(page.getByRole("meter")).toHaveCount(0)
+  await expect(page.getByRole("main")).not.toContainText("of 1M")
   await page.goto(`${origin}/`)
   await expect(page.getByRole("heading", { name: "Ship your first actor" })).toBeVisible()
   await expect(page.getByRole("note")).toHaveText(

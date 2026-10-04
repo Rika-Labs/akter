@@ -422,6 +422,35 @@ const refused = (reason: string) =>
     ),
   )
 
+describe("refusal retries", () => {
+  it("offers a resend with the same command ID exactly when the framework marks the reason retryable", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        live()
+        const cases: ReadonlyArray<readonly [string, boolean]> = [
+          ['{"_tag":"SessionEnded","cause":"OwnerLost","resync":false}', true],
+          ['{"_tag":"SessionEnded","cause":"Terminated","resync":false}', false],
+          ['{"_tag":"TransportError","code":"network","retryable":true}', true],
+          ['{"_tag":"TransportError","code":"decode","retryable":false}', false],
+          ['{"_tag":"Unauthorized","code":"reauthorization_unavailable"}', true],
+          ['{"_tag":"Unauthorized","code":"access_denied"}', false],
+          ['{"_tag":"Timeout"}', true],
+          ['{"_tag":"MailboxFull"}', true],
+        ]
+        for (const [reason, resendable] of cases) {
+          const body = yield* encoded(CommandRefused, yield* refused(reason))
+          route(() => json(body, 422))
+          const error = yield* sendCommand({ ...send, commandId: "key-1" }).pipe(Effect.flip)
+          expect([reason, retryable(error.kind)]).toEqual([reason, resendable])
+          expect([reason, error.message.includes("it runs at most once")]).toEqual([
+            reason,
+            resendable,
+          ])
+        }
+      }),
+    ))
+})
+
 describe("send retries", () => {
   it("offers a retry with the same command ID except after a final failure", () => {
     expect(["Unavailable", "CommandRefused", "NotFound", "QuotaExceeded"].map(retryable)).toEqual([
@@ -431,8 +460,10 @@ describe("send retries", () => {
       true,
     ])
     expect(
-      ["Conflict", "CommandExpired", "RunnerDefect", "InvalidCommandId"].map(retryable),
-    ).toEqual([false, false, false, false])
+      ["Conflict", "CommandExpired", "RunnerDefect", "InvalidCommandId", "CommandRefusedFinal"].map(
+        retryable,
+      ),
+    ).toEqual([false, false, false, false, false])
   })
 })
 

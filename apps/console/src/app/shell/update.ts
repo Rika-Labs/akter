@@ -9,6 +9,7 @@ import { canonicalPayload, toOpeningTail, toTailEntry } from "../commands/mappin
 import { settingsSeed } from "../settings/keys.ts"
 import {
   choiceFields,
+  hasPaidPlan,
   parseMemberRoleKey,
   parseNotificationKey,
   parseSpendLimit,
@@ -560,16 +561,20 @@ const submit = (model: Model, form: string): Result => {
     }),
     Match.when("change-plan", () => {
       const page = Option.getOrUndefined(settingsPage(model))
-      const subscribed = page?.billing?.plan.subscribed ?? "free"
-      const choices = planChoices({ subscribed, plans: page?.plans ?? null })
+      const billing = page?.billing
+      if (billing == null) return unavailable(model, "Another plan")
+      const choices = planChoices({
+        subscribed: billing.plan.subscribed,
+        plans: page?.plans ?? null,
+      })
       const choice = choices.find(({ plan }) => plan === model.choices[planChoiceKey]) ?? choices[0]
       if (choice === undefined) return unavailable(model, "Another plan")
       const { plan, offer } = choice
       return mutate(
         model,
-        subscribed === "free"
-          ? Action.StartCheckout({ plan })
-          : Action.ChangePlan({ plan, name: offer.name }),
+        hasPaidPlan(billing)
+          ? Action.ChangePlan({ plan, name: offer.name })
+          : Action.StartCheckout({ plan }),
       )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),

@@ -5,7 +5,8 @@ import { isQuotaKind, quotaMessage } from "../quota/errors.ts"
 
 /**
  * The failures after which sending the same submission again cannot help: the key is bound to
- * other input, its retry window has closed, or the runner hit a defect that must never be retried.
+ * other input, its retry window has closed or it is unusable, the runner hit a defect that must
+ * never be retried, or it refused for a reason the framework marks not retryable.
  * The dialog does not offer to resend that submission with the same command ID.
  */
 const finalKinds: ReadonlyArray<string> = [
@@ -13,6 +14,7 @@ const finalKinds: ReadonlyArray<string> = [
   "CommandExpired",
   "RunnerDefect",
   "InvalidCommandId",
+  "CommandRefusedFinal",
 ]
 
 /** Whether a send that failed with `kind` may be retried with the same command ID. */
@@ -35,11 +37,26 @@ const conflictMessage =
 const expiredMessage =
   "This command ID’s retry window has closed, so Akter won’t run it again. Clear the Command ID to send it as a new command."
 
+/** A refusal the framework marks retryable: the same command ID can be sent again safely. */
+const busy = (sent: Sent, refusal: CommandRefused): ConsoleError =>
+  ConsoleError.make({
+    kind: "CommandRefused",
+    message: `${sent.address} couldn’t take ${sent.command} right now (${refusal.reasonTag}), so nothing ran. Send again to retry with the same command ID; it runs at most once.`,
+  })
+
+/** A refusal the framework marks not retryable: sending the same submission again cannot help. */
+const final = (sent: Sent, refusal: CommandRefused): ConsoleError =>
+  ConsoleError.make({
+    kind: "CommandRefusedFinal",
+    message: `${sent.address} refused ${sent.command} (${refusal.reasonTag}), so nothing ran, and sending it again with this command ID won’t help. Clear the Command ID to send it as a new command.`,
+  })
+
 /**
  * What the dialog says about a runner's refusal, read from its typed reason. A plan refusal keeps
  * the console-wide quota wording and kind, so it links to Billing; a reason that means the key is
- * spent takes the same kind as the API's own error for it, so the dialog offers no resend; a busy or
- * unreachable runner can be sent again with the same command ID.
+ * spent takes the same kind as the API's own error for it, so the dialog offers no resend; any other
+ * reason is resendable exactly when the framework marks it retryable (`SessionEnded.isRetryable`,
+ * `TransportError.retryable`, and `Unauthorized` only for `reauthorization_unavailable`).
  */
 const refusalFailure = (sent: Sent, refusal: CommandRefused): ConsoleError =>
   Match.value(refusal.reason).pipe(
@@ -70,24 +87,22 @@ const refusalFailure = (sent: Sent, refusal: CommandRefused): ConsoleError =>
       ConsoleError.make({ kind: "CommandExpired", message: expiredMessage }),
     ),
     Match.tag("NotCreated", () => ConsoleError.make({ kind: "NotFound", message: absent(sent) })),
-    Match.tag("Unauthorized", ({ code }) =>
-      ConsoleError.make({
-        kind: "Forbidden",
-        message: `${sent.address} refused ${sent.command} for this caller (${code}), so nothing ran.`,
-      }),
+    Match.tag("Unauthorized", (reason) =>
+      reason.code === "reauthorization_unavailable"
+        ? busy(sent, refusal)
+        : ConsoleError.make({
+            kind: "CommandRefusedFinal",
+            message: `${sent.address} refused ${sent.command} for this caller (Unauthorized: ${reason.code}), so nothing ran. Sending it again won’t help.`,
+          }),
     ),
-    Match.tag(
-      "ActorUnavailable",
-      "Timeout",
-      "MailboxFull",
-      "RunnerAtCapacity",
-      "SessionEnded",
-      "TransportError",
-      () =>
-        ConsoleError.make({
-          kind: "CommandRefused",
-          message: `${sent.address} couldn’t take ${sent.command} right now (${refusal.reasonTag}), so nothing ran. Send again to retry with the same command ID; it runs at most once.`,
-        }),
+    Match.tag("SessionEnded", (reason) =>
+      reason.isRetryable ? busy(sent, refusal) : final(sent, refusal),
+    ),
+    Match.tag("TransportError", (reason) =>
+      reason.retryable ? busy(sent, refusal) : final(sent, refusal),
+    ),
+    Match.tag("ActorUnavailable", "Timeout", "MailboxFull", "RunnerAtCapacity", () =>
+      busy(sent, refusal),
     ),
     Match.exhaustive,
   )

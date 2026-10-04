@@ -133,9 +133,7 @@ describe("billing", () => {
       ).toExist(),
       Scene.expect(Scene.role("button", { name: "Continue to checkout" })).toBeEnabled(),
       Scene.expect(Scene.label("Plan to upgrade to")).toHaveValue("pro"),
-      Scene.expect(
-        Scene.role("option", { name: "Team · $249.00 a month (provisional)" }),
-      ).toExist(),
+      Scene.expect(Scene.role("option", { name: "Team · $249 / mo (provisional)" })).toExist(),
       Scene.expect(Scene.role("table", { name: "Plan comparison" })).toContainText(
         "Free (current)",
       ),
@@ -176,6 +174,30 @@ describe("billing", () => {
       Scene.expect(Scene.text("Included")).toBeAbsent(),
       Scene.expect(Scene.role("table", { name: "Plan comparison" })).not.toContainText("(current)"),
       Scene.expect(Scene.text("Applies once you’re on a paid plan.")).toExist(),
+    ))
+
+  it("reads an unbound organization from billing's own caps, even without usage", () =>
+    scene(
+      billingScreen,
+      { ...emptySettings, billing: { ...free, caps: unboundCaps }, plans },
+      Scene.expect(Scene.text("Billing isn’t set up")).toExist(),
+      Scene.expect(Scene.text("Included")).toBeAbsent(),
+      Scene.expect(Scene.role("note")).toBeAbsent(),
+    ))
+
+  it("names the plan from the billing response instead of assuming Free", () =>
+    scene(
+      billingScreen,
+      {
+        ...emptySettings,
+        billing: { ...free, plan: { ...free.plan, name: "Hobby" } },
+        plans,
+        usage: usage(10),
+      },
+      Scene.expect(
+        Scene.text("Applies once you’re on a paid plan; Hobby stops at what it includes instead."),
+      ).toExist(),
+      Scene.expect(Scene.role("button", { name: "Continue to checkout" })).toExist(),
     ))
 
   it("states a refusing cap on Billing without linking back to it", () =>
@@ -222,9 +244,7 @@ describe("billing", () => {
       ).toExist(),
       Scene.expect(Scene.role("button", { name: "Change plan" })).toExist(),
       Scene.expect(Scene.label("Plan to change to")).toHaveValue("pro"),
-      Scene.expect(
-        Scene.role("option", { name: "Team · $249.00 a month (provisional)" }),
-      ).toBeAbsent(),
+      Scene.expect(Scene.role("option", { name: "Team · $249 / mo (provisional)" })).toBeAbsent(),
       Scene.expect(
         Scene.role("link", { name: "Invoice INV-1 PDF, opens in a new tab" }),
       ).toHaveAttr("target", "_blank"),
@@ -253,6 +273,8 @@ describe("usage", () => {
       { ...emptySettings, usage: usage(999_999) },
       Scene.expect(Scene.role("note")).toBeAbsent(),
       Scene.expect(Scene.text("Paid prices are provisional.")).toExist(),
+      Scene.expect(Scene.selector("div")).toContainText("of 1M"),
+      Scene.expect(Scene.selector("div")).toContainText("of 0.5 GB"),
       Scene.expect(
         Scene.text(
           "Commands plus reads, a read counting as 0.2 of a command. This plan stops new commands here until next month; reads keep working",
@@ -277,6 +299,10 @@ describe("usage", () => {
         Scene.text("Commands plus reads, a read counting as 0.2 of a command"),
       ).toExist(),
       Scene.expect(Scene.text("Average stored this month")).toExist(),
+      Scene.expectAll(Scene.all.role("meter")).toHaveCount(0),
+      Scene.expect(Scene.selector("div")).not.toContainText("of 1M"),
+      Scene.expect(Scene.selector("div")).not.toContainText("of 0.5 GB"),
+      Scene.expect(Scene.selector("div")).not.toContainText("Nothing included"),
     ))
 
   it("shows the latest storage sample and the storage cap the edge refuses at", () =>

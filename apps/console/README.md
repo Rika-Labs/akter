@@ -104,7 +104,7 @@ already reached waits for an explicit save, because it refuses new commands righ
 
 Usage, Overview and Billing show cap state exactly as the API reports it per cap (`refusing`, not
 merely `atCap`), with one quiet notice: an organization without a billing account reads as
-"Billing isn't set up", never as Free; otherwise the command allowance, a tenant's storage sample
+"Billing isn't set up", never as Free, and its usage is shown without any plan's limits; otherwise the command allowance, a tenant's storage sample
 at its cap, the spend limit, then connections, in that order. Usage also shows the latest storage
 sample across serving deployments. A `503 Unavailable` from billing or usage (such as a plan the
 pricing configuration does not know) is worded as billing being temporarily unreadable, not as a
@@ -112,8 +112,8 @@ lost connection. Plan refusals (`QuotaExceeded`, `SpendLimitExceeded`, `Connecti
 `StorageQuotaExceeded`) are read from the cloud API's own typed errors, or from a `CommandRefused`
 whose typed `reason` is one, and explained in place with a link to Billing; the console reads only
 errors the client decoded, never a payload by its shape. In the send dialog every other
-`CommandRefused` reason has its own wording, and a reason that means the command ID is spent offers
-no resend. A `NotFound` is worded from its closed `resource` set.
+`CommandRefused` reason has its own wording; it offers a resend with the same command ID only when
+the framework marks the reason retryable, and never for a spent command ID. A `NotFound` is worded from its closed `resource` set.
 
 Actor-type activity and command volumes use `1h`, `24h` or `7d`. The overview latency distribution
 requests each actor type's `/latency` histogram at the chosen window and sums counts only when

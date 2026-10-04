@@ -1,5 +1,5 @@
 import type { NotificationEvent, PlanId, Preferences } from "@akter/cloud-api"
-import type { PaidPlan, PlanOffer, Plans, SettingsPage } from "./model.ts"
+import type { Billing, PaidPlan, PlanOffer, Plans, SettingsPage } from "./model.ts"
 
 /**
  * The names the settings views give their switches and selects in the shell's `toggles` and
@@ -51,6 +51,13 @@ export const parseMemberRoleKey = (key: string): string | undefined =>
 
 /** The select key of the paid plan an organization would move to; it is never saved by itself. */
 export const planChoiceKey = "plan"
+
+/**
+ * Whether the organization pays for a plan, so a change goes through the plan endpoint rather than
+ * a new Checkout. The control plane prices billing at the subscribed plan, and only plans with a
+ * base price are sold through Checkout, so a zero price means no paid subscription.
+ */
+export const hasPaidPlan = (billing: Billing): boolean => billing.plan.basePriceCents > 0
 
 /**
  * The catalog's plans an organization subscribed to `subscribed` can buy or move to, cheapest

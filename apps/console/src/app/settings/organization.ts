@@ -34,11 +34,12 @@ import {
   formatPeriod,
   titleCase,
 } from "./format.ts"
-import { CapNotice, capNotice, spendLimitReached } from "../quota/model.ts"
+import { capNotice, isUnbound, spendLimitReached } from "../quota/model.ts"
 import { capNoticeView, capStateView } from "../quota/view.ts"
 import {
   memberRoleKey,
   parseSpendLimit,
+  hasPaidPlan,
   planChoiceKey,
   planChoices,
   spendLimitKey,
@@ -285,11 +286,6 @@ const planDescription = (billing: Billing): string => {
   ].join(" · ")
 }
 
-const monthlyPrice = (offer: PlanOffer): string =>
-  offer.basePriceCents === 0
-    ? "No monthly charge"
-    : `${formatCurrency(dollars(offer.basePriceCents))} a month${offer.provisional ? " (provisional)" : ""}`
-
 /**
  * What a plan includes, as the catalog states it: its commands and storage, and for each whether it
  * is a hard cap or billed beyond the allowance.
@@ -382,17 +378,17 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
   const { billing, plans, usage } = page
   if (billing === null) return screen(h, "Billing", [])
   const billingSample = isSample(page, "billing")
-  const free = billing.plan.id === "free" && billing.plan.subscribed === "free"
+  const free = !hasPaidPlan(billing)
+  const unbound = isUnbound(billing.caps)
   const notice =
-    usage === null ? undefined : capNotice({ caps: billing.caps, period: usage.period })
-  const unbound = notice !== undefined && CapNotice.isAnyOf(["Unbound"])(notice)
+    unbound || usage === null ? undefined : capNotice({ caps: billing.caps, period: usage.period })
   const choices = planChoices({ subscribed: billing.plan.subscribed, plans })
   const current = unbound ? undefined : plans?.plans.find((offer) => offer.id === billing.plan.id)
   const limit = parseSpendLimit(
     model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
   )
   return screen(h, "Billing", [
-    ...(notice === undefined || unbound ? [] : [capStateView(h, notice)]),
+    ...(notice === undefined ? [] : [capStateView(h, notice)]),
     settingsGroup(h, {
       title: "Plan",
       rows: [
@@ -429,7 +425,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                       disabled: billingSample,
                       options: choices.map(({ plan, offer }) => ({
                         value: plan,
-                        label: `${offer.name} · ${monthlyPrice(offer)}`,
+                        label: `${offer.name} · ${shortPrice(offer.basePriceCents)}${offer.provisional ? " (provisional)" : ""}`,
                       })),
                       onChange: (value) => ChoseSetting({ key: planChoiceKey, value }),
                     }),
@@ -491,7 +487,7 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
           description: unbound
             ? "Applies once you’re on a paid plan."
             : free
-              ? "Applies once you’re on a paid plan; Free stops at what it includes instead."
+              ? `Applies once you’re on a paid plan; ${billing.plan.name} stops at what it includes instead.`
               : "New commands that would pass it are refused; work already admitted finishes.",
           control: select(h, {
             name: spendLimitKey,
@@ -584,7 +580,7 @@ const meterDetail = (
   capped: { readonly commands: boolean; readonly storage: boolean; readonly unbound: boolean },
 ): string | undefined => {
   const overage =
-    entry.overageCostCents > 0
+    entry.overageCostCents > 0 && !capped.unbound
       ? `${formatCents(entry.overageCostCents)} over the allowance so far`
       : undefined
   if (entry.meter === "commands")
@@ -642,7 +638,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
   const capped = {
     commands: bounded("commands"),
     storage: bounded("storage"),
-    unbound: usage.caps.some((cap) => cap.reason === "unbound"),
+    unbound: isUnbound(usage.caps),
   }
   const reads = usage.meters.find((entry) => entry.meter === "reads")
   return screen(h, "Usage", [
@@ -656,7 +652,7 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
           const format = meterFormat(entry.unit)
           const detail = meterDetail(entry, usage, capped)
           const shown =
-            entry.included > 0
+            entry.included > 0 && !capped.unbound
               ? h.div(
                   [...styleAttributes(h, styles.padded)],
                   [
@@ -671,7 +667,8 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
                 )
               : settingsRow(h, {
                   label: entry.label,
-                  description: detail ?? "Nothing included in this plan",
+                  description:
+                    detail ?? (capped.unbound ? undefined : "Nothing included in this plan"),
                   control: h.span([...styleAttributes(h, styles.value)], [format(entry.used)]),
                 })
           return entry.meter === "storageGb" ? [shown, ...storedNow(h, usage)] : [shown]

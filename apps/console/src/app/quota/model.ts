@@ -19,6 +19,13 @@ export const CapNotice = defineTaggedUnion({
 })
 export type CapNotice = typeof CapNotice.Type
 
+/**
+ * Whether the organization has no billing account: the edge refuses every new command and no
+ * plan's allowances or prices apply to it, whatever plan the reports fall back to.
+ */
+export const isUnbound = (caps: ReadonlyArray<CapState>): boolean =>
+  caps.some((cap) => cap.reason === "unbound")
+
 /** The caps in the order a page explains them: the hard stops before the limit a person set. */
 const precedence: ReadonlyArray<CapState["cap"]> = ["commands", "storage", "spend", "connections"]
 
@@ -31,7 +38,7 @@ export const capNotice = (input: {
   readonly caps: ReadonlyArray<CapState>
   readonly period: string
 }): CapNotice | undefined => {
-  if (input.caps.some((cap) => cap.reason === "unbound")) return CapNotice.Unbound()
+  if (isUnbound(input.caps)) return CapNotice.Unbound()
   const refusing = precedence
     .map((name) => input.caps.find((cap) => cap.cap === name && cap.refusing))
     .find((cap) => cap !== undefined && cap.limit !== null)
