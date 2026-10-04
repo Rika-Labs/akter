@@ -7,11 +7,11 @@
 
 ## Status
 
-`0.1.0-alpha.0` has not been published. The package does not exist on npm yet, and npm only lets a maintainer attach a trusted publisher to a package that exists, so the first version is published by hand once. Every later version publishes from `.github/workflows/release.yml` without an npm token.
+`0.1.0-alpha.0` was published by hand on 2026-10-04 and tagged `v0.1.0-alpha.0`; the npm trusted publisher for `Rika-Labs/akter`'s `release.yml` in the `npm` environment is configured. Every later version publishes from `.github/workflows/release.yml` without an npm token.
 
 ## Prerequisites
 
-- **Public repository.** npm provenance is only generated for a public repository publishing a public package. `Rika-Labs/akter` is private today; make it public before the first workflow release, or the `--provenance` publish fails.
+- **Public repository.** npm provenance is only generated for a public repository publishing a public package. `Rika-Labs/akter` is public.
 - **GitHub-hosted runner.** Trusted publishing and provenance reject self-hosted runners. The release job runs on `ubuntu-latest`.
 - **npm CLI 11.5.1 or later and Node 22.14.0 or later.** The workflow pins Node 26.7.0 and fails before publishing when its bundled npm is older than 11.5.1.
 - **`npm` environment.** The release job runs in the GitHub `npm` environment. The trusted publisher names that environment, so a run outside it cannot publish. Add required reviewers to the environment to gate every release.
