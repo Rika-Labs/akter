@@ -830,6 +830,21 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
       environment.run(
         Effect.gen(function* () {
           const target = yield* prepared(environment, { observe: true, index: false })
+          yield* onDatabase(
+            target,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.unsafe(
+                ownerIndexSql({
+                  schema: "public",
+                  table: "conformance_shipments",
+                  access: "write",
+                  tenantColumn: "tenant_uuid",
+                  actorColumn: "actor_uuid",
+                }).replace("CONCURRENTLY ", ""),
+              )
+            }),
+          )
           const exit = yield* runtimeOn(target).pipe(Effect.exit)
 
           expect(defect(exit)).toContain(
