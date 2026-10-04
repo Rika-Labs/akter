@@ -7,6 +7,8 @@
 
 External admission MUST check current authorization and command expiry under the [receipt contract](04-receipts.md). Trusted internal redelivery of accepted work remains recoverable after originating-caller revocation or external retry expiry.
 
+Authorization precedes delivery. The first external delivery MAY validate command expiry and resolve a replay in the turn's fenced admission read instead of an off-turn receipt read. That admission clock MUST be read after any wait to acquire the generation fence. The expiry recheck before result delivery MAY use a database clock read on the turn's session after `COMMIT` or `ROLLBACK`, in the same flight; it MUST NOT use the admission clock ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).
+
 Every admitted command attempt MUST execute within one framework-owned transaction, in this order:
 
 1. lock and validate the generation fence;

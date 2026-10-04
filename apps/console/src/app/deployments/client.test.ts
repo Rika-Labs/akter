@@ -1,7 +1,12 @@
-import { NotImplemented } from "@akter/cloud-api"
+import { Conflict, NotImplemented } from "@akter/cloud-api"
 import { Effect, Schema } from "effect"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { loadDeployment, loadDeployments, rollBackDeployment } from "./client.ts"
+import {
+  loadDeployment,
+  loadDeployments,
+  redeployDeployment,
+  rollBackDeployment,
+} from "./client.ts"
 import { DeploymentPage, DeploymentsPage } from "./model.ts"
 
 beforeEach(() => {
@@ -22,6 +27,8 @@ describe("deployments client in fixture mode", () => {
         yield* loadDeployments
         const error = yield* rollBackDeployment("dep_1").pipe(Effect.flip)
         expect(error).toMatchObject({ kind: "Sample" })
+        const redeploy = yield* redeployDeployment("dep_1").pipe(Effect.flip)
+        expect(redeploy).toMatchObject({ kind: "Sample" })
         expect(fetch).not.toHaveBeenCalled()
       }),
     ))
@@ -226,6 +233,36 @@ describe("deployments client against the live API", () => {
       }),
     ))
 
+  it("opens an earlier deployment by id when a newer deployment shares its commit", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const restored = deployment({
+          id: "dep_restored",
+          commitSha: "ddddddd",
+          status: "live",
+          rolledBackFrom: "dep_original",
+          createdAt: "2026-10-03T12:00:00.000Z",
+        })
+        const original = deployment({
+          id: "dep_original",
+          commitSha: "ddddddd",
+          message: "Original release",
+          createdAt: "2026-10-02T09:00:00.000Z",
+        })
+        serveHistory([
+          [restored, deployment({ id: "dep_between", commitSha: "bbbbbbb" })],
+          [original],
+        ])
+        expect((yield* loadDeployment("dep_original")).data?.deploy).toMatchObject({
+          id: "dep_original",
+          message: "Original release",
+        })
+        expect((yield* loadDeployment("ddddddd")).data?.deploy).toMatchObject({
+          id: "dep_restored",
+        })
+      }),
+    ))
+
   it("keeps paging a live deployment until a target appears, and stops at the history end without one", () =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -308,6 +345,70 @@ describe("deployments client against the live API", () => {
         expect(yield* rollBackDeployment("dep_drained").pipe(Effect.flip)).toMatchObject({
           kind: "NotImplemented",
         })
+      }),
+    ))
+
+  const respond = (path: string, response: () => Response) =>
+    fetch.mockImplementation((input, init) => {
+      const request = input instanceof Request ? input : new Request(String(input), init)
+      const url = new URL(request.url)
+      if (url.pathname.endsWith("/me")) return Promise.resolve(json(JSON.stringify(me)))
+      if (url.pathname.endsWith(path) && request.method === "POST")
+        return Promise.resolve(response())
+      return Promise.resolve(json(JSON.stringify([project])))
+    })
+
+  it("redeploys the viewed deployment and returns the new deployment it started", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        respond("/redeploy", () =>
+          json(
+            JSON.stringify({
+              ...deployment({
+                id: "dep_again",
+                commitSha: "1234567abcdef",
+                status: "in-progress",
+                durationMs: null,
+                createdAt: "2026-10-03T11:00:00.000Z",
+              }),
+              steps: [],
+              runners: [],
+            }),
+          ),
+        )
+        expect(yield* redeployDeployment("dep_live")).toMatchObject({
+          id: "dep_again",
+          commit: "1234567",
+          status: "Rolling out",
+        })
+        const posts = fetch.mock.calls
+          .map(([input, init]) =>
+            input instanceof Request ? input : new Request(String(input), init),
+          )
+          .filter((request) => request.method === "POST")
+        expect(posts.map((request) => new URL(request.url).pathname)).toEqual([
+          "/api/projects/prj_1/deployments/dep_live/redeploy",
+        ])
+      }),
+    ))
+
+  it("surfaces the server's conflict message when a redeploy is refused", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const body = yield* Schema.encodeEffect(Schema.fromJsonString(Conflict))(
+          Conflict.make({ message: "A rollout is already in progress" }),
+        )
+        respond(
+          "/redeploy",
+          () =>
+            new Response(body, { status: 409, headers: { "content-type": "application/json" } }),
+        )
+        expect(yield* redeployDeployment("dep_live").pipe(Effect.flip)).toEqual(
+          expect.objectContaining({
+            kind: "Conflict",
+            message: "A rollout is already in progress",
+          }),
+        )
       }),
     ))
 

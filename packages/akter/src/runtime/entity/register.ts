@@ -26,7 +26,7 @@ import {
 import { Rpc } from "effect/rpc"
 import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable } from "../../errors/actor.ts"
-import { Executed, Outcome, Request } from "../request.ts"
+import { DeliveryFailed, Executed, Outcome, Request } from "../request.ts"
 import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
@@ -58,7 +58,11 @@ import { activationEngine, kickedExecution, workflowCommands } from "../workflow
  */
 const makeCommandEntity = (name: string) =>
   Entity.make(name, [
-    Rpc.make("Execute", { payload: Request, success: Executed, error: ActorError }),
+    Rpc.make("Execute", {
+      payload: Request,
+      success: Executed,
+      error: Schema.Union([ActorError, DeliveryFailed]),
+    }),
     Rpc.make("Wake"),
   ]).annotateRpcs(ClusterSchema.Uninterruptible, true)
 
@@ -139,7 +143,8 @@ interface Waiting {
   readonly request: Request
   /** Resolved against the activation that runs the command, as the worker takes it. */
   command: RegisteredCommand
-  readonly reply: Deferred.Deferred<Executed, ActorError>
+  readonly reply: Deferred.Deferred<Executed, ActorError | DeliveryFailed>
+  admitted?: boolean
   /**
    * The request's own context, under the runtime's services, as the turn ran
    * in before batching: its span is the turn span's parent.
@@ -566,7 +571,18 @@ export const registerActor = Effect.fnUntraced(function* (
           Effect.andThen(
             Effect.forEach(
               batch,
-              (entry) => Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause))),
+              (entry) =>
+                entry.request.external !== true
+                  ? Deferred.failCause(entry.reply, Cause.die(Cause.squash(cause)))
+                  : Deferred.fail(
+                      entry.reply,
+                      DeliveryFailed.make({
+                        error: ActorError.make({
+                          reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
+                        }),
+                        admitted: entry.admitted === true,
+                      }),
+                    ),
               { discard: true },
             ),
           ),
@@ -599,9 +615,17 @@ export const registerActor = Effect.fnUntraced(function* (
             reason: ActorUnavailable.make({ cause: Cause.squash(cause) }),
           })
 
-          yield* Effect.forEach(batch, (entry) => Deferred.fail(entry.reply, unavailable), {
-            discard: true,
-          })
+          yield* Effect.forEach(
+            batch,
+            (entry) =>
+              entry.request.external !== true
+                ? Deferred.fail(entry.reply, unavailable)
+                : Deferred.fail(
+                    entry.reply,
+                    DeliveryFailed.make({ error: unavailable, admitted: entry.admitted === true }),
+                  ),
+            { discard: true },
+          )
         }).pipe(
           Effect.uninterruptible,
           Effect.catchCause((failed) => restart([...batch, ...orphan], failed)),
@@ -728,8 +752,8 @@ export const registerActor = Effect.fnUntraced(function* (
           }
 
           const executed: Executed = done.replays.has(index)
-            ? { outcome, version: done.version, replayed: true }
-            : { outcome, version: done.version }
+            ? { outcome, version: done.version, endedAtMs: done.endedAtMs, replayed: true }
+            : { outcome, version: done.version, endedAtMs: done.endedAtMs }
 
           yield* Deferred.succeed(entry.reply, executed)
         }
@@ -949,7 +973,7 @@ export const registerActor = Effect.fnUntraced(function* (
           const entry: Waiting = {
             request: payload,
             command,
-            reply: Deferred.makeUnsafe<Executed, ActorError>(),
+            reply: Deferred.makeUnsafe<Executed, ActorError | DeliveryFailed>(),
             context: Context.empty(),
             queued: false,
           }

@@ -20,6 +20,7 @@ import {
   CopiedText,
   type Message,
 } from "./message.ts"
+import { canSendCommand } from "./action.ts"
 import type { Dialog, Model } from "./model.ts"
 import { dialogId } from "./update.ts"
 
@@ -227,7 +228,7 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         danger: false,
         ready:
           !model.sendingCommand &&
-          !model.pageSample &&
+          canSendCommand({ page: model.page, sample: model.pageSample }) &&
           (model.fields["command-name"] ?? "").trim() !== "",
       }),
       RollBack: ({ commit }) => ({
@@ -237,6 +238,15 @@ const content = (h: HtmlBuilder<Message>, model: Model, current: Dialog): Dialog
         body: [],
         confirm: "Roll back",
         danger: true,
+        ready: true,
+      }),
+      Redeploy: ({ commit }) => ({
+        title: `Redeploy ${commit}?`,
+        description:
+          "A new deployment builds this commit again and rolls it out. The live deployment keeps serving until the new one is live.",
+        body: [],
+        confirm: "Redeploy",
+        danger: false,
         ready: true,
       }),
       KeyCreated: ({ name, secret }) => ({
