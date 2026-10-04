@@ -12,7 +12,10 @@ From `apps/console`:
 - `bun run dev` serves on `127.0.0.1:${CONSOLE_PORT:-3000}` with live reload.
 - `bun run build` writes the static application to `dist/`.
 - `bun run preview` serves `dist/` on `${CONSOLE_PORT:-3002}`, falling back to `index.html` for
-  client routes. Any static host with the same fallback can serve the build; there is no console
+  client routes. It runs Vite under Node, not `bun --bun`: Bun 1.4's `node:http` replays a pipelined
+  response through the compression middleware Vite preview installs and exits with
+  `ERR_STREAM_WRITE_AFTER_END` ([oven-sh/bun#40350](https://github.com/oven-sh/bun/issues/40350)),
+  which took the e2e preview down mid-run. Any static host with the same fallback can serve the build; there is no console
   server.
 
 ## API and fixture mode
