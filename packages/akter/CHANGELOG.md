@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.0-alpha.0 (unreleased)
+## 0.1.0-alpha.1 (2026-10-04)
+
+The first version published by the release workflow, through npm trusted publishing with provenance. The framework code is unchanged from `0.1.0-alpha.0`.
+
+## 0.1.0-alpha.0 (2026-10-04)
 
 The first published build of Akter, on the `alpha` npm dist-tag. It is an **alpha for a single runner**: run one runtime process per database, and expect APIs and stored formats to change between alphas without a migration path.
 
