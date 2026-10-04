@@ -8,6 +8,7 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@akter/cloud-api": "workspace:*",
     "@akter/console": "workspace:*",
     "@playwright/test": "1.63.0",
     "effect": "catalog:"

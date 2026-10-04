@@ -3,7 +3,6 @@ import type {
   ApiKey as CloudApiKey,
   AuditEntry as CloudAuditEntry,
   BillingSummary,
-  Plan,
   Domain as CloudDomain,
   EnvVariable,
   Environment,
@@ -200,17 +199,34 @@ export const toRegionChoices = (input: {
   return [...inUse, ...available]
 }
 
-export const toBilling = (billing: BillingSummary & { readonly plan: Plan }): Billing => ({
-  plan: {
-    id: billing.plan.id,
-    name: billing.plan.name,
-    subscribed: billing.plan.subscribedId ?? billing.plan.id,
-    paymentStatus: billing.plan.paymentStatus ?? null,
-    basePriceCents: billing.plan.basePriceCents,
-    provisional: billing.plan.provisional ?? false,
-    renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
-    monthToDateCents: billing.plan.monthToDateEstimateCents,
-  },
+/**
+ * The billing page's model has no unbound plan: an unbound organization is recognised by its caps'
+ * `unbound` reason, so its plan maps to the Free-shaped placeholder the page already ignores in
+ * that state rather than to an offer the organization holds.
+ */
+export const toBilling = (billing: BillingSummary): Billing => ({
+  plan:
+    "id" in billing.plan
+      ? {
+          id: billing.plan.id,
+          name: billing.plan.name,
+          subscribed: billing.plan.subscribedId ?? billing.plan.id,
+          paymentStatus: billing.plan.paymentStatus ?? null,
+          basePriceCents: billing.plan.basePriceCents,
+          provisional: billing.plan.provisional ?? false,
+          renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
+          monthToDateCents: billing.plan.monthToDateEstimateCents,
+        }
+      : {
+          id: "free",
+          name: "Free",
+          subscribed: "free",
+          paymentStatus: "free",
+          basePriceCents: 0,
+          provisional: false,
+          renewsAt: null,
+          monthToDateCents: billing.spendLimit.currentSpendCents,
+        },
   card:
     billing.paymentMethod === null
       ? null

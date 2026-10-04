@@ -313,13 +313,7 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<Loaded<SettingsPag
         Effect.gen(function* () {
           const { organization: current } = yield* organization
           const billing = yield* api.billing.get({ params: { organizationId: current.id } })
-          const { plan } = billing
-          if (!("id" in plan))
-            return yield* ConsoleError.make({
-              kind: "Unavailable",
-              message: "This organization has no billing account yet.",
-            })
-          return { billing: toBilling({ ...billing, plan }) }
+          return { billing: toBilling(billing) }
         }).pipe(Effect.catchTag("Unavailable", billingUnavailable)),
         (fixtures) => fixtures.billingSlice,
       ),
