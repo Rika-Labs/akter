@@ -13,10 +13,34 @@ import { windowSeconds } from "./time.ts"
 
 /** Recent deploys shared by the overview and the deployments list. Fixture data. */
 export const recentDeploys: ReadonlyArray<DeploySummary> = [
-  { commit: "a3f9c21", message: "Add refunds to Order", status: "Live", when: "2h" },
-  { commit: "77be010", message: "Tune Cart idle timeout", status: "Drained", when: "1d" },
-  { commit: "5d2e7c3", message: "Bump Effect", status: "Rolled back", when: "2d" },
-  { commit: "1c0d4a8", message: "SupportRoom presence", status: "Drained", when: "3d" },
+  {
+    id: "dep_a3f9c21",
+    commit: "a3f9c21",
+    message: "Add refunds to Order",
+    status: "Live",
+    when: "2h",
+  },
+  {
+    id: "dep_77be010",
+    commit: "77be010",
+    message: "Tune Cart idle timeout",
+    status: "Drained",
+    when: "1d",
+  },
+  {
+    id: "dep_5d2e7c3",
+    commit: "5d2e7c3",
+    message: "Bump Effect",
+    status: "Rolled back",
+    when: "2d",
+  },
+  {
+    id: "dep_1c0d4a8",
+    commit: "1c0d4a8",
+    message: "SupportRoom presence",
+    status: "Drained",
+    when: "3d",
+  },
 ]
 
 const latencyBounds: ReadonlyArray<number | null> = [1, 2, 5, 10, 25, 50, 100, 250, 1000, null]

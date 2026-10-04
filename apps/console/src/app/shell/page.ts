@@ -1,6 +1,6 @@
 import { Effect, Option, Schema as S } from "effect"
 import { fixturesEnabled, type ConsoleError, type Loaded } from "../api/client.ts"
-import { ActorPage, ActorTypePage, ActorsPage } from "../actors/model.ts"
+import { ActorPage, ActorTypePage, ActorsPage, MissingActorPage } from "../actors/model.ts"
 import { loadActor, loadActorType, loadActors } from "../actors/client.ts"
 import { loadInvitation } from "../auth/client.ts"
 import { InvitationPage } from "../auth/model.ts"
@@ -30,6 +30,7 @@ export const PageData = S.Union([
   ActorsPage,
   ActorTypePage,
   ActorPage,
+  MissingActorPage,
   CommandsPage,
   JobsPage,
   WorkflowsPage,

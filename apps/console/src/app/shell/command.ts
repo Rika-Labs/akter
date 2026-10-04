@@ -1,5 +1,5 @@
 import { closeDialog, openDialog } from "@akter/ui"
-import { Duration, Effect, Match, Schema as S } from "effect"
+import { Cause, Duration, Effect, Match, Option, Predicate, Schema as S } from "effect"
 import * as Command from "foldkit/command"
 import * as Navigation from "foldkit/navigation"
 import {
@@ -36,6 +36,8 @@ import {
   DismissedToast,
   FailedAction,
   FailedMutation,
+  ChangedDeployment,
+  FailedDeploymentChange,
   AnsweredCommand,
   FailedCommand,
   PreparedCommandId,
@@ -350,7 +352,7 @@ export const SendActorCommand = Command.define("SendActorCommand", {
     ),
 })
 
-/** A fresh id on opening makes an interrupted send safe to retry without changing its receipt key. */
+/** Mints the command ID of a new submission; retrying that submission reuses it, so it runs at most once. */
 export const NewCommandId = Command.define("NewCommandId", {
   args: { session: S.Finite },
   messages: [PreparedCommandId, FailedCommand],
@@ -370,6 +372,7 @@ const choose = <A>(schema: S.Codec<A, string>, value: string, message: string) =
 
 type Settled =
   | ReturnType<typeof Mutated>
+  | ReturnType<typeof ChangedDeployment>
   | ReturnType<typeof CreatedKey>
   | ReturnType<typeof CompletedAuth>
   | ReturnType<typeof CompletedEffect>
@@ -514,24 +517,22 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
         discardDeadLetter(id).pipe(
           Effect.andThen(done(`Discarded ${id}`, "The job will not run again.")),
         ),
-      RollBack: ({ id, commit }) =>
+      RollBack: ({ id }) =>
         rollBackDeployment(id).pipe(
           Effect.map(({ deploy }) =>
-            CompletedAuth({
+            ChangedDeployment({
               href: Routes.deployment({ deployment: deploy.id }),
-              refresh: true,
-              title: `Rolling back to ${commit}`,
-              description: "The live deployment keeps serving until the new one is live.",
+              title: deploy.message,
+              description: "Rolling out now. The live deployment keeps serving until it’s live.",
             }),
           ),
         ),
-      Redeploy: ({ id, commit }) =>
+      Redeploy: ({ id }) =>
         redeployDeployment(id).pipe(
           Effect.map((deploy) =>
-            CompletedAuth({
+            ChangedDeployment({
               href: Routes.deployment({ deployment: deploy.id }),
-              refresh: true,
-              title: `Redeploying ${commit}`,
+              title: deploy.message,
               description: "The new deployment is building.",
             }),
           ),
@@ -539,14 +540,39 @@ const perform = (action: Action): Effect.Effect<Settled, ConsoleError> =>
     }),
   )
 
-/** Runs one change through the cloud API; a refusal becomes a message the shell shows, never a silent success. */
+/**
+ * Runs one change through the cloud API; a refusal becomes a message the shell shows, never a silent
+ * success. Every other ending, a defect or an interruption inside the change included, is reported
+ * too, and a rollback or redeploy that did not succeed has its own message, so the shell always
+ * releases the deployment change it was holding.
+ */
 export const Mutate = Command.define("Mutate", {
   args: { action: Action },
-  messages: [Mutated, CreatedKey, CompletedAuth, CompletedEffect, FailedMutation],
+  messages: [
+    Mutated,
+    ChangedDeployment,
+    CreatedKey,
+    CompletedAuth,
+    CompletedEffect,
+    FailedMutation,
+    FailedDeploymentChange,
+  ],
   execute: ({ action }) =>
     Effect.suspend(() =>
       fixturesEnabled()
         ? Effect.fail(ConsoleError.make({ kind: "Sample", message: "Sample data is read-only." }))
         : perform(action),
-    ).pipe(Effect.catch((error) => Effect.succeed(FailedMutation({ message: error.message })))),
+    ).pipe(
+      Effect.catchCause((cause) => {
+        const message = Option.match(Cause.findErrorOption(cause), {
+          onNone: () => "The change didn’t finish. Reload to see where it stands.",
+          onSome: (error) => error.message,
+        })
+        return Effect.succeed(
+          Predicate.isTagged(action, "RollBack") || Predicate.isTagged(action, "Redeploy")
+            ? FailedDeploymentChange({ message })
+            : FailedMutation({ message }),
+        )
+      }),
+    ),
 })
