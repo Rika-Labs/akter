@@ -7,7 +7,7 @@ import type { Message } from "../shell/message.ts"
 import type { Model } from "../shell/model.ts"
 import { init } from "../shell/update.ts"
 import { workspace } from "../workspace/fixtures.ts"
-import type { CapState } from "@akter/cloud-api"
+import { type CapState, UnboundPlan } from "@akter/cloud-api"
 import { plansSlice } from "./fixtures.ts"
 import { emptySettings, type Billing, type SettingsPage, type Usage } from "./model.ts"
 import { billingScreen, usageScreen } from "./organization.ts"
@@ -58,6 +58,13 @@ const unboundCaps: ReadonlyArray<CapState> = freeCaps(0).map((cap) => ({
   refusing: true,
   reason: "unbound",
 }))
+
+/** An organization without a billing account, as billing reports it: no plan and every cap unbound. */
+const unbound: Billing = {
+  ...free,
+  plan: UnboundPlan.make({}),
+  caps: unboundCaps,
+}
 
 const usage = (commandsUsed: number): Usage => ({
   period: "2026-10",
@@ -163,7 +170,7 @@ describe("billing", () => {
   it("never calls an organization without a billing account Free", () =>
     scene(
       billingScreen,
-      { ...emptySettings, billing: { ...free, caps: unboundCaps }, plans, usage: usage(0) },
+      { ...emptySettings, billing: unbound, plans, usage: usage(0) },
       Scene.expect(Scene.text("Billing isn’t set up")).toExist(),
       Scene.expect(
         Scene.text(
@@ -176,13 +183,36 @@ describe("billing", () => {
       Scene.expect(Scene.text("Applies once you’re on a paid plan.")).toExist(),
     ))
 
-  it("reads an unbound organization from billing's own caps, even without usage", () =>
+  it("reads an unbound organization from billing's own plan, even without usage", () =>
     scene(
       billingScreen,
-      { ...emptySettings, billing: { ...free, caps: unboundCaps }, plans },
+      { ...emptySettings, billing: unbound, plans },
       Scene.expect(Scene.text("Billing isn’t set up")).toExist(),
       Scene.expect(Scene.text("Included")).toBeAbsent(),
       Scene.expect(Scene.role("note")).toBeAbsent(),
+    ))
+
+  it("shows an unbound organization no price, estimate or allowance of its own", () =>
+    scene(
+      billingScreen,
+      { ...emptySettings, billing: unbound, plans, usage: usage(0) },
+      Scene.expect(Scene.text("This month so far")).toBeAbsent(),
+      Scene.expect(Scene.text("No monthly charge")).toBeAbsent(),
+      Scene.expect(Scene.text("Choose a plan")).toExist(),
+      Scene.expect(Scene.role("button", { name: "Continue to checkout" })).toExist(),
+    ))
+
+  it("says calmly that an unknown plan isn't recognised instead of failing or pricing it", () =>
+    scene(
+      billingScreen,
+      { ...emptySettings, unknownPlan: true, plans },
+      Scene.expect(Scene.text("Plan not recognised")).toExist(),
+      Scene.expect(
+        Scene.text("This organization’s plan isn’t recognised. Contact support."),
+      ).toExist(),
+      Scene.expect(Scene.text("Billing isn’t set up")).toBeAbsent(),
+      Scene.expect(Scene.role("button", { name: "Continue to checkout" })).toBeAbsent(),
+      Scene.expect(Scene.label("Monthly spend limit")).toBeAbsent(),
     ))
 
   it("names the plan from the billing response instead of assuming Free", () =>
@@ -303,6 +333,38 @@ describe("usage", () => {
       Scene.expect(Scene.selector("div")).not.toContainText("of 1M"),
       Scene.expect(Scene.selector("div")).not.toContainText("of 0.5 GB"),
       Scene.expect(Scene.selector("div")).not.toContainText("Nothing included"),
+    ))
+
+  it("lets no allowance or price Free's pricing gives an unbound organization leak", () =>
+    scene(
+      usageScreen,
+      {
+        ...emptySettings,
+        usage: {
+          ...usage(12),
+          caps: unboundCaps,
+          meters: usage(12).meters.map((meter) => ({ ...meter, overageCostCents: 700 })),
+          projects: [
+            { id: "prj_1", name: "storefront", commands: 12, reads: 15, estimatedCostCents: 1_234 },
+          ],
+        },
+      },
+      Scene.expect(Scene.selector("div")).not.toContainText("$"),
+      Scene.expect(Scene.selector("div")).not.toContainText("provisional"),
+      Scene.expect(Scene.selector("div")).not.toContainText("allowance"),
+      Scene.expect(Scene.selector("div")).not.toContainText("per GB"),
+      Scene.expect(Scene.role("columnheader", { name: "Estimate" })).toBeAbsent(),
+      Scene.expect(Scene.role("table", { name: "Usage by project" })).toContainText("storefront"),
+    ))
+
+  it("says calmly that an unknown plan isn't recognised instead of showing usage", () =>
+    scene(
+      usageScreen,
+      { ...emptySettings, unknownPlan: true },
+      Scene.expect(
+        Scene.text("This organization’s plan isn’t recognised. Contact support."),
+      ).toExist(),
+      Scene.expectAll(Scene.all.role("meter")).toHaveCount(0),
     ))
 
   it("shows the latest storage sample and the storage cap the edge refuses at", () =>

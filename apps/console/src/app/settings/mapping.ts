@@ -1,24 +1,25 @@
-import type {
-  ActorReference,
-  ApiKey as CloudApiKey,
-  AuditEntry as CloudAuditEntry,
-  BillingSummary,
-  Domain as CloudDomain,
-  EnvVariable,
-  Environment,
-  Integration as CloudIntegration,
-  IntegrationKind,
-  Invitation,
-  Invoice as CloudInvoice,
-  Member as CloudMember,
-  Organization,
-  PlanCatalog,
-  Project,
-  ProjectEndpoints,
-  Region,
-  Role,
-  Usage as CloudUsage,
-  UsageMeterName,
+import {
+  type ActorReference,
+  type ApiKey as CloudApiKey,
+  type AuditEntry as CloudAuditEntry,
+  type BillingSummary,
+  type Domain as CloudDomain,
+  type Environment,
+  type EnvVariable,
+  type Integration as CloudIntegration,
+  type IntegrationKind,
+  type Invitation,
+  type Invoice as CloudInvoice,
+  type Member as CloudMember,
+  type Organization,
+  type PlanCatalog,
+  type Project,
+  type ProjectEndpoints,
+  type Region,
+  type Role,
+  UnboundPlan,
+  type Usage as CloudUsage,
+  type UsageMeterName,
 } from "@akter/cloud-api"
 import { DateTime, Option, Schema } from "effect"
 import {
@@ -44,6 +45,8 @@ import {
 import { browserContext, hostedPageUrl } from "./stripe.ts"
 
 const millis = (instant: DateTime.Utc): number => DateTime.toEpochMillis(instant)
+
+const isUnboundPlan = Schema.is(UnboundPlan)
 
 /** The name to show for who did something; a nameless key is still known to be a key. */
 export const actorName = (actor: ActorReference): string | null =>
@@ -199,34 +202,20 @@ export const toRegionChoices = (input: {
   return [...inUse, ...available]
 }
 
-/**
- * The billing page's model has no unbound plan: an unbound organization is recognised by its caps'
- * `unbound` reason, so its plan maps to the Free-shaped placeholder the page already ignores in
- * that state rather than to an offer the organization holds.
- */
+/** An organization without a billing account keeps its `unbound` plan, which has no price or allowances. */
 export const toBilling = (billing: BillingSummary): Billing => ({
-  plan:
-    "id" in billing.plan
-      ? {
-          id: billing.plan.id,
-          name: billing.plan.name,
-          subscribed: billing.plan.subscribedId ?? billing.plan.id,
-          paymentStatus: billing.plan.paymentStatus ?? null,
-          basePriceCents: billing.plan.basePriceCents,
-          provisional: billing.plan.provisional ?? false,
-          renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
-          monthToDateCents: billing.plan.monthToDateEstimateCents,
-        }
-      : {
-          id: "free",
-          name: "Free",
-          subscribed: "free",
-          paymentStatus: "free",
-          basePriceCents: 0,
-          provisional: false,
-          renewsAt: null,
-          monthToDateCents: billing.spendLimit.currentSpendCents,
-        },
+  plan: isUnboundPlan(billing.plan)
+    ? billing.plan
+    : {
+        id: billing.plan.id,
+        name: billing.plan.name,
+        subscribed: billing.plan.subscribedId ?? billing.plan.id,
+        paymentStatus: billing.plan.paymentStatus ?? null,
+        basePriceCents: billing.plan.basePriceCents,
+        provisional: billing.plan.provisional ?? false,
+        renewsAt: billing.plan.renewsAt === null ? null : millis(billing.plan.renewsAt),
+        monthToDateCents: billing.plan.monthToDateEstimateCents,
+      },
   card:
     billing.paymentMethod === null
       ? null

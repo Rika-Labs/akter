@@ -17,6 +17,7 @@ import {
   type ProjectId,
   type RegionId,
   Role,
+  type Unavailable,
   type UpdatePreferences,
   UpdateOrganization,
   UpdateProfile,
@@ -370,19 +371,21 @@ export const loadSettings = (route?: AppRoute): Effect.Effect<Loaded<SettingsPag
   })
 
 /**
- * Billing and usage answer `Unavailable` when the organization's plan is missing from the pricing
- * configuration, an operator fault the edge refuses work for too. The error carries no reason
- * beyond its message, so every `Unavailable` from these reads is worded the same calm way rather
- * than as a lost connection.
+ * Billing and usage answer `Unavailable` with reason `unknownPlan` when the organization's stored
+ * plan is missing from the pricing configuration, an operator fault the edge refuses work for too
+ * and retrying won't clear, so the page loads and says so. Any other `Unavailable` is an outage,
+ * worded calmly as billing being unreadable for now rather than as a lost connection.
  */
-const billingUnavailable = () =>
-  Effect.fail(
-    ConsoleError.make({
-      kind: "Unavailable",
-      message:
-        "Billing can’t be read right now, so plan and usage figures aren’t shown. Try again in a minute.",
-    }),
-  )
+const billingUnavailable = (error: Unavailable) =>
+  error.reason === "unknownPlan"
+    ? Effect.succeed<SettingsSlice>({ unknownPlan: true })
+    : Effect.fail(
+        ConsoleError.make({
+          kind: "Unavailable",
+          message:
+            "Billing can’t be read right now, so plan and usage figures aren’t shown. Try again in a minute.",
+        }),
+      )
 
 const sampleRegions = () =>
   import("./fixtures.ts").then(({ regionsSlice }) => regionsSlice.regions ?? [])
@@ -574,18 +577,21 @@ export const connectIntegration = (input: {
   ).pipe(Effect.map((connection) => ({ redirectUrl: connection.redirectUrl })))
 
 /**
- * Saves the spend limit. The control plane can store it and still answer `Unavailable` when it
- * cannot price the organization's plan, so that answer says the save is unconfirmed, not failed.
+ * Saves the spend limit. The control plane checks the organization's plan before storing anything,
+ * so an `unknownPlan` answer means the limit was not saved. Any other `Unavailable` may come after
+ * the write, so that answer says the save is unconfirmed, not failed.
  */
 export const setSpendLimit = (limitCents: number | null): Effect.Effect<void, ConsoleError> =>
   inOrganization((api, organizationId) =>
     api.billing.setSpendLimit({ params: { organizationId }, payload: { limitCents } }).pipe(
-      Effect.catchTag("Unavailable", () =>
+      Effect.catchTag("Unavailable", (error) =>
         Effect.fail(
           ConsoleError.make({
             kind: "Unavailable",
             message:
-              "Billing couldn’t confirm the spend limit right now. Reload in a minute to see whether it was saved.",
+              error.reason === "unknownPlan"
+                ? "This organization’s plan isn’t recognised, so the spend limit wasn’t saved. Contact support."
+                : "Billing couldn’t confirm the spend limit right now. Reload in a minute to see whether it was saved.",
           }),
         ),
       ),

@@ -19,6 +19,7 @@ import {
   toggleFields,
 } from "../settings/keys.ts"
 import { slugify } from "../auth/model.ts"
+import { billedPlan } from "../settings/model.ts"
 import { spendLimitReached } from "../quota/model.ts"
 import { AppRoute, isAuthRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
@@ -564,7 +565,7 @@ const submit = (model: Model, form: string): Result => {
       const billing = page?.billing
       if (billing == null) return unavailable(model, "Another plan")
       const choices = planChoices({
-        subscribed: billing.plan.subscribed,
+        subscribed: billedPlan(billing)?.subscribed ?? null,
         plans: page?.plans ?? null,
       })
       const choice = choices.find(({ plan }) => plan === model.choices[planChoiceKey]) ?? choices[0]
