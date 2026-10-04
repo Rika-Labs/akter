@@ -190,6 +190,14 @@ Signed out: `/sign-in`, `/sign-up`, `/verify-email`, `/forgot-password`, `/reset
 
 Emailed invitation links use `/invitations/:id`; the earlier compatibility URL is no longer routed.
 
+Device sign-in: `/device?user_code=` is where a signed-in person approves the code `akter login`
+printed. The link only fills the field; the code is looked up through Better Auth's `GET
+/auth/device` when the person continues, which binds it to their account, and only then does the
+page show the code, the client, the account and active organization, and Approve or Deny
+(`POST /auth/device/approve` and `/deny`). An unknown, expired, already used, foreign, rate-limited
+or unanswered code shows its own state and no Approve. A signed-out visitor signs in first and comes
+back with the code.
+
 Project: `/` (overview), `/projects/:slug` (empty project when undeployed), `/actors`,
 `/actors/:type`, `/actors/:type/:key?tab=state|rows|receipts|events|jobs|connections`,
 `/commands`, `/jobs`, `/workflows`, `/connections`, `/deployments`, `/deployments/:deployment` (an id or a commit),
