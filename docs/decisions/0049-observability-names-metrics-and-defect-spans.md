@@ -18,6 +18,8 @@ The runtime already emits spans through Effect's tracer, so any Effect exporter 
 
 ## Decision
 
+**Replay attribution amended by [ADR 0072](0072-served-command-in-two-round-trips.md):** replays resolve within the fenced turn, so the turn carries `turn.replayed=true` and `turn.outcome=replay`. The admission span no longer answers the receipt directly or sets `admission.replayed`.
+
 ### 1. Span names are public and bounded
 
 | Span                            | Where                                          | Kind     |

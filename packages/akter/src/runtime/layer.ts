@@ -37,7 +37,7 @@ import {
 } from "../errors/actor.ts"
 import { Actors } from "../handles/actors.ts"
 import { type JobRegistration, type QueryRegistration, type Registration } from "./members.ts"
-import type { Executed, Request } from "./request.ts"
+import { DeliveryFailed, type Executed, type Request } from "./request.ts"
 import { InternalActors } from "./actors.ts"
 import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import type { AccessRequest } from "../policies/access.ts"
@@ -57,7 +57,7 @@ import { holderShardGroups, holderTransport, type Transport } from "./connection
 import { type ProgressMessage, ProgressSink, ProgressTap } from "./jobs/progress.ts"
 import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
-import { checkIdentity, databaseTime, FrameworkClock, readAdmission } from "./turn/admission.ts"
+import { checkIdentity, databaseTime, FrameworkClock } from "./turn/admission.ts"
 import { routingKey } from "./storage/codec.ts"
 import { recordedPlacement } from "./storage/placements.ts"
 import { TurnHooks } from "./turn/hooks.ts"
@@ -65,7 +65,6 @@ import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
 import { DefectLog, boundedDefectLog } from "./telemetry/defects.ts"
 import { OperatorRuntime, operatorRuntime } from "./operators/repair.ts"
 import { seedRuntime } from "./operators/seed.ts"
-import { count, Metrics } from "./telemetry/metrics.ts"
 import { TelemetrySampler } from "./telemetry/sampler.ts"
 import { TurnConnections, turnConnections } from "./turn/pipeline.ts"
 import { outboxRelay } from "./turn/relay.ts"
@@ -77,7 +76,7 @@ import {
 import type { Placement } from "./storage/codec.ts"
 import { DEFAULT_WRITER_WINDOW_MS, refreshWriters } from "./payloads/versions.ts"
 import type { PayloadDeclaration } from "../members/payload.ts"
-import { ExecutionTarget, INTERRUPT, RESUME } from "../handles/workflow.ts"
+import { ExecutionTarget, INTERRUPT } from "../handles/workflow.ts"
 import { decodeExecutionId } from "../identity/execution.ts"
 import {
   coordinatedRunnerStorage,
@@ -94,7 +93,6 @@ import { MAX_CONTENT_BYTES, tenantContent } from "./content/store.ts"
 import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
-import { checkReceipt } from "./turn/receipt.ts"
 import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
@@ -589,9 +587,18 @@ export const layer = (options: Options = {}) => {
           return yield* ActorError.make({ reason: Unauthorized.make({ code: "access_denied" }) })
       })
 
-      const authorize = Effect.fnUntraced(function* (request: Request) {
+      /**
+       * Rechecks access and expiry before an external caller gets its outcome.
+       * `endedAtMs` is the clock the turn read after its transaction ended;
+       * an outcome without one, a defect, reads the clock again.
+       */
+      const authorize = Effect.fnUntraced(function* (request: Request, endedAtMs?: number) {
         yield* allow(request, "command")
-        yield* checkIdentity(request.commandId, retryWindowMs, yield* databaseTime)
+        yield* checkIdentity(
+          request.commandId,
+          retryWindowMs,
+          endedAtMs === undefined ? yield* databaseTime : endedAtMs + frameworkClock.offsetMillis(),
+        )
       })
 
       const refreshing = Semaphore.makeUnsafe(1)
@@ -697,6 +704,8 @@ export const layer = (options: Options = {}) => {
               external &&
               (request.intent !== undefined ||
                 request.delivery !== undefined ||
+                request.redelivered !== undefined ||
+                request.clockOffset !== undefined ||
                 (Schema.is(System)(request.caller) &&
                   (request.caller.mint !== undefined || request.caller.source === "subscription")))
             )
@@ -704,53 +713,49 @@ export const layer = (options: Options = {}) => {
                 reason: Unauthorized.make({ code: "access_denied" }),
               })
 
-            if (external) yield* allow(request, "command")
-
-            const admission = yield* readAdmission(
-              request,
-              routingKey({ ref: request.ref, placement: registration.placement }),
-            ).pipe(
-              Effect.tapError(() =>
-                external
-                  ? Effect.flatMap(databaseTime, (now) =>
-                      checkIdentity(request.commandId, retryWindowMs, now),
-                    )
-                  : Effect.void,
-              ),
-            )
-
-            if (external) yield* checkIdentity(request.commandId, retryWindowMs, admission.now)
-
-            if (admission.receipt !== undefined && request.command !== RESUME) {
-              const retained = yield* checkReceipt(request, admission.hash, admission.receipt)
-
-              yield* Effect.annotateCurrentSpan({ "admission.replayed": true })
-              yield* count(Metrics.receiptsReplayed, { actor_type: request.ref.actor }, 1)
-
-              if (external) yield* authorize(request)
-
-              return {
-                outcome: retained,
-                version: admission.version,
-                replayed: true,
-              } satisfies Executed
+            if (external) {
+              yield* allow(request, "command")
+              yield* checkIdentity(request.commandId, retryWindowMs)
             }
 
             const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
 
             yield* (yield* TurnHooks).at("beforeDelivery", request)
 
+            let admitted = false
+
             const deliver = Clock.currentTimeMillis.pipe(
               Effect.flatMap((queuedAtMs) =>
                 client
                   .Execute(
-                    external ? { ...request, external, queuedAtMs } : { ...request, queuedAtMs },
+                    !external
+                      ? { ...request, queuedAtMs }
+                      : !admitted
+                        ? {
+                            ...request,
+                            external,
+                            clockOffset: frameworkClock.offsetMillis(),
+                            queuedAtMs,
+                          }
+                        : {
+                            ...request,
+                            external,
+                            redelivered: true,
+                            clockOffset: frameworkClock.offsetMillis(),
+                            queuedAtMs,
+                          },
                   )
                   .pipe(Effect.forkIn(scope)),
               ),
               Effect.flatMap(Fiber.join),
               Effect.catchCause((cause) => {
                 const failure = Cause.findErrorOption(cause)
+
+                if (Option.isSome(failure) && Schema.is(DeliveryFailed)(failure.value)) {
+                  admitted ||= failure.value.admitted
+
+                  return Effect.fail(failure.value.error)
+                }
 
                 if (Option.isSome(failure) && Schema.is(ActorError)(failure.value))
                   return Effect.fail(failure.value)
@@ -787,7 +792,7 @@ export const layer = (options: Options = {}) => {
 
             const executed = yield* retrying(0)
 
-            if (external) yield* authorize(request)
+            if (external) yield* authorize(request, executed.endedAtMs)
 
             return executed
           }).pipe(

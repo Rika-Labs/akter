@@ -104,3 +104,56 @@ export const statementLog = (): StatementLog => {
 
   return log
 }
+
+const SSL_REQUEST = 80877103
+const GSS_REQUEST = 80877104
+const SYNC = 0x53
+const QUERY = 0x51
+
+/**
+ * Counts the statements a client sends on one Postgres connection from its
+ * protocol messages, for a relay that sees every byte the client writes:
+ * every extended-protocol statement ends its cycle with one Sync, and a
+ * simple query is one Query message. The startup and encryption requests
+ * that open a connection carry no type byte and are skipped.
+ */
+export const wireStatements = () => {
+  let started = false
+  let pending: Buffer = Buffer.alloc(0)
+
+  return (chunk: Buffer) => {
+    let statements = 0
+    pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk])
+
+    while (true) {
+      if (!started) {
+        if (pending.length < 8 || pending.length < pending.readInt32BE(0)) return statements
+
+        const code = pending.readInt32BE(4)
+        started = code !== SSL_REQUEST && code !== GSS_REQUEST
+        pending = pending.subarray(pending.readInt32BE(0))
+        continue
+      }
+
+      if (pending.length < 5 || pending.length < 1 + pending.readInt32BE(1)) return statements
+
+      if (pending[0] === SYNC || pending[0] === QUERY) statements += 1
+      pending = pending.subarray(1 + pending.readInt32BE(1))
+    }
+  }
+}
+
+/**
+ * What one external command to a warm activation costs across every pool,
+ * derived from the turn's two groups rather than measured. The admission
+ * flight sends `BEGIN`, the timeout `set_config`, and the fenced read that
+ * resolves the receipt. A command that runs its handler and dirties one key
+ * then sends the state upsert, the receipt insert, `COMMIT`, and the read of
+ * the commit version and the clock its expiry recheck uses: 2 flights and 7
+ * statements. A replay sends `ROLLBACK` and that same read instead: 2 flights
+ * and 5 statements. Nothing is read before delivery or after the turn.
+ */
+export const SERVED_COMMAND = {
+  warm: { flights: 2, statements: 7 },
+  replay: { flights: 2, statements: 5 },
+} as const

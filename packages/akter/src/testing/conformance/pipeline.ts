@@ -26,6 +26,7 @@ import { TurnPoolSettings } from "../../runtime/turn/pipeline.ts"
 import { ActorTest, ClusterMember } from "../actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
+import { SERVED_COMMAND, wireStatements } from "./statements.ts"
 
 const marks = Actor.table(pgTable("pipeline_marks", { id: text("id").primaryKey() }))
 
@@ -89,6 +90,8 @@ interface TestHooks {
 interface Probe {
   /** Client writes sent after the server last answered: one per round trip. */
   flights: number
+  /** Statements the client sent, counted from its protocol messages. */
+  statements: number
   /** The client bytes of each flight, in order. */
   readonly sent: Array<Buffer>
   handled: number
@@ -214,6 +217,7 @@ const relay = (url: URL, probe: Probe) =>
         let answered = true
         let losing = false
         let replies = Buffer.alloc(0)
+        const statementsOf = wireStatements()
 
         sockets.add(client)
         sockets.add(upstream)
@@ -224,6 +228,8 @@ const relay = (url: URL, probe: Probe) =>
             probe.flights += 1
             probe.sent.push(chunk)
           } else probe.sent[probe.sent.length - 1] = Buffer.concat([probe.sent.at(-1)!, chunk])
+
+          probe.statements += statementsOf(chunk)
 
           if (armed && chunk.includes("COMMIT")) {
             armed = false
@@ -318,7 +324,7 @@ const withProbe = <A, E>(
           if (!Redacted.isRedacted(database))
             return yield* Effect.die(new Error("The pipeline cases need a Postgres database"))
 
-          const probe: Probe = { flights: 0, sent: [], handled: 0 }
+          const probe: Probe = { flights: 0, statements: 0, sent: [], handled: 0 }
           const relayed = yield* relay(new URL(Redacted.value(database)), probe)
           const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
 
@@ -355,12 +361,14 @@ const withProbe = <A, E>(
 const flightsOf = <A, E, R>(probe: Probe, effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const before = probe.flights
+    const statements = probe.statements
     const sent = probe.sent.length
     const value = yield* effect
 
     return {
       value,
       flights: probe.flights - before,
+      statements: probe.statements - statements,
       sent: probe.sent.slice(sent),
     }
   })
@@ -433,6 +441,44 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "pipeline: a command and its replay each take two round trips across every pool, reading nothing before delivery or after the turn",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { everyPool: true }, (probe) =>
+        Effect.gen(function* () {
+          const meter = yield* Plain.get("every-pool")
+          yield* meter.Add(1)
+          yield* meter.Add(1)
+
+          const actors = yield* Actors
+
+          const fewest = <A, E, R>(effects: ReadonlyArray<Effect.Effect<A, E, R>>) =>
+            Effect.map(
+              Effect.forEach(effects, (effect) => flightsOf(probe, effect)),
+              (costs) => ({
+                values: costs.map(({ value }) => value),
+                flights: Math.min(...costs.map(({ flights }) => flights)),
+                statements: Math.min(...costs.map(({ statements }) => statements)),
+              }),
+            )
+
+          const ids = yield* Effect.forEach(Array.from({ length: 5 }), () => actors.mintCommandId)
+          const warm = yield* fewest(ids.map((id) => meter.Add(1).pipe(Actor.commandId(id))))
+          expect(warm).toEqual({ values: [3, 4, 5, 6, 7], ...SERVED_COMMAND.warm })
+
+          const id = yield* actors.mintCommandId
+          expect(yield* meter.Add(10).pipe(Actor.commandId(id))).toBe(17)
+          const handled = probe.handled
+
+          const replay = yield* fewest(
+            Array.from(ids, () => meter.Add(10).pipe(Actor.commandId(id))),
+          )
+          expect(replay).toEqual({ values: [17, 17, 17, 17, 17], ...SERVED_COMMAND.replay })
+          expect(probe.handled).toBe(handled)
+        }),
+      ),
+  },
+  {
     name: "pipeline: each awaited handler statement adds one round trip on the turn session",
     requiresIndependentConnections: true,
     run: ({ expect, environment }) =>
@@ -482,6 +528,8 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
                 "INSERT INTO actor_state",
                 "INSERT INTO actor_receipts",
                 "COMMIT",
+                "pg_current_wal_insert_lsn()",
+                "clock_timestamp()",
               ]),
             ),
           ).toBe(true)
@@ -499,6 +547,8 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
                 "INSERT INTO actor_state",
                 "INSERT INTO actor_receipts",
                 "COMMIT",
+                "pg_current_wal_insert_lsn()",
+                "clock_timestamp()",
               ]),
             ),
           ).toBe(true)
