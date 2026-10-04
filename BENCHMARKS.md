@@ -37,7 +37,38 @@ The latency cohorts had zero measured errors and no refusals. Sequential command
 
 With one runner, `main` served 44% more commands with 64 callers than `b8aa892d7`, and p50 and p99 fell 31% and 35%. With 256 callers, admitted throughput rose 45%, and admitted p99 fell from 180 to 123 ms. It refused a smaller share of attempts, 34.9% against 40.4%, and refusal p99 fell from 71 to 38 ms. Two runner processes on the same three CPUs served 2,054 commands/s, 1.42× the single-runner median, with p99 113 ms against 103 ms.
 
-The sequential cohort is inconclusive this round. The same `b8aa892d7` commit measured 653 op/s (median) with p99 4.9 ms in the previous section, and 540 op/s with p99 10.7 ms here. Two of the three candidate repeats had p99 31–41 ms while their p50 stayed near 1.4–2.0 ms. ADR 0084 never delays a lone command, and a single key cannot form a group. `IO:WalSync` waits were 8.1% of sequential backend samples after against 5.9% before. That fits commit-flush variance on the host but does not prove it. A dedicated sequential rerun is needed before claiming either a sequential regression or no change.
+The three-repeat sequential cohort in this table was too noisy to settle. The same `b8aa892d7` commit measured 653 op/s (median) with p99 4.9 ms in the previous section, and 540 op/s with p99 10.7 ms here. Two of the three candidate repeats had p99 31–41 ms. The seven-repeat follow-up below finds no sequential regression from group commit.
+
+### Sequential tail follow-up: no group-commit regression
+
+This follow-up ran only the sequential cohort, seven ordered repeats each on `b8aa892d7` (before group commit), `89b5449b3` (group commit only) and `7588b9358` (group commit plus the CPU cuts). It used the same sandbox and CPU split, and was deleted afterwards. The order alternated `b8aa892d7`/`89b5449b3`/`7588b9358` and the reverse. Every side got a fresh container. Each side ran two cohorts, each on its own fresh database and process:
+
+- **Untraced cohort:** the commit as released.
+- **Traced cohort:** a copy that records every Effect span, with three benchmark-only spans added around the group join, the group's session lease and the group's commit flight, plus one around the lone path's lease.
+
+Postgres also ran with `track_wal_io_timing`, `log_checkpoints` and `log_min_duration_statement=10`. A sampler took `pg_stat_wal`, `pg_stat_io` (WAL), `pg_stat_checkpointer`, cgroup CPU/IO pressure and throttling every 0.5 s, plus before/after snapshots of `pg_stat_bgwriter`. The driver recorded every request's start and latency. All 42 cohorts had zero errors.
+
+Untraced cohorts, median of seven repeats [min–max]:
+
+| Commit                     | op/s                | p50 ms              | p99 ms                | p99.9 ms                | Requests over 10 ms |
+| -------------------------- | ------------------- | ------------------- | --------------------- | ----------------------- | ------------------- |
+| `b8aa892d7`                | 413.1 [287.3–605.7] | 1.999 [1.258–2.151] | 16.152 [5.473–37.726] | 58.843 [36.442–103.917] | 105 [57–192]        |
+| `89b5449b3` (group commit) | 546.2 [370.5–603.1] | 1.525 [1.327–2.059] | 9.679 [5.303–12.212]  | 40.489 [23.261–53.541]  | 85 [52–112]         |
+| `7588b9358` (main)         | 455.9 [311.7–684.6] | 1.468 [1.231–2.029] | 6.325 [4.529–30.549]  | 51.321 [22.490–73.943]  | 87 [41–188]         |
+
+Pooled over all seven repeats, 1.4% of `b8aa892d7` requests took longer than 10 ms, against 0.8% for `89b5449b3` and 1.1% for `7588b9358`. The ranges overlap on every statistic, and the group-commit commits have the lower medians. Each commit had at least one slow repeat (p99 above 12 ms), so the earlier three-repeat medians were dominated by which repeats landed on slow storage.
+
+The tail is WAL flush latency, not group forming:
+
+- **Slow statements:** of the 3,543 statements of 10 ms or more that Postgres logged inside measured windows, 3,538 were `COMMIT`.
+- **Checkpoints:** none started inside any measured window.
+- **fsync latency:** mean WAL fsync time per run ranged from 0.16 to 1.34 ms. Across all 42 cohorts, it rank-correlated with p99 at ρ = 0.91 and with throughput at ρ = −0.69.
+- **IO stalls:** the app container's cgroup IO-pressure stall was 36–70 ms per 0.5-second interval when that interval held a request over 10 ms, against 3.6–6.2 ms otherwise. WAL fsync time per interval was 112–173 ms against 39–55 ms.
+- **CPU stalls and throttling:** CPU-pressure stalls were lower in those intervals, and the sandbox's CPU quota did not throttle during any window.
+
+In the traced cohorts, requests over 10 ms spent 22.5–25.2 ms (median across repeats) in `akter.commit`, out of 25.3–27.9 ms of server time, on all three commits. For a lone command on the group path, joining the group took 0.09 ms at p50 and 0.21 ms at p99. Leasing the group's session took 0.012 ms at p50, and there is no group-forming window. The group's commit flight (`group.ts:428`, from `execute.ts:1511`) followed the same tail as the lone path's commit. At the median, the group path adds about 0.1 ms to the commit wait (0.35 against 0.26 ms) plus the 0.09 ms join, a small fixed cost per lone command. The traced cohorts include span-recording overhead, so their absolute throughput is lower than the untraced cohorts.
+
+The harness, per-request latencies, spans, Postgres logs, pressure and WAL samples, and analysis are outside the repository at `~/.capy/work/akter-perf/sequential-tail/`. Two sandboxes were created for this follow-up: one stopped after a sampler change and one completed the run. A final lookup found both deleted and no sandbox with this follow-up's label. The same caveats apply: one sandbox on shared storage, no production SLO or Neki claim.
 
 ### Where the time goes on `main` after group commit
 
