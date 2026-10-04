@@ -107,6 +107,7 @@ import {
   acquiredShards,
   checkRunnerConfiguration,
   RunnerReadiness,
+  LocalRequestSerialization,
   RunnerWiring,
 } from "./runner.ts"
 
@@ -742,6 +743,22 @@ export const layer = (options: Options = {}) => {
           )
         })
 
+      const makeCommandClient = (actor: string) => sharding.makeClient(commandEntity(actor))
+      const commandClients = new Map<string, Effect.Success<ReturnType<typeof makeCommandClient>>>()
+
+      /** Cluster keeps one client per entity for the runtime's life, so its lookup is done once per actor type. */
+      const commandClient = (actor: string) => {
+        const cached = commandClients.get(actor)
+
+        if (cached !== undefined) return Effect.succeed(cached)
+
+        return Effect.tap(makeCommandClient(actor), (make) =>
+          Effect.sync(() => {
+            commandClients.set(actor, make)
+          }),
+        )
+      }
+
       const dispatch = Effect.fnUntraced(
         function* (
           request: Request,
@@ -784,7 +801,7 @@ export const layer = (options: Options = {}) => {
               yield* checkIdentity(request.commandId, retryWindowMs)
             }
 
-            const client = (yield* sharding.makeClient(commandEntity(request.ref.actor)))(address)
+            const client = (yield* commandClient(request.ref.actor))(address)
 
             yield* (yield* TurnHooks).at("beforeDelivery", request)
 
@@ -1105,13 +1122,15 @@ export const layer = (options: Options = {}) => {
 
       const outbox = { retryWindowMs, wake: relay.wake, cancelled: relay.cancelled, routed }
 
+      const tenantScope = yield* TenantScope
+
       const operators = operatorRuntime({
         services,
         clock: frameworkClock,
         outbox,
         jobOf: (actorType, job) => jobRegistrations.get(actorType)?.jobs.get(job),
         wake: relay.wake,
-        tenantScope: yield* TenantScope,
+        tenantScope,
       })
 
       const seeding = seedRuntime({
@@ -1121,7 +1140,7 @@ export const layer = (options: Options = {}) => {
         jobOf: (actorType, job) => jobRegistrations.get(actorType)?.jobs.get(job),
         createdBy: (actorType) => registrations.get(actorType)?.policy.createdBy !== undefined,
         wake: relay.wake,
-        tenantScope: yield* TenantScope,
+        tenantScope,
       })
 
       const internalActors = InternalActors.of({
@@ -1138,9 +1157,15 @@ export const layer = (options: Options = {}) => {
         databaseNow,
         mintCommandId,
         tables: (scope, write) =>
-          bindTables(database, scope, write, checked).pipe(Effect.provideContext(services)),
+          bindTables(database, scope, write, checked).pipe(
+            Effect.provideService(SqlClient.SqlClient, primary),
+            Effect.provideService(TenantScope, tenantScope),
+          ),
         blobs: (scope, write) =>
-          bindBlobs(scope, write, contentBinding).pipe(Effect.provideContext(services)),
+          bindBlobs(scope, write, contentBinding).pipe(
+            Effect.provideService(SqlClient.SqlClient, primary),
+            Effect.provideService(TenantScope, tenantScope),
+          ),
         sweepContent:
           content === undefined
             ? Effect.succeed(0)
@@ -1451,7 +1476,7 @@ export const layer = (options: Options = {}) => {
         Layer.provideMerge(
           ShardingConfig.layer({
             shardsPerGroup: 1,
-            simulateRemoteSerialization: true,
+            simulateRemoteSerialization: yield* LocalRequestSerialization,
             maxResidentEntities: maxResidentActors,
             ...wiring?.config,
             ...holderShardGroups(wiring?.config ?? {}),
