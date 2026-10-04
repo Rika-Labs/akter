@@ -652,6 +652,16 @@ layer(Layer.provideMerge(ImagesLive, services), {
           )).status,
         ).toBe(404)
 
+        expect((yield* sendAs(undefined, 1)).status).toBe(401)
+        expect((yield* sendAs(mallory, 1)).status).toBe(403)
+
+        expect(
+          (yield* call(
+            `/api/projects/${project.id}/environments/production/runtime/actors/Counter/hits/jobs`,
+            { cookie: alice },
+          )).status,
+        ).toBe(404)
+
         const clientKey = yield* (yield* Crypto.Crypto).randomUUIDv4
         const counted = yield* send(3, clientKey)
         expect(counted).toMatchObject({

@@ -34,7 +34,7 @@ export interface EdgeOptions {
    * How long a key must have been published before the edge signs with it:
    * at least the runners' key-set refresh interval, so every runner knows it.
    * Default 5 minutes, the runners' default refresh; a shorter lead suits only
-   * local development, where a runner rereads its key set on an unknown kid.
+   * local development; unknown-key refreshes are rate-limited on warm runners.
    */
   readonly publicationLead: Duration.Duration
   /** The largest request body the edge forwards. Default 1 MiB. */
