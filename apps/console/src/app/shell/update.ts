@@ -559,19 +559,17 @@ const submit = (model: Model, form: string): Result => {
       )
     }),
     Match.when("change-plan", () => {
-      const billing = Option.flatMap(settingsPage(model), (page) =>
-        Option.fromNullishOr(page.billing),
-      )
-      const subscribed = Option.match(billing, {
-        onNone: () => "free" as const,
-        onSome: (found) => found.plan.subscribed,
-      })
-      const choices = planChoices(subscribed)
-      const plan = choices.find((choice) => choice === model.choices[planChoiceKey]) ?? choices[0]
-      if (plan === undefined) return unavailable(model, "Another plan")
+      const page = Option.getOrUndefined(settingsPage(model))
+      const subscribed = page?.billing?.plan.subscribed ?? "free"
+      const choices = planChoices({ subscribed, plans: page?.plans ?? null })
+      const choice = choices.find(({ plan }) => plan === model.choices[planChoiceKey]) ?? choices[0]
+      if (choice === undefined) return unavailable(model, "Another plan")
+      const { plan, offer } = choice
       return mutate(
         model,
-        subscribed === "free" ? Action.StartCheckout({ plan }) : Action.ChangePlan({ plan }),
+        subscribed === "free"
+          ? Action.StartCheckout({ plan })
+          : Action.ChangePlan({ plan, name: offer.name }),
       )
     }),
     Match.when("stripe-portal", () => mutate(model, Action.OpenBillingPortal())),

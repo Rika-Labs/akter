@@ -34,8 +34,8 @@ import {
   formatPeriod,
   titleCase,
 } from "./format.ts"
-import { capReached, spendLimitReached } from "../quota/model.ts"
-import { capNoticeView } from "../quota/view.ts"
+import { CapNotice, capNotice, spendLimitReached } from "../quota/model.ts"
+import { capNoticeView, capStateView } from "../quota/view.ts"
 import {
   memberRoleKey,
   parseSpendLimit,
@@ -44,7 +44,15 @@ import {
   spendLimitKey,
   spendLimitValue,
 } from "./keys.ts"
-import type { Billing, PaymentStatus, SettingsPage, Usage, UsageMeter } from "./model.ts"
+import type {
+  Billing,
+  PaymentStatus,
+  PlanOffer,
+  Plans,
+  SettingsPage,
+  Usage,
+  UsageMeter,
+} from "./model.ts"
 import { isSample } from "./sample.ts"
 import { settingsStyles as styles } from "./styles.ts"
 
@@ -277,46 +285,111 @@ const planDescription = (billing: Billing): string => {
   ].join(" · ")
 }
 
-/** Free's monthly allowances, each a hard cap, as the usage report states them. */
-const freeAllowances = (usage: Usage): string | undefined => {
-  const commands = usage.meters.find((entry) => entry.meter === "commands")
-  const storage = usage.meters.find((entry) => entry.meter === "storageGb")
-  if (commands === undefined) return undefined
-  return [
-    `${formatCompact(commands.included)} commands a month (a read counts as ${String(usage.pricing.readCommandWeight)} of a command)`,
-    ...(storage === undefined ? [] : [`${formatGigabytes(storage.included)} of storage`]),
-  ].join(" and ")
+const monthlyPrice = (offer: PlanOffer): string =>
+  offer.basePriceCents === 0
+    ? "No monthly charge"
+    : `${formatCurrency(dollars(offer.basePriceCents))} a month${offer.provisional ? " (provisional)" : ""}`
+
+/**
+ * What a plan includes, as the catalog states it: its commands and storage, and for each whether it
+ * is a hard cap or billed beyond the allowance.
+ */
+const allowances = (offer: PlanOffer, readCommandWeight: number): string => {
+  const commands = `${formatCompact(offer.commandCap ?? offer.includedCommands)} commands a month (a read counts as ${String(readCommandWeight)} of a command)${offer.commandCap === null ? `, then ${formatCents(offer.commandCentsPerMillion)} per million` : ""}`
+  const storage = `${formatGigabytes(offer.storageGb)} of storage${offer.storageCap ? "" : `, then ${formatCents(offer.storageCentsPerGbMonth)} per GB-month`}`
+  const capped = [
+    ...(offer.commandCap === null ? [] : ["commands"]),
+    ...(offer.storageCap ? ["storage"] : []),
+  ]
+  const caps =
+    capped.length === 2
+      ? ["Both are hard caps: at either one, new commands are refused while reads keep working."]
+      : capped.map(
+          (name) =>
+            `The ${name} allowance is a hard cap: at it, new commands are refused while reads keep working.`,
+        )
+  return [`${commands} and ${storage}.`, ...caps].join(" ")
 }
 
-/** Organization › Billing: the plan and its change, payment method, spend limit and invoices. */
+/** Every plan in the catalog side by side, so a choice in the picker can be compared first. */
+const planComparison = (h: H, input: { readonly plans: Plans; readonly current: string | null }) =>
+  settingsGroup(h, {
+    title: "Plans",
+    footnote: input.plans.provisional
+      ? "Provisional prices aren’t final and may change before they are published."
+      : undefined,
+    rows: [
+      dataTable(h, {
+        label: "Plan comparison",
+        bare: true,
+        empty: "No plans are offered.",
+        columns: [
+          { key: "plan", label: "Plan", width: "minmax(0, 1fr)" },
+          { key: "price", label: "Price", width: "minmax(0, 1.2fr)" },
+          { key: "commands", label: "Commands a month", width: "minmax(0, 1.2fr)" },
+          { key: "storage", label: "Storage", width: "minmax(0, 1.2fr)" },
+          { key: "connections", label: "Connections", width: "6.5rem", align: "end" },
+        ],
+        rows: input.plans.plans.map((offer) => ({
+          key: offer.id,
+          cells: [
+            offer.id === input.current ? `${offer.name} (current)` : offer.name,
+            monthlyPrice(offer),
+            offer.commandCap === null
+              ? `${formatCompact(offer.includedCommands)}, then ${formatCents(offer.commandCentsPerMillion)} per million`
+              : `${formatCompact(offer.commandCap)}, hard cap`,
+            offer.storageCap
+              ? `${formatGigabytes(offer.storageGb)}, hard cap`
+              : `${formatGigabytes(offer.storageGb)}, then ${formatCents(offer.storageCentsPerGbMonth)} per GB-month`,
+            formatCompact(offer.connections),
+          ],
+        })),
+      }),
+    ],
+  })
+
+/**
+ * Organization › Billing: the plan and its change, the catalog to compare plans in, payment method,
+ * spend limit and invoices. An organization without a billing account is refused every new command
+ * by the edge, so it reads as not set up, never as Free.
+ */
 export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Screen => {
-  const { billing, usage } = page
+  const { billing, plans, usage } = page
   if (billing === null) return screen(h, "Billing", [])
   const billingSample = isSample(page, "billing")
   const free = billing.plan.id === "free" && billing.plan.subscribed === "free"
-  const choices = planChoices(billing.plan.subscribed)
-  const allowances = free && usage !== null ? freeAllowances(usage) : undefined
+  const notice =
+    usage === null ? undefined : capNotice({ caps: billing.caps, period: usage.period })
+  const unbound = notice !== undefined && CapNotice.isAnyOf(["Unbound"])(notice)
+  const choices = planChoices({ subscribed: billing.plan.subscribed, plans })
+  const current = unbound ? undefined : plans?.plans.find((offer) => offer.id === billing.plan.id)
   const limit = parseSpendLimit(
     model.choices[spendLimitKey] ?? spendLimitValue(billing.spendLimit.limitCents),
   )
   return screen(h, "Billing", [
+    ...(notice === undefined || unbound ? [] : [capStateView(h, notice)]),
     settingsGroup(h, {
       title: "Plan",
       rows: [
-        settingsRow(h, { label: billing.plan.name, description: planDescription(billing) }),
-        ...(allowances === undefined
+        unbound
+          ? settingsRow(h, {
+              label: "Billing isn’t set up",
+              description: `This organization has no billing account, so new commands are refused.${choices.length === 0 ? "" : " Choosing a plan sets one up."}`,
+            })
+          : settingsRow(h, { label: billing.plan.name, description: planDescription(billing) }),
+        ...(current === undefined || plans === null
           ? []
           : [
               settingsRow(h, {
                 label: "Included",
-                description: `${allowances}. Both are hard caps: at either one, new commands are refused while reads keep working.`,
+                description: allowances(current, plans.readCommandWeight),
               }),
             ]),
         ...(choices.length === 0
           ? []
           : [
               settingsRow(h, {
-                label: free ? "Upgrade" : "Change plan",
+                label: unbound ? "Choose a plan" : free ? "Upgrade" : "Change plan",
                 description: free
                   ? "Checkout opens on Stripe, which shows the price before you pay."
                   : "Invoiced right away; the new plan applies once the payment goes through.",
@@ -326,10 +399,13 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
                     select(h, {
                       name: planChoiceKey,
                       label: free ? "Plan to upgrade to" : "Plan to change to",
-                      value: model.choices[planChoiceKey] ?? choices[0] ?? "",
+                      value: model.choices[planChoiceKey] ?? choices[0]?.plan ?? "",
                       size: "sm",
                       disabled: billingSample,
-                      options: choices.map((plan) => ({ value: plan, label: titleCase(plan) })),
+                      options: choices.map(({ plan, offer }) => ({
+                        value: plan,
+                        label: `${offer.name} · ${monthlyPrice(offer)}`,
+                      })),
                       onChange: (value) => ChoseSetting({ key: planChoiceKey, value }),
                     }),
                     button(h, {
@@ -355,6 +431,9 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         }),
       ],
     }),
+    ...(plans === null
+      ? []
+      : [planComparison(h, { plans, current: unbound ? null : billing.plan.subscribed })]),
     settingsGroup(h, {
       title: "Payment",
       footnote:
@@ -384,9 +463,11 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         }),
         settingsRow(h, {
           label: "Monthly spend limit",
-          description: free
-            ? "Applies once you’re on a paid plan; Free stops at what it includes instead."
-            : "New commands that would pass it are refused; work already admitted finishes.",
+          description: unbound
+            ? "Applies once you’re on a paid plan."
+            : free
+              ? "Applies once you’re on a paid plan; Free stops at what it includes instead."
+              : "New commands that would pass it are refused; work already admitted finishes.",
           control: select(h, {
             name: spendLimitKey,
             label: "Monthly spend limit",
@@ -467,8 +548,15 @@ const meterFormat = (unit: UsageMeter["unit"]): ((value: number) => string) =>
     Match.exhaustive,
   )
 
-/** What a meter's numbers mean, from the pricing the control plane reports with them. */
-const meterDetail = (entry: UsageMeter, usage: Usage, free: boolean): string | undefined => {
+/**
+ * What a meter's numbers mean, from the pricing the control plane reports with them. `capped` names
+ * the allowances the edge stops new commands at, as its cap state reports them.
+ */
+const meterDetail = (
+  entry: UsageMeter,
+  usage: Usage,
+  capped: { readonly commands: boolean; readonly storage: boolean },
+): string | undefined => {
   const overage =
     entry.overageCostCents > 0
       ? `${formatCents(entry.overageCostCents)} over the allowance so far`
@@ -476,30 +564,55 @@ const meterDetail = (entry: UsageMeter, usage: Usage, free: boolean): string | u
   if (entry.meter === "commands")
     return [
       `Commands plus reads, a read counting as ${String(usage.pricing.readCommandWeight)} of a command`,
-      ...(free ? ["Free stops new commands here until next month; reads keep working"] : []),
+      ...(capped.commands
+        ? ["This plan stops new commands here until next month; reads keep working"]
+        : []),
       ...(overage === undefined ? [] : [overage]),
     ].join(". ")
   if (entry.meter === "storageGb")
     return [
       "Average stored this month",
-      free
-        ? "Free pauses new commands while a tenant’s latest sample is at the cap; reads keep working"
+      capped.storage
+        ? "This plan pauses new commands while a tenant’s latest sample is at the cap; reads keep working"
         : `${formatCents(usage.pricing.storagePerGbCents)} per GB-month beyond the allowance`,
       ...(overage === undefined ? [] : [overage]),
     ].join(". ")
   return overage
 }
 
+/** The latest storage sample, and for a storage cap how close its largest tenant is to it. */
+const storedNow = (h: H, usage: Usage): ReadonlyArray<Html> => {
+  const sample = usage.latestStorageSample
+  if (sample === null) return []
+  const cap = usage.caps.find((entry) => entry.cap === "storage")
+  return [
+    settingsRow(h, {
+      label: "Stored now",
+      description: [
+        `Latest sample across serving deployments, taken ${formatInstant(sample.sampledAt)} UTC`,
+        ...(cap?.limit == null
+          ? []
+          : [
+              `The largest tenant holds ${formatGigabytes(cap.used / 1e9)} of the ${formatGigabytes(cap.limit / 1e9)} each tenant may store`,
+            ]),
+      ].join(". "),
+      control: h.span([...styleAttributes(h, styles.value)], [formatGigabytes(sample.bytes / 1e9)]),
+    }),
+  ]
+}
+
 /** Organization › Usage: this period's meters against the plan, commands per day, and cost by project. */
 export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
-  const { usage, billing } = page
+  const { usage } = page
   if (usage === null) return screen(h, "Usage", [])
   const month = formatPeriod(usage.period)
-  const free = billing?.plan.id === "free"
-  const cap = billing === null ? undefined : capReached({ billing, usage })
+  const notice = capNotice({ caps: usage.caps, period: usage.period })
+  const bounded = (name: "commands" | "storage") =>
+    usage.caps.some((cap) => cap.cap === name && cap.limit !== null && cap.reason === undefined)
+  const capped = { commands: bounded("commands"), storage: bounded("storage") }
   const reads = usage.meters.find((entry) => entry.meter === "reads")
   return screen(h, "Usage", [
-    ...(cap === undefined ? [] : [capNoticeView(h, cap)]),
+    ...(notice === undefined ? [] : [capNoticeView(h, notice)]),
     settingsGroup(h, {
       title: month,
       footnote: usage.pricing.provisional ? "Paid prices are provisional." : undefined,
@@ -507,10 +620,10 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
         ...usage.meters.flatMap((entry) => {
           if (entry.meter === "reads") return []
           const format = meterFormat(entry.unit)
-          const detail = meterDetail(entry, usage, free)
-          return entry.included > 0
-            ? [
-                h.div(
+          const detail = meterDetail(entry, usage, capped)
+          const shown =
+            entry.included > 0
+              ? h.div(
                   [...styleAttributes(h, styles.padded)],
                   [
                     meter(h, {
@@ -521,15 +634,13 @@ export const usageScreen = ({ h, page }: ScreenInput<SettingsPage>): Screen => {
                       detail,
                     }),
                   ],
-                ),
-              ]
-            : [
-                settingsRow(h, {
+                )
+              : settingsRow(h, {
                   label: entry.label,
                   description: detail ?? "Nothing included in this plan",
                   control: h.span([...styleAttributes(h, styles.value)], [format(entry.used)]),
-                }),
-              ]
+                })
+          return entry.meter === "storageGb" ? [shown, ...storedNow(h, usage)] : [shown]
         }),
         ...(reads === undefined
           ? []

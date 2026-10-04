@@ -1,47 +1,58 @@
-import { Schema as S } from "effect"
-import type { Billing, Usage } from "../settings/model.ts"
+import type { CapState } from "@akter/cloud-api"
+import { Match, Schema as S } from "effect"
+import { defineTaggedUnion } from "foldkit/schema"
+import type { Billing } from "../settings/model.ts"
 
 /**
- * A cap the organization has reached, so new commands are refused at admission while reads keep
- * working: Free's included commands for the period (`limit` in commands), or the spend limit
- * (`limit` in cents). Storage is not here because usage reports an average over the month, not the
- * latest sample the storage cap is checked against.
+ * The one cap a page explains while the edge refuses at it, as the control plane reports it:
+ * `Unbound` when the organization has no billing account and every new command is refused,
+ * otherwise Free's command allowance for `period`, a tenant's storage sample at its cap, the spend
+ * limit in cents, or the organization's live connections (which refuse new connections, not
+ * commands).
  */
-export const CapNotice = S.Struct({
-  cap: S.Literals(["commands", "spend"]),
-  period: S.String,
-  limit: S.Finite,
+export const CapNotice = defineTaggedUnion({
+  Unbound: {},
+  CommandCap: { period: S.String },
+  StorageCap: { usedBytes: S.Finite, limitBytes: S.Finite },
+  SpendCap: { period: S.String, limitCents: S.Finite },
+  ConnectionCap: { open: S.Finite, limit: S.Finite },
 })
 export type CapNotice = typeof CapNotice.Type
 
+/** The caps in the order a page explains them: the hard stops before the limit a person set. */
+const precedence: ReadonlyArray<CapState["cap"]> = ["commands", "storage", "spend", "connections"]
+
 /**
- * Whether a spend limit is already reached by the month's estimate. Each command whose estimate would
- * pass the limit is refused, so once the estimate has reached it any command that costs something is.
+ * The cap a page explains, if the edge is refusing at one now. Only `refusing` counts: a cap that
+ * is merely reached (`atCap`) still admits work the edge would take. An `unbound` cap outranks the
+ * rest, because every new command is refused whatever the usage, and has no limit to quote.
+ */
+export const capNotice = (input: {
+  readonly caps: ReadonlyArray<CapState>
+  readonly period: string
+}): CapNotice | undefined => {
+  if (input.caps.some((cap) => cap.reason === "unbound")) return CapNotice.Unbound()
+  const refusing = precedence
+    .map((name) => input.caps.find((cap) => cap.cap === name && cap.refusing))
+    .find((cap) => cap !== undefined && cap.limit !== null)
+  if (refusing === undefined || refusing.limit === null) return undefined
+  const { used, limit } = refusing
+  return Match.value(refusing.cap).pipe(
+    Match.withReturnType<CapNotice>(),
+    Match.when("commands", () => CapNotice.CommandCap({ period: input.period })),
+    Match.when("storage", () => CapNotice.StorageCap({ usedBytes: used, limitBytes: limit })),
+    Match.when("spend", () => CapNotice.SpendCap({ period: input.period, limitCents: limit })),
+    Match.when("connections", () => CapNotice.ConnectionCap({ open: used, limit })),
+    Match.exhaustive,
+  )
+}
+
+/**
+ * Whether a spend limit not yet saved is already reached by the month's estimate, so saving it
+ * would refuse new commands right away. The control plane's cap state describes only the saved
+ * limit, so a limit being chosen is checked here.
  */
 export const spendLimitReached = (input: {
   readonly limitCents: number
   readonly billing: Billing
 }): boolean => input.billing.spendLimit.currentCents >= input.limitCents
-
-/**
- * The cap new commands are refused at, if one is reached. Free's allowance is a hard cap reached at
- * the allowance; a spend limit is reached as `spendLimitReached` describes.
- */
-export const capReached = (input: {
-  readonly billing: Billing
-  readonly usage: Usage
-}): CapNotice | undefined => {
-  const { billing, usage } = input
-  const commands = usage.meters.find((meter) => meter.meter === "commands")
-  if (
-    billing.plan.id === "free" &&
-    commands !== undefined &&
-    commands.included > 0 &&
-    commands.used >= commands.included
-  )
-    return { cap: "commands", period: usage.period, limit: commands.included }
-  const limit = billing.spendLimit.limitCents
-  if (limit !== null && spendLimitReached({ limitCents: limit, billing }))
-    return { cap: "spend", period: usage.period, limit }
-  return undefined
-}

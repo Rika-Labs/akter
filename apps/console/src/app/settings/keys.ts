@@ -1,5 +1,5 @@
 import type { NotificationEvent, PlanId, Preferences } from "@akter/cloud-api"
-import { PaidPlan, type SettingsPage } from "./model.ts"
+import type { PaidPlan, PlanOffer, Plans, SettingsPage } from "./model.ts"
 
 /**
  * The names the settings views give their switches and selects in the shell's `toggles` and
@@ -52,9 +52,19 @@ export const parseMemberRoleKey = (key: string): string | undefined =>
 /** The select key of the paid plan an organization would move to; it is never saved by itself. */
 export const planChoiceKey = "plan"
 
-/** The paid plans an organization subscribed to `subscribed` can move to, in the contract's order. */
-export const planChoices = (subscribed: PlanId): ReadonlyArray<PaidPlan> =>
-  PaidPlan.literals.filter((plan) => plan !== subscribed)
+/**
+ * The catalog's plans an organization subscribed to `subscribed` can buy or move to, cheapest
+ * first. Without a catalog there is nothing to offer, since the console knows no plan of its own.
+ */
+export const planChoices = (input: {
+  readonly subscribed: PlanId
+  readonly plans: Plans | null
+}): ReadonlyArray<{ readonly plan: PaidPlan; readonly offer: PlanOffer }> =>
+  (input.plans?.plans ?? []).flatMap((offer) =>
+    offer.checkout === null || offer.id === input.subscribed
+      ? []
+      : [{ plan: offer.checkout, offer }],
+  )
 
 /** The select key of the monthly spend limit; its value is whole cents or `none`. */
 export const spendLimitKey = "spendLimit"
