@@ -1,6 +1,6 @@
 import { expect, it } from "@effect/vitest"
 import * as Cloud from "@akter/cloud-api"
-import { Crypto, Effect, Schema } from "effect"
+import { Crypto, Effect, Schedule, Schema } from "effect"
 import { Cookies } from "effect/http"
 import { SqlClient } from "effect/sql"
 import { enterpriseOrganizations, read, signupWith, TestLive, testServer } from "./fixtures.ts"
@@ -183,7 +183,11 @@ it.layer(TestLive, { excludeTestServices: true })(
           const invite = yield* read(invited, Cloud.Invitation)
           const invitationMessages = yield* sql<{
             subject: string
-          }>`SELECT subject FROM cloud_email_outbox WHERE recipient = ${bob.email} AND subject LIKE 'Join %'`
+          }>`SELECT subject FROM cloud_email_outbox WHERE recipient = ${bob.email} AND subject LIKE 'Join %'`.pipe(
+            Effect.filterOrFail((rows) => rows.length > 0),
+            Effect.retry({ times: 100, schedule: Schedule.spaced("50 millis") }),
+            Effect.orDie,
+          )
           expect(invitationMessages).toHaveLength(1)
           expect(
             (yield* request({
