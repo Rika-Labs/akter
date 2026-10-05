@@ -98,6 +98,7 @@ const ATTRIBUTION = new Set([
   "forwarded",
   "cf-connecting-ip",
   "cf-connecting-ipv6",
+  "fly-client-ip",
   "true-client-ip",
 ])
 
