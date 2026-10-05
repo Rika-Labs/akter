@@ -315,38 +315,42 @@ const describeMigrations = (neki: boolean) => {
           )
         }).pipe(Effect.scoped),
       ),
-    neki ? 1_800_000 : 300_000,
+    neki ? 10_800_000 : 300_000,
   )
 
-  it("makes a concurrent startup wait for the owner and recover when that owner dies", () =>
-    harness.runPromise(
-      target((url, pool) =>
-        Effect.gen(function* () {
-          const owner = yield* child(url, "1:1:applied")
-          yield* ready(owner)
-          const contender = yield* child(url)
-          const completed = yield* Effect.forkChild(contender.exitCode)
-          if (neki) {
-            yield* Effect.sleep("200 millis")
-            expect(completed.pollUnsafe()).toBeUndefined()
-          } else
-            yield* query(
-              pool,
-              "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory'",
-            ).pipe(
-              Effect.flatMap((waiting) =>
-                waiting.rowCount! > 0 ? Effect.void : Effect.fail("not waiting"),
-              ),
-              Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
-            )
-          yield* owner.kill({ killSignal: "SIGKILL" })
-          expect(String((yield* owner.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
-          expect(yield* Fiber.join(completed)).toBe(0)
-          yield* assertSchema(pool, neki)
-          expect(yield* run(url)).toEqual([])
-        }),
+  it(
+    "makes a concurrent startup wait for the owner and recover when that owner dies",
+    () =>
+      harness.runPromise(
+        target((url, pool) =>
+          Effect.gen(function* () {
+            const owner = yield* child(url, "1:1:applied")
+            yield* ready(owner)
+            const contender = yield* child(url)
+            const completed = yield* Effect.forkChild(contender.exitCode)
+            if (neki) {
+              yield* Effect.sleep("200 millis")
+              expect(completed.pollUnsafe()).toBeUndefined()
+            } else
+              yield* query(
+                pool,
+                "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory'",
+              ).pipe(
+                Effect.flatMap((waiting) =>
+                  waiting.rowCount! > 0 ? Effect.void : Effect.fail("not waiting"),
+                ),
+                Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+              )
+            yield* owner.kill({ killSignal: "SIGKILL" })
+            expect(String((yield* owner.exitCode.pipe(Effect.flip)).cause)).toContain("SIGKILL")
+            expect(yield* Fiber.join(completed)).toBe(0)
+            yield* assertSchema(pool, neki)
+            expect(yield* run(url)).toEqual([])
+          }),
+        ),
       ),
-    ))
+    neki ? 1_800_000 : undefined,
+  )
 
   it(
     "upgrades the previous level through every crash boundary while preserving job identity and data",
@@ -429,7 +433,7 @@ const describeMigrations = (neki: boolean) => {
           )
         }).pipe(Effect.scoped),
       ),
-    neki ? 600_000 : 90_000,
+    neki ? 7_200_000 : 90_000,
   )
 }
 

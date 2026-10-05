@@ -347,6 +347,13 @@ const group = <F>(
   cases: requires === undefined ? cases : cases.map((each) => ({ ...each, ...requires })),
 })
 
+/**
+ * How long the first runtime build may take on a Neki router. Every framework
+ * migration statement there autocommits and waits for the router fleet to
+ * apply it, so a fresh database takes minutes, not seconds, to migrate.
+ */
+const NEKI_FIRST_BOOT_MS = 900_000
+
 /** Every case of the group opens a fresh database or a snapshot. */
 const freshDatabases = { requiresFreshDatabase: true } as const
 
@@ -725,7 +732,7 @@ export const registerConformance = (options: {
             yield* environment.restart
           }),
         ),
-      30_000,
+      backend.neki === true ? NEKI_FIRST_BOOT_MS : 30_000,
     )
 
     registrar.afterAll(() =>

@@ -81,11 +81,13 @@ export const summarize = ({
  * version of each row, so a concurrent change that committed first is never
  * counted twice. A summary count the change lowered to 0 is deleted in the
  * same transaction, so no committed summary row counts 0. Returns how many
- * rows `change` wrote.
+ * rows `change` wrote. A `change` that reads the outbox clock passes its
+ * `clock` CTE, which leads the statement's `WITH`.
  */
 export const changeRows = Effect.fnUntraced(function* (
   old: Statement.Fragment,
   change: Statement.Fragment,
+  clock?: Statement.Fragment,
 ) {
   const sql = yield* SqlClient.SqlClient
 
@@ -95,7 +97,7 @@ export const changeRows = Effect.fnUntraced(function* (
         SELECT coalesce(json_agg(o), '[]')::text AS rows FROM (${old}) o`
 
       const [result] = yield* sql<{ rows: number; emptied: string | null }>`
-        WITH old_rows AS (
+        WITH ${clock === undefined ? sql`` : sql`${clock},`} old_rows AS (
           SELECT * FROM json_to_recordset(${locked!.rows}::json) AS o(routing_key bigint,
             tenant_id text, source_type text, source_id text, subscriber_type text,
             subscription text, subscriber_id text, active boolean, events text[])),

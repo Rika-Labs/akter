@@ -282,6 +282,11 @@ export class Repository extends Context.Service<
     readonly pinActor: (
       input: PinnedActor & { readonly organizationId: string; readonly userId: string },
     ) => Effect.Effect<ReadonlyArray<PinnedActor>, EnvironmentNotFound>
+    /**
+     * Removes every copy of the pin. The kept list is computed while the
+     * preference row is locked and written back in the same transaction: a
+     * Neki router refuses a subquery in an `UPDATE` that also calls `now()`.
+     */
     readonly unpinActor: (
       input: PinnedActor & { readonly userId: string },
     ) => Effect.Effect<ReadonlyArray<PinnedActor>>
@@ -1046,22 +1051,34 @@ export const RepositoryLive = Layer.effect(
           .pipe(dieOnSql),
 
       unpinActor: ({ userId, projectId, environment: name, address }) =>
-        sql<{ readonly pinned_actors: ReadonlyArray<PinnedActor> }>`
-          UPDATE cloud_preference
-          SET pinned_actors = (
-                SELECT coalesce(jsonb_agg(entry ORDER BY position), '[]'::jsonb)
-                FROM jsonb_array_elements(pinned_actors) WITH ORDINALITY AS pinned(entry, position)
-                WHERE entry <> jsonb_build_object('projectId', ${projectId}::text,
-                                                  'environment', ${name}::text,
-                                                  'address', ${address}::text)
-              ),
-              updated_at = now()
-          WHERE user_id = ${userId}
-          RETURNING pinned_actors
-        `.pipe(
-          Effect.map(([row]) => row?.pinned_actors ?? []),
-          dieOnSql,
-        ),
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const [current] = yield* sql<{ readonly kept: string }>`
+                SELECT (
+                    SELECT coalesce(jsonb_agg(entry ORDER BY position), '[]'::jsonb)
+                    FROM jsonb_array_elements(pinned_actors) WITH ORDINALITY AS pinned(entry, position)
+                    WHERE entry <> jsonb_build_object('projectId', ${projectId}::text,
+                                                      'environment', ${name}::text,
+                                                      'address', ${address}::text)
+                  )::text AS kept
+                FROM cloud_preference
+                WHERE user_id = ${userId}
+                FOR UPDATE
+              `
+              if (current === undefined) return []
+
+              const [row] = yield* sql<{ readonly pinned_actors: ReadonlyArray<PinnedActor> }>`
+                UPDATE cloud_preference
+                SET pinned_actors = ${current.kept}::jsonb, updated_at = now()
+                WHERE user_id = ${userId}
+                RETURNING pinned_actors
+              `
+
+              return row?.pinned_actors ?? []
+            }),
+          )
+          .pipe(dieOnSql),
 
       recordAudit: (input) => insertAudit(input).pipe(dieOnSql),
 
