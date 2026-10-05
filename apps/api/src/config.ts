@@ -1,7 +1,7 @@
 import { Config, Effect, Option, Redacted, Schema } from "effect"
 import { defaultPricingConfig, PricingConfigSchema, type PricingConfig } from "@akter/billing"
 import type { MeterCell } from "./collector.ts"
-import type { EcsOptions } from "@akter/deployments/runners"
+import { FlyConfig, type FlyOptions } from "@akter/deployments/runners"
 
 export interface ApiOptions {
   readonly databaseUrl: Redacted.Redacted<string>
@@ -12,8 +12,9 @@ export interface ApiOptions {
   readonly port: number
   readonly hostname?: string
   readonly production: boolean
-  readonly emailMode: "local" | "ses"
+  readonly emailMode: "local" | "resend"
   readonly emailFrom: string
+  readonly resendApiKey?: Redacted.Redacted<string>
   readonly github?: { readonly clientId: string; readonly clientSecret: string }
   readonly google?: { readonly clientId: string; readonly clientSecret: string }
   readonly enterpriseOrganizations?: ReadonlyArray<string>
@@ -38,7 +39,7 @@ export interface ApiOptions {
   readonly runnerPeerAuthority?: string
   readonly migrationCommand?: ReadonlyArray<string>
   readonly runnerIdleSeconds?: number
-  readonly runnerEcs?: EcsOptions
+  readonly runnerFly?: { readonly options: FlyOptions; readonly token: Redacted.Redacted<string> }
   readonly runtimeRequestTimeoutSeconds?: number
   /**
    * Builds each new deployment's image locally from `dockerfile` in the
@@ -84,11 +85,12 @@ export const loadOptions = Effect.gen(function* () {
   const port = yield* Config.Int("API_PORT").pipe(Config.withDefault(3001))
   const hostname = yield* Config.String("API_HOST").pipe(Config.withDefault("127.0.0.1"))
   const production = yield* Config.Boolean("API_PRODUCTION").pipe(Config.withDefault(false))
-  const emailMode = yield* Config.Literals(["local", "ses"], "EMAIL_MODE").pipe(
+  const emailMode = yield* Config.Literals(["local", "resend"], "EMAIL_MODE").pipe(
     Config.withDefault("local"),
   )
+  const resendApiKey = yield* Config.Redacted("RESEND_API_KEY").pipe(Config.option)
   const emailFrom = yield* Config.String("EMAIL_FROM").pipe(
-    Config.withDefault(production ? "Akter <auth@akter.dev>" : "Akter <auth@localhost>"),
+    Config.withDefault(production ? "Akter <auth@mail.akter.dev>" : "Akter <auth@localhost>"),
   )
   const billingMode = yield* Config.Literals(["local", "stripe"], "BILLING_MODE").pipe(
     Config.withDefault("local"),
@@ -165,32 +167,18 @@ export const loadOptions = Effect.gen(function* () {
       Effect.die(new Error("RUNNER_ENVIRONMENT must be a string-valued JSON object")),
     ),
   )
-  const ecs = yield* Config.String("RUNNER_ECS_CONFIG").pipe(Config.option)
-  const runnerEcs = Option.isNone(ecs)
+  const fly = yield* Config.String("RUNNER_FLY_CONFIG").pipe(Config.option)
+  const flyApiToken = yield* Config.Redacted("FLY_API_TOKEN").pipe(Config.option)
+  const runnerFly = Option.isNone(fly)
     ? undefined
-    : yield* Schema.decodeEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            regions: Schema.Record(
-              Schema.String,
-              Schema.Struct({
-                cluster: Schema.String,
-                subnets: Schema.Array(Schema.String),
-                securityGroups: Schema.Array(Schema.String),
-              }),
-            ),
-            container: Schema.String,
-            port: Schema.Int,
-            scheme: Schema.optional(Schema.Literals(["http", "https"])),
-            definition: Schema.Struct({
-              executionRoleArn: Schema.String,
-              taskRoleArn: Schema.optional(Schema.String),
-              cpu: Schema.optional(Schema.String),
-              memory: Schema.optional(Schema.String),
-            }),
-          }),
+    : {
+        options: yield* Schema.decodeEffect(Schema.fromJsonString(FlyConfig))(fly.value).pipe(
+          Effect.catch(() => Effect.die(new Error("RUNNER_FLY_CONFIG is invalid"))),
         ),
-      )(ecs.value).pipe(Effect.catch(() => Effect.die(new Error("RUNNER_ECS_CONFIG is invalid"))))
+        token: Option.isSome(flyApiToken)
+          ? flyApiToken.value
+          : yield* Effect.die(new Error("RUNNER_FLY_CONFIG requires FLY_API_TOKEN")),
+      }
   const migrationCommand = yield* Config.String("RUNNER_MIGRATION_COMMAND").pipe(
     Config.withDefault('["bun","run","migrate"]'),
   )
@@ -211,8 +199,10 @@ export const loadOptions = Effect.gen(function* () {
     )
   if (Redacted.value(secret).length < 32)
     return yield* Effect.die(new Error("AUTH_SECRET must contain at least 32 characters"))
+  if (emailMode === "resend" && Option.isNone(resendApiKey))
+    return yield* Effect.die(new Error("Resend email requires RESEND_API_KEY"))
   if (production && emailMode === "local")
-    return yield* Effect.die(new Error("Production requires SES email delivery"))
+    return yield* Effect.die(new Error("Production requires Resend email delivery"))
   if (production && Object.keys(runnerEnvironment).length > 0)
     return yield* Effect.die(new Error("Production cannot use shared runner environment values"))
   if (production && Redacted.value(secret) === publishedDevelopmentSecret)
@@ -235,6 +225,7 @@ export const loadOptions = Effect.gen(function* () {
     production,
     emailMode,
     emailFrom,
+    resendApiKey: Option.getOrUndefined(resendApiKey),
     billingMode,
     stripeApiKey: Option.getOrUndefined(stripeApiKey),
     billingWebhookSecret,
@@ -246,7 +237,7 @@ export const loadOptions = Effect.gen(function* () {
     enterpriseOrganizations,
     paidOrganizations,
     runnerEnvironment,
-    runnerEcs,
+    runnerFly,
     migrationCommand: parsedMigrationCommand,
     localBuild: Option.match(buildContext, {
       onNone: () => undefined,

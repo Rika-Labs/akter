@@ -13,7 +13,7 @@ describe("API configuration", () => {
       expect(result._tag).toBe("Failure")
     }),
   )
-  it.effect("loads local settings without requiring OAuth or AWS credentials", () =>
+  it.effect("loads local settings without requiring OAuth, Resend or Fly credentials", () =>
     Effect.gen(function* () {
       const options = yield* loadOptions.pipe(
         Effect.provideService(
@@ -84,7 +84,8 @@ describe("API configuration", () => {
     CONTROL_PLANE_DATABASE_URL: "postgres://localhost/postgres",
     AUTH_SECRET: "a-production-signing-secret-long-enough",
     API_PRODUCTION: "true",
-    EMAIL_MODE: "ses",
+    EMAIL_MODE: "resend",
+    RESEND_API_KEY: "re_config_test_key_never_used",
     API_ORIGIN: "https://api.akter.dev",
     CONSOLE_ORIGIN: "https://app.akter.dev",
     BILLING_MODE: "stripe",
@@ -100,6 +101,89 @@ describe("API configuration", () => {
         ),
       ),
     )
+  it.effect("requires a Resend API key whenever email goes through Resend", () =>
+    Effect.gen(function* () {
+      const { RESEND_API_KEY: _omitted, ...withoutKey } = production
+      const result = yield* Effect.exit(
+        loadOptions.pipe(
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown(withoutKey),
+          ),
+        ),
+      )
+      expect(result._tag).toBe("Failure")
+      const options = yield* loadProduction({})
+      expect(Exit.isSuccess(options) && Redacted.value(options.value.resendApiKey!)).toBe(
+        "re_config_test_key_never_used",
+      )
+      expect(Exit.isSuccess(options) && options.value.emailFrom).toBe("Akter <auth@mail.akter.dev>")
+    }),
+  )
+  it.effect("refuses the retired SES email mode", () =>
+    Effect.gen(function* () {
+      expect((yield* loadProduction({ EMAIL_MODE: "ses" }))._tag).toBe("Failure")
+    }),
+  )
+  const fly = JSON.stringify({
+    organization: "rika-labs-prod",
+    regions: { "us-east-1": { region: "iad" } },
+    port: 8080,
+    appPrefix: "akter-prod-run-",
+    guest: { cpuKind: "shared", cpus: 1, memoryMb: 512 },
+  })
+  it.effect("reads the Fly runner configuration together with its token", () =>
+    Effect.gen(function* () {
+      const loaded = yield* loadProduction({
+        RUNNER_FLY_CONFIG: fly,
+        FLY_API_TOKEN: "fly-config-test-token-never-used",
+      })
+      if (!Exit.isSuccess(loaded)) return expect(Exit.isSuccess(loaded)).toBe(true)
+      expect(loaded.value.runnerFly?.options).toEqual({
+        organization: "rika-labs-prod",
+        regions: { "us-east-1": { region: "iad" } },
+        port: 8080,
+        appPrefix: "akter-prod-run-",
+        guest: { cpuKind: "shared", cpus: 1, memoryMb: 512 },
+      })
+      expect(Redacted.value(loaded.value.runnerFly!.token)).toBe("fly-config-test-token-never-used")
+    }),
+  )
+  it.effect(
+    "refuses a Fly runner configuration with no token or that Fly could not name apps from",
+    () =>
+      Effect.gen(function* () {
+        const token = { FLY_API_TOKEN: "fly-config-test-token-never-used" }
+        const refused: ReadonlyArray<Record<string, string>> = [
+          { RUNNER_FLY_CONFIG: fly },
+          { RUNNER_FLY_CONFIG: "not json", ...token },
+          {
+            RUNNER_FLY_CONFIG: fly.replace("akter-prod-run-", "akter-production-environment-run-"),
+            ...token,
+          },
+          { RUNNER_FLY_CONFIG: fly.replace('"iad"', '"Ashburn"'), ...token },
+          { RUNNER_FLY_CONFIG: fly.replace('"memoryMb":512', '"memoryMb":64'), ...token },
+          { RUNNER_FLY_CONFIG: fly.replace('"organization":"rika-labs-prod",', ""), ...token },
+        ]
+        for (const overrides of refused)
+          expect((yield* loadProduction(overrides))._tag).toBe("Failure")
+        const failure = yield* Effect.exit(
+          loadOptions.pipe(
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromUnknown({
+                ...production,
+                RUNNER_FLY_CONFIG: "not json",
+                ...token,
+              }),
+            ),
+          ),
+        )
+        expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).not.toContain(
+          "fly-config-test",
+        )
+      }),
+  )
   it.effect("accepts production with explicit public https origins", () =>
     Effect.gen(function* () {
       expect((yield* loadProduction({}))._tag).toBe("Success")

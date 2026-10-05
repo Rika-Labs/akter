@@ -1,8 +1,8 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { sendEmail } from "@distilled.cloud/aws/sesv2"
-import { Credentials } from "@distilled.cloud/aws/Credentials"
-import { HttpClient } from "effect/http"
+import { createEmail } from "@distilled.cloud/resend"
+import type { Credentials } from "@distilled.cloud/resend/Credentials"
+import type { HttpClient } from "effect/http"
 
 export class EmailError extends Schema.TaggedError<EmailError>()("EmailError", {}) {}
 
@@ -44,22 +44,23 @@ export const localEmail = Layer.effect(
   }),
 )
 
-export const sesEmail = (from: string) =>
+/**
+ * Sends each message through Resend from `from`, which must be on a domain
+ * verified in Resend. A failure carries nothing the provider said, because
+ * its answer can echo the message and a message can hold a sign-in link.
+ */
+export const resendEmail = (from: string) =>
   Layer.effect(
     Email,
     Effect.gen(function* () {
       const context = yield* Effect.context<Credentials | HttpClient.HttpClient>()
       return Email.of({
         send: (message) =>
-          sendEmail({
-            FromEmailAddress: from,
-            Destination: { ToAddresses: [message.to] },
-            Content: {
-              Simple: {
-                Subject: { Data: message.subject },
-                Body: { Text: { Data: message.text } },
-              },
-            },
+          createEmail({
+            from,
+            to: message.to,
+            subject: message.subject,
+            text: message.text,
           }).pipe(
             Effect.provideContext(context),
             Effect.asVoid,
