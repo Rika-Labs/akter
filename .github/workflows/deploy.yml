@@ -66,6 +66,12 @@ jobs:
               fi
               ;;
             workflow_run)
+              main="$(git ls-remote origin refs/heads/main | cut -f1)"
+              if [ "$VERIFIED_SHA" != "$main" ]; then
+                echo "Skipping $VERIFIED_SHA: main has moved on to $main, whose own verification deploys it"
+                echo "matrix=[]" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               add prod deploy production "$VERIFIED_SHA"
               if ! git diff --quiet "$VERIFIED_SHA^" "$VERIFIED_SHA" -- infra .github/workflows/deploy.yml; then
                 add preview deploy preview "$VERIFIED_SHA"
