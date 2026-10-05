@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import * as Cloud from "@akter/cloud-api"
 import { Clock, DateTime, Effect, Layer, Match, Option, Predicate, Schema } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
@@ -493,19 +494,15 @@ export const InvitationsLive = HttpApiBuilder.group(Cloud.CloudApi, "invitations
 export const ApiKeysLive = HttpApiBuilder.group(Cloud.CloudApi, "apiKeys", (handlers) =>
   Effect.gen(function* () {
     const { auth, access, sql, audit } = yield* services
-    yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          yield* sql`SELECT pg_advisory_xact_lock(499500503)`
-          yield* sql`CREATE TABLE IF NOT EXISTS cloud_api_key (
+    yield* Database.schemaChange(
+      sql`CREATE TABLE IF NOT EXISTS cloud_api_key (
     id text PRIMARY KEY, organization_id text NOT NULL, name text NOT NULL, prefix text NOT NULL,
     last_four text NOT NULL, permission text NOT NULL CHECK (permission IN ('read','write','admin')),
     project_id text, created_at timestamptz NOT NULL DEFAULT now(), created_by text NOT NULL,
     last_used_at timestamptz, expires_at timestamptz, revoked_at timestamptz
-  )`
-        }),
-      )
-      .pipe(Effect.orDie)
+  )`,
+      499500503,
+    ).pipe(Effect.orDie)
     return handlers
       .handle("list", ({ params, query }) =>
         Effect.gen(function* () {

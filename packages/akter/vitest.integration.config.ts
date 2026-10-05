@@ -50,6 +50,7 @@ export default defineConfig({
             "packages/akter/src/runtime/database/neki/session.test.ts",
             "packages/akter/src/runtime/database/neki/migrations.test.ts",
             "packages/akter/src/runtime/database/coordination.test.ts",
+            "packages/akter/src/runtime/database/schema.test.ts",
           ],
           exclude: [
             "**/node_modules/**",

@@ -26,12 +26,19 @@ export const withMigrationCoordination = <A, E>(
     }),
   )
 
-/** Propagation must finish before a later statement uses the changed schema. */
+/** The schema and cluster catalog versions this session's router has applied, which every router must reach. */
+export const NEKI_DDL_BARRIER =
+  "SELECT __neki.wait_for_ddl(v.schema_version, v.cluster_version) FROM __neki.ddl_versions() v"
+
+/**
+ * Propagation must finish before a later statement uses the changed schema.
+ * The router that ran the DDL reports its new versions at once; waiting for
+ * them makes every other router apply that DDL too.
+ */
 export const MigrationBarrier = Context.Reference<
   (connection: SqlConnection.Connection) => Effect.Effect<unknown, SqlError.SqlError>
 >("akter/MigrationBarrier", {
-  defaultValue: () => (connection) =>
-    connection.execute("SELECT __neki.wait_for_ddl()", [], undefined),
+  defaultValue: () => (connection) => connection.execute(NEKI_DDL_BARRIER, [], undefined),
 })
 
 /** A reserved session owns coordination across autocommit DDL and progress writes. */

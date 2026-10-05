@@ -1,4 +1,5 @@
 import {
+  defaultPricingConfig,
   organizationCaps,
   UnknownPlan,
   type PlanId,
@@ -6,6 +7,8 @@ import {
   PricingLive,
   type PricingTier,
 } from "@akter/billing"
+import { migrate } from "@akter/postgres/migrate"
+import { liveNeki, nekiDatabase } from "@akter/postgres/neki"
 import { BunCrypto } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
 import {
@@ -28,7 +31,7 @@ import {
   QuotaExceeded as ClientQuotaExceeded,
   SpendLimitExceeded as ClientSpendLimitExceeded,
 } from "@rikalabs/akter/client"
-import { actorErrorBody, statusOf } from "@rikalabs/akter/runtime"
+import { actorErrorBody, Database, statusOf } from "@rikalabs/akter/runtime"
 import {
   Clock,
   Context,
@@ -56,6 +59,7 @@ import {
   type HttpMethod,
 } from "effect/http"
 import { SqlClient, type SqlError } from "effect/sql"
+import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import { type FixtureEdge, type FixtureOptions, type Provisioned, startEdge } from "./fixtures.ts"
 import {
@@ -2569,3 +2573,61 @@ describe("lost leases", () => {
     90_000,
   )
 })
+
+const nekiQuotaTables = [
+  "cloud_billing_account",
+  "cloud_connection_lease",
+  "cloud_meter_storage_sample",
+  "cloud_meter_tenant",
+  "cloud_usage_account",
+  "cloud_usage_reservation",
+]
+
+/** Builds the edge's quota schema over its own client, as `main` does with the engine set to Neki. */
+const startNekiQuotas = (url: Redacted.Redacted<string>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(
+        Layer.mergeAll(
+          PgClient.layer({ url, maxConnections: 4 }),
+          Layer.succeed(Database.Neki, true),
+          PricingLive(defaultPricingConfig),
+          BunCrypto.layer,
+        ),
+      )
+      yield* quotas({ leaseTtl: Duration.seconds(30), leaseHeartbeat: Duration.seconds(10) }).pipe(
+        Effect.provideContext(context),
+      )
+    }),
+  )
+
+describe(
+  liveNeki === undefined ? "edge schema on the Neki stand-in" : "edge schema on a live Neki router",
+  () => {
+    it(
+      "creates the edge's quota tables on a fresh migrated database and again on restart",
+      () =>
+        harness.runPromise(
+          Effect.gen(function* () {
+            const url = yield* nekiDatabase("edge")
+            yield* Effect.promise(() => migrate(Redacted.value(url), { neki: true }))
+            yield* startNekiQuotas(url)
+            yield* startNekiQuotas(url)
+
+            const pool = yield* Effect.acquireRelease(
+              Effect.sync(() => new Pool({ connectionString: Redacted.value(url), max: 1 })),
+              (pool) => Effect.promise(() => pool.end()),
+            )
+            const { rows } = yield* Effect.promise(() =>
+              pool.query<{ name: string }>(
+                "SELECT relname AS name FROM pg_class WHERE relkind = 'r' AND relname = ANY($1) ORDER BY 1",
+                [nekiQuotaTables],
+              ),
+            )
+            expect(rows.map(({ name }) => name)).toEqual(nekiQuotaTables)
+          }).pipe(Effect.scoped),
+        ),
+      600_000,
+    )
+  },
+)

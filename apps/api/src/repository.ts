@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Context, DateTime, Effect, Layer, Option, Predicate, Schedule, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/sql"
 
@@ -487,9 +488,8 @@ export const RepositoryLive = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    yield* sql.withTransaction(
+    yield* Database.schemaChange(
       Effect.gen(function* () {
-        yield* sql`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK})`
         for (const statement of migrations) yield* sql.unsafe(statement)
         const legacy = yield* sql`
           SELECT 1 FROM information_schema.columns
@@ -536,6 +536,7 @@ export const RepositoryLive = Layer.effect(
           ON cloud_command_idempotency (expires_at_ms)
           WHERE command_id IS NULL AND payload_hash IS NULL`
       }),
+      MIGRATION_LOCK,
     )
 
     const dieOnSql = <A, E, R>(self: Effect.Effect<A, E | SqlError.SqlError, R>) =>
