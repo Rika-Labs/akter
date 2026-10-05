@@ -60,8 +60,6 @@ export type DnsRecord = Resource<
   Providers
 >
 
-const PAGES = 50
-
 const MANAGED = "Managed by Alchemy"
 
 const apex = (name: string) => (name === "@" ? "" : name)
@@ -87,7 +85,11 @@ const attributesOf = (props: DnsRecordProps, id: string, value: string): DnsReco
   teamId: props.teamId,
 })
 
-/** Every record of the domain, following the pagination cursor newest first. */
+/**
+ * Every record of the domain, following the pagination cursor newest first to its end. A partial
+ * list would read as a missing record and create a duplicate, so a cursor Vercel repeats fails
+ * the lookup instead of looping or stopping early.
+ */
 const recordsOf = Effect.fn(function* (props: { domain: string; teamId?: string | undefined }) {
   const records: Array<{
     id: string
@@ -98,8 +100,9 @@ const recordsOf = Effect.fn(function* (props: { domain: string; teamId?: string 
     ttl: number | undefined
     comment: string | undefined
   }> = []
+  const seen = new Set<string>()
   let until: string | undefined
-  for (let page = 0; page < PAGES; page++) {
+  for (;;) {
     const response = yield* listDnsRecords({
       domain: props.domain,
       teamId: props.teamId,
@@ -110,8 +113,12 @@ const recordsOf = Effect.fn(function* (props: { domain: string; teamId?: string 
     const next = response.pagination?.next
     if (next === null || next === undefined) return records
     until = String(next)
+    if (seen.has(until))
+      return yield* Effect.die(
+        new Error(`Vercel repeated the DNS record cursor ${until} for ${props.domain}`),
+      )
+    seen.add(until)
   }
-  return records
 })
 
 export const DnsRecordProvider = Provider.succeed(Vercel.DnsRecord, {

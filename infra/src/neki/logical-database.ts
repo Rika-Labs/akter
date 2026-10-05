@@ -2,8 +2,8 @@ import { isResolved } from "alchemy/Diff"
 import * as Provider from "alchemy/Provider"
 import type { Resource } from "alchemy/Resource"
 import { PgClient } from "@effect/sql-pg"
-import { Effect, Layer, Redacted } from "effect"
-import { SqlClient } from "effect/sql"
+import { Effect, Layer, Redacted, Schema } from "effect"
+import { SqlClient, type SqlError } from "effect/sql"
 import type { Providers } from "./providers.ts"
 import { Neki } from "./resources.ts"
 
@@ -24,9 +24,13 @@ export interface NekiLogicalDatabaseAttributes {
 }
 
 /**
- * A logical database created with `CREATE DATABASE` and dropped, with its connections, on delete.
- * Whether a Neki router accepts these statements has no provider evidence yet; the resource
- * fails the deploy with the router's own error rather than falling back to another layout.
+ * A logical database created with `CREATE DATABASE`, after which the deploy waits for every Neki
+ * router to apply it, and dropped on delete. One that already exists under the name is adopted, so
+ * a run that created it before its state write was lost converges instead of failing on the name.
+ * A Neki router refuses `DROP DATABASE ... WITH (FORCE)`, so the drop is plain and only falls back
+ * to forcing its sessions closed when the database is still in use, which only plain Postgres
+ * allows. A router that refuses a statement fails the deploy with its own error rather than
+ * falling back to another layout.
  *
  * @example
  * ```typescript
@@ -45,6 +49,16 @@ export type NekiLogicalDatabase = Resource<
 >
 
 const NAME = /^[a-z][a-z0-9_]{0,62}$/
+
+/** Waits until every router has applied the DDL this session's router has. */
+const BARRIER =
+  "SELECT __neki.wait_for_ddl(v.schema_version, v.cluster_version) FROM __neki.ddl_versions() v"
+
+const isServerResponse = Schema.is(Schema.Struct({ code: Schema.String }))
+
+/** SQLSTATE `55006`: the database still has sessions. */
+const inUse = (error: SqlError.SqlError) =>
+  isServerResponse(error.reason.cause) && error.reason.cause.code === "55006"
 
 const connected = <A, E>(
   url: Redacted.Redacted<string>,
@@ -72,8 +86,8 @@ export const NekiLogicalDatabaseProvider = Provider.succeed(Neki.LogicalDatabase
     ),
 
   read: Effect.fn(function* ({ olds, output }) {
-    if (output === undefined) return undefined
-    return (yield* connected(olds.connectionUrl, exists(output.name))) ? output : undefined
+    const name = output?.name ?? olds.name
+    return (yield* connected(olds.connectionUrl, exists(name))) ? { name } : undefined
   }),
 
   reconcile: Effect.fn(function* ({ news }) {
@@ -87,7 +101,7 @@ export const NekiLogicalDatabaseProvider = Provider.succeed(Neki.LogicalDatabase
         const sql = yield* SqlClient.SqlClient
         if (yield* exists(news.name)) return
         yield* sql`CREATE DATABASE ${sql(news.name)}`
-        yield* sql`SELECT __neki.wait_for_ddl()`.pipe(Effect.ignore)
+        yield* sql.unsafe(BARRIER).pipe(Effect.ignore)
       }),
     )
     return { name: news.name }
@@ -98,7 +112,12 @@ export const NekiLogicalDatabaseProvider = Provider.succeed(Neki.LogicalDatabase
       olds.connectionUrl,
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient
-        yield* sql`DROP DATABASE IF EXISTS ${sql(output.name)} WITH (FORCE)`
+        yield* sql`DROP DATABASE IF EXISTS ${sql(output.name)}`.pipe(
+          Effect.catchIf(
+            inUse,
+            () => sql`DROP DATABASE IF EXISTS ${sql(output.name)} WITH (FORCE)`,
+          ),
+        )
       }),
     )
   }),

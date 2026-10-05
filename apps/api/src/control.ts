@@ -3,6 +3,7 @@ import { Effect, Layer, Option, Predicate, Schema } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { HttpServerRequest } from "effect/http"
 import { AccountServices } from "./accounts.ts"
+import { RunnerRegions } from "./config.ts"
 import type * as Repository from "./repository.ts"
 
 const project = (value: Repository.Project) =>
@@ -26,6 +27,14 @@ const headers = Effect.map(
 
 const notFound = (resource: Cloud.NotFoundResource, id: string) =>
   Cloud.NotFound.make({ resource, id })
+
+/** Refuses regions no runner can start in, as a `Conflict` naming the first such region. */
+export const hosted = Effect.fn("Control.hosted")(function* (regions: ReadonlyArray<string>) {
+  const available = yield* RunnerRegions
+  const missing = regions.find((region) => available !== undefined && !available.includes(region))
+  if (missing !== undefined)
+    return yield* Cloud.Conflict.make({ message: `The region ${missing} is not available` })
+})
 
 const control = Effect.gen(function* () {
   const services = yield* AccountServices
@@ -107,6 +116,7 @@ export const ProjectsLive = HttpApiBuilder.group(Cloud.CloudApi, "projects", (ha
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
           yield* access.organization(params.organizationId, "write")
+          yield* hosted([payload.homeRegion])
 
           return yield* repository
             .createProject({ ...(yield* audited(params.organizationId)), ...payload })

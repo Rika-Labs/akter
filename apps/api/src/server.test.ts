@@ -1043,6 +1043,77 @@ it.layer(
   )
 })
 
+it.layer(
+  isolatedLive({
+    runnerFly: {
+      options: {
+        organization: "rika-labs-test",
+        regions: { "us-east-1": { region: "iad" } },
+        appPrefix: "akter-test-run-",
+        port: 8080,
+        guest: { cpuKind: "shared", cpus: 1, memoryMb: 512 },
+      },
+      token: Redacted.make("fly-region-test-token-never-used"),
+    },
+  }),
+  { excludeTestServices: true },
+)("regions on a control plane that starts runners on Fly", (it) => {
+  it.effect(
+    "refuses a home region or deployment region the runner configuration does not place",
+    () =>
+      Effect.gen(function* () {
+        const { request } = yield* testServer
+        const sql = yield* SqlClient.SqlClient
+        const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+        const owner = yield* signupWith({ request, sql, suffix })("region-owner")
+        const org = (yield* read(
+          yield* request({
+            path: "/api/organizations",
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: "Region organization", slug: `region-${suffix}` },
+          }),
+          Cloud.OrganizationMembership,
+        )).organization.id
+        const create = (slug: string, homeRegion: string) =>
+          request({
+            path: `/api/organizations/${org}/projects`,
+            method: "POST",
+            cookie: owner.cookie,
+            body: { name: slug, slug, homeRegion },
+          })
+
+        const west = yield* create("west", "us-west-2")
+        expect(west.status).toBe(409)
+        expect((yield* read(west, Cloud.Conflict)).message).toContain("us-west-2")
+        expect(
+          yield* sql`SELECT 1 FROM cloud_project WHERE organization_id = ${org} AND slug = 'west'`,
+        ).toHaveLength(0)
+
+        const east = yield* create("east", "us-east-1")
+        expect(east.status).toBe(200)
+        const project = yield* read(east, Cloud.Project)
+        const deployment = yield* request({
+          path: `/api/projects/${project.id}/deployments`,
+          method: "POST",
+          cookie: owner.cookie,
+          body: { environment: "production", commitSha: "abcdef123456", regions: ["us-west-2"] },
+        })
+        expect(deployment.status).toBe(409)
+        expect((yield* read(deployment, Cloud.Conflict)).message).toContain("us-west-2")
+        const listed = yield* read(
+          yield* request({
+            path: `/api/projects/${project.id}/deployments`,
+            cookie: owner.cookie,
+          }),
+          Cloud.Page(Cloud.DeploymentSummary),
+        )
+        expect(listed.items).toEqual([])
+      }),
+    { timeout: 120000 },
+  )
+})
+
 /** Builds the API's whole database setup, serves its routes, and signs a user up through Better Auth. */
 const bootNeki = (url: Redacted.Redacted<string>, suffix: string) =>
   Effect.scoped(

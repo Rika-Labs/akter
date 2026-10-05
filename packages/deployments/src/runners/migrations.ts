@@ -123,9 +123,11 @@ export const dockerMigrations = (options: {
 /**
  * A migration is one machine in the deployment's app that runs `command` once.
  * It succeeds only when Fly recorded the process's exit with code 0, not when
- * the machine merely stopped, and it is destroyed afterwards, whatever the
- * result, so its environment does not outlive it. A retry after that runs the
- * idempotent migration again.
+ * the machine merely stopped. Once started, the machine is stopped and
+ * destroyed however the run ends, by success, failure or interruption, so its
+ * environment does not outlive it; a failure to remove it does not replace the
+ * migration's own result. A retry after that runs the idempotent migration
+ * again.
  */
 export const flyMigrations = (options: FlyOptions & { readonly command: ReadonlyArray<string> }) =>
   Layer.effect(
@@ -135,27 +137,28 @@ export const flyMigrations = (options: FlyOptions & { readonly command: Readonly
       const context = yield* Effect.context<Credentials | HttpClient.HttpClient>()
       return {
         run: (input) =>
-          Effect.gen(function* () {
-            const started = yield* platform.start(input)
-            const exited = yield* platform.describe(started.id).pipe(
-              Effect.repeat({
-                schedule: Schedule.spaced("1 second"),
-                until: (machine) => machine.terminated === true,
+          Effect.acquireUseRelease(
+            platform.start(input),
+            (started) =>
+              Effect.gen(function* () {
+                const exited = yield* platform.describe(started.id).pipe(
+                  Effect.repeat({
+                    schedule: Schedule.spaced("1 second"),
+                    until: (machine) => machine.terminated === true,
+                  }),
+                  Effect.timeoutOption("5 minutes"),
+                )
+                const named = splitRunnerId(started.id)
+                if (Option.isNone(exited) || named === undefined)
+                  return yield* MigrationFailed.make({})
+                const machine = yield* Machines.getMachine({
+                  app_name: named.app,
+                  machine_id: named.machine,
+                }).pipe(Effect.provideContext(context))
+                if (exitOf(machine)?.code !== 0) return yield* MigrationFailed.make({})
               }),
-              Effect.timeoutOption("5 minutes"),
-            )
-            const named = splitRunnerId(started.id)
-            if (Option.isNone(exited) || named === undefined) {
-              yield* platform.stop(started.id)
-              return yield* MigrationFailed.make({})
-            }
-            const machine = yield* Machines.getMachine({
-              app_name: named.app,
-              machine_id: named.machine,
-            }).pipe(Effect.provideContext(context))
-            yield* platform.stop(started.id).pipe(Effect.ignore)
-            if (exitOf(machine)?.code !== 0) return yield* MigrationFailed.make({})
-          }).pipe(Effect.mapError(() => MigrationFailed.make({}))),
+            (started) => platform.stop(started.id).pipe(Effect.ignore),
+          ).pipe(Effect.mapError(() => MigrationFailed.make({}))),
       }
     }),
   ).pipe(Layer.provide(flyRunners(options)))

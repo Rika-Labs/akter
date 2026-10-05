@@ -64,7 +64,7 @@ it.effect(
         expect(started).toEqual({
           id: `${acme}/${apps.get(acme)?.machines[0]?.id}`,
           state: "starting",
-          url: `https://${acme}.fly.dev`,
+          url: null,
           basePath: "/api",
         })
         expect(acme).toHaveLength(30)
@@ -228,10 +228,10 @@ it.effect(
             machine.state = state
           }).pipe(Effect.andThen(platform.describe(started.id)))
 
-        expect(yield* observe("created")).toEqual({ ...base, state: "starting", url: origin })
-        expect(yield* observe("starting")).toEqual({ ...base, state: "starting", url: origin })
+        expect(yield* observe("created")).toEqual({ ...base, state: "starting", url: null })
+        expect(yield* observe("starting")).toEqual({ ...base, state: "starting", url: null })
         expect(yield* observe("started")).toEqual({ ...base, state: "running", url: origin })
-        expect(yield* observe("replacing")).toEqual({ ...base, state: "starting", url: origin })
+        expect(yield* observe("replacing")).toEqual({ ...base, state: "starting", url: null })
         for (const state of ["stopping", "suspending", "stopped", "suspended", "destroying"])
           expect(yield* observe(state)).toEqual({ ...base, state: "stopped", url: null })
 

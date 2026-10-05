@@ -117,7 +117,7 @@ describe("API configuration", () => {
       expect(Exit.isSuccess(options) && Redacted.value(options.value.resendApiKey!)).toBe(
         "re_config_test_key_never_used",
       )
-      expect(Exit.isSuccess(options) && options.value.emailFrom).toBe("Akter <auth@mail.akter.dev>")
+      expect(Exit.isSuccess(options) && options.value.emailFrom).toBe("Akter <auth@akter.dev>")
     }),
   )
   it.effect("refuses the retired SES email mode", () =>

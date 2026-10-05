@@ -144,10 +144,12 @@ jobs:
           IMAGE_TAG="$(git rev-parse HEAD)"
           export IMAGE_TAG
           bun --bun run --cwd infra guard deploy "$STAGE"
+          adopt=()
           for attempt in 1 2 3; do
-            if bun --bun run --cwd infra deploy --stage "$STAGE" --yes 2>&1 | tee deploy.log; then exit 0; fi
+            if bun --bun run --cwd infra deploy --stage "$STAGE" --yes "${adopt[@]}" 2>&1 | tee deploy.log; then exit 0; fi
             grep -q "state lock .* was lost mid-run" deploy.log || exit 1
-            echo "::warning::The Postgres state lock connection dropped; retrying the deploy (attempt $attempt)"
+            echo "::warning::The Postgres state lock connection dropped; retrying the deploy with --adopt (attempt $attempt)"
+            adopt=(--adopt)
           done
           exit 1
       - name: Destroy the preview
@@ -159,13 +161,26 @@ jobs:
           [[ "$STAGE" =~ ^pr-([1-9][0-9]{0,5})$ ]] || { echo "Refusing to destroy $STAGE: only pr-<number> stages are destroyed from here"; exit 1; }
           export PULL_REQUEST="${BASH_REMATCH[1]}"
           bun --bun run --cwd infra guard destroy "$STAGE"
-          bun --bun run --cwd infra destroy --stage "$STAGE" --yes
+          for attempt in 1 2 3; do
+            if bun --bun run --cwd infra destroy --stage "$STAGE" --yes 2>&1 | tee destroy.log; then exit 0; fi
+            grep -q "state lock .* was lost mid-run" destroy.log || exit 1
+            echo "::warning::The Postgres state lock connection dropped; retrying the destroy (attempt $attempt)"
+          done
+          exit 1
       - name: Destroy the previews of closed pull requests
         if: matrix.operation == 'sweep'
         env:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          destroy() {
+            for attempt in 1 2 3; do
+              if PULL_REQUEST="$2" bun --bun run --cwd infra destroy --stage "$1" --yes 2>&1 | tee destroy.log; then return 0; fi
+              grep -q "state lock .* was lost mid-run" destroy.log || return 1
+              echo "::warning::The Postgres state lock connection dropped; retrying the destroy of $1 (attempt $attempt)"
+            done
+            return 1
+          }
           failed=0
           for stage in $(bun --bun run --cwd infra --silent stages); do
             [[ "$stage" =~ ^pr-([1-9][0-9]{0,5})$ ]] || continue
@@ -174,7 +189,7 @@ jobs:
             [ "$state" != OPEN ] || continue
             echo "Destroying $stage: pull request $number is $state"
             bun --bun run --cwd infra guard destroy "$stage"
-            if ! PULL_REQUEST="$number" bun --bun run --cwd infra destroy --stage "$stage" --yes; then
+            if ! destroy "$stage" "$number"; then
               echo "::error::Could not destroy $stage"
               failed=1
             fi

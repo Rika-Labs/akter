@@ -148,7 +148,10 @@ const stateOf = (state: string | undefined): RunnerState => {
  * be pinned by digest in `registry.fly.io`, so a deployment always runs the
  * bytes CI pushed. Machines never restart themselves: a process that exits
  * leaves a stopped machine whose exit Fly recorded, which is what `terminated`
- * reports, and the platform decides whether to replace it. Stopping a runner
+ * reports, and the platform decides whether to replace it. A runner has a url
+ * only while Fly reports its machine started, so a caller that registers any
+ * url as ready keeps polling `describe` through `created` and `starting`.
+ * Stopping a runner
  * drains it, waits for Fly to report it stopped and then destroys the
  * machine, so scale-to-zero cycles leave no machines behind.
  *
@@ -218,7 +221,7 @@ export const flyRunners = (options: FlyOptions) =>
         const observed: Runner = {
           id: `${app}/${machine.id}`,
           state,
-          url: state === "stopped" || oneShot ? null : `https://${app}.fly.dev`,
+          url: state === "running" && !oneShot ? `https://${app}.fly.dev` : null,
           basePath,
         }
 

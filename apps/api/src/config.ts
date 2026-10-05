@@ -1,4 +1,4 @@
-import { Config, Effect, Option, Redacted, Schema } from "effect"
+import { Config, Context, Effect, Option, Redacted, Schema } from "effect"
 import { defaultPricingConfig, PricingConfigSchema, type PricingConfig } from "@akter/billing"
 import type { MeterCell } from "./collector.ts"
 import { FlyConfig, type FlyOptions } from "@akter/deployments/runners"
@@ -51,6 +51,17 @@ export interface ApiOptions {
   readonly localBuild?: { readonly context: string; readonly dockerfile: string }
 }
 
+/**
+ * The regions a deployment can run in: the keys of the Fly runner
+ * configuration's region map, or undefined when runners run locally and every
+ * region the contract names is served. A project homed elsewhere could never
+ * start a runner, so the API refuses it at creation.
+ */
+export const RunnerRegions = Context.Reference<ReadonlyArray<string> | undefined>(
+  "@akter/api/RunnerRegions",
+  { defaultValue: () => undefined },
+)
+
 export const localBillingWebhookSecret = "local-billing-signature-secret-not-for-production"
 
 /** The signing secret that ships in the local Compose file and is public in the repository. */
@@ -96,7 +107,7 @@ export const loadOptions = Effect.gen(function* () {
   )
   const resendApiKey = yield* Config.Redacted("RESEND_API_KEY").pipe(Config.option)
   const emailFrom = yield* Config.String("EMAIL_FROM").pipe(
-    Config.withDefault(production ? "Akter <auth@mail.akter.dev>" : "Akter <auth@localhost>"),
+    Config.withDefault(production ? "Akter <auth@akter.dev>" : "Akter <auth@localhost>"),
   )
   const billingMode = yield* Config.Literals(["local", "stripe"], "BILLING_MODE").pipe(
     Config.withDefault("local"),

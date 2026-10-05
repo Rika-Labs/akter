@@ -58,6 +58,6 @@ A pull request's workflow runs with the `preview` environment's secrets, so a co
 
 `prod` deploys without a person in the loop, so a bad merge reaches customers before anyone looks. The checks before it are `Verify` and feature flags, and a revert redeploys through the same path.
 
-Destroying a `pr-<n>` stage deletes its Fly apps with their machines, its Neki role and logical database, its Stripe endpoint and its Axiom token. The `preview` stage is never destroyed by CI; an operator who destroys it deletes the shared Neki cluster and must destroy every preview first. Destroying `prod` keeps its Neki database and the Axiom datasets, and the workflow never does it. State, DNS zones and the Resend domain are outside every stage's destroy.
+Destroying a `pr-<n>` stage deletes its Fly apps with their machines, its Neki role and logical database, its Stripe endpoint and its Axiom token. It does not delete the runner apps its API created for customer deployments (`akter-pr<n>-run-*` in `rika-labs-dev`), which the stack does not declare; ADR 0090 leaves their removal to a retirement hook that is still to be built. The `preview` stage is never destroyed by CI; an operator who destroys it deletes the shared Neki cluster and must destroy every preview first. Destroying `prod` keeps its Neki database and the Axiom datasets, and the workflow never does it. State, DNS zones and the Resend domain are outside every stage's destroy.
 
 Not decided here: runner provisioning and the edge-to-runner path (ADR 0090), multi-region, paid Fly support, and a staging environment.

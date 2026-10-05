@@ -84,3 +84,64 @@ it.live("waits for the machine to exit rather than judging it while it still run
     }),
   ),
 )
+
+const machineReads = (calls: ReadonlyArray<{ readonly method: string; readonly path: string }>) =>
+  calls.filter((call) => call.method === "GET" && /\/machines\/[^/]+$/u.test(call.path)).length
+
+it.effect("destroys the machine when reading its exit fails after it started", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let reads = 0
+      const { calls, apps, migrations } = yield* harness({
+        createdAs: { state: "stopped", exit: { code: 0 } },
+        override: (call) =>
+          call.method === "GET" && /\/machines\/[^/]+$/u.test(call.path) && ++reads === 2
+            ? { status: 500, body: { error: "read failed" } }
+            : undefined,
+      })
+
+      const result = yield* migrations.run(input).pipe(Effect.exit)
+
+      expect(result._tag).toBe("Failure")
+      expect(machineReads(calls)).toBeGreaterThan(2)
+      expect([...apps.values()].flatMap((app) => app.machines)).toHaveLength(0)
+      expect(calls.at(-1)?.method).toBe("DELETE")
+    }),
+  ),
+)
+
+it.live("destroys the machine when the migration is interrupted while it runs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { calls, apps, migrations } = yield* harness({ createdAs: { state: "started" } })
+
+      const run = yield* Effect.forkChild(migrations.run(input))
+
+      yield* Effect.sleep("300 millis")
+
+      expect([...apps.values()][0]?.machines).toHaveLength(1)
+
+      yield* Fiber.interrupt(run)
+
+      expect([...apps.values()][0]?.machines).toHaveLength(0)
+      expect(calls.some((call) => call.method === "POST" && call.path.endsWith("/stop"))).toBe(true)
+    }),
+  ),
+)
+
+it.effect("keeps a successful migration's result when removing its machine fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { calls, migrations } = yield* harness({
+        createdAs: { state: "stopped", exit: { code: 0 } },
+        override: (call) =>
+          call.method === "DELETE" ? { status: 500, body: { error: "delete failed" } } : undefined,
+      })
+
+      const result = yield* migrations.run(input).pipe(Effect.exit)
+
+      expect(result._tag).toBe("Success")
+      expect(calls.at(-1)?.method).toBe("DELETE")
+    }),
+  ),
+)
