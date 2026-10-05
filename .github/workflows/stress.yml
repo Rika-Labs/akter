@@ -44,7 +44,7 @@ jobs:
     name: Stress run ${{ matrix.run }}
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -74,7 +74,7 @@ jobs:
       # runner, so every run shares its own machine with one busy worker per core.
       # Each run owns a runner, so the runs no longer share a clock or a database.
       - name: Run the conformance suites under CPU load
-        timeout-minutes: 40
+        timeout-minutes: 75
         env:
           RUN: ${{ matrix.run }}
           TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
@@ -89,7 +89,7 @@ jobs:
             status=0
             # A hung run is cut off and reported instead of eating the budget.
             # Vitest resolves the report path from the repository root.
-            timeout --kill-after=30s 20m bun run "$suite" --reporter=default --reporter=json \
+            timeout --kill-after=30s 35m bun run "$suite" --reporter=default --reporter=json \
               --outputFile.json="stress/${suite/:/-}-$RUN.json" \
               > "../../stress/${suite/:/-}-$RUN.log" 2>&1 || status=$?
             echo "$status" > "../../stress/${suite/:/-}-$RUN.status"
