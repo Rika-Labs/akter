@@ -40,9 +40,12 @@ import { CollectorLive, startCollectors } from "./collector.ts"
 export const BillingReturnUrl = Context.Reference<string>("@akter/api/BillingReturnUrl", {
   defaultValue: () => "http://localhost:3001/settings/billing",
 })
-export const BillingProduction = Context.Reference<boolean>("@akter/api/BillingProduction", {
-  defaultValue: () => false,
-})
+
+/** Whether checkout and plan changes refuse a paid plan whose price is still provisional. */
+export const ProvisionalPlansRefused = Context.Reference<boolean>(
+  "@akter/api/ProvisionalPlansRefused",
+  { defaultValue: () => false },
+)
 
 export const billingInfrastructure = (options: ApiOptions) => {
   const pricing = options.pricing ?? defaultPricingConfig
@@ -73,7 +76,7 @@ export const billingInfrastructure = (options: ApiOptions) => {
         `${options.consoleOrigin ?? options.origin}/settings/billing`,
       ),
     ),
-    Layer.merge(Layer.succeed(BillingProduction, options.production)),
+    Layer.merge(Layer.succeed(ProvisionalPlansRefused, options.provisionalPlansRefused === true)),
   )
   return Layer.mergeAll(runtime, startCollectors(cells).pipe(Layer.provide(runtime)))
 }
@@ -156,7 +159,7 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
     const repository = yield* BillingRepository
     const provider = yield* StripeBilling
     const pricing = yield* Pricing
-    const production = yield* BillingProduction
+    const provisionalRefused = yield* ProvisionalPlansRefused
     const returnUrl = yield* BillingReturnUrl
     return handlers
       .handle("listPlans", () =>
@@ -275,7 +278,10 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
       .handle("startCheckout", ({ params, payload }) =>
         Effect.gen(function* () {
           yield* access.organization(params.organizationId, "admin")
-          if (production && (yield* pricing.tier(payload.plan).pipe(Effect.orDie)).provisional)
+          if (
+            provisionalRefused &&
+            (yield* pricing.tier(payload.plan).pipe(Effect.orDie)).provisional
+          )
             return yield* Cloud.Conflict.make({
               message: "Paid plans are not published until benchmark-backed pricing is configured",
             })
@@ -338,7 +344,10 @@ export const BillingLive = HttpApiBuilder.group(Cloud.CloudApi, "billing", (hand
       .handle("changePlan", ({ params, payload }) =>
         Effect.gen(function* () {
           yield* access.organization(params.organizationId, "admin")
-          if (production && (yield* pricing.tier(payload.plan).pipe(Effect.orDie)).provisional)
+          if (
+            provisionalRefused &&
+            (yield* pricing.tier(payload.plan).pipe(Effect.orDie)).provisional
+          )
             return yield* Cloud.Conflict.make({
               message: "Paid plans are not published until benchmark-backed pricing is configured",
             })
