@@ -1484,3 +1484,37 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
     )
   },
 )
+
+it.layer(isolatedLive({ pricing, provisionalPlansRefused: true }), { excludeTestServices: true })(
+  "paid plans with provisional prices where they are refused",
+  (it) => {
+    it.effect(
+      "refuses checkout and a plan change until the prices are published, leaving the organization on Free",
+      () =>
+        Effect.gen(function* () {
+          const w = yield* world
+          const alice = yield* w.signup("provisional")
+          const org = yield* w.organization(alice, "Provisional org")
+          const base = `/api/organizations/${org}/billing`
+          for (const plan of ["pro", "team"] as const)
+            expect([
+              yield* w.status({
+                path: `${base}/checkout`,
+                method: "POST",
+                cookie: alice.cookie,
+                body: { plan },
+              }),
+              yield* w.status({
+                path: `${base}/plan`,
+                method: "POST",
+                cookie: alice.cookie,
+                body: { plan },
+              }),
+            ]).toEqual([409, 409])
+          expect((yield* w.summary(org, alice.cookie)).plan.id).toBe("free")
+          expect(yield* w.sessions(org)).toEqual([])
+        }),
+      { timeout: 120_000 },
+    )
+  },
+)
