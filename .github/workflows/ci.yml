@@ -19,7 +19,7 @@ defaults:
 jobs:
   static:
     name: static
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     permissions:
       contents: read
@@ -63,7 +63,7 @@ jobs:
 
   pack:
     name: pack
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
@@ -87,7 +87,7 @@ jobs:
 
   workspaces:
     name: workspaces
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
       contents: read
@@ -146,7 +146,7 @@ jobs:
 
   e2e:
     name: e2e
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
       contents: read
@@ -185,7 +185,7 @@ jobs:
 
   framework-unit:
     name: framework-unit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
@@ -209,7 +209,7 @@ jobs:
 
   framework-pglite:
     name: framework-${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -247,7 +247,7 @@ jobs:
 
   framework-postgres:
     name: framework-${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -324,7 +324,7 @@ jobs:
 
   framework-drills:
     name: framework-drills
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     services:
       postgres:
@@ -364,7 +364,7 @@ jobs:
 
   node-postgres:
     name: node-${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -450,7 +450,7 @@ jobs:
       - framework-drills
       - node-postgres
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
