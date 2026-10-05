@@ -41,7 +41,7 @@ export type TopologyInput = {
   readonly dataShards: ReadonlyArray<string>
   readonly database: string
   readonly schema: string
-  readonly unshardedTables: ReadonlyArray<string>
+  readonly routedTables: ReadonlyArray<string>
 }
 
 export type TopologyScope = { readonly database: string; readonly schema: string }
@@ -50,9 +50,26 @@ const hexByte = (byte: number) => byte.toString(16).padStart(2, "0")
 
 const signedBucket = (byte: number) => (byte < 128 ? byte : byte - BUCKET_COUNT)
 
-export const checkShardCount = (shardCount: number) => {
+const checkRange = (shardCount: number) => {
   if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > BUCKET_COUNT)
     throw new RangeError(`shardCount must be an integer from 1 to ${BUCKET_COUNT}`)
+}
+
+/**
+ * A topology that routes no table holds every row on the authoritative shard, so
+ * further data shards would stay empty, and the first routed tables would then have
+ * to move between shards instead of only between groups of one shard.
+ */
+export const checkShardCount = (input: {
+  readonly shardCount: number
+  readonly routedTables: ReadonlyArray<string>
+}) => {
+  const { shardCount, routedTables } = input
+  checkRange(shardCount)
+  if (shardCount > 1 && routedTables.length === 0)
+    throw new RangeError(
+      "shardCount above 1 needs routedTables: no table would use the data shards",
+    )
 }
 
 /**
@@ -72,7 +89,7 @@ export const bucketHex = (bucket: number) => {
 
 /** The first top byte owned by each shard when 256 buckets are split into near-equal runs. */
 const startBytes = (shardCount: number) => {
-  checkShardCount(shardCount)
+  checkRange(shardCount)
   return Array.from({ length: shardCount }, (_, shard) =>
     Math.floor((shard * BUCKET_COUNT) / shardCount),
   )
@@ -121,10 +138,16 @@ export const shardBucketSpans = (shardCount: number): ReadonlyArray<ReadonlyArra
 
 /**
  * The topology Neki is given. The authoritative group is the single control shard
- * and the cluster default. Every table in the schema is routed by a range index on
- * `routing_key` across the data shards, except the tables named as unsharded, which
- * stay on the authoritative group. One data shard, the authoritative one, is the
- * initial unsharded layout.
+ * and the default for every table, in the schema and elsewhere. Only the routed
+ * tables are placed in the data group, routed by a range index on `routing_key`
+ * across the data shards. One data shard, the authoritative one, is the initial
+ * unsharded layout.
+ *
+ * Routing is opt-in because a table that lacks `routing_key` cannot be written in
+ * the data group, and a table whose SQL needs the control tables beside it (a
+ * trigger that writes one, a key that references one, a uniqueness or ordering
+ * that spans every actor) is only correct while it shares their shard. A table
+ * nobody listed therefore stays where it works on any number of data shards.
  */
 export const dataTopology = (input: TopologyInput): DataTopology => ({
   authoritative_shard_group: AUTHORITATIVE_GROUP,
@@ -142,9 +165,9 @@ export const dataTopology = (input: TopologyInput): DataTopology => ({
     [input.database]: {
       schemas: {
         [input.schema]: {
-          default_shard_group: ACTOR_DATA_GROUP,
+          default_shard_group: AUTHORITATIVE_GROUP,
           tables: Object.fromEntries(
-            input.unshardedTables.map((table) => [table, { shard_group: AUTHORITATIVE_GROUP }]),
+            input.routedTables.map((table) => [table, { shard_group: ACTOR_DATA_GROUP }]),
           ),
         },
       },

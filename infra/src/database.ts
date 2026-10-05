@@ -3,7 +3,6 @@ import { retain } from "alchemy/RemovalPolicy"
 import { Config, Effect, Redacted } from "effect"
 import { sharedNekiCluster, type Deployment, type SharedLayout } from "./config.ts"
 import { Neki } from "./neki/resources.ts"
-import { controlTables } from "./placement.ts"
 
 const nekiRegion = "us-east"
 
@@ -24,10 +23,16 @@ export const withDatabase = (input: {
 }
 
 /**
- * A Neki database with the control tables kept on the authoritative shard. `prod` runs two
- * replicas and two routers per cell and is protected from deletion and retained when its stage is
- * destroyed. The `preview` stage's cluster is the smallest the sizes allow: one shard, no
- * replicas and a single router. Both read their sizes from the stage's environment.
+ * A Neki database that routes no table yet: every table, actor rows included, stays on the
+ * authoritative shard, and the `routing_key` group is declared over that same shard. A Neki
+ * router plans each statement on a range-routed group itself, and its planner refuses the
+ * framework's turn statements there, so actor rows can only be routed once every statement on
+ * them runs on a session targeted at its data shard. `prod` runs two extra replicas and is
+ * protected from deletion and retained when its stage is destroyed. Every cluster runs one
+ * router per cell: Neki's router baseline already places one in each of three availability
+ * zones, and the router size comes from the stage's environment. The `preview` stage's cluster
+ * is the smallest the sizes allow: one shard, no replicas and a single router. Both read their
+ * sizes from the stage's environment.
  */
 const cluster = Effect.fn(function* (input: {
   readonly organization: string
@@ -46,10 +51,10 @@ const cluster = Effect.fn(function* (input: {
       {
         name: "default",
         size: yield* Config.String("NEKI_ROUTER_SIZE"),
-        replicasPerCell: production ? 2 : 1,
+        replicasPerCell: 1,
       },
     ],
-    unshardedTables: controlTables,
+    routedTables: [],
     deletionProtected: production,
   }).pipe(retain(production))
 })

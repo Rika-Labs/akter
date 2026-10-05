@@ -34,7 +34,7 @@ export interface NekiRouterGroup {
 
 /**
  * Properties of a Neki database. `shardCount`, `logicalDatabase`, `schema` and
- * `unshardedTables` shape the data topology, which this resource writes when it
+ * `routedTables` shape the data topology, which this resource writes when it
  * creates the database and otherwise only reads; see {@link NekiDatabase}.
  */
 export interface NekiDatabaseProps {
@@ -77,10 +77,10 @@ export interface NekiDatabaseProps {
    */
   schema?: string
   /**
-   * Tables in the schema that have no `routing_key` and stay on the authoritative
-   * shard.
+   * Tables in the schema routed by `routing_key` across the data shards. Every other
+   * table stays on the authoritative shard.
    */
-  unshardedTables?: ReadonlyArray<string>
+  routedTables?: ReadonlyArray<string>
   /**
    * Asks PlanetScale to refuse deleting the database. Left unset, the setting is not touched.
    */
@@ -114,8 +114,9 @@ export interface NekiDatabaseAttributes {
  * A PlanetScale Neki database: horizontally sharded Postgres.
  *
  * Creating it makes the database, waits for its first shard, adds data shards when
- * `shardCount` is above one, and writes a data topology that routes every table in
- * the schema by a `range` shard index on `routing_key`. The key space is split on
+ * `shardCount` is above one, and writes a data topology that routes the `routedTables` of
+ * the schema by a `range` shard index on `routing_key` and keeps every other table on the
+ * authoritative shard. The key space is split on
  * bucket boundaries, `routing_key >> 56`, read as the unsigned top byte of the
  * two's-complement key; see `bucketHex` in `./topology.ts`.
  *
@@ -123,8 +124,13 @@ export interface NekiDatabaseAttributes {
  * resharding workflows, which this resource does not run, and writing a topology
  * that moves a range without them leaves the rows on shards that no longer own
  * them. A live placement that differs from the props, whether the props changed or
- * a reshard completed, therefore fails the reconcile instead of being overwritten. Shards are
- * never deleted, and deleting the database deletes them with it.
+ * a reshard completed, therefore fails the reconcile instead of being overwritten. The one
+ * exception is a database that has, and is meant to have, a single shard. The authoritative and
+ * the data shard group are then the same shard, so every row already sits where any topology
+ * places it and writing one moves nothing. That covers a database created in the dashboard and
+ * adopted, a run that placed it but stopped before saving, and a change to the list of routed
+ * tables before the first reshard. Shards are never deleted, and deleting the database deletes
+ * them with it.
  *
  * @example
  * ```typescript
@@ -218,7 +224,7 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
   diff: ({ news, olds, output }) =>
     Effect.sync(() => {
       if (!isResolved(news)) return undefined
-      checkShardCount(news.shardCount ?? 1)
+      checkShardCount({ shardCount: news.shardCount ?? 1, routedTables: news.routedTables ?? [] })
       if (
         output !== undefined &&
         ((news.organization !== undefined && news.organization !== output.organization) ||
@@ -262,7 +268,7 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
     const organization = news.organization ?? credentials.organization
     const name = output?.name ?? (yield* resolveName(id, news.name))
     const shardCount = news.shardCount ?? 1
-    checkShardCount(shardCount)
+    checkShardCount({ shardCount, routedTables: news.routedTables ?? [] })
     const scope: TopologyScope = {
       database: news.logicalDatabase ?? "postgres",
       schema: news.schema ?? "public",
@@ -324,16 +330,16 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
         authoritativeShard: authoritative.name,
         dataShards,
         ...scope,
-        unshardedTables: news.unshardedTables ?? [],
+        routedTables: news.routedTables ?? [],
       })
 
-    const mayRewrite = fresh
-    const live =
-      mayRewrite && fresh
-        ? undefined
-        : yield* liveTopology(organization, name, branch).pipe(
-            Effect.catchTag("SchemaError", () => Effect.undefined),
-          )
+    const live = fresh
+      ? undefined
+      : yield* liveTopology(organization, name, branch).pipe(
+          Effect.catchTag("SchemaError", () => Effect.undefined),
+        )
+    const singleShard = shards.length === 1 && shardCount === 1
+    const mayRewrite = fresh || singleShard
 
     const sortedSpare = (all: typeof shards) =>
       all
