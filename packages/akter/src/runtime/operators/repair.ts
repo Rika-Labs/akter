@@ -269,7 +269,7 @@ export const operatorRuntime = (deps: {
           outcome: string
           expires_at_ms: number
         }>`SELECT command, outcome_tag, outcome, expires_at_ms::float8 AS expires_at_ms
-          FROM durable.receipts
+          FROM durable.receipts_v2
           WHERE routing_key = ${key} AND tenant_id = ${target.tenant}
             AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
             AND command_id = ${commandId}`)

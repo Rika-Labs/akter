@@ -148,6 +148,7 @@ const replayDdl = (sql: SqlClient.SqlClient, text: string) =>
       )
     if (/^DROP (?:TABLE|INDEX|VIEW) /i.test(text))
       return text.replace(/^(DROP (?:TABLE|INDEX|VIEW)) (?!IF EXISTS )/i, "$1 IF EXISTS ")
+    if (/^REVOKE /i.test(text)) return text
     if (/^CREATE (?:OR REPLACE )?(?:VIEW|FUNCTION) /i.test(text))
       return text.replace(/^CREATE (?:OR REPLACE )?/i, "CREATE OR REPLACE ")
 
@@ -263,7 +264,7 @@ export const nekiMigrator = ({
             if (/^SELECT\b/i.test(text.trim()))
               return yield* connection.execute(text, parameters, transform)
             const mutation = text.trim()
-            const ddl = /^(CREATE|ALTER|DROP)\b/i.test(mutation)
+            const ddl = /^(CREATE|ALTER|DROP|REVOKE)\b/i.test(mutation)
             if (!ddl && !(id === 26 && /^UPDATE\b/i.test(mutation)))
               return yield* Effect.die(
                 new Migrator.MigrationError({

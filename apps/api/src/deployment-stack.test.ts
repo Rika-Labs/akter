@@ -838,7 +838,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const generationOf = (id: string) =>
           Effect.promise(() =>
             applicationRows.query<{ generation: number }>(
-              "SELECT generation::int AS generation FROM durable.actors WHERE tenant_id = 'default' AND actor_type = 'Counter' AND actor_id = $1",
+              "SELECT generation::int AS generation FROM durable.actors_v2 WHERE tenant_id = 'default' AND actor_type = 'Counter' AND actor_id = $1",
               [id],
             ),
           ).pipe(Effect.map((result) => result.rows[0]?.generation))
@@ -1179,7 +1179,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
           "every Settle job to dead-letter and the Retry job to fail its first attempt",
           90,
           rows<{ dead: number; retrying: number; queued: number }>(
-            "SELECT (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = 'default') AS dead, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default' AND job = 'Retry' AND attempts > 0) AS retrying, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default' AND job = 'Later' AND attempts = 0) AS queued",
+            "SELECT (SELECT count(*)::int FROM durable.dead_letters_v2 WHERE tenant_id = 'default') AS dead, (SELECT count(*)::int FROM durable.jobs_v2 WHERE tenant_id = 'default' AND job = 'Retry' AND attempts > 0) AS retrying, (SELECT count(*)::int FROM durable.jobs_v2 WHERE tenant_id = 'default' AND job = 'Later' AND attempts = 0) AS queued",
           ),
           ([found]) => found?.dead === 3 && found.retrying === 1 && found.queued === 1,
         )
@@ -1187,7 +1187,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
           "the review to suspend on its clock and the other two runs to finish",
           90,
           rows<{ workflow: string; status: string }>(
-            "SELECT workflow, status FROM durable.workflows WHERE tenant_id = 'default' ORDER BY workflow",
+            "SELECT workflow, status FROM durable.workflows_v2 WHERE tenant_id = 'default' ORDER BY workflow",
           ),
           (found) =>
             found.map((row) => `${row.workflow}:${row.status}`).join(",") ===
@@ -1242,7 +1242,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         const asAlice = { kind: "user", subject: `user:${aliceId}`, source: null }
 
         const [counts] = yield* rows<{ actors: number; jobs: number; timers: number }>(
-          "SELECT (SELECT count(*)::int FROM durable.actors WHERE tenant_id = 'default') AS actors, (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = 'default') AS jobs, (SELECT count(*)::int FROM durable.timers WHERE tenant_id = 'default') AS timers",
+          "SELECT (SELECT count(*)::int FROM durable.actors_v2 WHERE tenant_id = 'default') AS actors, (SELECT count(*)::int FROM durable.jobs_v2 WHERE tenant_id = 'default') AS jobs, (SELECT count(*)::int FROM durable.timers_v2 WHERE tenant_id = 'default') AS timers",
         )
         expect(counts?.actors).toBe(3)
         expect(counts?.jobs).toBe(2)
@@ -1329,7 +1329,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         })
 
         const generations = yield* rows<{ actor_id: string; generation: number }>(
-          "SELECT actor_id, generation::int AS generation FROM durable.actors WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
+          "SELECT actor_id, generation::int AS generation FROM durable.actors_v2 WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
         )
         const lastCommands = yield* rows<{ actor_id: string; command: string; at: string }>(
           "SELECT DISTINCT ON (actor_id) actor_id, command, committed_at_ms::text AS at FROM actor_receipts WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND committed_at_ms IS NOT NULL ORDER BY actor_id, committed_at_ms DESC, command_id COLLATE \"C\" DESC",
@@ -1381,7 +1381,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
           committed_at_ms: string
           duration_ms: string
         }>(
-          "SELECT actor_type, actor_id, command_id, command, outcome_tag, expires_at_ms::text, committed_at_ms::text, duration_ms::text FROM durable.receipts WHERE tenant_id = 'default'",
+          "SELECT actor_type, actor_id, command_id, command, outcome_tag, expires_at_ms::text, committed_at_ms::text, duration_ms::text FROM durable.receipts_v2 WHERE tenant_id = 'default'",
         )
         const receiptAt = (commandId: string) =>
           Number(receiptRows.find((row) => row.command_id === commandId)?.committed_at_ms)
@@ -1443,7 +1443,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
           command_id: string
           emitted_at_ms: string
         }>(
-          "SELECT sequence::int AS sequence, event, command_id, emitted_at_ms::text FROM durable.events WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND actor_id = 'a' ORDER BY sequence DESC",
+          "SELECT sequence::int AS sequence, event, command_id, emitted_at_ms::text FROM durable.events_v2 WHERE tenant_id = 'default' AND actor_type = 'Ledger' AND actor_id = 'a' ORDER BY sequence DESC",
         )
         expect(events.map((event) => [event.sequence, event.event, event.command_id])).toEqual([
           [4, "Adjusted", adjusted.commandId],
@@ -1547,7 +1547,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
           cause: string
           dead_at_ms: string
         }>(
-          "SELECT actor_id, job_id, attempts::int AS attempts, cause, dead_at_ms::text FROM durable.dead_letters WHERE tenant_id = 'default'",
+          "SELECT actor_id, job_id, attempts::int AS attempts, cause, dead_at_ms::text FROM durable.dead_letters_v2 WHERE tenant_id = 'default'",
         )
         const letters = yield* every("/dead-letters?limit=2", Cloud.DeadLetter)
         for (const letter of letters)
@@ -1577,7 +1577,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         expect(deadRows.map((row) => row.actor_id).toSorted()).toEqual(["a", "a", "b"])
 
         const runs = yield* rows<{ execution_id: string; workflow: string; started_at_ms: string }>(
-          "SELECT execution_id, workflow, started_at_ms::text FROM durable.workflows WHERE tenant_id = 'default'",
+          "SELECT execution_id, workflow, started_at_ms::text FROM durable.workflows_v2 WHERE tenant_id = 'default'",
         )
         expect(runs.find((run) => run.workflow === "Review")?.execution_id).toBe(executionId)
         const expectedRuns = runs
@@ -1609,7 +1609,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
         expect(yield* workflows("?status=running")).toEqual([])
 
         const [timers] = yield* rows<{ pending: number; due: string }>(
-          "SELECT count(*)::int AS pending, min(due_at_ms)::text AS due FROM durable.timers WHERE tenant_id = 'default'",
+          "SELECT count(*)::int AS pending, min(due_at_ms)::text AS due FROM durable.timers_v2 WHERE tenant_id = 'default'",
         )
         expect(timers?.pending).toBeGreaterThanOrEqual(3)
         const firing = yield* get("/timers", Cloud.TimersSummary)
@@ -1963,7 +1963,7 @@ layer(Layer.provideMerge(ImagesLive, services), {
             .filter((row) => row.actor_type === actorType && row.actor_id === actorId)
             .toSorted((left, right) => Number(right.committed) - Number(left.committed))[0]
         const generations = yield* rows<{ actor_id: string; generation: number }>(
-          "SELECT actor_id, generation::int AS generation FROM durable.actors WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
+          "SELECT actor_id, generation::int AS generation FROM durable.actors_v2 WHERE tenant_id = 'default' AND actor_type = 'Ledger'",
         )
         const instances = yield* get(
           "/actor-types/Ledger/instances",

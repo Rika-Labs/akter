@@ -115,7 +115,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase<WorkflowsFi
           const run = yield* shipper.Watch({ mode: "phases", orderId: "phases" })
 
           const status = () =>
-            sql<{ status: string }>`SELECT status FROM durable.workflows
+            sql<{ status: string }>`SELECT status FROM durable.workflows_v2
               WHERE execution_id = ${run.executionId}`.pipe(Effect.map((rows) => rows[0]?.status))
 
           yield* suspendedRow(run.executionId)
@@ -140,7 +140,7 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase<WorkflowsFi
       ),
   },
   {
-    name: "workflows: durable.workflows and durable.workflow_steps show a suspended then finished execution",
+    name: "workflows: durable.workflows_v2 and durable.workflow_steps_v2 show a suspended then finished execution",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
@@ -161,14 +161,14 @@ export const workflowBasicConformance: ReadonlyArray<ConformanceCase<WorkflowsFi
               stored: boolean | null
             }>`SELECT execution_id, tenant_id, workflow, workflow_key, status,
                 finished_at IS NOT NULL AS finished, result_bytes > 0 AS stored
-              FROM durable.workflows
+              FROM durable.workflows_v2
               WHERE tenant_id = ${test.tenant} AND actor_type = 'Shipper' AND actor_id = 'inspected'`
 
           const steps = () =>
             sql<{ step: string; kind: string; settled: boolean; dated: boolean }>`
               SELECT step, kind, exit IS NOT NULL AS settled,
                 due_at IS NOT DISTINCT FROM to_timestamp(due_at_ms::float8 / 1000) AS dated
-              FROM durable.workflow_steps
+              FROM durable.workflow_steps_v2
               WHERE tenant_id = ${test.tenant} AND execution_id = ${run.executionId}
                 AND kind IN ('activity', 'clock')
               ORDER BY started_at_ms, step`
