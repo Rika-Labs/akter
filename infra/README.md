@@ -1,18 +1,52 @@
 # Akter infrastructure
 
-The private `@akter/infra` workspace provisions the AWS, Cloudflare, Axiom, and Neki stack through Alchemy and Distilled. It does not build container images or deploy application source. All provider versions are exact catalog pins.
+The private `@akter/infra` workspace provisions the hosted platform on Fly.io through Alchemy and Distilled: the API, edge, console and site, their certificates and DNS records, the Neki control-plane databases, Axiom telemetry and the Stripe webhook of each stage. A second stack writes the GitHub environments the deploy workflow runs in. It does not build application source outside the stack's own image builds, and it does not provision customer runners, which the API creates at run time. [ADR 0089](../docs/decisions/0089-fly-infrastructure-and-environments.md) records the decisions; all provider versions are exact catalog pins.
 
-The chosen public domains are `akter.dev` (site), `app.akter.dev` (console), and `docs.akter.dev` (documentation); none is registered yet. A production stack using zone `akter.dev` creates its console hostname as `app.akter.dev`. Stage zones remain explicitly configured rather than silently sharing production DNS.
+## Stages
 
-## Deployment orchestration bindings
+The only stages are `prod`, `preview` and `pr-<n>`. Anything else, including `dev` and `staging`, is refused before a provider is reached, and CI never destroys `prod` or `preview`.
 
-The stack provisions a private runner security group, ARM64 Fargate task-definition permissions, an NLB with preserved Cloudflare source addresses, and an empty Secrets Manager entry for edge signing keys. Before launching real tasks, populate `<stack-name>/edge-signing-keys` with the edge's private Ed25519 JWK array. The edge never forwards its private key. Runners use the API's public `/edge/keys` endpoint or explicitly supplied public keys. Production refuses shared `RUNNER_ENVIRONMENT` values; each deployment must supply its own customer-cell bindings. The local-only setting is not a shared-cell security boundary.
+| Stage    | Fly organization | Site                       | Console                        | API                            | Edge                            | `DEPLOYMENT_DOMAIN`        | Sleeps when idle |
+| -------- | ---------------- | -------------------------- | ------------------------------ | ------------------------------ | ------------------------------- | -------------------------- | ---------------- |
+| `prod`   | `rika-labs-prod` | `akter.dev`                | `app.akter.dev`                | `api.akter.dev`                | `edge.akter.dev`                | `akter.run`                | no               |
+| `pr-<n>` | `rika-labs-dev`  | `pr-<n>.preview.akter.dev` | `app-pr-<n>.preview.akter.dev` | `api-pr-<n>.preview.akter.dev` | `edge-pr-<n>.preview.akter.dev` | `pr-<n>.preview.akter.run` | yes              |
 
-The API receives `RUNNER_ECS_CONFIG` from the provisioned cluster, private subnets, runner security group and a separate runner execution role that cannot read platform secrets. Only edge tasks may reach runner HTTP ports. Runner peering port 9000 is closed until authenticated peering or per-deployment network isolation is implemented. Each customer image must serve HTTPS on its configured runner port with a trusted certificate; HTTP configuration is refused in production. `RUNNER_MIGRATION_COMMAND` is a JSON argument array, defaulting to `["bun", "run", "migrate"]`. Customer-cell assignment, production certificate issuance and provider-specific validation still require authorized setup; local Docker evidence is not certification of these resources.
+`preview` is not an environment. It runs no application, has no hostnames, and declares only what every `pr-<n>` shares: the Neki cluster `akter-preview` and the Axiom datasets. It publishes the cluster's coordinates as its stack output, and each `pr-<n>` reads them. Its credentials are the `preview` GitHub environment's, which is also the one pull request code runs with.
 
-The runner execution role may pull the `akter/runner-base` repository and customer repositories under `akter/runners/` in the selected account and region, not platform service images. Provision those customer repositories separately before pushing immutable images. ECS launch permissions are restricted to runner task-definition families in the selected cluster, and stop/describe permissions require a runner deployment tag. The API may apply that tag only while creating a runner task.
+Every machine runs in `iad`. Fly apps are named `akter-<stage>-api`, `-edge`, `-console` and `-site`, and the API starts customer runner apps named with the prefix `akter-<stage without hyphens>-run-`. The edge also holds the wildcard certificate `*.<customer domain>`. A preview stops its machines when idle and starts them on the next request.
 
-The API currently hosts its orchestration actors in one embedded process, so its ECS service has one desired task. The edge can have multiple tasks. Multi-process control-plane availability requires socket-runner wiring and separate topology evidence before increasing that count.
+## What the service stack declares
+
+- **Apps.** The API and the edge are Fly Machines running images built from `apps/api/Dockerfile` and `apps/edge/Dockerfile` for `linux/amd64`, which Fly requires, and pushed to `registry.fly.io/<app>`. The console (`Fly.Website.Foldkit`, built against its stage's API) and the site (`Fly.Website.Astro`, static) are served by Fly. Each app gets a shared IPv4 and an IPv6.
+- **Environment and secrets.** The API's and the edge's runtime environment is set in `src/applications.ts`; every secret is a Fly secret, and a machine carries each secret's digest as metadata so a rotated secret restarts it. The API receives `FLY_API_TOKEN` (the stage's organization token) so it can create runner apps, `RUNNER_FLY_CONFIG`, `EMAIL_MODE=resend` with `RESEND_API_KEY` and `EMAIL_FROM`, the Stripe key and webhook secret, and `CONTROL_PLANE_DATABASE_URL`. The edge receives `EDGE_TRUST_FLY_PROXY=true`, `EDGE_SIGNING_KEYS` and the database URL. `AUTH_SECRET` and the edge's Ed25519 key are generated by the stack and live in its state.
+- **DNS and certificates.** Fly certificates for each hostname and the wildcard; Vercel records for each hostname, the production apex, and the wildcard with its ACME challenge. The stack only creates records. It never creates a zone and never touches records it did not make, so the mail records on `akter.dev` stay as they are.
+- **Database.** Every database is Neki (`src/neki`). `prod` creates `akter-prod` with a role for the services; it keeps two replicas and two routers per cell, is protected from deletion and is retained when the stage is destroyed. `preview` creates `akter-preview`: the same resources at the smallest sizes, with no replicas, one shard and one router. A `pr-<n>` creates a Neki role on that cluster and a logical database `akter_pr_<n>` with `CREATE DATABASE`, and drops both when it is destroyed. The services' role inherits `postgres` because the API creates its tables when it boots.
+- **Telemetry.** `prod` and `preview` both declare the Axiom datasets `akter-traces` and `akter-logs`, adopting them if they exist and retaining them, so neither has to be deployed first. `prod` owns the one error monitor, which watches `prod` only. Every deployed stage mints its own ingest token. Previews never create datasets or monitors, because the Personal plan allows three of each for the whole organization. The stack sets `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=<stage>` so telemetry can be told apart by stage.
+- **Billing.** One Stripe webhook endpoint per deployed stage at `https://<api host>/api/billing/webhook`. Previews use a test-mode key; `prod` uses a live key, and the stack refuses the wrong mode.
+- **State.** Alchemy `PostgresState` in the database named by `ALCHEMY_STATE_DATABASE_URL`. `prod` has a database of its own; `preview` and every `pr-<n>` share another, which is what lets a preview read the `preview` stage's output.
+- **Preview comment.** A preview posts its URLs on its pull request through `GitHub.Comment`, updating the same comment on every push.
+
+## Inputs
+
+The service stack reads these from the environment (GitHub environment secrets and variables in CI). The `production` and `preview` environments each hold their own value of every row marked per environment, because pull request code runs with the `preview` environment.
+
+| Input                                               | Per environment | Meaning                                                                                                              |
+| --------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `ALCHEMY_STATE_DATABASE_URL`                        | yes             | Connection URL of a state database; a PlanetScale Postgres database of its own. `preview` must not read `prod`'s.    |
+| `FLY_API_TOKEN`                                     | yes             | An organization token for the stage's Fly organization; the API also uses it to create runner apps.                  |
+| `STRIPE_API_KEY`                                    | yes             | Test-mode key for `preview`, live key for `production`; also the API's key.                                          |
+| `RESEND_API_KEY`                                    | yes             | The key the API sends mail with; the stack does not manage Resend.                                                   |
+| `PLANETSCALE_API_TOKEN_ID`, `PLANETSCALE_API_TOKEN` | yes             | A PlanetScale service token with Neki access.                                                                        |
+| `NEKI_CLUSTER_SIZE`, `NEKI_ROUTER_SIZE`             | yes             | Neki sizes: the smallest for `preview`, production's for `production`.                                               |
+| `NEKI_SHARD_COUNT`                                  | production only | The shard count of `prod`, default 1. The `preview` stage is always one shard.                                       |
+| `PLANETSCALE_ORGANIZATION`                          | no              | The PlanetScale organization (`dallenpyrah-rikalabs`).                                                               |
+| `VERCEL_TOKEN`, `VERCEL_TEAM_ID`                    | no              | A token that can edit DNS of `akter.dev` and `akter.run`; the team id is optional (`team_pVscXSY6qeeH5CBnGjWIpz8p`). |
+| `AXIOM_TOKEN`, `AXIOM_ORG_ID`                       | token minted    | An Axiom token and the organization (`rika-labs-k5hj`); the GitHub stack mints each environment's own token.         |
+| `AXIOM_NOTIFIER_ID`                                 | production only | The notification destination for the monitor `prod` owns.                                                            |
+| `IMAGE_TAG`                                         | no              | The tag pushed for the images; defaults to `GITHUB_SHA`, then `local`.                                               |
+| `GITHUB_TOKEN`, `PULL_REQUEST`                      | no              | Set by the workflow so a preview can comment.                                                                        |
+
+`infra/stacks/github.ts` reads the same names to write the environments. A per-environment input is read there as `PREVIEW_<NAME>` or `PRODUCTION_<NAME>`, for example `PREVIEW_ALCHEMY_STATE_DATABASE_URL` and `PRODUCTION_NEKI_SHARD_COUNT`; `VERCEL_TOKEN` is copied to both. Never commit credentials or a populated environment file.
 
 ## Credential-free checks
 
@@ -28,69 +62,48 @@ bun run --cwd infra test
 bun run --cwd infra plan:offline
 ```
 
-The offline preview compiles all six stage-region combinations with memory state, deliberately invalid provider tokens, loopback API endpoints, and a nonexistent AWS profile. It checks every resource's provider registration. It never runs Alchemy's cloud planner or resource lifecycle methods and never reads a real provider credential. Its output contains only logical IDs and resource types, not secrets or resolved URLs.
+`plan:offline` compiles the service stack for `prod`, `preview` and `pr-1` with memory state, placeholder inputs and loopback endpoints. It checks every resource's provider registration and never runs Alchemy's planner or any lifecycle method, so it makes no provider call. `bun run --cwd infra test:integration` also needs `TEST_DATABASE_URL`: it runs the logical-database provider against a real Postgres.
 
-`alchemy plan` exists, but needs real credentials. Its S3 state backend may create/configure the state bucket even during a plan. Do not run it as an offline check or as a promise of no provider writes.
+`alchemy plan` exists but needs real credentials and a reachable state database; do not use it as an offline check.
 
-## Organization bootstrap
+## One-time setup
 
-`organization.run.ts` is a separate account-vending stack. Use an Alchemy profile for the AWS management account in `us-east-1`, set `AKTER_MANAGEMENT_ACCOUNT_ID`, and supply `AKTER_DEV_ACCOUNT_EMAIL`, `AKTER_STAGING_ACCOUNT_EMAIL`, and `AKTER_PROD_ACCOUNT_EMAIL`. Each email must be unique across AWS accounts. The stack creates/adopts an organization with all features, discovers its root, and creates the three member accounts with `OrganizationAccountAccessRole`.
+Done once by a person, before the first deploy:
 
-With explicit deployment authorization and credentials:
+1. **Domains.** `akter.dev` is in Vercel. Buy `akter.run` in Vercel too; the stack creates records in it but cannot create it.
+2. **Fly.** Create the organizations `rika-labs-dev` and `rika-labs-prod`, add billing, and create an organization token for each (`fly tokens create org -o <organization>`).
+3. **State databases.** Create two small PlanetScale Postgres databases for Alchemy state, each with a role, and keep their connection URLs: one for `production`, one for `preview`.
+4. **PlanetScale.** Join the Neki platform preview for the organization and create a service token that can create databases, branches and roles. Make a second, narrower token for `preview` if PlanetScale lets you scope one to the `akter-preview` database.
+5. **Axiom.** Create a notification destination for errors and an admin or personal access token to run the GitHub stack. The free Personal plan allows three datasets and three monitors; the stack uses two and one.
+6. **Resend.** `akter.dev` is added and verified by hand; create the keys the API sends with, one per environment.
+7. **Stripe.** Create a test-mode key for `preview` and a live key for `production`, each as narrow as billing allows.
+8. **GitHub environments.** With repository admin access (`gh auth login`), put the inputs above in the environment of a shell, using the `PREVIEW_` and `PRODUCTION_` names for the per-environment ones, and run `bun run --cwd infra deploy:github`. It creates the `preview` and `production` environments, restricts `production` to deployments from `main`, writes their secrets and variables, and mints an Axiom token for each. Rerun it to rotate a value.
+9. **First deploy order.** Run `Deploy` by hand from `main` and choose `preview`: it creates the Neki cluster that every pull request preview depends on. After that previews deploy with their pull requests, and `prod` deploys when `Verify` passes on `main`; `prod` does not depend on `preview`.
 
-```sh
-cd infra
-bunx alchemy plan organization.run.ts --stage organization --profile akter-management
-bunx alchemy deploy organization.run.ts --stage organization --profile akter-management
-```
+## Deploying
 
-The organization, root, and accounts are retained; destroying the service stack cannot remove them. Copy the returned account and organization IDs into the regional stack's configuration. Existing member accounts can instead be configured directly; account adoption/vending must be authorized separately from service deployment.
-
-## Regional service configuration
-
-The service stack accepts only Alchemy stages `dev`, `staging`, and `prod`. Set `AKTER_REGION` to `us-east-1` (the default) or `us-west-2`. Deploy each region separately; the stack name is `akter-<region>` and Alchemy adds stage isolation.
-
-| Setting                                                                     | Meaning                                                                                                                                                               |
-| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AKTER_DEV_ACCOUNT_ID`, `AKTER_STAGING_ACCOUNT_ID`, `AKTER_PROD_ACCOUNT_ID` | Three distinct 12-digit member-account IDs.                                                                                                                           |
-| `AKTER_ORGANIZATION_ID`                                                     | Organization expected by the credential guard.                                                                                                                        |
-| `AKTER_<STAGE>_AWS_PROFILE`                                                 | Shared AWS profile, defaulting to `akter-dev`, `akter-staging`, or `akter-prod`; supports Distilled's SSO, process, web-identity, and assume-role profile mechanisms. |
-| `AKTER_<STAGE>_<REGION>_ZONE`                                               | A distinct Cloudflare zone for this deployment, for example `staging-east.akter.dev`. Region is uppercase with underscores, such as `US_EAST_1`.                      |
-| `AKTER_<STAGE>_<REGION>_CERTIFICATE_ARN`                                    | Issued ACM certificate in this account and region, covering `api`, `edge`, and `console` under the zone.                                                              |
-| `AKTER_<STAGE>_<REGION>_IMAGE_TAG`                                          | Immutable tag already present in each application ECR repository.                                                                                                     |
-| `AKTER_<STAGE>_<REGION>_CUSTOM_HOSTNAMES`                                   | Optional JSON string array of customer domains managed by this stack. Defaults to `[]`.                                                                               |
-| `PLANETSCALE_ORGANIZATION`                                                  | PlanetScale organization with Neki preview access.                                                                                                                    |
-| `AXIOM_NOTIFIER_ID`                                                         | Existing Axiom notification destination for the error monitor.                                                                                                        |
-
-Set `AKTER_<STAGE>_<REGION>_NEKI_CLUSTER_SIZE` and `AKTER_<STAGE>_<REGION>_NEKI_ROUTER_SIZE` to available Neki shard/router SKUs confirmed with the provider. `AKTER_<STAGE>_<REGION>_NEKI_SHARD_COUNT` sets the initial actor-data shard count from 1–256 (default 1). A live count change is refused rather than treated as a reshard.
-
-Configure Axiom, Cloudflare, and PlanetScale credentials in an Alchemy profile, or use their documented environment variables in CI. These credentials are not AWS stage selection: the stack always selects and verifies the stage's named AWS profile, ignoring ambient AWS keys. Never commit credentials or a populated environment file.
-
-With explicit deployment authorization and credentials:
+Pull requests and `main` deploy through `.github/workflows/deploy.yml`; see [CI](../.github/ci.md#deploy). By hand, with the inputs in the environment:
 
 ```sh
 cd infra
-AKTER_REGION=us-east-1 bunx alchemy plan --stage staging
-AKTER_REGION=us-east-1 bunx alchemy deploy --stage staging
-AKTER_REGION=us-west-2 bunx alchemy deploy --stage staging
+bun run guard deploy preview
+bun --bun run deploy --stage preview --yes
+bun run guard destroy pr-12
+bun --bun run destroy --stage pr-12 --yes
 ```
 
-## Resources and boundaries
+The `guard` script refuses an unknown stage and a destroy of `prod` or `preview` from CI, which Alchemy cannot tell from a deploy while it evaluates the stack. `bun run stages` lists the stages in state, which the nightly job uses to find previews whose pull request is closed.
 
-- Each region has a VPC, two public/private subnet pairs, internet routing, two NAT gateways, a Fargate cluster, an NLB, and ARM64 task definitions/services for `api`, `edge`, and `console`. ECR repositories are `akter/runner-base`, `akter/api`, `akter/edge`, and `akter/console`. The runner repository is a base-image destination, not a deployed customer-runner service.
-- GitHub Actions owns builds and pushes immutable ARM64 images. Images must listen on ports 3001, 3002, and 3000 respectively and answer `GET /health`; application exporters must honor the standard OTLP environment settings. The stack does not prove current applications or unavailable images satisfy those prerequisites.
-- Cloudflare proxies CNAMEs to the NLB. Origin rules send `edge` to TLS 443, `console` to TLS 8443, and `api` to TLS 2053. Only the published Cloudflare IPv4 ranges can reach those listeners; private tasks admit traffic only from the NLB security group. Review the ranges against `https://www.cloudflare.com/ips-v4` before deployment.
-- Each stack owns the zone's origin-rule entrypoint. Use a distinct zone per stage-region and do not manage that phase in another stack. Cloudflare for SaaS and the custom-origin/SNI entitlement must be enabled for customer domains; TXT ownership/certificate validation and customers' CNAME changes remain external obligations. The certificate must match the origin SNI and be usable in Full (strict) mode.
-- SES uses a domain identity, three DNS-only Easy DKIM CNAMEs, and a TLS-required configuration set. Domain delegation, DNS propagation, production sending access, and limits require real provider verification.
-- Customer environment variables use a rotating KMS envelope-encryption key, separate from the service-secrets key. Auth material is generated in Secrets Manager; provider-derived Turnstile and Axiom secrets stay redacted and are injected by ARN, not stack outputs. Axiom OTLP traces and logs have separate datasets and header secrets.
-- The state backend bootstraps `akter-state-<account>-<region>-an`. The retained bucket resource adopts it, enables versioning, blocks public access, and rejects SSE-C. Do not delete this bucket during ordinary teardown; it contains sensitive provider state. Restrict IAM access and keep its version history.
+## Teardown and retention
 
-Neki connection outputs are redacted provider role URLs on port 5432, with percent-encoded credentials and `sslmode=verify-full`. Runtime and migration roles are separate; the runtime URL is injected into API and edge through Secrets Manager. The topology defaults actor tables to a range index on `routing_key`; `src/placement.ts` lists the existing control-plane, framework metadata, and Effect Cluster tables without routing keys that stay unsharded. Future tables without routing keys need explicit placement before deployment.
+Destroying a `pr-<n>` stage deletes its Fly apps and machines, certificates, DNS records, Neki role and logical database, Stripe endpoint, Axiom token and generated keys. Alchemy retains the Neki database of `prod` and the Axiom datasets, and nothing else; retained resources need an explicit operator removal. CI never destroys `prod` or `preview`. An operator who destroys `preview` deletes the shared Neki cluster, so destroy every preview first. State, the DNS zones and the Resend domain are outside every stage's destroy.
 
-The range mapping assumes Neki encodes a negative `int8` as its unsigned two's-complement bit pattern: buckets 0–127 become `00`–`7f` and buckets -128–-1 become `80`–`ff`. The topology tests prove complete nonoverlapping ranges under that convention, but Neki's published documentation does not confirm its negative-integer encoding. Verify both signed halves with `EXPLAIN (NEKI_PLAN)` before deploying a topology with more than one actor-data shard. The default one-shard topology does not split that boundary. Changing a live topology fails closed; no REST-based resharding workflow is invented.
+## Boundaries
 
-Provisioning and topology generation do not prove runtime Neki support; the provider-specific create/reconcile/delete and SQL conformance checks remain separate gates. Topology polling observes stored API state, not every router's applied state; router propagation needs the provider's SQL readiness check during live verification.
-
-## Teardown
-
-After authorized live verification, `alchemy destroy --stage staging` removes service resources but retains the state bucket and DNS zone. Production also retains customer/service KMS keys and its Neki database. Retained resources need an explicit operator removal procedure; do not treat a destroy as an AWS account closure or complete erasure.
+- A Neki router may refuse `CREATE DATABASE` and `DROP DATABASE`; nothing has run them against Neki yet. If it does, a preview's deploy fails with the router's error, and the fallback is one schema per preview in the shared database, which is a code change in `src/database.ts` and `src/neki/logical-database.ts`.
+- Neki roles are cluster-wide, so a preview's role can read every other preview's logical database on the shared cluster. The cluster holds preview data only and `prod` never uses it.
+- Neki connection URLs are redacted provider role URLs on port 5432, with percent-encoded credentials and `sslmode=verify-full`. `src/placement.ts` lists the control-plane, framework metadata and Effect Cluster tables that stay unsharded; future tables without routing keys need explicit placement before deployment.
+- The range mapping assumes Neki encodes a negative `int8` as its unsigned two's-complement bit pattern: buckets 0–127 become `00`–`7f` and buckets -128–-1 become `80`–`ff`. The topology tests prove complete nonoverlapping ranges under that convention, but Neki's published documentation does not confirm it. Verify both signed halves with `EXPLAIN (NEKI_PLAN)` before deploying a topology with more than one actor-data shard. Changing a live topology fails closed; no REST-based resharding workflow is invented.
+- Provisioning and topology generation do not prove runtime Neki support; the provider-specific create, reconcile, delete and SQL conformance checks remain separate gates.
+- Stripe allows 16 webhook endpoints per account, which bounds the previews open at once.
+- Stage state is sensitive: it holds the generated `AUTH_SECRET`, the edge signing key and provider tokens. Restrict the state database accordingly.
