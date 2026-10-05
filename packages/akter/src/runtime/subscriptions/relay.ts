@@ -10,8 +10,9 @@ import { decompress, type Placement, routingKey } from "../storage/codec.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { TurnHooks, type TurnPoint } from "../turn/hooks.ts"
 import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
-import { candidates, outboxNow } from "../turn/relay.ts"
+import { candidates, outboxClock, outboxNow } from "../turn/relay.ts"
 import { changeRows, rowColumns } from "./storage.ts"
+import { NekiTurnSessions } from "../database/neki/session.ts"
 import { deliveryCommandId } from "./identity.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -239,6 +240,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   const clock = yield* FrameworkClock
   const { settings } = options
   const now = () => outboxNow({ sql, offsetMillis: clock.offsetMillis() })
+  const statementClock = outboxClock({ sql, neki: yield* NekiTurnSessions })
 
   const sourceWhere = (alias: string, key: bigint, source: ActorRef) =>
     sql`${sql(alias)}.routing_key = ${key} AND ${sql(alias)}.tenant_id = ${source.tenant}
@@ -463,7 +465,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
           <= (SELECT subscriber_type, subscription, subscriber_id FROM last)`
 
       const [page] = yield* sql<{ rows: number; last: string | null; leased: string | null }>`
-        WITH head AS (
+        WITH ${statementClock}, head AS (
           SELECT event_sequence AS h FROM actor_generations g
           WHERE ${eventsOf("g", key, source)}),
         page AS MATERIALIZED (
@@ -647,6 +649,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
               delivered = EXCLUDED.delivered, marked = 0, due_at_ms = EXCLUDED.due_at_ms, attempts = 0,
               last_error = NULL, gap_at_ms = NULL, gap_through = NULL
             RETURNING ${rowColumns({ sql, alias: "s" })}`,
+          statementClock,
         )
 
         return false
@@ -979,6 +982,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             ELSE ARRAY(SELECT DISTINCT x FROM unnest(s.events || ${declared}) AS u(x) ORDER BY x) END
         WHERE ${held()}
         RETURNING ${rowColumns({ sql, alias: "s" })}`,
+      statementClock,
     )
 
     if (settled === 0) return yield* lostClaim("settle")
@@ -1044,6 +1048,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             AND s.subscriber_type = o.subscriber_type AND s.subscription = o.subscription
             AND s.subscriber_id = o.subscriber_id
           RETURNING ${rowColumns({ sql, alias: "s" })}`,
+        statementClock,
       )
 
       if (widened < EXPANSION_PAGE) break

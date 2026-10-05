@@ -1,15 +1,15 @@
 -- What the hosted edge reads: hosts, runners, hosted credentials, and its published keys.
 
 -- A platform subdomain or verified custom domain, lowercase and without a port.
-CREATE TABLE deployment_host (
+CREATE TABLE IF NOT EXISTS deployment_host (
   host text PRIMARY KEY CHECK (host = lower(host) AND host !~ ':'),
   deployment_id text NOT NULL REFERENCES deployment(id) ON DELETE CASCADE
 );
 
-CREATE INDEX deployment_host_deployment_idx ON deployment_host (deployment_id);
+CREATE INDEX IF NOT EXISTS deployment_host_deployment_idx ON deployment_host (deployment_id);
 
 -- The runners the edge may forward to; any ready one in the tenant's home region will do.
-CREATE TABLE deployment_runner (
+CREATE TABLE IF NOT EXISTS deployment_runner (
   deployment_id text NOT NULL REFERENCES deployment(id) ON DELETE CASCADE,
   region text NOT NULL,
   -- The runner's origin, without a path: the edge appends each request's own path.
@@ -24,7 +24,7 @@ CREATE TABLE deployment_runner (
 
 -- Hosted API keys, stored as the SHA-256 of the key. A revoked key is refused from the
 -- moment `revoked_at` commits.
-CREATE TABLE hosted_api_key (
+CREATE TABLE IF NOT EXISTS hosted_api_key (
   key_hash text PRIMARY KEY CHECK (key_hash ~ '^[0-9a-f]{64}$'),
   deployment_id text NOT NULL REFERENCES deployment(id) ON DELETE CASCADE,
   tenant text NOT NULL CHECK (tenant ~ '^[A-Za-z0-9._:-]{1,128}$'),
@@ -33,10 +33,10 @@ CREATE TABLE hosted_api_key (
   revoked_at timestamptz
 );
 
-CREATE INDEX hosted_api_key_deployment_idx ON hosted_api_key (deployment_id);
+CREATE INDEX IF NOT EXISTS hosted_api_key_deployment_idx ON hosted_api_key (deployment_id);
 
 -- A deployment's declarative JWT settings: the tenant is a claim or a fixed value, never code.
-CREATE TABLE deployment_jwt (
+CREATE TABLE IF NOT EXISTS deployment_jwt (
   deployment_id text PRIMARY KEY REFERENCES deployment(id) ON DELETE CASCADE,
   issuer text NOT NULL,
   audience text NOT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE deployment_jwt (
 
 -- The edge's public keys. Runners read the unrevoked ones as their key set; a key is
 -- published before the edge signs with it and stays published until `expires_at`.
-CREATE TABLE edge_key (
+CREATE TABLE IF NOT EXISTS edge_key (
   kid text PRIMARY KEY,
   x text NOT NULL,
   published_at timestamptz NOT NULL DEFAULT now(),

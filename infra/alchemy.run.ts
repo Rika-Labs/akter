@@ -1,9 +1,7 @@
 import * as Alchemy from "alchemy"
-import { Effect } from "effect"
-import { state } from "./src/aws.ts"
-import { region } from "./src/config.ts"
-import { resources, stackProviders } from "./src/stack.ts"
+import { stackName } from "./src/config.ts"
+import { stackProviders } from "./src/providers.ts"
+import { state } from "./src/state.ts"
+import { resources } from "./src/stack.ts"
 
-const location = await Effect.runPromise(region)
-
-export default Alchemy.Stack(`akter-${location}`, { providers: stackProviders, state }, resources)
+export default Alchemy.Stack(stackName, { providers: stackProviders, state }, resources)

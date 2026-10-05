@@ -32,6 +32,8 @@ Stop only that project with the same `-p` and file arguments. `down` preserves i
 
 The console runs separately with its own Vite command. Compose sets `CONSOLE_ORIGIN` to `http://localhost:5173` unless you override it; set it to the console's exact origin. It is the one credentialed browser origin besides `API_ORIGIN` and the base of every link in invitation, verification and password-reset email. When it is unset, the API serves the console itself behind one origin and those links use `API_ORIGIN`. `bun run dev:apps` preserves the monorepo's former Turbo development path. A same-origin reverse proxy is recommended outside local development.
 
+`AUTH_COOKIE_SAME_SITE` (`lax` by default, or `none`; anything else is refused) sets the SameSite attribute of every Better Auth cookie. `none` also marks them `Secure` and `Partitioned`, for a console and an API that are different sites, as the Fly pull request previews are on `fly.dev`; CORS and trusted origins stay the API's own origin and `CONSOLE_ORIGIN` either way. Safari may block partitioned cross-site cookies.
+
 For a host Bun process instead of a container:
 
 ```sh
@@ -66,9 +68,25 @@ Deployment creation, build results, source uploads, lifecycle reads, redeploy an
 
 ## Email
 
-`EMAIL_MODE=local` writes `cloud_email_outbox` rows, readable in tests and at the local mailbox. `EMAIL_MODE=ses` sends through the exact `@distilled.cloud/aws@1.0.0-rc.13` SESv2 client. Set `EMAIL_FROM`, an AWS region and credentials using the Distilled credential chain (ECS task roles in production). SES is typechecked; no actual SES sending is claimed without a verified sender and provider evidence.
+`EMAIL_MODE=local` writes `cloud_email_outbox` rows, readable in tests and at the local mailbox. `EMAIL_MODE=resend` sends through the exact `@distilled.cloud/resend@1.0.0-rc.13` client with `RESEND_API_KEY`, from `EMAIL_FROM`, which must be on a domain verified in Resend (`akter.dev`, the default sender's domain in production). Startup refuses `EMAIL_MODE=resend` without the key, and a send that fails raises an `EmailError` that carries nothing Resend said. Resend is exercised against a fake HTTP endpoint only; no actual sending is claimed without a verified sender and provider evidence.
 
-Production requires `API_PRODUCTION=true`, SES delivery, a securely provisioned `AUTH_SECRET` that is not the published Compose secret, the Neki control-plane database URL and explicit public https `API_ORIGIN`, `CONSOLE_ORIGIN` (when the console has its own origin) and `AUTH_TRUSTED_IDP_ORIGINS`; startup fails on any other value. `API_PRODUCTION=true` also enables Better Auth's in-memory rate limiter, which counts per process and per client address, so put a shared limiter at the edge and have it set a trustworthy forwarded-address header. `API_HOST` controls binding; Compose binds inside its container and publishes only loopback ports. Request-path logging is disabled so verification/reset query tokens never enter access logs.
+Production requires `API_PRODUCTION=true`, Resend delivery (`EMAIL_MODE=local` is refused), Fly runner configuration for deployments, a securely provisioned `AUTH_SECRET` that is not the published Compose secret, the Neki control-plane database URL with `CONTROL_PLANE_DATABASE_ENGINE=neki` (default `postgres`; it makes every startup schema change autocommit and wait for Neki to propagate it, [ADR 0091](../../docs/decisions/0091-neki-control-plane-database.md)) and explicit public https `API_ORIGIN`, `CONSOLE_ORIGIN` (when the console has its own origin) and `AUTH_TRUSTED_IDP_ORIGINS`; startup fails on any other value. `API_PRODUCTION=true` also enables Better Auth's in-memory rate limiter, which counts per process and per client address, so put a shared limiter at the edge and have it set a trustworthy forwarded-address header. `API_HOST` controls binding; Compose binds inside its container and publishes only loopback ports. Request-path logging is disabled so verification/reset query tokens never enter access logs.
+
+## Hosted runners
+
+Without `RUNNER_FLY_CONFIG` the API runs and migrates deployments as local Docker containers. With it, each deployment's runners are Fly Machines in an app of their own, started through `@distilled.cloud/fly-io` with `FLY_API_TOKEN`, an organization-scoped token that may create and delete apps and machines in `organization`:
+
+```json
+{
+  "organization": "rika-labs-prod",
+  "regions": { "us-east-1": { "region": "iad" } },
+  "port": 8080,
+  "appPrefix": "akter-prod-run-",
+  "guest": { "cpuKind": "shared", "cpus": 1, "memoryMb": 512 }
+}
+```
+
+`regions` is keyed by the Akter region a deployment names and maps it to the Fly region its machine starts in, so every region a project can choose needs an entry. An entry may list `fallbackRegions`, tried in order when Fly has no capacity in `region`; with none left the start fails with the transient `capacity` code. `appPrefix` is at most 22 characters because Fly app names are 30; the rest is a hash of the deployment id. Customer images must be `registry.fly.io/<app>@sha256:<digest>` and linux/amd64. Production refuses to start deployments without this configuration, and the configuration is refused without `FLY_API_TOKEN`. The Fly adapter is exercised against a fake HTTP endpoint only.
 
 ## Evidence
 
@@ -84,7 +102,7 @@ TEST_DATABASE_URL=postgres://project:project@127.0.0.1:55430/postgres \
   bun run --cwd apps/api test:integration
 ```
 
-The HTTP suite exercises actual Bun HTTP and Postgres: verification through stored email, wrong passwords, organization/invitation isolation, control-plane persistence, key hashing, scope, expiry, denied writes, audit rollback and immediate revocation. The OIDC suite runs discovery, redirects, PKCE, signed tokens and userinfo through an actual test IdP; forged/replayed state, invalid tokens, cross-domain identities, unverified providers and non-Enterprise sign-ins are refused. Real Neki, AWS, SES, GitHub/Google and SAML support remain unverified.
+The HTTP suite exercises actual Bun HTTP and Postgres: verification through stored email, wrong passwords, organization/invitation isolation, control-plane persistence, key hashing, scope, expiry, denied writes, audit rollback and immediate revocation. The OIDC suite runs discovery, redirects, PKCE, signed tokens and userinfo through an actual test IdP; forged/replayed state, invalid tokens, cross-domain identities, unverified providers and non-Enterprise sign-ins are refused. Real Neki, Fly, Resend, GitHub/Google and SAML support remain unverified.
 
 The local deployment-stack E2E builds two example runner images, migrates isolated databases, starts actual Docker runners and a real edge process, then deploys, rolls forward, rolls back, sleeps and wakes through the public API. It inspects a live actor's state and generation, checks that commands reach the actor as the signed-in user and that a tenant credential cannot claim that user, reads a second actor type's overview, types, instances, receipts with their callers, events, timeline, jobs, dead letters, workflows and timers against the runner database's own rows while another organization is refused, and runs a second stack whose API builds every deployment itself, through a redeploy of a rollback. It requires Docker and a host Postgres port reachable by containers through `host.docker.internal`; it uses no provider credentials and removes only the exact containers and databases it creates.
 

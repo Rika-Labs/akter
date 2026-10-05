@@ -1,6 +1,6 @@
 # ADR 0065: AWS infrastructure in a stage-isolated Alchemy workspace
 
-**Status:** implementation decision (2026-10-03), implementing Dallen's provider choices.
+**Status:** superseded by [ADR 0089](0089-fly-infrastructure-and-environments.md) (2026-10-04). Implementation decision (2026-10-03), implementing Dallen's provider choices; the AWS and Cloudflare stack it describes was deleted, so read the rest as history.
 
 **Responsibility:** place the hosted infrastructure in the repository and define its deployment boundaries.
 

@@ -1,6 +1,7 @@
-import { BetterAuth, Database } from "@alchemy.run/better-auth"
-import { applyMigrations } from "@alchemy.run/better-auth/Migrate"
+import { BetterAuth, Database as AuthDatabase } from "@alchemy.run/better-auth"
+import { Database } from "@rikalabs/akter/runtime"
 import { RuntimeContext, unpackEnvValue } from "alchemy/RuntimeContext"
+import { getMigrations } from "better-auth/db/migration"
 import { getCurrentDBAdapterAsyncLocalStorage } from "@better-auth/core/context"
 import { apiKey } from "@better-auth/api-key"
 import { sso } from "@better-auth/sso"
@@ -30,6 +31,10 @@ import { CLI_CLIENT_ID, devicePolicy } from "./device.ts"
  * token, browser sign-ins included, into a script-readable `set-auth-token`
  * header, so it is left out and browser sessions stay in their HTTP-only
  * cookie.
+ *
+ * Better Auth plans its schema statements, but they run as a database schema
+ * change: its own runner autocommits each one without waiting for Neki to
+ * propagate it, so a later index or foreign key could miss its table.
  */
 const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
   const email = yield* Email
@@ -103,6 +108,10 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
           return { action: "continue" }
         }),
   })
+  const crossSiteCookies =
+    options.cookieSameSite === "none"
+      ? ({ sameSite: "none", secure: true, partitioned: true } as const)
+      : undefined
   const settings = {
     secret: options.secret,
     baseURL: options.origin,
@@ -150,6 +159,7 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     ],
     advanced: {
       useSecureCookies: options.production,
+      defaultCookieAttributes: crossSiteCookies,
       disableCSRFCheck: false,
       disableOriginCheck: false,
       backgroundTasks: {
@@ -165,16 +175,29 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     logger: { disabled: true },
     telemetry: { enabled: false },
   }
-  const database = yield* Database
+  const database = yield* AuthDatabase
   const sql = yield* SqlClient.SqlClient
-  if (database.migrate === undefined)
+  const migrate = database.migrate
+  if (migrate === undefined)
     return yield* Effect.die(new Error("Auth database must support migrations"))
-  yield* sql.withTransaction(
+  yield* Database.schemaChange(
     Effect.gen(function* () {
-      yield* sql`SELECT pg_advisory_xact_lock(499500501)`
-      yield* applyMigrations(database.migrate!, { ...settings, secret: "migration-only" })
+      const planned = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const direct = yield* yield* migrate.connect
+          const migrations = yield* Effect.tryPromise(() =>
+            getMigrations({ ...settings, secret: "migration-only", database: direct }),
+          )
+          return yield* Effect.tryPromise(() => migrations.compileMigrations())
+        }),
+      )
+      for (const statement of planned.split(";\n\n")) {
+        const text = statement.replace(/;$/, "").trim()
+        if (text !== "") yield* sql.unsafe(text)
+      }
     }),
-  )
+    499500501,
+  ).pipe(Effect.orDie)
   const wrapped = yield* BetterAuth(settings)
   const auth = yield* wrapped.auth
   return {

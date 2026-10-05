@@ -1,64 +1,211 @@
-import { Config, Effect, Schema } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 import { Stage } from "alchemy/Stage"
 
-export const DeploymentStage = Schema.Literals(["dev", "staging", "prod"])
-export const DeploymentRegion = Schema.Literals(["us-east-1", "us-west-2"])
-export type DeploymentStage = typeof DeploymentStage.Type
-export type DeploymentRegion = typeof DeploymentRegion.Type
+/** The Fly organization that holds every pull request preview, and the one that holds `prod`. */
+export const flyOrganizations = { preview: "rika-labs-dev", production: "rika-labs-prod" }
 
-/** Rejects shared accounts before any provider operation can reach AWS. */
-export const selectAccount = ({
-  stage,
-  accounts,
-}: {
-  readonly stage: DeploymentStage
-  readonly accounts: Readonly<Record<DeploymentStage, string>>
-}) => {
-  for (const account of Object.values(accounts)) {
-    if (!/^[0-9]{12}$/.test(account)) throw new Error("AWS account IDs must contain 12 digits")
-  }
-  if (new Set(Object.values(accounts)).size !== 3)
-    throw new Error("Dev, staging and prod must use separate AWS accounts")
-  return accounts[stage]
+/** The Vercel-hosted domain that carries the platform hostnames. */
+export const platformZone = "akter.dev"
+
+/** The Vercel-hosted domain that carries customer deployments; only records are created in it. */
+export const customerZone = "akter.run"
+
+/** The Fly region every machine runs in. */
+export const region = "iad"
+
+/** The Akter region id the runner configuration keys the Fly region by. */
+export const akterRegion = "us-east-1"
+
+export const repositoryRoot = new URL("../../", import.meta.url).pathname.replace(/\/$/, "")
+
+/**
+ * The stage that owns what every pull request preview shares. It runs no application: it is the
+ * database cluster the previews' logical databases live on, and the Axiom datasets they ingest into.
+ */
+export const sharedStage = "preview"
+
+/** The free hostname Fly gives every app. */
+export const flyHostname = (app: string) => `${app}.fly.dev`
+
+const pullRequestStage = /^pr-([1-9][0-9]{0,5})$/
+
+export interface SharedLayout {
+  readonly kind: "shared"
+  readonly stage: typeof sharedStage
 }
 
-export const region = Config.schema(DeploymentRegion, "AKTER_REGION").pipe(
-  Config.withDefault("us-east-1"),
-)
-
-export const deployment = Effect.gen(function* () {
-  const stage = yield* Schema.decodeUnknownEffect(DeploymentStage)(yield* Stage).pipe(Effect.orDie)
-  const location = yield* region
-  const accounts = {
-    dev: yield* Config.String("AKTER_DEV_ACCOUNT_ID"),
-    staging: yield* Config.String("AKTER_STAGING_ACCOUNT_ID"),
-    prod: yield* Config.String("AKTER_PROD_ACCOUNT_ID"),
+/** The layout of a stage that runs the four services. */
+export interface Layout {
+  readonly stage: string
+  readonly kind: "prod" | "pr"
+  /** The pull request number of a `pr-<n>` stage. */
+  readonly pullRequest: number | undefined
+  readonly flyOrganization: string
+  readonly region: string
+  /** Idle previews stop their machines and wake on the next request. */
+  readonly sleeps: boolean
+  /**
+   * Whether the four platform hosts are custom domains on the platform zone, each with a Fly
+   * certificate and a DNS record. A preview uses the free `<app>.fly.dev` hostnames instead:
+   * every certificate it issued on the platform zone counted against the zone's weekly Let's
+   * Encrypt limit, which `prod` shares. `fly.dev` is a public suffix, so a preview's console and
+   * API are different sites and its API must issue cross-site cookies.
+   */
+  readonly customDomains: boolean
+  readonly hosts: {
+    readonly site: string
+    readonly console: string
+    readonly api: string
+    readonly edge: string
   }
-  const accountId = yield* Effect.sync(() => selectAccount({ stage, accounts }))
-  const prefix = `AKTER_${stage.toUpperCase()}_${location.toUpperCase().replaceAll("-", "_")}`
+  /** `DEPLOYMENT_DOMAIN`: the one place a stage's customer domain is written. */
+  readonly customerDomain: string
+  /** The sender of the API's email; every stage sends from the root domain, which Resend verified. */
+  readonly emailFrom: string
+  /** Fly app names, which are global across Fly, so each carries the stage. */
+  readonly apps: {
+    readonly api: string
+    readonly edge: string
+    readonly console: string
+    readonly site: string
+  }
+  readonly runnerPrefix: string
+  readonly stripeMode: "live" | "test"
+  readonly edgeMachines: number
+}
+
+export type StageLayout = SharedLayout | Layout
+
+/**
+ * The only stages are `prod`, `preview` and `pr-<n>`; anything else, including a leftover
+ * `dev` or `staging`, is refused before a provider is reached.
+ */
+export const layoutOf = (stage: string): StageLayout => {
+  if (stage === sharedStage) return { kind: "shared", stage }
+  const number = pullRequestStage.exec(stage)?.[1]
+  if (stage !== "prod" && number === undefined)
+    throw new Error(`Unsupported stage "${stage}": use prod, ${sharedStage} or pr-<number>`)
+  const production = stage === "prod"
+  const apps = {
+    api: `akter-${stage}-api`,
+    edge: `akter-${stage}-edge`,
+    console: `akter-${stage}-console`,
+    site: `akter-${stage}-site`,
+  }
   return {
     stage,
-    region: location,
-    accountId,
-    organizationId: yield* Config.String("AKTER_ORGANIZATION_ID"),
-    profile: yield* Config.String(`AKTER_${stage.toUpperCase()}_AWS_PROFILE`).pipe(
-      Config.withDefault(`akter-${stage}`),
-    ),
-    zone: yield* Config.String(`${prefix}_ZONE`),
-    certificateArn: yield* Config.String(`${prefix}_CERTIFICATE_ARN`),
-    imageTag: yield* Config.String(`${prefix}_IMAGE_TAG`),
-    planetscaleOrganization: yield* Config.String("PLANETSCALE_ORGANIZATION"),
-    nekiClusterSize: yield* Config.String(`${prefix}_NEKI_CLUSTER_SIZE`),
-    nekiRouterSize: yield* Config.String(`${prefix}_NEKI_ROUTER_SIZE`),
-    nekiShardCount: yield* Config.Int(`${prefix}_NEKI_SHARD_COUNT`).pipe(Config.withDefault(1)),
-    notifierId: yield* Config.String("AXIOM_NOTIFIER_ID"),
-    customHostnames: yield* Config.schema(
-      Schema.fromJsonString(Schema.Array(Schema.String)),
-      `${prefix}_CUSTOM_HOSTNAMES`,
-    ).pipe(Config.withDefault([])),
-    name: `akter-${stage}-${location}`,
-    stateBucket: `akter-state-${accountId}-${location}-an`,
+    kind: production ? "prod" : "pr",
+    pullRequest: number === undefined ? undefined : Number(number),
+    flyOrganization: production ? flyOrganizations.production : flyOrganizations.preview,
+    region,
+    sleeps: !production,
+    customDomains: production,
+    hosts: production
+      ? {
+          site: platformZone,
+          console: `app.${platformZone}`,
+          api: `api.${platformZone}`,
+          edge: `edge.${platformZone}`,
+        }
+      : {
+          site: flyHostname(apps.site),
+          console: flyHostname(apps.console),
+          api: flyHostname(apps.api),
+          edge: flyHostname(apps.edge),
+        },
+    customerDomain: production ? customerZone : `${stage}.preview.${customerZone}`,
+    emailFrom: production
+      ? `Akter <auth@${platformZone}>`
+      : `Akter Preview <auth-preview@${platformZone}>`,
+    apps,
+    runnerPrefix: `akter-${stage.replace("-", "")}-run-`,
+    stripeMode: production ? "live" : "test",
+    edgeMachines: production ? 2 : 1,
   }
+}
+
+/**
+ * Refuses an operation that must never reach the stage from where it was started: CI destroys
+ * only pull request previews, never `prod` and never the `preview` stage they all depend on.
+ */
+export const assertOperation = (input: {
+  readonly operation: "deploy" | "destroy"
+  readonly stage: string
+  readonly ci: boolean
+}) => {
+  const layout = layoutOf(input.stage)
+  if (input.operation === "destroy" && input.ci && layout.kind !== "pr")
+    throw new Error(`Stage ${layout.stage} is never destroyed from CI`)
+  return layout
+}
+
+/** A Stripe secret or restricted key must belong to the mode the stage bills in. */
+export const assertStripeMode = (input: {
+  readonly layout: Layout
+  readonly key: Redacted.Redacted<string>
+}) => {
+  const { layout, key } = input
+  if (!new RegExp(`^(sk|rk)_${layout.stripeMode}_`).test(Redacted.value(key)))
+    throw new Error(`Stage ${layout.stage} bills in Stripe ${layout.stripeMode} mode`)
+}
+
+/** The runtime configuration of the api's `RUNNER_FLY_CONFIG`. */
+export const runnerFlyConfig = (layout: Layout) =>
+  JSON.stringify({
+    organization: layout.flyOrganization,
+    regions: { [akterRegion]: { region: layout.region } },
+    port: 8080,
+    appPrefix: layout.runnerPrefix,
+    guest: { cpuKind: "shared", cpus: 1, memoryMb: 512 },
+  })
+
+/** The stage being deployed, as its layout. */
+export const stageLayout = Effect.gen(function* () {
+  const stage = yield* Stage
+  return yield* Effect.try(() => layoutOf(stage))
 }).pipe(Effect.orDie)
 
-export type Deployment = Effect.Success<typeof deployment>
+export const planetscaleOrganization = Config.String("PLANETSCALE_ORGANIZATION")
+
+/** What a stage that runs the four services reads from its environment. */
+export const deployment = (layout: Layout) =>
+  Effect.gen(function* () {
+    const stripeKey = yield* Config.Redacted("STRIPE_API_KEY")
+    yield* Effect.try(() => assertStripeMode({ layout, key: stripeKey }))
+    return {
+      layout,
+      flyToken: yield* Config.Redacted("FLY_API_TOKEN"),
+      resendApiKey: yield* Config.Redacted("RESEND_API_KEY"),
+      stripeKey,
+      imageTag: yield* Config.String("IMAGE_TAG").pipe(
+        Config.orElse(() => Config.String("GITHUB_SHA")),
+        Config.withDefault("local"),
+      ),
+      planetscaleOrganization: yield* planetscaleOrganization,
+      vercelTeamId: Option.getOrUndefined(
+        yield* Config.String("VERCEL_TEAM_ID").pipe(Config.option),
+      ),
+    }
+  }).pipe(Effect.orDie)
+
+export type Deployment = Effect.Success<ReturnType<typeof deployment>>
+
+/** The stack's Alchemy name; a pull request preview reads the `preview` stage's output through it. */
+export const stackName = "akter"
+
+/** What a pull request preview needs from the `preview` stage's output. */
+export interface SharedOutputs {
+  readonly neki: {
+    readonly organization: string
+    readonly database: string
+    readonly branch: string
+  }
+}
+
+/** The record name of `host` inside `zone`: empty for the apex. */
+export const relativeName = (input: { readonly zone: string; readonly host: string }) => {
+  const { zone, host } = input
+  if (host === zone) return ""
+  if (!host.endsWith(`.${zone}`)) throw new Error(`${host} is not inside ${zone}`)
+  return host.slice(0, -(zone.length + 1))
+}

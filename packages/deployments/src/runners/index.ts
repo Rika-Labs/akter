@@ -8,8 +8,8 @@ export {
 export { Runners, RunnerLayers, runnerKey, runnerActor } from "./actor.ts"
 export { RunnerPoller } from "./poller.ts"
 export { dockerRunners, type DockerOptions } from "./docker.ts"
-export { ecsRunners, type EcsOptions } from "./ecs.ts"
-export { ImageMigrations, MigrationFailed, dockerMigrations, ecsMigrations } from "./migrations.ts"
+export { flyRunners, FlyConfig, type FlyOptions } from "./fly.ts"
+export { ImageMigrations, MigrationFailed, dockerMigrations, flyMigrations } from "./migrations.ts"
 export {
   BuildFailed,
   type BuildInput,

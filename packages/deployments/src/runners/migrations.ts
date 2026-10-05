@@ -1,16 +1,15 @@
+import type { Credentials } from "@distilled.cloud/fly-io/Credentials"
+import * as Machines from "@distilled.cloud/fly-io/machines"
 import { Context, Effect, Layer, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Stream } from "effect"
-import { describeTasks } from "@distilled.cloud/aws/ecs"
-import { Credentials } from "@distilled.cloud/aws/Credentials"
-import { Region, type RegionName } from "@distilled.cloud/aws/Region"
-import { HttpClient } from "effect/http"
+import type { HttpClient } from "effect/http"
 import { Option, Schedule } from "effect"
 import { decodeStart, startToken, type StartInput } from "./contract.ts"
 import { RunnerPlatform } from "./contract.ts"
 import type { RunnerAuthority } from "@rikalabs/akter/runtime"
 import { peerEnvironment } from "./docker.ts"
-import { ecsRunners, type EcsOptions } from "./ecs.ts"
+import { exitOf, flyRunners, splitRunnerId, type FlyOptions } from "./fly.ts"
 
 /** Migration attempts retain their provider identity so an interrupted worker can recover their result. */
 export class MigrationFailed extends Schema.TaggedError<MigrationFailed>()("MigrationFailed", {}) {}
@@ -34,7 +33,7 @@ export const dockerMigrations = (options: {
   readonly command: ReadonlyArray<string>
   readonly network?: string
   readonly peering?: RunnerAuthority
-  /** Default `linux/arm64`, the architecture hosted runners run on. */
+  /** Default `linux/arm64`, the architecture of a development machine. */
   readonly platform?: string
 }) =>
   Layer.effect(
@@ -121,8 +120,16 @@ export const dockerMigrations = (options: {
     }),
   )
 
-/** A successful task stop is insufficient: migration tasks must have exactly one successful container exit. */
-export const ecsMigrations = (options: EcsOptions & { readonly command: ReadonlyArray<string> }) =>
+/**
+ * A migration is one machine in the deployment's app that runs `command` once.
+ * It succeeds only when Fly recorded the process's exit with code 0, not when
+ * the machine merely stopped. Once started, the machine is stopped and
+ * destroyed however the run ends, by success, failure or interruption, so its
+ * environment does not outlive it; a failure to remove it does not replace the
+ * migration's own result. A retry after that runs the idempotent migration
+ * again.
+ */
+export const flyMigrations = (options: FlyOptions & { readonly command: ReadonlyArray<string> }) =>
   Layer.effect(
     ImageMigrations,
     Effect.gen(function* () {
@@ -130,32 +137,28 @@ export const ecsMigrations = (options: EcsOptions & { readonly command: Readonly
       const context = yield* Effect.context<Credentials | HttpClient.HttpClient>()
       return {
         run: (input) =>
-          Effect.gen(function* () {
-            const started = yield* platform.start(input)
-            const exited = yield* platform.describe(started.id).pipe(
-              Effect.repeat({
-                schedule: Schedule.spaced("1 second"),
-                until: (task) => task.terminated === true,
+          Effect.acquireUseRelease(
+            platform.start(input),
+            (started) =>
+              Effect.gen(function* () {
+                const exited = yield* platform.describe(started.id).pipe(
+                  Effect.repeat({
+                    schedule: Schedule.spaced("1 second"),
+                    until: (machine) => machine.terminated === true,
+                  }),
+                  Effect.timeoutOption("5 minutes"),
+                )
+                const named = splitRunnerId(started.id)
+                if (Option.isNone(exited) || named === undefined)
+                  return yield* MigrationFailed.make({})
+                const machine = yield* Machines.getMachine({
+                  app_name: named.app,
+                  machine_id: named.machine,
+                }).pipe(Effect.provideContext(context))
+                if (exitOf(machine)?.code !== 0) return yield* MigrationFailed.make({})
               }),
-              Effect.timeoutOption("5 minutes"),
-            )
-            if (Option.isNone(exited)) {
-              yield* platform.stop(started.id)
-              return yield* MigrationFailed.make({})
-            }
-            const placement = options.regions[input.region]
-            if (placement === undefined) return yield* MigrationFailed.make({})
-            const result = yield* describeTasks({
-              cluster: placement.cluster,
-              tasks: [started.id],
-            }).pipe(
-              Effect.provideService(Region, Effect.succeed(input.region as RegionName)),
-              Effect.provideContext(context),
-            )
-            const containers = result.tasks?.[0]?.containers
-            if (containers?.length !== 1 || containers[0]?.exitCode !== 0)
-              return yield* MigrationFailed.make({})
-          }).pipe(Effect.mapError(() => MigrationFailed.make({}))),
+            (started) => platform.stop(started.id).pipe(Effect.ignore),
+          ).pipe(Effect.mapError(() => MigrationFailed.make({}))),
       }
     }),
-  ).pipe(Layer.provide(ecsRunners(options)))
+  ).pipe(Layer.provide(flyRunners(options)))

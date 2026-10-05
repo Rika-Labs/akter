@@ -5,7 +5,7 @@ import { createPhysicalName } from "alchemy/PhysicalName"
 import * as Planetscale from "alchemy/Planetscale"
 import * as Provider from "alchemy/Provider"
 import type { Resource } from "alchemy/Resource"
-import { Effect, Redacted } from "effect"
+import { Effect, Redacted, Stream } from "effect"
 import type { Providers } from "./providers.ts"
 import { Neki } from "./resources.ts"
 
@@ -74,6 +74,9 @@ export interface NekiRoleAttributes {
  * A role on a Neki branch with the URL a client connects with. PlanetScale returns
  * the password once, when the role is created, so the password lives in state and a
  * role that is deleted outside the stack is replaced by a new role with a new password.
+ * A role created by a run whose state write was lost is found again by its name, which
+ * the engine keeps across that retry, and adopted with a new password, since the first
+ * one cannot be read back; a role of that name with other privileges is refused.
  *
  * @example
  * ```typescript
@@ -186,12 +189,35 @@ export const NekiRoleProvider = Provider.succeed(Neki.Role, {
             .getRole({ organization, database, branch, id: output.id })
             .pipe(Effect.catchTag("NotFound", () => Effect.undefined))
 
+    const adopt = Effect.gen(function* () {
+      const pages = yield* planetscale.listRoles
+        .pages({ organization, database, branch, q: name })
+        .pipe(Stream.runCollect)
+      const found = Array.from(pages)
+        .flatMap((page) => page.data)
+        .find((role) => role.name === name && role.deleted_at === null && role.dropped_at === null)
+      if (found === undefined) return undefined
+      if (
+        !sameSet(found.inherited_roles, news.inheritedRoles) ||
+        found.with_replication !== (news.withReplication ?? false)
+      )
+        return yield* new Planetscale.PlanetscaleConflict({
+          message: `Role "${name}" already exists on branch "${branch}" of "${database}" with other privileges.`,
+        })
+      const reset = yield* planetscale.resetRole({ organization, database, branch, id: found.id })
+      if (reset.password === null)
+        return yield* Effect.die(`PlanetScale did not return a password for role "${name}".`)
+      return { role: reset, password: reset.password }
+    })
+
     const issue = Effect.gen(function* () {
       const live = yield* Planetscale.waitForBranchReady(organization, database, branch)
       if (live.kind !== "neki")
         return yield* new Planetscale.PlanetscaleConflict({
           message: `Branch "${branch}" of "${database}" has kind "${live.kind}"; a NekiRole needs a Neki branch.`,
         })
+      const adopted = yield* adopt
+      if (adopted !== undefined) return adopted
       const created = yield* planetscale.createRole({
         organization,
         database,

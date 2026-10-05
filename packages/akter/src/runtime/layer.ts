@@ -46,6 +46,7 @@ import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { NekiTurnSessions } from "./database/neki/session.ts"
+import { schemaChange } from "./database/schema.ts"
 import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
@@ -1628,7 +1629,9 @@ export const Database = {
    * (`maxConnections` default 10) opens connections only as queries need them.
    * Every pool requests server TCP keepalives at 5 seconds idle, 2 seconds
    * between probes, and 3 probes. `startupParameters` overrides these defaults
-   * independently on the primary and replica configurations.
+   * independently on the primary and replica configurations. A Neki router
+   * reports no commit version for a replica to wait for, so `neki` refuses a
+   * `replica`.
    *
    * Registers a `regclass` codec because the pinned driver lacks one and the
    * migrator needs it on restart; remove once Effect #8309 lands.
@@ -1656,6 +1659,8 @@ export const Database = {
 
     const { offTurnConnections, queryConnections, replica, neki, coordination, ...configured } =
       options
+    if (neki === true && replica !== undefined)
+      throw new Error("A Neki database has no commit version for a replica to wait for")
     const pool = withKeepalives(configured)
 
     const database = Layer.mergeAll(
@@ -1678,4 +1683,11 @@ export const Database = {
       : database.pipe(Layer.provideMerge(Layer.succeed(NekiTurnSessions, neki)))
   },
   pglite,
+  /**
+   * Whether the database is Neki (default `false`). `postgres({ neki })`
+   * provides it; a process that opens its own Postgres client and runs no
+   * actors provides it itself so `schemaChange` follows Neki's DDL rules.
+   */
+  Neki: NekiTurnSessions,
+  schemaChange,
 }

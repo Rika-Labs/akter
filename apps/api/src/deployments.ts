@@ -12,6 +12,7 @@ import { SqlClient } from "effect/sql"
 import { HttpApiBuilder } from "effect/http-api"
 import type { HttpServerRequest } from "effect/http"
 import { Access, attributedSubject } from "./access.ts"
+import { hosted } from "./control.ts"
 import { Sources } from "./sources.ts"
 
 const Cursor = Schema.fromJsonString(Schema.Struct({ at: Schema.String, id: Schema.String }))
@@ -193,6 +194,13 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
             return yield* Cloud.Conflict.make({
               message: "A deployment must name exactly one home region",
             })
+          const [project] = yield* sql<{
+            homeRegion: "us-east-1" | "us-west-2"
+          }>`SELECT home_region AS "homeRegion" FROM cloud_project WHERE id = ${params.projectId} AND organization_id = ${organizationId}`.pipe(
+            Effect.orDie,
+          )
+          const regions = payload.regions ?? [project?.homeRegion ?? "us-east-1"]
+          yield* hosted(regions)
           const deploymentId = yield* id
           if (payload.source !== undefined) {
             if (!sources.builds)
@@ -212,18 +220,13 @@ export const DeploymentsLive = HttpApiBuilder.group(Cloud.CloudApi, "deployments
               )
           }
           const actor = yield* actorOf(organizationId, params.projectId, payload.environment)
-          const [project] = yield* sql<{
-            homeRegion: "us-east-1" | "us-west-2"
-          }>`SELECT home_region AS "homeRegion" FROM cloud_project WHERE id = ${params.projectId} AND organization_id = ${organizationId}`.pipe(
-            Effect.orDie,
-          )
           return yield* actor
             .Create({
               deploymentId,
               commitSha: payload.commitSha,
               message: payload.message ?? "",
               author: yield* author,
-              regions: payload.regions ?? [project?.homeRegion ?? "us-east-1"],
+              regions,
               envSnapshot: "{}",
             })
             .pipe(expected, Effect.flatMap(detail))

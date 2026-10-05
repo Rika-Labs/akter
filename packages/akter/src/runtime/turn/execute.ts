@@ -29,7 +29,7 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
-import { COMMIT_VERSION } from "../database/replica.ts"
+import { COMMIT_VERSION, NEKI_COMMIT_VERSION } from "../database/replica.ts"
 import { isPoolRefusal } from "../database/bounded.ts"
 import { NekiTurnSessions } from "../database/neki/session.ts"
 import { compress, decompress } from "../storage/codec.ts"
@@ -489,6 +489,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   accounting?: UsageAccountingService,
 ) {
   const sql = yield* SqlClient.SqlClient
+  const commitVersion = (yield* NekiTurnSessions) ? NEKI_COMMIT_VERSION : COMMIT_VERSION
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
   const scope = yield* TenantScope
@@ -1332,7 +1333,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
               if (!chained) open = false
             }),
-            Effect.map(session().query(COMMIT_VERSION, [], true), (result) => {
+            Effect.map(session().query(commitVersion, [], true), (result) => {
               const ended = result.rows[0] as { version: string; now: string }
               version = ended.version
               endedAtMs = Number(ended.now)
@@ -1633,7 +1634,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             ),
         )
 
-        const [ended] = yield* sql.unsafe<{ version: string; now: string }>(COMMIT_VERSION)
+        const [ended] = yield* sql.unsafe<{ version: string; now: string }>(commitVersion)
 
         return {
           plan,

@@ -38,6 +38,13 @@ export interface PostgresBackendOptions {
    * router does not, so cases that open fresh databases or snapshots skip.
    */
   readonly freshDatabases?: boolean
+  /**
+   * The suite's main database is the one `url` names, created and dropped by
+   * whoever runs the suite, instead of a disposable one beside it. A Neki
+   * router refuses `DROP DATABASE ... WITH (FORCE)`, so a disposable database
+   * could not be dropped while its sessions linger.
+   */
+  readonly ownDatabase?: boolean
 }
 
 /**
@@ -72,7 +79,8 @@ export const postgresBackend = (options: PostgresBackendOptions): ConformanceBac
             Effect.provideService(Crypto.Crypto, crypto),
           )
 
-        const main = yield* provision("actors", options.template?.())
+        const main =
+          options.ownDatabase === true ? url : yield* provision("actors", options.template?.())
 
         const connect = Effect.acquireRelease(
           Effect.sync(() => new Pool({ connectionString: Redacted.value(main) })),

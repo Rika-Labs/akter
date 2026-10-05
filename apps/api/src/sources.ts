@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
 
@@ -56,11 +57,9 @@ export const SourcesLive = (options: { readonly builds: boolean }) =>
     Sources,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
-      yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            yield* sql`SELECT pg_advisory_xact_lock(499500503)`
-            yield* sql`CREATE TABLE IF NOT EXISTS cloud_source_archive (
+      yield* Database.schemaChange(
+        Effect.gen(function* () {
+          yield* sql`CREATE TABLE IF NOT EXISTS cloud_source_archive (
     organization_id text NOT NULL CHECK (organization_id <> ''),
     project_id text NOT NULL CHECK (project_id <> ''),
     digest text NOT NULL CHECK (digest ~ '^sha256:[0-9a-f]{64}$'),
@@ -69,7 +68,7 @@ export const SourcesLive = (options: { readonly builds: boolean }) =>
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, digest)
   )`
-            yield* sql`CREATE TABLE IF NOT EXISTS cloud_deployment_source (
+          yield* sql`CREATE TABLE IF NOT EXISTS cloud_deployment_source (
     deployment_id text PRIMARY KEY CHECK (deployment_id <> ''),
     project_id text NOT NULL,
     digest text NOT NULL,
@@ -77,9 +76,9 @@ export const SourcesLive = (options: { readonly builds: boolean }) =>
     created_at timestamptz NOT NULL DEFAULT now(),
     FOREIGN KEY (project_id, digest) REFERENCES cloud_source_archive (project_id, digest)
   )`
-          }),
-        )
-        .pipe(Effect.orDie)
+        }),
+        499500503,
+      ).pipe(Effect.orDie)
 
       return Sources.of({
         builds: options.builds,

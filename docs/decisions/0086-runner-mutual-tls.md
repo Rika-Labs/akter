@@ -1,6 +1,6 @@
 # ADR 0086: Mutual TLS between runners
 
-**Status:** implementation decision (2026-10-04), for [#541](https://github.com/Rika-Labs/akter/issues/541); amends [ADR 0068](0068-production-multi-runner.md)'s trusted-peer transport and the runner-to-runner clause of [contract 10](../contracts/10-security.md); the hosted provisioning path below is a proposal that [ADR 0075](0075-deployment-and-runner-orchestration.md)'s gate on hosted peering still covers.
+**Status:** implementation decision (2026-10-04), for [#541](https://github.com/Rika-Labs/akter/issues/541); amends [ADR 0068](0068-production-multi-runner.md)'s trusted-peer transport and the runner-to-runner clause of [contract 10](../contracts/10-security.md); the hosted provisioning path below is a proposal that [ADR 0075](0075-deployment-and-runner-orchestration.md)'s gate on hosted peering still covers, and [ADR 0090](0090-fly-machines-runner-platform.md) withdraws its AWS Private CA, Secrets Manager and KMS design.
 
 **Responsibility:** authenticate and encrypt runner-to-runner traffic, so runners of one deployment accept messages only from each other, on a network other deployments share.
 

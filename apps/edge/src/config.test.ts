@@ -70,3 +70,21 @@ describe("EDGE_LEASE_HEARTBEAT", () => {
     expect(ttl.pipe(isLeaseTiming(Duration.seconds(10)))).toBe(true)
   })
 })
+
+describe("EDGE_TRUST_FLY_PROXY", () => {
+  it("is off unless the operator says the edge sits behind Fly's proxy", () => {
+    const trusted = (environment: Record<string, string>) => {
+      const options = load(environment)
+
+      return Exit.isSuccess(options) && options.value.trustedProxies.flyProxy
+    }
+
+    expect(trusted({})).toBe(false)
+    expect(trusted({ EDGE_TRUST_FLY_PROXY: "false" })).toBe(false)
+    expect(trusted({ EDGE_TRUST_FLY_PROXY: "true" })).toBe(true)
+  })
+
+  it("refuses a value that is not a boolean, so a typo never silently trusts or distrusts", () => {
+    expect(Exit.isFailure(load({ EDGE_TRUST_FLY_PROXY: "yes please" }))).toBe(true)
+  })
+})

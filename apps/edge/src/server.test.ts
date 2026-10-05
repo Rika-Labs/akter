@@ -170,6 +170,7 @@ const startRunner = Effect.fnUntraced(function* () {
 
 const spoofed = {
   "cf-connecting-ip": "198.51.100.7",
+  "fly-client-ip": "198.51.100.20",
   "x-forwarded-for": "203.0.113.9, 192.0.2.1",
   "x-forwarded-host": "evil.example",
   "x-forwarded-proto": "https",
@@ -193,6 +194,7 @@ const unavailableEnd = Schema.fromJsonString(
 const attributionNames = [
   "cf-connecting-ip",
   "cf-connecting-ipv6",
+  "fly-client-ip",
   "x-forwarded-proto",
   "x-forwarded-port",
   "x-real-ip",
@@ -293,11 +295,11 @@ describe("Hosted edge client address", () => {
       }),
     ))
 
-  it("ignores spoofed forwarding headers from a peer outside the trusted lists and tells the runner the peer's address", () =>
+  it("ignores spoofed forwarding headers without the Fly proxy gate and tells the runner the peer's address", () =>
     withEdge(
       {
         primaryRegion: "r1",
-        trustedProxies: { nlbOnly: true, cloudflare: ["173.245.48.0/20"] },
+        trustedProxies: { flyProxy: false },
       },
       ({ edge, runner, send }) =>
         Effect.gen(function* () {
@@ -319,37 +321,29 @@ describe("Hosted edge client address", () => {
         }),
     ))
 
-  it("believes CF-Connecting-IP only behind the NLB-only gate from a Cloudflare peer, and only when it is an address", () =>
-    withEdge(
-      { primaryRegion: "r1", trustedProxies: { nlbOnly: true, cloudflare: ["127.0.0.1/32"] } },
-      ({ runner, send }) =>
-        Effect.gen(function* () {
-          yield* send("/ping", spoofed)
-          expect(lastRequest(runner).get("x-forwarded-for")).toBe("198.51.100.7")
-          expect(lastRequest(runner).has("cf-connecting-ip")).toBe(false)
+  it("believes Fly-Client-IP only behind the Fly proxy gate, and only when it is an address", () =>
+    withEdge({ primaryRegion: "r1", trustedProxies: { flyProxy: true } }, ({ runner, send }) =>
+      Effect.gen(function* () {
+        yield* send("/ping", spoofed)
+        expect(lastRequest(runner).get("x-forwarded-for")).toBe("198.51.100.20")
+        expect(lastRequest(runner).has("fly-client-ip")).toBe(false)
+        expect(lastRequest(runner).has("cf-connecting-ip")).toBe(false)
 
-          yield* send("/ping", { ...spoofed, "cf-connecting-ip": "2001:DB8::1" })
-          expect(lastRequest(runner).get("x-forwarded-for")).toBe("2001:db8::1")
+        yield* send("/ping", { ...spoofed, "fly-client-ip": "2001:DB8::1" })
+        expect(lastRequest(runner).get("x-forwarded-for")).toBe("2001:db8::1")
 
-          yield* send("/ping", { ...spoofed, "cf-connecting-ip": "198.51.100.7, 1.1.1.1" })
-          expect(lastRequest(runner).get("x-forwarded-for")).toBe("127.0.0.1")
-        }),
+        yield* send("/ping", { ...spoofed, "fly-client-ip": "198.51.100.7, 1.1.1.1" })
+        expect(lastRequest(runner).get("x-forwarded-for")).toBe("127.0.0.1")
+      }),
     ))
 
-  it.each([
-    { nlbOnly: false, cloudflare: ["127.0.0.1/32"] },
-    { nlbOnly: true, cloudflare: ["10.0.0.0/8"] },
-    { nlbOnly: true, cloudflare: [] },
-  ])(
-    "ignores CF-Connecting-IP without the gate, from a peer outside Cloudflare's ranges, or with no ranges %#",
-    (trustedProxies) =>
-      withEdge({ primaryRegion: "r1", trustedProxies }, ({ runner, send }) =>
-        Effect.gen(function* () {
-          yield* send("/ping", spoofed)
-          expect(lastRequest(runner).get("x-forwarded-for")).toBe("127.0.0.1")
-        }),
-      ),
-  )
+  it("ignores Fly-Client-IP and CF-Connecting-IP without the gate", () =>
+    withEdge({ primaryRegion: "r1" }, ({ runner, send }) =>
+      Effect.gen(function* () {
+        yield* send("/ping", spoofed)
+        expect(lastRequest(runner).get("x-forwarded-for")).toBe("127.0.0.1")
+      }),
+    ))
 
   it("streams server-sent events through the edge as they are produced", () =>
     withEdge({ primaryRegion: "r1" }, ({ edge, runner }) =>
@@ -377,22 +371,20 @@ describe("Hosted edge client address", () => {
     ))
 
   it("opens the upstream WebSocket with the edge's own forwarding headers and relays messages both ways", () =>
-    withEdge(
-      { primaryRegion: "r1", trustedProxies: { nlbOnly: true, cloudflare: ["10.0.0.0/8"] } },
-      ({ edge, runner }) =>
-        Effect.gen(function* () {
-          const session = openSession(edge.url, spoofed)
-          const message = yield* session.first
+    withEdge({ primaryRegion: "r1", trustedProxies: { flyProxy: false } }, ({ edge, runner }) =>
+      Effect.gen(function* () {
+        const session = openSession(edge.url, spoofed)
+        const message = yield* session.first
 
-          session.socket.close()
+        session.socket.close()
 
-          const upgrade = runner.seen.find(({ headers }) => headers.has("upgrade"))!.headers
+        const upgrade = runner.seen.find(({ headers }) => headers.has("upgrade"))!.headers
 
-          expect(message).toBe("not-a-hello")
-          expect(upgrade.get("x-forwarded-for")).toBe("127.0.0.1")
-          expect(upgrade.get("x-forwarded-host")).toBe("127.0.0.1")
-          for (const name of attributionNames) expect(upgrade.has(name)).toBe(false)
-        }),
+        expect(message).toBe("not-a-hello")
+        expect(upgrade.get("x-forwarded-for")).toBe("127.0.0.1")
+        expect(upgrade.get("x-forwarded-host")).toBe("127.0.0.1")
+        for (const name of attributionNames) expect(upgrade.has(name)).toBe(false)
+      }),
     ))
 
   it("commits deployment activity before forwarding public and authenticated requests, and not for a rejected credential", () =>

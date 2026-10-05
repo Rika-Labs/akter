@@ -1,8 +1,29 @@
 # Automation contracts
 
-Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes, deploys or auto-merges, and only `Release` publishes, from a maintainer's tag.
+Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes or auto-merges, only `Release` publishes, from a maintainer's tag, and only `Deploy` deploys.
 
 `Verify` runs PR code without long-lived repository secrets or persisted checkout credentials on GitHub-hosted `ubuntu-24.04` runners. `Trusted policy` and `Evidence gate` execute only main code. The gate checks successful current-head-SHA run/artifact metadata through Distilled and refuses a PR-modified verification workflow. It never extracts or executes PR artifacts. A policy workflow change therefore requires a separately approved rollout. Configure branch rules to require `verify` (the job that aggregates every other job), `branch`, and `Current SHA evidence`; those settings were not applied. A review-complete label is informational, never proof or merge permission. Artifact metadata establishes executed CI provenance, not correctness of arbitrary PR tests; independent review remains required.
+
+## Deploy
+
+`Deploy` runs Alchemy against Fly.io from `infra/`. A first job, on an Arm runner, decides which stages to touch from the event and a second applies them, one matrix entry per stage, each with the secrets of one GitHub environment; [ADR 0089](../docs/decisions/0089-fly-infrastructure-and-environments.md) describes the stages and environments and `infra/README.md` the bootstrap.
+
+| Event                                                           | Stage      | Environment  | Operation                                               |
+| --------------------------------------------------------------- | ---------- | ------------ | ------------------------------------------------------- |
+| Pull request from this repository opened, reopened or pushed to | `pr-<n>`   | `preview`    | deploy                                                  |
+| That pull request closed                                        | `pr-<n>`   | `preview`    | destroy                                                 |
+| `Verify` succeeds for a push to `main`                          | `prod`     | `production` | deploy the verified commit, with no approval step       |
+| The same push changed `infra/` or this workflow                 | `preview`  | `preview`    | deploy                                                  |
+| Manual run from `main`, choosing `prod` (default) or `preview`  | the choice | by stage     | deploy                                                  |
+| Nightly schedule                                                | `pr-<n>`   | `preview`    | destroy each stage whose pull request is no longer open |
+
+The `preview` stage owns the Neki cluster and Axiom datasets that the previews share and must exist before the first preview. Each stage has its own concurrency group, so runs of one stage queue instead of overlapping or cancelling one that is applying, and two deploys of `prod` never run at once. `infra`'s `guard` script refuses an unknown stage and any destroy of `prod` or `preview` from CI, and the workflow refuses to destroy anything but `pr-<n>`. Fork and Dependabot pull requests never run it, and a manual run from another branch does nothing.
+
+Nothing waits for a reviewer: the `production` environment accepts deployments from `main` alone, so a merge that passes `Verify` reaches production. Feature flags, not the workflow, keep unfinished work dark.
+
+Unlike `Verify`, this workflow runs pull-request code with the `preview` environment's secrets. Any collaborator who can push a branch to this repository can read them through a workflow change, so give that environment credentials that reach preview resources only, including a state database of its own, and keep production credentials in `production`. The Vercel token is the one secret both share.
+
+Fly Machines run amd64 only, so the apply job runs on `ubuntu-24.04` and builds `linux/amd64` images natively.
 
 ## Framework tarball and release
 
@@ -124,3 +145,7 @@ An `AMP_TOKEN` secret alone does not enable issue replies or pull request review
 This repository does not define an Amp mention or review workflow. Those behaviors
 require a separately configured integration; the verification and evidence workflows
 do not invoke Amp.
+
+Alchemy holds a Postgres session advisory lock for the stage it runs. If the connection that holds it drops mid-run, Alchemy stops with "state lock ... was lost mid-run" before writing anything unlocked. The deploy step, the preview destroy and the nightly sweep each retry up to three times on that error alone. Alchemy records a resource as `creating`, with the instance id its physical names derive from, before it creates it, so a retry looks for what the interrupted run made. Deploy retries pass `--adopt`, so a resource its provider finds but cannot prove the stage owns, such as a Fly app or a Fly secret with a fixed name, is adopted instead of refused. Not every provider finds what it made: Axiom's `ApiToken` and `Monitor` and GitHub's `Comment` look only for the id in state, so a drop during their create leaves a second one behind, and a Stripe webhook endpoint is adopted without its signing secret, which Stripe returns only on create, so the deploy then fails until that endpoint is deleted.
+
+A prod deploy is triggered by `Verify` succeeding on `main`. Those runs can finish out of order, so the plan job deploys a verified commit only while it is still the head of `main`; an older commit is skipped, because the newer head's own verification deploys it.

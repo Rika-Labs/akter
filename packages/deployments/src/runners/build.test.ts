@@ -227,6 +227,51 @@ layer(services, { excludeTestServices: true })("docker image builds", (it) => {
   )
 
   it.effect(
+    "gives docker the uploaded archive on its stdin byte for byte, and survives a docker that exits without reading it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        const received = `${directory}/received`
+        const reader = `${directory}/reader`
+        const deaf = `${directory}/deaf`
+
+        yield* fs.writeFileString(reader, `#!/bin/sh\ncat > ${received}\nexit 1\n`, { mode: 0o755 })
+        yield* fs.writeFileString(deaf, "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+
+        const noise = new Uint8Array(512 * 1024)
+
+        for (let offset = 0; offset < noise.length; offset += 65_536)
+          crypto.getRandomValues(noise.subarray(offset, offset + 65_536))
+
+        const archive = yield* Effect.promise(() =>
+          new Bun.Archive({ Dockerfile: "FROM scratch\n", noise }, { compress: "gzip" }).bytes(),
+        )
+        const refusal = (binary: string) =>
+          Effect.flatMap(
+            Layer.build(
+              dockerBuilds({ context: directory, dockerfile: "Dockerfile", binary }).pipe(
+                Layer.provide(services),
+              ),
+            ),
+            (built) =>
+              Context.get(built, ImageBuilds)
+                .build({
+                  tag: "akter-build-test:stdin",
+                  buildArgs: {},
+                  source: { archive, dockerfile: "Dockerfile" },
+                })
+                .pipe(Effect.flip),
+          )
+
+        expect(archive.byteLength).toBeGreaterThan(256 * 1024)
+        expect((yield* refusal(reader)).reason).toMatch(/^docker build exited with 1/u)
+        expect(yield* fs.readFile(received)).toEqual(archive)
+        expect((yield* refusal(deaf)).reason).toMatch(/^docker build exited with 1/u)
+      }),
+  )
+
+  it.effect(
     "keeps only the last 400 lines of a build's output as it streams, and stops a build at its timeout",
     () =>
       Effect.gen(function* () {

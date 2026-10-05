@@ -1,19 +1,29 @@
-import { Config, Effect, Option, Redacted, Schema } from "effect"
+import { Config, Context, Effect, Option, Redacted, Schema } from "effect"
 import { defaultPricingConfig, PricingConfigSchema, type PricingConfig } from "@akter/billing"
 import type { MeterCell } from "./collector.ts"
-import type { EcsOptions } from "@akter/deployments/runners"
+import { FlyConfig, type FlyOptions } from "@akter/deployments/runners"
 
 export interface ApiOptions {
   readonly databaseUrl: Redacted.Redacted<string>
+  /** Neki runs every schema change outside transactions and waits for it to propagate. */
+  readonly databaseEngine?: "postgres" | "neki"
   readonly secret: Redacted.Redacted<string>
   readonly origin: string
   readonly consoleOrigin?: string
+  /**
+   * The SameSite attribute of every Better Auth cookie. `none` also makes them
+   * `Secure` and `Partitioned`, for a console and an API that are different
+   * sites, such as two hostnames under a public suffix like `fly.dev`; the
+   * default `lax` is for a console and an API on one registrable domain.
+   */
+  readonly cookieSameSite?: "lax" | "none"
   readonly trustedIdpOrigins?: ReadonlyArray<string>
   readonly port: number
   readonly hostname?: string
   readonly production: boolean
-  readonly emailMode: "local" | "ses"
+  readonly emailMode: "local" | "resend"
   readonly emailFrom: string
+  readonly resendApiKey?: Redacted.Redacted<string>
   readonly github?: { readonly clientId: string; readonly clientSecret: string }
   readonly google?: { readonly clientId: string; readonly clientSecret: string }
   readonly enterpriseOrganizations?: ReadonlyArray<string>
@@ -38,7 +48,7 @@ export interface ApiOptions {
   readonly runnerPeerAuthority?: string
   readonly migrationCommand?: ReadonlyArray<string>
   readonly runnerIdleSeconds?: number
-  readonly runnerEcs?: EcsOptions
+  readonly runnerFly?: { readonly options: FlyOptions; readonly token: Redacted.Redacted<string> }
   readonly runtimeRequestTimeoutSeconds?: number
   /**
    * Builds each new deployment's image locally from `dockerfile` in the
@@ -47,6 +57,17 @@ export interface ApiOptions {
    */
   readonly localBuild?: { readonly context: string; readonly dockerfile: string }
 }
+
+/**
+ * The regions a deployment can run in: the keys of the Fly runner
+ * configuration's region map, or undefined when runners run locally and every
+ * region the contract names is served. A project homed elsewhere could never
+ * start a runner, so the API refuses it at creation.
+ */
+export const RunnerRegions = Context.Reference<ReadonlyArray<string> | undefined>(
+  "@akter/api/RunnerRegions",
+  { defaultValue: () => undefined },
+)
 
 export const localBillingWebhookSecret = "local-billing-signature-secret-not-for-production"
 
@@ -67,11 +88,18 @@ const isPublicHttpsOrigin = (value: string) => {
 
 export const loadOptions = Effect.gen(function* () {
   const databaseUrl = yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL")
+  const databaseEngine = yield* Config.Literals(
+    ["postgres", "neki"],
+    "CONTROL_PLANE_DATABASE_ENGINE",
+  ).pipe(Config.withDefault("postgres"))
   const secret = yield* Config.Redacted("AUTH_SECRET")
   const origin = yield* Config.String("API_ORIGIN").pipe(
     Config.withDefault("http://localhost:3001"),
   )
   const consoleOrigin = yield* Config.String("CONSOLE_ORIGIN").pipe(Config.option)
+  const cookieSameSite = yield* Config.Literals(["lax", "none"], "AUTH_COOKIE_SAME_SITE").pipe(
+    Config.withDefault("lax"),
+  )
   const trustedIdpOrigins = yield* Config.String("AUTH_TRUSTED_IDP_ORIGINS").pipe(
     Config.withDefault(""),
     Config.map((value) =>
@@ -84,9 +112,10 @@ export const loadOptions = Effect.gen(function* () {
   const port = yield* Config.Int("API_PORT").pipe(Config.withDefault(3001))
   const hostname = yield* Config.String("API_HOST").pipe(Config.withDefault("127.0.0.1"))
   const production = yield* Config.Boolean("API_PRODUCTION").pipe(Config.withDefault(false))
-  const emailMode = yield* Config.Literals(["local", "ses"], "EMAIL_MODE").pipe(
+  const emailMode = yield* Config.Literals(["local", "resend"], "EMAIL_MODE").pipe(
     Config.withDefault("local"),
   )
+  const resendApiKey = yield* Config.Redacted("RESEND_API_KEY").pipe(Config.option)
   const emailFrom = yield* Config.String("EMAIL_FROM").pipe(
     Config.withDefault(production ? "Akter <auth@akter.dev>" : "Akter <auth@localhost>"),
   )
@@ -165,32 +194,18 @@ export const loadOptions = Effect.gen(function* () {
       Effect.die(new Error("RUNNER_ENVIRONMENT must be a string-valued JSON object")),
     ),
   )
-  const ecs = yield* Config.String("RUNNER_ECS_CONFIG").pipe(Config.option)
-  const runnerEcs = Option.isNone(ecs)
+  const fly = yield* Config.String("RUNNER_FLY_CONFIG").pipe(Config.option)
+  const flyApiToken = yield* Config.Redacted("FLY_API_TOKEN").pipe(Config.option)
+  const runnerFly = Option.isNone(fly)
     ? undefined
-    : yield* Schema.decodeEffect(
-        Schema.fromJsonString(
-          Schema.Struct({
-            regions: Schema.Record(
-              Schema.String,
-              Schema.Struct({
-                cluster: Schema.String,
-                subnets: Schema.Array(Schema.String),
-                securityGroups: Schema.Array(Schema.String),
-              }),
-            ),
-            container: Schema.String,
-            port: Schema.Int,
-            scheme: Schema.optional(Schema.Literals(["http", "https"])),
-            definition: Schema.Struct({
-              executionRoleArn: Schema.String,
-              taskRoleArn: Schema.optional(Schema.String),
-              cpu: Schema.optional(Schema.String),
-              memory: Schema.optional(Schema.String),
-            }),
-          }),
+    : {
+        options: yield* Schema.decodeEffect(Schema.fromJsonString(FlyConfig))(fly.value).pipe(
+          Effect.catch(() => Effect.die(new Error("RUNNER_FLY_CONFIG is invalid"))),
         ),
-      )(ecs.value).pipe(Effect.catch(() => Effect.die(new Error("RUNNER_ECS_CONFIG is invalid"))))
+        token: Option.isSome(flyApiToken)
+          ? flyApiToken.value
+          : yield* Effect.die(new Error("RUNNER_FLY_CONFIG requires FLY_API_TOKEN")),
+      }
   const migrationCommand = yield* Config.String("RUNNER_MIGRATION_COMMAND").pipe(
     Config.withDefault('["bun","run","migrate"]'),
   )
@@ -211,8 +226,10 @@ export const loadOptions = Effect.gen(function* () {
     )
   if (Redacted.value(secret).length < 32)
     return yield* Effect.die(new Error("AUTH_SECRET must contain at least 32 characters"))
+  if (emailMode === "resend" && Option.isNone(resendApiKey))
+    return yield* Effect.die(new Error("Resend email requires RESEND_API_KEY"))
   if (production && emailMode === "local")
-    return yield* Effect.die(new Error("Production requires SES email delivery"))
+    return yield* Effect.die(new Error("Production requires Resend email delivery"))
   if (production && Object.keys(runnerEnvironment).length > 0)
     return yield* Effect.die(new Error("Production cannot use shared runner environment values"))
   if (production && Redacted.value(secret) === publishedDevelopmentSecret)
@@ -226,15 +243,18 @@ export const loadOptions = Effect.gen(function* () {
     )
   return {
     databaseUrl,
+    databaseEngine,
     secret,
     origin,
     consoleOrigin: Option.getOrUndefined(consoleOrigin),
+    cookieSameSite,
     trustedIdpOrigins,
     port,
     hostname,
     production,
     emailMode,
     emailFrom,
+    resendApiKey: Option.getOrUndefined(resendApiKey),
     billingMode,
     stripeApiKey: Option.getOrUndefined(stripeApiKey),
     billingWebhookSecret,
@@ -246,7 +266,7 @@ export const loadOptions = Effect.gen(function* () {
     enterpriseOrganizations,
     paidOrganizations,
     runnerEnvironment,
-    runnerEcs,
+    runnerFly,
     migrationCommand: parsedMigrationCommand,
     localBuild: Option.match(buildContext, {
       onNone: () => undefined,

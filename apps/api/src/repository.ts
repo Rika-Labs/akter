@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Context, DateTime, Effect, Layer, Option, Predicate, Schedule, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/sql"
 
@@ -281,6 +282,11 @@ export class Repository extends Context.Service<
     readonly pinActor: (
       input: PinnedActor & { readonly organizationId: string; readonly userId: string },
     ) => Effect.Effect<ReadonlyArray<PinnedActor>, EnvironmentNotFound>
+    /**
+     * Removes every copy of the pin. The kept list is computed while the
+     * preference row is locked and written back in the same transaction: a
+     * Neki router refuses a subquery in an `UPDATE` that also calls `now()`.
+     */
     readonly unpinActor: (
       input: PinnedActor & { readonly userId: string },
     ) => Effect.Effect<ReadonlyArray<PinnedActor>>
@@ -480,16 +486,20 @@ const auditEntry = (row: AuditRow): AuditEntry => ({
 /**
  * `Repository` over the control-plane database. Building the layer applies
  * the `cloud_*` migrations, which are idempotent and safe to run from several
- * processes at once.
+ * processes at once. Upgrading the legacy command table locks it against
+ * writers inside the Postgres migration transaction. Neki autocommits every
+ * statement, so there is no transaction to hold that lock; the schema lock
+ * still keeps booting processes apart, and each step, from adding the hash
+ * columns to backfilling rows that lack them and swapping the key, is safe to
+ * repeat after a crash or a row an older process wrote meanwhile.
  */
 export const RepositoryLive = Layer.effect(
   Repository,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    yield* sql.withTransaction(
+    yield* Database.schemaChange(
       Effect.gen(function* () {
-        yield* sql`SELECT pg_advisory_xact_lock(${MIGRATION_LOCK})`
         for (const statement of migrations) yield* sql.unsafe(statement)
         const legacy = yield* sql`
           SELECT 1 FROM information_schema.columns
@@ -497,7 +507,8 @@ export const RepositoryLive = Layer.effect(
             AND column_name = 'payload'
         `
         if (legacy.length > 0) {
-          yield* sql`LOCK TABLE cloud_command_idempotency IN ACCESS EXCLUSIVE MODE`
+          if (!(yield* Database.Neki))
+            yield* sql`LOCK TABLE cloud_command_idempotency IN ACCESS EXCLUSIVE MODE`
           yield* sql`ALTER TABLE cloud_command_idempotency
             ADD COLUMN IF NOT EXISTS key_hash text,
             ADD COLUMN IF NOT EXISTS payload_hash text,
@@ -536,6 +547,7 @@ export const RepositoryLive = Layer.effect(
           ON cloud_command_idempotency (expires_at_ms)
           WHERE command_id IS NULL AND payload_hash IS NULL`
       }),
+      MIGRATION_LOCK,
     )
 
     const dieOnSql = <A, E, R>(self: Effect.Effect<A, E | SqlError.SqlError, R>) =>
@@ -1045,22 +1057,34 @@ export const RepositoryLive = Layer.effect(
           .pipe(dieOnSql),
 
       unpinActor: ({ userId, projectId, environment: name, address }) =>
-        sql<{ readonly pinned_actors: ReadonlyArray<PinnedActor> }>`
-          UPDATE cloud_preference
-          SET pinned_actors = (
-                SELECT coalesce(jsonb_agg(entry ORDER BY position), '[]'::jsonb)
-                FROM jsonb_array_elements(pinned_actors) WITH ORDINALITY AS pinned(entry, position)
-                WHERE entry <> jsonb_build_object('projectId', ${projectId}::text,
-                                                  'environment', ${name}::text,
-                                                  'address', ${address}::text)
-              ),
-              updated_at = now()
-          WHERE user_id = ${userId}
-          RETURNING pinned_actors
-        `.pipe(
-          Effect.map(([row]) => row?.pinned_actors ?? []),
-          dieOnSql,
-        ),
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const [current] = yield* sql<{ readonly kept: string }>`
+                SELECT (
+                    SELECT coalesce(jsonb_agg(entry ORDER BY position), '[]'::jsonb)
+                    FROM jsonb_array_elements(pinned_actors) WITH ORDINALITY AS pinned(entry, position)
+                    WHERE entry <> jsonb_build_object('projectId', ${projectId}::text,
+                                                      'environment', ${name}::text,
+                                                      'address', ${address}::text)
+                  )::text AS kept
+                FROM cloud_preference
+                WHERE user_id = ${userId}
+                FOR UPDATE
+              `
+              if (current === undefined) return []
+
+              const [row] = yield* sql<{ readonly pinned_actors: ReadonlyArray<PinnedActor> }>`
+                UPDATE cloud_preference
+                SET pinned_actors = ${current.kept}::jsonb, updated_at = now()
+                WHERE user_id = ${userId}
+                RETURNING pinned_actors
+              `
+
+              return row?.pinned_actors ?? []
+            }),
+          )
+          .pipe(dieOnSql),
 
       recordAudit: (input) => insertAudit(input).pipe(dieOnSql),
 

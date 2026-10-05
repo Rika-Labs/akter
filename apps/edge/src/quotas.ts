@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import {
   COMMAND_UNITS,
   commandLimitUnits,
@@ -341,18 +342,16 @@ export const quotas = Effect.fnUntraced(function* (
     Deferred.doneUnsafe(entry.lost, Effect.void)
   }
 
-  yield* sql
-    .withTransaction(
-      Effect.gen(function* () {
-        yield* sql`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_meter_tenant (
+  yield* Database.schemaChange(
+    Effect.gen(function* () {
+      yield* sql`CREATE TABLE IF NOT EXISTS cloud_meter_tenant (
           deployment_id text NOT NULL,
           tenant text NOT NULL,
           organization_id text NOT NULL,
           project_id text NOT NULL,
           PRIMARY KEY (deployment_id, tenant)
         )`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_billing_account (
+      yield* sql`CREATE TABLE IF NOT EXISTS cloud_billing_account (
           organization_id text PRIMARY KEY,
           plan text NOT NULL DEFAULT 'free',
           subscribed_plan text NOT NULL DEFAULT 'free',
@@ -363,9 +362,9 @@ export const quotas = Effect.fnUntraced(function* (
           provider_updated_at bigint NOT NULL DEFAULT 0,
           payment_status text NOT NULL DEFAULT 'free'
         )`
-        yield* sql`ALTER TABLE cloud_billing_account
+      yield* sql`ALTER TABLE cloud_billing_account
           ADD COLUMN IF NOT EXISTS subscribed_plan text NOT NULL DEFAULT 'free'`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_usage_account (
+      yield* sql`CREATE TABLE IF NOT EXISTS cloud_usage_account (
           organization_id text NOT NULL,
           period text NOT NULL,
           command_units bigint NOT NULL DEFAULT 0,
@@ -373,7 +372,7 @@ export const quotas = Effect.fnUntraced(function* (
           storage_gb_months double precision NOT NULL DEFAULT 0,
           PRIMARY KEY (organization_id, period)
         )`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_usage_reservation (
+      yield* sql`CREATE TABLE IF NOT EXISTS cloud_usage_reservation (
           identity text PRIMARY KEY,
           organization_id text NOT NULL,
           project_id text NOT NULL,
@@ -391,18 +390,18 @@ export const quotas = Effect.fnUntraced(function* (
           settled_at timestamptz,
           UNIQUE (deployment_id, tenant, actor_type, actor_id, command_id)
         )`
-        yield* sql`ALTER TABLE cloud_usage_reservation
+      yield* sql`ALTER TABLE cloud_usage_reservation
           ADD COLUMN IF NOT EXISTS admissions bigint NOT NULL DEFAULT 1`
-        yield* sql`CREATE INDEX IF NOT EXISTS cloud_usage_reservation_open
+      yield* sql`CREATE INDEX IF NOT EXISTS cloud_usage_reservation_open
           ON cloud_usage_reservation (organization_id, state)`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_meter_storage_sample (
+      yield* sql`CREATE TABLE IF NOT EXISTS cloud_meter_storage_sample (
           deployment_id text NOT NULL,
           tenant text NOT NULL,
           hour timestamptz NOT NULL,
           logical_bytes double precision NOT NULL CHECK (logical_bytes >= 0),
           PRIMARY KEY (deployment_id, tenant)
         )`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_connection_lease (
+      yield* sql`CREATE TABLE IF NOT EXISTS cloud_connection_lease (
           lease_id text PRIMARY KEY,
           organization_id text NOT NULL,
           deployment_id text NOT NULL,
@@ -412,13 +411,13 @@ export const quotas = Effect.fnUntraced(function* (
           heartbeat_at timestamptz NOT NULL DEFAULT now(),
           expires_at timestamptz NOT NULL
         )`
-        yield* sql`CREATE INDEX IF NOT EXISTS cloud_connection_lease_live
+      yield* sql`CREATE INDEX IF NOT EXISTS cloud_connection_lease_live
           ON cloud_connection_lease (organization_id, expires_at)`
-        yield* sql`CREATE INDEX IF NOT EXISTS cloud_connection_lease_edge
+      yield* sql`CREATE INDEX IF NOT EXISTS cloud_connection_lease_edge
           ON cloud_connection_lease (edge_id)`
-      }),
-    )
-    .pipe(Effect.orDie)
+    }),
+    SCHEMA_LOCK,
+  ).pipe(Effect.orDie)
 
   const renew = Effect.gen(function* () {
     const ids = [...held.keys()]

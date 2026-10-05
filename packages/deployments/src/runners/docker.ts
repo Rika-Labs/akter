@@ -22,7 +22,8 @@ import {
  * its routes. `command` replaces the image's command when given.
  * `drainTimeout` is how many seconds a stopped runner has to finish after
  * SIGTERM before Docker kills it. `platform` defaults to `linux/arm64`, the
- * architecture hosted runners run on. `peering` issues each new container its
+ * architecture of a development machine; hosted runners are linux/amd64, so a
+ * local image is no evidence for the hosted architecture. `peering` issues each new container its
  * own runner certificate for its deployment (see `peerEnvironment`).
  */
 export interface DockerOptions {
@@ -95,7 +96,7 @@ const stateOf = (status: string): RunnerState => {
  * `RunnerPlatform` over the local Docker CLI, starting real containers. The
  * environment snapshot travels through the CLI's environment, with only
  * variable names in arguments. This platform is for development and tests;
- * hosted runners use ECS.
+ * hosted runners use Fly Machines.
  *
  * A container is named for its deployment and the hash of its idempotency
  * key, so a repeated start finds the container it already made. Containers

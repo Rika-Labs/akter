@@ -1,6 +1,6 @@
 import { CloudApi } from "@akter/cloud-api"
 import { Postgres } from "@alchemy.run/better-auth/Postgres"
-import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
+import { fromApiKey } from "@distilled.cloud/resend/Credentials"
 import { BunHttpServer } from "@effect/platform-bun"
 import { Effect, Layer, Option, Predicate, Redacted, Schema, Stream } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
@@ -16,8 +16,8 @@ import {
 import { Access, AccessLive } from "./access.ts"
 import { AccountLayers } from "./accounts.ts"
 import { Auth, processRuntimeLayer } from "./auth.ts"
-import type { ApiOptions } from "./config.ts"
-import { localEmail, sesEmail } from "./email.ts"
+import { type ApiOptions, RunnerRegions } from "./config.ts"
+import { localEmail, resendEmail } from "./email.ts"
 import { PendingLayers } from "./pending.ts"
 import { Repository, RepositoryLive, RepositoryRetentionLive } from "./repository.ts"
 import { ControlLayers } from "./control.ts"
@@ -214,8 +214,19 @@ export const infrastructure = (options: ApiOptions) => {
   const email =
     options.emailMode === "local"
       ? localEmail
-      : sesEmail(options.emailFrom).pipe(
-          Layer.provide(Layer.mergeAll(fromNodeProviderChain(), FetchHttpClient.layer)),
+      : Layer.unwrap(
+          options.resendApiKey === undefined
+            ? Effect.die(new Error("Resend email requires RESEND_API_KEY"))
+            : Effect.succeed(
+                resendEmail(options.emailFrom).pipe(
+                  Layer.provide(
+                    Layer.mergeAll(
+                      fromApiKey({ apiKey: Redacted.value(options.resendApiKey) }),
+                      FetchHttpClient.layer,
+                    ),
+                  ),
+                ),
+              ),
         )
   const auth = Auth.layer(options).pipe(
     Layer.provide(email),
@@ -228,6 +239,10 @@ export const infrastructure = (options: ApiOptions) => {
     RepositoryRetentionLive.pipe(Layer.provide(RepositoryLive)),
     billingInfrastructure(options),
     Layer.succeed(LocalBillingOptions, options),
+    Layer.succeed(
+      RunnerRegions,
+      options.runnerFly === undefined ? undefined : Object.keys(options.runnerFly.options.regions),
+    ),
     runtimeEdge(options),
     runnerReconciliation(options),
   ).pipe(Layer.provideMerge(sql))

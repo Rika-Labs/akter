@@ -1,6 +1,6 @@
 import { Config, Duration, Effect, Redacted, Schema } from "effect"
 import { dual } from "effect/Function"
-import { cidrs, type TrustedProxies } from "./routing/client-ip.ts"
+import type { TrustedProxies } from "./routing/client-ip.ts"
 
 /** One Ed25519 signing key from the edge's secret store, as a private JWK. */
 export const SigningKey = Schema.Struct({
@@ -21,6 +21,8 @@ export interface EdgeOptions {
   readonly issuer: string
   /** The control-plane database: hosts, runners, credentials, keys, and the tenant directory. */
   readonly controlPlaneUrl: Redacted.Redacted<string>
+  /** Neki runs the edge's schema changes outside transactions and waits for them to propagate. */
+  readonly controlPlaneEngine?: "postgres" | "neki"
   /** The edge's signing keys. Their public halves are published at startup. */
   readonly signingKeys: ReadonlyArray<SigningKey>
   readonly hostname: string
@@ -62,9 +64,8 @@ export interface EdgeOptions {
   /** How often an edge extends its live leases; at most half of `leaseTtl`. Default 10 seconds. */
   readonly leaseHeartbeat: Duration.Duration
   /**
-   * Whether `CF-Connecting-IP` is believed. It is only when `nlbOnly` says the
-   * network admits the edge's traffic solely through an NLB that preserves
-   * client addresses, and then only from a peer in Cloudflare's ranges;
+   * Whether `Fly-Client-IP` is believed. It is only when `flyProxy` says the
+   * edge is reachable solely through Fly's proxy, which sets that header;
    * otherwise the client is the TCP peer.
    */
   readonly trustedProxies: TrustedProxies
@@ -131,30 +132,18 @@ export const loadOptions = Effect.gen(function* () {
     return yield* Effect.die(
       new Error("EDGE_LEASE_HEARTBEAT is positive and at most half of EDGE_LEASE_TTL"),
     )
-  const list = (name: string) =>
-    Config.String(name).pipe(
-      Config.withDefault(""),
-      Config.map((value) =>
-        value
-          .split(",")
-          .map((block) => block.trim())
-          .filter((block) => block.length > 0),
-      ),
-    )
 
   const trustedProxies = {
-    nlbOnly: yield* Config.Boolean("EDGE_NLB_ONLY").pipe(Config.withDefault(false)),
-    cloudflare: yield* list("EDGE_CLOUDFLARE_RANGES"),
+    flyProxy: yield* Config.Boolean("EDGE_TRUST_FLY_PROXY").pipe(Config.withDefault(false)),
   } satisfies TrustedProxies
-
-  yield* Effect.try(() => cidrs(trustedProxies.cloudflare)).pipe(Effect.orDie)
-
-  if (trustedProxies.nlbOnly && trustedProxies.cloudflare.length === 0)
-    return yield* Effect.die(new Error("EDGE_NLB_ONLY needs EDGE_CLOUDFLARE_RANGES"))
 
   return {
     issuer: yield* Config.String("EDGE_ISSUER"),
     controlPlaneUrl: yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL"),
+    controlPlaneEngine: yield* Config.Literals(
+      ["postgres", "neki"],
+      "CONTROL_PLANE_DATABASE_ENGINE",
+    ).pipe(Config.withDefault("postgres")),
     signingKeys: yield* decodeKeys(Redacted.value(keys)).pipe(
       Effect.catch(() =>
         Effect.die(new Error("EDGE_SIGNING_KEYS must contain a valid private signing-key array")),

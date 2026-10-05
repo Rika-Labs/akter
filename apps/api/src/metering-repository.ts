@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Context, DateTime, Effect, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 
@@ -356,7 +357,7 @@ export class MeteringRepository extends Context.Service<
 
 /**
  * `MeteringRepository` over the control-plane database; building it creates the
- * metering tables, functions and triggers under one advisory transaction lock,
+ * metering tables, functions and triggers under one advisory lock,
  * so it must be built before any layer of the `UsageActor`.
  */
 export const MeteringRepositoryLive = Layer.effect(
@@ -364,15 +365,12 @@ export const MeteringRepositoryLive = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          yield* sql`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})`
-
-          for (const statement of migrations) yield* sql.unsafe(statement)
-        }),
-      )
-      .pipe(Effect.orDie)
+    yield* Database.schemaChange(
+      Effect.gen(function* () {
+        for (const statement of migrations) yield* sql.unsafe(statement)
+      }),
+      SCHEMA_LOCK,
+    ).pipe(Effect.orDie)
 
     return {
       binding: (deployment, tenant) =>

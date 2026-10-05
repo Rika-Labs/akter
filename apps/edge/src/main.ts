@@ -1,6 +1,7 @@
 import { defaultPricingConfig, PricingConfigSchema, PricingLive } from "@akter/billing"
 import { BunCrypto, BunRuntime } from "@effect/platform-bun"
 import { PgClient } from "@effect/sql-pg"
+import { Database } from "@rikalabs/akter/runtime"
 import { Config, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { loadOptions } from "./config.ts"
@@ -22,6 +23,7 @@ const program = Effect.gen(function* () {
       Layer.provide(
         Layer.mergeAll(
           PgClient.layer({ url: options.controlPlaneUrl, maxConnections: 10 }),
+          Layer.succeed(Database.Neki, options.controlPlaneEngine === "neki"),
           FetchHttpClient.layer,
           BunCrypto.layer,
           PricingLive(pricing),

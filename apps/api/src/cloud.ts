@@ -8,14 +8,14 @@ import {
   dockerBuilds,
   dockerMigrations,
   dockerRunners,
-  ecsMigrations,
-  ecsRunners,
+  flyMigrations,
+  flyRunners,
   ImageBuilds,
   ImageMigrations,
   RunnerLayers,
   RunnerPoller,
 } from "@akter/deployments/runners"
-import { fromNodeProviderChain } from "@distilled.cloud/aws/Credentials"
+import { credentials as flyCredentials } from "@distilled.cloud/fly-io/Credentials"
 import { migrate } from "@akter/postgres/migrate"
 import { Actors, Database, RunnerAuthority } from "@rikalabs/akter/runtime"
 import { BunCrypto, BunServices } from "@effect/platform-bun"
@@ -103,24 +103,30 @@ export const runtimeEdge = (options: ApiOptions) =>
     }),
   )
 
-/** Serving migrations deliberately exclude the retired identity schema; Better Auth owns identity tables. */
-export const cloudDatabase = (options: ApiOptions) =>
-  Layer.unwrap(
-    Effect.promise(() => migrate(Redacted.value(options.databaseUrl), { startAt: "0002_" })).pipe(
-      Effect.map(() => Database.postgres({ url: options.databaseUrl, maxConnections: 10 })),
+/**
+ * Serving migrations deliberately exclude the retired identity schema; Better
+ * Auth owns identity tables. The engine reaches every schema change built on
+ * this database through `Database.Neki`.
+ */
+export const cloudDatabase = (options: ApiOptions) => {
+  const neki = options.databaseEngine === "neki"
+  return Layer.unwrap(
+    Effect.promise(() =>
+      migrate(Redacted.value(options.databaseUrl), { startAt: "0002_", neki }),
+    ).pipe(
+      Effect.map(() => Database.postgres({ url: options.databaseUrl, maxConnections: 10, neki })),
     ),
   )
+}
 
 /** The local control plane uses the same durable actors and SQL authority as hosted orchestration. */
 export const cloudRuntime = (options: ApiOptions) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      if (options.production && options.runnerEcs === undefined)
+      if (options.production && options.runnerFly === undefined)
         return yield* Effect.die(
-          new Error("Production deployment orchestration requires ECS runner configuration"),
+          new Error("Production deployment orchestration requires Fly runner configuration"),
         )
-      if (options.production && options.runnerEcs?.scheme === "http")
-        return yield* Effect.die(new Error("Production edge-to-runner traffic requires TLS"))
       yield* ensureLifecycleTables
       const actors = Actors.layer({ relay: { poll: "100 millis" } })
       const runners = RunnerLayers.pipe(Layer.provideMerge(actors))
@@ -202,7 +208,7 @@ export const cloudRuntime = (options: ApiOptions) =>
     }),
   ).pipe(
     Layer.provide(
-      options.runnerEcs === undefined
+      options.runnerFly === undefined
         ? Layer.unwrap(
             Effect.map(localAuthority(options.runnerPeerAuthority), (peering) =>
               Layer.mergeAll(
@@ -221,14 +227,18 @@ export const cloudRuntime = (options: ApiOptions) =>
             ),
           ).pipe(Layer.provide(Layer.mergeAll(BunServices.layer, BunCrypto.layer)))
         : Layer.mergeAll(
-            ecsRunners(options.runnerEcs),
-            ecsMigrations({
-              ...options.runnerEcs,
+            flyRunners(options.runnerFly.options),
+            flyMigrations({
+              ...options.runnerFly.options,
               command: options.migrationCommand ?? ["bun", "run", "migrate"],
             }),
           ).pipe(
             Layer.provide(
-              Layer.mergeAll(fromNodeProviderChain(), FetchHttpClient.layer, BunCrypto.layer),
+              Layer.mergeAll(
+                flyCredentials({ apiKey: Redacted.value(options.runnerFly.token) }),
+                FetchHttpClient.layer,
+                BunCrypto.layer,
+              ),
             ),
           ),
     ),

@@ -1,0 +1,38 @@
+diff --git a/lib/Fly/replicas.js b/lib/Fly/replicas.js
+index 054d65e67415b845ac04e589fdd475cfaf3cd2d2..22be4baab8db230af72b922704ebbba37e8e7806 100644
+--- a/lib/Fly/replicas.js
++++ b/lib/Fly/replicas.js
+@@ -880,11 +880,10 @@ const reconcileLeasedReplicas = Effect.fn(function* (input, leases) {
+                     });
+                 return observed;
+             }).pipe(Effect.retry({
+-                times: 8,
+-                schedule: waitBackoff,
++                schedule: Schedule.spaced("2 seconds"),
+                 while: (error) => error._tag === "Fly.ReplicaNotCreated" ||
+                     TRANSIENT_GET_TAGS.some((tag) => tag === error._tag),
+-            }), Effect.timeout("60 seconds")));
++            }), Effect.timeout("5 minutes")));
+         }
+         current = yield* ensureStarted(input.appName, current, input.skipLaunch === true, input.policy.healthTimeoutMs, config, leases);
+         if (current.cordoned === true && !input.skipLaunch) {
+diff --git a/src/Fly/replicas.ts b/src/Fly/replicas.ts
+index c82d979213ad26a3e50f291df258c3f34527ba27..6a35acf29714f99c4d50ff3a37d90c4a33ef82c2 100644
+--- a/src/Fly/replicas.ts
++++ b/src/Fly/replicas.ts
+@@ -1448,13 +1448,12 @@ const reconcileLeasedReplicas = Effect.fn(function* (
+           return observed;
+         }).pipe(
+           Effect.retry({
+-            times: 8,
+-            schedule: waitBackoff,
++            schedule: Schedule.spaced("2 seconds"),
+             while: (error) =>
+               error._tag === "Fly.ReplicaNotCreated" ||
+               TRANSIENT_GET_TAGS.some((tag) => tag === error._tag),
+           }),
+-          Effect.timeout("60 seconds"),
++          Effect.timeout("5 minutes"),
+         ),
+       );
+     }
