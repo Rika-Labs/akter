@@ -514,7 +514,7 @@ describe("control-plane database", () => {
         shardCount: 1,
         routers: [{ name: "default", size: "NKR_1", replicasPerCell: 1 }],
         deletionProtected: false,
-        unshardedTables: expect.arrayContaining(["deployment", "actor_placements"]),
+        routedTables: [],
       })
       expect(removalOf(graph, "Database")).toBe("destroy")
     }))
@@ -540,7 +540,7 @@ describe("control-plane database", () => {
         replicas: 2,
         routers: [{ name: "default", size: "NKR_1", replicasPerCell: 1 }],
         deletionProtected: true,
-        unshardedTables: expect.arrayContaining(["deployment", "actor_placements"]),
+        routedTables: [],
       })
       expect(removalOf(graph, "Database")).toBe("retain")
     }))
