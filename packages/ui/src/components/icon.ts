@@ -7,7 +7,7 @@ import { dimensions } from "../tokens.stylex.ts"
 
 /**
  * Line icons drawn on a 16-unit grid with round caps, so every glyph shares one stroke weight.
- * `filled` paths are painted instead of stroked (the GitHub mark, status dots).
+ * `filled` paths are painted instead of stroked (the GitHub and Google marks, status dots).
  */
 const glyphs = {
   overview: { d: "M2.5 7 8 2.5 13.5 7v6.5h-11Z" },
@@ -108,6 +108,10 @@ const glyphs = {
   },
   github: {
     d: "M8 1.3a6.7 6.7 0 0 0-2.1 13c.3.1.5-.1.5-.3v-1.2c-1.9.4-2.3-.8-2.3-.8-.3-.8-.8-1-.8-1-.6-.4 0-.4 0-.4.7 0 1 .7 1 .7.6 1 1.6.7 2 .6.1-.4.2-.7.4-.9-1.5-.2-3-.7-3-3.3 0-.7.3-1.3.7-1.8-.1-.2-.3-.9.1-1.8 0 0 .6-.2 1.8.7a6.3 6.3 0 0 1 3.4 0c1.3-.9 1.8-.7 1.8-.7.4.9.1 1.6.1 1.8.4.5.7 1.1.7 1.8 0 2.6-1.6 3.1-3.1 3.3.2.2.5.6.5 1.2v1.8c0 .2.1.4.5.3A6.7 6.7 0 0 0 8 1.3Z",
+    filled: true,
+  },
+  google: {
+    d: "M15.5 8.2c0-.6-.1-1.1-.2-1.6H8v3h4.2a3.6 3.6 0 0 1-1.6 2.4v2h2.6c1.5-1.4 2.3-3.4 2.3-5.8ZM8 16c2.2 0 4-.7 5.3-2l-2.6-2c-.7.5-1.6.8-2.7.8-2.1 0-3.9-1.4-4.5-3.3H.8v2A8 8 0 0 0 8 16ZM3.5 9.5a4.8 4.8 0 0 1 0-3V4.4H.8a8 8 0 0 0 0 7.2l2.7-2.1ZM8 3.2c1.2 0 2.3.4 3.1 1.2l2.3-2.3A8 8 0 0 0 .8 4.4l2.7 2.1C4.1 4.6 5.9 3.2 8 3.2Z",
     filled: true,
   },
 } as const

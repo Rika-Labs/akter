@@ -1,7 +1,8 @@
 ---
+import { containerStrip } from "@akter/ui/brand"
 import * as stylex from "@stylexjs/stylex"
 import { renderDrawing } from "../illustrations/render-drawing.ts"
-import { containerStrip, portScene } from "../illustrations/scenes.ts"
+import { portScene } from "../illustrations/scenes.ts"
 import { art } from "./art.styles.ts"
 
 interface Props {
@@ -14,7 +15,7 @@ interface Props {
 
 const markup = {
   crane: renderDrawing(portScene),
-  strip: renderDrawing(containerStrip),
+  strip: renderDrawing(containerStrip.drawing),
 }
 const { source, viewBox, label, phoneCrop = false, xstyle } = Astro.props
 ---

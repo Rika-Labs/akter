@@ -155,7 +155,7 @@ test("a signed-out visitor signs in and comes back with the code intact", async 
 
   await page.getByRole("textbox", { name: "Email", exact: true }).fill("ada@acme.dev")
   await page.getByRole("textbox", { name: "Password", exact: true }).fill("correct-password")
-  await page.getByRole("button", { name: "Continue", exact: true }).click()
+  await page.getByRole("button", { name: "Sign in", exact: true }).click()
   await expect(page).toHaveURL(`${origin}/device?user_code=WDJBMJHT`)
   await expect(page.getByRole("textbox", { name: "Code" })).toHaveValue("WDJBMJHT")
 

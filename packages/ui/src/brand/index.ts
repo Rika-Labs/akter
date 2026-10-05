@@ -12,11 +12,4 @@ export {
   stack,
   water,
 } from "./port.ts"
-export {
-  type Scene,
-  adrift,
-  letterOnContainer,
-  mooredRow,
-  waitingQuay,
-  workingYard,
-} from "./scenes.ts"
+export { type Scene, adrift, containerStrip, waitingQuay } from "./scenes.ts"

@@ -132,7 +132,7 @@ describe("social sign-in providers", () => {
         Scene.expect(provider("GitHub")).toBeAbsent(),
         Scene.expect(provider("Google")).toBeAbsent(),
         Scene.expect(Scene.text("or")).toBeAbsent(),
-        Scene.expect(Scene.role("button", { name: /^(Continue|Create account)$/ })).toExist(),
+        Scene.expect(Scene.role("button", { name: /^(Sign in|Create account)$/ })).toExist(),
       ),
   )
 
@@ -154,4 +154,31 @@ describe("social sign-in providers", () => {
       Scene.expect(provider("Google")).toExist(),
     )
   })
+})
+
+describe("signed-out frame", () => {
+  const shownAt = (
+    path: string,
+    ...steps: ReadonlyArray<Scene.SceneStep<Model, Message, undefined>>
+  ) => screenScene({ path, screen: authScreen, page: undefined }, ...steps)
+
+  it.each([
+    ["/sign-in", "Sign up"],
+    ["/sign-up", "Sign in"],
+    ["/forgot-password", "Sign in"],
+    ["/verify-email", "Start over"],
+  ])("offers the way to the other screen as a link on %s's top bar", (path, label) =>
+    shownAt(
+      path,
+      Scene.expect(Scene.role("banner")).toContainText(label),
+      Scene.expect(Scene.role("link", { name: label })).toExist(),
+    ),
+  )
+
+  it("keeps the forgot-password link beside the password label, outside the textbox's name", () =>
+    shownAt(
+      "/sign-in",
+      Scene.expect(Scene.role("link", { name: "Forgot password?" })).toExist(),
+      Scene.expect(Scene.role("textbox", { name: /^Password$/ })).toExist(),
+    ))
 })
