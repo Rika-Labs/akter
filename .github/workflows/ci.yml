@@ -49,13 +49,16 @@ jobs:
             bun run check:static
             bun run turbo run lint lint:root typecheck --concurrency=100% --summarize "${affected[@]}"
           } 2>&1 | tee evidence/static/check.log
+      - name: Collect Turbo run summaries
+        if: always()
+        run: |
+          mkdir -p evidence/static/turbo
+          cp .turbo/runs/*.json evidence/static/turbo/ 2>/dev/null || true
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: evidence-part-static
-          path: |
-            evidence/
-            .turbo/runs/*.json
+          path: evidence/
           include-hidden-files: true
           if-no-files-found: ignore
           overwrite: true
@@ -131,14 +134,17 @@ jobs:
           bun run turbo run build test test:integration \
             --filter='!@rikalabs/akter' --filter='!@akter/e2e' \
             --concurrency=100% --summarize "${affected[@]}" 2>&1 | tee evidence/workspaces/check.log
+      - name: Collect Turbo run summaries
+        if: always()
+        run: |
+          mkdir -p evidence/workspaces/turbo
+          cp .turbo/runs/*.json evidence/workspaces/turbo/ 2>/dev/null || true
+          cp apps/api/.cache/integration-results.json evidence/workspaces/ 2>/dev/null || true
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: evidence-part-workspaces
-          path: |
-            evidence/
-            .turbo/runs/*.json
-            apps/api/.cache/integration-results.json
+          path: evidence/
           include-hidden-files: true
           if-no-files-found: ignore
           overwrite: true
@@ -171,13 +177,16 @@ jobs:
             affected=(--affected)
           fi
           bun run test:e2e --summarize "${affected[@]}" 2>&1 | tee evidence/e2e/check.log
+      - name: Collect Turbo run summaries
+        if: always()
+        run: |
+          mkdir -p evidence/e2e/turbo
+          cp .turbo/runs/*.json evidence/e2e/turbo/ 2>/dev/null || true
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: evidence-part-e2e
-          path: |
-            evidence/
-            .turbo/runs/*.json
+          path: evidence/
           include-hidden-files: true
           if-no-files-found: ignore
           overwrite: true
@@ -472,16 +481,12 @@ jobs:
         with:
           pattern: evidence-part-*
           merge-multiple: true
-          path: .
+          path: evidence
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: evidence-${{ env.HEAD_SHA }}
-          path: |
-            evidence/
-            .turbo/runs/*.json
-            apps/api/.cache/integration-results.json
-          include-hidden-files: true
+          path: evidence/
           if-no-files-found: error
           overwrite: true
           retention-days: 14
