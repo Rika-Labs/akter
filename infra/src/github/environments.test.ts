@@ -57,6 +57,10 @@ const Setting = Schema.Struct({
 const Token = Schema.Struct({
   name: Schema.String,
   orgCapabilities: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  datasetCapabilities: Schema.Record(
+    Schema.String,
+    Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  ),
 })
 
 const decode = {
@@ -177,6 +181,21 @@ describe("GitHub environments", () => {
         apiTokens: ["create", "read", "delete"],
       })
       expect(production.name).not.toBe(preview.name)
+    }))
+
+  test("lets each environment ingest into the shared datasets and only production query the one its monitor reads", () =>
+    Effect.gen(function* () {
+      const graph = yield* compile()
+      const preview = yield* decode.token(graph.declarations["preview/AxiomToken"])
+      const production = yield* decode.token(graph.declarations["production/AxiomToken"])
+      expect(preview.datasetCapabilities).toEqual({
+        "akter-traces": { ingest: ["create"] },
+        "akter-logs": { ingest: ["create"] },
+      })
+      expect(production.datasetCapabilities).toEqual({
+        "akter-traces": { ingest: ["create"], query: ["read"] },
+        "akter-logs": { ingest: ["create"] },
+      })
     }))
 
   test("sizes Neki and names the Stripe mode for each environment, notifying from production only", () =>
