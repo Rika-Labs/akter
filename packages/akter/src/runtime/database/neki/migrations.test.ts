@@ -19,7 +19,7 @@ import { afterAll, describe, expect, it } from "vitest"
 import { Actors } from "../../index.ts"
 import { Database } from "../../layer.ts"
 import { migrate, migrations, migrator } from "../migrations.ts"
-import { MigrationBoundary, prepareRunnerStorage } from "./migrations.ts"
+import { MigrationBoundary, NEKI_DDL_BARRIER, prepareRunnerStorage } from "./migrations.ts"
 import { disposableDatabase } from "../../../testing/database.ts"
 
 const harness = ManagedRuntime.make(Layer.merge(BunCrypto.layer, BunServices.layer))
@@ -62,7 +62,7 @@ const withDatabase = <A, E, R>(
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* query(pool, "DROP SCHEMA IF EXISTS durable CASCADE")
-            yield* query(pool, "SELECT __neki.wait_for_ddl()")
+            yield* query(pool, NEKI_DDL_BARRIER)
             const tables = yield* query(
               pool,
               `SELECT format('%I.%I', schemaname, tablename) AS name FROM pg_tables
@@ -70,11 +70,11 @@ const withDatabase = <A, E, R>(
             )
             for (const { name } of tables.rows) {
               yield* query(pool, `DROP TABLE IF EXISTS ${name} CASCADE`)
-              yield* query(pool, "SELECT __neki.wait_for_ddl()")
+              yield* query(pool, NEKI_DDL_BARRIER)
             }
             for (const name of ["actor_adoption_observe", "actor_adoption_guard"]) {
               yield* query(pool, `DROP FUNCTION IF EXISTS ${name}()`)
-              yield* query(pool, "SELECT __neki.wait_for_ddl()")
+              yield* query(pool, NEKI_DDL_BARRIER)
             }
           }),
         )
@@ -85,7 +85,12 @@ const withDatabase = <A, E, R>(
       yield* query(pool, "INSERT INTO neki_barriers VALUES (0)")
       yield* query(
         pool,
-        `CREATE FUNCTION __neki.wait_for_ddl() RETURNS void LANGUAGE plpgsql AS $$
+        `CREATE FUNCTION __neki.ddl_versions(OUT schema_version bigint, OUT cluster_version bigint)
+        LANGUAGE sql AS $$ SELECT 1::bigint, 1::bigint $$`,
+      )
+      yield* query(
+        pool,
+        `CREATE FUNCTION __neki.wait_for_ddl(schema_version bigint, cluster_version bigint) RETURNS void LANGUAGE plpgsql AS $$
       BEGIN
         IF pg_current_xact_id_if_assigned() IS NOT NULL THEN
           RAISE EXCEPTION 'DDL propagation was requested inside a writing transaction';

@@ -5,8 +5,8 @@ import type { SqlError } from "effect/sql"
 
 /**
  * Whether the database is a Neki router. Turn sessions then run
- * `NEKI_SESSION_SETTINGS`; nothing sets this outside the Neki conformance
- * backend until Neki is a supported database.
+ * `NEKI_SESSION_SETTINGS`, startup migrations use the Neki protocol, and
+ * application schema changes autocommit with propagation barriers.
  */
 export const NekiTurnSessions = Context.Reference<boolean>("akter/NekiTurnSessions", {
   defaultValue: () => false,

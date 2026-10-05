@@ -103,13 +103,21 @@ export const runtimeEdge = (options: ApiOptions) =>
     }),
   )
 
-/** Serving migrations deliberately exclude the retired identity schema; Better Auth owns identity tables. */
-export const cloudDatabase = (options: ApiOptions) =>
-  Layer.unwrap(
-    Effect.promise(() => migrate(Redacted.value(options.databaseUrl), { startAt: "0002_" })).pipe(
-      Effect.map(() => Database.postgres({ url: options.databaseUrl, maxConnections: 10 })),
+/**
+ * Serving migrations deliberately exclude the retired identity schema; Better
+ * Auth owns identity tables. The engine reaches every schema change built on
+ * this database through `Database.Neki`.
+ */
+export const cloudDatabase = (options: ApiOptions) => {
+  const neki = options.databaseEngine === "neki"
+  return Layer.unwrap(
+    Effect.promise(() =>
+      migrate(Redacted.value(options.databaseUrl), { startAt: "0002_", neki }),
+    ).pipe(
+      Effect.map(() => Database.postgres({ url: options.databaseUrl, maxConnections: 10, neki })),
     ),
   )
+}
 
 /** The local control plane uses the same durable actors and SQL authority as hosted orchestration. */
 export const cloudRuntime = (options: ApiOptions) =>

@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Context, Effect, Layer, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { createEmail } from "@distilled.cloud/resend"
@@ -23,15 +24,13 @@ export const localEmail = Layer.effect(
   Email,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`SELECT pg_advisory_xact_lock(499500502)`
-        yield* sql`CREATE TABLE IF NOT EXISTS cloud_email_outbox (
+    yield* Database.schemaChange(
+      sql`CREATE TABLE IF NOT EXISTS cloud_email_outbox (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     recipient text NOT NULL, subject text NOT NULL, body text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
-  )`
-      }),
+  )`,
+      499500502,
     )
     return Email.of({
       send: (message) =>

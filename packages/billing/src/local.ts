@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Crypto, DateTime, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 
@@ -124,9 +125,8 @@ export const StripeBillingLocal = (config: LocalBillingConfig) =>
       const hostedBaseUrl = config.hostedBaseUrl ?? DEFAULT_HOSTED_BASE_URL
       const withCrypto = Effect.provideService(Crypto.Crypto, crypto)
 
-      yield* sql.withTransaction(
+      yield* Database.schemaChange(
         Effect.gen(function* () {
-          yield* sql`SELECT pg_advisory_xact_lock(499500503)`
           yield* sql`CREATE TABLE IF NOT EXISTS cloud_billing_customer (
             organization_id text PRIMARY KEY,
             customer_id text NOT NULL UNIQUE,
@@ -200,6 +200,7 @@ export const StripeBillingLocal = (config: LocalBillingConfig) =>
           )`
           yield* sql`ALTER TABLE cloud_billing_meter_event ADD COLUMN IF NOT EXISTS payload_value text`
         }),
+        499500503,
       )
 
       const findTier = (tierId: string): Effect.Effect<Tier, UnknownTier> => {

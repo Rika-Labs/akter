@@ -5,6 +5,8 @@ import { FlyConfig, type FlyOptions } from "@akter/deployments/runners"
 
 export interface ApiOptions {
   readonly databaseUrl: Redacted.Redacted<string>
+  /** Neki runs every schema change outside transactions and waits for it to propagate. */
+  readonly databaseEngine?: "postgres" | "neki"
   readonly secret: Redacted.Redacted<string>
   readonly origin: string
   readonly consoleOrigin?: string
@@ -68,6 +70,10 @@ const isPublicHttpsOrigin = (value: string) => {
 
 export const loadOptions = Effect.gen(function* () {
   const databaseUrl = yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL")
+  const databaseEngine = yield* Config.Literals(
+    ["postgres", "neki"],
+    "CONTROL_PLANE_DATABASE_ENGINE",
+  ).pipe(Config.withDefault("postgres"))
   const secret = yield* Config.Redacted("AUTH_SECRET")
   const origin = yield* Config.String("API_ORIGIN").pipe(
     Config.withDefault("http://localhost:3001"),
@@ -216,6 +222,7 @@ export const loadOptions = Effect.gen(function* () {
     )
   return {
     databaseUrl,
+    databaseEngine,
     secret,
     origin,
     consoleOrigin: Option.getOrUndefined(consoleOrigin),

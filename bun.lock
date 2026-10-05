@@ -202,6 +202,7 @@
       "name": "@akter/billing",
       "dependencies": {
         "@distilled.cloud/stripe": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -271,6 +272,7 @@
       "dependencies": {
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
+        "@rikalabs/akter": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
         "pg": "8.23.0",

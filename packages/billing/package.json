@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@distilled.cloud/stripe": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

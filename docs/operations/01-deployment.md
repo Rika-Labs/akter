@@ -136,7 +136,7 @@ The edge removes `authorization` and any client `durable-assertion` before forwa
 
 WebSockets are proxied, and holders stay in runners. The edge verifies the `hello` and `reauthenticate` credentials. It replaces each with an assertion carrying the session's random `sid`, and its `cexp` is the credential's expiry. An API key has no expiry, so it gets `EDGE_API_KEY_SESSION` (default 5 minutes): that is the revocation bound of a session opened with an API key.
 
-Configuration: `EDGE_ISSUER`, `CONTROL_PLANE_DATABASE_URL`, `EDGE_SIGNING_KEYS` (a secret JSON array of Ed25519 private JWKs `{ kid, x, d }`), `PORT`, `EDGE_ASSERTION_LIFETIME` (at most 60 seconds), `EDGE_API_KEY_SESSION`, `EDGE_PUBLICATION_LEAD` (default 5 minutes), and `EDGE_COLD_START_TIMEOUT` (default 30 seconds).
+Configuration: `EDGE_ISSUER`, `CONTROL_PLANE_DATABASE_URL`, `CONTROL_PLANE_DATABASE_ENGINE` (`postgres`, the default, or `neki`; the API reads it too), `EDGE_SIGNING_KEYS` (a secret JSON array of Ed25519 private JWKs `{ kid, x, d }`), `PORT`, `EDGE_ASSERTION_LIFETIME` (at most 60 seconds), `EDGE_API_KEY_SESSION`, `EDGE_PUBLICATION_LEAD` (default 5 minutes), and `EDGE_COLD_START_TIMEOUT` (default 30 seconds).
 
 ### Scale to zero
 

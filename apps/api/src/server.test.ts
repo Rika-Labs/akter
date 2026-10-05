@@ -1,19 +1,37 @@
-import { expect, it } from "@effect/vitest"
+import { describe, expect, it } from "@effect/vitest"
+import { afterAll } from "vitest"
 import * as Cloud from "@akter/cloud-api"
-import { Crypto, Effect, Schedule, Schema } from "effect"
-import { Cookies } from "effect/http"
+import { migrate, statements } from "@akter/postgres/migrate"
+import { liveNeki, nekiDatabase } from "@akter/postgres/neki"
+import { BunCrypto } from "@effect/platform-bun"
+import { PgClient } from "@effect/sql-pg"
+import { Database } from "@rikalabs/akter/runtime"
+import {
+  Crypto,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Redacted,
+  Schedule,
+  Schema,
+  type Scope,
+} from "effect"
+import { Cookies, FetchHttpClient } from "effect/http"
 import { SqlClient } from "effect/sql"
+import { Pool } from "pg"
 import { CLI_CLIENT_ID } from "./device.ts"
 import {
   baseOrigin,
   enterpriseOrganizations,
   isolatedLive,
+  options,
   read,
   signupWith,
   stalledRequest,
   TestLive,
   testServer,
 } from "./fixtures.ts"
+import { infrastructure } from "./server.ts"
 
 const DeviceCode = Schema.Struct({
   device_code: Schema.String,
@@ -1024,3 +1042,196 @@ it.layer(
     { timeout: 120000 },
   )
 })
+
+/** Builds the API's whole database setup, serves its routes, and signs a user up through Better Auth. */
+const bootNeki = (url: Redacted.Redacted<string>, suffix: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(
+        Layer.provideMerge(
+          Layer.provideMerge(
+            infrastructure({ ...options(url), databaseEngine: "neki" }),
+            FetchHttpClient.layer,
+          ),
+          BunCrypto.layer,
+        ),
+      )
+      yield* Effect.gen(function* () {
+        const { request } = yield* testServer
+        const sql = yield* SqlClient.SqlClient
+        yield* signupWith({ request, sql, suffix })("neki")
+        const ready = yield* request({ path: "/ready" })
+        expect(ready.status).toBe(200)
+      }).pipe(Effect.provideContext(context))
+    }),
+  )
+
+const nekiTables = [
+  "actor_migrations",
+  "actor_migration_steps",
+  "apikey",
+  "cloud_api_key",
+  "cloud_audit",
+  "cloud_billing_account",
+  "cloud_billing_customer",
+  "cloud_email_outbox",
+  "cloud_meter_tenant",
+  "cloud_project",
+  "cloud_source_archive",
+  "deployment",
+  "deployment_rollout_build_log",
+  "deployment_runner",
+  "member",
+  "organization",
+  "project_migration",
+  "runner_wake",
+  "session",
+  "tenant_directory",
+  "user",
+]
+
+const inspectNeki = (url: Redacted.Redacted<string>) =>
+  Effect.gen(function* () {
+    const pool = yield* Effect.acquireRelease(
+      Effect.sync(() => new Pool({ connectionString: Redacted.value(url), max: 1 })),
+      (pool) => Effect.promise(() => pool.end()),
+    )
+    const rows = <A>(text: string) =>
+      Effect.promise(() => pool.query(text)).pipe(Effect.map(({ rows }) => rows as Array<A>))
+    return {
+      tables: (yield* rows<{ name: string }>(
+        `SELECT relname AS name FROM pg_class WHERE relkind = 'r' AND relname = ANY('{${nekiTables.join(",")}}')`,
+      ))
+        .map(({ name }) => name)
+        .sort(),
+      files: (yield* rows<{ name: string }>(
+        "SELECT name FROM project_migration ORDER BY name",
+      )).map(({ name }) => name),
+      columns: (yield* rows<{ name: string }>(
+        `SELECT table_name || '.' || column_name AS name FROM information_schema.columns
+          WHERE table_name IN ('deployment', 'deployment_runner')
+            AND column_name IN ('tier', 'image', 'serving', 'provider_id') ORDER BY 1`,
+      )).map(({ name }) => name),
+      barriers:
+        liveNeki === undefined
+          ? (yield* rows<{ calls: number }>("SELECT calls FROM neki_barriers"))[0]!.calls
+          : undefined,
+      guarded:
+        liveNeki === undefined
+          ? (yield* rows("SELECT 1 FROM pg_event_trigger WHERE evtname = 'neki_autocommit_ddl'"))
+              .length
+          : undefined,
+    }
+  }).pipe(Effect.scoped)
+
+const nekiFiles = [
+  "0002_tenant_directory.sql",
+  "0003_edge.sql",
+  "0004_scale_to_zero.sql",
+  "0005_runner_provider.sql",
+]
+
+const nekiHarness = ManagedRuntime.make(BunCrypto.layer)
+afterAll(() => nekiHarness.dispose())
+
+const runNeki = <A, E>(effect: Effect.Effect<A, E, Crypto.Crypto | Scope.Scope>) =>
+  nekiHarness.runPromise(Effect.scoped(effect))
+
+describe(
+  liveNeki === undefined ? "API schema on the Neki stand-in" : "API schema on a live Neki router",
+  () => {
+    it(
+      "boots on a fresh database, boots again, and reapplies every control-plane statement over its own result",
+      () =>
+        runNeki(
+          Effect.gen(function* () {
+            const url = yield* nekiDatabase("cp")
+            yield* bootNeki(url, "fresh")
+            const first = yield* inspectNeki(url)
+
+            expect(first.tables).toEqual([...nekiTables].sort())
+            expect(first.files).toEqual(nekiFiles)
+            expect(first.columns).toEqual([
+              "deployment.image",
+              "deployment.serving",
+              "deployment.tier",
+              "deployment_runner.provider_id",
+            ])
+            if (liveNeki === undefined) {
+              expect(first.guarded).toBe(1)
+              expect(first.barriers).toBeGreaterThan(200)
+            }
+
+            yield* bootNeki(url, "restart")
+            expect((yield* inspectNeki(url)).files).toEqual(nekiFiles)
+
+            const pool = new Pool({ connectionString: Redacted.value(url), max: 1 })
+            yield* Effect.promise(() => pool.query("DELETE FROM project_migration")).pipe(
+              Effect.ensuring(Effect.promise(() => pool.end())),
+            )
+            yield* Effect.promise(() =>
+              migrate(Redacted.value(url), { startAt: "0002_", neki: true }),
+            )
+            expect((yield* inspectNeki(url)).files).toEqual(nekiFiles)
+          }),
+        ),
+      900_000,
+    )
+
+    it(
+      "finishes the control-plane files a previous release left part way through a file",
+      () =>
+        runNeki(
+          Effect.gen(function* () {
+            const url = yield* nekiDatabase("cp")
+            const directory = new URL("../../../packages/postgres/migrations/", import.meta.url)
+            const [interrupted, ...rest] = statements(
+              yield* Effect.promise(() => Bun.file(new URL(nekiFiles[3]!, directory)).text()),
+            )
+            expect(rest.length).toBeGreaterThan(0)
+            yield* Database.schemaChange(
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                yield* sql`create table if not exists project_migration (name text primary key, applied_at timestamptz not null default now())`
+                for (const name of nekiFiles.slice(0, 3)) {
+                  for (const statement of statements(
+                    yield* Effect.promise(() => Bun.file(new URL(name, directory)).text()),
+                  ))
+                    yield* sql.unsafe(statement)
+                  yield* sql`insert into project_migration(name) values (${name})`
+                }
+                yield* sql.unsafe(interrupted!)
+              }),
+              741902113,
+            ).pipe(
+              Effect.provideContext(
+                yield* Layer.build(
+                  Layer.mergeAll(
+                    PgClient.layer({ url, maxConnections: 1 }),
+                    Layer.succeed(Database.Neki, true),
+                  ),
+                ),
+              ),
+              Effect.orDie,
+            )
+            const before = yield* inspectNeki(url)
+            expect(before.files).toEqual(nekiFiles.slice(0, 3))
+            expect(before.columns).toEqual(["deployment.tier"])
+
+            yield* bootNeki(url, "upgrade")
+            const after = yield* inspectNeki(url)
+
+            expect(after.files).toEqual(nekiFiles)
+            expect(after.columns).toEqual([
+              "deployment.image",
+              "deployment.serving",
+              "deployment.tier",
+              "deployment_runner.provider_id",
+            ])
+            expect(after.tables).toEqual([...nekiTables].sort())
+          }),
+        ),
+      900_000,
+    )
+  },
+)

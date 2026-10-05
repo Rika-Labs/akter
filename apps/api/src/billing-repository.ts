@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import type { BillingEvent } from "@akter/billing"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"
@@ -51,16 +52,10 @@ const migrations: ReadonlyArray<string> = [
     provider_updated_at bigint NOT NULL DEFAULT 0,
     payment_status text NOT NULL DEFAULT 'free'
   )`,
-  `DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = 'cloud_billing_account'
-        AND column_name = 'subscribed_plan') THEN
-      ALTER TABLE cloud_billing_account ADD COLUMN subscribed_plan text;
-      UPDATE cloud_billing_account SET subscribed_plan = plan;
-      ALTER TABLE cloud_billing_account ALTER COLUMN subscribed_plan SET DEFAULT 'free';
-      ALTER TABLE cloud_billing_account ALTER COLUMN subscribed_plan SET NOT NULL;
-    END IF;
-  END $$`,
+  `ALTER TABLE cloud_billing_account ADD COLUMN IF NOT EXISTS subscribed_plan text`,
+  `UPDATE cloud_billing_account SET subscribed_plan = plan WHERE subscribed_plan IS NULL`,
+  `ALTER TABLE cloud_billing_account ALTER COLUMN subscribed_plan SET DEFAULT 'free'`,
+  `ALTER TABLE cloud_billing_account ALTER COLUMN subscribed_plan SET NOT NULL`,
   `ALTER TABLE cloud_billing_account ADD COLUMN IF NOT EXISTS customer_id text`,
   `ALTER TABLE cloud_billing_account ADD COLUMN IF NOT EXISTS billing_email text`,
   `ALTER TABLE cloud_billing_account ADD COLUMN IF NOT EXISTS subscription_id text`,
@@ -195,7 +190,7 @@ export class BillingRepository extends Context.Service<
 
 /**
  * `BillingRepository` over the control-plane database; building it creates or
- * upgrades the billing tables under one advisory transaction lock, so it must
+ * upgrades the billing tables under one advisory lock, so it must
  * be built before any layer of the `BillingActor`.
  */
 export const BillingRepositoryLive = Layer.effect(
@@ -203,15 +198,12 @@ export const BillingRepositoryLive = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    yield* sql
-      .withTransaction(
-        Effect.gen(function* () {
-          yield* sql`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})`
-
-          for (const statement of migrations) yield* sql.unsafe(statement)
-        }),
-      )
-      .pipe(Effect.orDie)
+    yield* Database.schemaChange(
+      Effect.gen(function* () {
+        for (const statement of migrations) yield* sql.unsafe(statement)
+      }),
+      SCHEMA_LOCK,
+    ).pipe(Effect.orDie)
 
     return {
       account: (organizationId) =>

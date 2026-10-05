@@ -21,6 +21,8 @@ export interface EdgeOptions {
   readonly issuer: string
   /** The control-plane database: hosts, runners, credentials, keys, and the tenant directory. */
   readonly controlPlaneUrl: Redacted.Redacted<string>
+  /** Neki runs the edge's schema changes outside transactions and waits for them to propagate. */
+  readonly controlPlaneEngine?: "postgres" | "neki"
   /** The edge's signing keys. Their public halves are published at startup. */
   readonly signingKeys: ReadonlyArray<SigningKey>
   readonly hostname: string
@@ -138,6 +140,10 @@ export const loadOptions = Effect.gen(function* () {
   return {
     issuer: yield* Config.String("EDGE_ISSUER"),
     controlPlaneUrl: yield* Config.Redacted("CONTROL_PLANE_DATABASE_URL"),
+    controlPlaneEngine: yield* Config.Literals(
+      ["postgres", "neki"],
+      "CONTROL_PLANE_DATABASE_ENGINE",
+    ).pipe(Config.withDefault("postgres")),
     signingKeys: yield* decodeKeys(Redacted.value(keys)).pipe(
       Effect.catch(() =>
         Effect.die(new Error("EDGE_SIGNING_KEYS must contain a valid private signing-key array")),

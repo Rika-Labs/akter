@@ -1,3 +1,4 @@
+import { Database } from "@rikalabs/akter/runtime"
 import { Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
 
@@ -69,10 +70,12 @@ const tables = [
   "deployment_rollout_build_log",
 ]
 
+/** `hashtext('deployment_rollout_tables')`, the key processes from earlier releases still take. */
+const ROLLOUT_TABLES_LOCK = 239_197_811
+
 /**
  * Creates the lifecycle's owned tables when they are missing, under one
- * transaction-scoped advisory lock so runners starting together cannot race
- * each other, and leaves existing tables and rows untouched. Row-level
+ * advisory lock so runners starting together cannot race each other, and leaves existing tables and rows untouched. Row-level
  * security is enabled with the `durable_tenant` policy, which changes nothing
  * until the runtime opts in. It must run before the actor runtime starts,
  * which fails when an owned table is missing.
@@ -80,10 +83,8 @@ const tables = [
 export const ensureLifecycleTables = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
-  yield* sql.withTransaction(
+  yield* Database.schemaChange(
     Effect.gen(function* () {
-      yield* sql`SELECT pg_advisory_xact_lock(hashtext('deployment_rollout_tables'))`
-
       for (const statement of statements) yield* sql.unsafe(statement)
 
       for (const table of tables) {
@@ -100,6 +101,7 @@ export const ensureLifecycleTables = Effect.gen(function* () {
           )
       }
     }),
+    ROLLOUT_TABLES_LOCK,
   )
 }).pipe(Effect.orDie)
 

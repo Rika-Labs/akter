@@ -46,6 +46,7 @@ import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
 import { NekiTurnSessions } from "./database/neki/session.ts"
+import { schemaChange } from "./database/schema.ts"
 import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
@@ -1678,4 +1679,11 @@ export const Database = {
       : database.pipe(Layer.provideMerge(Layer.succeed(NekiTurnSessions, neki)))
   },
   pglite,
+  /**
+   * Whether the database is Neki (default `false`). `postgres({ neki })`
+   * provides it; a process that opens its own Postgres client and runs no
+   * actors provides it itself so `schemaChange` follows Neki's DDL rules.
+   */
+  Neki: NekiTurnSessions,
+  schemaChange,
 }

@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/accounts/schema.ts",
-    "./migrate": "./bin/migrate.ts"
+    "./migrate": "./bin/migrate.ts",
+    "./neki": "./src/neki.ts"
   },
   "scripts": {
     "migrate": "bun bin/migrate.ts",
@@ -15,6 +16,7 @@
   "dependencies": {
     "@effect/platform-bun": "catalog:",
     "@effect/sql-pg": "catalog:",
+    "@rikalabs/akter": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
     "pg": "8.23.0"
