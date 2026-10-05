@@ -298,15 +298,15 @@ const tenantCounts = Effect.fnUntraced(function* (tenant: string) {
 
   const [row] = yield* sql<Record<string, number>>`
     SELECT
-      (SELECT count(*)::int FROM durable.actors WHERE tenant_id = ${tenant}) AS actors,
-      (SELECT count(*)::int FROM durable.receipts WHERE tenant_id = ${tenant}) AS receipts,
-      (SELECT count(*)::int FROM durable.events WHERE tenant_id = ${tenant}) AS events,
-      (SELECT count(*)::int FROM durable.outbox WHERE tenant_id = ${tenant}) AS outbox,
-      (SELECT count(*)::int FROM durable.timers WHERE tenant_id = ${tenant}) AS timers,
-      (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = ${tenant}) AS jobs,
-      (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = ${tenant}) AS "deadLetters",
-      (SELECT count(*)::int FROM durable.workflows WHERE tenant_id = ${tenant}) AS workflows,
-      (SELECT count(*)::int FROM durable.workflows
+      (SELECT count(*)::int FROM durable.actors_v2 WHERE tenant_id = ${tenant}) AS actors,
+      (SELECT count(*)::int FROM durable.receipts_v2 WHERE tenant_id = ${tenant}) AS receipts,
+      (SELECT count(*)::int FROM durable.events_v2 WHERE tenant_id = ${tenant}) AS events,
+      (SELECT count(*)::int FROM durable.outbox_v2 WHERE tenant_id = ${tenant}) AS outbox,
+      (SELECT count(*)::int FROM durable.timers_v2 WHERE tenant_id = ${tenant}) AS timers,
+      (SELECT count(*)::int FROM durable.jobs_v2 WHERE tenant_id = ${tenant}) AS jobs,
+      (SELECT count(*)::int FROM durable.dead_letters_v2 WHERE tenant_id = ${tenant}) AS "deadLetters",
+      (SELECT count(*)::int FROM durable.workflows_v2 WHERE tenant_id = ${tenant}) AS workflows,
+      (SELECT count(*)::int FROM durable.workflows_v2
         WHERE tenant_id = ${tenant} AND status <> 'finished') AS "openWorkflows"`
 
   return row!
@@ -370,7 +370,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             created: boolean
             last_event_sequence: number
           }>`SELECT generation::int AS generation, created, last_event_sequence::int AS last_event_sequence
-              FROM durable.actors
+              FROM durable.actors_v2
               WHERE tenant_id = ${test.tenant} AND actor_type = 'Inspected' AND actor_id = 'flow'`
 
           expect(field(detail.body, "actor")).toEqual({
@@ -386,7 +386,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           ])
 
           const [event] = yield* sql<{ value: Uint8Array; command_id: string }>`
-            SELECT value, command_id FROM durable.events
+            SELECT value, command_id FROM durable.events_v2
             WHERE tenant_id = ${test.tenant} AND actor_type = 'Inspected' AND actor_id = 'flow'`
 
           expect(field(detail.body, "events")).toMatchObject([
@@ -417,7 +417,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           ])
 
           const [dead] = yield* sql<{ payload: string }>`
-            SELECT payload FROM durable.dead_letters
+            SELECT payload FROM durable.dead_letters_v2
             WHERE tenant_id = ${test.tenant} AND actor_type = 'Inspected' AND actor_id = 'flow'`
 
           expect(field(detail.body, "jobs")).toEqual([])
@@ -490,7 +490,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             outcome_tag: string
             expires_at_ms: string
           }>`SELECT actor_id, command_id, command, caller_key, outcome_tag, expires_at_ms::text
-              FROM durable.receipts WHERE tenant_id = ${tenant}`
+              FROM durable.receipts_v2 WHERE tenant_id = ${tenant}`
 
           const receiptOrder = (left: (typeof stored)[number], right: (typeof stored)[number]) =>
             Number(right.expires_at_ms) - Number(left.expires_at_ms) ||
@@ -569,7 +569,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
             command_id: string
             emitted_at_ms: string
           }>`SELECT sequence::int AS sequence, event, command_id, emitted_at_ms::text
-              FROM durable.events
+              FROM durable.events_v2
               WHERE tenant_id = ${tenant} AND actor_type = 'Inspected' AND actor_id = 'paged'`
           expect(events.length).toBe(2)
 
@@ -668,9 +668,9 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           })
 
           const pending = yield* sql<{ job: string; attempts: number }>`
-            SELECT job, attempts::int AS attempts FROM durable.jobs WHERE tenant_id = ${tenant}`
+            SELECT job, attempts::int AS attempts FROM durable.jobs_v2 WHERE tenant_id = ${tenant}`
           const dead = yield* sql<{ job: string; job_id: string; dead_at_ms: string }>`
-            SELECT job, job_id, dead_at_ms::text FROM durable.dead_letters
+            SELECT job, job_id, dead_at_ms::text FROM durable.dead_letters_v2
             WHERE tenant_id = ${tenant}`
           expect(dead.length).toBe(4)
 
@@ -705,7 +705,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           const [timer] = yield* sql<{ due: string | null }>`
-            SELECT min(due_at_ms)::text AS due FROM durable.timers WHERE tenant_id = ${tenant}`
+            SELECT min(due_at_ms)::text AS due FROM durable.timers_v2 WHERE tenant_id = ${tenant}`
           expect(timer!.due).not.toBe(null)
           expect(field((yield* get("/overview", tenant)).body, "nextTimerDueAtMs")).toBe(
             Number(timer!.due),
@@ -727,7 +727,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           yield* eventually(
             Effect.gen(function* () {
               const rows = yield* sql<{ status: string }>`
-                SELECT status FROM durable.workflows WHERE execution_id = ${run.executionId}`
+                SELECT status FROM durable.workflows_v2 WHERE execution_id = ${run.executionId}`
 
               return rows[0]?.status === "suspended"
             }).pipe(Effect.orDie),
@@ -735,11 +735,11 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           const [reserve] = yield* sql<{ exit: Uint8Array }>`
-            SELECT exit FROM durable.workflow_steps
+            SELECT exit FROM durable.workflow_steps_v2
             WHERE execution_id = ${run.executionId} AND step = 'reserve'`
 
           const [started] = yield* sql<{ payload: Uint8Array }>`
-            SELECT payload FROM durable.workflows WHERE execution_id = ${run.executionId}`
+            SELECT payload FROM durable.workflows_v2 WHERE execution_id = ${run.executionId}`
 
           const open = yield* get("/actor?type=Inspected&id=settling", test.tenant)
 
@@ -776,7 +776,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* run.result).toBe("held-o-1:settled")
 
           const [finished] = yield* sql<{ result: Uint8Array }>`
-            SELECT result FROM durable.workflows WHERE execution_id = ${run.executionId}`
+            SELECT result FROM durable.workflows_v2 WHERE execution_id = ${run.executionId}`
 
           const done = yield* get("/actor?type=Inspected&id=settling", test.tenant)
 
@@ -891,7 +891,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const commandsOf = (tenant: string) =>
             sql<{ command_id: string }>`
-              SELECT command_id FROM durable.receipts
+              SELECT command_id FROM durable.receipts_v2
               WHERE tenant_id = ${tenant} AND actor_type = 'Inspected' AND actor_id = 'shared'`.pipe(
               Effect.map((rows) => rows.map((row) => row.command_id)),
             )
@@ -902,7 +902,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(homeCommands).not.toEqual(abroadCommands)
 
           const [homeEvent] = yield* sql<{ sequence: number; command_id: string }>`
-            SELECT sequence::int AS sequence, command_id FROM durable.events
+            SELECT sequence::int AS sequence, command_id FROM durable.events_v2
             WHERE tenant_id = ${home} AND actor_type = 'Inspected' AND actor_id = 'shared'`
           expect(homeEvent!.command_id).toBe(homeCommands[0])
 
@@ -1047,7 +1047,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
           expect(stored[1]!.started_at_ms >= between).toBe(true)
 
           const [view] = yield* sql<{ duration_ms: number; committed_at: Date }>`
-            SELECT duration_ms::float8 AS duration_ms, committed_at FROM durable.receipts
+            SELECT duration_ms::float8 AS duration_ms, committed_at FROM durable.receipts_v2
             WHERE tenant_id = ${tenant} AND command_id = ${stored[0]!.command_id}`
           expect(view!.duration_ms).toBe(stored[0]!.committed_at_ms - stored[0]!.started_at_ms)
           expect(view!.committed_at.getTime()).toBe(stored[0]!.committed_at_ms)
