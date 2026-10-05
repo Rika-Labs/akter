@@ -203,7 +203,7 @@ describe("data topology", () => {
     authoritativeShard: "meta",
     dataShards: ["s1", "s2", "s3"],
     ...scope,
-    unshardedTables: [],
+    routedTables: [],
   }
   it("starts unsharded with the authoritative shard also holding the data", () => {
     const topology = dataTopology({ ...input, dataShards: ["meta"] })
@@ -217,7 +217,7 @@ describe("data topology", () => {
     ])
   })
 
-  it("keeps the authoritative group standalone and routes the schema by a range index on routing_key", () => {
+  it("keeps the authoritative group standalone and the default for the schema and the cluster", () => {
     const topology = dataTopology(input)
     expect(topology.shard_indexes).toEqual({
       [ROUTING_KEY_INDEX]: { type: "range", columns: ["routing_key"] },
@@ -231,20 +231,20 @@ describe("data topology", () => {
     expect(data?.key_ranges.map((range) => range.shard_uid)).toEqual(["s1", "s2", "s3"])
     expect(topology.default_shard_group).toBe(topology.authoritative_shard_group)
     expect(topology.databases).toEqual({
-      postgres: { schemas: { public: { default_shard_group: ACTOR_DATA_GROUP, tables: {} } } },
+      postgres: { schemas: { public: { default_shard_group: AUTHORITATIVE_GROUP, tables: {} } } },
     })
   })
 
-  it("binds tables without a routing_key to the authoritative group", () => {
+  it("routes only the listed tables by routing_key, leaving every other table authoritative", () => {
     const topology = dataTopology({
       ...input,
-      unshardedTables: ["cluster_messages", "cluster_runners"],
+      routedTables: ["actor_outbox", "actor_state"],
     })
     expect(topology.databases.postgres?.schemas.public).toEqual({
-      default_shard_group: ACTOR_DATA_GROUP,
+      default_shard_group: AUTHORITATIVE_GROUP,
       tables: {
-        cluster_messages: { shard_group: AUTHORITATIVE_GROUP },
-        cluster_runners: { shard_group: AUTHORITATIVE_GROUP },
+        actor_outbox: { shard_group: ACTOR_DATA_GROUP },
+        actor_state: { shard_group: ACTOR_DATA_GROUP },
       },
     })
   })
@@ -267,7 +267,7 @@ describe("placement comparison", () => {
     authoritativeShard: "meta",
     dataShards: ["s1", "s2"],
     ...scope,
-    unshardedTables: ["cluster_messages"],
+    routedTables: ["actor_outbox"],
   }
   it("treats the generated topology as the same placement after Neki echoes it back", () => {
     const generated = dataTopology(input)
@@ -298,7 +298,7 @@ describe("placement comparison", () => {
     const moved = dataTopology({ ...input, dataShards: ["s1", "s2", "s3"] })
     const swapped = dataTopology({ ...input, dataShards: ["s2", "s1"] })
     const elsewhere = dataTopology({ ...input, authoritativeShard: "other" })
-    const rebound = dataTopology({ ...input, unshardedTables: [] })
+    const rebound = dataTopology({ ...input, routedTables: [] })
     for (const topology of [moved, swapped, elsewhere, rebound])
       expect(place(topology)).not.toBe(base)
   })

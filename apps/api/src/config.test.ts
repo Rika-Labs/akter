@@ -120,6 +120,37 @@ describe("API configuration", () => {
       expect(Exit.isSuccess(options) && options.value.emailFrom).toBe("Akter <auth@akter.dev>")
     }),
   )
+  it.effect(
+    "keeps provisional paid plans refused in production unless the Stripe key belongs to test mode",
+    () =>
+      Effect.gen(function* () {
+        const refused = (overrides: Record<string, string>) =>
+          loadProduction(overrides).pipe(
+            Effect.map((loaded) =>
+              Exit.isSuccess(loaded) ? loaded.value.provisionalPlansRefused : "refused",
+            ),
+          )
+        expect(yield* refused({ STRIPE_API_KEY: "sk_test_configuration_never_used" })).toBe(false)
+        expect(yield* refused({ STRIPE_API_KEY: "rk_test_configuration_never_used" })).toBe(false)
+        expect(yield* refused({ STRIPE_API_KEY: "sk_live_configuration_never_used" })).toBe(true)
+        expect(yield* refused({ STRIPE_API_KEY: "rk_live_configuration_never_used" })).toBe(true)
+        expect(yield* refused({})).toBe(true)
+      }),
+  )
+  it.effect("offers provisional paid plans outside production", () =>
+    Effect.gen(function* () {
+      const options = yield* loadOptions.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            CONTROL_PLANE_DATABASE_URL: "postgres://project:project@localhost/postgres",
+            AUTH_SECRET: "a-local-test-signing-secret-long-enough",
+          }),
+        ),
+      )
+      expect(options.provisionalPlansRefused).toBe(false)
+    }),
+  )
   it.effect("refuses the retired SES email mode", () =>
     Effect.gen(function* () {
       expect((yield* loadProduction({ EMAIL_MODE: "ses" }))._tag).toBe("Failure")

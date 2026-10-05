@@ -26,6 +26,12 @@ export const endpointOf = (url: string) => {
  * connection that stays idle while images build. Hosted CI runners sit behind NAT that drops a TCP
  * flow after a few idle minutes, which kills that connection and with it the lock, so the pool's
  * sockets send TCP keepalives every 30 seconds.
+ *
+ * Each state database allows 25 connections, a few of which PlanetScale's own agents hold, and every
+ * pull request deploys its preview concurrently against the same `preview` database. With the
+ * client's default pool of ten, two or three deploys at once exhaust it and the rest fail to
+ * connect, so each run keeps at most four: the reserved lock connection, the one that
+ * verifies it, and two for state reads and writes.
  */
 export const state = Layer.unwrap(
   Effect.gen(function* () {
@@ -33,6 +39,7 @@ export const state = Layer.unwrap(
     const { host, port } = endpointOf(Redacted.value(url))
     const client = yield* PgClient.make({
       url,
+      maxConnections: 4,
       stream: () =>
         Net.connect({
           host,

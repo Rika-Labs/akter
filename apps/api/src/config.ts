@@ -29,6 +29,12 @@ export interface ApiOptions {
   readonly enterpriseOrganizations?: ReadonlyArray<string>
   readonly billingMode?: "local" | "stripe"
   readonly stripeApiKey?: Redacted.Redacted<string>
+  /**
+   * Checkout and plan changes refuse a paid plan whose price is still provisional. Production sets
+   * it unless the Stripe key belongs to test mode, where nothing charged is real and the paid
+   * plans can be bought to exercise checkout end to end.
+   */
+  readonly provisionalPlansRefused?: boolean
   readonly billingWebhookSecret?: Redacted.Redacted<string>
   readonly pricing?: PricingConfig
   readonly meterCells?: ReadonlyArray<MeterCell>
@@ -257,6 +263,9 @@ export const loadOptions = Effect.gen(function* () {
     resendApiKey: Option.getOrUndefined(resendApiKey),
     billingMode,
     stripeApiKey: Option.getOrUndefined(stripeApiKey),
+    provisionalPlansRefused:
+      production &&
+      !(Option.isSome(stripeApiKey) && /^(sk|rk)_test_/.test(Redacted.value(stripeApiKey.value))),
     billingWebhookSecret,
     pricing,
     meterCells: cells.map((cell) => ({
