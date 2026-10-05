@@ -129,6 +129,8 @@ const dockerService = (
 const telemetryEnvironment = (layout: Layout, service: string) => ({
   OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.axiom.co",
   OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+  OTEL_TRACES_EXPORTER: "otlp",
+  OTEL_LOGS_EXPORTER: "otlp",
   OTEL_SERVICE_NAME: service,
   OTEL_RESOURCE_ATTRIBUTES: `deployment.environment=${layout.stage}`,
   AXIOM_DATASET: "akter-traces",

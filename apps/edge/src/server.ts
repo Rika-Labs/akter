@@ -128,7 +128,18 @@ export const makeEdge = Effect.fnUntraced(function* (options: EdgeOptions) {
   const server = Bun.serve<SocketData>({
     hostname: options.hostname,
     port: options.port,
-    fetch: (request, served) => run(handle(request, served)),
+    fetch: (request, served) =>
+      run(
+        handle(request, served).pipe(
+          Effect.tap((response) =>
+            Effect.annotateCurrentSpan("http.response.status_code", response?.status ?? 101),
+          ),
+          Effect.withSpan("edge.request", {
+            kind: "server",
+            attributes: { "http.request.method": request.method },
+          }),
+        ),
+      ),
     websocket: {
       maxPayloadLength: options.socketMessageBytes,
       open: (ws) =>
