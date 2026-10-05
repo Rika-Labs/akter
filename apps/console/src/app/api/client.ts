@@ -26,6 +26,19 @@ import { quotaKind, quotaMessage, quotaRefusal } from "../quota/errors.ts"
 /** The public API mount; the contract already owns its `/api` prefix. */
 export const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "/api"
 
+/**
+ * The social sign-in providers the API has credentials for, named by `VITE_AUTH_PROVIDERS` as a
+ * comma-separated list of `github` and `google`. A deployment lists none unless its API holds the
+ * provider's client credentials: the API answers a provider it was not given with a 404, so a
+ * button for it could only fail.
+ */
+export const socialProviders = (): ReadonlyArray<"github" | "google"> => {
+  const named = String(import.meta.env.VITE_AUTH_PROVIDERS ?? "")
+    .split(",")
+    .map((name) => name.trim())
+  return (["github", "google"] as const).filter((provider) => named.includes(provider))
+}
+
 /** Resolves the contract prefix once, including browser-relative configuration. */
 export const apiOrigin: {
   (base: string, origin: string): string

@@ -25,6 +25,12 @@ The console uses `HttpApiClient.make(CloudApi)` with session credentials include
 exactly once. Better Auth uses the same origin's `/auth` mount. A cross-origin deployment needs
 credentialed CORS and cookie configuration on the API server.
 
+Sign-in and sign-up show a "Continue with GitHub" or "Continue with Google" button only for the
+providers named in the build-time `VITE_AUTH_PROVIDERS` (comma-separated `github`, `google`; none by
+default). Name a provider only on a deployment whose API holds its `GITHUB_CLIENT_ID` and
+`GITHUB_CLIENT_SECRET` or `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: the API answers any other
+provider with a 404.
+
 For local development, set `API_PROXY_TARGET=http://127.0.0.1:<port>` or `API_PORT=<port>` to
 proxy `/api`, `/auth` and the local Stripe stand-in's `/billing` pages through Vite (the default target is `http://127.0.0.1:3001`). The
 accounts backend's `apps/api/README.md` describes its Postgres/API/email-outbox Compose stack.
