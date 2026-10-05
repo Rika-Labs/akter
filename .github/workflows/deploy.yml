@@ -154,8 +154,8 @@ jobs:
           adopt=()
           for attempt in 1 2 3; do
             if bun --bun run --cwd infra deploy --stage "$STAGE" --yes "${adopt[@]}" 2>&1 | tee deploy.log; then exit 0; fi
-            grep -q "state lock .* was lost mid-run" deploy.log || exit 1
-            echo "::warning::The Postgres state lock connection dropped; retrying the deploy with --adopt (attempt $attempt)"
+            grep -qE "state lock .* was lost mid-run|StateStoreError: PgConnection|Cannot resume creating resource" deploy.log || exit 1
+            echo "::warning::The Alchemy state connection dropped; retrying the deploy with --adopt (attempt $attempt)"
             adopt=(--adopt)
           done
           exit 1
@@ -170,8 +170,8 @@ jobs:
           bun --bun run --cwd infra guard destroy "$STAGE"
           for attempt in 1 2 3; do
             if bun --bun run --cwd infra destroy --stage "$STAGE" --yes 2>&1 | tee destroy.log; then exit 0; fi
-            grep -q "state lock .* was lost mid-run" destroy.log || exit 1
-            echo "::warning::The Postgres state lock connection dropped; retrying the destroy (attempt $attempt)"
+            grep -qE "state lock .* was lost mid-run|StateStoreError: PgConnection" destroy.log || exit 1
+            echo "::warning::The Alchemy state connection dropped; retrying the destroy (attempt $attempt)"
           done
           exit 1
       - name: Destroy the previews of closed pull requests
@@ -183,8 +183,8 @@ jobs:
           destroy() {
             for attempt in 1 2 3; do
               if PULL_REQUEST="$2" bun --bun run --cwd infra destroy --stage "$1" --yes 2>&1 | tee destroy.log; then return 0; fi
-              grep -q "state lock .* was lost mid-run" destroy.log || return 1
-              echo "::warning::The Postgres state lock connection dropped; retrying the destroy of $1 (attempt $attempt)"
+              grep -qE "state lock .* was lost mid-run|StateStoreError: PgConnection" destroy.log || return 1
+              echo "::warning::The Alchemy state connection dropped; retrying the destroy of $1 (attempt $attempt)"
             done
             return 1
           }

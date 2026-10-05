@@ -18,6 +18,7 @@ import {
   type BillingDetails,
   type Catalog,
   CatalogNotReady,
+  CardPaymentMethod,
   CheckoutExpired,
   type CatalogMeter,
   type CatalogTier,
@@ -26,6 +27,7 @@ import {
   type CustomerInput,
   type InvoiceRecord,
   type InvoiceStatus,
+  LinkPaymentMethod,
   type PaymentMethod,
   type PortalInput,
   StripeBilling,
@@ -755,6 +757,13 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
       ): Effect.Effect<PaymentMethod | null, BillingProviderError | UnknownCustomer> =>
         Effect.gen(function* () {
           const customer = yield* retrieveCustomer("paymentMethod", customerId)
+          const listed = (type: "card" | "link") =>
+            request(
+              stripe.GetCustomerPaymentMethods({ customer: customerId, type, limit: 1 }),
+            ).pipe(
+              Effect.mapError(customerFailure("paymentMethod", customerId)),
+              Effect.map((page) => page.data[0]),
+            )
           const preferred = customer.invoice_settings?.default_payment_method
           const method = Predicate.isString(preferred)
             ? yield* request(stripe.GetPaymentMethod({ payment_method: preferred })).pipe(
@@ -762,21 +771,18 @@ export const StripeBillingDistilled = (config: DistilledBillingConfig) =>
               )
             : preferred != null
               ? preferred
-              : (yield* request(
-                  stripe.GetCustomerPaymentMethods({
-                    customer: customerId,
-                    type: "card",
-                    limit: 1,
-                  }),
-                ).pipe(Effect.mapError(customerFailure("paymentMethod", customerId)))).data[0]
-          if (method?.card === undefined) return null
-          return {
-            id: method.id,
-            brand: method.card.brand,
-            lastFour: method.card.last4,
-            expiryMonth: method.card.exp_month,
-            expiryYear: method.card.exp_year,
-          }
+              : ((yield* listed("card")) ?? (yield* listed("link")))
+          if (method?.card !== undefined)
+            return CardPaymentMethod.make({
+              id: method.id,
+              brand: method.card.brand,
+              lastFour: method.card.last4,
+              expiryMonth: method.card.exp_month,
+              expiryYear: method.card.exp_year,
+            })
+          if (method?.link !== undefined)
+            return LinkPaymentMethod.make({ id: method.id, email: method.link.email })
+          return null
         })
 
       const invoices = (

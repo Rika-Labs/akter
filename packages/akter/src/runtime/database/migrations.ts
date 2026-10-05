@@ -3,6 +3,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Migrator, SqlClient, SqlError } from "effect/sql"
 import { NekiTurnSessions } from "./neki/session.ts"
 import { MigrationResuming, nekiMigrator, withMigrationCoordination } from "./neki/migrations.ts"
+import { routedTables } from "./neki/topology.ts"
 
 /** How long a migration's table DDL waits for its lock before giving way. */
 const LOCK_TIMEOUT = "2s"
@@ -45,6 +46,53 @@ const briefLocks = <E>(ddl: Effect.Effect<void, E, SqlClient.SqlClient>) =>
       Effect.ensuring(restore),
     )
   })
+
+/** The first set of inspection views and the version the catalog lists for each. */
+const FIRST_VIEWS = [
+  ["actors", 1],
+  ["state", 1],
+  ["receipts", 2],
+  ["events", 1],
+  ["outbox", 1],
+  ["timers", 1],
+  ["jobs", 1],
+  ["dead_letters", 2],
+  ["workflows", 1],
+  ["workflow_steps", 1],
+  ["contents", 1],
+  ["content_refs", 1],
+  ["operator_audit", 1],
+] as const
+
+/** The single-table views `0031_routable_views` creates. */
+export const ROUTABLE_VIEWS = [
+  "actors_v2",
+  "state_v2",
+  "receipts_v2",
+  "events_v2",
+  "outbox_v2",
+  "timers_v2",
+  "jobs_v2",
+  "dead_letters_v2",
+  "workflows_v2",
+  "workflow_steps_v2",
+  "contents_v2",
+  "content_sweeps_v2",
+  "content_refs_v2",
+  "operator_audit_v2",
+  "placements_v2",
+] as const
+
+/**
+ * Runs `views`, which create views that join `actor_placements` to `tables`, unless a Neki
+ * router places one of those tables in a shard group routed by `routing_key`. A routed group
+ * serves only a view over a single table, so the join is refused there and the migration
+ * would never finish; the single-table views of `0031_routable_views` serve that layout.
+ */
+const joinedViews = <E>(
+  tables: ReadonlyArray<string>,
+  views: Effect.Effect<void, E, SqlClient.SqlClient>,
+) => Effect.flatMap(routedTables(tables), (routed) => (routed.length > 0 ? Effect.void : views))
 
 /** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {
@@ -368,74 +416,88 @@ export const migrations = {
   "0013_inspection_views": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`CREATE SCHEMA durable`
-    yield* sql`CREATE VIEW durable.actors AS
-      SELECT g.tenant_id, g.actor_type, g.actor_id, g.routing_key, p.placement,
-        g.generation, g.created, g.event_sequence AS last_event_sequence
-      FROM actor_generations g
-      LEFT JOIN actor_placements p ON p.actor_type = g.actor_type`
-    yield* sql`CREATE VIEW durable.state AS
-      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
-        s.key, s.value, octet_length(s.value) AS value_bytes
-      FROM actor_state s
-      LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
-    yield* sql`CREATE VIEW durable.receipts AS
-      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
-        r.command_id, r.command, r.caller_key,
-        r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
-        r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at
-      FROM actor_receipts r
-      LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
-    yield* sql`CREATE VIEW durable.events AS
-      SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
-        e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
-        e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at
-      FROM actor_events e
-      LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
-    yield* sql`CREATE VIEW durable.outbox AS
-      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
-        o.intent_id, o.timer_key, o.target_type, o.target_id, o.command, o.payload, o.caller,
-        o.attempts, o.last_error, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
-      FROM actor_outbox o
-      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
-      WHERE o.kind = 'intent'`
-    yield* sql`CREATE VIEW durable.timers AS
-      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
-        o.timer_key, o.intent_id, o.target_type, o.target_id, o.command, o.payload, o.caller,
-        o.attempts, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
-      FROM actor_outbox o
-      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
-      WHERE o.kind = 'intent' AND o.timer_key IS NOT NULL`
-    yield* sql`CREATE VIEW durable.effects AS
-      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
-        o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
-        o.attempts, o.last_error, o.ambiguous,
-        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
-      FROM actor_outbox o
-      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
-      WHERE o.kind = 'effect'`
-    yield* sql`CREATE VIEW durable.dead_letters AS
-      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
-        d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
-        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at
-      FROM actor_dead_letters d
-      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
-    yield* sql`CREATE VIEW durable.workflows AS
-      SELECT w.tenant_id, w.actor_type, w.actor_id, w.routing_key, p.placement,
-        w.execution_id, w.workflow, w.workflow_key, w.manifest_hash, w.status, w.interrupt,
-        w.caller, w.payload, octet_length(w.payload) AS payload_bytes,
-        w.result, octet_length(w.result) AS result_bytes,
-        w.started_at_ms, to_timestamp(w.started_at_ms::float8 / 1000) AS started_at,
-        w.finished_at_ms, to_timestamp(w.finished_at_ms::float8 / 1000) AS finished_at
-      FROM actor_workflow_executions w
-      LEFT JOIN actor_placements p ON p.actor_type = w.actor_type`
-    yield* sql`CREATE VIEW durable.workflow_steps AS
-      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
-        s.execution_id, s.step, s.attempt, s.kind, s.exit, s.wait_event, s.version,
-        s.due_at_ms, to_timestamp(s.due_at_ms::float8 / 1000) AS due_at,
-        s.started_at_ms, to_timestamp(s.started_at_ms::float8 / 1000) AS started_at,
-        s.settled_at_ms, to_timestamp(s.settled_at_ms::float8 / 1000) AS settled_at
-      FROM actor_workflow_step s
-      LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
+    yield* joinedViews(
+      [
+        "actor_generations",
+        "actor_state",
+        "actor_receipts",
+        "actor_events",
+        "actor_outbox",
+        "actor_dead_letters",
+        "actor_workflow_executions",
+        "actor_workflow_step",
+      ],
+      Effect.gen(function* () {
+        yield* sql`CREATE VIEW durable.actors AS
+        SELECT g.tenant_id, g.actor_type, g.actor_id, g.routing_key, p.placement,
+          g.generation, g.created, g.event_sequence AS last_event_sequence
+        FROM actor_generations g
+        LEFT JOIN actor_placements p ON p.actor_type = g.actor_type`
+        yield* sql`CREATE VIEW durable.state AS
+        SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
+          s.key, s.value, octet_length(s.value) AS value_bytes
+        FROM actor_state s
+        LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
+        yield* sql`CREATE VIEW durable.receipts AS
+        SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
+          r.command_id, r.command, r.caller_key,
+          r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
+          r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at
+        FROM actor_receipts r
+        LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+        yield* sql`CREATE VIEW durable.events AS
+        SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
+          e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
+          e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at
+        FROM actor_events e
+        LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
+        yield* sql`CREATE VIEW durable.outbox AS
+        SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+          o.intent_id, o.timer_key, o.target_type, o.target_id, o.command, o.payload, o.caller,
+          o.attempts, o.last_error, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+        FROM actor_outbox o
+        LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+        WHERE o.kind = 'intent'`
+        yield* sql`CREATE VIEW durable.timers AS
+        SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+          o.timer_key, o.intent_id, o.target_type, o.target_id, o.command, o.payload, o.caller,
+          o.attempts, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+        FROM actor_outbox o
+        LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+        WHERE o.kind = 'intent' AND o.timer_key IS NOT NULL`
+        yield* sql`CREATE VIEW durable.effects AS
+        SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+          o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
+          o.attempts, o.last_error, o.ambiguous,
+          o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+        FROM actor_outbox o
+        LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+        WHERE o.kind = 'effect'`
+        yield* sql`CREATE VIEW durable.dead_letters AS
+        SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+          d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
+          d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at
+        FROM actor_dead_letters d
+        LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+        yield* sql`CREATE VIEW durable.workflows AS
+        SELECT w.tenant_id, w.actor_type, w.actor_id, w.routing_key, p.placement,
+          w.execution_id, w.workflow, w.workflow_key, w.manifest_hash, w.status, w.interrupt,
+          w.caller, w.payload, octet_length(w.payload) AS payload_bytes,
+          w.result, octet_length(w.result) AS result_bytes,
+          w.started_at_ms, to_timestamp(w.started_at_ms::float8 / 1000) AS started_at,
+          w.finished_at_ms, to_timestamp(w.finished_at_ms::float8 / 1000) AS finished_at
+        FROM actor_workflow_executions w
+        LEFT JOIN actor_placements p ON p.actor_type = w.actor_type`
+        yield* sql`CREATE VIEW durable.workflow_steps AS
+        SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key, p.placement,
+          s.execution_id, s.step, s.attempt, s.kind, s.exit, s.wait_event, s.version,
+          s.due_at_ms, to_timestamp(s.due_at_ms::float8 / 1000) AS due_at,
+          s.started_at_ms, to_timestamp(s.started_at_ms::float8 / 1000) AS started_at,
+          s.settled_at_ms, to_timestamp(s.settled_at_ms::float8 / 1000) AS settled_at
+        FROM actor_workflow_step s
+        LEFT JOIN actor_placements p ON p.actor_type = s.actor_type`
+      }),
+    )
     yield* sql`CREATE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
@@ -672,17 +734,22 @@ export const migrations = {
         actor_type text PRIMARY KEY,
         turn_ms bigint NOT NULL CHECK (turn_ms > 0)
       )`
-    yield* sql`CREATE VIEW durable.contents AS
-      SELECT c.tenant_id, c.routing_key, c.hash, c.size,
-        c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until,
-        s.swept_at_ms, to_timestamp(s.swept_at_ms::float8 / 1000) AS swept_at
-      FROM tenant_contents c
-      LEFT JOIN tenant_content_sweeps s ON s.routing_key = c.routing_key AND s.tenant_id = c.tenant_id`
-    yield* sql`CREATE VIEW durable.content_refs AS
-      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
-        r.blob, r.name, r.hash, r.size
-      FROM actor_content_refs r
-      LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+    yield* joinedViews(
+      ["tenant_contents", "tenant_content_sweeps", "actor_content_refs"],
+      Effect.gen(function* () {
+        yield* sql`CREATE VIEW durable.contents AS
+        SELECT c.tenant_id, c.routing_key, c.hash, c.size,
+          c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until,
+          s.swept_at_ms, to_timestamp(s.swept_at_ms::float8 / 1000) AS swept_at
+        FROM tenant_contents c
+        LEFT JOIN tenant_content_sweeps s ON s.routing_key = c.routing_key AND s.tenant_id = c.tenant_id`
+        yield* sql`CREATE VIEW durable.content_refs AS
+        SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
+          r.blob, r.name, r.hash, r.size
+        FROM actor_content_refs r
+        LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+      }),
+    )
     yield* sql`CREATE OR REPLACE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
@@ -742,29 +809,34 @@ export const migrations = {
       )`
     yield* sql`CREATE INDEX actor_payload_writers_version
       ON actor_payload_writers (actor_type, kind, tag, version, refreshed_at_ms)`
-    yield* sql`CREATE OR REPLACE VIEW durable.events AS
-      SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
-        e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
-        e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at,
-        e.payload_version
-      FROM actor_events e
-      LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
-    yield* sql`CREATE OR REPLACE VIEW durable.effects AS
-      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
-        o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
-        o.attempts, o.last_error, o.ambiguous,
-        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
-        o.payload_version
-      FROM actor_outbox o
-      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
-      WHERE o.kind = 'effect'`
-    yield* sql`CREATE OR REPLACE VIEW durable.dead_letters AS
-      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
-        d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
-        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
-        d.payload_version
-      FROM actor_dead_letters d
-      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+    yield* joinedViews(
+      ["actor_events", "actor_outbox", "actor_dead_letters"],
+      Effect.gen(function* () {
+        yield* sql`CREATE OR REPLACE VIEW durable.events AS
+        SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key, p.placement,
+          e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
+          e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at,
+          e.payload_version
+        FROM actor_events e
+        LEFT JOIN actor_placements p ON p.actor_type = e.actor_type`
+        yield* sql`CREATE OR REPLACE VIEW durable.effects AS
+        SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+          o.intent_id AS effect_id, o.command AS effect, o.payload, o.caller,
+          o.attempts, o.last_error, o.ambiguous,
+          o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
+          o.payload_version
+        FROM actor_outbox o
+        LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+        WHERE o.kind = 'effect'`
+        yield* sql`CREATE OR REPLACE VIEW durable.dead_letters AS
+        SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+          d.effect_id, d.effect, d.payload, d.attempts, d.cause, d.ambiguous,
+          d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
+          d.payload_version
+        FROM actor_dead_letters d
+        LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+      }),
+    )
   }),
   /**
    * A parent-placed type routes through its parent type's placement, so the parent is part of
@@ -809,12 +881,15 @@ export const migrations = {
     yield* sql`CREATE POLICY durable_tenant ON actor_operator_audit
         USING (tenant_id = current_setting('durable.tenant', true))
         WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
-    yield* sql`CREATE VIEW durable.operator_audit AS
-      SELECT a.tenant_id, a.actor_type, a.actor_id, a.routing_key, p.placement, a.audit_id,
-        a.operator, a.action, a.target, a.capability, a.reason, a.outcome,
-        a.at_ms, to_timestamp(a.at_ms::float8 / 1000) AS at
-      FROM actor_operator_audit a
-      LEFT JOIN actor_placements p ON p.actor_type = a.actor_type`
+    yield* joinedViews(
+      ["actor_operator_audit"],
+      sql`CREATE VIEW durable.operator_audit AS
+        SELECT a.tenant_id, a.actor_type, a.actor_id, a.routing_key, p.placement, a.audit_id,
+          a.operator, a.action, a.target, a.capability, a.reason, a.outcome,
+          a.at_ms, to_timestamp(a.at_ms::float8 / 1000) AS at
+        FROM actor_operator_audit a
+        LEFT JOIN actor_placements p ON p.actor_type = a.actor_type`,
+    )
     yield* sql`CREATE OR REPLACE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
@@ -992,24 +1067,29 @@ export const migrations = {
 
     yield* sql`ALTER TABLE actor_subscription_tags DROP CONSTRAINT actor_subscription_tags_rows_check,
         ADD CONSTRAINT actor_subscription_tags_rows_check CHECK (rows >= 0)`
-    yield* sql`DROP VIEW durable.effects`
-    yield* sql`DROP VIEW durable.dead_letters`
-    yield* sql`CREATE VIEW durable.jobs AS
-      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
-        o.intent_id AS job_id, o.command AS job, o.payload, o.caller,
-        o.attempts, o.last_error, o.ambiguous,
-        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
-        o.payload_version
-      FROM actor_outbox o
-      LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
-      WHERE o.kind = 'job'`
-    yield* sql`CREATE VIEW durable.dead_letters AS
-      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
-        d.job_id, d.job, d.payload, d.attempts, d.cause, d.ambiguous,
-        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
-        d.payload_version
-      FROM actor_dead_letters d
-      LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+    yield* joinedViews(
+      ["actor_outbox", "actor_dead_letters"],
+      Effect.gen(function* () {
+        yield* sql`DROP VIEW durable.effects`
+        yield* sql`DROP VIEW durable.dead_letters`
+        yield* sql`CREATE VIEW durable.jobs AS
+        SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key, p.placement,
+          o.intent_id AS job_id, o.command AS job, o.payload, o.caller,
+          o.attempts, o.last_error, o.ambiguous,
+          o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
+          o.payload_version
+        FROM actor_outbox o
+        LEFT JOIN actor_placements p ON p.actor_type = o.actor_type
+        WHERE o.kind = 'job'`
+        yield* sql`CREATE VIEW durable.dead_letters AS
+        SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key, p.placement,
+          d.job_id, d.job, d.payload, d.attempts, d.cause, d.ambiguous,
+          d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
+          d.payload_version
+        FROM actor_dead_letters d
+        LEFT JOIN actor_placements p ON p.actor_type = d.actor_type`
+      }),
+    )
     yield* sql`CREATE OR REPLACE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 1), ('events', 1), ('outbox', 1),
@@ -1049,16 +1129,19 @@ export const migrations = {
           SET DEFAULT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint`
       }),
     )
-    yield* sql`CREATE OR REPLACE VIEW durable.receipts AS
-      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
-        r.command_id, r.command, r.caller_key,
-        r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
-        r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at,
-        r.started_at_ms, r.committed_at_ms,
-        to_timestamp(r.committed_at_ms::float8 / 1000) AS committed_at,
-        r.committed_at_ms - r.started_at_ms AS duration_ms
-      FROM actor_receipts r
-      LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`
+    yield* joinedViews(
+      ["actor_receipts"],
+      sql`CREATE OR REPLACE VIEW durable.receipts AS
+        SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key, p.placement,
+          r.command_id, r.command, r.caller_key,
+          r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
+          r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at,
+          r.started_at_ms, r.committed_at_ms,
+          to_timestamp(r.committed_at_ms::float8 / 1000) AS committed_at,
+          r.committed_at_ms - r.started_at_ms AS duration_ms
+        FROM actor_receipts r
+        LEFT JOIN actor_placements p ON p.actor_type = r.actor_type`,
+    )
     yield* sql`CREATE OR REPLACE VIEW durable.views AS
       SELECT view_name, version FROM (VALUES
         ('actors', 1), ('state', 1), ('receipts', 2), ('events', 1), ('outbox', 1),
@@ -1066,6 +1149,122 @@ export const migrations = {
         ('workflow_steps', 1), ('views', 1), ('contents', 1), ('content_refs', 1),
         ('operator_audit', 1)
       ) AS v(view_name, version)`
+  }),
+  /**
+   * A second set of inspection views, each reading exactly one table, with the actor type's
+   * placement in a view of its own (`placements_v2`) that a tool joins by `actor_type`. A Neki
+   * router serves a view on a group routed by `routing_key` only when it is a projection or
+   * filter of one table; the first set joins `actor_placements` to every view, and a view over
+   * several tables of one group is refused too.
+   *
+   * Every column keeps its name, meaning and type apart from `placement`, which moves. A single
+   * table view is automatically updatable, so the migration takes every write privilege on
+   * each of them from its owner; the first set's joins kept it read-only structurally.
+   *
+   * The catalog lists the first set only where it exists, because a routed layout never
+   * created it.
+   */
+  "0031_routable_views": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE VIEW durable.actors_v2 AS
+      SELECT g.tenant_id, g.actor_type, g.actor_id, g.routing_key,
+        g.generation, g.created, g.event_sequence AS last_event_sequence
+      FROM actor_generations g`
+    yield* sql`CREATE VIEW durable.state_v2 AS
+      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key,
+        s.key, s.value, octet_length(s.value) AS value_bytes
+      FROM actor_state s`
+    yield* sql`CREATE VIEW durable.receipts_v2 AS
+      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key,
+        r.command_id, r.command, r.caller_key,
+        r.outcome::jsonb ->> '_tag' AS outcome_tag, r.outcome,
+        r.expires_at_ms, to_timestamp(r.expires_at_ms::float8 / 1000) AS expires_at,
+        r.started_at_ms, r.committed_at_ms,
+        to_timestamp(r.committed_at_ms::float8 / 1000) AS committed_at,
+        r.committed_at_ms - r.started_at_ms AS duration_ms
+      FROM actor_receipts r`
+    yield* sql`CREATE VIEW durable.events_v2 AS
+      SELECT e.tenant_id, e.actor_type, e.actor_id, e.routing_key,
+        e.sequence, e.event, e.command_id, e.value, octet_length(e.value) AS value_bytes,
+        e.emitted_at_ms, to_timestamp(e.emitted_at_ms::float8 / 1000) AS emitted_at,
+        e.payload_version
+      FROM actor_events e`
+    yield* sql`CREATE VIEW durable.outbox_v2 AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key,
+        o.intent_id, o.timer_key, o.target_type, o.target_id, o.command, o.payload, o.caller,
+        o.attempts, o.last_error, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+      FROM actor_outbox o
+      WHERE o.kind = 'intent'`
+    yield* sql`CREATE VIEW durable.timers_v2 AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key,
+        o.timer_key, o.intent_id, o.target_type, o.target_id, o.command, o.payload, o.caller,
+        o.attempts, o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at
+      FROM actor_outbox o
+      WHERE o.kind = 'intent' AND o.timer_key IS NOT NULL`
+    yield* sql`CREATE VIEW durable.jobs_v2 AS
+      SELECT o.tenant_id, o.actor_type, o.actor_id, o.routing_key,
+        o.intent_id AS job_id, o.command AS job, o.payload, o.caller,
+        o.attempts, o.last_error, o.ambiguous,
+        o.due_at_ms, to_timestamp(o.due_at_ms::float8 / 1000) AS due_at,
+        o.payload_version
+      FROM actor_outbox o
+      WHERE o.kind = 'job'`
+    yield* sql`CREATE VIEW durable.dead_letters_v2 AS
+      SELECT d.tenant_id, d.actor_type, d.actor_id, d.routing_key,
+        d.job_id, d.job, d.payload, d.attempts, d.cause, d.ambiguous,
+        d.dead_at_ms, to_timestamp(d.dead_at_ms::float8 / 1000) AS dead_at,
+        d.payload_version
+      FROM actor_dead_letters d`
+    yield* sql`CREATE VIEW durable.workflows_v2 AS
+      SELECT w.tenant_id, w.actor_type, w.actor_id, w.routing_key,
+        w.execution_id, w.workflow, w.workflow_key, w.manifest_hash, w.status, w.interrupt,
+        w.caller, w.payload, octet_length(w.payload) AS payload_bytes,
+        w.result, octet_length(w.result) AS result_bytes,
+        w.started_at_ms, to_timestamp(w.started_at_ms::float8 / 1000) AS started_at,
+        w.finished_at_ms, to_timestamp(w.finished_at_ms::float8 / 1000) AS finished_at
+      FROM actor_workflow_executions w`
+    yield* sql`CREATE VIEW durable.workflow_steps_v2 AS
+      SELECT s.tenant_id, s.actor_type, s.actor_id, s.routing_key,
+        s.execution_id, s.step, s.attempt, s.kind, s.exit, s.wait_event, s.version,
+        s.due_at_ms, to_timestamp(s.due_at_ms::float8 / 1000) AS due_at,
+        s.started_at_ms, to_timestamp(s.started_at_ms::float8 / 1000) AS started_at,
+        s.settled_at_ms, to_timestamp(s.settled_at_ms::float8 / 1000) AS settled_at
+      FROM actor_workflow_step s`
+    yield* sql`CREATE VIEW durable.contents_v2 AS
+      SELECT c.tenant_id, c.routing_key, c.hash, c.size,
+        c.granted_until_ms, to_timestamp(c.granted_until_ms::float8 / 1000) AS granted_until
+      FROM tenant_contents c`
+    yield* sql`CREATE VIEW durable.content_sweeps_v2 AS
+      SELECT s.tenant_id, s.routing_key,
+        s.swept_at_ms, to_timestamp(s.swept_at_ms::float8 / 1000) AS swept_at
+      FROM tenant_content_sweeps s`
+    yield* sql`CREATE VIEW durable.content_refs_v2 AS
+      SELECT r.tenant_id, r.actor_type, r.actor_id, r.routing_key,
+        r.blob, r.name, r.hash, r.size
+      FROM actor_content_refs r`
+    yield* sql`CREATE VIEW durable.operator_audit_v2 AS
+      SELECT a.tenant_id, a.actor_type, a.actor_id, a.routing_key, a.audit_id,
+        a.operator, a.action, a.target, a.capability, a.reason, a.outcome,
+        a.at_ms, to_timestamp(a.at_ms::float8 / 1000) AS at
+      FROM actor_operator_audit a`
+    yield* sql`CREATE VIEW durable.placements_v2 AS
+      SELECT p.actor_type, p.placement, p.parent_type
+      FROM actor_placements p`
+    yield* sql.unsafe(
+      `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ${ROUTABLE_VIEWS.map((view) => `durable.${view}`).join(", ")} FROM CURRENT_USER`,
+    )
+
+    const present = yield* sql<{ readonly view: string }>`
+      SELECT relname AS view FROM pg_class
+      WHERE relnamespace = 'durable'::regnamespace AND relkind = 'v'`
+
+    const first = FIRST_VIEWS.filter(([view]) => present.some((row) => row.view === view))
+    const rows = [...first, ...ROUTABLE_VIEWS.map((view) => [view, 1] as const), ["views", 1]]
+
+    yield* sql.unsafe(`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ${rows.map(([view, version]) => `('${view}', ${version})`).join(", ")}
+      ) AS v(view_name, version)`)
   }),
 }
 

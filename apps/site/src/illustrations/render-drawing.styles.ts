@@ -34,32 +34,6 @@ const bobbing = stylex.keyframes({
   "100%": { transform: "translateY(0)" },
 })
 
-const slideIn = stylex.keyframes({
-  "0%": { transform: "translateX(-16px)", opacity: 0 },
-  "18%": { transform: "translateX(0)", opacity: 1 },
-  "72%": { transform: "translateX(0)", opacity: 1 },
-  "100%": { transform: "translateX(10px)", opacity: 0 },
-})
-
-const pulsing = stylex.keyframes({
-  "0%": { opacity: 0.1 },
-  "35%": { opacity: 1 },
-  "70%": { opacity: 0.1 },
-  "100%": { opacity: 0.1 },
-})
-
-const ticking = stylex.keyframes({
-  from: { transform: "rotate(0deg)" },
-  to: { transform: "rotate(360deg)" },
-})
-
-const blinking = stylex.keyframes({
-  "0%": { opacity: 1 },
-  "50%": { opacity: 1 },
-  "51%": { opacity: 0 },
-  "100%": { opacity: 0 },
-})
-
 /** Fill and stroke paints for each brand paint role, mapped to design tokens so themes apply. */
 export const fills = stylex.create({
   ink: { fill: colors.foreground },
@@ -109,30 +83,6 @@ export const motion = stylex.create({
     animationName: { default: "none", [queries.motionOk]: bobbing },
     animationDuration: "4.5s",
     animationTimingFunction: "ease-in-out",
-    animationIterationCount: "infinite",
-  },
-  slide: {
-    animationName: { default: "none", [queries.motionOk]: slideIn },
-    animationDuration: "5s",
-    animationTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
-    animationIterationCount: "infinite",
-  },
-  pulse: {
-    animationName: { default: "none", [queries.motionOk]: pulsing },
-    animationDuration: "3.2s",
-    animationTimingFunction: "ease-in-out",
-    animationIterationCount: "infinite",
-  },
-  tick: {
-    animationName: { default: "none", [queries.motionOk]: ticking },
-    animationDuration: "12s",
-    animationTimingFunction: "linear",
-    animationIterationCount: "infinite",
-  },
-  blink: {
-    animationName: { default: "none", [queries.motionOk]: blinking },
-    animationDuration: "1.1s",
-    animationTimingFunction: "linear",
     animationIterationCount: "infinite",
   },
 })

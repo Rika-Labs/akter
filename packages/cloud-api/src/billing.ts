@@ -32,12 +32,23 @@ export const Plan = Schema.TaggedStruct("known", {
 })
 export type Plan = typeof Plan.Type
 
-export const PaymentMethod = Schema.Struct({
+/** A card on file. */
+export const CardPaymentMethod = Schema.TaggedStruct("card", {
   brand: Schema.String,
   lastFour: Schema.String,
   expiryMonth: Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 1, maximum: 12 }))),
   expiryYear: NonNegativeInt,
 })
+
+/**
+ * A Link account on file. Stripe reports only the account's email, which is null when Link holds
+ * none, and nothing about the card behind it.
+ */
+export const LinkPaymentMethod = Schema.TaggedStruct("link", {
+  email: Schema.NullOr(Schema.String),
+})
+
+export const PaymentMethod = Schema.Union([CardPaymentMethod, LinkPaymentMethod])
 export type PaymentMethod = typeof PaymentMethod.Type
 
 export const SpendLimit = Schema.Struct({

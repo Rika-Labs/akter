@@ -35,6 +35,12 @@ export const exemptions: ReadonlyArray<Exemption> = [
       "Exercises turns, relays, jobs, cron, retention and holder liveness together on shard-targeted sessions, checking each committed write's session against the shard that holds its row, rather than one source module.",
   },
   {
+    path: "infra/src/fly-service-image.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "It exercises the patched Alchemy Fly.Service image build that the console and the site share, which has no source module in this repository.",
+  },
+  {
     path: "tooling/oxlint/anti-slop",
     rule: "tests-beside-sources",
     reason:

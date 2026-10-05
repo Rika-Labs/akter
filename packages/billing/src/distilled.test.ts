@@ -12,8 +12,10 @@ import {
 } from "./distilled.ts"
 import {
   BillingProviderError,
+  CardPaymentMethod,
   CatalogNotReady,
   CheckoutExpired,
+  LinkPaymentMethod,
   StripeBilling,
   type Tier,
   UnknownCustomer,
@@ -109,6 +111,23 @@ interface StoredPrice {
   meter: string | null
 }
 
+interface PaymentMethodState {
+  customerDefault: string | null
+  listed: Array<Schema.JsonObject>
+}
+
+const linkMethod = (id: string, email: string | null): Schema.JsonObject => ({
+  id,
+  type: "link",
+  link: { email },
+})
+
+const cardMethod = (id: string): Schema.JsonObject => ({
+  id,
+  type: "card",
+  card: { brand: "visa", last4: "4242", exp_month: 7, exp_year: 2031 },
+})
+
 /** A Stripe test double that remembers what was created, so repeated setup calls see earlier objects. */
 const makeStripe = () => {
   const requests: Array<Recorded> = []
@@ -127,6 +146,7 @@ const makeStripe = () => {
     paginated: false,
     multiple: false,
   }
+  const paymentMethodState: PaymentMethodState = { customerDefault: "pm_1", listed: [] }
   const checkoutSessions: Array<{
     id: string
     customer: string
@@ -343,8 +363,20 @@ const makeStripe = () => {
           postal_code: "10115",
           country: "DE",
         },
-        invoice_settings: { default_payment_method: "pm_1" },
+        invoice_settings: { default_payment_method: paymentMethodState.customerDefault },
       })
+    }
+    if (method === "GET" && path === "/v1/customers/cus_known/payment_methods") {
+      const type = url.searchParams.get("type")
+      return json(200, {
+        object: "list",
+        data: paymentMethodState.listed.filter((entry) => entry.type === type),
+        has_more: false,
+        url: path,
+      })
+    }
+    if (method === "GET" && path === "/v1/payment_methods/pm_link") {
+      return json(200, linkMethod("pm_link", "ada@example.com"))
     }
     if (method === "GET" && path === "/v1/payment_methods/pm_1") {
       return json(200, {
@@ -449,6 +481,7 @@ const makeStripe = () => {
     streamFailures,
     session,
     subscriptionState,
+    paymentMethodState,
     checkoutSessions,
     prices,
     meters,
@@ -1323,13 +1356,15 @@ describe("reading billing state", () => {
       expect(DateTime.toEpochMillis(state.details.subscription!.currentPeriodEnd!)).toBe(
         1_790_592_000_000,
       )
-      expect(state.method).toEqual({
-        id: "pm_1",
-        brand: "visa",
-        lastFour: "4242",
-        expiryMonth: 7,
-        expiryYear: 2031,
-      })
+      expect(state.method).toEqual(
+        CardPaymentMethod.make({
+          id: "pm_1",
+          brand: "visa",
+          lastFour: "4242",
+          expiryMonth: 7,
+          expiryYear: 2031,
+        }),
+      )
       expect(state.invoices).toHaveLength(1)
       expect(state.invoices[0]).toMatchObject({
         id: "in_1",
@@ -1345,6 +1380,84 @@ describe("reading billing state", () => {
       ).toBe("5")
     }),
   )
+
+  describe("payment method", () => {
+    const method = (setup: (stripe: ReturnType<typeof makeStripe>) => void) =>
+      Effect.gen(function* () {
+        const stripe = makeStripe()
+        setup(stripe)
+        return yield* run(
+          stripe,
+          StripeBilling.use((billing) => billing.paymentMethod("cus_known")),
+        )
+      })
+
+    it.live("reports a Link account, with its email, when the customer's default is Link", () =>
+      Effect.gen(function* () {
+        expect(
+          yield* method((stripe) => {
+            stripe.paymentMethodState.customerDefault = "pm_link"
+          }),
+        ).toEqual(LinkPaymentMethod.make({ id: "pm_link", email: "ada@example.com" }))
+      }),
+    )
+
+    it.live(
+      "reports the Link account a customer has on file when Checkout set no customer default, as it does for Link",
+      () =>
+        Effect.gen(function* () {
+          expect(
+            yield* method((stripe) => {
+              stripe.paymentMethodState.customerDefault = null
+              stripe.paymentMethodState.listed = [linkMethod("pm_listed_link", "grace@example.com")]
+            }),
+          ).toEqual(LinkPaymentMethod.make({ id: "pm_listed_link", email: "grace@example.com" }))
+        }),
+    )
+
+    it.live("reports a Link account without an email as such, not as no payment method", () =>
+      Effect.gen(function* () {
+        expect(
+          yield* method((stripe) => {
+            stripe.paymentMethodState.customerDefault = null
+            stripe.paymentMethodState.listed = [linkMethod("pm_listed_link", null)]
+          }),
+        ).toEqual(LinkPaymentMethod.make({ id: "pm_listed_link", email: null }))
+      }),
+    )
+
+    it.live("prefers a card on file to a Link account when there is no customer default", () =>
+      Effect.gen(function* () {
+        expect(
+          yield* method((stripe) => {
+            stripe.paymentMethodState.customerDefault = null
+            stripe.paymentMethodState.listed = [
+              linkMethod("pm_listed_link", "grace@example.com"),
+              cardMethod("pm_listed_card"),
+            ]
+          }),
+        ).toEqual(
+          CardPaymentMethod.make({
+            id: "pm_listed_card",
+            brand: "visa",
+            lastFour: "4242",
+            expiryMonth: 7,
+            expiryYear: 2031,
+          }),
+        )
+      }),
+    )
+
+    it.live("reports none when the customer has neither a default nor a card or Link account", () =>
+      Effect.gen(function* () {
+        expect(
+          yield* method((stripe) => {
+            stripe.paymentMethodState.customerDefault = null
+          }),
+        ).toBeNull()
+      }),
+    )
+  })
 
   it.live("reports an unknown customer", () =>
     Effect.gen(function* () {

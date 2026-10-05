@@ -36,6 +36,7 @@ import {
   ConfirmedDialog,
   FailedCommand,
   FailedDeploymentChange,
+  FailedPage,
   type Message,
   OpenedDialog,
   PreparedCommandId,
@@ -58,7 +59,7 @@ const billing: Billing = {
     renewsAt: null,
     monthToDateCents: 30_000,
   }),
-  card: null,
+  paymentMethod: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 30_000 },
   caps: [],
@@ -132,6 +133,23 @@ const failWith = (model: Model, cause: unknown) => {
     FailedCommand({ session: model.commandSession, kind: error.kind, message: error.message }),
   ).model
 }
+
+describe("an organization without a project", () => {
+  it.each(["/", "/deployments", "/actors", "/projects/storefront"])(
+    "replaces %s with onboarding's project step instead of the error page",
+    (path) => {
+      const loading = init({ workspace, theme: "light" }, at(path)).model
+      const result = update(
+        loading,
+        FailedPage({ kind: "NoProject", message: "Create a project to continue." }),
+      )
+      expect(result.model.pageError).toEqual(Option.none())
+      expect(result.commands).toMatchObject([
+        { name: "ReplaceUrl", args: { href: "/onboarding?step=project" } },
+      ])
+    },
+  )
+})
 
 describe("send command keys", () => {
   it("mints one key per submission and reuses it when the same submission is retried", () => {

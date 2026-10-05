@@ -1,0 +1,105 @@
+import * as stylex from "@stylexjs/stylex"
+import { queries } from "../styles/breakpoints.stylex.ts"
+import { siteColors } from "../styles/site-tokens.stylex.ts"
+
+export const blog = stylex.create({
+  feature: {
+    display: "grid",
+    gridTemplateColumns: { default: "1.2fr 1fr", [queries.tabletDown]: "minmax(0, 1fr)" },
+    marginTop: { default: "3.5rem", [queries.phoneDown]: "2rem" },
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: siteColors.hairline,
+  },
+  art: {
+    display: "flex",
+    alignItems: "flex-end",
+    minWidth: 0,
+    paddingTop: "2.5rem",
+    paddingInline: "1.5rem",
+    backgroundColor: siteColors.page,
+    borderInlineEndWidth: { default: 1, [queries.tabletDown]: 0 },
+    borderInlineEndStyle: "solid",
+    borderInlineEndColor: siteColors.hairline,
+    borderBottomWidth: { default: 0, [queries.tabletDown]: 1 },
+    borderBottomStyle: "solid",
+    borderBottomColor: siteColors.hairline,
+    overflow: "hidden",
+  },
+  artInner: { width: "100%" },
+  text: {
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+    gap: "2rem",
+    padding: { default: "2.25rem", [queries.phoneDown]: "1.5rem" },
+  },
+  title: {
+    marginTop: "0.875rem",
+    fontSize: { default: "2.125rem", [queries.phoneDown]: "1.75rem" },
+  },
+  summary: { marginTop: "0.875rem" },
+  arrow: { marginInlineStart: "0.375rem" },
+})
+
+export const post = stylex.create({
+  article: {
+    maxWidth: "42.5rem",
+    marginInline: "auto",
+    paddingTop: { default: "4.5rem", [queries.phoneDown]: "2.5rem" },
+  },
+  title: {
+    marginTop: "1.125rem",
+    fontSize: { default: "3rem", [queries.phoneDown]: "2.25rem" },
+  },
+  lede: { fontSize: { default: "1.25rem", [queries.phoneDown]: "1.125rem" } },
+  byline: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.75rem",
+    marginTop: "1.75rem",
+    fontSize: "0.90625rem",
+  },
+  avatar: {
+    display: "grid",
+    placeItems: "center",
+    width: "2rem",
+    height: "2rem",
+    backgroundColor: siteColors.tile,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: siteColors.hairline,
+    fontSize: "0.6875rem",
+  },
+  date: { marginInlineStart: "auto" },
+  band: {
+    marginTop: "3rem",
+    paddingTop: "2.25rem",
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: siteColors.hairline,
+    borderBottomWidth: 1,
+    borderBottomStyle: "solid",
+    borderBottomColor: siteColors.hairline,
+  },
+  body: { paddingTop: "0.5rem" },
+  paragraph: {
+    marginTop: "1.5rem",
+    fontSize: { default: "1.125rem", [queries.phoneDown]: "1.0625rem" },
+    lineHeight: 1.75,
+    color: siteColors.prose,
+  },
+  heading: { marginTop: "3rem", fontSize: "1.625rem" },
+  quote: {
+    marginTop: "2rem",
+    paddingBlock: "0.25rem",
+    paddingInlineStart: "1.375rem",
+    borderInlineStartWidth: 2,
+    borderInlineStartStyle: "solid",
+    borderInlineStartColor: siteColors.ink,
+    fontSize: { default: "1.3125rem", [queries.phoneDown]: "1.1875rem" },
+    lineHeight: 1.5,
+    letterSpacing: "-0.01em",
+  },
+  figure: { marginTop: "2.25rem" },
+})

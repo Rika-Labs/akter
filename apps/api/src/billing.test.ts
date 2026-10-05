@@ -597,20 +597,24 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             monthToDateEstimateCents: 2_500,
           })
           expect(pro.plan.renewsAt).not.toBeNull()
-          expect(pro.paymentMethod).toEqual({
-            brand: "visa",
-            lastFour: "4242",
-            expiryMonth: 7,
-            expiryYear: 2036,
-          })
+          expect(pro.paymentMethod).toEqual(
+            Cloud.CardPaymentMethod.make({
+              brand: "visa",
+              lastFour: "4242",
+              expiryMonth: 7,
+              expiryYear: 2036,
+            }),
+          )
           expect(pro.billingEmail).toBe(alice.email)
           yield* w.sql`UPDATE cloud_billing_payment_method SET brand = 'mastercard', last_four = '8675', expiry_month = 11, expiry_year = 2037 WHERE customer_id = ${customer.customer_id}`
-          expect((yield* w.summary(org, bob.cookie)).paymentMethod).toEqual({
-            brand: "mastercard",
-            lastFour: "8675",
-            expiryMonth: 11,
-            expiryYear: 2037,
-          })
+          expect((yield* w.summary(org, bob.cookie)).paymentMethod).toEqual(
+            Cloud.CardPaymentMethod.make({
+              brand: "mastercard",
+              lastFour: "8675",
+              expiryMonth: 11,
+              expiryYear: 2037,
+            }),
+          )
           expect(yield* w.membershipPlan(org, bob.cookie)).toEqual(
             Cloud.KnownPlan.make({ id: "pro" }),
           )
@@ -1479,6 +1483,40 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             reason: "unbound",
             unitsPerCommand: 5,
           })
+        }),
+      { timeout: 120_000 },
+    )
+  },
+)
+
+it.layer(isolatedLive({ pricing, provisionalPlansRefused: true }), { excludeTestServices: true })(
+  "paid plans with provisional prices where they are refused",
+  (it) => {
+    it.effect(
+      "refuses checkout and a plan change until the prices are published, leaving the organization on Free",
+      () =>
+        Effect.gen(function* () {
+          const w = yield* world
+          const alice = yield* w.signup("provisional")
+          const org = yield* w.organization(alice, "Provisional org")
+          const base = `/api/organizations/${org}/billing`
+          for (const plan of ["pro", "team"] as const)
+            expect([
+              yield* w.status({
+                path: `${base}/checkout`,
+                method: "POST",
+                cookie: alice.cookie,
+                body: { plan },
+              }),
+              yield* w.status({
+                path: `${base}/plan`,
+                method: "POST",
+                cookie: alice.cookie,
+                body: { plan },
+              }),
+            ]).toEqual([409, 409])
+          expect((yield* w.summary(org, alice.cookie)).plan.id).toBe("free")
+          expect(yield* w.sessions(org)).toEqual([])
         }),
       { timeout: 120_000 },
     )

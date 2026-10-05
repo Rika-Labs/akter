@@ -1,14 +1,19 @@
-import { space } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
+import { queries } from "./breakpoints.stylex.ts"
 
 export const notFound = stylex.create({
   root: {
-    display: "grid",
-    justifyItems: "center",
-    gap: space.xl,
-    paddingBlock: space.huge,
+    paddingTop: { default: "7.5rem", [queries.phoneDown]: "4rem" },
     textAlign: "center",
   },
-  svg: { width: "100%", maxWidth: "26rem", height: "auto", overflow: "visible", opacity: 0.94 },
-  actions: { display: "flex", flexWrap: "wrap", justifyContent: "center", gap: space.md },
+  title: { marginTop: "1rem" },
+  lede: { marginInline: "auto" },
+  actions: {
+    display: "flex",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: "0.75rem",
+    marginTop: "2.125rem",
+  },
+  art: { marginTop: { default: "4rem", [queries.phoneDown]: "2.5rem" } },
 })

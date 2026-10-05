@@ -216,15 +216,7 @@ export const toBilling = (billing: BillingSummary): Billing => ({
         monthToDateCents: plan.monthToDateEstimateCents,
       }),
   }),
-  card:
-    billing.paymentMethod === null
-      ? null
-      : {
-          brand: billing.paymentMethod.brand,
-          lastFour: billing.paymentMethod.lastFour,
-          expiryMonth: billing.paymentMethod.expiryMonth,
-          expiryYear: billing.paymentMethod.expiryYear,
-        },
+  paymentMethod: billing.paymentMethod,
   billingEmail: billing.billingEmail,
   spendLimit: {
     limitCents: billing.spendLimit.limitCents,

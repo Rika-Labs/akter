@@ -8,6 +8,7 @@ import {
   type Catalog,
   type CatalogMeter,
   type CatalogTier,
+  CardPaymentMethod,
   CatalogNotReady,
   type CheckoutInput,
   type ChangeSubscriptionInput,
@@ -522,13 +523,13 @@ export const StripeBillingLocal = (config: LocalBillingConfig) =>
           )
           return row === undefined
             ? null
-            : {
+            : CardPaymentMethod.make({
                 id: row.id,
                 brand: row.brand,
                 lastFour: row.last_four,
                 expiryMonth: row.expiry_month,
                 expiryYear: row.expiry_year,
-              }
+              })
         })
 
       const invoices = (customerId: string, limit = 24) =>

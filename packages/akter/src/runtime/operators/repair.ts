@@ -149,16 +149,6 @@ interface DeadLetterRow {
   readonly payloadVersion: number
 }
 
-/**
- * Builds the service over the runtime's SQL, crypto, clock, and outbox, and
- * its job registrations, which say whether a retried job is capped.
- *
- * Repairs lock the dead letter they act on, so two repairs of it serialize and the
- * second finds nothing. Without `receipts.read` an operator sees that a command
- * ran, not what it returned. A retry is the operator's act and carries no end
- * user's principal. The payload may hold customer data, so a discard's record
- * keeps what failed, not what was sent.
- */
 const encoder = new TextEncoder()
 
 /** Compares two strings by their UTF-8 bytes, as Postgres orders them under `COLLATE "C"`. */
@@ -172,6 +162,16 @@ const byteOrder = (left: string, right: string) => {
   return a.length - b.length
 }
 
+/**
+ * Builds the service over the runtime's SQL, crypto, clock, and outbox, and
+ * its job registrations, which say whether a retried job is capped.
+ *
+ * Repairs lock the dead letter they act on, so two repairs of it serialize and the
+ * second finds nothing. Without `receipts.read` an operator sees that a command
+ * ran, not what it returned. A retry is the operator's act and carries no end
+ * user's principal. The payload may hold customer data, so a discard's record
+ * keeps what failed, not what was sent.
+ */
 export const operatorRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
@@ -283,7 +283,7 @@ export const operatorRuntime = (deps: {
           outcome: string
           expires_at_ms: number
         }>`SELECT command, outcome_tag, outcome, expires_at_ms::float8 AS expires_at_ms
-          FROM durable.receipts
+          FROM durable.receipts_v2
           WHERE routing_key = ${key} AND tenant_id = ${target.tenant}
             AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
             AND command_id = ${commandId}`).pipe(onShard(key))

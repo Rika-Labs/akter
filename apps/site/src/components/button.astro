@@ -1,41 +1,56 @@
 ---
 import * as stylex from "@stylexjs/stylex"
 import { button } from "./button.styles.ts"
+import ExternalIcon from "./external-icon.astro"
+import Mark from "./mark.astro"
 
 interface Props {
-  href?: string
-  variant?: "primary" | "secondary" | "ghost" | "inverse"
-  size?: "default" | "large"
+  href: string
+  variant?: "primary" | "inverse" | "ghost"
+  size?: "default" | "small"
+  tile?: boolean
   block?: boolean
   external?: boolean
-  type?: "button" | "submit"
+  arrow?: boolean
+  xstyle?: stylex.StyleXStyles
 }
 
 const {
   href,
-  variant = "secondary",
+  variant = "primary",
   size = "default",
+  tile = false,
   block = false,
   external = false,
-  type = "button",
+  arrow = false,
+  xstyle,
 } = Astro.props
-const attrs = stylex.attrs(
-  button.root,
-  button[variant],
-  size === "large" && button.large,
-  block && button.block,
-)
-const rel = external ? "noopener noreferrer" : undefined
+const inverse = variant === "inverse"
 ---
 
-{
-  href === undefined ? (
-    <button type={type} {...attrs}>
-      <slot />
-    </button>
-  ) : (
-    <a href={href} rel={rel} target={external ? "_blank" : undefined} {...attrs}>
-      <slot />
-    </a>
-  )
-}
+<a
+  href={href}
+  rel={external ? "noopener noreferrer" : undefined}
+  target={external ? "_blank" : undefined}
+  {...stylex.attrs(
+    button.root,
+    variant === "ghost" ? button.ghost : button.primary,
+    inverse && button.inverse,
+    tile && button.tiled,
+    size === "small" && button.small,
+    block && button.block,
+    xstyle,
+  )}
+>
+  {
+    tile && (
+      <span {...stylex.attrs(button.tile, inverse && button.tileInverse)}>
+        <Mark size={18} />
+      </span>
+    )
+  }
+  <slot />
+  {
+    arrow && <ExternalIcon xstyle={button.icon} />
+  }
+</a>

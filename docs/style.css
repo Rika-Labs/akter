@@ -9,3 +9,368 @@
 body:has(#content > h1:first-child) #table-of-contents-content > li:first-child {
   display: none;
 }
+
+/*
+ * Akter docs theme: the marketing site's palette, PolySans and Geist Mono, hairline borders,
+ * square corners, and mono uppercase labels. Mintlify's `fonts` setting only emits fixed-weight
+ * faces, so the variable files are declared here with a weight range.
+ */
+@font-face {
+  font-family: "Akter Sans";
+  src: url("/fonts/PolySans-variable.woff2") format("woff2");
+  font-weight: 300 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Akter Mono";
+  src: url("/fonts/GeistMono-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --ak-ink: #0b0d0b;
+  --ak-page: #fafaf9;
+  --ak-tile: #f1f0ed;
+  --ak-raised: #ffffff;
+  --ak-hair: rgba(55, 48, 31, 0.13);
+  --ak-muted: rgba(11, 13, 11, 0.55);
+  --ak-body: rgba(11, 13, 11, 0.75);
+  --ak-sans: "Akter Sans", "PolySans", system-ui, sans-serif;
+  --ak-mono: "Akter Mono", "Geist Mono", ui-monospace, monospace;
+  --font-family-headings-custom: var(--ak-sans);
+  --font-family-body-custom: var(--ak-sans);
+  --gray-50: 250 250 249;
+  --gray-100: 241 240 237;
+  --gray-200: 226 224 219;
+  --gray-300: 206 204 197;
+  --gray-400: 158 156 150;
+  --gray-500: 112 111 106;
+  --gray-600: 80 79 74;
+  --gray-700: 62 61 57;
+  --gray-800: 37 37 34;
+  --gray-900: 23 23 21;
+  --gray-950: 10 10 9;
+  --mint-foreground: #0b0d0b;
+  --mint-background: #f1f0ed;
+  --mint-token-constant: #0b0d0b;
+  --mint-token-string: #5b5a4f;
+  --mint-token-comment: rgba(11, 13, 11, 0.45);
+  --mint-token-keyword: #0b0d0b;
+  --mint-token-parameter: #0b0d0b;
+  --mint-token-function: #0b0d0b;
+  --mint-token-string-expression: #5b5a4f;
+  --mint-token-punctuation: rgba(11, 13, 11, 0.6);
+  --mint-token-link: #0b0d0b;
+}
+
+body {
+  font-family: var(--ak-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+[class*="rounded"],
+.callout,
+.code-block,
+pre,
+code,
+kbd,
+table,
+img:not(.nav-logo),
+[data-component-part="scroll-area-viewport"],
+#search-bar-entry,
+#search-input,
+[role="dialog"],
+[role="menu"],
+[role="listbox"] {
+  border-radius: 0 !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--ak-sans);
+  font-weight: 450;
+  letter-spacing: -0.035em;
+  color: var(--ak-ink);
+}
+
+#page-title {
+  font-weight: 450;
+  font-size: 2.5rem;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+}
+
+#content-area .prose,
+#content-area p,
+#content-area li {
+  font-weight: 400;
+}
+
+#content-area p,
+#content-area li {
+  color: var(--ak-body);
+}
+
+.eyebrow,
+.sidebar-group-header,
+.sidebar-group-header *,
+#table-of-contents h2 button,
+#table-of-contents h2 button span {
+  font-family: var(--ak-mono);
+  font-weight: 400;
+  font-size: 0.6875rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ak-muted);
+}
+
+.eyebrow {
+  height: auto;
+}
+
+code,
+pre,
+kbd,
+.code-block,
+.font-mono {
+  font-family: var(--ak-mono) !important;
+}
+
+#navbar-transition {
+  background: var(--ak-page);
+  border-color: var(--ak-hair);
+}
+
+#navbar .border-b {
+  border-color: transparent;
+}
+
+#navbar .nav-tabs {
+  gap: 1.625rem;
+}
+
+#navbar .nav-tabs-item {
+  font-weight: 400;
+  text-shadow: none;
+}
+
+#navbar .nav-tabs-item[data-active="true"] {
+  color: var(--ak-ink);
+}
+
+#navbar .nav-tabs-item > div {
+  height: 1.5px;
+}
+
+#navbar .nav-tabs-item[data-active="true"] > div {
+  background: var(--ak-ink);
+}
+
+#navbar .hidden.lg\:flex.px-12 {
+  border-bottom: 1px solid var(--ak-hair);
+}
+
+#search-bar-entry {
+  background: var(--ak-raised);
+  border: 1px solid var(--ak-hair);
+  box-shadow: none;
+  --tw-ring-shadow: 0 0 #0000;
+  color: var(--ak-muted);
+  max-width: 27.5rem;
+  height: 2.25rem;
+}
+
+#search-bar-entry:hover {
+  border-color: rgba(55, 48, 31, 0.28);
+}
+
+#search-bar-entry span {
+  font-family: var(--ak-mono);
+  font-weight: 400;
+  font-size: 0.6875rem;
+  border: 1px solid var(--ak-hair);
+  padding: 1px 5px;
+  color: var(--ak-muted);
+}
+
+.navbar-link a {
+  font-weight: 400;
+  color: var(--ak-muted);
+}
+
+.navbar-link a:hover {
+  color: var(--ak-ink);
+}
+
+.navbar-link a[href*="github.com"] {
+  border: 1px solid var(--ak-hair);
+  background: var(--ak-raised);
+  padding: 0 0.875rem;
+  height: 2.25rem;
+  color: var(--ak-body);
+}
+
+.navbar-link a[href*="github.com"] > span:last-child {
+  display: none;
+}
+
+#topbar-cta-button a {
+  height: 2.25rem;
+  padding: 0 1.125rem;
+  background: var(--ak-ink);
+  border: 1px solid var(--ak-ink);
+}
+
+#topbar-cta-button a > span.absolute {
+  display: none;
+}
+
+#topbar-cta-button a svg {
+  display: none;
+}
+
+#topbar-cta-button a span {
+  font-family: var(--ak-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ak-page);
+}
+
+#topbar-cta-button a:hover {
+  background: #242824;
+}
+
+html .sidebar-group-header {
+  padding-left: 0;
+  margin-bottom: 0.75rem;
+}
+
+html .sidebar-group {
+  border-left: 1px solid var(--ak-hair);
+}
+
+html .sidebar-group li > a {
+  background: transparent !important;
+  padding-top: 0.3125rem;
+  padding-bottom: 0.3125rem;
+  padding-left: 0.875rem !important;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  font-size: 0.90625rem;
+  font-weight: 400;
+  color: var(--ak-muted);
+}
+
+html .sidebar-group li > a:hover {
+  color: var(--ak-ink);
+}
+
+html .sidebar-group li[data-active="true"] > a {
+  border-left-color: var(--ak-ink);
+  color: var(--ak-ink);
+  font-weight: 500;
+}
+
+#table-of-contents .toc {
+  border-left: 1px solid var(--ak-hair);
+}
+
+#table-of-contents .toc-item a {
+  color: var(--ak-muted);
+}
+
+.code-block,
+pre {
+  background: var(--ak-tile) !important;
+  border: 1px solid var(--ak-hair) !important;
+  box-shadow: none;
+}
+
+.code-block pre {
+  border: 0 !important;
+}
+
+.code-block pre,
+.code-block code {
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+
+:not(pre) > code {
+  background: var(--ak-tile);
+  border: 1px solid var(--ak-hair);
+  color: var(--ak-ink);
+  font-size: 0.85em;
+  padding: 0.0625rem 0.3125rem;
+}
+
+.callout {
+  background: var(--ak-raised);
+  border: 1px solid var(--ak-hair);
+  border-left: 2px solid var(--ak-ink);
+}
+
+table,
+th,
+td {
+  border-color: var(--ak-hair);
+}
+
+th {
+  font-family: var(--ak-mono);
+  font-weight: 400;
+  font-size: 0.6875rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ak-muted);
+}
+
+#pagination a {
+  border: 1px solid var(--ak-hair);
+  padding: 1rem 1.125rem;
+}
+
+#page-context-menu button {
+  border-color: var(--ak-hair);
+  background: var(--ak-raised);
+}
+
+#table-of-contents .toc-item a {
+  padding-left: 0.875rem;
+  margin-left: -1px;
+  border-left: 1px solid transparent;
+}
+
+#table-of-contents .toc-item a[data-active="true"],
+#table-of-contents .toc-item[data-active-deepest="true"] > a {
+  border-left-color: var(--ak-ink);
+  color: var(--ak-ink);
+}
+
+.code-block-copy-button button {
+  background: var(--ak-raised) !important;
+  border: 1px solid var(--ak-hair);
+}
+
+.code-block-copy-button button svg {
+  color: var(--ak-muted) !important;
+}
+
+.code-block-copy-button button:hover svg {
+  color: var(--ak-ink) !important;
+}
+
+.code-block [class*="rounded-t"],
+.code-block [class*="rounded-t"] * {
+  color: var(--ak-muted) !important;
+  font-family: var(--ak-mono);
+  font-size: 0.6875rem;
+}

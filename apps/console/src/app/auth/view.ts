@@ -1,18 +1,7 @@
-import {
-  avatar,
-  button,
-  choiceCards,
-  codeBlock,
-  field,
-  illustration,
-  input,
-  mark,
-  styleAttributes,
-} from "@akter/ui"
-import { letterOnContainer } from "@akter/ui/brand"
+import { accessibility, styleAttributes } from "@akter/ui"
 import { Match, Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { fixturesEnabled } from "../api/client.ts"
+import { fixturesEnabled, socialProviders } from "../api/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
@@ -29,43 +18,18 @@ import { displayUserCode, type DeviceProblem, type DeviceReview } from "../devic
 import { pageOf } from "../shell/screen.ts"
 import { homeRegions, type InvitationPage, onboardingStep, onboardingSteps } from "./model.ts"
 import { planLabel } from "../workspace/model.ts"
-import { authLayout, authStyles as styles, deviceStyles } from "./styles.ts"
-
-const fill = authLayout.fill
+import { actionButton, divider, providerButton, textField as field } from "./controls.ts"
+import type { TextFieldConfig } from "./controls.ts"
+import { frame } from "./frame.ts"
+import { authStyles as styles, deviceStyles } from "./styles.ts"
 
 type H = HtmlBuilder<Message>
 
-const textField = (
-  h: H,
-  model: Model,
-  config: Readonly<{
-    name: string
-    label: string
-    type?: "text" | "email" | "password"
-    placeholder?: string
-    autocomplete: string
-    description?: string
-    trailing?: Html
-    minlength?: number
-  }>,
-): Html =>
+const textField = (h: H, model: Model, config: Omit<TextFieldConfig, "value" | "onInput">): Html =>
   field(h, {
-    id: config.name,
-    label: config.label,
-    description: config.description,
-    trailing: config.trailing,
-    control: input(h, {
-      name: config.name,
-      value: model.fields[config.name] ?? "",
-      type: config.type ?? "text",
-      placeholder: config.placeholder,
-      autocomplete: config.autocomplete,
-      size: "lg",
-      required: true,
-      describedBy: config.description === undefined ? undefined : `${config.name}-description`,
-      attributes: config.minlength === undefined ? [] : [h.Minlength(config.minlength)],
-      onInput: (value) => ChangedField({ name: config.name, value }),
-    }),
+    ...config,
+    value: model.fields[config.name] ?? "",
+    onInput: (value) => ChangedField({ name: config.name, value }),
   })
 
 const organizationSlug = (model: Model): string => {
@@ -73,36 +37,33 @@ const organizationSlug = (model: Model): string => {
   return slug === undefined || slug === "" ? "acme" : slug
 }
 
-const column = (h: H, children: ReadonlyArray<Html>, wide = false): Html =>
-  h.main(
-    [h.Id("main"), ...styleAttributes(h, styles.page)],
-    [h.div([...styleAttributes(h, styles.column, wide && styles.wide)], children)],
-  )
-
 const heading = (h: H, title: string, lead?: Html | string): ReadonlyArray<Html> => [
-  h.a([h.Href(Routes.overview()), h.AriaLabel("Akter")], [mark(h, { size: 26 })]),
   h.h1([...styleAttributes(h, styles.title)], [title]),
   lead === undefined ? h.empty : h.p([...styleAttributes(h, styles.lead)], [lead]),
 ]
 
-const providers = (h: H, model: Model): ReadonlyArray<Html> => [
-  button(h, {
-    label: "Continue with GitHub",
-    icon: "github",
-    size: "lg",
-    onClick: SubmittedForm({ form: "social-github" }),
-    disabled: model.submitting,
-    style: fill,
-  }),
-  button(h, {
-    label: "Continue with Google",
-    size: "lg",
-    onClick: SubmittedForm({ form: "social-google" }),
-    disabled: model.submitting,
-    style: fill,
-  }),
-  h.div([h.AriaHidden(true), ...styleAttributes(h, styles.divider)], ["or"]),
-]
+const providerWords = {
+  github: { label: "Continue with GitHub", icon: "github" },
+  google: { label: "Continue with Google", icon: "google" },
+} as const
+
+const providers = (h: H, model: Model): ReadonlyArray<Html> => {
+  const configured = socialProviders()
+  if (configured.length === 0) return []
+  return [
+    h.div(
+      [...styleAttributes(h, styles.oauth)],
+      configured.map((provider) =>
+        providerButton(h, {
+          ...providerWords[provider],
+          onClick: SubmittedForm({ form: `social-${provider}` }),
+          disabled: model.submitting,
+        }),
+      ),
+    ),
+    divider(h),
+  ]
+}
 
 const failureNote = (h: H, model: Model): Html =>
   Option.match(model.formError, {
@@ -120,26 +81,25 @@ const form = (h: H, model: Model, name: string, children: ReadonlyArray<Html>): 
     [...children, failureNote(h, model)],
   )
 
-const foot = (h: H, text: string, link: Readonly<{ label: string; href: string }>): Html =>
+const fine = (h: H, text: string, link: Readonly<{ label: string; href: string }>): Html =>
   h.p(
-    [...styleAttributes(h, styles.foot)],
-    [`${text} `, h.a([h.Href(link.href), ...styleAttributes(h, styles.link)], [link.label])],
+    [...styleAttributes(h, styles.fine)],
+    [`${text} `, h.a([h.Href(link.href), ...styleAttributes(h, styles.fineLink)], [link.label])],
   )
 
-const submit = (h: H, model: Model, label: string): Html =>
-  button(h, {
-    label,
-    variant: "primary",
-    size: "lg",
-    type: "submit",
-    disabled: model.submitting,
-    style: fill,
-  })
+const submit = (h: H, model: Model, label: string, marked = false): Html =>
+  h.div(
+    [...styleAttributes(h, styles.submit)],
+    [actionButton(h, { label, type: "submit", disabled: model.submitting, mark: marked })],
+  )
+
+const actions = (h: H, buttons: ReadonlyArray<Html>): Html =>
+  h.div([...styleAttributes(h, styles.stack)], buttons)
 
 const signIn = (h: H, model: Model): Screen => ({
   title: "Sign in",
   crumbs: [],
-  body: column(h, [
+  body: frame(h, { alt: { text: "No account?", label: "Sign up", href: Routes.signUp() } }, [
     ...heading(h, "Sign in to Akter"),
     ...providers(h, model),
     form(h, model, "sign-in", [
@@ -154,23 +114,27 @@ const signIn = (h: H, model: Model): Screen => ({
         name: "password",
         label: "Password",
         type: "password",
+        placeholder: "••••••••••",
         autocomplete: "current-password",
         trailing: h.a(
           [h.Href(Routes.forgotPassword()), ...styleAttributes(h, styles.link)],
-          ["Forgot?"],
+          ["Forgot password?"],
         ),
       }),
-      submit(h, model, "Continue"),
+      submit(h, model, "Sign in", true),
     ]),
-    foot(h, "No account?", { label: "Sign up", href: Routes.signUp() }),
   ]),
 })
 
 const signUp = (h: H, model: Model): Screen => ({
   title: "Create an account",
   crumbs: [],
-  body: column(h, [
-    ...heading(h, "Create your account", "Your actors on our runners, your data in Postgres."),
+  body: frame(h, { alt: { text: "Have an account?", label: "Sign in", href: Routes.signIn() } }, [
+    ...heading(
+      h,
+      "Create your account",
+      "Your actors on our runners, your data in a Postgres database.",
+    ),
     ...providers(h, model),
     form(h, model, "sign-up", [
       textField(h, model, {
@@ -183,65 +147,81 @@ const signUp = (h: H, model: Model): Screen => ({
         name: "email",
         label: "Work email",
         type: "email",
-        placeholder: "ada@company.com",
+        placeholder: "you@company.com",
         autocomplete: "email",
       }),
       textField(h, model, {
         name: "new-password",
         label: "Password",
         type: "password",
+        placeholder: "At least 12 characters",
         autocomplete: "new-password",
-        description: "At least 12 characters.",
         minlength: 12,
       }),
-      submit(h, model, "Create account"),
+      submit(h, model, "Create account", true),
     ]),
-    foot(h, "Already have an account?", { label: "Sign in", href: Routes.signIn() }),
   ]),
 })
+
+const inbox = (h: H): Html =>
+  h.div(
+    [...styleAttributes(h, styles.tile)],
+    [
+      h.svg(
+        [
+          h.ViewBox("0 0 24 24"),
+          h.Width("24"),
+          h.Height("24"),
+          h.AriaHidden(true),
+          h.Attribute("fill", "none"),
+          h.Attribute("stroke", "currentColor"),
+          h.StrokeWidth("1.5"),
+        ],
+        [h.path([h.D("M3 5h18v14H3Z M3 6l9 7 9-7")], [])],
+      ),
+    ],
+  )
 
 const verifyEmail = (h: H, model: Model): Screen => ({
   title: "Verify your email",
   crumbs: [],
-  body: column(h, [
-    h.div(
-      [...styleAttributes(h, styles.art)],
-      [illustration(h, { drawing: letterOnContainer.drawing, viewBox: letterOnContainer.viewBox })],
+  body: frame(h, { alt: { text: "Wrong email?", label: "Start over", href: Routes.signUp() } }, [
+    inbox(h),
+    ...heading(
+      h,
+      "Check your inbox",
+      h.span(
+        [],
+        [
+          "We sent a link to ",
+          h.span([...styleAttributes(h, styles.strong)], [model.fields["email"] ?? "your email"]),
+          ". Open it on this device to verify your address.",
+        ],
+      ),
     ),
-    h.h1([...styleAttributes(h, styles.title)], ["Check your inbox"]),
-    h.p(
-      [...styleAttributes(h, styles.lead)],
-      [
-        "We sent a link to ",
-        h.span([...styleAttributes(h, styles.strong)], [model.fields["email"] ?? "your email"]),
-        ". Open it on this device to verify your address.",
-      ],
-    ),
-    button(h, {
-      label: "Continue",
-      variant: "primary",
-      size: "lg",
-      onClick: SubmittedForm({ form: "verify-continue" }),
-      disabled: model.submitting,
-      style: fill,
-    }),
-    button(h, {
-      label: "Resend email",
-      size: "lg",
-      onClick: SubmittedForm({ form: "verify-resend" }),
-      disabled: model.submitting,
-      style: fill,
-    }),
+    actions(h, [
+      actionButton(h, {
+        label: "Continue",
+        onClick: SubmittedForm({ form: "verify-continue" }),
+        disabled: model.submitting,
+      }),
+      actionButton(h, {
+        label: "Resend the link",
+        variant: "ghost",
+        onClick: SubmittedForm({ form: "verify-resend" }),
+        disabled: model.submitting,
+      }),
+    ]),
     failureNote(h, model),
-    foot(h, "Wrong address?", { label: "Use a different email", href: Routes.signUp() }),
   ]),
 })
 
 const forgotPassword = (h: H, model: Model): Screen => ({
   title: "Reset your password",
   crumbs: [],
-  body: column(
+  body: frame(
     h,
+    { alt: { text: "Remembered it?", label: "Sign in", href: Routes.signIn() } },
     model.fields["recoverySent"] === "yes"
       ? [
           ...heading(
@@ -250,18 +230,17 @@ const forgotPassword = (h: H, model: Model): Screen => ({
             "If that email has an account, a reset link is on its way. It works for one hour.",
           ),
           fixturesEnabled()
-            ? button(h, {
-                label: "Open the reset link",
-                variant: "primary",
-                size: "lg",
-                href: Routes.resetPassword(),
-                style: fill,
-              })
+            ? actions(h, [
+                actionButton(h, { label: "Open the reset link", href: Routes.resetPassword() }),
+              ])
             : h.empty,
-          foot(h, "Remembered it?", { label: "Back to sign in", href: Routes.signIn() }),
         ]
       : [
-          ...heading(h, "Reset your password", "Enter the email you signed up with."),
+          ...heading(
+            h,
+            "Reset your password",
+            "Enter the email you signed up with and we’ll send you a link.",
+          ),
           form(h, model, "forgot", [
             textField(h, model, {
               name: "email",
@@ -272,7 +251,6 @@ const forgotPassword = (h: H, model: Model): Screen => ({
             }),
             submit(h, model, "Send reset link"),
           ]),
-          foot(h, "Remembered it?", { label: "Back to sign in", href: Routes.signIn() }),
         ],
   ),
 })
@@ -280,15 +258,15 @@ const forgotPassword = (h: H, model: Model): Screen => ({
 const resetPassword = (h: H, model: Model): Screen => ({
   title: "Choose a new password",
   crumbs: [],
-  body: column(h, [
+  body: frame(h, { alt: { text: "Remembered it?", label: "Sign in", href: Routes.signIn() } }, [
     ...heading(h, "Choose a new password", "Other sessions are signed out when you save it."),
     form(h, model, "reset", [
       textField(h, model, {
         name: "new-password",
         label: "New password",
         type: "password",
+        placeholder: "At least 12 characters",
         autocomplete: "new-password",
-        description: "At least 12 characters.",
         minlength: 12,
       }),
       textField(h, model, {
@@ -307,52 +285,41 @@ const invitation = (h: H, model: Model, page: Option.Option<InvitationPage>): Sc
   title: "Accept invitation",
   crumbs: [],
   body: Option.match(page, {
-    onNone: () => column(h, [...heading(h, "Opening invitation")]),
+    onNone: () => frame(h, { busy: true }, [...heading(h, "Opening invitation")]),
     onSome: (invite) =>
-      column(h, [
-        h.div(
-          [...styleAttributes(h, styles.organization)],
-          [
-            avatar(h, { name: invite.organization, size: "lg", kind: "organization" }),
-            h.div(
-              [],
-              [
-                h.p([...styleAttributes(h, styles.strong)], [invite.organization]),
-                h.p(
-                  [...styleAttributes(h, styles.note)],
-                  [`${String(invite.members)} members · ${planLabel(invite.plan, invite.catalog)}`],
-                ),
-              ],
-            ),
-          ],
+      frame(h, {}, [
+        h.div([...styleAttributes(h, styles.tile)], [invite.organization.slice(0, 1)]),
+        ...heading(
+          h,
+          `Join ${invite.organization} on Akter`,
+          h.span(
+            [],
+            [
+              h.span([...styleAttributes(h, styles.strong)], [invite.inviter]),
+              " invited ",
+              h.span([...styleAttributes(h, styles.strong)], [invite.email]),
+              ` as a ${invite.role}. You will be able to deploy, inspect actors and retry jobs.`,
+            ],
+          ),
         ),
-        h.h1([...styleAttributes(h, styles.title)], [`Join ${invite.organization} on Akter`]),
-        h.p(
-          [...styleAttributes(h, styles.lead)],
-          [
-            h.span([...styleAttributes(h, styles.strong)], [invite.inviter]),
-            " invited ",
-            h.span([...styleAttributes(h, styles.strong)], [invite.email]),
-            ` as a ${invite.role}. You will be able to deploy, inspect actors and retry jobs.`,
-          ],
-        ),
-        button(h, {
-          label: "Accept invitation",
-          variant: "primary",
-          size: "lg",
-          onClick: SubmittedForm({ form: "accept-invitation" }),
-          disabled: model.submitting,
-          style: fill,
-        }),
-        button(h, {
-          label: "Decline",
-          variant: "ghost",
-          size: "lg",
-          onClick: SubmittedForm({ form: "decline-invitation" }),
-          disabled: model.submitting,
-          style: fill,
-        }),
+        actions(h, [
+          actionButton(h, {
+            label: "Accept invitation",
+            onClick: SubmittedForm({ form: "accept-invitation" }),
+            disabled: model.submitting,
+          }),
+          actionButton(h, {
+            label: "Decline",
+            variant: "ghost",
+            onClick: SubmittedForm({ form: "decline-invitation" }),
+            disabled: model.submitting,
+          }),
+        ]),
         failureNote(h, model),
+        h.p(
+          [...styleAttributes(h, styles.fine)],
+          [`${String(invite.members)} members · ${planLabel(invite.plan, invite.catalog)}`],
+        ),
       ]),
   }),
 })
@@ -370,16 +337,84 @@ const stepIndicator = (h: H, current: number): ReadonlyArray<Html> => [
   ),
 ]
 
+const regionChoice = (h: H, model: Model): Html => {
+  const selected = model.choices["homeRegion"] ?? "us-east-1"
+  return h.div(
+    [],
+    [
+      h.p([...styleAttributes(h, styles.regionLegend)], ["Home region"]),
+      h.div(
+        [h.Role("radiogroup"), h.AriaLabel("Home region"), ...styleAttributes(h, styles.regions)],
+        homeRegions.map((region) =>
+          h.button(
+            [
+              h.Type("button"),
+              h.Role("radio"),
+              h.AriaChecked(region.id === selected),
+              h.Tabindex(region.id === selected ? 0 : -1),
+              h.OnClick(ChoseSetting({ key: "homeRegion", value: region.id })),
+              h.DataAttribute("choice", region.id),
+              ...styleAttributes(
+                h,
+                styles.region,
+                region.id === selected && styles.regionSelected,
+                accessibility.focusRing,
+              ),
+            ],
+            [
+              h.span([...styleAttributes(h, styles.regionId)], [region.id]),
+              h.span([...styleAttributes(h, styles.regionPlace)], [region.place]),
+            ],
+          ),
+        ),
+      ),
+    ],
+  )
+}
+
+const installCommand = "bun add @rikalabs/akter@alpha"
+
+const commands = (h: H): Html =>
+  h.div(
+    [...styleAttributes(h, styles.commandsBox)],
+    [
+      h.pre(
+        [...styleAttributes(h, styles.commands)],
+        [
+          h.code(
+            [],
+            [
+              h.span([...styleAttributes(h, styles.prompt)], ["$ "]),
+              `${installCommand}\n`,
+              h.span([...styleAttributes(h, styles.prompt)], ["$ "]),
+              "bunx akter login\n",
+              h.span([...styleAttributes(h, styles.prompt)], ["$ "]),
+              "bunx akter deploy",
+            ],
+          ),
+        ],
+      ),
+      h.button(
+        [
+          h.Type("button"),
+          h.AriaLabel("Copy install command"),
+          h.OnClick(CopiedText({ text: installCommand, label: "install command" })),
+          ...styleAttributes(h, styles.copyButton, accessibility.focusRing),
+        ],
+        ["Copy"],
+      ),
+    ],
+  )
+
 const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
   const current = onboardingStep(step)
   const index = onboardingSteps.indexOf(current)
   const back = (href: string) =>
-    button(h, { label: "Back", variant: "ghost", icon: "arrowLeft", href })
+    actionButton(h, { label: "Back", variant: "ghost", fit: true, href })
   const body = (): ReadonlyArray<Html> => {
     if (current === "organization")
       return [
-        h.h1([...styleAttributes(h, styles.title)], ["Name your organization"]),
-        h.p([...styleAttributes(h, styles.lead)], ["Projects, members and billing live under it."]),
+        ...heading(h, "Name your organization", "Projects, members and billing live under it."),
         form(h, model, "onboarding-organization", [
           textField(h, model, {
             name: "org-name",
@@ -398,10 +433,10 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
             [...styleAttributes(h, styles.row)],
             [
               h.span([], []),
-              button(h, {
+              actionButton(h, {
                 label: "Continue",
-                variant: "primary",
                 type: "submit",
+                fit: true,
                 disabled: model.submitting,
               }),
             ],
@@ -410,10 +445,10 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
       ]
     if (current === "project")
       return [
-        h.h1([...styleAttributes(h, styles.title)], ["Create your first project"]),
-        h.p(
-          [...styleAttributes(h, styles.lead)],
-          ["Your actors and their rows live in its home region. You can add regions later."],
+        ...heading(
+          h,
+          "Create your first project",
+          "Your actors and their rows live in its home region. You can add regions later.",
         ),
         form(h, model, "onboarding-project", [
           textField(h, model, {
@@ -422,27 +457,15 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
             placeholder: "storefront",
             autocomplete: "off",
           }),
-          choiceCards(h, {
-            label: "Home region",
-            selected: model.choices["homeRegion"] ?? "us-east-1",
-            onSelect: (value) => ChoseSetting({ key: "homeRegion", value }),
-            choices: homeRegions.map((region) => ({
-              value: region.id,
-              label: region.id,
-              preview: h.span(
-                [...styleAttributes(h, styles.region)],
-                [h.span([...styleAttributes(h, styles.regionPlace)], [region.place])],
-              ),
-            })),
-          }),
+          regionChoice(h, model),
           h.div(
             [...styleAttributes(h, styles.row)],
             [
               back(Routes.onboarding({ step: "organization" })),
-              button(h, {
+              actionButton(h, {
                 label: "Continue",
-                variant: "primary",
                 type: "submit",
+                fit: true,
                 disabled: model.submitting,
               }),
             ],
@@ -450,24 +473,20 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
         ]),
       ]
     return [
-      h.h1([...styleAttributes(h, styles.title)], ["Connect and deploy"]),
-      h.p(
-        [...styleAttributes(h, styles.lead)],
-        ["Connect GitHub to deploy on every push to main, or deploy from your machine."],
+      ...heading(
+        h,
+        "Connect and deploy",
+        "Connect GitHub to deploy on every push to main, or deploy from your machine.",
       ),
-      button(h, {
-        label: "Connect GitHub",
-        icon: "github",
-        size: "lg",
-        href: Routes.settingsIntegrations(),
-        style: fill,
-      }),
-      h.div([h.AriaHidden(true), ...styleAttributes(h, styles.divider)], ["or"]),
-      codeBlock(h, {
-        language: "shell",
-        code: "$ bun add @rikalabs/akter@alpha\n$ bunx akter login\n$ bunx akter deploy",
-        onCopy: CopiedText({ text: "bun add @rikalabs/akter@alpha", label: "install command" }),
-      }),
+      actions(h, [
+        actionButton(h, {
+          label: "Connect GitHub",
+          variant: "ghost",
+          href: Routes.settingsIntegrations(),
+        }),
+      ]),
+      divider(h),
+      commands(h),
       h.form(
         [
           h.OnSubmit(SubmittedForm({ form: "onboarding-deploy" })),
@@ -478,7 +497,7 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
             [...styleAttributes(h, styles.row)],
             [
               back(Routes.onboarding({ step: "project" })),
-              button(h, { label: "Go to project", variant: "primary", type: "submit" }),
+              actionButton(h, { label: "Go to project", type: "submit", fit: true }),
             ],
           ),
         ],
@@ -488,36 +507,14 @@ const onboarding = (h: H, model: Model, step: string | undefined): Screen => {
   return {
     title: "Set up Akter",
     crumbs: [],
-    body: column(
-      h,
-      [
-        h.a([h.Href(Routes.overview()), h.AriaLabel("Akter")], [mark(h, { size: 26 })]),
-        ...stepIndicator(h, index),
-        ...body(),
-      ],
-      true,
-    ),
+    body: frame(h, { wide: true }, [...stepIndicator(h, index), ...body()]),
   }
 }
-
-const deviceAction = (
-  h: H,
-  model: Model,
-  config: Readonly<{ label: string; form: string; quiet?: boolean }>,
-): Html =>
-  button(h, {
-    label: config.label,
-    variant: config.quiet === true ? "ghost" : "primary",
-    size: "lg",
-    onClick: SubmittedForm({ form: config.form }),
-    disabled: model.submitting,
-    style: fill,
-  })
 
 const deviceColumn = (h: H, body: ReadonlyArray<Html>): Screen => ({
   title: "Connect a device",
   crumbs: [],
-  body: column(h, body),
+  body: frame(h, {}, body),
 })
 
 /** The code field, filled from the link's `user_code` until the person types. */
@@ -525,50 +522,49 @@ const deviceEntry = (h: H, model: Model): Screen => {
   const linked = AppRoute.isAnyOf(["Device"])(model.route) ? model.route.user_code : undefined
   return deviceColumn(h, [
     ...heading(h, "Connect a device", "Enter the code shown in your terminal."),
-    h.form(
-      [
-        h.OnSubmit(SubmittedForm({ form: "device-code" })),
-        h.AriaLabel("device-code"),
-        ...styleAttributes(h, styles.form),
-      ],
-      [
-        field(h, {
-          id: "device-code",
-          label: "Code",
-          control: input(h, {
-            name: "device-code",
-            value: model.fields["device-code"] ?? linked ?? "",
-            placeholder: "ABCD-EFGH",
-            autocomplete: "off",
-            size: "lg",
-            required: true,
-            mono: true,
-            attributes: [h.Autocapitalize("characters")],
-            onInput: (value) => ChangedField({ name: "device-code", value }),
-          }),
-        }),
-        button(h, {
-          label: "Continue",
-          variant: "primary",
-          size: "lg",
-          type: "submit",
-          disabled: model.submitting,
-          style: fill,
-        }),
-        failureNote(h, model),
-      ],
-    ),
+    form(h, model, "device-code", [
+      field(h, {
+        name: "device-code",
+        label: "Code",
+        value: model.fields["device-code"] ?? linked ?? "",
+        placeholder: "ABCD-EFGH",
+        autocomplete: "off",
+        mono: true,
+        autocapitalize: "characters",
+        onInput: (value) => ChangedField({ name: "device-code", value }),
+      }),
+      submit(h, model, "Continue"),
+    ]),
   ])
 }
 
-const deviceRow = (
-  h: H,
-  term: string,
-  detail: ReadonlyArray<Html | string>,
-): ReadonlyArray<Html> => [
-  h.dt([...styleAttributes(h, deviceStyles.term)], [term]),
-  h.dd([...styleAttributes(h, deviceStyles.detail)], detail),
-]
+const deviceRow = (h: H, term: string, detail: ReadonlyArray<Html | string>): Html =>
+  h.div(
+    [...styleAttributes(h, deviceStyles.row)],
+    [
+      h.dt([...styleAttributes(h, deviceStyles.term)], [term]),
+      h.dd([...styleAttributes(h, deviceStyles.detail)], detail),
+    ],
+  )
+
+/** The code a person compares with their terminal, one mono box per character. */
+const userCode = (h: H, code: string): Html =>
+  h.div(
+    [
+      h.Id("device-user-code"),
+      h.Role("img"),
+      h.AriaLabel(displayUserCode(code)),
+      ...styleAttributes(h, deviceStyles.code),
+    ],
+    displayUserCode(code)
+      .split("")
+      .map((character) =>
+        h.span(
+          [...styleAttributes(h, character === "-" ? deviceStyles.separator : deviceStyles.box)],
+          [character],
+        ),
+      ),
+  )
 
 /**
  * A looked-up code: who is asking, the code itself to compare with the terminal, and the account
@@ -581,24 +577,35 @@ const deviceReview = (h: H, model: Model, step: DeviceReview): Screen =>
       [...styleAttributes(h, deviceStyles.prompt)],
       ["Check this code matches the one in your terminal."],
     ),
-    h.p(
-      [h.Id("device-user-code"), ...styleAttributes(h, deviceStyles.code)],
-      [displayUserCode(step.code)],
-    ),
+    userCode(h, step.code),
     h.dl(
       [h.AriaLabel("Signs in as"), ...styleAttributes(h, deviceStyles.details)],
       [
-        ...deviceRow(h, "Account", [
+        deviceRow(h, "Account", [
           step.name === "" ? step.email : step.name,
           step.name === ""
             ? h.empty
             : h.span([...styleAttributes(h, deviceStyles.email)], [step.email]),
         ]),
-        ...deviceRow(h, "Access", [step.access]),
+        deviceRow(h, "Access", [step.access]),
       ],
     ),
-    deviceAction(h, model, { label: "Approve", form: "device-approve" }),
-    deviceAction(h, model, { label: "Deny", form: "device-deny", quiet: true }),
+    h.div(
+      [...styleAttributes(h, deviceStyles.actions)],
+      [
+        actionButton(h, {
+          label: "Deny",
+          variant: "ghost",
+          onClick: SubmittedForm({ form: "device-deny" }),
+          disabled: model.submitting,
+        }),
+        actionButton(h, {
+          label: "Approve",
+          onClick: SubmittedForm({ form: "device-approve" }),
+          disabled: model.submitting,
+        }),
+      ],
+    ),
     failureNote(h, model),
   ])
 
@@ -636,9 +643,13 @@ const deviceRefused = (h: H, model: Model, problem: DeviceProblem): Screen => {
   const words = deviceProblems[problem]
   return deviceColumn(h, [
     ...heading(h, words.title, words.lead),
-    words.retry
-      ? deviceAction(h, model, { label: "Try again", form: "device-retry" })
-      : deviceAction(h, model, { label: "Enter another code", form: "device-restart" }),
+    actions(h, [
+      actionButton(h, {
+        label: words.retry ? "Try again" : "Enter another code",
+        onClick: SubmittedForm({ form: words.retry ? "device-retry" : "device-restart" }),
+        disabled: model.submitting,
+      }),
+    ]),
     failureNote(h, model),
   ])
 }
@@ -651,11 +662,11 @@ const deviceDecided = (h: H, decision: "approved" | "denied"): Screen =>
           "You can return to your terminal",
           "The sign-in was approved. Your terminal finishes on its own in a few seconds.",
         ),
-        foot(h, "Done here?", { label: "Go to the console", href: Routes.overview() }),
+        fine(h, "Done here?", { label: "Go to the console", href: Routes.overview() }),
       ])
     : deviceColumn(h, [
         ...heading(h, "Request denied", "Nothing was signed in. Your terminal will say so."),
-        foot(h, "Done here?", { label: "Go to the console", href: Routes.overview() }),
+        fine(h, "Done here?", { label: "Go to the console", href: Routes.overview() }),
       ])
 
 /**
@@ -679,30 +690,16 @@ const device = (h: H, model: Model): Screen =>
 const waiting = (h: H): Screen => ({
   title: "Akter",
   crumbs: [],
-  body: h.main(
-    [h.Id("main"), h.AriaBusy(true), ...styleAttributes(h, styles.page)],
-    [
-      h.div(
-        [...styleAttributes(h, styles.column)],
-        [h.a([h.Href(Routes.overview()), h.AriaLabel("Akter")], [mark(h, { size: 26 })])],
-      ),
-    ],
-  ),
+  body: frame(h, { busy: true }, []),
 })
 
 const failure = (h: H, error: PageError): Screen => ({
   title: "Couldn’t open this page",
   crumbs: [],
-  body: column(h, [
+  body: frame(h, {}, [
     ...heading(h, "This page couldn’t open", error.message),
-    button(h, {
-      label: "Try again",
-      variant: "primary",
-      size: "lg",
-      onClick: RetriedPage(),
-      style: fill,
-    }),
-    foot(h, "Or", { label: "go to sign in", href: Routes.signIn() }),
+    actions(h, [actionButton(h, { label: "Try again", onClick: RetriedPage() })]),
+    fine(h, "Or", { label: "go to sign in", href: Routes.signIn() }),
   ]),
 })
 
