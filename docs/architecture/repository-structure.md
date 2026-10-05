@@ -29,7 +29,7 @@ packages/
 tooling/
   oxlint/                   @akter/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
   structure/                @akter/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
-infra/                      @akter/infra      Alchemy AWS/Cloudflare/Axiom/Neki infrastructure; separate organization and regional service stacks (ADR 0065)
+infra/                      @akter/infra      Alchemy Fly.io/Vercel/Neki/Axiom/Stripe infrastructure: the service stack for prod and pr-<n>, the preview stage they share, and a GitHub environments stack (ADR 0089)
 BENCHMARKS.md               consolidated performance and recovery report
 docs/  research/  .github/src/
 ```
