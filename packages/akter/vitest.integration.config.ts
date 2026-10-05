@@ -7,11 +7,15 @@ const testing = "packages/akter/src/testing"
 
 const worker = `${testing}/conformance/postgres/backend.test.ts`
 
+const migrations = "packages/akter/src/runtime/database/neki/migrations.test.ts"
+
 /**
  * Runs the Postgres integration files in parallel workers, one database each.
  * Each conformance shard is a project of its own that runs `backend.test.ts`,
  * so the shard registry, not a file per shard, decides the workers. The
- * Docker drills stay out: they run alone, through the root config, so their
+ * migration crash file is a project of its own: it walks hundreds of
+ * sequential kill points, so it is the longest single file and CI gives it a
+ * worker no other file competes with. The Docker drills stay out: they run alone, through the root config, so their
  * timings and the ports and containers they take are theirs.
  */
 export default defineConfig({
@@ -57,7 +61,15 @@ export default defineConfig({
             `${testing}/conformance/crash/drills/**`,
             `${testing}/conformance/postgres/shards.test.ts`,
             worker,
+            migrations,
           ],
+        },
+      },
+      {
+        extends: true as const,
+        test: {
+          name: "integration:migrations",
+          include: [migrations],
         },
       },
     ],

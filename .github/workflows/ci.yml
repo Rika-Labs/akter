@@ -10,9 +10,87 @@ permissions:
 concurrency:
   group: verify-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+env:
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+defaults:
+  run:
+    shell: bash
 jobs:
-  verify:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+  static:
+    name: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GOMAXPROCS: "1"
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          save-cache: "true"
+          typecheck-cache: "true"
+          turbo-team: ${{ vars.TURBO_TEAM }}
+      - name: Lint, structure, format, typecheck
+        run: |
+          mkdir -p evidence/static
+          affected=()
+          if [[ -n "$BASE_SHA" ]]; then
+            export TURBO_SCM_BASE="$BASE_SHA" TURBO_SCM_HEAD="$HEAD_SHA"
+            affected=(--affected)
+          fi
+          {
+            bun run check:static
+            bun run turbo run lint lint:root typecheck --concurrency=100% --summarize "${affected[@]}"
+          } 2>&1 | tee evidence/static/check.log
+      - name: Collect Turbo run summaries
+        if: always()
+        run: |
+          mkdir -p evidence/static/turbo
+          cp .turbo/runs/*.json evidence/static/turbo/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-static
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  pack:
+    name: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Pack check and tarball smoke on Node and Bun
+        run: |
+          mkdir -p evidence/pack
+          bun run check:pack 2>&1 | tee evidence/pack/check.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-pack
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  workspaces:
+    name: workspaces
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -31,70 +109,393 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+    env:
+      GOMAXPROCS: "1"
+      TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.HEAD_SHA }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2.2.0
+      - uses: ./.github/actions/setup
         with:
-          bun-version: 1.4.2
-      # oxlint's CLI runs on Node; Node < 24 cannot load the .ts JS plugins.
-      - uses: actions/setup-node@v7.0.0
-        with:
-          node-version: 26.7.0
-      - name: Restore Bun package cache
-        uses: actions/cache@v6.1.0
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
-      - name: Restore incremental typecheck state
-        uses: actions/cache@v6.1.0
-        with:
-          path: |
-            apps/*/.cache/typecheck.tsbuildinfo
-            packages/*/.cache/typecheck.tsbuildinfo
-            tooling/*/.cache/typecheck.tsbuildinfo
-            infra/.cache/typecheck.tsbuildinfo
-          key: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-${{ github.sha }}
-          restore-keys: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-
-      - name: Set up Turborepo Remote Cache
-        if: >-
-          github.actor != 'dependabot[bot]' &&
-          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: vercel/setup-turborepo-remote-cache-action@v1.1.0
-        with:
-          team: ${{ vars.TURBO_TEAM }}
-      - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Verify and record executable evidence
-        id: verify
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GOMAXPROCS: "1"
-          TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
+          turbo-team: ${{ vars.TURBO_TEAM }}
+      - name: Start the streaming replica
+        run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
+      - name: Build and test every workspace except the framework and the browser project
         run: |
-          set -euo pipefail
+          mkdir -p evidence/workspaces
+          affected=()
+          if [[ -n "$BASE_SHA" ]]; then
+            export TURBO_SCM_BASE="$BASE_SHA" TURBO_SCM_HEAD="$HEAD_SHA"
+            affected=(--affected)
+          fi
+          bun run turbo run build test test:integration \
+            --filter='!@rikalabs/akter' --filter='!@akter/e2e' \
+            --concurrency=100% --summarize "${affected[@]}" 2>&1 | tee evidence/workspaces/check.log
+      - name: Collect Turbo run summaries
+        if: always()
+        run: |
+          mkdir -p evidence/workspaces/turbo
+          cp .turbo/runs/*.json evidence/workspaces/turbo/ 2>/dev/null || true
+          cp apps/api/.cache/integration-results.json evidence/workspaces/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-workspaces
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          turbo-team: ${{ vars.TURBO_TEAM }}
+      - name: Install Chromium
+        run: bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell
+      - name: Browser tests
+        run: |
+          mkdir -p evidence/e2e
+          affected=()
+          if [[ -n "$BASE_SHA" ]]; then
+            export TURBO_SCM_BASE="$BASE_SHA" TURBO_SCM_HEAD="$HEAD_SHA"
+            affected=(--affected)
+          fi
+          bun run test:e2e --summarize "${affected[@]}" 2>&1 | tee evidence/e2e/check.log
+      - name: Collect Turbo run summaries
+        if: always()
+        run: |
+          mkdir -p evidence/e2e/turbo
+          cp .turbo/runs/*.json evidence/e2e/turbo/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-e2e
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  framework-unit:
+    name: framework-unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Framework unit tests, PGlite conformance excluded
+        run: |
+          mkdir -p evidence/framework-unit
+          bun run --cwd packages/akter test --exclude '**/conformance/pglite/backend.test.ts' 2>&1 | tee evidence/framework-unit/check.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-framework-unit
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  framework-pglite:
+    name: framework-${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pglite-1
+            projects: --project=pglite:conformance --project=pglite:workflows --project=pglite:cron
+          - name: pglite-2
+            projects: --project=pglite:properties --project=pglite:capacity --project=pglite:transports
+          - name: pglite-3
+            projects: >-
+              --project=!pglite:conformance --project=!pglite:workflows --project=!pglite:cron
+              --project=!pglite:properties --project=!pglite:capacity --project=!pglite:transports
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: PGlite conformance, ${{ matrix.name }}
+        env:
+          PROJECTS: ${{ matrix.projects }}
+        run: |
+          mkdir -p evidence/framework-${{ matrix.name }}
+          bun run --cwd packages/akter test:pglite $PROJECTS 2>&1 | tee evidence/framework-${{ matrix.name }}/check.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-framework-${{ matrix.name }}
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  framework-postgres:
+    name: framework-${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: postgres-1
+            projects: --project=postgres:effect-control --project=postgres:heap
+          - name: postgres-2
+            projects: --project=postgres:conformance --project=postgres:capacity
+          - name: postgres-3
+            projects: >-
+              --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain
+              --project=postgres:cron
+          - name: postgres-4
+            projects: --project=integration:migrations
+            replica: "false"
+          - name: postgres-8
+            projects: --project=integration
+          - name: postgres-9
+            projects: --project=postgres:relay
+          - name: postgres-5
+            projects: >-
+              --project=postgres:replica --project=postgres:properties
+              --project=postgres:subscriptions --project=postgres:transports
+              --project=postgres:connections
+          - name: postgres-6
+            projects: --project=postgres:simulation --project=postgres:workflows
+          - name: postgres-7
+            projects: >-
+              --project=!integration --project=!integration:migrations
+              --project=!postgres:effect-control --project=!postgres:heap
+              --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet
+              --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron
+              --project=!postgres:replica --project=!postgres:properties
+              --project=!postgres:subscriptions --project=!postgres:transports
+              --project=!postgres:connections --project=!postgres:simulation
+              --project=!postgres:workflows --project=!postgres:relay
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: project
+          POSTGRES_PASSWORD: project
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U project -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Start the streaming replica
+        if: matrix.replica != 'false'
+        run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
+      - name: Postgres conformance on Bun, ${{ matrix.name }}
+        env:
+          PROJECTS: ${{ matrix.projects }}
+        run: |
+          mkdir -p evidence/framework-${{ matrix.name }}
+          bun run --cwd packages/akter test:integration:postgres $PROJECTS 2>&1 | tee evidence/framework-${{ matrix.name }}/check.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-framework-${{ matrix.name }}
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  framework-drills:
+    name: framework-drills
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: project
+          POSTGRES_PASSWORD: project
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U project -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Docker drills, which own their containers and ports
+        run: |
+          mkdir -p evidence/framework-drills
+          bun run --cwd packages/akter test:integration:drills 2>&1 | tee evidence/framework-drills/check.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-framework-drills
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  node-postgres:
+    name: node-${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: conformance-1
+            projects: --project=postgres:effect-control --project=postgres:heap
+          - name: conformance-2
+            projects: --project=postgres:conformance --project=postgres:capacity
+          - name: conformance-3
+            projects: >-
+              --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain
+              --project=postgres:cron
+          - name: conformance-4
+            projects: >-
+              --project=postgres:replica --project=postgres:properties
+              --project=postgres:subscriptions --project=postgres:transports
+              --project=postgres:connections
+          - name: conformance-5
+            projects: --project=postgres:simulation --project=postgres:workflows
+          - name: conformance-6
+            projects: >-
+              --project=!postgres:effect-control --project=!postgres:heap
+              --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet
+              --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron
+              --project=!postgres:replica --project=!postgres:properties
+              --project=!postgres:subscriptions --project=!postgres:transports
+              --project=!postgres:connections --project=!postgres:simulation
+              --project=!postgres:workflows --project=!postgres:relay
+          - name: conformance-7
+            projects: --project=postgres:relay
+          - name: units
+            projects: ""
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: project
+          POSTGRES_PASSWORD: project
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U project -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://project:project@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Start the streaming replica
+        run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
+      - name: Postgres conformance on Node, ${{ matrix.name }}
+        env:
+          PROJECTS: ${{ matrix.projects }}
+          SCRIPT: ${{ matrix.name == 'units' && 'test:node:units' || 'test:node:conformance' }}
+        run: |
+          mkdir -p evidence/node-${{ matrix.name }}
+          bun run "$SCRIPT" $PROJECTS 2>&1 | tee evidence/node-${{ matrix.name }}/check.log
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-part-node-${{ matrix.name }}
+          path: evidence/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 14
+
+  verify:
+    name: verify
+    needs:
+      - static
+      - pack
+      - workspaces
+      - e2e
+      - framework-unit
+      - framework-pglite
+      - framework-postgres
+      - framework-drills
+      - node-postgres
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - name: Record the verified commit and each job's result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
           mkdir -p evidence
           git rev-parse HEAD > evidence/sha.txt
           test "$(cat evidence/sha.txt)" = "$HEAD_SHA"
-          bun run prepare
-          if [[ -n "$BASE_SHA" ]]; then
-            export TURBO_SCM_BASE="$BASE_SHA" TURBO_SCM_HEAD="$HEAD_SHA"
-            bun run check:ci --affected 2>&1 | tee evidence/check.log
-          else
-            bun run check:ci 2>&1 | tee evidence/check.log
-          fi
-      - uses: actions/upload-artifact@v7.0.1
-        if: always() && steps.verify.outcome != 'skipped'
+          printf '%s\n' "$NEEDS" > evidence/jobs.json
+      - uses: actions/download-artifact@v8.0.1
+        if: always()
         with:
-          name: evidence-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            evidence/
-            .turbo/runs/*.json
-            apps/api/.cache/integration-results.json
-          include-hidden-files: true
+          pattern: evidence-part-*
+          merge-multiple: true
+          path: evidence
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: evidence-${{ env.HEAD_SHA }}
+          path: evidence/
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
+      - name: Every verification job must have succeeded
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          echo "A verification job did not succeed" >&2
+          exit 1

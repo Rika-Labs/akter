@@ -2,7 +2,7 @@
 
 Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes or auto-merges, only `Release` publishes, from a maintainer's tag, and only `Deploy` deploys.
 
-`Verify` runs PR code without long-lived repository secrets or persisted checkout credentials on Blacksmith. `Trusted policy` and `Evidence gate` execute only main code. The gate checks successful current-head-SHA run/artifact metadata through Distilled and refuses a PR-modified verification workflow. It never extracts or executes PR artifacts. A policy workflow change therefore requires a separately approved rollout. Configure branch rules to require `verify`, `branch`, and `Current SHA evidence`; those settings were not applied. A review-complete label is informational, never proof or merge permission. Artifact metadata establishes executed CI provenance, not correctness of arbitrary PR tests; independent review remains required.
+`Verify` runs PR code without long-lived repository secrets or persisted checkout credentials on GitHub-hosted `ubuntu-24.04` runners. `Trusted policy` and `Evidence gate` execute only main code. The gate checks successful current-head-SHA run/artifact metadata through Distilled and refuses a PR-modified verification workflow. It never extracts or executes PR artifacts. A policy workflow change therefore requires a separately approved rollout. Configure branch rules to require `verify` (the job that aggregates every other job), `branch`, and `Current SHA evidence`; those settings were not applied. A review-complete label is informational, never proof or merge permission. Artifact metadata establishes executed CI provenance, not correctness of arbitrary PR tests; independent review remains required.
 
 ## Deploy
 
@@ -27,24 +27,24 @@ Fly Machines run amd64 only, so the apply job runs on `ubuntu-24.04` and builds 
 
 ## Framework tarball and release
 
-`bun run check` ends with `bun run pack:check`, which runs `bun .github/src/pack.ts`; `check:ci`, and so `Verify`, runs it before Turbo so that `check:ci --affected` still reaches Turbo, which Bun appends script arguments to. It builds `@rikalabs/akter`, stages the tarball with the `publishConfig` entries applied and `catalog:` versions resolved, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, when a dependency is unresolved, when the manifest is private or its version is not semantic, or when compiled code imports an undeclared package. Its output lands in `evidence/check.log`. It lives in the root scripts rather than a new workflow step because the evidence gate refuses a pull request that changes `ci.yml`.
+`bun run check` ends with `bun run pack:check`, which runs `bun .github/src/pack.ts`; `check:pack`, which `check:ci` and the `pack` job run, calls it. It builds `@rikalabs/akter`, stages the tarball with the `publishConfig` entries applied and `catalog:` versions resolved, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, when a dependency is unresolved, when the manifest is private or its version is not semantic, or when compiled code imports an undeclared package. Its output lands in the `pack` job's evidence log. It lives in the root scripts rather than a workflow step because the evidence gate refuses a pull request that changes `ci.yml`.
 
 ## Streaming replica for read-your-writes
 
-`check:ci` runs `bun .github/src/replica.ts` and passes the connection string it prints as `TEST_REPLICA_DATABASE_URL`. It stays in the root scripts for the same reason. The script finds the container that publishes `TEST_DATABASE_URL`'s port (the `postgres` service), admits replication connections in its `pg_hba.conf`, and starts `durable-replica`, a `pg_basebackup` clone of it on port 5433 that follows the primary as a physical streaming replica. `.github/src/node-postgres.ts` creates `durable-node-postgres` on port 5435 for Node, and `replica.ts` clones that primary with `TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434`. Fleet's logical slot name is cluster-global, and the read-your-writes cases pause replay server-wide, so concurrent runtimes must have separate primaries and replicas. Control connections wait only for the newly created database to reach the standby; subsequent version checks and queries are not retried. Without `TEST_DATABASE_URL` or Docker the replica bootstrap prints nothing; with `CI` set, the script and Postgres suite fail instead. Startup refuses an existing container instead of deleting it. Locally, remove only the exact containers you created, including their replicas; never prune the shared Docker daemon.
+Every job that runs the Postgres conformance suites (`workspaces`, `framework-postgres`, `node-postgres`) has its own `postgres` service container and runs `bun .github/src/replica.ts` to export the connection string it prints as `TEST_REPLICA_DATABASE_URL`; locally `check:ci` does the same. The script finds the container that publishes `TEST_DATABASE_URL`'s port (the `postgres` service), admits replication connections in its `pg_hba.conf`, and starts `durable-replica`, a `pg_basebackup` clone of it on port 5433 that follows the primary as a physical streaming replica. Locally, `.github/src/node-postgres.ts` creates `durable-node-postgres` on port 5435 for Node, and `replica.ts` clones that primary with `TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434`; in CI every job is its own machine, so the Bun and Node suites never share a primary. Fleet's logical slot name is cluster-global, and the read-your-writes cases pause replay server-wide, so concurrent runtimes must have separate primaries and replicas. Control connections wait only for the newly created database to reach the standby; subsequent version checks and queries are not retried. Without `TEST_DATABASE_URL` or Docker the replica bootstrap prints nothing; with `CI` set, the script and Postgres suite fail instead. Startup refuses an existing container instead of deleting it. Locally, remove only the exact containers you created, including their replicas; never prune the shared Docker daemon.
 
 `Release` runs on a pushed `v<version>` tag, or by manual dispatch with that tag as its `tag` input; CR.1b (#99) owns the first publish. It checks out the tag, checks that it matches `packages/akter/package.json` and that the tagged commit is on main, checks the runner's npm is at least 11.5.1, packs with the same script, installs the tarball into a clean project with `bun .github/src/release/smoke.ts` (typecheck plus one command on PGlite), and runs `npm publish --provenance --access public` through npm Trusted Publishing. The job uses the `npm` environment and its job-scoped `id-token: write` permission, so npm exchanges the GitHub Actions OIDC identity for a short-lived publish credential; no npm secret or auth-token environment variable is configured. A maintainer can require environment reviewers, and a tag ruleset on `v*` limits who can start a release. npm can only trust a package that already exists, so the first version is published by hand; [Releasing](../docs/operations/05-releasing.md) has the bootstrap. A prerelease version publishes to the dist-tag named by its first prerelease identifier (`0.1.0-alpha.0` goes to `alpha`); that id must start with a letter, and a version without one goes to `latest`. It runs on a GitHub-hosted runner because npm provenance does not accept self-hosted runners, and provenance requires the repository to be public. The workspace `prepublishOnly` script refuses a local `npm publish` from the source package.
 
 ## Node runtime evidence
 
-`bun run test:node` launches Vitest with Node rather than Bun, runs every core Postgres conformance shard, checks client error reporting, durable routing, compression compatibility and kernel-lock refusal/recovery, and runs the installed-tarball quickstart on Node, including a file-backed PGlite process restart and injected failures before and after commit. `check:ci` runs the Node and Bun tarball quickstarts before parallel checks, so packing cannot race Turbo's builds. It then runs `test:node:core` and the existing Turbo checks concurrently through `.github/src/verify.ts`, with a separate primary and replica for each runtime, to preserve Verify's existing 20-minute budget. Checks run in owned process groups: failure or interruption terminates the sibling and its test-worker descendants; `--affected` is forwarded only to Turbo. `typecheck:ci`, root lint, and real child-process tests cover the runner. Node 24+ is required; the existing Verify environment supplies Node 26. No verification workflow changes are needed or permitted for this slice. The separate actor subprocess crash drills retain their Bun runner and are not claimed as Node crash evidence; the fleet-maintainer core case and PGlite kernel-lock subprocess cases run on Node too.
+`bun run test:node` launches Vitest with Node rather than Bun, runs every core Postgres conformance shard, checks client error reporting, durable routing, compression compatibility and kernel-lock refusal/recovery, and runs the installed-tarball quickstart on Node, including a file-backed PGlite process restart and injected failures before and after commit. Locally, `check:ci` runs the Node and Bun tarball quickstarts before parallel checks, so packing cannot race Turbo's builds. It then runs `test:node:core` and the Turbo checks concurrently through `.github/src/verify.ts`, with a separate primary and replica for each runtime. Checks run in owned process groups: failure or interruption terminates the sibling and its test-worker descendants; `--affected` is forwarded only to Turbo. In CI the `node-postgres` jobs run `test:node:conformance` shards and `test:node:units` instead. `typecheck:ci`, root lint, and real child-process tests cover the runner. Node 24+ is required; the existing Verify environment supplies Node 26. No verification workflow changes are needed or permitted for this slice. The separate actor subprocess crash drills retain their Bun runner and are not claimed as Node crash evidence; the fleet-maintainer core case and PGlite kernel-lock subprocess cases run on Node too.
 
 ## Turborepo remote cache
 
 `Verify` uses `vercel/setup-turborepo-remote-cache-action@v1.1.0` with job-scoped
 `id-token: write` and the repository-accessible organization/repository variable
 `TURBO_TEAM`. The action exchanges GitHub OIDC for a short-lived cache token and
-exports `TURBO_TOKEN` and `TURBO_TEAM` before `bun run check:ci`.
+exports `TURBO_TOKEN` and `TURBO_TEAM` before the jobs that run Turbo (`static`, `workspaces`, `e2e`).
 No PAT or `TURBO_TOKEN` secret is required. Other workflows do not run Turbo.
 
 The cache setup runs on main pushes/manual runs and same-repository PRs, excluding Dependabot.
@@ -84,51 +84,34 @@ effects and event handlers are Promise code and whose exports are React APIs,
 not pipeable Effect functions, so `async-function` and
 `missing-pipeable-signature` are off there. All other rules still run on these files.
 
-Blacksmith automatically accelerates upstream `actions/cache@v6`. All three
-workflows cache Bun's package store, not mutable `node_modules`. Verify also
-restores TypeScript incremental metadata using a toolchain/configuration key and
-a per-commit snapshot. TypeScript validates that state on a Turbo miss; Turbo
-restores successful exact results on a hit. Do not add ESLint's per-file cache
-under typed lint: this repository uses Oxlint, and cross-file type changes matter.
-Keep Blacksmith's branch-protected cache setting enabled.
+## Job layout
 
-Turbo concurrency follows available CPUs. Oxlint uses one thread per package,
-Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses one
-isolated worker. This avoids multiplying a package-level worker pool by another
-CPU-sized pool. No isolation is disabled. PostgreSQL integration results are
-never cached; their task is selected by the affected graph and requires explicit
-disposable database configuration.
+`Verify` runs these jobs in parallel on `ubuntu-24.04` (4 vCPU on a public repository); each one checks out the exact head SHA and runs `.github/actions/setup`, which installs Bun 1.4.2 and Node 26.7.0, restores Bun's package cache, and runs the frozen install and `bun run prepare`.
 
-Every Verify run uploads exact-SHA evidence and `.turbo/runs` summaries, including
-on failure. The evidence gate still requires a successful current-SHA run. Use
-the summaries and Actions step durations to distinguish queue/install time from
-task execution before changing runner sizes or introducing more jobs.
+- `static`: `check:static` (directives, structure, format, `typecheck:ci`, the verify-runner test), then Turbo `lint lint:root typecheck`. It also saves the Bun package cache and the incremental typecheck state.
+- `pack`: `check:pack` (pack check and the tarball quickstart on Node and Bun).
+- `workspaces`: Turbo `build test test:integration` for every workspace except `@rikalabs/akter` and `@akter/e2e`, with a Postgres service and replica. The filter keeps the framework's own tasks out, but `^build` still builds it for dependents.
+- `e2e`: Playwright through `test:e2e`.
+- `framework-unit`: the framework's `test` script minus the PGlite conformance file.
+- `framework-pglite-*`: `packages/akter/vitest.pglite.config.ts` runs `testing/conformance/pglite/backend.test.ts` once per conformance shard (the same registry as the Postgres shards), and each job selects shards with `--project`. The last job of a family lists only negated projects, so a shard added to the registry runs there until someone assigns it.
+- `framework-postgres-*`: the Postgres conformance shards on Bun, one Postgres service and replica per job, plus the `integration` project (crash and process tests) in two jobs. The Neki migration file, whose SIGKILL-at-every-boundary case is one sequential test of about three minutes, has a job to itself and sets the floor for the whole workflow.
+- `framework-drills`: the Docker failover and restore drills, alone, since they own containers and ports.
+- `node-postgres`: the same Postgres shards on Node, plus `test:node:units`.
+- `verify`: waits for every job, merges each job's `evidence-part-*` artifact into `evidence-<sha>`, and fails if any job did not succeed. Branch rules should require this one check.
 
-As suites grow, shard the slow package rather than every package. Vitest already
-accepts `--shard=1/4` through a filtered Turbo invocation, for example
-`bun run test --filter=@project/console -- --shard=1/4`. Allocate one Blacksmith job per
-shard only when measured execution savings exceed repeated checkout/install cost;
-merge blob reports and require every shard before publishing aggregate evidence.
-Keep shard arguments in the Turbo invocation so each shard gets a distinct cache
-key. Historical balancing needs real timing data; no speculative scheduler is
-installed. The separate `apps/e2e` Playwright project runs in `check:ci`
-after Chromium headless-shell installation. It checks the console's read-only
-fixture in a real browser, not the live auth or billing providers. Run
-`bun run test:e2e` locally after installing Playwright Chromium.
+`check:ci` still runs everything in one process group for a local run. Unlike the old single job, the framework suites are not skipped by `--affected`; only Turbo's tasks are.
 
-Sticky disks are not interchangeable with branch-isolated Actions caches: they
-share snapshots across repository workflows by default. Enable Blacksmith sticky
-disk branch protection before adopting its cached checkout or Docker builder.
-For an actual container-build workflow, use `useblacksmith/setup-docker-builder`
-with one cache key per image workload and its matching build action; do not also
-export large BuildKit caches to GitHub. Current Verify builds Bun artifacts and
-does not publish images or deploy infrastructure.
+Every job caches Bun's package store, not mutable `node_modules`; one job per workflow saves it. `static` also restores TypeScript incremental metadata using a toolchain/configuration key and a per-commit snapshot. TypeScript validates that state on a Turbo miss; Turbo restores successful exact results on a hit. Do not add ESLint's per-file cache under typed lint: this repository uses Oxlint, and cross-file type changes matter.
+
+Inside a job, Turbo concurrency follows available CPUs. Oxlint uses one thread per package, Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses one isolated worker, except the integration, PGlite and Node shard configs, which allow two. No isolation is disabled. PostgreSQL integration results are never cached; their task is selected by the affected graph and requires explicit disposable database configuration.
+
+Every job uploads its logs and Turbo summaries as `evidence-part-*`, including on failure, and `verify` merges them into `evidence-<sha>`. The evidence gate still requires a successful current-SHA run. Use the Actions step durations to tell setup time from test time before adding jobs: each job pays roughly 15 seconds of setup, plus about 15 more for a Postgres service and replica.
+
+To rebalance, move a project between the matrix entries in `ci.yml`; the project names are the keys of `shards` in `packages/akter/src/testing/conformance/postgres/shards.ts`, plus `conformance` for the groups no shard names and `integration`.
 
 Sources: [Turbo task graphs](https://turborepo.dev/docs/crafting-your-repository/configuring-tasks),
 [Turbo caching](https://turborepo.dev/docs/crafting-your-repository/caching),
-[Blacksmith Actions caching](https://docs.blacksmith.sh/blacksmith-caching/dependencies-actions),
-[sticky-disk trust boundaries](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks),
-[Docker caching](https://docs.blacksmith.sh/blacksmith-caching/docker-builds).
+[Actions caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
 
 ## Dependabot and Bun catalogs
 
@@ -156,7 +139,7 @@ Dependabot is turned off for this repository; dependency updates, catalog or not
 
 Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins. Historical `research/` snapshots are not active dependency manifests and remain unchanged.
 
-Blacksmith runner startup and Vercel OIDC authentication have been exercised in GitHub Actions. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
+Vercel OIDC authentication has been exercised in GitHub Actions. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
 
 An `AMP_TOKEN` secret alone does not enable issue replies or pull request reviews.
 This repository does not define an Amp mention or review workflow. Those behaviors
