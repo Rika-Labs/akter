@@ -1,3 +1,24 @@
+diff --git a/lib/Fly/hosted.js b/lib/Fly/hosted.js
+index 69e5a758b57962333629de65bdf2a5d873ccc8d1..565321e0f90ce6ae7110bc93b1551135e963aec9 100644
+--- a/lib/Fly/hosted.js
++++ b/lib/Fly/hosted.js
+@@ -324,6 +324,7 @@ export const createFlyHostedSupport = ({ stackName, stage, virtualEntryPlugin, d
+             packageJson,
+             extraFiles,
+             extraFilesIncludesNodeModules: true,
++            contextDirPerApp: true,
+         })).slice(0, 16);
+         return { bundled, dockerfile, codeHash, packageJson, entryRel };
+     });
+@@ -349,7 +350,7 @@ export const createFlyHostedSupport = ({ stackName, stage, virtualEntryPlugin, d
+         }
+         if (!(yield* imageExists(imageRef))) {
+             const realMain = yield* resolveMainPath(input.props.main);
+-            const contextDir = yield* getStableContextDir(realMain, dotAlchemy, `${input.id}-image`);
++            const contextDir = yield* getStableContextDir(realMain, dotAlchemy, `${input.appName}-${input.id}-image`);
+             const fs = yield* FileSystem.FileSystem;
+             const path = yield* Path.Path;
+             const files = input.props.isExternal === true
 diff --git a/lib/Fly/replicas.js b/lib/Fly/replicas.js
 index 054d65e67415b845ac04e589fdd475cfaf3cd2d2..22be4baab8db230af72b922704ebbba37e8e7806 100644
 --- a/lib/Fly/replicas.js
@@ -16,6 +37,27 @@ index 054d65e67415b845ac04e589fdd475cfaf3cd2d2..22be4baab8db230af72b922704ebbba3
          }
          current = yield* ensureStarted(input.appName, current, input.skipLaunch === true, input.policy.healthTimeoutMs, config, leases);
          if (current.cordoned === true && !input.skipLaunch) {
+diff --git a/src/Fly/hosted.ts b/src/Fly/hosted.ts
+index a5db7d92cd85e044124f226830cef72712711952..7735ce033402816e99365a2b096725e866eb1e48 100644
+--- a/src/Fly/hosted.ts
++++ b/src/Fly/hosted.ts
+@@ -516,6 +516,7 @@ export const createFlyHostedSupport = ({
+       packageJson,
+       extraFiles,
+       extraFilesIncludesNodeModules: true,
++      contextDirPerApp: true,
+     })).slice(0, 16);
+     return { bundled, dockerfile, codeHash, packageJson, entryRel };
+   });
+@@ -562,7 +563,7 @@ export const createFlyHostedSupport = ({
+       const contextDir = yield* getStableContextDir(
+         realMain,
+         dotAlchemy,
+-        `${input.id}-image`,
++        `${input.appName}-${input.id}-image`,
+       );
+       const fs = yield* FileSystem.FileSystem;
+       const path = yield* Path.Path;
 diff --git a/src/Fly/replicas.ts b/src/Fly/replicas.ts
 index c82d979213ad26a3e50f291df258c3f34527ba27..6a35acf29714f99c4d50ff3a37d90c4a33ef82c2 100644
 --- a/src/Fly/replicas.ts
