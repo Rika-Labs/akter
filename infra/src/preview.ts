@@ -138,6 +138,7 @@ export const placeholders = (stage: string) => {
       "STRIPE_API_KEY",
       `sk_${stage === "prod" ? "live" : "test"}_nonfunctional-offline-placeholder`,
     ],
+    ["STRIPE_MODE", stage === "prod" ? "live" : "test"],
     ["VERCEL_TOKEN", "nonfunctional-offline-placeholder"],
     ["VERCEL_API_URL", "http://127.0.0.1:1"],
     ["RESEND_API_KEY", "nonfunctional-offline-placeholder"],
@@ -214,10 +215,13 @@ export const inspect = <A, StackErr>(input: {
     ),
   )
 
-/** The service stack at `stage`, compiled with the stage's placeholders and any overrides. */
+/**
+ * The service stack at `stage`, compiled with the stage's placeholders and any overrides; an
+ * override of `undefined` removes that variable.
+ */
 export const preview = (input: {
   readonly stage: string
-  readonly overrides?: { readonly [name: string]: string }
+  readonly overrides?: { readonly [name: string]: string | undefined }
 }): Effect.Effect<Graph, ConfigError | PlatformError, Layer.Success<typeof previewLayer>> =>
   inspect({
     stack: Alchemy.Stack(
@@ -226,7 +230,11 @@ export const preview = (input: {
       resources,
     ),
     stage: input.stage,
-    environment: { ...placeholders(input.stage), ...input.overrides },
+    environment: Object.fromEntries(
+      Object.entries({ ...placeholders(input.stage), ...input.overrides }).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
   })
 
 if (import.meta.main) {

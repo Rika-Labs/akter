@@ -39,6 +39,7 @@ const inputs = {
   PRODUCTION_NEKI_CLUSTER_SIZE: "PS_80",
   PRODUCTION_NEKI_ROUTER_SIZE: "NKR_2",
   PRODUCTION_NEKI_SHARD_COUNT: "4",
+  PRODUCTION_STRIPE_MODE: "test",
 }
 
 const Environment = Schema.Struct({
@@ -178,7 +179,7 @@ describe("GitHub environments", () => {
       expect(production.name).not.toBe(preview.name)
     }))
 
-  test("sizes Neki for each environment and notifies from production only", () =>
+  test("sizes Neki and names the Stripe mode for each environment, notifying from production only", () =>
     Effect.gen(function* () {
       const graph = yield* compile()
       const preview = yield* settings(graph, "GitHub.Variable", "preview")
@@ -193,6 +194,7 @@ describe("GitHub environments", () => {
         NEKI_CLUSTER_SIZE: "PS_80",
         NEKI_ROUTER_SIZE: "NKR_2",
         NEKI_SHARD_COUNT: "4",
+        STRIPE_MODE: "test",
         AXIOM_NOTIFIER_ID: "notifier",
       })
     }))

@@ -1,7 +1,7 @@
 import * as Output from "alchemy/Output"
 import { retain } from "alchemy/RemovalPolicy"
 import { Config, Effect, Redacted } from "effect"
-import { stackName, type Deployment, type SharedLayout, type SharedOutputs } from "./config.ts"
+import { sharedNekiCluster, type Deployment, type SharedLayout } from "./config.ts"
 import { Neki } from "./neki/resources.ts"
 import { controlTables } from "./placement.ts"
 
@@ -63,11 +63,11 @@ export const sharedDatabase = (input: {
   readonly planetscaleOrganization: string
 }) =>
   Effect.gen(function* () {
-    const { layout, planetscaleOrganization: organization } = input
+    const { planetscaleOrganization: organization } = input
     const database = yield* cluster({
       organization,
       production: false,
-      name: `akter-${layout.stage}`,
+      name: sharedNekiCluster.database,
     })
     return {
       neki: {
@@ -88,9 +88,7 @@ export const controlPlane = (deployment: Deployment) =>
   Effect.gen(function* () {
     const { layout, planetscaleOrganization: organization } = deployment
     if (layout.kind === "pr") {
-      const shared = (yield* Output.stackRef<SharedOutputs>(stackName, {
-        stage: "preview",
-      })) as Output.ToOutput<SharedOutputs>
+      const shared = { neki: { organization, ...sharedNekiCluster } }
       const role = yield* Neki.Role("PreviewRole", {
         organization: shared.neki.organization,
         database: shared.neki.database,

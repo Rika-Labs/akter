@@ -31,7 +31,7 @@ describe("stage layout", () => {
       emailFrom: "Akter <auth@akter.dev>",
       apps: { api: "akter-prod-api", edge: "akter-prod-edge" },
       runnerPrefix: "akter-prod-run-",
-      stripeMode: "live",
+      liveBilling: true,
       edgeMachines: 2,
     })
     expect(layoutOf("pr-42")).toMatchObject({
@@ -50,7 +50,7 @@ describe("stage layout", () => {
       emailFrom: "Akter Preview <auth-preview@akter.dev>",
       apps: { api: "akter-pr-42-api", site: "akter-pr-42-site" },
       runnerPrefix: "akter-pr42-run-",
-      stripeMode: "test",
+      liveBilling: false,
       edgeMachines: 1,
     })
   })
@@ -131,18 +131,31 @@ describe("operations", () => {
 })
 
 describe("billing mode", () => {
-  it("keeps live keys on production and test keys on every preview", () => {
-    const live = Redacted.make("sk_live_abc")
-    const test = Redacted.make("sk_test_abc")
-    expect(() => assertStripeMode({ layout: application("prod"), key: live })).not.toThrow()
-    expect(() => assertStripeMode({ layout: application("prod"), key: test })).toThrow("live mode")
-    expect(() => assertStripeMode({ layout: application("pr-5"), key: test })).not.toThrow()
-    expect(() => assertStripeMode({ layout: application("pr-5"), key: live })).toThrow("test mode")
+  const live = Redacted.make("sk_live_abc")
+  const test = Redacted.make("sk_test_abc")
+
+  it("lets production bill in the mode its environment names, with a key of that mode", () => {
+    const prod = application("prod")
+    expect(() => assertStripeMode({ layout: prod, mode: "live", key: live })).not.toThrow()
+    expect(() => assertStripeMode({ layout: prod, mode: "test", key: test })).not.toThrow()
+    expect(() => assertStripeMode({ layout: prod, mode: "live", key: test })).toThrow("live mode")
+    expect(() => assertStripeMode({ layout: prod, mode: "test", key: live })).toThrow("test mode")
+  })
+
+  it("never lets a preview bill in live mode, whatever key it is given", () => {
+    const preview = application("pr-5")
+    expect(() => assertStripeMode({ layout: preview, mode: "test", key: test })).not.toThrow()
+    expect(() => assertStripeMode({ layout: preview, mode: "live", key: live })).toThrow(
+      "never bills in Stripe live mode",
+    )
+    expect(() => assertStripeMode({ layout: preview, mode: "test", key: live })).toThrow(
+      "test mode",
+    )
     expect(() =>
-      assertStripeMode({ layout: application("pr-5"), key: Redacted.make("rk_test_abc") }),
+      assertStripeMode({ layout: preview, mode: "test", key: Redacted.make("rk_test_abc") }),
     ).not.toThrow()
     expect(() =>
-      assertStripeMode({ layout: application("pr-5"), key: Redacted.make("pk_test_abc") }),
+      assertStripeMode({ layout: preview, mode: "test", key: Redacted.make("pk_test_abc") }),
     ).toThrow()
   })
 })

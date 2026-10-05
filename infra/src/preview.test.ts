@@ -547,11 +547,9 @@ describe("control-plane database", () => {
       expect(ids(graph, "Planetscale.NekiLogicalDatabase")).toEqual(["PreviewDatabase"])
       expect(graph.declarations["PreviewDatabase"]).toMatchObject({ name: "akter_pr_23" })
       expect(graph.declarations["PreviewRole"]).toMatchObject({
-        organization: expect.stringContaining(
-          "stackRef(akter, { stage: preview }).neki.organization",
-        ),
-        database: expect.stringContaining("stackRef(akter, { stage: preview }).neki.database"),
-        branch: expect.stringContaining("stackRef(akter, { stage: preview }).neki.branch"),
+        organization: "placeholder",
+        database: "akter-preview",
+        branch: "main",
         inheritedRoles: ["postgres", "pg_read_all_data", "neki_viewer"],
       })
       expect(removalOf(graph, "PreviewDatabase")).toBe("destroy")
@@ -628,5 +626,34 @@ describe("stage rules", () => {
         }),
       )
       expect(String(prod)).toContain("live mode")
+    }))
+
+  test("bills production in test mode only when its environment says so", () =>
+    Effect.gen(function* () {
+      const chosen = yield* Effect.exit(
+        preview({
+          stage: "prod",
+          overrides: {
+            STRIPE_MODE: "test",
+            STRIPE_API_KEY: "sk_test_nonfunctional-offline-placeholder",
+          },
+        }),
+      )
+      expect(chosen._tag).toBe("Success")
+      const unset = yield* Effect.exit(
+        preview({ stage: "prod", overrides: { STRIPE_MODE: undefined } }),
+      )
+      expect(unset._tag).toBe("Failure")
+      expect(String(unset)).toContain("STRIPE_MODE")
+      const preview5 = yield* Effect.exit(
+        preview({
+          stage: "pr-5",
+          overrides: {
+            STRIPE_MODE: "live",
+            STRIPE_API_KEY: "sk_live_nonfunctional-offline-placeholder",
+          },
+        }),
+      )
+      expect(String(preview5)).toContain("test mode")
     }))
 })
