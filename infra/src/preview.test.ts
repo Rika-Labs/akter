@@ -518,7 +518,7 @@ describe("control-plane database", () => {
       expect(ids(graph, "Planetscale.NekiRole")).toEqual(["ServiceRole"])
       expect(types(graph, "Planetscale.NekiLogicalDatabase")).toEqual([])
       expect(graph.declarations["Database"]).toMatchObject({
-        name: "akter-prod",
+        name: "akter-production",
         region: "us-east",
         replicas: 2,
         deletionProtected: true,

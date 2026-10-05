@@ -111,7 +111,7 @@ export const controlPlane = (deployment: Deployment) =>
     const database = yield* cluster({
       organization,
       production: true,
-      name: `akter-${layout.stage}`,
+      name: "akter-production",
     })
     const role = yield* Neki.Role("ServiceRole", {
       organization,
