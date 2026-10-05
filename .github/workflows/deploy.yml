@@ -1,0 +1,182 @@
+name: Deploy
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, closed]
+  workflow_run:
+    workflows: [Verify]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: The stage to redeploy from main
+        type: choice
+        options: [prod, preview]
+        default: prod
+  schedule:
+    - cron: "17 3 * * *"
+permissions:
+  contents: read
+jobs:
+  plan:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'pull_request' &&
+        github.actor != 'dependabot[bot]' &&
+        github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Decide the stages and the operations
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.sha }}
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_STAGE: ${{ inputs.stage }}
+        run: |
+          set -euo pipefail
+          include='[]'
+          add() {
+            include="$(jq -c --arg stage "$1" --arg operation "$2" --arg environment "$3" --arg ref "$4" \
+              '. + [{stage: $stage, operation: $operation, environment: $environment, ref: $ref}]' <<<"$include")"
+          }
+          case "$EVENT_NAME" in
+            pull_request)
+              if [ "$EVENT_ACTION" = closed ]; then
+                add "pr-$PR_NUMBER" destroy preview main
+              else
+                add "pr-$PR_NUMBER" deploy preview "$EVENT_SHA"
+              fi
+              ;;
+            workflow_run)
+              add prod deploy production "$VERIFIED_SHA"
+              if ! git diff --quiet "$VERIFIED_SHA^" "$VERIFIED_SHA" -- infra .github/workflows/deploy.yml; then
+                add preview deploy preview "$VERIFIED_SHA"
+              fi
+              ;;
+            workflow_dispatch)
+              if [ "$DISPATCH_STAGE" = preview ]; then
+                add preview deploy preview "$EVENT_SHA"
+              else
+                add prod deploy production "$EVENT_SHA"
+              fi
+              ;;
+            schedule) add sweep sweep preview main ;;
+            *) echo "Nothing deploys on $EVENT_NAME"; exit 1 ;;
+          esac
+          echo "matrix=$include" >> "$GITHUB_OUTPUT"
+  apply:
+    name: ${{ matrix.operation }} ${{ matrix.stage }}
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    concurrency:
+      group: deploy-${{ matrix.stage }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      ALCHEMY_STATE_DATABASE_URL: ${{ secrets.ALCHEMY_STATE_DATABASE_URL }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      PLANETSCALE_ORGANIZATION: ${{ vars.PLANETSCALE_ORGANIZATION }}
+      AXIOM_TOKEN: ${{ secrets.AXIOM_TOKEN }}
+      AXIOM_ORG_ID: ${{ vars.AXIOM_ORG_ID }}
+      AXIOM_NOTIFIER_ID: ${{ vars.AXIOM_NOTIFIER_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      NEKI_CLUSTER_SIZE: ${{ vars.NEKI_CLUSTER_SIZE }}
+      NEKI_ROUTER_SIZE: ${{ vars.NEKI_ROUTER_SIZE }}
+      NEKI_SHARD_COUNT: ${{ vars.NEKI_SHARD_COUNT }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Restore Bun package cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Emulate amd64 for the images, which Fly Machines require
+        if: matrix.operation == 'deploy' && matrix.stage != 'preview'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: amd64
+      - if: matrix.operation == 'deploy' && matrix.stage != 'preview'
+        uses: docker/setup-buildx-action@v3
+      - name: Deploy the stage
+        if: matrix.operation == 'deploy'
+        env:
+          STAGE: ${{ matrix.stage }}
+        run: |
+          set -euo pipefail
+          if [[ "$STAGE" =~ ^pr-([1-9][0-9]{0,5})$ ]]; then export PULL_REQUEST="${BASH_REMATCH[1]}"; fi
+          IMAGE_TAG="$(git rev-parse HEAD)"
+          export IMAGE_TAG
+          bun --bun run --cwd infra guard deploy "$STAGE"
+          bun --bun run --cwd infra deploy --stage "$STAGE" --yes
+      - name: Destroy the preview
+        if: matrix.operation == 'destroy'
+        env:
+          STAGE: ${{ matrix.stage }}
+        run: |
+          set -euo pipefail
+          [[ "$STAGE" =~ ^pr-([1-9][0-9]{0,5})$ ]] || { echo "Refusing to destroy $STAGE: only pr-<number> stages are destroyed from here"; exit 1; }
+          export PULL_REQUEST="${BASH_REMATCH[1]}"
+          bun --bun run --cwd infra guard destroy "$STAGE"
+          bun --bun run --cwd infra destroy --stage "$STAGE" --yes
+      - name: Destroy the previews of closed pull requests
+        if: matrix.operation == 'sweep'
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for stage in $(bun --bun run --cwd infra --silent stages); do
+            [[ "$stage" =~ ^pr-([1-9][0-9]{0,5})$ ]] || continue
+            number="${BASH_REMATCH[1]}"
+            state="$(gh pr view "$number" --repo "$REPOSITORY" --json state --jq .state)"
+            [ "$state" != OPEN ] || continue
+            echo "Destroying $stage: pull request $number is $state"
+            bun --bun run --cwd infra guard destroy "$stage"
+            if ! PULL_REQUEST="$number" bun --bun run --cwd infra destroy --stage "$stage" --yes; then
+              echo "::error::Could not destroy $stage"
+              failed=1
+            fi
+          done
+          exit "$failed"
