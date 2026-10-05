@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Layer, Schema, Stream } from "effect"
+import { Context, Duration, Effect, FileSystem, Layer, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 /** One line of a build's output. */
@@ -198,8 +198,12 @@ const tail = <E>(output: Stream.Stream<Uint8Array, E>, stream: BuildLine["stream
 /**
  * `ImageBuilds` over the local Docker CLI with BuildKit, for the development
  * stack and tests; hosted images are built and pushed by CI. An uploaded
- * context is piped to `docker build -` as its tar, where `--file` names a
+ * context is `docker build -`'s stdin as its tar, where `--file` names a
  * path inside it, after its headers are walked against the context limits.
+ * It reaches stdin from a private temporary file that the shell redirects,
+ * never through a pipe this process writes: a Docker CLI that exits without
+ * reading its context would otherwise break that pipe, and Bun reports the
+ * failed write as an uncaught exception that no caller can handle.
  * A build is stopped at its timeout, which interrupts the Docker CLI and so
  * ends the BuildKit session. Only the last lines of output are held while
  * it runs. A retried build reuses the Docker build cache, and the
@@ -211,6 +215,7 @@ export const dockerBuilds = (options: DockerBuildOptions) =>
     ImageBuilds,
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+      const fs = yield* FileSystem.FileSystem
       const binary = options.binary ?? "docker"
 
       const timeout = Duration.fromInputUnsafe(options.timeout ?? "15 minutes")
@@ -219,18 +224,28 @@ export const dockerBuilds = (options: DockerBuildOptions) =>
         entries: options.maxContextEntries ?? 100_000,
       }
 
-      const docker = (args: ReadonlyArray<string>, stdin?: Uint8Array) =>
+      const docker = (args: ReadonlyArray<string>, archive?: Uint8Array) =>
         Effect.gen(function* () {
           const environment = {
             env: { DOCKER_BUILDKIT: "1", BUILDKIT_PROGRESS: "plain" },
             extendEnv: true,
             forceKillAfter: Duration.seconds(10),
           }
-          const handle = yield* spawner.spawn(
-            stdin === undefined
-              ? ChildProcess.make(binary, [...args], environment)
-              : ChildProcess.make(binary, [...args], { ...environment, stdin: Stream.make(stdin) }),
-          )
+
+          let command = ChildProcess.make(binary, [...args], environment)
+
+          if (archive !== undefined) {
+            const file = `${yield* fs.makeTempDirectoryScoped()}/context.tar.gz`
+
+            yield* fs.writeFile(file, archive, { mode: 0o600 })
+            command = ChildProcess.make(
+              "sh",
+              ["-c", 'archive=$1; shift; exec "$@" < "$archive"', "sh", file, binary, ...args],
+              environment,
+            )
+          }
+
+          const handle = yield* spawner.spawn(command)
           const [stdout, stderr] = yield* Effect.all(
             [tail(handle.stdout, "stdout"), tail(handle.stderr, "stderr")],
             { concurrency: 2 },
