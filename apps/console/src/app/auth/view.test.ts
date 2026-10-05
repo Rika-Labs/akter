@@ -1,6 +1,6 @@
 import { Option } from "effect"
 import * as Scene from "foldkit/scene"
-import { describe, it } from "vitest"
+import { afterEach, describe, it, vi } from "vitest"
 import {
   DeviceDecided,
   DeviceEntry,
@@ -112,4 +112,46 @@ describe("device page refusals", () => {
         ),
       ),
   )
+})
+
+describe("social sign-in providers", () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  const provider = (provider: string) => Scene.role("button", { name: `Continue with ${provider}` })
+
+  const shownAt = (
+    path: string,
+    ...steps: ReadonlyArray<Scene.SceneStep<Model, Message, undefined>>
+  ) => screenScene({ path, screen: authScreen, page: undefined }, ...steps)
+
+  it.each(["/sign-in", "/sign-up"])(
+    "offers no provider on %s when the deployment names none, so no button can lead to a 404",
+    (path) =>
+      shownAt(
+        path,
+        Scene.expect(provider("GitHub")).toBeAbsent(),
+        Scene.expect(provider("Google")).toBeAbsent(),
+        Scene.expect(Scene.text("or")).toBeAbsent(),
+        Scene.expect(Scene.role("button", { name: /^(Continue|Create account)$/ })).toExist(),
+      ),
+  )
+
+  it("offers only the providers the deployment names", () => {
+    vi.stubEnv("VITE_AUTH_PROVIDERS", "github")
+    return shownAt(
+      "/sign-in",
+      Scene.expect(provider("GitHub")).toExist(),
+      Scene.expect(provider("Google")).toBeAbsent(),
+      Scene.expect(Scene.text("or")).toExist(),
+    )
+  })
+
+  it("offers both, ignoring spaces and names it does not know", () => {
+    vi.stubEnv("VITE_AUTH_PROVIDERS", "google, gitlab ,github")
+    return shownAt(
+      "/sign-up",
+      Scene.expect(provider("GitHub")).toExist(),
+      Scene.expect(provider("Google")).toExist(),
+    )
+  })
 })
