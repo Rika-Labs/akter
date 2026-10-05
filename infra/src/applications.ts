@@ -6,6 +6,7 @@ import * as Output from "alchemy/Output"
 import { Effect, Redacted } from "effect"
 import {
   customerZone,
+  docs,
   flyHostname,
   platformZone,
   relativeName,
@@ -128,6 +129,8 @@ const dockerService = (
 const telemetryEnvironment = (layout: Layout, service: string) => ({
   OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.axiom.co",
   OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+  OTEL_TRACES_EXPORTER: "otlp",
+  OTEL_LOGS_EXPORTER: "otlp",
   OTEL_SERVICE_NAME: service,
   OTEL_RESOURCE_ATTRIBUTES: `deployment.environment=${layout.stage}`,
   AXIOM_DATASET: "akter-traces",
@@ -313,6 +316,13 @@ export const applications = (inputs: ApplicationInputs) =>
         name: "",
         type: "AAAA",
         value: v6.ip,
+      })
+      yield* Vercel.DnsRecord("DocsDns", {
+        domain: platformZone,
+        teamId: deployment.vercelTeamId,
+        name: relativeName({ zone: platformZone, host: docs.host }),
+        type: "CNAME",
+        value: docs.target,
       })
     }).pipe(Namespace.push("site"))
   })

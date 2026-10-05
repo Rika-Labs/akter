@@ -198,6 +198,8 @@ describe("credential-free resource graph", () => {
             EMAIL_FROM: expected.from,
             OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.axiom.co",
             OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+            OTEL_TRACES_EXPORTER: "otlp",
+            OTEL_LOGS_EXPORTER: "otlp",
             OTEL_SERVICE_NAME: "api",
             OTEL_RESOURCE_ATTRIBUTES: `deployment.environment=${expected.stage}`,
             AXIOM_DATASET: "akter-traces",
@@ -229,6 +231,8 @@ describe("credential-free resource graph", () => {
             CONTROL_PLANE_DATABASE_ENGINE: "neki",
             OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.axiom.co",
             OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+            OTEL_TRACES_EXPORTER: "otlp",
+            OTEL_LOGS_EXPORTER: "otlp",
             OTEL_SERVICE_NAME: "edge",
             OTEL_RESOURCE_ATTRIBUTES: `deployment.environment=${expected.stage}`,
             AXIOM_DATASET: "akter-traces",
@@ -360,6 +364,12 @@ describe("credential-free resource graph", () => {
               value: "site/V6.ip",
             })
             expect(byId["site/Dns"]).toBeUndefined()
+            expect(byId["site/DocsDns"]).toEqual({
+              domain: "akter.dev",
+              name: "docs",
+              type: "CNAME",
+              value: "cname.mintlify.builders",
+            })
           } else {
             expect(Object.keys(byId).sort()).toEqual([
               "edge/CustomerChallengeDns",
@@ -433,7 +443,7 @@ describe("shared services", () => {
       })
       expect(production.declarations["ServiceErrors"]).toMatchObject({
         aplQuery: expect.stringMatching(
-          /^(?!.*\['(status\.code|resource\.deployment\.environment)'\]).*column_ifexists\('status\.code', ''\).*column_ifexists\('resource\.deployment\.environment', ''\)/,
+          /^(?!.*\['(status\.code|resource\.custom)'\]).*column_ifexists\('status\.code', ''\).*column_ifexists\('resource\.custom', dynamic\(null\)\)\['deployment\.environment'\]/,
         ),
       })
       const request = yield* preview({ stage: "pr-4" })

@@ -7,6 +7,7 @@ import {
   InviteRole,
   NotificationPreference,
   OrganizationPlan,
+  PaymentMethod,
   Plan,
   PlanId,
   Preferences,
@@ -156,14 +157,7 @@ export type BillingPlan = typeof BillingPlan.Type
  */
 export const Billing = S.Struct({
   plan: S.Union([BillingPlan, UnboundPlan]),
-  card: S.NullOr(
-    S.Struct({
-      brand: S.String,
-      lastFour: S.String,
-      expiryMonth: S.Finite,
-      expiryYear: S.Finite,
-    }),
-  ),
+  paymentMethod: S.NullOr(PaymentMethod),
   billingEmail: S.NullOr(S.String),
   spendLimit: S.Struct({ limitCents: S.NullOr(S.Finite), currentCents: S.Finite }),
   caps: S.Array(CapState),

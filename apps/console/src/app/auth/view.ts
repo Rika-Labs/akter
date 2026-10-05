@@ -12,7 +12,7 @@ import {
 import { letterOnContainer } from "@akter/ui/brand"
 import { Match, Option, Predicate } from "effect"
 import type { Html, HtmlBuilder } from "foldkit/html"
-import { fixturesEnabled } from "../api/client.ts"
+import { fixturesEnabled, socialProviders } from "../api/client.ts"
 import { AppRoute } from "../navigation/routes.ts"
 import * as Routes from "../navigation/routes.ts"
 import {
@@ -85,24 +85,36 @@ const heading = (h: H, title: string, lead?: Html | string): ReadonlyArray<Html>
   lead === undefined ? h.empty : h.p([...styleAttributes(h, styles.lead)], [lead]),
 ]
 
-const providers = (h: H, model: Model): ReadonlyArray<Html> => [
-  button(h, {
-    label: "Continue with GitHub",
-    icon: "github",
-    size: "lg",
-    onClick: SubmittedForm({ form: "social-github" }),
-    disabled: model.submitting,
-    style: fill,
-  }),
-  button(h, {
-    label: "Continue with Google",
-    size: "lg",
-    onClick: SubmittedForm({ form: "social-google" }),
-    disabled: model.submitting,
-    style: fill,
-  }),
-  h.div([h.AriaHidden(true), ...styleAttributes(h, styles.divider)], ["or"]),
-]
+const providers = (h: H, model: Model): ReadonlyArray<Html> => {
+  const configured = socialProviders()
+  if (configured.length === 0) return []
+  return [
+    ...(configured.includes("github")
+      ? [
+          button(h, {
+            label: "Continue with GitHub",
+            icon: "github",
+            size: "lg",
+            onClick: SubmittedForm({ form: "social-github" }),
+            disabled: model.submitting,
+            style: fill,
+          }),
+        ]
+      : []),
+    ...(configured.includes("google")
+      ? [
+          button(h, {
+            label: "Continue with Google",
+            size: "lg",
+            onClick: SubmittedForm({ form: "social-google" }),
+            disabled: model.submitting,
+            style: fill,
+          }),
+        ]
+      : []),
+    h.div([h.AriaHidden(true), ...styleAttributes(h, styles.divider)], ["or"]),
+  ]
+}
 
 const failureNote = (h: H, model: Model): Html =>
   Option.match(model.formError, {

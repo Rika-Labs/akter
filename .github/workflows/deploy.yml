@@ -154,7 +154,7 @@ jobs:
           adopt=()
           for attempt in 1 2 3; do
             if bun --bun run --cwd infra deploy --stage "$STAGE" --yes "${adopt[@]}" 2>&1 | tee deploy.log; then exit 0; fi
-            grep -qE "state lock .* was lost mid-run|StateStoreError: PgConnection" deploy.log || exit 1
+            grep -qE "state lock .* was lost mid-run|StateStoreError: PgConnection|Cannot resume creating resource" deploy.log || exit 1
             echo "::warning::The Alchemy state connection dropped; retrying the deploy with --adopt (attempt $attempt)"
             adopt=(--adopt)
           done

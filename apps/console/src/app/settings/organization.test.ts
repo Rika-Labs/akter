@@ -7,7 +7,7 @@ import type { Message } from "../shell/message.ts"
 import type { Model } from "../shell/model.ts"
 import { init } from "../shell/update.ts"
 import { workspace } from "../workspace/fixtures.ts"
-import { type CapState, UnboundPlan } from "@akter/cloud-api"
+import { type CapState, CardPaymentMethod, LinkPaymentMethod, UnboundPlan } from "@akter/cloud-api"
 import { plansSlice } from "./fixtures.ts"
 import { BillingPlan, emptySettings, type Billing, type SettingsPage, type Usage } from "./model.ts"
 import { billingScreen, usageScreen } from "./organization.ts"
@@ -30,7 +30,7 @@ const freePlan = BillingPlan.make({
 
 const free: Billing = {
   plan: freePlan,
-  card: null,
+  paymentMethod: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 0 },
   caps: [],
@@ -283,6 +283,54 @@ describe("billing", () => {
       Scene.expect(
         Scene.role("link", { name: "Invoice INV-1 PDF, opens in a new tab" }),
       ).toHaveAttr("href", "https://files.example/in_1.pdf"),
+    ))
+})
+
+describe("payment method", () => {
+  const withMethod = (
+    paymentMethod: Billing["paymentMethod"],
+    ...steps: ReadonlyArray<Scene.SceneStep<Model, Message, undefined>>
+  ) =>
+    scene(
+      billingScreen,
+      {
+        ...emptySettings,
+        billing: { ...free, paymentMethod, billingEmail: "ops@acme.dev" },
+        plans,
+      },
+      ...steps,
+    )
+
+  it("offers to add one when the organization has none", () =>
+    withMethod(
+      null,
+      Scene.expect(Scene.text("No payment method")).toExist(),
+      Scene.expect(Scene.role("button", { name: "Add" })).toExist(),
+    ))
+
+  it("names a card by its brand and last four digits and when it expires", () =>
+    withMethod(
+      CardPaymentMethod.make({ brand: "visa", lastFour: "4242", expiryMonth: 8, expiryYear: 2028 }),
+      Scene.expect(Scene.text("Visa ending 4242")).toExist(),
+      Scene.expect(Scene.text("Expires 08 / 28 · receipts to ops@acme.dev")).toExist(),
+      Scene.expect(Scene.role("button", { name: "Update" })).toExist(),
+    ))
+
+  it("shows a Link account as Link with its email, not as no payment method", () =>
+    withMethod(
+      LinkPaymentMethod.make({ email: "ada@example.com" }),
+      Scene.expect(Scene.text("No payment method")).toBeAbsent(),
+      Scene.expect(Scene.text("Link")).toExist(),
+      Scene.expect(Scene.text("ada@example.com · receipts to ops@acme.dev")).toExist(),
+      Scene.expect(Scene.role("button", { name: "Update" })).toExist(),
+    ))
+
+  it("shows a Link account that reports no email as Link alone", () =>
+    withMethod(
+      LinkPaymentMethod.make({ email: null }),
+      Scene.expect(Scene.text("No payment method")).toBeAbsent(),
+      Scene.expect(Scene.text("Link")).toExist(),
+      Scene.expect(Scene.text("receipts to ops@acme.dev")).toExist(),
     ))
 })
 

@@ -1,6 +1,6 @@
 # ADR 0028: SQL inspection views over runtime tables
 
-**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) corrects §2's wording about `scheduled_at_ms`. [ADR 0051](0051-row-level-security.md) amends §4, §5, and question 6: with row-level security the views keep owner rights, owned by the tenant role, instead of switching to `security_invoker`.
+**Status:** accepted (2026-09-28, Dallen, with the recommended answer to every open question; proposed 2026-09-27). It gates CR.4. Migration `0013_inspection_views` implements it; the [decided questions](#decided-questions) record the answers. [ADR 0048](0048-mint-progress-and-inspection-record-corrections.md) corrects §2's wording about `scheduled_at_ms`. [ADR 0095](0095-single-table-inspection-views.md) adds a second, single-table view set for routed Neki groups and keeps this one. [ADR 0051](0051-row-level-security.md) amends §4, §5, and question 6: with row-level security the views keep owner rights, owned by the tenant role, instead of switching to `security_invoker`.
 
 **Responsibility:** define a stable, documented, read-only SQL surface for inspecting committed runtime state, which rows and columns it exposes, how it is tenant scoped, and which privileges read it.
 
