@@ -4,22 +4,42 @@
   "name": "Akter",
   "description": "The framework for durable, stateful backends that power realtime apps, background work, and agents.",
   "colors": {
-    "primary": "#0b0d0b",
-    "light": "#fafaf9",
-    "dark": "#0b0d0b"
+    "primary": "#0b0d0b"
   },
   "background": {
     "color": {
-      "light": "#fafaf9",
-      "dark": "#0b0d0b"
+      "light": "#fafaf9"
     }
+  },
+  "appearance": {
+    "default": "light",
+    "strict": true
   },
   "logo": {
     "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg",
+    "dark": "/logo/light.svg",
     "href": "https://akter.dev"
   },
   "favicon": "/favicon.svg",
+  "fonts": {
+    "heading": {
+      "family": "PolySans",
+      "weight": 450,
+      "source": "/fonts/PolySans-variable.woff2",
+      "format": "woff2"
+    },
+    "body": {
+      "family": "PolySans",
+      "weight": 400,
+      "source": "/fonts/PolySans-variable.woff2",
+      "format": "woff2"
+    }
+  },
+  "styling": {
+    "codeblocks": {
+      "theme": "css-variables"
+    }
+  },
   "navigation": {
     "tabs": [
       {
@@ -123,24 +143,5 @@
   ],
   "contextual": {
     "options": ["copy", "view", "claude", "chatgpt"]
-  },
-  "fonts": {
-    "heading": {
-      "family": "PolySans",
-      "weight": 450,
-      "source": "/fonts/PolySans-variable.woff2",
-      "format": "woff2"
-    },
-    "body": {
-      "family": "PolySans",
-      "weight": 400,
-      "source": "/fonts/PolySans-variable.woff2",
-      "format": "woff2"
-    }
-  },
-  "styling": {
-    "codeblocks": {
-      "theme": "css-variables"
-    }
   }
 }
