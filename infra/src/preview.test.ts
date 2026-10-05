@@ -360,6 +360,12 @@ describe("credential-free resource graph", () => {
               value: "site/V6.ip",
             })
             expect(byId["site/Dns"]).toBeUndefined()
+            expect(byId["site/DocsDns"]).toEqual({
+              domain: "akter.dev",
+              name: "docs",
+              type: "CNAME",
+              value: "cname.mintlify.builders",
+            })
           } else {
             expect(Object.keys(byId).sort()).toEqual([
               "edge/CustomerChallengeDns",

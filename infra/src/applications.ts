@@ -6,6 +6,7 @@ import * as Output from "alchemy/Output"
 import { Effect, Redacted } from "effect"
 import {
   customerZone,
+  docs,
   flyHostname,
   platformZone,
   relativeName,
@@ -313,6 +314,13 @@ export const applications = (inputs: ApplicationInputs) =>
         name: "",
         type: "AAAA",
         value: v6.ip,
+      })
+      yield* Vercel.DnsRecord("DocsDns", {
+        domain: platformZone,
+        teamId: deployment.vercelTeamId,
+        name: relativeName({ zone: platformZone, host: docs.host }),
+        type: "CNAME",
+        value: docs.target,
       })
     }).pipe(Namespace.push("site"))
   })

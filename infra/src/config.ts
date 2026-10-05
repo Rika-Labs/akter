@@ -10,6 +10,12 @@ export const platformZone = "akter.dev"
 /** The Vercel-hosted domain that carries customer deployments; only records are created in it. */
 export const customerZone = "akter.run"
 
+/**
+ * The hostname of the public documentation, which Mintlify serves from the repository's `docs/`
+ * directory, and the Mintlify hostname its record points at.
+ */
+export const docs = { host: `docs.${platformZone}`, target: "cname.mintlify.builders" } as const
+
 /** The Fly region every machine runs in. */
 export const region = "iad"
 
