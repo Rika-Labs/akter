@@ -85,7 +85,7 @@ const dockerService = (
     yield* Fly.IpAssignment("SharedV4", { app, type: "shared_v4" })
     yield* Fly.IpAssignment("V6", { app, type: "v6" })
     const image = yield* Docker.Image("Image", {
-      name: app.appName,
+      name: app.appName.pipe(Output.map((name) => `registry.fly.io/${name}`)),
       tag: deployment.imageTag,
       registry: { server: "registry.fly.io", username: "x", password: flyToken },
       build: {
@@ -188,6 +188,7 @@ export const applications = (inputs: ApplicationInputs) =>
           EMAIL_MODE: "resend",
           EMAIL_FROM: layout.emailFrom,
           RUNNER_FLY_CONFIG: runnerFlyConfig(layout),
+          CONTROL_PLANE_DATABASE_ENGINE: "neki",
           ...telemetryEnvironment(layout, "api"),
         },
         secrets: {
@@ -218,6 +219,7 @@ export const applications = (inputs: ApplicationInputs) =>
           PORT: "3002",
           EDGE_ISSUER: origin(layout.hosts.edge),
           EDGE_TRUST_FLY_PROXY: "true",
+          CONTROL_PLANE_DATABASE_ENGINE: "neki",
           ...telemetryEnvironment(layout, "edge"),
         },
         secrets: {

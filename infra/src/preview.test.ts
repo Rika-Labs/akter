@@ -198,6 +198,7 @@ describe("credential-free resource graph", () => {
             DEPLOYMENT_DOMAIN: expected.customer,
             BILLING_MODE: "stripe",
             EMAIL_MODE: "resend",
+            CONTROL_PLANE_DATABASE_ENGINE: "neki",
             EMAIL_FROM: expected.from,
             OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.axiom.co",
             OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
@@ -229,6 +230,7 @@ describe("credential-free resource graph", () => {
             PORT: "3002",
             EDGE_ISSUER: `https://${expected.edge}`,
             EDGE_TRUST_FLY_PROXY: "true",
+            CONTROL_PLANE_DATABASE_ENGINE: "neki",
             OTEL_EXPORTER_OTLP_ENDPOINT: "https://api.axiom.co",
             OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
             OTEL_SERVICE_NAME: "edge",
@@ -255,7 +257,7 @@ describe("credential-free resource graph", () => {
             const image = yield* decode.image(compiled.declarations[`${role}/Image`])
             const machine = yield* decode.machine(compiled.declarations[`${role}/Machine`])
             expect(image).toMatchObject({
-              name: `${role}/App.appName`,
+              name: `registry.fly.io/${role}/App.appName`,
               registry: { server: "registry.fly.io", username: "x" },
               build: { dockerfile, platform: "linux/amd64" },
             })
