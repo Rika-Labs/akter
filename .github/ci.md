@@ -6,7 +6,7 @@ Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<
 
 ## Deploy
 
-`Deploy` runs Alchemy against Fly.io from `infra/` on an Arm runner. A first job decides which stages to touch from the event and a second applies them, one matrix entry per stage, each with the secrets of one GitHub environment; [ADR 0089](../docs/decisions/0089-fly-infrastructure-and-environments.md) describes the stages and environments and `infra/README.md` the bootstrap.
+`Deploy` runs Alchemy against Fly.io from `infra/`. A first job, on an Arm runner, decides which stages to touch from the event and a second applies them, one matrix entry per stage, each with the secrets of one GitHub environment; [ADR 0089](../docs/decisions/0089-fly-infrastructure-and-environments.md) describes the stages and environments and `infra/README.md` the bootstrap.
 
 | Event                                                           | Stage      | Environment  | Operation                                               |
 | --------------------------------------------------------------- | ---------- | ------------ | ------------------------------------------------------- |
@@ -23,7 +23,7 @@ Nothing waits for a reviewer: the `production` environment accepts deployments f
 
 Unlike `Verify`, this workflow runs pull-request code with the `preview` environment's secrets. Any collaborator who can push a branch to this repository can read them through a workflow change, so give that environment credentials that reach preview resources only, including a state database of its own, and keep production credentials in `production`. The Vercel token is the one secret both share.
 
-Fly Machines run amd64 only, so the images are built for `linux/amd64` under QEMU on the Arm runner. If those builds are too slow, change `runs-on` to `ubuntu-24.04`.
+Fly Machines run amd64 only, so the apply job runs on `ubuntu-24.04` and builds `linux/amd64` images natively.
 
 ## Framework tarball and release
 

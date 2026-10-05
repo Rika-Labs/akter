@@ -540,7 +540,7 @@ describe("control-plane database", () => {
         ),
         database: expect.stringContaining("stackRef(akter, { stage: preview }).neki.database"),
         branch: expect.stringContaining("stackRef(akter, { stage: preview }).neki.branch"),
-        inheritedRoles: ["postgres", "neki_viewer"],
+        inheritedRoles: ["postgres", "pg_read_all_data", "neki_viewer"],
       })
       expect(removalOf(graph, "PreviewDatabase")).toBe("destroy")
       expect(removalOf(graph, "PreviewRole")).toBe("destroy")

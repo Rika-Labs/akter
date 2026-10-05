@@ -7,7 +7,7 @@ import { controlTables } from "./placement.ts"
 
 const nekiRegion = "us-east"
 
-const serviceRoles = ["postgres", "neki_viewer"] as const
+const serviceRoles = ["postgres", "pg_read_all_data", "neki_viewer"] as const
 
 /**
  * Names the logical database in a role's connection URL, which is the
