@@ -712,6 +712,20 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
         ).toBe(true)
       }))
 
+    test("rejects routing a table that is not a framework per-actor table before any provider call", () =>
+      Effect.gen(function* () {
+        const output = yield* reconcile(props())
+        state.calls = []
+        for (const table of ["cloud_billing_state", "tenant_directory", "actor_placements"]) {
+          const exit = yield* Effect.exit(
+            diff(props({ routedTables: ["actor_outbox", table] }), props(), output),
+          )
+          expect(Exit.isFailure(exit)).toBe(true)
+          expect(String(exit)).toContain(table)
+        }
+        expect(state.calls).toEqual([])
+      }))
+
     test("rejects a shard count that cannot align to buckets before any provider call", () =>
       Effect.gen(function* () {
         const output = yield* reconcile(props())
