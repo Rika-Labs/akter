@@ -5,6 +5,18 @@ import { Config, Effect, Layer, Redacted } from "effect"
 import * as Reactivity from "effect/reactivity/Reactivity"
 
 /**
+ * The host and port to dial for a Postgres URL. `URL` keeps the brackets around an IPv6 literal,
+ * which `Net.connect` would look up as a host name.
+ */
+export const endpointOf = (url: string) => {
+  const { hostname, port } = new URL(url)
+  return {
+    host: hostname.replace(/^\[(.*)\]$/u, "$1"),
+    port: port === "" ? 5432 : Number(port),
+  }
+}
+
+/**
  * The stages a GitHub environment deploys keep their state in one dedicated PlanetScale Postgres
  * database: `prod` in the `production` environment's, and `preview` with every `pr-<n>` in the
  * `preview` environment's, which is what lets a pull request preview read the `preview` stage's
@@ -18,13 +30,13 @@ import * as Reactivity from "effect/reactivity/Reactivity"
 export const state = Layer.unwrap(
   Effect.gen(function* () {
     const url = yield* Config.Redacted("ALCHEMY_STATE_DATABASE_URL")
-    const { hostname, port } = new URL(Redacted.value(url))
+    const { host, port } = endpointOf(Redacted.value(url))
     const client = yield* PgClient.make({
       url,
       stream: () =>
         Net.connect({
-          host: hostname,
-          port: port === "" ? 5432 : Number(port),
+          host,
+          port,
           noDelay: true,
           keepAlive: true,
           keepAliveInitialDelay: 30_000,

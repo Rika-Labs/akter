@@ -15,6 +15,8 @@ import {
   Schema,
 } from "effect"
 import { SqlClient } from "effect/sql"
+import { nekiDatabase } from "@akter/postgres/neki"
+import { Database } from "@rikalabs/akter/runtime"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
 import {
@@ -1083,6 +1085,51 @@ describe("command assignments", () => {
               mintedCommandId: yield* unique,
             }),
           ).toEqual(assignment(mintedCommandId, payload))
+        }),
+      ),
+    ))
+
+  it("migrates legacy assignments on Neki, finishing what an earlier boot left part way", () =>
+    run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* nekiDatabase("api_legacy")
+          const neki = () =>
+            client(url, 2).pipe(Layer.merge(Layer.succeed(Database.Neki, true)), Layer.fresh)
+          const sql = Context.get(yield* Layer.build(neki()), SqlClient.SqlClient)
+          const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.Json))
+          const first = `v1.1.${expiresAt}.00000000-0000-4000-8000-000000000002`
+          const second = `v1.1.${expiresAt + 1}.00000000-0000-4000-8000-000000000003`
+          yield* sql`CREATE TABLE cloud_command_idempotency (
+        organization_id text NOT NULL, project_id text NOT NULL, environment text NOT NULL,
+        address text NOT NULL, command text NOT NULL, idempotency_key text NOT NULL,
+        command_id text NOT NULL UNIQUE, payload json NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (organization_id, project_id, environment, address, command, idempotency_key)
+      )`
+          yield* sql`INSERT INTO cloud_command_idempotency VALUES
+        ('neki-org', 'p1', 'production', 'Order/o/1', 'Cancel', 'client-key', ${first}, ${yield* encode({ n: 1 })}::json, now()),
+        ('neki-org-2', 'p1', 'production', 'Order/o/1', 'Cancel', 'client-key', ${second}, ${yield* encode({ n: 2 })}::json, now())`
+          yield* sql`ALTER TABLE cloud_command_idempotency
+        ADD COLUMN key_hash text, ADD COLUMN payload_hash text, ADD COLUMN expires_at_ms bigint`
+          const repository = Context.get(
+            yield* Layer.build(RepositoryLive.pipe(Layer.provide(neki()), Layer.fresh)),
+            Repository,
+          )
+          expect(yield* repository.findCommand(key("neki-org"))).toEqual(
+            assignment(first, { n: 1 }),
+          )
+          expect(yield* repository.findCommand(key("neki-org-2"))).toEqual({
+            ...assignment(second, { n: 2 }),
+            expiresAt: expiresAt + 1,
+          })
+          const columns = yield* sql<{ column_name: string }>`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'cloud_command_idempotency'
+      `
+          expect(columns.map((row) => row.column_name)).not.toContain("payload")
+          expect(columns.map((row) => row.column_name)).not.toContain("idempotency_key")
+          yield* Layer.build(RepositoryLive.pipe(Layer.provide(neki()), Layer.fresh))
         }),
       ),
     ))

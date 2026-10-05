@@ -40,6 +40,7 @@ type FakeState = {
   queries: string[]
   pageSize: number
   deleteStatus: number
+  stuckCursor: number | undefined
 }
 
 const fresh = (): FakeState => ({
@@ -49,6 +50,7 @@ const fresh = (): FakeState => ({
   queries: [],
   pageSize: 100,
   deleteStatus: 200,
+  stuckCursor: undefined,
 })
 
 const json = (body: Json, status = 200) => Response.json(body, { status })
@@ -91,7 +93,11 @@ const handle = (state: FakeState, request: Request) =>
       const next = until - state.pageSize
       return json({
         records: [...page].reverse().map(listed),
-        pagination: { count: page.length, next: next > 0 ? next : null, prev: null },
+        pagination: {
+          count: page.length,
+          next: state.stuckCursor ?? (next > 0 ? next : null),
+          prev: null,
+        },
       })
     }
     const single = url.pathname.match(/\/records\/([^/]+)$/)
@@ -377,6 +383,47 @@ describe("DnsRecord provider against a recorded Vercel API", () => {
       const adopted = yield* reconcile(props())
       expect(adopted.id).toBe("rec_old")
       expect(state.calls).not.toContain("create")
+    }))
+
+  test("follows the cursor past fifty pages to find its record", () =>
+    Effect.gen(function* () {
+      state.pageSize = 1
+      state.records.push({
+        id: "rec_old",
+        name: "api",
+        type: "CNAME",
+        value: "akter-prod-api.fly.dev",
+        comment: "Managed by Alchemy",
+      })
+      for (let index = 0; index < 120; index++)
+        state.records.push({
+          id: `rec_x${index}`,
+          name: `host${index}`,
+          type: "A",
+          value: "1.1.1.1",
+        })
+      state.nextId = 200
+      const adopted = yield* reconcile(props())
+      expect(adopted.id).toBe("rec_old")
+      expect(state.calls).not.toContain("create")
+      expect(state.calls.filter((call) => call === "list")).toHaveLength(121)
+      expect((yield* read(props()))?.id).toBe("rec_old")
+    }))
+
+  test("fails rather than loop or stop early when Vercel repeats a cursor", () =>
+    Effect.gen(function* () {
+      state.pageSize = 1
+      state.stuckCursor = 5
+      for (let index = 0; index < 3; index++)
+        state.records.push({
+          id: `rec_x${index}`,
+          name: `host${index}`,
+          type: "A",
+          value: "1.1.1.1",
+        })
+      expect((yield* Effect.exit(reconcile(props())))._tag).toBe("Failure")
+      expect(state.calls).not.toContain("create")
+      expect(state.calls.filter((call) => call === "list")).toHaveLength(2)
     }))
 
   test("reads a missing record as gone and a present one as itself", () =>

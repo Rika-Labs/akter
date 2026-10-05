@@ -25,6 +25,8 @@ export interface NekiLogicalDatabaseAttributes {
 
 /**
  * A logical database created with `CREATE DATABASE` and dropped, with its connections, on delete.
+ * One that already exists under the name is adopted, so a run that created it before its state
+ * write was lost converges instead of failing on the name.
  * Whether a Neki router accepts these statements has no provider evidence yet; the resource
  * fails the deploy with the router's own error rather than falling back to another layout.
  *
@@ -72,8 +74,8 @@ export const NekiLogicalDatabaseProvider = Provider.succeed(Neki.LogicalDatabase
     ),
 
   read: Effect.fn(function* ({ olds, output }) {
-    if (output === undefined) return undefined
-    return (yield* connected(olds.connectionUrl, exists(output.name))) ? output : undefined
+    const name = output?.name ?? olds.name
+    return (yield* connected(olds.connectionUrl, exists(name))) ? { name } : undefined
   }),
 
   reconcile: Effect.fn(function* ({ news }) {

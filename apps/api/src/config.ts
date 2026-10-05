@@ -1,4 +1,4 @@
-import { Config, Effect, Option, Redacted, Schema } from "effect"
+import { Config, Context, Effect, Option, Redacted, Schema } from "effect"
 import { defaultPricingConfig, PricingConfigSchema, type PricingConfig } from "@akter/billing"
 import type { MeterCell } from "./collector.ts"
 import { FlyConfig, type FlyOptions } from "@akter/deployments/runners"
@@ -50,6 +50,17 @@ export interface ApiOptions {
    */
   readonly localBuild?: { readonly context: string; readonly dockerfile: string }
 }
+
+/**
+ * The regions a deployment can run in: the keys of the Fly runner
+ * configuration's region map, or undefined when runners run locally and every
+ * region the contract names is served. A project homed elsewhere could never
+ * start a runner, so the API refuses it at creation.
+ */
+export const RunnerRegions = Context.Reference<ReadonlyArray<string> | undefined>(
+  "@akter/api/RunnerRegions",
+  { defaultValue: () => undefined },
+)
 
 export const localBillingWebhookSecret = "local-billing-signature-secret-not-for-production"
 

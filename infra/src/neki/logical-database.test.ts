@@ -163,6 +163,19 @@ describe("NekiLogicalDatabase provider against Postgres", () => {
       yield* remove(props, second)
     }))
 
+  test("adopts the database a run created before its state was lost", (url) =>
+    Effect.gen(function* () {
+      const name = yield* unique
+      const props = { name, connectionUrl: url }
+      yield* reconcile(props)
+      expect(yield* read(props)).toEqual({ name })
+      const recovered = yield* reconcile(props)
+      expect(recovered).toEqual({ name })
+      expect(yield* databases(url, name)).toHaveLength(1)
+      yield* remove(props, recovered)
+      expect(yield* read(props)).toBeUndefined()
+    }))
+
   test("reads a database as present until it is dropped", (url) =>
     Effect.gen(function* () {
       const name = yield* unique

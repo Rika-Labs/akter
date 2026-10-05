@@ -16,7 +16,7 @@ import {
 import { Access, AccessLive } from "./access.ts"
 import { AccountLayers } from "./accounts.ts"
 import { Auth, processRuntimeLayer } from "./auth.ts"
-import type { ApiOptions } from "./config.ts"
+import { type ApiOptions, RunnerRegions } from "./config.ts"
 import { localEmail, resendEmail } from "./email.ts"
 import { PendingLayers } from "./pending.ts"
 import { Repository, RepositoryLive, RepositoryRetentionLive } from "./repository.ts"
@@ -239,6 +239,10 @@ export const infrastructure = (options: ApiOptions) => {
     RepositoryRetentionLive.pipe(Layer.provide(RepositoryLive)),
     billingInfrastructure(options),
     Layer.succeed(LocalBillingOptions, options),
+    Layer.succeed(
+      RunnerRegions,
+      options.runnerFly === undefined ? undefined : Object.keys(options.runnerFly.options.regions),
+    ),
     runtimeEdge(options),
     runnerReconciliation(options),
   ).pipe(Layer.provideMerge(sql))

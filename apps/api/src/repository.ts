@@ -481,7 +481,12 @@ const auditEntry = (row: AuditRow): AuditEntry => ({
 /**
  * `Repository` over the control-plane database. Building the layer applies
  * the `cloud_*` migrations, which are idempotent and safe to run from several
- * processes at once.
+ * processes at once. Upgrading the legacy command table locks it against
+ * writers inside the Postgres migration transaction. Neki autocommits every
+ * statement, so there is no transaction to hold that lock; the schema lock
+ * still keeps booting processes apart, and each step, from adding the hash
+ * columns to backfilling rows that lack them and swapping the key, is safe to
+ * repeat after a crash or a row an older process wrote meanwhile.
  */
 export const RepositoryLive = Layer.effect(
   Repository,
@@ -497,7 +502,8 @@ export const RepositoryLive = Layer.effect(
             AND column_name = 'payload'
         `
         if (legacy.length > 0) {
-          yield* sql`LOCK TABLE cloud_command_idempotency IN ACCESS EXCLUSIVE MODE`
+          if (!(yield* Database.Neki))
+            yield* sql`LOCK TABLE cloud_command_idempotency IN ACCESS EXCLUSIVE MODE`
           yield* sql`ALTER TABLE cloud_command_idempotency
             ADD COLUMN IF NOT EXISTS key_hash text,
             ADD COLUMN IF NOT EXISTS payload_hash text,

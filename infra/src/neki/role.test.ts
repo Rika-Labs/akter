@@ -68,7 +68,12 @@ type RoleBody = {
   readonly with_replication?: boolean
 }
 
-type FakeRole = { id: string; name: string; inherited: ReadonlyArray<string> }
+type FakeRole = {
+  id: string
+  name: string
+  inherited: ReadonlyArray<string>
+  deleted?: boolean
+}
 
 type FakeState = {
   branchKind: string
@@ -78,6 +83,7 @@ type FakeState = {
   deleteStatus: number
   calls: string[]
   bodies: RoleBody[]
+  listQueries: string[]
 }
 
 const fresh = (): FakeState => ({
@@ -88,6 +94,7 @@ const fresh = (): FakeState => ({
   deleteStatus: 200,
   calls: [],
   bodies: [],
+  listQueries: [],
 })
 
 const roleJson = (role: FakeRole, password: string | null) => ({
@@ -102,7 +109,7 @@ const roleJson = (role: FakeRole, password: string | null) => ({
   database_name: "postgres",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
-  deleted_at: null,
+  deleted_at: role.deleted === true ? "2026-01-02T00:00:00Z" : null,
   expires_at: null,
   dropped_at: null,
   disabled_at: null,
@@ -145,6 +152,33 @@ const handle = (state: FakeState, request: Request) =>
       state.nextId += 1
       state.roles.push(created)
       return json(roleJson(created, state.nextId === 2 ? PASSWORD : ROTATED_PASSWORD))
+    }
+    if (route === `GET ${BRANCH}/roles`) {
+      const query = url.searchParams.get("q") ?? ""
+      const page = Number(url.searchParams.get("page") ?? "1")
+      state.listQueries.push(query)
+      const matching = state.roles.filter((entry) => entry.name.includes(query))
+      const more = page < matching.length
+      return json({
+        type: "list",
+        current_page: page,
+        per_page: 1,
+        next_page: more ? page + 1 : null,
+        next_page_url: null,
+        prev_page: page > 1 ? page - 1 : null,
+        prev_page_url: null,
+        total_count: matching.length,
+        total_pages: matching.length,
+        data: matching.slice(page - 1, page).map((entry) => roleJson(entry, null)),
+      })
+    }
+    const reset = url.pathname.match(/\/roles\/([^/]+)\/reset$/)
+    if (reset !== null && request.method === "POST") {
+      state.calls.push("resetRole")
+      const found = state.roles.find((entry) => entry.id === reset[1])
+      return found === undefined
+        ? json({ code: "not_found", message: "no" }, 404)
+        : json(roleJson(found, ROTATED_PASSWORD))
     }
     const named = url.pathname.match(/\/roles\/([^/]+)$/)
     const role = state.roles.find((entry) => entry.id === named?.[1])
@@ -333,6 +367,39 @@ describe("NekiRole provider against a recorded PlanetScale API", () => {
       expect(rotated.id).toBe("role2")
       expect(Redacted.value(rotated.password)).toBe(ROTATED_PASSWORD)
       expect(Redacted.value(rotated.connectionUrl)).toContain(encodeURIComponent(ROTATED_PASSWORD))
+    }))
+
+  test("adopts the role a run created before its state was lost, under a new password", () =>
+    Effect.gen(function* () {
+      state.roles.push(
+        { id: "decoy", name: "app-old", inherited: ["pg_read_all_data"] },
+        { id: "gone", name: "app", inherited: ["postgres"], deleted: true },
+      )
+      const lost = yield* reconcile(props())
+      expect(lost.id).toBe("role1")
+      expect(state.calls).toEqual(["createRole"])
+      const recovered = yield* reconcile(props())
+      expect(state.calls).toEqual(["createRole", "resetRole"])
+      expect(state.roles.filter((entry) => entry.name === "app" && entry.deleted !== true)).toEqual(
+        [{ id: "role1", name: "app", inherited: ["pg_read_all_data", "pg_write_all_data"] }],
+      )
+      expect(recovered.id).toBe("role1")
+      expect(Redacted.value(recovered.password)).toBe(ROTATED_PASSWORD)
+      expect(Redacted.value(recovered.connectionUrl)).toContain(
+        encodeURIComponent(ROTATED_PASSWORD),
+      )
+      expect(state.listQueries.every((query) => query === "app")).toBe(true)
+      const again = yield* reconcile(props(), recovered)
+      expect(again.id).toBe("role1")
+      expect(Redacted.value(again.password)).toBe(ROTATED_PASSWORD)
+      expect(state.calls).toEqual(["createRole", "resetRole"])
+    }))
+
+  test("refuses to adopt a role of the same name with other privileges", () =>
+    Effect.gen(function* () {
+      state.roles.push({ id: "foreign", name: "app", inherited: ["postgres"] })
+      expect(yield* failure(reconcile(props()))).toContain("other privileges")
+      expect(state.calls).toEqual([])
     }))
 
   test("does not treat a denied read as a missing role", () =>
