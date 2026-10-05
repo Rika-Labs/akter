@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { NekiDatabaseProvider } from "./database.ts"
 import type { NekiDatabaseAttributes, NekiDatabaseProps } from "./database.ts"
 import { Neki } from "./resources.ts"
-import { dataTopology, keyRanges, type DataTopology } from "./topology.ts"
+import { dataTopology, keyRanges, type DataTopology, type LiveTopology } from "./topology.ts"
 
 const REGION = {
   id: "region",
@@ -56,12 +56,22 @@ type FakeState = {
   profileReplicas: number
   shards: FakeShard[]
   routers: FakeRouter[]
-  topology: DataTopology | undefined
+  topology: DataTopology | LiveTopology | undefined
   calls: string[]
   bodies: Record<string, RequestBody[]>
 }
 
 const NEW_SHARD_NAMES = ["zeta", "yankee", "xray", "whiskey", "victor"]
+
+/**
+ * The topology PlanetScale reports for a Neki database created in the dashboard and never
+ * configured: one shard group over the authoritative shard and no table placements.
+ */
+const unplacedTopology: LiveTopology = {
+  shard_groups: [{ uid: "meta", key_ranges: [{ shard_uid: "meta" }] }],
+  default_shard_group: "meta",
+  authoritative_shard_group: "meta",
+}
 
 const fresh = (): FakeState => ({
   exists: false,
@@ -363,6 +373,8 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
     state = fresh()
   })
 
+  const routed = { routedTables: ["actor_outbox"] }
+
   const props = (overrides: Partial<NekiDatabaseProps> = {}): NekiDatabaseProps => ({
     name: "cells",
     clusterSize: "PS_10",
@@ -416,13 +428,13 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
   const test = (name: string, program: () => Effect.Effect<void, ProviderFailure, Env>) =>
     it(name, () => runtime.runPromise(Effect.suspend(program)))
 
-  const topologyOf = (dataShards: ReadonlyArray<string>, unshardedTables: ReadonlyArray<string>) =>
+  const topologyOf = (dataShards: ReadonlyArray<string>, routedTables: ReadonlyArray<string>) =>
     dataTopology({
       authoritativeShard: "meta",
       dataShards,
       database: "postgres",
       schema: "public",
-      unshardedTables,
+      routedTables,
     })
 
   test("creates a four-shard cluster, splits the key space over the new shards in creation order and sizes the routers", () =>
@@ -436,7 +448,7 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
             { name: "default", size: "NKR_2", replicasPerCell: 2 },
             { name: "edge", size: "NKR_1" },
           ],
-          unshardedTables: ["cluster_messages"],
+          routedTables: ["actor_outbox"],
         }),
       )
       expect(state.calls).toEqual([
@@ -459,7 +471,7 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
       expect(attributes.dataShards).toEqual(created)
       expect(attributes.routerGroups).toEqual(["edge"])
       expect(state.bodies.updateTopology?.[0]?.data_topology).toEqual(
-        topologyOf(created, ["cluster_messages"]),
+        topologyOf(created, ["actor_outbox"]),
       )
       expect(keyRanges(created).map((range) => range.start)).toEqual([undefined, "40", "80", "c0"])
       expect(state.bodies.updateRouter?.[0]).toMatchObject({
@@ -478,7 +490,7 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
 
   test("is idempotent: a second reconcile of the same props writes nothing", () =>
     Effect.gen(function* () {
-      const olds = props({ shardCount: 2 })
+      const olds = props({ ...routed, shardCount: 2 })
       const output = yield* reconcile(olds)
       state.calls = []
       yield* reconcile(olds, { output, olds })
@@ -487,20 +499,64 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
 
   test("refuses to overwrite a live topology that places data differently and writes nothing", () =>
     Effect.gen(function* () {
-      const olds = props({ shardCount: 2 })
+      const olds = props({ ...routed, shardCount: 2 })
       const output = yield* reconcile(olds)
       state.calls = []
-      const message = yield* refusal(reconcile(props({ shardCount: 3 }), { output, olds }))
+      const message = yield* refusal(
+        reconcile(props({ ...routed, shardCount: 3 }), { output, olds }),
+      )
       expect(message).toContain("resharding workflows")
       expect(state.calls).toEqual([])
       expect(state.shards.filter((item) => !item.authoritative)).toHaveLength(2)
     }))
 
+  test("places an adopted single-shard database that was never given a topology, and nothing else", () =>
+    Effect.gen(function* () {
+      const output = yield* reconcile(props())
+      state.topology = unplacedTopology
+      state.calls = []
+      yield* reconcile(props(), { output, olds: props() })
+      expect(state.calls).toContain("updateTopology")
+      expect(state.topology?.databases).toBeDefined()
+    }))
+
+  test("accepts a single-shard database a stopped run placed before it saved its shards", () =>
+    Effect.gen(function* () {
+      const output = yield* reconcile(props())
+      state.calls = []
+      yield* reconcile(props(), { output: { ...output, dataShards: [] }, olds: props() })
+      expect(state.calls).not.toContain("createShard")
+      expect(state.shards).toHaveLength(1)
+    }))
+
+  test("rewrites a single-shard database's routed tables, since one shard holds every group", () =>
+    Effect.gen(function* () {
+      const olds = props()
+      const output = yield* reconcile(olds)
+      const news = props({ routedTables: ["actor_outbox", "actor_state"] })
+      state.calls = []
+      yield* reconcile(news, { output, olds })
+      expect(state.calls).toEqual(["updateTopology"])
+      expect(state.topology?.databases?.["postgres"]?.schemas?.["public"]?.tables).toMatchObject({
+        actor_state: { shard_group: "actor_data" },
+      })
+    }))
+
+  test("refuses to place an unconfigured database that already has more than one shard", () =>
+    Effect.gen(function* () {
+      const olds = props({ ...routed, shardCount: 2 })
+      const output = yield* reconcile(olds)
+      state.topology = unplacedTopology
+      state.calls = []
+      expect(yield* refusal(reconcile(olds, { output, olds }))).toContain("resharding workflows")
+      expect(state.calls).toEqual([])
+    }))
+
   test("refuses when the live topology was resharded behind the props", () =>
     Effect.gen(function* () {
-      const olds = props({ shardCount: 2 })
+      const olds = props({ ...routed, shardCount: 2 })
       const output = yield* reconcile(olds)
-      state.topology = topologyOf(["other-a", "other-b"], [])
+      state.topology = topologyOf(["other-a", "other-b"], routed.routedTables)
       state.calls = []
       expect(yield* refusal(reconcile(olds, { output, olds }))).toContain("resharding workflows")
       expect(state.calls).toEqual([])
@@ -508,16 +564,18 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
 
   test("refuses changed routing semantics before a requested profile resize writes anything", () =>
     Effect.gen(function* () {
-      const olds = props({ shardCount: 2 })
+      const olds = props({ ...routed, shardCount: 2 })
       const output = yield* reconcile(olds)
-      const generated = topologyOf(output.dataShards, [])
+      const generated = topologyOf(output.dataShards, routed.routedTables)
       state.topology = {
         ...generated,
         shard_indexes: { routing_key_range: { type: "range", columns: ["wrong_key"] } },
       }
       state.calls = []
       expect(
-        yield* refusal(reconcile(props({ shardCount: 2, clusterSize: "PS_80" }), { output, olds })),
+        yield* refusal(
+          reconcile(props({ ...routed, shardCount: 2, clusterSize: "PS_80" }), { output, olds }),
+        ),
       ).toContain("resharding workflows")
       expect(state.calls).toEqual([])
       expect(state.profileSize).toBe("PS_10")
@@ -570,13 +628,13 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
 
   test("recreates a database deleted behind the state and uses the new shards, not the recorded ones", () =>
     Effect.gen(function* () {
-      const olds = props({ shardCount: 2 })
+      const olds = props({ ...routed, shardCount: 2 })
       const output = yield* reconcile(olds)
       state = fresh()
       const next = yield* reconcile(olds, { output, olds })
       expect(state.calls).toEqual(["createDatabase", "createShards", "updateTopology"])
       expect(next.dataShards).toEqual(["zeta", "yankee"])
-      expect(state.topology).toEqual(topologyOf(["zeta", "yankee"], []))
+      expect(state.topology).toEqual(topologyOf(["zeta", "yankee"], routed.routedTables))
     }))
 
   test("refuses a database of another kind", () =>
@@ -636,14 +694,31 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
         expect(yield* outcome({ ...olds, organization: "another" }, olds, output)).toBe("replace")
         expect(yield* outcome({ ...olds, majorVersion: "17" }, olds, output)).toBe("replace")
         expect(yield* outcome({ ...olds, clusterSize: "PS_80" }, olds, output)).toBe("update")
-        expect(yield* outcome({ ...olds, shardCount: 4 }, olds, output)).toBe("update")
+        expect(yield* outcome({ ...olds, ...routed, shardCount: 4 }, olds, output)).toBe("update")
+      }))
+
+    test("rejects data shards for a topology that routes no table before any provider call", () =>
+      Effect.gen(function* () {
+        const output = yield* reconcile(props())
+        state.calls = []
+        const exit = yield* Effect.exit(diff(props({ shardCount: 2 }), props(), output))
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(String(exit)).toContain("routedTables")
+        expect(state.calls).toEqual([])
+        expect(
+          Exit.isSuccess(
+            yield* Effect.exit(diff(props({ ...routed, shardCount: 2 }), props(), output)),
+          ),
+        ).toBe(true)
       }))
 
     test("rejects a shard count that cannot align to buckets before any provider call", () =>
       Effect.gen(function* () {
         const output = yield* reconcile(props())
         state.calls = []
-        const exit = yield* Effect.exit(diff(props({ shardCount: 300 }), props(), output))
+        const exit = yield* Effect.exit(
+          diff(props({ ...routed, shardCount: 300 }), props(), output),
+        )
         expect(Exit.isFailure(exit)).toBe(true)
         expect(state.calls).toEqual([])
       }))
