@@ -262,9 +262,9 @@ jobs:
               --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain
               --project=postgres:cron
           - name: postgres-4
-            projects: --project=integration packages/akter/src/runtime/database/neki/migrations.test.ts
+            projects: --project=integration:migrations
           - name: postgres-8
-            projects: --project=integration --exclude=**/neki/migrations.test.ts
+            projects: --project=integration
           - name: postgres-5
             projects: >-
               --project=postgres:replica --project=postgres:properties
@@ -274,7 +274,8 @@ jobs:
             projects: --project=postgres:simulation --project=postgres:workflows
           - name: postgres-7
             projects: >-
-              --project=!integration --project=!postgres:effect-control --project=!postgres:heap
+              --project=!integration --project=!integration:migrations
+              --project=!postgres:effect-control --project=!postgres:heap
               --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet
               --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron
               --project=!postgres:replica --project=!postgres:properties
@@ -309,7 +310,6 @@ jobs:
         env:
           PROJECTS: ${{ matrix.projects }}
         run: |
-          set -f
           mkdir -p evidence/framework-${{ matrix.name }}
           bun run --cwd packages/akter test:integration:postgres $PROJECTS 2>&1 | tee evidence/framework-${{ matrix.name }}/check.log
       - uses: actions/upload-artifact@v7.0.1
