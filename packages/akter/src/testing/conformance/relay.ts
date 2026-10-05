@@ -469,6 +469,24 @@ const takenOnce = (fixture: RelayFixture, ids: ReadonlyArray<string>) =>
   ids.every((id) => fixture.taken.get(id) === 1)
 
 /**
+ * Whether every id's handler ran and runner 0's outbox holds no row, so each
+ * delivery's receiver turn committed and its row settled. Handler runs are
+ * not delivery counts: a turn group that commits without a member still
+ * running reruns that member's handler under the same delivery, so a case
+ * whose handlers outlast the group's wait counts deliveries by claims and
+ * receipts instead.
+ */
+const settledAll = (fixture: RelayFixture, ids: ReadonlyArray<string>) =>
+  query(
+    0,
+    (sql) => sql<{ remaining: number }>`SELECT count(*)::int AS remaining FROM actor_outbox`,
+  ).pipe(
+    Effect.map(
+      ([row]) => row!.remaining === 0 && ids.every((id) => (fixture.taken.get(id) ?? 0) > 0),
+    ),
+  )
+
+/**
  * Whether every claim's `akter.relay.intent` span has ended, so a
  * read of `brokenClaims` sees each claim's whole hold.
  */
@@ -1085,13 +1103,24 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
         { relay: { deliveryConcurrency: 8, claimLease: "3 seconds" } },
         Effect.gen(function* () {
           const ids = Array.from({ length: 64 }, (_, index) => `slow-${index}`)
-          const claimedAt = new Map<string, number>()
-          const startedAt = new Map<string, number>()
+          const claimedAt = new Map<string, Array<number>>()
+          const startedAt = new Map<string, Array<number>>()
+
+          /**
+           * Keeps claim and delivery-start times per claim rather than per
+           * row: a delivery that outlives its lease is claimed and delivered
+           * again, which its receipt deduplicates, so only a claim whose
+           * delivery waits locally, or a lease that ends before its delivery
+           * starts, is a fault.
+           */
+          const note = (times: Map<string, Array<number>>, payload: string, now: number) =>
+            times.set(payload, [...(times.get(payload) ?? []), now])
+
           fixture.hook = (point, request) =>
             Effect.map(Clock.currentTimeMillis, (now) => {
-              if (point === "afterClaim") claimedAt.set(request.payload, now)
+              if (point === "afterClaim") note(claimedAt, request.payload, now)
 
-              if (point === "beforeDelivery") startedAt.set(request.payload, now)
+              if (point === "beforeDelivery") note(startedAt, request.payload, now)
             })
           fixture.onTake = () => Effect.sleep("1 second")
 
@@ -1109,20 +1138,79 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
           )
 
           yield* stage(0, ids)
-          yield* eventually(
-            Effect.sync(() => takenOnce(fixture, ids)),
-            "60 seconds",
-            "every slow delivery",
-          )
+          yield* eventually(settledAll(fixture, ids), "60 seconds", "every slow delivery")
           yield* Fiber.interrupt(sampler)
 
           expect(samples.length > 20).toBe(true)
           expect(Math.max(...samples) <= 8).toBe(true)
-          expect([...fixture.claims.values()].every((count) => count === 1)).toBe(true)
           expect(claimedAt.size).toBe(64)
+          expect(yield* receipts(0, "Take")).toBe(64)
 
-          for (const [payload, claimed] of claimedAt)
-            expect(startedAt.get(payload)! - claimed < 1000).toBe(true)
+          for (const [payload, claims] of claimedAt) {
+            const starts = startedAt.get(payload)!
+            expect(starts.length).toBe(claims.length)
+
+            for (const [index, claimed] of claims.entries()) {
+              expect(starts[index]! - claimed < 1000).toBe(true)
+
+              if (index > 0) expect(starts[index - 1]! < claimed).toBe(true)
+            }
+          }
+        }),
+      ),
+  },
+  {
+    name: "claims and settles once a delivery whose receiver turn its group evicted and ran again",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment, fixture }) =>
+      withCluster(
+        environment,
+        fixture,
+        1,
+        {},
+        Effect.gen(function* () {
+          const quick = "evicted-quick"
+          const late = "evicted-late"
+
+          const twin = (id: string) =>
+            Array.from({ length: 1000 }, (_, index) => `${id}-warm-${index}`).find(
+              (candidate) => mailboxOf(candidate) === mailboxOf(id),
+            )!
+
+          expect(mailboxOf(quick)).not.toBe(mailboxOf(late))
+          const warm = [twin(quick), twin(late)]
+          yield* stage(0, warm)
+          yield* eventually(settledAll(fixture, warm), "20 seconds", "both mailboxes to warm")
+
+          const lateStarted = yield* Deferred.make<void>()
+          const quickSettled = yield* Deferred.make<void>()
+          fixture.hook = (point, request) =>
+            point === "beforeOutboxDelete"
+              ? decodeTaken(request.payload).pipe(
+                  Effect.flatMap((id) =>
+                    id === quick ? Deferred.succeed(quickSettled, undefined) : Effect.void,
+                  ),
+                  Effect.asVoid,
+                )
+              : Effect.void
+          fixture.onTake = (id) =>
+            id === quick
+              ? Deferred.await(lateStarted)
+              : id === late
+                ? Deferred.succeed(lateStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(quickSettled)),
+                  )
+                : Effect.void
+
+          yield* stage(0, [quick, late])
+          yield* eventually(settledAll(fixture, [quick, late]), "20 seconds", "both deliveries")
+
+          expect(fixture.taken.get(quick)).toBe(1)
+          expect(fixture.taken.get(late)).toBe(2)
+          expect(fixture.claims.size).toBe(4)
+          expect([...fixture.claims.values()].every((count) => count === 1)).toBe(true)
+          expect(yield* receipts(0, "Take")).toBe(4)
         }),
       ),
   },
