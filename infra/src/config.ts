@@ -208,13 +208,13 @@ export type Deployment = Effect.Success<ReturnType<typeof deployment>>
 export const stackName = "akter"
 
 /** What a pull request preview needs from the `preview` stage's output. */
-export interface SharedOutputs {
-  readonly neki: {
-    readonly organization: string
-    readonly database: string
-    readonly branch: string
-  }
-}
+/**
+ * The Neki cluster every pull request preview shares, owned by the `preview` stage. A preview names
+ * it directly rather than reading the `preview` stage's state: Alchemy's Postgres state holds a
+ * stage's lock for the whole run of anything that reads it, so reading it would serialize every
+ * preview deploy and destroy behind one another and behind a deploy of `preview` itself.
+ */
+export const sharedNekiCluster = { database: `akter-${sharedStage}`, branch: "main" } as const
 
 /** The record name of `host` inside `zone`: empty for the apex. */
 export const relativeName = (input: { readonly zone: string; readonly host: string }) => {

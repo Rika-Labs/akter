@@ -547,11 +547,9 @@ describe("control-plane database", () => {
       expect(ids(graph, "Planetscale.NekiLogicalDatabase")).toEqual(["PreviewDatabase"])
       expect(graph.declarations["PreviewDatabase"]).toMatchObject({ name: "akter_pr_23" })
       expect(graph.declarations["PreviewRole"]).toMatchObject({
-        organization: expect.stringContaining(
-          "stackRef(akter, { stage: preview }).neki.organization",
-        ),
-        database: expect.stringContaining("stackRef(akter, { stage: preview }).neki.database"),
-        branch: expect.stringContaining("stackRef(akter, { stage: preview }).neki.branch"),
+        organization: "placeholder",
+        database: "akter-preview",
+        branch: "main",
         inheritedRoles: ["postgres", "pg_read_all_data", "neki_viewer"],
       })
       expect(removalOf(graph, "PreviewDatabase")).toBe("destroy")
