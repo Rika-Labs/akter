@@ -116,6 +116,7 @@ const dockerService = (
       env: input.env,
       services: publicService(layout, input),
       restart: { policy: "on-failure", maxRetries: 10 },
+      deploy: { strategy: "rolling", healthTimeout: "5 minutes" },
       metadata: Object.fromEntries(secrets),
     })
     yield* Fly.Certificate("Certificate", { app, hostname: input.host })
