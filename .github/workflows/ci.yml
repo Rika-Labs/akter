@@ -102,7 +102,6 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --tmpfs /var/lib/postgresql
           --health-cmd "pg_isready -U project -d postgres"
           --health-interval 5s
           --health-timeout 5s
@@ -264,6 +263,7 @@ jobs:
               --project=postgres:cron
           - name: postgres-4
             projects: --project=integration:migrations
+            replica: "false"
           - name: postgres-8
             projects: --project=integration
           - name: postgres-5
@@ -293,7 +293,6 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --tmpfs /var/lib/postgresql
           --health-cmd "pg_isready -U project -d postgres"
           --health-interval 5s
           --health-timeout 5s
@@ -307,6 +306,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - name: Start the streaming replica
+        if: matrix.replica != 'false'
         run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
       - name: Postgres conformance on Bun, ${{ matrix.name }}
         env:
@@ -338,7 +338,6 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --tmpfs /var/lib/postgresql
           --health-cmd "pg_isready -U project -d postgres"
           --health-interval 5s
           --health-timeout 5s
@@ -409,7 +408,6 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --tmpfs /var/lib/postgresql
           --health-cmd "pg_isready -U project -d postgres"
           --health-interval 5s
           --health-timeout 5s
