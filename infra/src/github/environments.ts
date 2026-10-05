@@ -104,6 +104,12 @@ export const environments = Effect.gen(function* () {
               : Option.none(),
           ],
           [
+            "STRIPE_MODE",
+            input.production
+              ? Option.some(yield* Config.String("PRODUCTION_STRIPE_MODE"))
+              : Option.none(),
+          ],
+          [
             "AXIOM_NOTIFIER_ID",
             input.production
               ? Option.some(yield* Config.String("AXIOM_NOTIFIER_ID"))

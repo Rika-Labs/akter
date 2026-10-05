@@ -629,4 +629,33 @@ describe("stage rules", () => {
       )
       expect(String(prod)).toContain("live mode")
     }))
+
+  test("bills production in test mode only when its environment says so", () =>
+    Effect.gen(function* () {
+      const chosen = yield* Effect.exit(
+        preview({
+          stage: "prod",
+          overrides: {
+            STRIPE_MODE: "test",
+            STRIPE_API_KEY: "sk_test_nonfunctional-offline-placeholder",
+          },
+        }),
+      )
+      expect(chosen._tag).toBe("Success")
+      const unset = yield* Effect.exit(
+        preview({ stage: "prod", overrides: { STRIPE_MODE: undefined } }),
+      )
+      expect(unset._tag).toBe("Failure")
+      expect(String(unset)).toContain("STRIPE_MODE")
+      const preview5 = yield* Effect.exit(
+        preview({
+          stage: "pr-5",
+          overrides: {
+            STRIPE_MODE: "live",
+            STRIPE_API_KEY: "sk_live_nonfunctional-offline-placeholder",
+          },
+        }),
+      )
+      expect(String(preview5)).toContain("test mode")
+    }))
 })

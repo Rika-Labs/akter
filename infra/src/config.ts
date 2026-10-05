@@ -1,4 +1,4 @@
-import { Config, Effect, Option, Redacted } from "effect"
+import { Config, Effect, Option, Redacted, Schema } from "effect"
 import { Stage } from "alchemy/Stage"
 
 /** The Fly organization that holds every pull request preview, and the one that holds `prod`. */
@@ -70,7 +70,8 @@ export interface Layout {
     readonly site: string
   }
   readonly runnerPrefix: string
-  readonly stripeMode: "live" | "test"
+  /** Only `prod` may bill in Stripe live mode; a preview always bills in test mode. */
+  readonly liveBilling: boolean
   readonly edgeMachines: number
 }
 
@@ -119,7 +120,7 @@ export const layoutOf = (stage: string): StageLayout => {
       : `Akter Preview <auth-preview@${platformZone}>`,
     apps,
     runnerPrefix: `akter-${stage.replace("-", "")}-run-`,
-    stripeMode: production ? "live" : "test",
+    liveBilling: production,
     edgeMachines: production ? 2 : 1,
   }
 }
@@ -139,14 +140,24 @@ export const assertOperation = (input: {
   return layout
 }
 
-/** A Stripe secret or restricted key must belong to the mode the stage bills in. */
+export const StripeMode = Schema.Literals(["test", "live"])
+export type StripeMode = typeof StripeMode.Type
+
+/**
+ * A Stripe secret or restricted key must belong to the mode the stage bills in. `prod` bills in
+ * whichever mode its environment names, so test mode before launch is an explicit, recorded choice
+ * rather than a missing key; a preview may never bill in live mode.
+ */
 export const assertStripeMode = (input: {
   readonly layout: Layout
+  readonly mode: StripeMode
   readonly key: Redacted.Redacted<string>
 }) => {
-  const { layout, key } = input
-  if (!new RegExp(`^(sk|rk)_${layout.stripeMode}_`).test(Redacted.value(key)))
-    throw new Error(`Stage ${layout.stage} bills in Stripe ${layout.stripeMode} mode`)
+  const { layout, mode, key } = input
+  if (mode === "live" && !layout.liveBilling)
+    throw new Error(`Stage ${layout.stage} never bills in Stripe live mode`)
+  if (!new RegExp(`^(sk|rk)_${mode}_`).test(Redacted.value(key)))
+    throw new Error(`Stage ${layout.stage} bills in Stripe ${mode} mode`)
 }
 
 /** The runtime configuration of the api's `RUNNER_FLY_CONFIG`. */
@@ -171,7 +182,10 @@ export const planetscaleOrganization = Config.String("PLANETSCALE_ORGANIZATION")
 export const deployment = (layout: Layout) =>
   Effect.gen(function* () {
     const stripeKey = yield* Config.Redacted("STRIPE_API_KEY")
-    yield* Effect.try(() => assertStripeMode({ layout, key: stripeKey }))
+    const stripeMode: StripeMode = layout.liveBilling
+      ? yield* Config.schema(StripeMode, "STRIPE_MODE")
+      : "test"
+    yield* Effect.try(() => assertStripeMode({ layout, mode: stripeMode, key: stripeKey }))
     return {
       layout,
       flyToken: yield* Config.Redacted("FLY_API_TOKEN"),
