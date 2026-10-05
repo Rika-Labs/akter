@@ -347,6 +347,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
+  },
   "catalog": {
     "@alchemy.run/frontend-frameworks": "2.0.0-beta.80",
     "@distilled.cloud/axiom": "1.0.0-rc.13",

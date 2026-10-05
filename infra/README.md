@@ -107,3 +107,7 @@ Destroying a `pr-<n>` stage deletes its Fly apps and machines, certificates, DNS
 - Provisioning and topology generation do not prove runtime Neki support; the provider-specific create, reconcile, delete and SQL conformance checks remain separate gates.
 - Stripe allows 16 webhook endpoints per account, which bounds the previews open at once.
 - Stage state is sensitive: it holds the generated `AUTH_SECRET`, the edge signing key and provider tokens. Restrict the state database accordingly.
+
+## Patched dependency
+
+`patches/alchemy@2.0.0-beta.80.patch` lengthens one wait in Alchemy's Fly provider. After it updates an existing Machine, Alchemy re-reads the Machine until Fly reports the new config, giving up after 8 tries within 60 seconds. Fly keeps reporting the old config while the Machine is `replacing`, which includes pulling the new image, and that took about 90 seconds for our images, so every update of an existing preview or `prod` Machine failed even though Fly applied it. The patch polls every 2 seconds for up to 5 minutes. Drop it once Alchemy waits for the replacement itself.
