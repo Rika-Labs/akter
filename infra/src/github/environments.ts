@@ -2,6 +2,7 @@ import * as Axiom from "alchemy/Axiom"
 import * as GitHub from "alchemy/GitHub"
 import * as Namespace from "alchemy/Namespace"
 import { Config, Effect, Option } from "effect"
+import { datasets } from "../telemetry.ts"
 
 export const repository = { owner: "Rika-Labs", repository: "akter" }
 
@@ -25,7 +26,9 @@ const variables = (entries: ReadonlyArray<readonly [string, Option.Option<string
  * that cannot touch production, above all a state database of its own, because state holds
  * `prod`'s generated secrets. Only the Vercel token is shared, and it can edit every DNS record in
  * the team. The Axiom token each environment receives is minted here with only what that
- * environment's deploys need, and is not a copy of the token running this stack. Anything the
+ * environment's deploys need, including ingest on the shared datasets so it can mint each stage's
+ * ingest token (Axiom refuses to grant a capability its creator lacks), and is not a copy of the
+ * token running this stack. Anything the
  * stack does not mint is copied.
  */
 export const environments = Effect.gen(function* () {
@@ -57,6 +60,10 @@ export const environments = Effect.gen(function* () {
       name: `akter-ci-${input.name}`,
       description: `Alchemy deploys of the ${input.name} environment`,
       orgCapabilities: input.axiom,
+      datasetCapabilities: {
+        [datasets.traces]: { ingest: ["create"] },
+        [datasets.logs]: { ingest: ["create"] },
+      },
     })
     yield* GitHub.Secrets({
       ...repository,
