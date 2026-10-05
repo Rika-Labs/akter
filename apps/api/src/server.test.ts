@@ -25,6 +25,7 @@ import {
   enterpriseOrganizations,
   isolatedLive,
   options,
+  password,
   read,
   signupWith,
   stalledRequest,
@@ -1306,3 +1307,80 @@ describe(
     )
   },
 )
+
+const consoleOrigin = "https://akter-pr-7-console.fly.dev"
+
+/** Signs a verified person in through the HTTP surface from `from` and answers the cookies of the real `Set-Cookie` headers. */
+const signInFrom = (from: string) =>
+  Effect.gen(function* () {
+    const { request } = yield* testServer
+    const sql = yield* SqlClient.SqlClient
+    const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).slice(0, 8)
+    const user = yield* signupWith({ request, sql, suffix })("cookie-user")
+    const response = yield* request({
+      path: "/auth/sign-in/email",
+      method: "POST",
+      origin: from,
+      body: { email: user.email, password },
+    })
+    return { status: response.status, cookies: Object.values(response.cookies.cookies) }
+  })
+
+it.layer(isolatedLive({ consoleOrigin }), { excludeTestServices: true })(
+  "auth cookies on a console and an API of one site",
+  (it) => {
+    it.effect(
+      "keeps the session cookie SameSite=Lax, unpartitioned, by default",
+      () =>
+        Effect.gen(function* () {
+          const { status, cookies } = yield* signInFrom(consoleOrigin)
+          expect(status).toBe(200)
+          const session = cookies.find(({ name }) => name === "better-auth.session_token")
+          expect(session?.options).toMatchObject({ sameSite: "lax", httpOnly: true, path: "/" })
+          expect(session?.options?.partitioned).toBeUndefined()
+          expect(session?.options?.secure).toBeUndefined()
+        }),
+      { timeout: 60000 },
+    )
+  },
+)
+
+it.layer(isolatedLive({ consoleOrigin, cookieSameSite: "none" }), {
+  excludeTestServices: true,
+})("auth cookies on a console and an API of different sites", (it) => {
+  it.effect(
+    "issues every cookie SameSite=None, Secure and Partitioned, to the console's origin only",
+    () =>
+      Effect.gen(function* () {
+        const { request } = yield* testServer
+        const { status, cookies } = yield* signInFrom(consoleOrigin)
+        expect(status).toBe(200)
+        expect(cookies.map(({ name }) => name)).toContain("better-auth.session_token")
+        for (const { options } of cookies)
+          expect(options).toMatchObject({
+            sameSite: "none",
+            secure: true,
+            partitioned: true,
+            httpOnly: true,
+            path: "/",
+          })
+
+        const sibling = "https://akter-pr-8-console.fly.dev"
+        const allowed = yield* request({ path: "/auth/get-session", origin: consoleOrigin })
+        expect(allowed.headers["access-control-allow-origin"]).toBe(consoleOrigin)
+        expect(allowed.headers["access-control-allow-credentials"]).toBe("true")
+        const other = yield* request({ path: "/auth/get-session", origin: sibling })
+        expect(other.headers["access-control-allow-origin"]).toBeUndefined()
+        const refused = yield* request({
+          path: "/auth/sign-in/email",
+          method: "POST",
+          origin: sibling,
+          cookie: "better-auth.session_token=unrelated",
+          body: { email: "nobody@example.com", password },
+        })
+        expect(refused.status).toBe(403)
+        expect(Object.keys(refused.cookies.cookies)).toEqual([])
+      }),
+    { timeout: 60000 },
+  )
+})

@@ -125,6 +125,23 @@ describe("API configuration", () => {
       expect((yield* loadProduction({ EMAIL_MODE: "ses" }))._tag).toBe("Failure")
     }),
   )
+  it.effect(
+    "keeps auth cookies SameSite=Lax unless the stage asks for none, and refuses any other value",
+    () =>
+      Effect.gen(function* () {
+        const sameSite = (overrides: Record<string, string>) =>
+          loadProduction(overrides).pipe(
+            Effect.map((loaded) =>
+              Exit.isSuccess(loaded) ? loaded.value.cookieSameSite : "refused",
+            ),
+          )
+        expect(yield* sameSite({})).toBe("lax")
+        expect(yield* sameSite({ AUTH_COOKIE_SAME_SITE: "lax" })).toBe("lax")
+        expect(yield* sameSite({ AUTH_COOKIE_SAME_SITE: "none" })).toBe("none")
+        for (const value of ["strict", "None", "NONE", "true"])
+          expect(yield* sameSite({ AUTH_COOKIE_SAME_SITE: value })).toBe("refused")
+      }),
+  )
   const fly = JSON.stringify({
     organization: "rika-labs-prod",
     regions: { "us-east-1": { region: "iad" } },

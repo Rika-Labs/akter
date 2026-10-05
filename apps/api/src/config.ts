@@ -10,6 +10,13 @@ export interface ApiOptions {
   readonly secret: Redacted.Redacted<string>
   readonly origin: string
   readonly consoleOrigin?: string
+  /**
+   * The SameSite attribute of every Better Auth cookie. `none` also makes them
+   * `Secure` and `Partitioned`, for a console and an API that are different
+   * sites, such as two hostnames under a public suffix like `fly.dev`; the
+   * default `lax` is for a console and an API on one registrable domain.
+   */
+  readonly cookieSameSite?: "lax" | "none"
   readonly trustedIdpOrigins?: ReadonlyArray<string>
   readonly port: number
   readonly hostname?: string
@@ -90,6 +97,9 @@ export const loadOptions = Effect.gen(function* () {
     Config.withDefault("http://localhost:3001"),
   )
   const consoleOrigin = yield* Config.String("CONSOLE_ORIGIN").pipe(Config.option)
+  const cookieSameSite = yield* Config.Literals(["lax", "none"], "AUTH_COOKIE_SAME_SITE").pipe(
+    Config.withDefault("lax"),
+  )
   const trustedIdpOrigins = yield* Config.String("AUTH_TRUSTED_IDP_ORIGINS").pipe(
     Config.withDefault(""),
     Config.map((value) =>
@@ -237,6 +247,7 @@ export const loadOptions = Effect.gen(function* () {
     secret,
     origin,
     consoleOrigin: Option.getOrUndefined(consoleOrigin),
+    cookieSameSite,
     trustedIdpOrigins,
     port,
     hostname,

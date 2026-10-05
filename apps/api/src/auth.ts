@@ -108,6 +108,10 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
           return { action: "continue" }
         }),
   })
+  const crossSiteCookies =
+    options.cookieSameSite === "none"
+      ? ({ sameSite: "none", secure: true, partitioned: true } as const)
+      : undefined
   const settings = {
     secret: options.secret,
     baseURL: options.origin,
@@ -155,6 +159,7 @@ const makeAuth = Effect.fn("Auth.make")(function* (options: ApiOptions) {
     ],
     advanced: {
       useSecureCookies: options.production,
+      defaultCookieAttributes: crossSiteCookies,
       disableCSRFCheck: false,
       disableOriginCheck: false,
       backgroundTasks: {

@@ -32,6 +32,8 @@ Stop only that project with the same `-p` and file arguments. `down` preserves i
 
 The console runs separately with its own Vite command. Compose sets `CONSOLE_ORIGIN` to `http://localhost:5173` unless you override it; set it to the console's exact origin. It is the one credentialed browser origin besides `API_ORIGIN` and the base of every link in invitation, verification and password-reset email. When it is unset, the API serves the console itself behind one origin and those links use `API_ORIGIN`. `bun run dev:apps` preserves the monorepo's former Turbo development path. A same-origin reverse proxy is recommended outside local development.
 
+`AUTH_COOKIE_SAME_SITE` (`lax` by default, or `none`; anything else is refused) sets the SameSite attribute of every Better Auth cookie. `none` also marks them `Secure` and `Partitioned`, for a console and an API that are different sites, as the Fly pull request previews are on `fly.dev`; CORS and trusted origins stay the API's own origin and `CONSOLE_ORIGIN` either way. Safari may block partitioned cross-site cookies.
+
 For a host Bun process instead of a container:
 
 ```sh
