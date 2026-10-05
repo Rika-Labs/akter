@@ -293,6 +293,11 @@ export const projectContext = Effect.gen(function* () {
   const api = yield* cloud
   const { organization } = yield* organizationContext
   const projects = yield* api.projects.list({ params: { organizationId: organization.id } })
+  if (projects.length === 0)
+    return yield* ConsoleError.make({
+      kind: "NoProject",
+      message: "Create a project to get started.",
+    })
   const pathname = typeof location === "undefined" ? "/" : location.pathname
   const encodedSlug = /^\/projects\/([^/]+)/.exec(pathname)?.[1]
   const routeSlug = yield* Effect.try({

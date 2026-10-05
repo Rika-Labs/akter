@@ -686,6 +686,7 @@ const redirectFor = (kind: string): string | undefined =>
     Match.when("Unauthorized", () => Routes.signIn()),
     Match.when("SignedIn", () => Routes.overview()),
     Match.when("Onboarding", () => Routes.onboarding({})),
+    Match.when("NoProject", () => Routes.onboarding({ step: "project" })),
     Match.orElse(() => undefined),
   )
 
