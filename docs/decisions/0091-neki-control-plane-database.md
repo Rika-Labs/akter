@@ -60,4 +60,4 @@ The live router also refused the runtime's relay statements after boot: `subquer
 
 ## Consequences
 
-New startup schema code in the control plane must go through `Database.schemaChange` and be rerunnable statement by statement. It must not use `DO` blocks or `LOCK TABLE`, since a Neki change has no enclosing transaction. New control-plane `.sql` files must be idempotent. Postgres deployments keep their transactional behaviour and lock keys.
+New startup schema code in the control plane must go through `Database.schemaChange` and be rerunnable statement by statement. It must not use `DO` blocks, and may take `LOCK TABLE` only when `Database.Neki` is false, since a Neki change has no enclosing transaction to hold the lock; the legacy `cloud_command_idempotency` upgrade does exactly that and relies on the schema lock and rerunnable steps on Neki. New control-plane `.sql` files must be idempotent. Postgres deployments keep their transactional behaviour and lock keys.

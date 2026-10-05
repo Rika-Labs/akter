@@ -176,6 +176,53 @@ describe("NekiLogicalDatabase provider against Postgres", () => {
       expect(yield* read(props)).toBeUndefined()
     }))
 
+  test("waits for every router to apply the new database before it returns", (url) =>
+    Effect.gen(function* () {
+      const admin = yield* unique
+      yield* on(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`CREATE DATABASE ${sql(admin)}`
+        }),
+      )
+      const standIn = inDatabase(url, admin)
+      const calls = on(
+        standIn,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const rows = yield* sql<{ calls: number }>`SELECT calls FROM neki_barriers`
+          return rows[0]?.calls
+        }),
+      )
+      yield* on(
+        standIn,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`CREATE SCHEMA __neki`
+          yield* sql`CREATE TABLE neki_barriers (calls integer NOT NULL)`
+          yield* sql`INSERT INTO neki_barriers VALUES (0)`
+          yield* sql.unsafe(`CREATE FUNCTION __neki.ddl_versions(OUT schema_version bigint, OUT cluster_version bigint)
+            LANGUAGE sql AS $$ SELECT 1::bigint, 1::bigint $$`)
+          yield* sql.unsafe(`CREATE FUNCTION __neki.wait_for_ddl(schema_version bigint, cluster_version bigint)
+            RETURNS void LANGUAGE sql AS $$ UPDATE neki_barriers SET calls = calls + 1 $$`)
+        }),
+      )
+      const props = { name: yield* unique, connectionUrl: standIn }
+      const output = yield* reconcile(props)
+      expect(yield* calls).toBe(1)
+      yield* reconcile(props, output)
+      expect(yield* calls).toBe(1)
+      yield* remove(props, output)
+      yield* on(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`DROP DATABASE ${sql(admin)} WITH (FORCE)`
+        }),
+      )
+    }))
+
   test("reads a database as present until it is dropped", (url) =>
     Effect.gen(function* () {
       const name = yield* unique

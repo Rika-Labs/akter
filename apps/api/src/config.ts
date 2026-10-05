@@ -107,7 +107,7 @@ export const loadOptions = Effect.gen(function* () {
   )
   const resendApiKey = yield* Config.Redacted("RESEND_API_KEY").pipe(Config.option)
   const emailFrom = yield* Config.String("EMAIL_FROM").pipe(
-    Config.withDefault(production ? "Akter <auth@mail.akter.dev>" : "Akter <auth@localhost>"),
+    Config.withDefault(production ? "Akter <auth@akter.dev>" : "Akter <auth@localhost>"),
   )
   const billingMode = yield* Config.Literals(["local", "stripe"], "BILLING_MODE").pipe(
     Config.withDefault("local"),
