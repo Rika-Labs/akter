@@ -248,6 +248,16 @@ describe("overview over the live API", () => {
       }),
     ))
 
+  it("fails with NoProject, not NotFound, when the organization has no project", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const responder = live({ "/api/organizations/org_1/projects": { body: [] } })
+        const error = yield* Effect.flip(load(responder))
+        expect(error).toMatchObject({ kind: "NoProject" })
+        expect(responder.seen.some((path) => path.includes("/runtime/"))).toBe(false)
+      }),
+    ))
+
   it("draws no distribution when the actor types count into different bounds", () =>
     Effect.runPromise(
       Effect.gen(function* () {
