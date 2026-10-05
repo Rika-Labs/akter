@@ -27,6 +27,7 @@ const variables = (entries: ReadonlyArray<readonly [string, Option.Option<string
  * `prod`'s generated secrets. Only the Vercel token is shared, and it can edit every DNS record in
  * the team. The Axiom token each environment receives is minted here with only what that
  * environment's deploys need, including ingest on the shared datasets so it can mint each stage's
+ * ingest token and, for `production`, query on the traces dataset its error monitor reads
  * ingest token (Axiom refuses to grant a capability its creator lacks), and is not a copy of the
  * token running this stack. Anything the
  * stack does not mint is copied.
@@ -61,7 +62,9 @@ export const environments = Effect.gen(function* () {
       description: `Alchemy deploys of the ${input.name} environment`,
       orgCapabilities: input.axiom,
       datasetCapabilities: {
-        [datasets.traces]: { ingest: ["create"] },
+        [datasets.traces]: input.production
+          ? { ingest: ["create"], query: ["read"] }
+          : { ingest: ["create"] },
         [datasets.logs]: { ingest: ["create"] },
       },
     })
