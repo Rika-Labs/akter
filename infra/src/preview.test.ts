@@ -431,6 +431,11 @@ describe("shared services", () => {
       expect(production.declarations["ServiceErrors"]).toMatchObject({
         aplQuery: expect.stringContaining("== 'prod'"),
       })
+      expect(production.declarations["ServiceErrors"]).toMatchObject({
+        aplQuery: expect.stringMatching(
+          /^(?!.*\['(status\.code|resource\.deployment\.environment)'\]).*column_ifexists\('status\.code', ''\).*column_ifexists\('resource\.deployment\.environment', ''\)/,
+        ),
+      })
       const request = yield* preview({ stage: "pr-4" })
       expect(types(request, "Axiom.Dataset")).toEqual([])
       expect(types(request, "Axiom.Monitor")).toEqual([])
@@ -533,6 +538,7 @@ describe("control-plane database", () => {
         name: "akter-production",
         region: "us-east",
         replicas: 2,
+        routers: [{ name: "default", size: "NKR_1", replicasPerCell: 1 }],
         deletionProtected: true,
         unshardedTables: expect.arrayContaining(["deployment", "actor_placements"]),
       })

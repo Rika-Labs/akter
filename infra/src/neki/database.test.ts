@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { NekiDatabaseProvider } from "./database.ts"
 import type { NekiDatabaseAttributes, NekiDatabaseProps } from "./database.ts"
 import { Neki } from "./resources.ts"
-import { dataTopology, keyRanges, type DataTopology } from "./topology.ts"
+import { dataTopology, keyRanges, type DataTopology, type LiveTopology } from "./topology.ts"
 
 const REGION = {
   id: "region",
@@ -56,12 +56,22 @@ type FakeState = {
   profileReplicas: number
   shards: FakeShard[]
   routers: FakeRouter[]
-  topology: DataTopology | undefined
+  topology: DataTopology | LiveTopology | undefined
   calls: string[]
   bodies: Record<string, RequestBody[]>
 }
 
 const NEW_SHARD_NAMES = ["zeta", "yankee", "xray", "whiskey", "victor"]
+
+/**
+ * The topology PlanetScale reports for a Neki database created in the dashboard and never
+ * configured: one shard group over the authoritative shard and no table placements.
+ */
+const unplacedTopology: LiveTopology = {
+  shard_groups: [{ uid: "meta", key_ranges: [{ shard_uid: "meta" }] }],
+  default_shard_group: "meta",
+  authoritative_shard_group: "meta",
+}
 
 const fresh = (): FakeState => ({
   exists: false,
@@ -494,6 +504,48 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
       expect(message).toContain("resharding workflows")
       expect(state.calls).toEqual([])
       expect(state.shards.filter((item) => !item.authoritative)).toHaveLength(2)
+    }))
+
+  test("places an adopted single-shard database that was never given a topology, and nothing else", () =>
+    Effect.gen(function* () {
+      const output = yield* reconcile(props())
+      state.topology = unplacedTopology
+      state.calls = []
+      yield* reconcile(props(), { output, olds: props() })
+      expect(state.calls).toContain("updateTopology")
+      expect(state.topology?.databases).toBeDefined()
+    }))
+
+  test("accepts a single-shard database a stopped run placed before it saved its shards", () =>
+    Effect.gen(function* () {
+      const output = yield* reconcile(props())
+      state.calls = []
+      yield* reconcile(props(), { output: { ...output, dataShards: [] }, olds: props() })
+      expect(state.calls).not.toContain("createShard")
+      expect(state.shards).toHaveLength(1)
+    }))
+
+  test("rewrites a single-shard database's unsharded tables, since one shard holds every group", () =>
+    Effect.gen(function* () {
+      const olds = props()
+      const output = yield* reconcile(olds)
+      const news = props({ unshardedTables: ["deployment", "cloud_usage_account"] })
+      state.calls = []
+      yield* reconcile(news, { output, olds })
+      expect(state.calls).toEqual(["updateTopology"])
+      expect(state.topology?.databases?.["postgres"]?.schemas?.["public"]?.tables).toMatchObject({
+        cloud_usage_account: { shard_group: "authoritative" },
+      })
+    }))
+
+  test("refuses to place an unconfigured database that already has more than one shard", () =>
+    Effect.gen(function* () {
+      const olds = props({ shardCount: 2 })
+      const output = yield* reconcile(olds)
+      state.topology = unplacedTopology
+      state.calls = []
+      expect(yield* refusal(reconcile(olds, { output, olds }))).toContain("resharding workflows")
+      expect(state.calls).toEqual([])
     }))
 
   test("refuses when the live topology was resharded behind the props", () =>

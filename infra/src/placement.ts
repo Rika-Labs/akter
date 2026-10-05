@@ -34,4 +34,13 @@ export const controlTables = [
   "cluster_migrations",
   "cluster_runners",
   "cluster_locks",
+  "actor_migration_steps",
+  "cloud_billing_account",
+  "cloud_connection_lease",
+  "cloud_deployment_source",
+  "cloud_meter_storage_sample",
+  "cloud_meter_tenant",
+  "cloud_source_archive",
+  "cloud_usage_account",
+  "cloud_usage_reservation",
 ] as const

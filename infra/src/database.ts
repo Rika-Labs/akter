@@ -25,8 +25,9 @@ export const withDatabase = (input: {
 
 /**
  * A Neki database with the control tables kept on the authoritative shard. `prod` runs two
- * replicas and two routers per cell and is protected from deletion and retained when its stage is
- * destroyed. The `preview` stage's cluster is the smallest the sizes allow: one shard, no
+ * extra replicas and is protected from deletion and retained when its stage is destroyed. Every
+ * cluster runs one router per cell: Neki's router baseline already places one in each of three
+ * availability zones, and the router size comes from the stage's environment. The `preview` stage's cluster is the smallest the sizes allow: one shard, no
  * replicas and a single router. Both read their sizes from the stage's environment.
  */
 const cluster = Effect.fn(function* (input: {
@@ -46,7 +47,7 @@ const cluster = Effect.fn(function* (input: {
       {
         name: "default",
         size: yield* Config.String("NEKI_ROUTER_SIZE"),
-        replicasPerCell: production ? 2 : 1,
+        replicasPerCell: 1,
       },
     ],
     unshardedTables: controlTables,

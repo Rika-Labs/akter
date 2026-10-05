@@ -123,8 +123,13 @@ export interface NekiDatabaseAttributes {
  * resharding workflows, which this resource does not run, and writing a topology
  * that moves a range without them leaves the rows on shards that no longer own
  * them. A live placement that differs from the props, whether the props changed or
- * a reshard completed, therefore fails the reconcile instead of being overwritten. Shards are
- * never deleted, and deleting the database deletes them with it.
+ * a reshard completed, therefore fails the reconcile instead of being overwritten. The one
+ * exception is a database that has, and is meant to have, a single shard. The authoritative and
+ * the data shard group are then the same shard, so every row already sits where any topology
+ * places it and writing one moves nothing. That covers a database created in the dashboard and
+ * adopted, a run that placed it but stopped before saving, and a change to the list of unsharded
+ * tables before the first reshard. Shards are never deleted, and deleting the database deletes
+ * them with it.
  *
  * @example
  * ```typescript
@@ -327,13 +332,13 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
         unshardedTables: news.unshardedTables ?? [],
       })
 
-    const mayRewrite = fresh
-    const live =
-      mayRewrite && fresh
-        ? undefined
-        : yield* liveTopology(organization, name, branch).pipe(
-            Effect.catchTag("SchemaError", () => Effect.undefined),
-          )
+    const live = fresh
+      ? undefined
+      : yield* liveTopology(organization, name, branch).pipe(
+          Effect.catchTag("SchemaError", () => Effect.undefined),
+        )
+    const singleShard = shards.length === 1 && shardCount === 1
+    const mayRewrite = fresh || singleShard
 
     const sortedSpare = (all: typeof shards) =>
       all
