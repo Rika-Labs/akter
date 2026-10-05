@@ -94,7 +94,7 @@ export const resources = Effect.gen(function* () {
         `| Edge | https://${layout.hosts.edge} |`,
         `| Customer deployments | \`*.${layout.customerDomain}\` |`,
         "",
-        `Commit \`${github.sha.slice(0, 7)}\`. Idle machines stop and start again on the next request, so the first one after a pause is slow.`,
+        `Commit \`${github.sha.slice(0, 7)}\`. Idle machines stop and start again on the next request, so the first one after a pause is slow. The console and API are different sites on \`fly.dev\`, so sign-in uses partitioned cross-site cookies: use Chrome or Firefox, as Safari may block them.`,
       ].join("\n"),
     })
   }

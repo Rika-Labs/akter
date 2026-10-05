@@ -6,6 +6,7 @@ import * as Output from "alchemy/Output"
 import { Effect, Redacted } from "effect"
 import {
   customerZone,
+  flyHostname,
   platformZone,
   relativeName,
   repositoryRoot,
@@ -55,12 +56,12 @@ const cname = (deployment: Deployment, id: string, host: string, target: string)
     teamId: deployment.vercelTeamId,
     name: relativeName({ zone: platformZone, host }),
     type: "CNAME",
-    value: `${target}.fly.dev`,
+    value: flyHostname(target),
   })
 
 /**
  * One service built from a Dockerfile in this repository: its Fly app, addresses, image,
- * secrets, machines, certificate and DNS record. The machines carry each secret's digest as
+ * secrets, machines and, on a stage with custom domains, certificate and DNS record. The machines carry each secret's digest as
  * metadata, so rotating a secret restarts them with the new value.
  */
 const dockerService = (
@@ -119,6 +120,7 @@ const dockerService = (
       deploy: { strategy: "rolling", healthTimeout: "5 minutes" },
       metadata: Object.fromEntries(secrets),
     })
+    if (!layout.customDomains) return
     yield* Fly.Certificate("Certificate", { app, hostname: input.host })
     yield* cname(deployment, "Dns", input.host, layout.apps[input.role])
   })
@@ -163,6 +165,27 @@ export const applications = (inputs: ApplicationInputs) =>
       OTEL_EXPORTER_OTLP_LOGS_HEADERS: inputs.telemetry.logHeaders,
     }
 
+    const baseEnvironment = {
+      NODE_ENV: "production",
+      PORT: "3001",
+      API_PORT: "3001",
+      API_HOST: "0.0.0.0",
+      API_PRODUCTION: "true",
+      API_ORIGIN: origin(layout.hosts.api),
+      CONSOLE_ORIGIN: origin(layout.hosts.console),
+      EDGE_ORIGIN: origin(layout.hosts.edge),
+      DEPLOYMENT_DOMAIN: layout.customerDomain,
+      BILLING_MODE: "stripe",
+      EMAIL_MODE: "resend",
+      EMAIL_FROM: layout.emailFrom,
+      RUNNER_FLY_CONFIG: runnerFlyConfig(layout),
+      CONTROL_PLANE_DATABASE_ENGINE: "neki",
+      ...telemetryEnvironment(layout, "api"),
+    }
+    const apiEnvironment = layout.customDomains
+      ? baseEnvironment
+      : { ...baseEnvironment, AUTH_COOKIE_SAME_SITE: "none" }
+
     yield* Effect.gen(function* () {
       const api = yield* app("api")
       yield* dockerService(deployment, {
@@ -175,23 +198,7 @@ export const applications = (inputs: ApplicationInputs) =>
         memoryMb: 1024,
         count: 1,
         command: ["bun", "apps/api/src/main.ts"],
-        env: {
-          NODE_ENV: "production",
-          PORT: "3001",
-          API_PORT: "3001",
-          API_HOST: "0.0.0.0",
-          API_PRODUCTION: "true",
-          API_ORIGIN: origin(layout.hosts.api),
-          CONSOLE_ORIGIN: origin(layout.hosts.console),
-          EDGE_ORIGIN: origin(layout.hosts.edge),
-          DEPLOYMENT_DOMAIN: layout.customerDomain,
-          BILLING_MODE: "stripe",
-          EMAIL_MODE: "resend",
-          EMAIL_FROM: layout.emailFrom,
-          RUNNER_FLY_CONFIG: runnerFlyConfig(layout),
-          CONTROL_PLANE_DATABASE_ENGINE: "neki",
-          ...telemetryEnvironment(layout, "api"),
-        },
+        env: apiEnvironment,
         secrets: {
           CONTROL_PLANE_DATABASE_URL: inputs.databaseUrl,
           AUTH_SECRET: inputs.authSecret,
@@ -238,7 +245,7 @@ export const applications = (inputs: ApplicationInputs) =>
         teamId: deployment.vercelTeamId,
         name: relativeName({ zone: customerZone, host: `*.${layout.customerDomain}` }),
         type: "CNAME",
-        value: `${layout.apps.edge}.fly.dev`,
+        value: flyHostname(layout.apps.edge),
       })
       yield* Vercel.DnsRecord("CustomerChallengeDns", {
         domain: customerZone,
@@ -270,27 +277,27 @@ export const applications = (inputs: ApplicationInputs) =>
     yield* Fly.Website.Foldkit("Web", {
       rootDir: `${repositoryRoot}/apps/console`,
       app: web,
-      domain: layout.hosts.console,
+      domain: layout.customDomains ? layout.hosts.console : undefined,
       env: { VITE_API_BASE_URL: origin(layout.hosts.api) },
       services,
     }).pipe(Namespace.push("console"))
-    yield* cname(deployment, "Dns", layout.hosts.console, layout.apps.console).pipe(
-      Namespace.push("console"),
-    )
+    if (layout.customDomains)
+      yield* cname(deployment, "Dns", layout.hosts.console, layout.apps.console).pipe(
+        Namespace.push("console"),
+      )
 
     const home = yield* app("site").pipe(Namespace.push("site"))
     const v6 = yield* Fly.IpAssignment("V6", { app: home, type: "v6" }).pipe(Namespace.push("site"))
     const site = yield* Fly.Website.Astro("Web", {
       rootDir: `${repositoryRoot}/apps/site`,
       app: home,
-      domain: layout.hosts.site,
+      domain: layout.customDomains ? layout.hosts.site : undefined,
       astro: { site: origin(layout.hosts.site), output: "static" },
       assets: { notFoundHandling: "404-page" },
       services,
     }).pipe(Namespace.push("site"))
+    if (!layout.customDomains) return
     yield* Effect.gen(function* () {
-      if (layout.hosts.site !== platformZone)
-        return yield* cname(deployment, "Dns", layout.hosts.site, layout.apps.site)
       if (site.ip === undefined)
         return yield* Effect.die(new Error("The site has no shared address for its apex records"))
       yield* Vercel.DnsRecord("ApexA", {

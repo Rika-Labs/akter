@@ -20,6 +20,7 @@ describe("stage layout", () => {
       kind: "prod",
       flyOrganization: "rika-labs-prod",
       sleeps: false,
+      customDomains: true,
       hosts: {
         site: "akter.dev",
         console: "app.akter.dev",
@@ -38,11 +39,12 @@ describe("stage layout", () => {
       pullRequest: 42,
       flyOrganization: "rika-labs-dev",
       sleeps: true,
+      customDomains: false,
       hosts: {
-        site: "pr-42.preview.akter.dev",
-        console: "app-pr-42.preview.akter.dev",
-        api: "api-pr-42.preview.akter.dev",
-        edge: "edge-pr-42.preview.akter.dev",
+        site: "akter-pr-42-site.fly.dev",
+        console: "akter-pr-42-console.fly.dev",
+        api: "akter-pr-42-api.fly.dev",
+        edge: "akter-pr-42-edge.fly.dev",
       },
       customerDomain: "pr-42.preview.akter.run",
       emailFrom: "Akter Preview <auth-preview@akter.dev>",
@@ -51,6 +53,17 @@ describe("stage layout", () => {
       stripeMode: "test",
       edgeMachines: 1,
     })
+  })
+
+  it("hosts a preview on the Fly hostnames of its own apps, never on the platform zone", () => {
+    const layout = application("pr-9")
+    expect(layout.hosts).toEqual({
+      site: `${layout.apps.site}.fly.dev`,
+      console: `${layout.apps.console}.fly.dev`,
+      api: `${layout.apps.api}.fly.dev`,
+      edge: `${layout.apps.edge}.fly.dev`,
+    })
+    for (const host of Object.values(layout.hosts)) expect(host.endsWith("akter.dev")).toBe(false)
   })
 
   it("gives the preview stage no services, hostnames or customer domain to hold", () => {

@@ -121,27 +121,22 @@ const stages = [
     from: "Akter <auth@akter.dev>",
     app: "akter-prod",
     prefix: "akter-prod-run-",
-    names: { api: "api", edge: "edge", console: "app", site: "" },
+    environment: {},
     wildcard: { name: "*", challenge: "_acme-challenge" },
   },
   {
     stage: "pr-23",
     organization: "rika-labs-dev",
     other: "rika-labs-prod",
-    api: "api-pr-23.preview.akter.dev",
-    edge: "edge-pr-23.preview.akter.dev",
-    console: "app-pr-23.preview.akter.dev",
-    site: "pr-23.preview.akter.dev",
+    api: "akter-pr-23-api.fly.dev",
+    edge: "akter-pr-23-edge.fly.dev",
+    console: "akter-pr-23-console.fly.dev",
+    site: "akter-pr-23-site.fly.dev",
     customer: "pr-23.preview.akter.run",
     from: "Akter Preview <auth-preview@akter.dev>",
     app: "akter-pr-23",
     prefix: "akter-pr23-run-",
-    names: {
-      api: "api-pr-23.preview",
-      edge: "edge-pr-23.preview",
-      console: "app-pr-23.preview",
-      site: "pr-23.preview",
-    },
+    environment: { AUTH_COOKIE_SAME_SITE: "none" },
     wildcard: { name: "*.pr-23.preview", challenge: "_acme-challenge.pr-23.preview" },
   },
 ]
@@ -194,6 +189,7 @@ describe("credential-free resource graph", () => {
             API_PRODUCTION: "true",
             API_ORIGIN: `https://${expected.api}`,
             CONSOLE_ORIGIN: `https://${expected.console}`,
+            ...expected.environment,
             EDGE_ORIGIN: `https://${expected.edge}`,
             DEPLOYMENT_DOMAIN: expected.customer,
             BILLING_MODE: "stripe",
@@ -303,7 +299,7 @@ describe("credential-free resource graph", () => {
           })
         }))
 
-      test("certifies every hostname and the customer wildcard on the edge", () =>
+      test("certifies the platform hostnames of prod only, and the customer wildcard on the edge", () =>
         Effect.gen(function* () {
           const compiled = yield* graph
           const hostnames = yield* Effect.forEach(ids(compiled, "Fly.Certificate"), (id) =>
@@ -312,16 +308,21 @@ describe("credential-free resource graph", () => {
               ({ hostname }) => [id, hostname] as const,
             ),
           )
-          expect(Object.fromEntries(hostnames)).toEqual({
-            "api/Certificate": expected.api,
-            "console/Web/Certificate": expected.console,
-            "edge/Certificate": expected.edge,
-            "edge/CustomerWildcard": `*.${expected.customer}`,
-            "site/Web/Certificate": expected.site,
-          })
+          const customer = { "edge/CustomerWildcard": `*.${expected.customer}` }
+          expect(Object.fromEntries(hostnames)).toEqual(
+            expected.stage === "prod"
+              ? {
+                  "api/Certificate": expected.api,
+                  "console/Web/Certificate": expected.console,
+                  "edge/Certificate": expected.edge,
+                  ...customer,
+                  "site/Web/Certificate": expected.site,
+                }
+              : customer,
+          )
         }))
 
-      test("publishes each hostname and the customer wildcard in the zone that owns it", () =>
+      test("publishes the platform hostnames of prod only, and the customer wildcard in its own zone", () =>
         Effect.gen(function* () {
           const compiled = yield* graph
           const records = yield* Effect.forEach(ids(compiled, "Vercel.DnsRecord"), (id) =>
@@ -334,9 +335,6 @@ describe("credential-free resource graph", () => {
             type: "CNAME",
             value: `${expected.app}-${role}.fly.dev`,
           })
-          expect(byId["api/Dns"]).toEqual(cname("akter.dev", expected.names.api, "api"))
-          expect(byId["edge/Dns"]).toEqual(cname("akter.dev", expected.names.edge, "edge"))
-          expect(byId["console/Dns"]).toEqual(cname("akter.dev", expected.names.console, "console"))
           expect(byId["edge/CustomerWildcardDns"]).toEqual(
             cname("akter.run", expected.wildcard.name, "edge"),
           )
@@ -346,6 +344,9 @@ describe("credential-free resource graph", () => {
             type: "CNAME",
           })
           if (expected.stage === "prod") {
+            expect(byId["api/Dns"]).toEqual(cname("akter.dev", "api", "api"))
+            expect(byId["edge/Dns"]).toEqual(cname("akter.dev", "edge", "edge"))
+            expect(byId["console/Dns"]).toEqual(cname("akter.dev", "app", "console"))
             expect(byId["site/ApexA"]).toEqual({
               domain: "akter.dev",
               name: "",
@@ -360,13 +361,22 @@ describe("credential-free resource graph", () => {
             })
             expect(byId["site/Dns"]).toBeUndefined()
           } else {
-            expect(byId["site/Dns"]).toEqual(cname("akter.dev", expected.names.site, "site"))
-            expect(byId["site/ApexA"]).toBeUndefined()
+            expect(Object.keys(byId).sort()).toEqual([
+              "edge/CustomerChallengeDns",
+              "edge/CustomerWildcardDns",
+            ])
+            expect(records.filter(([, { domain }]) => domain === "akter.dev")).toEqual([])
           }
           for (const record of Object.values(byId)) {
             expect(record.name.endsWith(record.domain)).toBe(false)
             expect(record.name.endsWith(".")).toBe(false)
           }
+        }))
+
+      test("declares no hostname under the retired preview zone", () =>
+        Effect.gen(function* () {
+          const compiled = yield* graph
+          expect(yield* encodeJson(compiled.declarations)).not.toContain("preview.akter.dev")
         }))
 
       test("builds the console against its own API", () =>
@@ -562,13 +572,15 @@ describe("pull request comment", () => {
       const comment = yield* decode.comment(graph.declarations["PreviewUrls"])
       expect(comment).toMatchObject({ owner: "Rika-Labs", repository: "akter", issueNumber: 23 })
       for (const url of [
-        "https://pr-23.preview.akter.dev",
-        "https://app-pr-23.preview.akter.dev",
-        "https://api-pr-23.preview.akter.dev",
-        "https://edge-pr-23.preview.akter.dev",
+        "https://akter-pr-23-site.fly.dev",
+        "https://akter-pr-23-console.fly.dev",
+        "https://akter-pr-23-api.fly.dev",
+        "https://akter-pr-23-edge.fly.dev",
         "*.pr-23.preview.akter.run",
       ])
         expect(comment.body).toContain(url)
+      expect(comment.body).not.toContain("preview.akter.dev")
+      expect(comment.body).toContain("partitioned cross-site cookies")
       for (const stage of ["preview", "prod"])
         expect(types(yield* preview({ stage }), "GitHub.Comment")).toEqual([])
     }))

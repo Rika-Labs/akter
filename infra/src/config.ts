@@ -24,6 +24,9 @@ export const repositoryRoot = new URL("../../", import.meta.url).pathname.replac
  */
 export const sharedStage = "preview"
 
+/** The free hostname Fly gives every app. */
+export const flyHostname = (app: string) => `${app}.fly.dev`
+
 const pullRequestStage = /^pr-([1-9][0-9]{0,5})$/
 
 export interface SharedLayout {
@@ -41,6 +44,14 @@ export interface Layout {
   readonly region: string
   /** Idle previews stop their machines and wake on the next request. */
   readonly sleeps: boolean
+  /**
+   * Whether the four platform hosts are custom domains on the platform zone, each with a Fly
+   * certificate and a DNS record. A preview uses the free `<app>.fly.dev` hostnames instead:
+   * every certificate it issued on the platform zone counted against the zone's weekly Let's
+   * Encrypt limit, which `prod` shares. `fly.dev` is a public suffix, so a preview's console and
+   * API are different sites and its API must issue cross-site cookies.
+   */
+  readonly customDomains: boolean
   readonly hosts: {
     readonly site: string
     readonly console: string
@@ -75,6 +86,12 @@ export const layoutOf = (stage: string): StageLayout => {
   if (stage !== "prod" && number === undefined)
     throw new Error(`Unsupported stage "${stage}": use prod, ${sharedStage} or pr-<number>`)
   const production = stage === "prod"
+  const apps = {
+    api: `akter-${stage}-api`,
+    edge: `akter-${stage}-edge`,
+    console: `akter-${stage}-console`,
+    site: `akter-${stage}-site`,
+  }
   return {
     stage,
     kind: production ? "prod" : "pr",
@@ -82,6 +99,7 @@ export const layoutOf = (stage: string): StageLayout => {
     flyOrganization: production ? flyOrganizations.production : flyOrganizations.preview,
     region,
     sleeps: !production,
+    customDomains: production,
     hosts: production
       ? {
           site: platformZone,
@@ -90,21 +108,16 @@ export const layoutOf = (stage: string): StageLayout => {
           edge: `edge.${platformZone}`,
         }
       : {
-          site: `${stage}.preview.${platformZone}`,
-          console: `app-${stage}.preview.${platformZone}`,
-          api: `api-${stage}.preview.${platformZone}`,
-          edge: `edge-${stage}.preview.${platformZone}`,
+          site: flyHostname(apps.site),
+          console: flyHostname(apps.console),
+          api: flyHostname(apps.api),
+          edge: flyHostname(apps.edge),
         },
     customerDomain: production ? customerZone : `${stage}.preview.${customerZone}`,
     emailFrom: production
       ? `Akter <auth@${platformZone}>`
       : `Akter Preview <auth-preview@${platformZone}>`,
-    apps: {
-      api: `akter-${stage}-api`,
-      edge: `akter-${stage}-edge`,
-      console: `akter-${stage}-console`,
-      site: `akter-${stage}-site`,
-    },
+    apps,
     runnerPrefix: `akter-${stage.replace("-", "")}-run-`,
     stripeMode: production ? "live" : "test",
     edgeMachines: production ? 2 : 1,
