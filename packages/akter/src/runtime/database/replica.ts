@@ -18,6 +18,16 @@ export const COMMIT_VERSION = `SELECT (pg_current_wal_insert_lsn() - '0/0')::tex
   floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
 /**
+ * `COMMIT_VERSION` on a Neki router, which has no WAL position to report: its
+ * evaluation engine refuses `pg_current_wal_insert_lsn()`, and a Neki
+ * database has no streaming replica for a version to gate, so every commit
+ * reports version 0. The clock is still the shard's, read after the
+ * transaction ended.
+ */
+export const NEKI_COMMIT_VERSION = `SELECT '0' AS version,
+  floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
+
+/**
  * This runner's streaming replica, if it has one. A query that carries a
  * version reads there only once the replica has replayed past it, and
  * otherwise reads the primary.

@@ -32,6 +32,7 @@ import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
 import { type BucketRange, shardClients } from "../database/shards.ts"
+import { NekiTurnSessions } from "../database/neki/session.ts"
 import type {
   Handoff,
   SubscriptionError,
@@ -206,6 +207,7 @@ interface JobClaim {
  */
 const claimDue = ({
   sql,
+  clock,
   now,
   intents,
   jobs,
@@ -213,6 +215,8 @@ const claimDue = ({
   range,
 }: {
   readonly sql: SqlClient.SqlClient
+  /** The CTE `now` reads, when `now` is not a constant. */
+  readonly clock?: Statement.Fragment | undefined
   readonly now: Statement.Fragment
   readonly intents?: IntentClaim | undefined
   readonly jobs?: JobClaim | undefined
@@ -302,7 +306,7 @@ const claimDue = ({
 
   if (results.length === 0) return Effect.succeed([] as ReadonlyArray<ClaimedRow>)
 
-  return sql<ClaimedRow>`WITH ${sql.csv(parts)}
+  return sql<ClaimedRow>`${withClock(sql, clock)} ${sql.csv(parts)}
     ${sql.join(" UNION ALL ", false)(results)}`
 }
 
@@ -354,18 +358,21 @@ interface DueGroup extends CappedGroup {
  */
 const cappedGroups = ({
   sql,
+  clock,
   now,
   executors,
   limit,
   range,
 }: {
   readonly sql: SqlClient.SqlClient
+  /** The CTE `now` reads, when `now` is not a constant. */
+  readonly clock?: Statement.Fragment | undefined
   readonly now: Statement.Fragment
   readonly executors: ReadonlyArray<LocalExecutor>
   readonly limit: number
   readonly range: BucketRange
 }) =>
-  sql<DueGroup>`WITH mine (actor_type, command) AS (
+  sql<DueGroup>`${withClock(sql, clock)} mine (actor_type, command) AS (
       VALUES ${sql.csv(executors.map(({ actor, job }) => sql`(${actor}::text, ${job}::text)`))}
     ),
     due AS (
@@ -402,6 +409,7 @@ const cappedGroups = ({
  */
 export const claimCapped = ({
   sql,
+  clock,
   now,
   group,
   cap,
@@ -410,6 +418,8 @@ export const claimCapped = ({
   leaseMs,
 }: {
   readonly sql: SqlClient.SqlClient
+  /** The CTE `now` reads, when `now` is not a constant. */
+  readonly clock?: Statement.Fragment | undefined
   readonly now: Statement.Fragment
   readonly group: CappedGroup
   readonly cap: number
@@ -423,7 +433,7 @@ export const claimCapped = ({
       const inGroup = groupRow({ sql, group })
       yield* sql`SELECT 1 FROM actor_outbox o WHERE ${inGroup} AND o.running FOR UPDATE OF o`
 
-      return yield* sql<ClaimedRow>`WITH live AS (
+      return yield* sql<ClaimedRow>`${withClock(sql, clock)} live AS (
           SELECT count(*)::int AS n FROM actor_outbox o
           WHERE ${inGroup} AND o.running AND o.due_at_ms > ${now}
         ),
@@ -473,15 +483,45 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "job") => {
     WHERE NOT EXISTS (SELECT 1 FROM ${claimed}) AND EXISTS (SELECT 1 FROM ${found})`
 }
 
-/** The outbox clock inside a statement: its start time on the database plus the test offset. */
+/**
+ * The `outbox_clock` CTE: the outbox clock of one statement, read once so
+ * every place the statement compares or sets a due time sees one value. Every
+ * statement that reads `outboxNow` lists it first in its `WITH`.
+ *
+ * Postgres reads the statement's start time. A Neki router evaluates
+ * `statement_timestamp()` and the other transaction-time functions itself,
+ * with its own clock, and must then plan the whole statement with a planner
+ * that refuses data-modifying CTEs, subqueries in `UPDATE`, and expressions in
+ * `LIMIT`; a session targeted at one shard refuses those functions outright.
+ * Neki therefore reads `clock_timestamp()`, which the shard that holds the
+ * rows evaluates, so the router forwards the statement unchanged and due
+ * times are compared on the clock turns write them with. That clock is read
+ * when the statement first needs it, never before the statement starts, so a
+ * row committed before the claim was sent is still due.
+ */
+export const outboxClock = ({
+  sql,
+  neki,
+}: {
+  readonly sql: SqlClient.SqlClient
+  readonly neki: boolean
+}) =>
+  sql`outbox_clock AS MATERIALIZED (SELECT floor(extract(epoch FROM ${sql.literal(
+    neki ? "clock_timestamp()" : "statement_timestamp()",
+  )}) * 1000)::bigint AS ms)`
+
+/** The outbox clock inside a statement that lists `outboxClock`, plus the test offset. */
 export const outboxNow = ({
   sql,
   offsetMillis,
 }: {
   readonly sql: SqlClient.SqlClient
   readonly offsetMillis: number
-}) =>
-  sql`(floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint + ${offsetMillis}::bigint)`
+}) => sql`((SELECT ms FROM outbox_clock) + ${offsetMillis}::bigint)`
+
+/** `WITH` followed by `clock` and a comma, or just `WITH` when the statement's clock is a constant. */
+const withClock = (sql: SqlClient.SqlClient, clock: Statement.Fragment | undefined) =>
+  clock === undefined ? sql`WITH` : sql`WITH ${clock},`
 
 /** The intent half of `claimDue` at a fixed `now`, as a statement to inspect. */
 export const claimIntents = ({
@@ -616,6 +656,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   schedules: () => ReadonlyMap<string, CronSchedule> = () => new Map(),
 ) {
   const sql = yield* SqlClient.SqlClient
+  const statementClock = outboxClock({ sql, neki: yield* NekiTurnSessions })
   const shards = yield* shardClients
   let firstShard = 0
   const services = yield* Effect.context<SqlClient.SqlClient>()
@@ -826,6 +867,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 const groups = yield* cappedGroups({
                   sql,
                   range,
+                  clock: statementClock,
                   now,
                   executors: capped,
                   limit: remaining,
@@ -844,6 +886,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
                   claimed.push(
                     ...(yield* claimCapped({
                       sql,
+                      clock: statementClock,
                       now,
                       group,
                       cap: registered.perActor!,
@@ -880,6 +923,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             const claimed = yield* claimDue({
               sql,
               range,
+              clock: statementClock,
               now,
               intents:
                 intentSlots > 0

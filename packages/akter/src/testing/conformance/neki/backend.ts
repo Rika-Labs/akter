@@ -11,11 +11,18 @@ export const NEKI_SKIP_REASON = `${NEKI_URL_VARIABLE} is not set; Neki runs are 
 
 /**
  * The Neki backend: a Postgres-protocol router that places every framework
- * table by `routing_key`. It cannot create databases beside its own, so every
- * case that declares `requiresFreshDatabase` is reported as skipped by name.
+ * table by `routing_key`. The suite runs in the database `url` names, which
+ * must be empty and is left for its owner to drop: the router refuses to drop
+ * a database while sessions remain. Cases that declare `requiresFreshDatabase`
+ * are reported as skipped by name.
  */
 export const nekiBackend = (url: string) =>
-  postgresBackend({ url: Effect.succeed(url), neki: true, freshDatabases: false })
+  postgresBackend({
+    url: Effect.succeed(url),
+    neki: true,
+    freshDatabases: false,
+    ownDatabase: true,
+  })
 
 /**
  * Runs every conformance group against the Neki router that

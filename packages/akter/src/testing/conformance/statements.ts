@@ -43,8 +43,11 @@ const collapse = (sql: string) => sql.replace(/\s+/g, " ").trim()
  */
 const tablesOf = (sql: string) => {
   const defined = new Set(
-    Array.from(sql.matchAll(/(?:\bwith\b|,)\s*([a-z_]\w*)\s*(?:\([^)]*\))?\s+as\s*\(/gi), (match) =>
-      match[1]!.toLowerCase(),
+    Array.from(
+      sql.matchAll(
+        /(?:\bwith\b|,)\s*([a-z_]\w*)\s*(?:\([^)]*\))?\s+as\s*(?:(?:not\s+)?materialized\s*)?\(/gi,
+      ),
+      (match) => match[1]!.toLowerCase(),
     ),
   )
 

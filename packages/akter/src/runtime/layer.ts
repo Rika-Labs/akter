@@ -1629,7 +1629,9 @@ export const Database = {
    * (`maxConnections` default 10) opens connections only as queries need them.
    * Every pool requests server TCP keepalives at 5 seconds idle, 2 seconds
    * between probes, and 3 probes. `startupParameters` overrides these defaults
-   * independently on the primary and replica configurations.
+   * independently on the primary and replica configurations. A Neki router
+   * reports no commit version for a replica to wait for, so `neki` refuses a
+   * `replica`.
    *
    * Registers a `regclass` codec because the pinned driver lacks one and the
    * migrator needs it on restart; remove once Effect #8309 lands.
@@ -1657,6 +1659,8 @@ export const Database = {
 
     const { offTurnConnections, queryConnections, replica, neki, coordination, ...configured } =
       options
+    if (neki === true && replica !== undefined)
+      throw new Error("A Neki database has no commit version for a replica to wait for")
     const pool = withKeepalives(configured)
 
     const database = Layer.mergeAll(
