@@ -3,19 +3,12 @@ import * as stylex from "@stylexjs/stylex"
 import { container } from "./container.styles.ts"
 
 interface Props {
-  width?: "site" | "landing" | "reading"
-  as?: "div" | "section" | "header" | "footer" | "main"
+  as?: "div" | "section" | "header" | "footer" | "main" | "article"
 }
 
-const { width = "site", as: Tag = "div" } = Astro.props
+const { as: Tag = "div" } = Astro.props
 ---
 
-<Tag
-  {...stylex.attrs(
-    container.root,
-    width === "landing" && container.landing,
-    width === "reading" && container.reading,
-  )}
->
+<Tag {...stylex.attrs(container.root)}>
   <slot />
 </Tag>

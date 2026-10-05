@@ -5,12 +5,7 @@
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "!**/*.test.ts",
-        "$TURBO_ROOT$/BENCHMARKS.md",
-        "$TURBO_ROOT$/README.md"
-      ],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.test.ts", "$TURBO_ROOT$/BENCHMARKS.md"],
       "env": ["NODE_ENV"]
     }
   }

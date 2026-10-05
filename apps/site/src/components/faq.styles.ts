@@ -1,6 +1,7 @@
-import { colors, motion, space, typography } from "@akter/ui/tokens.stylex"
+import { typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { queries } from "../styles/breakpoints.stylex.ts"
+import { questionMarker } from "../styles/markers.stylex.ts"
 import { siteColors } from "../styles/site-tokens.stylex.ts"
 
 export const faq = stylex.create({
@@ -8,51 +9,45 @@ export const faq = stylex.create({
   item: {
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: colors.border,
-    ":first-child": { borderTopWidth: 1, borderTopStyle: "solid", borderTopColor: colors.border },
+    borderBottomColor: siteColors.hairline,
+    ":first-child": {
+      borderTopWidth: 1,
+      borderTopStyle: "solid",
+      borderTopColor: siteColors.hairline,
+    },
   },
   summary: {
     display: "grid",
     gridTemplateColumns: {
-      default: "2.75rem 1fr 1.25rem",
-      [queries.phoneDown]: "2rem 1fr 1.25rem",
+      default: "2.5rem minmax(0, 1fr) 1rem",
+      [queries.phoneDown]: "2rem minmax(0, 1fr) 1rem",
     },
     alignItems: "baseline",
-    paddingBlock: space.lg,
+    paddingBlock: "1rem",
     cursor: "pointer",
-    fontSize: { default: "0.9375rem", [queries.phoneDown]: "0.875rem" },
-    fontWeight: typography.weightMedium,
-    color: colors.foreground,
+    fontSize: { default: "1rem", [queries.phoneDown]: "0.9375rem" },
     outlineWidth: { default: 0, ":focus-visible": 2 },
     outlineStyle: "solid",
-    outlineColor: colors.ring,
+    outlineColor: siteColors.ring,
     outlineOffset: -2,
   },
   number: {
     fontFamily: typography.mono,
-    fontSize: typography.caption,
-    fontWeight: typography.weightRegular,
-    color: colors.subtleForeground,
+    fontSize: "0.75rem",
+    color: siteColors.muted,
   },
   question: { textWrap: "pretty" },
-  icon: {
-    justifySelf: "end",
-    width: 12,
-    height: 12,
-    alignSelf: "center",
-    color: colors.mutedForeground,
-    transitionProperty: "transform",
-    transitionDuration: motion.moderate,
-    transitionTimingFunction: motion.ease,
+  icon: { justifySelf: "end", alignSelf: "center", color: siteColors.muted },
+  stem: {
+    opacity: { default: 1, [stylex.when.ancestor("[open]", questionMarker)]: 0 },
   },
-  iconOpen: {},
   answer: {
-    paddingBottom: space.xl,
-    paddingInlineStart: { default: "2.75rem", [queries.phoneDown]: "2rem" },
-    paddingInlineEnd: space.xl,
-    maxWidth: "46rem",
-    fontSize: typography.body,
+    paddingBottom: "1.25rem",
+    paddingInlineStart: { default: "2.5rem", [queries.phoneDown]: "2rem" },
+    paddingInlineEnd: "1rem",
+    maxWidth: "44rem",
+    fontSize: "0.96875rem",
     lineHeight: 1.65,
-    color: siteColors.bodyForeground,
+    color: siteColors.soft,
   },
 })

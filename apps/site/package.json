@@ -16,7 +16,6 @@
     "@resvg/resvg-js": "2.6.2",
     "@stylexjs/stylex": "catalog:",
     "astro": "catalog:",
-    "shiki": "4.5.0",
     "wawoff2": "2.0.1"
   },
   "devDependencies": {

@@ -1,25 +1,26 @@
 ---
 import * as stylex from "@stylexjs/stylex"
-import Drawing from "../illustrations/drawing.astro"
-import { containerStrip } from "../illustrations/scenes.ts"
-import { githubUrl, pages } from "../site.ts"
+import { benchmarkReportUrl, githubUrl, pages, quickstartUrl } from "../site.ts"
+import Art from "./art.astro"
 import Container from "./container.astro"
 import { footer } from "./site-footer.styles.ts"
 import Wordmark from "./wordmark.astro"
 
-interface Props {
-  variant?: "full" | "compact"
-  width?: "site" | "landing"
-}
-
-const { variant = "compact", width = "site" } = Astro.props
 const columns = [
-  { heading: "Project", links: pages.map((page) => ({ label: page.label, href: page.href })) },
+  { heading: "Product", links: pages },
+  {
+    heading: "Developers",
+    links: [
+      { label: "Quickstart", href: quickstartUrl },
+      { label: "GitHub", href: githubUrl },
+      { label: "Benchmark report", href: benchmarkReportUrl },
+    ],
+  },
   {
     heading: "Community",
     links: [
-      { label: "GitHub", href: githubUrl },
       { label: "Issues", href: `${githubUrl}/issues` },
+      { label: "Contributing", href: `${githubUrl}/blob/main/CONTRIBUTING.md` },
     ],
   },
   {
@@ -30,53 +31,33 @@ const columns = [
     ],
   },
 ]
-const compactLinks = [
-  ...pages,
-  { label: "GitHub", href: githubUrl },
-  { label: "Apache-2.0", href: `${githubUrl}/blob/main/LICENSE` },
-]
 ---
 
-<Container as="footer" width={width}>
-  <div {...stylex.attrs(footer.root)}>
-    {
-      variant === "full" ? (
-        <>
-          <div {...stylex.attrs(footer.full)}>
-            {columns.map((column) => (
-              <div {...stylex.attrs(footer.column)}>
-                <h2 {...stylex.attrs(footer.heading)}>{column.heading}</h2>
-                {column.links.map((link) => (
+<footer {...stylex.attrs(footer.root)}>
+  <Container>
+    <div {...stylex.attrs(footer.columns)}>
+      {
+        columns.map((column) => (
+          <div>
+            <h2 {...stylex.attrs(footer.heading)}>{column.heading}</h2>
+            <ul>
+              {column.links.map((link) => (
+                <li {...stylex.attrs(footer.item)}>
                   <a href={link.href} {...stylex.attrs(footer.link)}>
                     {link.label}
                   </a>
-                ))}
-              </div>
-            ))}
-            <a href="/" aria-label="Akter home" {...stylex.attrs(footer.brand)}>
-              <Wordmark size="footer" />
-            </a>
+                </li>
+              ))}
+            </ul>
           </div>
-          <div {...stylex.attrs(footer.strip)} aria-hidden="true">
-            <svg viewBox="0 0 1080 140" {...stylex.attrs(footer.stripSvg)}>
-              <Drawing items={containerStrip} />
-            </svg>
-          </div>
-        </>
-      ) : (
-        <div {...stylex.attrs(footer.compact)}>
-          <a href="/" aria-label="Akter home" {...stylex.attrs(footer.brand)}>
-            <Wordmark />
-          </a>
-          <nav aria-label="Footer" {...stylex.attrs(footer.inline)}>
-            {compactLinks.map((link) => (
-              <a href={link.href} {...stylex.attrs(footer.link)}>
-                {link.label}
-              </a>
-            ))}
-          </nav>
-        </div>
-      )
-    }
-  </div>
-</Container>
+        ))
+      }
+      <a href="/" aria-label="Akter home" {...stylex.attrs(footer.brand)}>
+        <Wordmark />
+      </a>
+    </div>
+    <div {...stylex.attrs(footer.strip)}>
+      <Art source="strip" viewBox="0 0 1080 140" />
+    </div>
+  </Container>
+</footer>

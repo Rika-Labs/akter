@@ -1,24 +1,23 @@
 ---
 import * as stylex from "@stylexjs/stylex"
-import { consoleUrl, githubUrl, pages } from "../site.ts"
+import Button from "./button.astro"
 import Container from "./container.astro"
+import ExternalIcon from "./external-icon.astro"
+import GithubIcon from "./github-icon.astro"
 import { header } from "./site-header.styles.ts"
 import Wordmark from "./wordmark.astro"
+import { consoleUrl, githubUrl, pages } from "../site.ts"
 
 interface Props {
   current?: string
-  bordered?: boolean
-  width?: "site" | "landing"
 }
 
-const { current, bordered = true, width = "site" } = Astro.props
+const { current } = Astro.props
 const signIn = { label: "Sign in", href: `${consoleUrl}/sign-in` }
-const githubMark =
-  "M8 1.3a6.7 6.7 0 0 0-2.1 13c.3.1.5-.1.5-.3v-1.2c-1.9.4-2.3-.8-2.3-.8-.3-.8-.8-1-.8-1-.6-.4 0-.4 0-.4.7 0 1 .7 1 .7.6 1 1.6.7 2 .6.1-.4.2-.7.4-.9-1.5-.2-3-.7-3-3.3 0-.7.3-1.3.7-1.8-.1-.2-.3-.9.1-1.8 0 0 .6-.2 1.8.7a6.3 6.3 0 0 1 3.4 0c1.3-.9 1.8-.7 1.8-.7.4.9.1 1.6.1 1.8.4.5.7 1.1.7 1.8 0 2.6-1.6 3.1-3.1 3.3.2.2.5.6.5 1.2v1.8c0 .2.1.4.5.3A6.7 6.7 0 0 0 8 1.3Z"
 ---
 
-<header {...stylex.attrs(header.root, bordered && header.bordered)}>
-  <Container width={width}>
+<header {...stylex.attrs(header.root)}>
+  <Container>
     <div {...stylex.attrs(header.bar)}>
       <a href="/" aria-label="Akter home" {...stylex.attrs(header.home)}>
         <Wordmark />
@@ -28,50 +27,51 @@ const githubMark =
           pages.map((link) => (
             <a
               href={link.href}
+              target={link.external ? "_blank" : undefined}
+              rel={link.external ? "noopener noreferrer" : undefined}
               aria-current={link.href === current ? "page" : undefined}
               {...stylex.attrs(header.link, link.href === current && header.current)}
             >
               {link.label}
+              {link.external && <ExternalIcon xstyle={header.external} />}
             </a>
           ))
         }
       </nav>
       <div {...stylex.attrs(header.actions)}>
-        <a href={githubUrl} rel="noopener noreferrer" {...stylex.attrs(header.github)}>
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d={githubMark}></path>
-          </svg>
+        <Button href={githubUrl} variant="ghost" size="small" external xstyle={header.github}>
+          <GithubIcon />
           GitHub
-        </a>
-        <a href={signIn.href} {...stylex.attrs(header.link)}>
-          {signIn.label}
-        </a>
+        </Button>
+        <Button href={signIn.href} size="small">{signIn.label}</Button>
       </div>
       <details {...stylex.attrs(header.menu)}>
         <summary {...stylex.attrs(header.menuButton)}>
           Menu
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
-            <path d="M1.5 3.5h9M1.5 8.5h9"></path>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M1 3.5h10M1 8.5h10"></path>
           </svg>
         </summary>
         <div {...stylex.attrs(header.menuPanel)}>
           {
-            [...pages, signIn].map((link) => (
+            pages.map((link) => (
               <a
                 href={link.href}
+                target={link.external ? "_blank" : undefined}
+                rel={link.external ? "noopener noreferrer" : undefined}
                 aria-current={link.href === current ? "page" : undefined}
-                {...stylex.attrs(header.menuLink, link.href === current && header.menuCurrent)}
+                {...stylex.attrs(header.menuLink)}
               >
                 {link.label}
+                {link.external && <span aria-hidden="true">↗</span>}
               </a>
             ))
           }
-          <a href={githubUrl} rel="noopener noreferrer" {...stylex.attrs(header.menuLink)}>
+          <a href={githubUrl} rel="noopener noreferrer" target="_blank" {...stylex.attrs(header.menuLink)}>
             GitHub
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-              <path d={githubMark}></path>
-            </svg>
+            <GithubIcon />
           </a>
+          <a href={signIn.href} {...stylex.attrs(header.menuLink)}>{signIn.label}</a>
         </div>
       </details>
     </div>

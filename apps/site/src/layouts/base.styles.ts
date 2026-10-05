@@ -1,5 +1,6 @@
-import { colors, radius, space, typography } from "@akter/ui/tokens.stylex"
+import { typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
+import { siteColors } from "../styles/site-tokens.stylex.ts"
 
 export const base = stylex.create({
   html: {
@@ -9,12 +10,12 @@ export const base = stylex.create({
   },
   body: {
     minHeight: "100vh",
-    backgroundColor: colors.stone,
-    color: colors.foreground,
+    backgroundColor: siteColors.page,
+    color: siteColors.ink,
     fontFamily: typography.sans,
-    fontSize: typography.lead,
-    fontWeight: typography.weightRegular,
-    lineHeight: 1.5,
+    fontSize: "1rem",
+    fontWeight: 400,
+    lineHeight: "normal",
     WebkitFontSmoothing: "antialiased",
     MozOsxFontSmoothing: "grayscale",
     textRendering: "optimizeLegibility",
@@ -25,20 +26,16 @@ export const base = stylex.create({
     display: "flex",
     flexDirection: "column",
   },
-  main: {
-    flexGrow: 1,
-    paddingBottom: space.section,
-  },
+  main: { flexGrow: 1 },
   skip: {
     position: "absolute",
-    left: space.lg,
-    top: space.lg,
+    left: "1rem",
+    top: "1rem",
     zIndex: 10,
-    paddingBlock: space.sm,
-    paddingInline: space.lg,
-    borderRadius: radius.sm,
-    backgroundColor: colors.primary,
-    color: colors.primaryForeground,
+    paddingBlock: "0.5rem",
+    paddingInline: "1rem",
+    backgroundColor: siteColors.ink,
+    color: siteColors.page,
     transform: { default: "translateY(-200%)", ":focus": "translateY(0)" },
   },
 })

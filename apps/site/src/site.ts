@@ -26,22 +26,23 @@ export const contactUrl = "mailto:hello@akter.dev"
 export const headline =
   "The framework for durable, stateful backends that power realtime apps, background work, and agents."
 
-/** The install command the marketing pages show; it must match the published alpha tag. */
-export const installCommand = "bun add @rikalabs/akter@alpha"
-
 /** A top-level destination in the header and footer. */
 export interface Destination {
   readonly label: string
   readonly href: string
+  readonly external?: boolean
 }
 
-/** The header's page links, in order. */
+/** The page links shared by the header and the footer's Product column, in order. */
 export const pages: ReadonlyArray<Destination> = [
-  { label: "Docs", href: docsUrl },
-  { label: "Examples", href: "/examples" },
-  { label: "Benchmarks", href: "/benchmarks" },
+  { label: "Docs", href: docsUrl, external: true },
   { label: "Pricing", href: "/pricing" },
+  { label: "Changelog", href: "/changelog" },
+  { label: "Blog", href: "/blog" },
 ]
+
+/** The launch announcement, which the home page's chip links to. */
+export const announcementUrl = "/blog/introducing-akter"
 
 /** The repository file that holds the benchmark report the site's numbers come from. */
 export const benchmarkReportUrl = `${githubUrl}/blob/main/BENCHMARKS.md`

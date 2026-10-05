@@ -1,52 +1,35 @@
-import { colors, motion, space, typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { queries } from "../styles/breakpoints.stylex.ts"
+import { siteColors } from "../styles/site-tokens.stylex.ts"
 
 export const footer = stylex.create({
-  root: { marginTop: space.chapter },
-  compact: {
-    borderTopWidth: 1,
-    borderTopStyle: "solid",
-    borderTopColor: colors.border,
-    paddingBlock: space.xxl,
-    display: "flex",
-    justifyContent: "space-between",
-    gap: space.xl,
-    flexDirection: { default: "row", [queries.phoneDown]: "column" },
-    alignItems: { default: "center", [queries.phoneDown]: "flex-start" },
-  },
-  full: {
+  root: { marginTop: { default: "6rem", [queries.phoneDown]: "4.5rem" } },
+  columns: {
     display: "grid",
     gridTemplateColumns: {
-      default: "repeat(3, 7.5rem) 1fr",
-      [queries.phoneDown]: "repeat(3, minmax(0, 1fr))",
+      default: "repeat(4, 12.5rem) 1fr",
+      [queries.tabletDown]: "repeat(2, minmax(0, 1fr))",
     },
-    gap: space.xl,
-    fontSize: typography.small,
+    gap: { default: 0, [queries.tabletDown]: "2rem 1.5rem" },
+    fontSize: "0.875rem",
   },
-  column: { display: "grid", alignContent: "start", gap: space.md },
   heading: {
-    fontSize: typography.small,
-    fontWeight: typography.weightStrong,
-    color: colors.foreground,
+    fontSize: "0.875rem",
+    fontWeight: 500,
+    marginBottom: "0.75rem",
   },
+  item: { marginBottom: "0.5rem" },
   link: {
-    color: { default: colors.mutedForeground, ":hover": colors.foreground },
+    color: { default: siteColors.muted, ":hover": siteColors.ink },
     transitionProperty: "color",
-    transitionDuration: motion.fast,
-  },
-  inline: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: space.xl,
-    fontSize: typography.caption,
+    transitionDuration: "120ms",
   },
   brand: {
-    justifySelf: { default: "end", [queries.phoneDown]: "start" },
-    gridColumn: { default: "auto", [queries.phoneDown]: "1 / -1" },
-    alignSelf: "start",
-    display: "inline-flex",
+    display: "flex",
+    justifyContent: { default: "flex-end", [queries.tabletDown]: "flex-start" },
+    alignItems: "flex-start",
+    gridColumn: { default: "auto", [queries.tabletDown]: "1 / -1" },
+    order: { default: 0, [queries.tabletDown]: -1 },
   },
-  strip: { marginTop: space.xxl, opacity: 0.82 },
-  stripSvg: { width: "100%", height: "auto" },
+  strip: { marginTop: "3rem", paddingBottom: "2rem" },
 })

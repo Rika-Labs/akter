@@ -1,0 +1,59 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import Art from "../../components/art.astro"
+import Container from "../../components/container.astro"
+import FigureOne from "../../components/figure-one.astro"
+import { post as styles } from "../../blog/blog.styles.ts"
+import { posts } from "../../blog/posts.ts"
+import { shortDate } from "../../dates.ts"
+import Base from "../../layouts/base.astro"
+import { text } from "../../styles/text.styles.ts"
+
+const post = posts.find((candidate) => candidate.slug === "introducing-akter")
+
+if (post === undefined) throw new Error("The blog module has no post with the slug introducing-akter")
+
+const initials = post.author
+  .split(" ")
+  .map((word) => word.charAt(0))
+  .join("")
+---
+
+<Base title={post.title} description={post.summary} path={`/blog/${post.slug}`} current="/blog">
+  <Container>
+    <article>
+      <header {...stylex.attrs(styles.article)}>
+        <a href="/blog" {...stylex.attrs(text.label)}>← Blog</a>
+        <h1 {...stylex.attrs(text.hero, styles.title)}>{post.title}</h1>
+        <p {...stylex.attrs(text.lede, styles.lede)}>{post.summary}</p>
+        <div {...stylex.attrs(styles.byline)}>
+          <span {...stylex.attrs(styles.avatar)} aria-hidden="true">{initials}</span>
+          <span>{post.author}</span>
+          <time datetime={post.published} {...stylex.attrs(text.label, styles.date)}>{shortDate(post.published)}</time>
+        </div>
+      </header>
+      <div {...stylex.attrs(styles.band)}>
+        <Art source="crane" viewBox="0 0 1080 300" />
+      </div>
+      <div {...stylex.attrs(styles.article, styles.body)}>
+        <p {...stylex.attrs(styles.paragraph)}>
+          Every backend we have worked on kept its most important things in pieces. An order lived in a table, its retries in a queue, its timers in cron, and its live updates on a socket server. The code that kept those pieces in step was always the code that broke.
+        </p>
+        <h2 {...stylex.attrs(text.section, styles.heading)}>One home per thing</h2>
+        <p {...stylex.attrs(styles.paragraph)}>
+          Akter gives each order, chat room or agent session its own actor. The actor has an address, owns its state and tables, runs its own jobs, and keeps its live clients connected. It handles one request at a time, and each one commits in a single transaction against your Postgres database.
+        </p>
+        <blockquote {...stylex.attrs(styles.quote)}>
+          If a process dies before the commit, nothing was written. If it dies after, the retry gets the stored result.
+        </blockquote>
+        <div {...stylex.attrs(styles.figure)}>
+          <FigureOne caption="Figure 1. Requests reach one actor by its address and commit in one transaction." />
+        </div>
+        <h2 {...stylex.attrs(text.section, styles.heading)}>What's in the alpha</h2>
+        <p {...stylex.attrs(styles.paragraph)}>
+          The 0.1 alpha runs embedded in your process or served over HTTP, WebSocket and SSE. Akter Cloud, with managed runners and an inspector for every actor, is in development.
+        </p>
+      </div>
+    </article>
+  </Container>
+</Base>

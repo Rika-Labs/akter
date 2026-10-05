@@ -1,51 +1,44 @@
-/** One numbered callout in the cutaway diagram, with its bold lead-in and the line that follows. */
-export interface Callout {
-  readonly lead: string
-  readonly text: string
-}
-
-/** The five callouts, numbered to match the badges on the cutaway container. */
-export const callouts: ReadonlyArray<Callout> = [
-  { lead: "An address.", text: "Order/ord_8f2c, reachable from anywhere." },
-  { lead: "Commands, one at a time.", text: "Each one commits in its own transaction." },
-  { lead: "State and tables.", text: "Rows in your Postgres, owned by this actor." },
-  { lead: "Events and jobs.", text: "Durable, retried, and run after the commit." },
-  { lead: "Live clients.", text: "Connections that stay open while it sleeps." },
+/** The three things the headline promises, each with the sentence the "What you build" row shows. */
+export const builds: ReadonlyArray<{ readonly title: string; readonly text: string }> = [
+  {
+    title: "Realtime apps.",
+    text: "A chat room, a document or a dashboard keeps its history and pushes every change to the people connected to it.",
+  },
+  {
+    title: "Background work.",
+    text: "A billing run or an import retries with backoff, runs on a schedule, and never quietly vanishes.",
+  },
+  {
+    title: "Agents.",
+    text: "An agent session keeps its transcript, pauses for an approval, and picks up where it left off after a crash or a deploy.",
+  },
 ]
 
-/** One use case: a sentence about what the actor is, and the scene that illustrates it. */
-export interface UseCase {
-  readonly kind: "realtime" | "background" | "agent"
+/** The three places Akter runs, numbered as the cards show them, with each card's crane crop. */
+export const places: ReadonlyArray<{
+  readonly number: string
   readonly title: string
   readonly text: string
-}
-
-/** The three things the headline promises, each as one kind of actor. */
-export const useCases: ReadonlyArray<UseCase> = [
+  readonly viewBox: string
+}> = [
   {
-    kind: "realtime",
-    title: "A chat room is an actor.",
-    text: "Rooms, documents and dashboards that keep their history and push every change to connected clients.",
+    number: "001",
+    title: "In your process",
+    text: "Call actors directly. Starts on an embedded Postgres database with nothing to install.",
+    viewBox: "20 110 300 120",
   },
   {
-    kind: "background",
-    title: "A billing run is an actor.",
-    text: "Payments, imports and billing runs that retry with backoff, run on schedules, and never quietly vanish.",
+    number: "002",
+    title: "On your servers",
+    text: "The same actors over HTTP, WebSocket and SSE, on any Postgres server you run.",
+    viewBox: "380 10 340 220",
   },
   {
-    kind: "agent",
-    title: "An agent session is an actor.",
-    text: "Sessions that keep their transcript, pause for an approval, and resume after a crash or a deploy.",
+    number: "003",
+    title: "Akter Cloud",
+    text: "Managed runners and Postgres databases, with an inspector for every actor. In development.",
+    viewBox: "750 80 320 150",
   },
-]
-
-/** The primitives the landing page lists, each with the one thing it does. */
-export const primitives: ReadonlyArray<{ readonly name: string; readonly does: string }> = [
-  { name: "Actor.make", does: "Identity, state and tables" },
-  { name: "Actor.command", does: "Typed, one at a time" },
-  { name: "Actor.job", does: "Retries and schedules" },
-  { name: "Actor.event", does: "Durable, with a cursor" },
-  { name: "Actors.serve", does: "Embedded, served or hosted" },
 ]
 
 /** The landing page's questions, answered from the README and the repository's own wording. */
@@ -56,9 +49,9 @@ export const questions: ReadonlyArray<{ readonly question: string; readonly answ
       "An addressable part of your app, such as one order, one room or one agent session. It handles one command at a time and owns its data, its background work and its live connections.",
   },
   {
-    question: "Do I need Postgres?",
+    question: "Do I need a Postgres database?",
     answer:
-      "Your data lives in Postgres, as ordinary tables you can query with plain SQL. To start, PGlite, an embedded Postgres, runs the same code with no Docker or database server; Database.postgres points it at a real server. In the alpha, run one runtime process per database.",
+      "Your data lives in a Postgres database, as ordinary tables you can query with plain SQL. To start, PGlite, an embedded Postgres database, runs the same code with no Docker or database server; Database.postgres points it at a real Postgres server. In the alpha, run one runtime process per database.",
   },
   {
     question: "Can I run it inside my existing server?",
@@ -66,7 +59,7 @@ export const questions: ReadonlyArray<{ readonly question: string; readonly answ
       "Yes. Embedded, you provide Actors.layer and call actors as Effects in your own process. Served, Actors.serve exposes the same actors over HTTP, WebSocket and SSE, with an OpenAPI document and an MCP endpoint.",
   },
   {
-    question: "What happens when a process dies mid-command?",
+    question: "What happens when a process dies mid-request?",
     answer:
       "Before the commit, nothing was written, and a retry with the same command ID places the order once. After the commit but before the reply, the retry finds the stored result and returns it without running the handler again.",
   },
@@ -78,6 +71,6 @@ export const questions: ReadonlyArray<{ readonly question: string; readonly answ
   {
     question: "Is there a hosted version?",
     answer:
-      "Akter cloud, with managed runners, Postgres and an inspector for every actor, is in development and its pricing here is a placeholder. The framework is Apache-2.0 and runs wherever Bun does.",
+      "Akter Cloud, with managed runners, Postgres databases and an inspector for every actor, is in development and its pricing here is a placeholder. The framework is Apache-2.0 and runs wherever Bun does.",
   },
 ]
