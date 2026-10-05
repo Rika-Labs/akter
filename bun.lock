@@ -31,8 +31,9 @@
         "@better-auth/api-key": "1.7.7",
         "@better-auth/core": "1.7.7",
         "@better-auth/sso": "1.7.7",
-        "@distilled.cloud/aws": "1.0.0-rc.13",
         "@distilled.cloud/core": "1.0.0-rc.13",
+        "@distilled.cloud/fly-io": "catalog:",
+        "@distilled.cloud/resend": "catalog:",
         "@distilled.cloud/stripe": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/sql-pg": "catalog:",
@@ -222,7 +223,7 @@
     "packages/deployments": {
       "name": "@akter/deployments",
       "dependencies": {
-        "@distilled.cloud/aws": "catalog:",
+        "@distilled.cloud/fly-io": "catalog:",
         "@rikalabs/akter": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
@@ -346,8 +347,10 @@
     "@distilled.cloud/aws": "1.0.0-rc.13",
     "@distilled.cloud/axiom": "1.0.0-rc.13",
     "@distilled.cloud/cloudflare": "1.0.0-rc.13",
+    "@distilled.cloud/fly-io": "1.0.0-rc.13",
     "@distilled.cloud/github": "1.0.0-rc.13",
     "@distilled.cloud/planetscale": "1.0.0-rc.13",
+    "@distilled.cloud/resend": "1.0.0-rc.13",
     "@distilled.cloud/stripe": "1.0.0-rc.13",
     "@effect/platform-browser": "4.0.0",
     "@effect/platform-bun": "4.0.0",
@@ -594,6 +597,8 @@
     "@distilled.cloud/prisma": ["@distilled.cloud/prisma@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-+UmHSp9JV8XQl5t5tTdQBY+dWZ9abrEoc7leYEctA0Ar1TrKZEl2EaeQDoumrg4RyGaacRlirEbxaDFI4SOPtQ=="],
 
     "@distilled.cloud/railway": ["@distilled.cloud/railway@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-yXalRS3GFLo3hWM0HXptqudi23NVCM4FRD20db2/Ob9FFcNrMJik1fopv+74HOiV+BuxfkCP609KsEK6LVdB/g=="],
+
+    "@distilled.cloud/resend": ["@distilled.cloud/resend@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-6ycfBaYSplLNd2usvam7yVlTtEtTio1P+BDLRWu0IZvNfEKkUTALmL76euddpSSZNTNGs+Av/KVEdKVQBYdgiA=="],
 
     "@distilled.cloud/stripe": ["@distilled.cloud/stripe@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-jLTJ1mg4U39lHZb9EGYBJLR91yB3LSG6fVxix+r1BbqaTovWzE+NuJ7fu9fRSeax9jRAqsGLLxe9IxJbOtwQnQ=="],
 

@@ -1,101 +1,86 @@
-import { Credentials } from "@distilled.cloud/aws/Credentials"
-import * as Endpoint from "@distilled.cloud/aws/Endpoint"
-import { BunCrypto } from "@effect/platform-bun"
 import { expect, it } from "@effect/vitest"
-import { Context, Effect, Layer, Redacted, type Schema } from "effect"
-import { FetchHttpClient } from "effect/http"
-import { ecsMigrations, ImageMigrations } from "./migrations.ts"
+import { Context, Effect, Fiber, Layer } from "effect"
+import { creates, flyClient, flyFake, type FlyScript } from "./fly-fake.ts"
+import type { FlyOptions } from "./fly.ts"
+import { flyMigrations, ImageMigrations } from "./migrations.ts"
 
-const taskArn = "arn:aws:ecs:us-east-1:111122223333:task/cluster/migration"
+const options = {
+  organization: "rika-labs-test",
+  regions: { "us-east-1": { region: "iad" } },
+  appPrefix: "akter-pr-12-run-",
+  port: 8080,
+  guest: { cpuKind: "shared", cpus: 1, memoryMb: 512 },
+  command: ["bun", "run", "migrate"],
+} as const satisfies FlyOptions
 
-type Body = { readonly [key: string]: Schema.Json }
+const input = {
+  deploymentId: "migration-test",
+  region: "us-east-1",
+  image: `registry.fly.io/akter-images@sha256:${"a".repeat(64)}`,
+  environment: { DATABASE_URL: "postgres://cell/db" },
+  idempotencyKey: "migration-job",
+}
 
-for (const exitCode of [0, 19, undefined]) {
+const harness = (script: FlyScript) =>
+  Effect.gen(function* () {
+    const fake = yield* flyFake(script)
+    const context = yield* Layer.build(
+      flyMigrations(options).pipe(Layer.provide(flyClient(fake.url))),
+    )
+
+    return { ...fake, migrations: Context.get(context, ImageMigrations) }
+  })
+
+for (const code of [0, 19, undefined])
   it.effect(
-    `requires the migration container's actual successful exit, not only STOPPED (${String(exitCode)})`,
+    `requires the migration process's recorded exit code 0, not only a stopped machine (${String(code)})`,
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const calls: Array<{ operation: string; body: Body }> = []
-          const server = yield* Effect.acquireRelease(
-            Effect.sync(() =>
-              Bun.serve({
-                port: 0,
-                hostname: "127.0.0.1",
-                fetch: (request) =>
-                  request.json().then((body: Body) => {
-                    const operation = request.headers.get("x-amz-target")?.split(".").at(-1) ?? ""
-                    calls.push({ operation, body })
-                    const task = {
-                      taskArn,
-                      lastStatus: "STOPPED",
-                      desiredStatus: "STOPPED",
-                      attributes: [{ name: "ecs.cpu-architecture", value: "arm64" }],
-                      containers: [{ name: "runner", exitCode }],
-                    }
-                    return Response.json({ tasks: [task], failures: [] })
-                  }),
-              }),
-            ),
-            (server) => Effect.promise(() => server.stop(true)),
-          )
-          const context = yield* Layer.build(
-            ecsMigrations({
-              regions: {
-                "us-east-1": {
-                  cluster: "cluster",
-                  subnets: ["subnet-one"],
-                  securityGroups: ["sg-one"],
-                },
-              },
-              taskDefinition: () => "example:7",
-              container: "runner",
-              port: 8080,
-              command: ["bun", "run", "migrate"],
-            }).pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  FetchHttpClient.layer,
-                  BunCrypto.layer,
-                  Endpoint.of(`http://127.0.0.1:${server.port}`),
-                  Layer.succeed(
-                    Credentials,
-                    Effect.succeed({
-                      accessKeyId: Redacted.make("AKIDEXAMPLE"),
-                      secretAccessKey: Redacted.make("fake-http-only"),
-                      sessionToken: undefined,
-                      region: "us-east-1" as const,
-                    }),
-                  ),
-                ),
-              ),
-            ),
-          )
-          const result = yield* Context.get(context, ImageMigrations)
-            .run({
-              deploymentId: "migration-test",
-              region: "us-east-1",
-              image: `example@sha256:${"a".repeat(64)}`,
-              environment: { DATABASE_URL: "postgres://cell/db" },
-              idempotencyKey: "migration-job",
-            })
-            .pipe(Effect.exit)
-          expect(result._tag).toBe(exitCode === 0 ? "Success" : "Failure")
-          expect(calls.map(({ operation }) => operation)).toEqual([
-            "RunTask",
-            "DescribeTasks",
-            "DescribeTasks",
-          ])
-          expect(calls[0]?.body.overrides).toEqual({
-            containerOverrides: [
-              {
-                name: "runner",
-                environment: [{ name: "DATABASE_URL", value: "postgres://cell/db" }],
-                command: ["bun", "run", "migrate"],
-              },
-            ],
+          const { calls, apps, migrations } = yield* harness({
+            createdAs: { state: "stopped", exit: { code } },
           })
+
+          const result = yield* migrations.run(input).pipe(Effect.exit)
+
+          const config = creates(calls)[0]?.config
+
+          expect(result._tag).toBe(code === 0 ? "Success" : "Failure")
+          expect(config?.init).toEqual({ cmd: ["bun", "run", "migrate"] })
+          expect(config?.env).toEqual({ DATABASE_URL: "postgres://cell/db" })
+          expect(config?.services).toBeUndefined()
+          expect(calls.some((call) => call.path.endsWith("/ip_assignments"))).toBe(false)
+          expect([...apps.values()].flatMap((app) => app.machines)).toHaveLength(0)
+          expect(calls.at(-1)?.method).toBe("DELETE")
         }),
       ),
   )
-}
+
+it.live("waits for the machine to exit rather than judging it while it still runs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { calls, apps, migrations } = yield* harness({ createdAs: { state: "started" } })
+
+      const run = yield* Effect.forkChild(migrations.run(input).pipe(Effect.exit))
+
+      yield* Effect.sleep("300 millis")
+
+      const machine = [...apps.values()][0]!.machines[0]!
+
+      expect(machine.state).toBe("started")
+      expect(calls.some((call) => call.method === "DELETE")).toBe(false)
+
+      machine.state = "stopped"
+      machine.events = [{ type: "exit", timestamp: 9, request: { exit_event: { exit_code: 0 } } }]
+
+      const result = yield* Fiber.join(run)
+
+      expect(result._tag).toBe("Success")
+      expect(
+        calls.filter((call) => call.method === "GET" && call.path.endsWith(machine.id)).length,
+      ).toBeGreaterThanOrEqual(2)
+      expect(apps.size).toBe(1)
+      expect([...apps.values()][0]?.machines).toHaveLength(0)
+    }),
+  ),
+)
