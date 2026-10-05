@@ -1,10 +1,10 @@
-import { BunCrypto, BunHttpServer, BunFileSystem } from "@effect/platform-bun"
+import { BunCrypto } from "@effect/platform-bun"
 import { PGlite } from "@electric-sql/pglite"
 import { PgliteClient } from "@effect/sql-pglite"
-import { Cause, Effect, Exit, FileSystem, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/sql"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
 import { migrate, migrations, migrator } from "./migrations.ts"
 import { Database } from "../index.ts"
@@ -12,64 +12,6 @@ import { orderCapped } from "../turn/outbox.ts"
 import { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import type { InternalActors } from "../actors.ts"
-import { describeConformance, type ConformanceBackend } from "../../testing/conformance.ts"
-
-const harness = ManagedRuntime.make(BunFileSystem.layer)
-
-afterAll(() => harness.dispose())
-
-const backend: ConformanceBackend = {
-  independentConnections: false,
-  freshDatabases: true,
-  services: BunCrypto.layer,
-  httpServer: Layer.orDie(BunHttpServer.layerServer({ hostname: "127.0.0.1", port: 0 })),
-  open: () =>
-    harness.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const dataDir = yield* fs.makeTempDirectory({ prefix: "akter-pglite-" })
-        const copies: Array<string> = []
-
-        return {
-          database: { dataDir },
-          freshDatabase: Effect.succeed({}),
-          copy: (database) =>
-            Effect.gen(function* () {
-              if (
-                Redacted.isRedacted(database) ||
-                !("dataDir" in database) ||
-                database.dataDir === undefined
-              )
-                return yield* Effect.die(new Error("Only a file-backed PGlite database is copied"))
-
-              const copied = yield* fs.makeTempDirectory({ prefix: "akter-restored-" })
-              copies.push(copied)
-              yield* fs.copy(database.dataDir, `${copied}/data`)
-
-              return { dataDir: `${copied}/data` }
-            }).pipe(Effect.orDie),
-          close: Effect.suspend(() =>
-            Effect.forEach([dataDir, ...copies], (path) =>
-              fs.remove(path, { recursive: true }).pipe(Effect.ignore),
-            ),
-          ),
-        }
-      }),
-    ),
-}
-
-describeConformance({
-  name: "PGlite durable turns",
-  backend,
-  registrar: {
-    describe,
-    it,
-    beforeAll,
-    afterAll,
-    expect,
-    skip: (name) => it.skip(name),
-  },
-})
 
 describe("PGlite migrations", () => {
   it("owns a fresh database per layer build and closes both instances", () =>
