@@ -597,20 +597,24 @@ it.layer(isolatedLive({ pricing }), { excludeTestServices: true })(
             monthToDateEstimateCents: 2_500,
           })
           expect(pro.plan.renewsAt).not.toBeNull()
-          expect(pro.paymentMethod).toEqual({
-            brand: "visa",
-            lastFour: "4242",
-            expiryMonth: 7,
-            expiryYear: 2036,
-          })
+          expect(pro.paymentMethod).toEqual(
+            Cloud.CardPaymentMethod.make({
+              brand: "visa",
+              lastFour: "4242",
+              expiryMonth: 7,
+              expiryYear: 2036,
+            }),
+          )
           expect(pro.billingEmail).toBe(alice.email)
           yield* w.sql`UPDATE cloud_billing_payment_method SET brand = 'mastercard', last_four = '8675', expiry_month = 11, expiry_year = 2037 WHERE customer_id = ${customer.customer_id}`
-          expect((yield* w.summary(org, bob.cookie)).paymentMethod).toEqual({
-            brand: "mastercard",
-            lastFour: "8675",
-            expiryMonth: 11,
-            expiryYear: 2037,
-          })
+          expect((yield* w.summary(org, bob.cookie)).paymentMethod).toEqual(
+            Cloud.CardPaymentMethod.make({
+              brand: "mastercard",
+              lastFour: "8675",
+              expiryMonth: 11,
+              expiryYear: 2037,
+            }),
+          )
           expect(yield* w.membershipPlan(org, bob.cookie)).toEqual(
             Cloud.KnownPlan.make({ id: "pro" }),
           )

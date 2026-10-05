@@ -1,4 +1,4 @@
-import { KnownPlan, UnboundPlan, UnknownPlan } from "@akter/cloud-api"
+import { CardPaymentMethod, KnownPlan, UnboundPlan, UnknownPlan } from "@akter/cloud-api"
 import { expect, type Page, type Route, test } from "@playwright/test"
 
 const origin = `http://127.0.0.1:${process.env.E2E_LIVE_PORT ?? "3539"}`
@@ -186,7 +186,12 @@ const catalog = {
 
 const proBilling = (limitCents: number | null) => ({
   plan: plan({ id: "pro", name: "Pro", basePriceCents: 2_731, estimate: 3_102 }),
-  paymentMethod: { brand: "visa", lastFour: "4242", expiryMonth: 4, expiryYear: 2031 },
+  paymentMethod: CardPaymentMethod.make({
+    brand: "visa",
+    lastFour: "4242",
+    expiryMonth: 4,
+    expiryYear: 2031,
+  }),
   billingEmail: "owner@example.com",
   spendLimit: { limitCents, currentSpendCents: 3_102 },
   caps: caps({ plan: "pro", commandUnits: 600_000, spendLimitCents: limitCents }),
