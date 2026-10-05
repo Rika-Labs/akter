@@ -149,7 +149,7 @@ describe("spendLimitReached", () => {
       renewsAt: null,
       monthToDateCents: currentCents,
     }),
-    card: null,
+    paymentMethod: null,
     billingEmail: null,
     spendLimit: { limitCents: null, currentCents },
     caps: [],

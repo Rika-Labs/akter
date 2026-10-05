@@ -47,6 +47,7 @@ import {
 } from "./keys.ts"
 import {
   billedPlan,
+  type Billing,
   type BillingPlan,
   type PaymentStatus,
   type PlanOffer,
@@ -485,20 +486,13 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
         "Payments are processed by Stripe; card details never reach Akter. The billing portal opens in a new tab.",
       rows: [
         settingsRow(h, {
-          label:
-            billing.card === null
-              ? "No payment method"
-              : `${titleCase(billing.card.brand)} ending ${billing.card.lastFour}`,
+          label: paymentMethodLabel(billing.paymentMethod),
           description: [
-            ...(billing.card === null
-              ? []
-              : [
-                  `Expires ${formatExpiry({ month: billing.card.expiryMonth, year: billing.card.expiryYear })}`,
-                ]),
+            ...paymentMethodDetails(billing.paymentMethod),
             ...(billing.billingEmail === null ? [] : [`receipts to ${billing.billingEmail}`]),
           ].join(" · "),
           control: button(h, {
-            label: billing.card === null ? "Add" : "Update",
+            label: billing.paymentMethod === null ? "Add" : "Update",
             variant: "ghost",
             size: "sm",
             trailingIcon: "external",
@@ -585,6 +579,26 @@ export const billingScreen = ({ h, model, page }: ScreenInput<SettingsPage>): Sc
     }),
   ])
 }
+
+/** A card is named by brand and last four digits; Link, which reports no card, by its own name. */
+const paymentMethodLabel = (method: Billing["paymentMethod"]): string =>
+  method === null
+    ? "No payment method"
+    : Match.valueTags(method, {
+        card: (card) => `${titleCase(card.brand)} ending ${card.lastFour}`,
+        link: () => "Link",
+      })
+
+/** A card's expiry, or the email of the Link account when it has one. */
+const paymentMethodDetails = (method: Billing["paymentMethod"]): ReadonlyArray<string> =>
+  method === null
+    ? []
+    : Match.valueTags(method, {
+        card: (card) => [
+          `Expires ${formatExpiry({ month: card.expiryMonth, year: card.expiryYear })}`,
+        ],
+        link: (link) => (link.email === null ? [] : [link.email]),
+      })
 
 const meterFormat = (unit: UsageMeter["unit"]): ((value: number) => string) =>
   Match.value(unit).pipe(

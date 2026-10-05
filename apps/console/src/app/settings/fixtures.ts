@@ -1,4 +1,4 @@
-import { KnownPlan } from "@akter/cloud-api"
+import { CardPaymentMethod, KnownPlan } from "@akter/cloud-api"
 import { seededSeries } from "../workspace/series.ts"
 import { BillingPlan, type SettingsSlice } from "./model.ts"
 
@@ -241,7 +241,12 @@ export const billingSlice: SettingsSlice = {
       renewsAt: at(11, 1, 0, 0),
       monthToDateCents: 20_670,
     }),
-    card: { brand: "Visa", lastFour: "4242", expiryMonth: 8, expiryYear: 2028 },
+    paymentMethod: CardPaymentMethod.make({
+      brand: "Visa",
+      lastFour: "4242",
+      expiryMonth: 8,
+      expiryYear: 2028,
+    }),
     billingEmail: "billing@acme.dev",
     spendLimit: { limitCents: 50_000, currentCents: 20_670 },
     caps,

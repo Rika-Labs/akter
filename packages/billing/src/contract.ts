@@ -128,13 +128,26 @@ export interface BillingDetails {
   readonly subscription: Subscription | null
 }
 
-export interface PaymentMethod {
-  readonly id: string
-  readonly brand: string
-  readonly lastFour: string
-  readonly expiryMonth: number
-  readonly expiryYear: number
-}
+/** A card on file. */
+export const CardPaymentMethod = Schema.TaggedStruct("card", {
+  id: Schema.String,
+  brand: Schema.String,
+  lastFour: Schema.String,
+  expiryMonth: Schema.Finite,
+  expiryYear: Schema.Finite,
+})
+
+/**
+ * A Link account on file. Stripe reports the account's email and nothing about the card behind it,
+ * and the email is null when Link holds none, so no brand or last four digits can be shown.
+ */
+export const LinkPaymentMethod = Schema.TaggedStruct("link", {
+  id: Schema.String,
+  email: Schema.NullOr(Schema.String),
+})
+
+export const PaymentMethod = Schema.Union([CardPaymentMethod, LinkPaymentMethod])
+export type PaymentMethod = typeof PaymentMethod.Type
 
 export type InvoiceStatus = "draft" | "open" | "paid" | "void" | "uncollectible"
 

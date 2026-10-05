@@ -58,7 +58,7 @@ const billing: Billing = {
     renewsAt: null,
     monthToDateCents: 30_000,
   }),
-  card: null,
+  paymentMethod: null,
   billingEmail: null,
   spendLimit: { limitCents: null, currentCents: 30_000 },
   caps: [],

@@ -8,6 +8,9 @@ export {
   CheckoutExpired,
   WebhookRejected,
   StripeBilling,
+  CardPaymentMethod,
+  LinkPaymentMethod,
+  PaymentMethod,
 } from "./contract.ts"
 export type {
   UsagePrice,
@@ -26,7 +29,6 @@ export type {
   SubscriptionStatus,
   Subscription,
   BillingDetails,
-  PaymentMethod,
   InvoiceStatus,
   InvoiceRecord,
   UsageEvent,
