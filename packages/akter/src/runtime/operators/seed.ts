@@ -6,6 +6,7 @@ import { ActorRef, type Caller } from "../../identity/caller.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { compress, routingKey } from "../storage/codec.ts"
+import { onShard } from "../database/shards.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
@@ -128,8 +129,8 @@ export const seedRuntime = (deps: {
 
       const key = routingKey({ ref, placement })
 
-      yield* withTenant(ref.tenant)(
-        sql.withTransaction(
+      yield* sql
+        .withTransaction(
           Effect.gen(function* () {
             const [inserted] = yield* sql<{ created: boolean }>`
             INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id, created)
@@ -186,8 +187,8 @@ export const seedRuntime = (deps: {
 
             for (const statement of staged.statements) yield* statement
           }),
-        ),
-      )
+        )
+        .pipe(withTenant(ref.tenant), onShard(key))
 
       yield* deps.wake
     },

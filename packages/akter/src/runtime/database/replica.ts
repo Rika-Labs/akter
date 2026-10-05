@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import type { SqlClient } from "effect/sql"
-import { boundedPool } from "./bounded.ts"
+import { boundedPool, routedPool } from "./bounded.ts"
 
 /**
  * The primary's WAL insert position as a decimal string, and the database
@@ -60,9 +60,16 @@ export const QueryPool = Context.Reference<SqlClient.SqlClient | undefined>(
   { defaultValue: () => undefined },
 )
 
-/** Provides `QueryPool` as a bounded, first-come, first-served pool for `options`. */
+/**
+ * Provides `QueryPool` as a bounded, first-come, first-served pool for
+ * `options`, whose checkouts follow the caller's shard target like the
+ * off-turn client's.
+ */
 export const queryPoolLayer = (options: PgClient.PgPoolConfig) =>
-  Layer.effect(QueryPool, boundedPool(options)).pipe(Layer.provide(Reactivity.layer))
+  Layer.effect(
+    QueryPool,
+    Effect.map(routedPool(options), ({ sql }) => sql),
+  ).pipe(Layer.provide(Reactivity.layer))
 
 /**
  * Whether the replica has replayed WAL through `version`. A server not in

@@ -6,6 +6,7 @@ import { ActorRef, System } from "../../identity/caller.ts"
 import * as Queries from "../inspector/queries.ts"
 import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { type Placement, routingKey } from "../storage/codec.ts"
+import { forEachRange, onShard, withinRange } from "../database/shards.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
@@ -158,6 +159,19 @@ interface DeadLetterRow {
  * user's principal. The payload may hold customer data, so a discard's record
  * keeps what failed, not what was sent.
  */
+const encoder = new TextEncoder()
+
+/** Compares two strings by their UTF-8 bytes, as Postgres orders them under `COLLATE "C"`. */
+const byteOrder = (left: string, right: string) => {
+  const a = encoder.encode(left)
+  const b = encoder.encode(right)
+
+  for (let index = 0; index < Math.min(a.length, b.length); index++)
+    if (a[index] !== b[index]) return a[index]! - b[index]!
+
+  return a.length - b.length
+}
+
 export const operatorRuntime = (deps: {
   readonly services: Context.Context<SqlClient.SqlClient | Crypto.Crypto>
   readonly clock: ReferenceOf<typeof FrameworkClock>
@@ -218,7 +232,7 @@ export const operatorRuntime = (deps: {
         sql.withTransaction(
           Effect.tap(repair(key), ({ outcome }) => writeAudit({ entry: audit, key, outcome })),
         ),
-      )
+      ).pipe(onShard(key))
 
       return result
     })
@@ -272,7 +286,7 @@ export const operatorRuntime = (deps: {
           FROM durable.receipts
           WHERE routing_key = ${key} AND tenant_id = ${target.tenant}
             AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
-            AND command_id = ${commandId}`)
+            AND command_id = ${commandId}`).pipe(onShard(key))
 
         return Option.map(Option.fromUndefinedOr(row), (found) => ({
           commandId,
@@ -286,7 +300,12 @@ export const operatorRuntime = (deps: {
         provided,
       ),
     exportSeed: (target) =>
-      exportActor(target).pipe(Effect.catchIf(SqlError.isSqlError, Effect.die), provided),
+      keyOf(target).pipe(
+        Effect.flatMap((key) => exportActor(target).pipe(onShard(key))),
+        Effect.catchTag("OperatorNotFound", () => Effect.succeedNone),
+        Effect.catchIf(SqlError.isSqlError, Effect.die),
+        provided,
+      ),
     retry: ({ target, jobId, providerChecked, audit }) =>
       Effect.gen(function* () {
         const ref = ActorRef.make({
@@ -407,11 +426,12 @@ export const operatorRuntime = (deps: {
         return { through }
       }).pipe(provided),
     lagging: ({ tenant, minAttempts, limit }) =>
-      Queries.readOnly(tenant)(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
+      forEachRange((range) =>
+        Queries.readOnly(tenant)(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
 
-          return yield* sql<LaggingSubscription>`
+            return yield* sql<LaggingSubscription>`
             SELECT s.source_type AS "sourceType", s.source_id AS "sourceId",
               s.subscriber_type AS "subscriberType", s.subscription,
               s.subscriber_id AS "subscriberId", s.delivered::text AS delivered,
@@ -423,25 +443,52 @@ export const operatorRuntime = (deps: {
               AND g.tenant_id = s.tenant_id AND g.actor_type = s.source_type
               AND g.actor_id = s.source_id
             WHERE s.tenant_id = ${tenant} AND s.active AND s.last_error IS NOT NULL
-              AND s.attempts >= ${minAttempts}
+              AND s.attempts >= ${minAttempts} ${withinRange({ sql, range, column: "s.routing_key" })}
             ORDER BY s.attempts DESC, g.event_sequence - s.delivered DESC,
               s.source_type COLLATE "C", s.source_id COLLATE "C",
               s.subscriber_type COLLATE "C", s.subscription COLLATE "C",
               s.subscriber_id COLLATE "C"
             LIMIT ${limit}`
-        }),
-      ).pipe(provided, Effect.orDie),
-    audit: (page) => Queries.readOnly(page.tenant)(listAudit(page)).pipe(provided, Effect.orDie),
+          }),
+        ),
+      ).pipe(
+        Effect.map((shards) =>
+          shards
+            .flat()
+            .sort(
+              (a, b) =>
+                b.attempts - a.attempts ||
+                Number(BigInt(b.lag) - BigInt(a.lag)) ||
+                byteOrder(a.sourceType, b.sourceType) ||
+                byteOrder(a.sourceId, b.sourceId) ||
+                byteOrder(a.subscriberType, b.subscriberType) ||
+                byteOrder(a.subscription, b.subscription) ||
+                byteOrder(a.subscriberId, b.subscriberId),
+            )
+            .slice(0, limit),
+        ),
+        provided,
+        Effect.orDie,
+      ),
+    audit: (page) =>
+      forEachRange((range) => Queries.readOnly(page.tenant)(listAudit({ ...page, range }))).pipe(
+        Effect.map((shards) =>
+          shards
+            .flat()
+            .sort((a, b) => b.atMs - a.atMs || byteOrder(a.auditId, b.auditId))
+            .slice(0, page.limit),
+        ),
+        provided,
+        Effect.orDie,
+      ),
     record: (entry, outcome) =>
       Effect.gen(function* () {
         const found =
           entry.actorType === undefined ? Option.none() : yield* placement(entry.actorType)
 
-        yield* writeAudit({
-          entry,
-          key: auditRoutingKey({ entry, placement: Option.getOrUndefined(found) }),
-          outcome,
-        })
+        const key = auditRoutingKey({ entry, placement: Option.getOrUndefined(found) })
+
+        yield* writeAudit({ entry, key, outcome }).pipe(onShard(key))
       }).pipe(provided, Effect.orDie),
   })
 }

@@ -5,7 +5,8 @@ import type { SqlError } from "effect/sql"
 import { fairGate } from "../database/gate.ts"
 import { nekiLease, NekiTurnSessions } from "../database/neki/session.ts"
 import { admissionLimit } from "../admission.ts"
-import { POOL_WAITERS, poolRefusal } from "../database/bounded.ts"
+import { perShard, POOL_WAITERS, poolRefusal, targetedAt } from "../database/bounded.ts"
+import { targetShard } from "../database/shards.ts"
 
 /**
  * Connections a turn leases for itself alone. Each one is multiplexed and
@@ -15,7 +16,11 @@ import { POOL_WAITERS, poolRefusal } from "../database/bounded.ts"
 export class TurnConnections extends Context.Service<
   TurnConnections,
   {
-    /** Leases one session for the enclosing scope; the session returns to the pool when the scope closes. */
+    /**
+     * Leases one session for the enclosing scope, from the pool of the
+     * caller's `ShardTarget`; the session returns to its pool when the scope
+     * closes.
+     */
     readonly lease: Effect.Effect<PgConnection.PgConnection, SqlError.SqlError, Scope.Scope>
     /** Takes a connection out of the pool, so its session never serves another turn. */
     readonly invalidate: (connection: PgConnection.PgConnection) => Effect.Effect<void>
@@ -34,7 +39,7 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
 )
 
 /**
- * The turn pool: `maxConnections` sessions, each handed to one turn at a
+ * One turn pool: `maxConnections` sessions, each handed to one turn at a
  * time. A concurrency of one keeps the lease exclusive while the session
  * stays unpinned. A lease first takes a bounded admission slot, refused at
  * once past `maxConnections` plus the waiter allowance, then waits for a
@@ -44,33 +49,61 @@ export const TurnPoolSettings = Context.Reference<Partial<PgPool.Config>>(
  *
  * On Neki, each session first runs the Neki session settings.
  */
+const turnPool = Effect.fnUntraced(function* (config: PgPool.Config, neki: boolean) {
+  const pool = yield* PgPool.make({
+    ...config,
+    multiplex: true,
+    multiplexConcurrency: 1,
+  })
+
+  const slots = config.maxConnections ?? 10
+  const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
+  const gate = fairGate(slots)
+  const acquire = Effect.andThen(gate.take, neki ? nekiLease(pool) : pool.get)
+
+  return { pool, take: Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), acquire) }
+})
+
+/**
+ * The turn pools. A turn whose fiber targets a data shard leases from that
+ * shard's pool, whose sessions target it from their startup packet, so every
+ * statement of the turn reaches the shard holding its actor's rows. Each
+ * shard's pool has `maxConnections` sessions of its own and opens on the
+ * first turn that needs it. A turn with no target uses the untargeted pool.
+ */
 export const turnConnections = (options: PgPool.Config) =>
   Layer.effect(
     TurnConnections,
     Effect.gen(function* () {
       const settings = yield* TurnPoolSettings
       const neki = yield* NekiTurnSessions
+      const scope = yield* Effect.scope
 
       const config = { ...options, ...settings }
-
-      const pool = yield* PgPool.make({
-        ...config,
-        multiplex: true,
-        multiplexConcurrency: 1,
+      const untargeted = yield* turnPool(config, neki)
+      const shard = perShard({
+        scope,
+        open: (target) => turnPool(targetedAt({ options: config, shard: target }), neki),
       })
-
-      const slots = config.maxConnections ?? 10
-      const admission = admissionLimit({ limit: slots + POOL_WAITERS, wait: Duration.zero })
-      const gate = fairGate(slots)
-      const acquire = Effect.andThen(gate.take, neki ? nekiLease(pool) : pool.get)
+      const owners = new WeakMap<PgConnection.PgConnection, PgPool.PgPool>()
       let leased = 0
       let waiting = 0
+
+      const poolOf = Effect.flatMap(targetShard, (target) =>
+        target === undefined ? Effect.succeed(untargeted) : Effect.orDie(shard(target)),
+      )
 
       return TurnConnections.of({
         lease: Effect.suspend(() => {
           waiting += 1
 
-          return Effect.andThen(admission.take.pipe(Effect.mapError(poolRefusal)), acquire).pipe(
+          return Effect.flatMap(poolOf, ({ pool, take }) =>
+            Effect.tap(take, (connection) =>
+              Effect.sync(() => {
+                owners.set(connection, pool)
+              }),
+            ),
+          ).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 waiting -= 1
@@ -89,7 +122,8 @@ export const turnConnections = (options: PgPool.Config) =>
             ),
           )
         }),
-        invalidate: pool.invalidate,
+        invalidate: (connection) =>
+          (owners.get(connection) ?? untargeted.pool).invalidate(connection),
         sessions: () => ({ leased, waiting }),
       })
     }),

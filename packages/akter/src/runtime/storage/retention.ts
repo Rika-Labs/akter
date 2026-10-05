@@ -3,7 +3,8 @@ import { SqlClient, type SqlError } from "effect/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
-import { coordinated } from "../database/coordination.ts"
+import { coordinated, registry } from "../database/coordination.ts"
+import { type BucketRange, currentRanges, forEachRange, withinRange } from "../database/shards.ts"
 
 /** One actor type's retention horizons, in milliseconds on the framework clock, and whether it has workflows to sweep. */
 interface RetentionPolicy {
@@ -75,6 +76,12 @@ export interface Swept {
  *
  * The sweep yields after each batch, so a turn waiting for PGlite's one
  * connection runs between batches instead of after the whole sweep.
+ *
+ * With data shards, every prune runs once per shard on a session targeted at
+ * it, under the same authoritative lock and that shard's local fence. A
+ * manifest is then pruned on the authority once no shard reports an open
+ * execution under it; an execution that starts under it after that read
+ * restores it, as a runner of an older deployment does.
  */
 export const sweep = Effect.fnUntraced(function* (
   policies: Iterable<RetentionPolicy>,
@@ -117,12 +124,18 @@ export const sweep = Effect.fnUntraced(function* (
       }
     })
 
-    receipts += yield* pruneAll(
-      (from) => sql<{ count: number; last: string | null }>`
+    const everyRange = <R>(
+      prune: (range: BucketRange) => Effect.Effect<number, SqlError.SqlError, R>,
+    ) => Effect.map(forEachRange(prune), (counts) => counts.reduce((sum, one) => sum + one, 0))
+
+    receipts += yield* everyRange((range) =>
+      pruneAll(
+        (from) => sql<{ count: number; last: string | null }>`
         WITH doomed AS (
           SELECT r.routing_key, r.tenant_id, r.actor_type, r.actor_id, r.command_id, r.expires_at_ms
           FROM actor_receipts r
           WHERE r.actor_type = ${policy.actorType} AND r.expires_at_ms >= ${from}::bigint
+            ${withinRange({ sql, range, column: "r.routing_key" })}
             AND r.expires_at_ms <= ${receiptCutoff}
             AND NOT EXISTS (
               SELECT 1 FROM actor_outbox o
@@ -139,14 +152,17 @@ export const sweep = Effect.fnUntraced(function* (
           RETURNING 1)
         SELECT count(*)::integer AS count, (SELECT max(expires_at_ms)::text FROM doomed) AS last
         FROM gone`,
-      Metrics.receiptsPruned,
+        Metrics.receiptsPruned,
+      ),
     )
 
-    events += yield* pruneAll(
-      (from) => sql<{ count: number; last: string | null }>`
+    events += yield* everyRange((range) =>
+      pruneAll(
+        (from) => sql<{ count: number; last: string | null }>`
         WITH picked AS (
           SELECT routing_key, tenant_id, actor_type, actor_id, sequence, emitted_at_ms FROM actor_events
           WHERE actor_type = ${policy.actorType} AND emitted_at_ms >= ${from}::bigint
+            ${withinRange({ sql, range, column: "routing_key" })}
             AND emitted_at_ms <= ${eventCutoff}
           ORDER BY emitted_at_ms
           LIMIT ${hooks.batchSize}),
@@ -177,17 +193,20 @@ export const sweep = Effect.fnUntraced(function* (
           RETURNING 1)
         SELECT count(*)::integer AS count, (SELECT max(emitted_at_ms)::text FROM picked) AS last
         FROM gone`,
-      Metrics.eventsPruned,
+        Metrics.eventsPruned,
+      ),
     )
 
     if (policy.workflows) {
       const workflowCutoff = now - policy.keepWorkflowsMs
 
-      workflows += yield* pruneAll(
-        () => sql<{ count: number }>`
+      workflows += yield* everyRange((range) =>
+        pruneAll(
+          () => sql<{ count: number }>`
         WITH doomed AS (
           SELECT routing_key, execution_id FROM actor_workflow_executions
           WHERE actor_type = ${policy.actorType} AND status = 'finished'
+            ${withinRange({ sql, range, column: "routing_key" })}
             AND finished_at_ms <= ${workflowCutoff}
           ORDER BY finished_at_ms
           LIMIT ${hooks.batchSize}
@@ -197,16 +216,42 @@ export const sweep = Effect.fnUntraced(function* (
           WHERE x.routing_key = d.routing_key AND x.execution_id = d.execution_id
           RETURNING 1)
         SELECT count(*)::integer AS count FROM gone`,
+        ),
       )
 
-      yield* batch(sql`
-        DELETE FROM actor_workflow_manifests m
-        WHERE m.actor_type = ${policy.actorType}
-          AND m.accepted_at_ms < (SELECT max(l.accepted_at_ms) FROM actor_workflow_manifests l
-            WHERE l.actor_type = m.actor_type AND l.workflow = m.workflow)
-          AND NOT EXISTS (SELECT 1 FROM actor_workflow_executions x
-            WHERE x.actor_type = m.actor_type AND x.workflow = m.workflow
-              AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
+      const superseded = sql`m.actor_type = ${policy.actorType}
+        AND m.accepted_at_ms < (SELECT max(l.accepted_at_ms) FROM actor_workflow_manifests l
+          WHERE l.actor_type = m.actor_type AND l.workflow = m.workflow)`
+
+      if (!(yield* currentRanges).some((range) => range.shard !== undefined))
+        yield* batch(sql`
+          DELETE FROM actor_workflow_manifests m
+          WHERE ${superseded}
+            AND NOT EXISTS (SELECT 1 FROM actor_workflow_executions x
+              WHERE x.actor_type = m.actor_type AND x.workflow = m.workflow
+                AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
+      else {
+        const open = (yield* forEachRange(
+          (range) => sql<{ workflow: string; manifest_hash: string }>`
+          SELECT DISTINCT workflow, manifest_hash FROM actor_workflow_executions
+          WHERE actor_type = ${policy.actorType} AND status <> 'finished'
+            ${withinRange({ sql, range, column: "routing_key" })}`,
+        )).flat()
+
+        yield* coordinated({
+          resource: `akter/retention/${policy.actorType}`,
+          writesData: false,
+          work: Effect.flatMap(
+            registry,
+            (manifests) => manifests`
+            DELETE FROM actor_workflow_manifests m
+            WHERE ${superseded}
+              AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(${JSON.stringify(open)}::jsonb)
+                AS x (workflow text, manifest_hash text)
+                WHERE x.workflow = m.workflow AND x.manifest_hash = m.manifest_hash)`,
+          ),
+        })
+      }
     }
   }
 

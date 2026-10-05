@@ -1,6 +1,8 @@
 import { Crypto, Effect, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { type Placement, routingKey } from "../storage/codec.ts"
+import { type BucketRange, withinRange } from "../database/shards.ts"
+import { BUCKETS } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { Capability, type OperatorAction } from "./grants.ts"
 
@@ -89,13 +91,19 @@ export type AuditRecord = typeof AuditRecord.Type
 export const listAudit = Effect.fnUntraced(function* ({
   tenant,
   limit,
+  range = BUCKETS,
 }: {
   readonly tenant: string
   readonly limit: number
+  /** The buckets read, when each shard is read on its own. */
+  readonly range?: BucketRange
 }) {
   const sql = yield* SqlClient.SqlClient
 
-  const filter = tenant === "*" ? sql`` : sql`WHERE tenant_id = ${tenant}`
+  const filter =
+    tenant === "*"
+      ? withinRange({ sql, range, column: "routing_key", keyword: "WHERE" })
+      : sql`WHERE tenant_id = ${tenant} ${withinRange({ sql, range, column: "routing_key" })}`
 
   return yield* sql<AuditRecord>`SELECT audit_id AS "auditId", at_ms::float8 AS "atMs", operator,
       action, tenant_id AS tenant, actor_type AS "actorType", actor_id AS "actorId", target,

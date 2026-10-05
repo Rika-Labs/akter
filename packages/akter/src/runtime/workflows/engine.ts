@@ -43,6 +43,8 @@ import { type ActorRef, Caller, type Principal, principal, System } from "../../
 import { decodeExecutionId, encodeExecutionId } from "../../identity/execution.ts"
 import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
+import { registry } from "../database/coordination.ts"
+import { onShard } from "../database/shards.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { type ActivationCache, actorRow, fence } from "../storage/generation.ts"
@@ -145,7 +147,9 @@ const deleteTimer = (
  * start is delivered. The run starts at once on this activation and the recovery
  * timer resumes it if this runner dies first. The start manifest is restored if
  * retention pruned it while a runner of an older deployment still starts
- * executions under it.
+ * executions under it. The manifest is a deployment registry row, so it is
+ * written on the registry client after the execution row: inside the turn on
+ * one database, and committed before the turn on a sharded one.
  */
 const insertExecution = Effect.fnUntraced(function* (options: {
   readonly routingKey: bigint
@@ -163,7 +167,7 @@ const insertExecution = Effect.fnUntraced(function* (options: {
   const manifest = yield* manifestOf(ref.actor, workflow.member)
 
   const inserted = yield* sql`
-    WITH x AS (INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
+    INSERT INTO actor_workflow_executions (routing_key, execution_id, bucket, tenant_id, actor_type, actor_id,
       workflow, workflow_key, manifest_hash, payload, caller, event_cursor, status, started_at_ms)
     SELECT ${routingKey}, ${executionId}, ${bucketOf(routingKey)}, ${ref.tenant}, ${ref.actor}, ${ref.id},
       ${workflow.member.tag}, ${options.key}, ${manifest.hash}, ${compress(options.payload)},
@@ -171,14 +175,14 @@ const insertExecution = Effect.fnUntraced(function* (options: {
       COALESCE(${options.after}::bigint, g.event_sequence),
       'running', ${now}
     FROM actor_generations g WHERE ${actorRow({ sql, actor: { key: routingKey, ref } })}
-    ON CONFLICT DO NOTHING RETURNING 1),
-    m AS (INSERT INTO actor_workflow_manifests (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
-      SELECT ${ref.actor}, ${workflow.member.tag}, ${manifest.hash}, ${toJson(manifest.manifest)}::jsonb, 0
-      WHERE EXISTS (SELECT 1 FROM x)
-      ON CONFLICT DO NOTHING)
-    SELECT 1 FROM x`
+    ON CONFLICT DO NOTHING RETURNING 1`
 
   if (inserted.length === 0) return false
+
+  yield* (yield* registry)`INSERT INTO actor_workflow_manifests
+      (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+    VALUES (${ref.actor}, ${workflow.member.tag}, ${manifest.hash}, ${toJson(manifest.manifest)}::jsonb, 0)
+    ON CONFLICT DO NOTHING`
 
   const markers = Object.entries(workflow.member.versions)
 
@@ -544,7 +548,7 @@ export const activationEngine = (options: {
         if (hash === declared.hash || known !== undefined)
           return known ?? startVerdict({ declared, hash, start: undefined, newer: false })
 
-        const [row] = yield* sql<{ manifest: string; newer: boolean }>`
+        const [row] = yield* (yield* registry)<{ manifest: string; newer: boolean }>`
           SELECT m.manifest::text AS manifest, m.accepted_at_ms > COALESCE((SELECT o.accepted_at_ms
             FROM actor_workflow_manifests o WHERE o.actor_type = m.actor_type AND o.workflow = m.workflow
               AND o.manifest_hash = ${declared.hash}), -1) AS newer
@@ -634,14 +638,17 @@ export const activationEngine = (options: {
     ) =>
       execution.manifest_hash === declared.hash || changed.length === 0
         ? Effect.void
-        : fenced(sql`
-            WITH m AS (INSERT INTO actor_workflow_manifests
-                (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
-              VALUES (${ref.actor}, ${workflow.member.tag}, ${declared.hash}, ${toJson(declared.manifest)}::jsonb, 0)
-              ON CONFLICT DO NOTHING)
-            UPDATE actor_workflow_executions SET manifest_hash = ${declared.hash}
-            WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
-              AND manifest_hash = ${execution.manifest_hash}`).pipe(Effect.asVoid)
+        : fenced(
+            Effect.gen(function* () {
+              yield* (yield* registry)`INSERT INTO actor_workflow_manifests
+                  (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+                VALUES (${ref.actor}, ${workflow.member.tag}, ${declared.hash}, ${toJson(declared.manifest)}::jsonb, 0)
+                ON CONFLICT DO NOTHING`
+              yield* sql`UPDATE actor_workflow_executions SET manifest_hash = ${declared.hash}
+                WHERE routing_key = ${routingKey} AND execution_id = ${executionId}
+                  AND manifest_hash = ${execution.manifest_hash}`
+            }),
+          )
 
     /** Records an execution's result, then drops its steps and its timer. */
     const finish = (executionId: string, result: StoredResult) =>
@@ -1289,7 +1296,7 @@ export const activationEngine = (options: {
               )
             }),
           ).pipe(Effect.ignoreCause)
-      }).pipe(Effect.provideContext(services))
+      }).pipe(Effect.provideContext(services), onShard(routingKey))
 
     return { kick, live: () => live.size }
   })

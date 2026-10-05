@@ -99,7 +99,11 @@ export const runnerActor: {
   (region: string): (deploymentId: string) => ReturnType<typeof controlPlaneActor>
 } = Function.dual(2, controlPlaneActor)
 
-/** Registration is committed with the state transition; stopping first withdraws the ingress row. */
+/**
+ * Registration is committed with the state transition; stopping first
+ * withdraws the ingress row. The idle check reads `clock_timestamp()`: a Neki
+ * turn session targeted at its data shard refuses `now()` beside a table.
+ */
 export const RunnerCommands = Runners.toLayer(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
@@ -207,7 +211,7 @@ export const RunnerCommands = Runners.toLayer(
         const [deploymentId] = turn.id.split("/")
         const [row] = yield* sql<{
           idle: boolean
-        }>`SELECT tier = 'free' AND scale_to_zero AND last_activity_at <= now() - ${idleSeconds} * interval '1 second' AS idle FROM deployment WHERE id = ${deploymentId} FOR UPDATE`.pipe(
+        }>`SELECT tier = 'free' AND scale_to_zero AND last_activity_at <= clock_timestamp() - ${idleSeconds} * interval '1 second' AS idle FROM deployment WHERE id = ${deploymentId} FOR UPDATE`.pipe(
           Effect.orDie,
         )
         if (row?.idle === true) yield* stop()

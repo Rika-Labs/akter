@@ -1,5 +1,6 @@
 import { Context, Effect, type Metric } from "effect"
 import { SqlClient } from "effect/sql"
+import { forEachRange, withinRange } from "../database/shards.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { Metrics, record } from "./metrics.ts"
 
@@ -46,33 +47,45 @@ export const databaseSampler = () => {
       values.set(`${metric.id}${JSON.stringify(attributes)}`, { metric, attributes, value })
     }
 
-    const outbox = yield* sql<{ kind: string; rows: number; lag: string; stuck: number }>`
+    const outbox = (yield* forEachRange(
+      (range) => sql<{
+        kind: string
+        rows: number
+        lag: string
+        stuck: number
+      }>`
       SELECT kind, count(*)::int AS rows,
         COALESCE(max(${now}::bigint - due_at_ms) FILTER (WHERE due_at_ms <= ${now}), 0)::text AS lag,
         count(*) FILTER (WHERE attempts >= ${STUCK_ATTEMPTS})::int AS stuck
-      FROM actor_outbox GROUP BY kind`
+      FROM actor_outbox ${withinRange({ sql, range, column: "routing_key", keyword: "WHERE" })} GROUP BY kind`,
+    )).flat()
 
     for (const kind of ["intent", "job", "feed", "control"]) {
-      const row = outbox.find((found) => found.kind === kind)
+      const rows = outbox.filter((found) => found.kind === kind)
 
-      set(Metrics.outboxRows, { kind }, row?.rows ?? 0)
-      set(Metrics.relayLag, { kind }, Number(row?.lag ?? 0))
+      set(
+        Metrics.outboxRows,
+        { kind },
+        rows.reduce((sum, row) => sum + row.rows, 0),
+      )
+      set(Metrics.relayLag, { kind }, Math.max(0, ...rows.map((row) => Number(row.lag))))
     }
 
     set(
       Metrics.stuckRows,
       { kind: "intent" },
-      outbox.find((row) => row.kind === "intent")?.stuck ?? 0,
+      outbox.filter((row) => row.kind === "intent").reduce((sum, row) => sum + row.stuck, 0),
     )
 
-    const subscriptions = yield* sql<{
-      subscriber_type: string
-      subscription: string
-      events: string
-      lag: string
-      due: string
-      stuck: number
-    }>`
+    const perShard = (yield* forEachRange(
+      (range) => sql<{
+        subscriber_type: string
+        subscription: string
+        events: string
+        lag: string
+        due: string
+        stuck: number
+      }>`
       SELECT s.subscriber_type, s.subscription,
         max(g.event_sequence - s.delivered)::text AS events,
         COALESCE(max(${now}::bigint - e.emitted_at_ms), 0)::text AS lag,
@@ -87,8 +100,33 @@ export const databaseSampler = () => {
           AND e.actor_type = s.source_type AND e.actor_id = s.source_id
           AND e.sequence > s.delivered AND e.event = ANY(s.events)
         ORDER BY e.sequence LIMIT 1) e ON true
-      WHERE s.active AND s.due_at_ms IS NOT NULL
-      GROUP BY s.subscriber_type, s.subscription`
+      WHERE s.active AND s.due_at_ms IS NOT NULL ${withinRange({ sql, range, column: "s.routing_key" })}
+      GROUP BY s.subscriber_type, s.subscription`,
+    )).flat()
+
+    const subscriptions = [
+      ...perShard
+        .reduce((merged, row) => {
+          const key = JSON.stringify([row.subscriber_type, row.subscription])
+          const seen = merged.get(key)
+
+          merged.set(
+            key,
+            seen === undefined
+              ? row
+              : {
+                  ...seen,
+                  events: String(Math.max(Number(seen.events), Number(row.events))),
+                  lag: String(Math.max(Number(seen.lag), Number(row.lag))),
+                  due: String(Math.max(Number(seen.due), Number(row.due))),
+                  stuck: seen.stuck + row.stuck,
+                },
+          )
+
+          return merged
+        }, new Map<string, (typeof perShard)[number]>())
+        .values(),
+    ]
 
     let subscriptionLag = 0
     let subscriptionStuck = 0
@@ -109,7 +147,8 @@ export const databaseSampler = () => {
       const cutoff = now - type.keepEventsMs
       const holdCutoff = cutoff - type.holdEventsMs
 
-      const [pinned] = yield* sql<{ subscriptions: number; workflows: number }>`
+      const counts = (yield* forEachRange(
+        (range) => sql<{ subscriptions: number; workflows: number }>`
         SELECT
           count(*) FILTER (WHERE e.emitted_at_ms > ${holdCutoff} AND e.sequence > s.held)::int AS subscriptions,
           count(*) FILTER (WHERE e.sequence > w.held)::int AS workflows
@@ -126,10 +165,20 @@ export const databaseSampler = () => {
           WHERE x.routing_key = e.routing_key AND x.tenant_id = e.tenant_id
             AND x.actor_type = e.actor_type AND x.actor_id = e.actor_id
             AND x.status <> 'finished') w ON true
-        WHERE e.actor_type = ${type.actorType} AND e.emitted_at_ms <= ${cutoff}`
+        WHERE e.actor_type = ${type.actorType} AND e.emitted_at_ms <= ${cutoff}
+          ${withinRange({ sql, range, column: "e.routing_key" })}`,
+      )).flat()
 
-      set(Metrics.subscriptionPinned, { actor_type: type.actorType }, pinned?.subscriptions ?? 0)
-      set(Metrics.workflowPinned, { actor_type: type.actorType }, pinned?.workflows ?? 0)
+      set(
+        Metrics.subscriptionPinned,
+        { actor_type: type.actorType },
+        counts.reduce((sum, row) => sum + row.subscriptions, 0),
+      )
+      set(
+        Metrics.workflowPinned,
+        { actor_type: type.actorType },
+        counts.reduce((sum, row) => sum + row.workflows, 0),
+      )
     }
 
     for (const [key, series] of reported)

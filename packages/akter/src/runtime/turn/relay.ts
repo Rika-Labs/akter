@@ -31,7 +31,7 @@ import { count as tally, Metrics } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
-import { type BucketRange, shardClients } from "../database/shards.ts"
+import { type BucketRange, onRange, onShard, shardRanges } from "../database/shards.ts"
 import { NekiTurnSessions } from "../database/neki/session.ts"
 import type {
   Handoff,
@@ -657,7 +657,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient
   const statementClock = outboxClock({ sql, neki: yield* NekiTurnSessions })
-  const shards = yield* shardClients
   let firstShard = 0
   const services = yield* Effect.context<SqlClient.SqlClient>()
   const lock = Semaphore.makeUnsafe(1)
@@ -734,6 +733,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
   const deliverIntent = Effect.fnUntraced(function* (row: ClaimedRow) {
     const routingKey = BigInt(row.routing_key)
+    const onRow = onShard(routingKey)
 
     const claim = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
       AND kind = 'intent' AND due_at_ms = ${BigInt(row.claimed_until)}`
@@ -750,14 +750,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
             reason,
           }),
         )
-        yield* sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
-          WHERE ${claim}`
+        yield* onRow(
+          sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
+            WHERE ${claim}`,
+        )
         yield* tally(Metrics.relayRetried, { kind: "intent" }, 1)
       })
 
     return yield* Effect.gen(function* () {
       const tick = ticks.isTick(row)
-      const route = tick ? yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)) : row
+      const route = tick
+        ? yield* onRow(ticks.settleUnfired(row, claim, backoffMs(row.attempts)))
+        : row
 
       if (route === undefined) return
 
@@ -778,8 +782,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       yield* hooks.at("beforeOutboxDelete", request)
 
-      if (tick) yield* ticks.settleFired(row, claim)
-      else yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
+      if (tick) yield* onRow(ticks.settleFired(row, claim))
+      else yield* onRow(sql`DELETE FROM actor_outbox WHERE ${claim}`)
 
       yield* tally(Metrics.relayDelivered, { kind: "intent" }, 1)
     }).pipe(
@@ -801,7 +805,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
       ),
       Effect.onInterrupt(() =>
         databaseTime.pipe(
-          Effect.flatMap((at) => sql`UPDATE actor_outbox SET due_at_ms = ${at} WHERE ${claim}`),
+          Effect.flatMap((at) =>
+            onRow(sql`UPDATE actor_outbox SET due_at_ms = ${at} WHERE ${claim}`),
+          ),
           Effect.ignore,
         ),
       ),
@@ -848,15 +854,17 @@ export const outboxRelay = Effect.fnUntraced(function* (
                 }
 
           const now = outboxNow({ sql, offsetMillis: clock.offsetMillis() })
-          const ordered = [...shards.slice(firstShard), ...shards.slice(0, firstShard)]
-          firstShard = shards.length === 0 ? 0 : (firstShard + 1) % shards.length
+          const ranges = yield* shardRanges
+          const start = firstShard % Math.max(ranges.length, 1)
+          const ordered = [...ranges.slice(start), ...ranges.slice(0, start)]
+          firstShard = ranges.length === 0 ? 0 : (start + 1) % ranges.length
 
           const claimGroups = (limit: number) =>
             Effect.gen(function* () {
               const claimed: Array<ClaimedRow> = []
               let backlog = false
 
-              for (const { sql, range } of ordered) {
+              for (const range of ordered) {
                 const remaining = limit - claimed.length
 
                 if (remaining <= 0) {
@@ -864,14 +872,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
                   break
                 }
 
-                const groups = yield* cappedGroups({
-                  sql,
-                  range,
-                  clock: statementClock,
-                  now,
-                  executors: capped,
-                  limit: remaining,
-                })
+                const groups = yield* onRange(range)(
+                  cappedGroups({
+                    sql,
+                    range,
+                    clock: statementClock,
+                    now,
+                    executors: capped,
+                    limit: remaining,
+                  }),
+                )
                 backlog ||= groups.length === remaining || (groups[0]?.due_rows ?? 0) >= remaining
 
                 for (const group of groups) {
@@ -884,16 +894,18 @@ export const outboxRelay = Effect.fnUntraced(function* (
                   )!
 
                   claimed.push(
-                    ...(yield* claimCapped({
-                      sql,
-                      clock: statementClock,
-                      now,
-                      group,
-                      cap: registered.perActor!,
-                      maxAttempts: registered.attempts,
-                      permits: left,
-                      leaseMs: settings.executorLeaseMs,
-                    })),
+                    ...(yield* onRange(range)(
+                      claimCapped({
+                        sql,
+                        clock: statementClock,
+                        now,
+                        group,
+                        cap: registered.perActor!,
+                        maxAttempts: registered.attempts,
+                        permits: left,
+                        leaseMs: settings.executorLeaseMs,
+                      }),
+                    )),
                   )
                 }
               }
@@ -919,36 +931,38 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const remainingWork = workSlots === undefined ? undefined : { ...workSlots }
           const found = { intent: 0, job: 0 }
 
-          for (const { sql, range } of ordered) {
-            const claimed = yield* claimDue({
-              sql,
-              range,
-              clock: statementClock,
-              now,
-              intents:
-                intentSlots > 0
-                  ? {
-                      limit: intentSlots,
-                      leaseMs: settings.claimLeaseMs(),
-                      maxBackoffMs: settings.maxBackoffMs,
-                      probe: lanes.intents.probe(intentSlots),
-                      cronActors: [...schedules().keys()],
-                    }
-                  : undefined,
-              jobs:
-                jobSlots > 0 && uncapped.length > 0
-                  ? {
-                      permits: jobSlots,
-                      leaseMs: settings.executorLeaseMs,
-                      executors: uncapped,
-                      probe: lanes.jobs.probe(jobSlots),
-                    }
-                  : undefined,
-              subscriptions:
-                remainingWork === undefined
-                  ? undefined
-                  : subscriptions!.claim(remainingWork, range),
-            })
+          for (const range of ordered) {
+            const claimed = yield* onRange(range)(
+              claimDue({
+                sql,
+                range,
+                clock: statementClock,
+                now,
+                intents:
+                  intentSlots > 0
+                    ? {
+                        limit: intentSlots,
+                        leaseMs: settings.claimLeaseMs(),
+                        maxBackoffMs: settings.maxBackoffMs,
+                        probe: lanes.intents.probe(intentSlots),
+                        cronActors: [...schedules().keys()],
+                      }
+                    : undefined,
+                jobs:
+                  jobSlots > 0 && uncapped.length > 0
+                    ? {
+                        permits: jobSlots,
+                        leaseMs: settings.executorLeaseMs,
+                        executors: uncapped,
+                        probe: lanes.jobs.probe(jobSlots),
+                      }
+                    : undefined,
+                subscriptions:
+                  remainingWork === undefined
+                    ? undefined
+                    : subscriptions!.claim(remainingWork, range),
+              }),
+            )
 
             for (const kind of ["intent", "job"] as const) {
               found[kind] +=
@@ -1084,6 +1098,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
               AND kind = 'job' AND attempts = ${current}`.pipe(
+              onShard(routingKey),
               Effect.tap(
                 Effect.sync(() => {
                   lease.until += millis
@@ -1093,7 +1108,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           { discard: true },
         ).pipe(Effect.andThen(jump)),
       )
-      .pipe(Effect.orDie)
+      .pipe(Effect.orDie, Effect.provideContext(services))
 
   const stop = Effect.andThen(
     halt,
