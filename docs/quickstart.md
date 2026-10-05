@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Go from an empty directory to a running, tested actor app on embedded Postgres."
+description: "Go from an empty directory to a running, tested actor app on an embedded Postgres database."
 ---
 
 # Quickstart
@@ -10,7 +10,7 @@ description: "Go from an empty directory to a running, tested actor app on embed
 **Owner role:** API / SDK.  
 **Change policy:** change with the public API; run every command here against a freshly packed tarball before a release.
 
-You need [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. No Docker and no database server: the app stores its data with [PGlite](https://pglite.dev), an embedded Postgres, in `./.data`. File-backed PGlite requires Linux or macOS on a local filesystem with either runtime.
+You need [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. No Docker and no database server: the app stores its data with [PGlite](https://pglite.dev), an embedded Postgres database, in `./.data`. File-backed PGlite requires Linux or macOS on a local filesystem with either runtime.
 
 ## 1. Install
 
@@ -173,7 +173,7 @@ For Node tests, install Vitest (`npm install --save-dev vitest`), import `afterA
 
 The first test opens a new PGlite directory, which runs `initdb` inside WebAssembly and applies the framework's migrations, so it takes a few seconds. The injected `afterCommit` crash is logged as an entity defect; that log line is expected.
 
-## 5. Switch to Postgres
+## 5. Switch to a Postgres server
 
 Replace `Database.pglite({ dataDir: "./.data" })` with `Database.postgres({ url })`, where `url` is a `Redacted` connection string such as `Redacted.make(process.env.DATABASE_URL!)`. In tests, pass `{ url }` as `ActorTest.layer({ database })`. Startup creates the framework tables. Use a database for this app alone.
 
@@ -182,7 +182,7 @@ Replace `Database.pglite({ dataDir: "./.data" })` with `Database.postgres({ url 
 PGlite has one connection and belongs to the one process that opened its data directory, so:
 
 - run one process against a data directory; a second process opening it at the same time is refused;
-- nothing on PGlite proves lock contention, independent connections, multi-runner relay, or process-kill recovery, which the framework verifies on Postgres only;
-- file-backed PGlite is a production backend for one process per data directory, within the limits of [ADR 0035](decisions/0035-pglite-embedded-production-backend.md): the data directory is locked to one process, a process crash recovers to the last commit (power loss is not claimed), backups are stopped copies, and there are no replicas or multiple runners. Move to Postgres when those limits bind; see the [support matrix](operations/support-matrix.md).
+- nothing on PGlite proves lock contention, independent connections, multi-runner relay, or process-kill recovery, which the framework verifies on a Postgres server only;
+- file-backed PGlite is a production backend for one process per data directory, within the limits of [ADR 0035](decisions/0035-pglite-embedded-production-backend.md): the data directory is locked to one process, a process crash recovers to the last commit (power loss is not claimed), backups are stopped copies, and there are no replicas or multiple runners. Move to a Postgres server when those limits bind; see the [support matrix](operations/support-matrix.md).
 
-On Postgres the alpha is single-runner: run one runtime process per database.
+On a Postgres server the alpha is single-runner: run one runtime process per database.

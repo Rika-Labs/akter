@@ -1,16 +1,16 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "maple",
+  "theme": "mint",
   "name": "Akter",
   "description": "The framework for durable, stateful backends that power realtime apps, background work, and agents.",
   "colors": {
     "primary": "#0b0d0b",
-    "light": "#f5f5f4",
+    "light": "#fafaf9",
     "dark": "#0b0d0b"
   },
   "background": {
     "color": {
-      "light": "#f5f5f4",
+      "light": "#fafaf9",
       "dark": "#0b0d0b"
     }
   },
@@ -21,39 +21,69 @@
   },
   "favicon": "/favicon.svg",
   "navigation": {
-    "groups": [
+    "tabs": [
       {
-        "group": "Get started",
-        "pages": ["quickstart", "guides/concepts", "product/fit-and-non-fit"]
-      },
-      {
-        "group": "Guides",
-        "pages": ["guides/effect-into-the-commit", "guides/testing", "guides/deploy"]
-      },
-      {
-        "group": "API reference",
-        "pages": [
-          "api/01-server-api",
-          "api/02-context",
-          "api/03-typescript-sdk",
-          "api/04-drizzle",
-          "api/05-generated-clients",
-          "api/06-cli",
-          "api/generated-contracts",
-          "api/naming",
-          "api/versioning",
-          "api/post-foundation-sketches"
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": ["quickstart", "guides/concepts", "product/fit-and-non-fit"]
+          },
+          {
+            "group": "Guides",
+            "pages": ["guides/effect-into-the-commit", "guides/testing", "guides/deploy"]
+          },
+          {
+            "group": "Compare",
+            "pages": ["guides/comparison"]
+          }
         ]
       },
       {
-        "group": "Compare",
-        "pages": ["guides/comparison"]
+        "tab": "API reference",
+        "groups": [
+          {
+            "group": "Runtime",
+            "pages": [
+              "api/01-server-api",
+              "api/02-context",
+              "api/03-typescript-sdk",
+              "api/04-drizzle"
+            ]
+          },
+          {
+            "group": "Clients and CLI",
+            "pages": ["api/05-generated-clients", "api/06-cli", "api/generated-contracts"]
+          },
+          {
+            "group": "Conventions",
+            "pages": ["api/naming", "api/versioning", "api/post-foundation-sketches"]
+          }
+        ]
       }
     ]
   },
   "navbar": {
-    "links": [{ "label": "akter.dev", "href": "https://akter.dev" }],
-    "primary": { "type": "github", "href": "https://github.com/Rika-Labs/akter" }
+    "links": [
+      {
+        "label": "Blog",
+        "href": "https://akter.dev/blog"
+      },
+      {
+        "label": "Changelog",
+        "href": "https://akter.dev/changelog"
+      },
+      {
+        "type": "github",
+        "label": "GitHub",
+        "href": "https://github.com/Rika-Labs/akter"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Sign in",
+      "href": "https://app.akter.dev/sign-in"
+    }
   },
   "footer": {
     "socials": {
@@ -93,5 +123,24 @@
   ],
   "contextual": {
     "options": ["copy", "view", "claude", "chatgpt"]
+  },
+  "fonts": {
+    "heading": {
+      "family": "PolySans",
+      "weight": 450,
+      "source": "/fonts/PolySans-variable.woff2",
+      "format": "woff2"
+    },
+    "body": {
+      "family": "PolySans",
+      "weight": 400,
+      "source": "/fonts/PolySans-variable.woff2",
+      "format": "woff2"
+    }
+  },
+  "styling": {
+    "codeblocks": {
+      "theme": "css-variables"
+    }
   }
 }
