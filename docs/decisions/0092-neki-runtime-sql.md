@@ -27,7 +27,7 @@ What the router did, checked on 2026-10-05:
    - `[146]` a router-managed function whose arguments read a column.
 4. **Functions the router cannot run at all:** `pg_current_wal_insert_lsn()`, `pg_blocking_pids()` and `pg_stat_clear_snapshot()` (`[200]`), and `pg_logical_slot_peek_binary_changes()` (`[64]`).
 5. **Sessions targeted at a shard** (`SET __neki.shard`) refuse every router-managed function, and refuse `EXPLAIN (NEKI_PLAN)`.
-6. **Other limits:** one session cannot hold a session advisory lock and a transaction advisory lock at once (`[61]`); temporary tables (`[338]`) and views calling router-managed functions (`[122]`) are refused.
+6. **Other limits:** one session cannot hold a session advisory lock and a transaction advisory lock at once (`[61]`); temporary tables (`[338]`) and views calling router-managed functions (`[122]`) are refused. A `MATERIALIZED` CTE that calls `clock_timestamp()` is refused (`[929]`) only when the statement reads no table, so the router would run it itself; every framework statement that lists `outbox_clock` reads a table and is forwarded. A role created inside a transaction is not visible to `SET ROLE` in that transaction.
 7. **`pg_backend_pid()` is the router's process id.** `pg_locks` reports the shard backend's, so a session cannot find its own advisory locks by pid.
 
 The framework statements that failed:
@@ -58,13 +58,21 @@ Statements only the test harness issues (`pg_blocking_pids`, `pg_stat_activity` 
 
 ## Evidence and limits
 
-The following ran against `akter-preview` on 2026-10-05, each on its own `akter_dev_*` database:
+The following ran against `akter-preview` on 2026-10-05, from a machine about 87 ms per round trip from the router, each on its own `akter_dev_*` database:
 
-- The Neki conformance suite (`testing/conformance/neki/backend.test.ts`).
-- The ADR 0070 Neki migration scenarios (`runtime/database/neki/migrations.test.ts` with `TEST_NEKI_DATABASE_URL`): fresh start, SIGKILL recovery at every boundary, concurrent start and the 0025 → 0026 upgrade.
-- A soak: `apps/api` with `CONTROL_PLANE_DATABASE_ENGINE=neki`, booted on a fresh database, driven through sign-up and a deployment create over HTTP while the relay ran.
+- **Statement replay.** After the change, the router refuses no framework statement on the turn, relay, subscription, Cluster-lock or API hot paths. The harness-only statements listed above remain refused.
+- **ADR 0070 migration scenarios** (`runtime/database/neki/migrations.test.ts` with `TEST_NEKI_DATABASE_URL`, one database per scenario). All three pass: concurrent start waits for the owner and recovers when it is SIGKILLed (159 s), the 0025 → 0026 upgrade through every crash boundary keeps job identity and data (768 s), and SIGKILL after every durable boundary recovers (2,274 s). Over this link they need hours, not the 30 minutes the test allowed before, so the Neki variants' timeouts are raised.
+- **Neki conformance suite** (`testing/conformance/neki/backend.test.ts`, run with `--testTimeout=180000`). 497 cases passed, 38 failed and 294 were skipped. No failure is a router refusal of a framework statement. The failures are:
+  - 13 timeouts.
+  - 4 cases that call `pg_stat_clear_snapshot`, a test harness function.
+  - Cases that create a role inside the transaction that uses it.
+  - Cases with wall-clock bounds tighter than the link allows, such as a release that must land within 5 s of a restart.
 
-The Postgres integration suites of the same packages pass unchanged.
+  Five relay cases that failed in the full run passed when rerun alone on a fresh database. Three of the failing cases also fail on local Postgres behind a proxy that adds the same 87 ms. The remaining assertion failures are unexplained and are not claimed as passes.
+
+- **API soak.** `apps/api` ran with `CONTROL_PLANE_DATABASE_ENGINE=neki` on a fresh database for about 75 minutes, with no errors logged. Over HTTP it served two sign-ups with email verification, organizations, projects, six concurrent deployment creates (one 200, five 409), a recorded build failure, a create after it, and listing. The relay claimed and delivered both hourly `$cron` refresh ticks of the `BillingActor`. The Cluster table-lock acquire was checked directly with two runners, including release and expiry takeover.
+
+On local Postgres, `@rikalabs/akter` unit and integration tests, `apps/api` unit and integration tests and lint and typecheck pass on the changed code.
 
 These remain unproven:
 
@@ -72,3 +80,4 @@ These remain unproven:
 - Advisory-lock Cluster storage, the default for `Actors.layer`, which the API uses. It runs on Neki, but Cluster's lookup of its own locks by `pg_backend_pid()` finds none, so it re-takes them (re-entrantly) on every acquire, and `release` cannot confirm a release. One process is unaffected. Several processes sharing one Neki database should use table locks.
 - `Fleet.view`: logical decoding on Neki.
 - Multi-shard atomicity.
+- The 38 conformance cases above, until they pass from a machine near the router.
