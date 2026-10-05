@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg"
-import { Clock, Config, Data, Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import { Clock, Config, Data, Effect, Fiber, Layer, ManagedRuntime, Redacted } from "effect"
 import { SqlClient } from "effect/sql"
 import { afterAll, describe, expect, it } from "vitest"
 import { NekiLogicalDatabaseProvider } from "./logical-database.ts"
@@ -252,6 +252,27 @@ describe("NekiLogicalDatabase provider against Postgres", () => {
           expect(yield* databases(url, name)).toHaveLength(0)
         }),
       ).pipe(Effect.orDie)
+      yield* remove(props, output)
+    }))
+
+  test("waits for another session to leave template1 instead of failing the create", (url) =>
+    Effect.gen(function* () {
+      const name = yield* unique
+      const props = { name, connectionUrl: url }
+      const holder = yield* Effect.forkChild(
+        on(
+          inDatabase(url, "template1"),
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`SELECT pg_sleep(8)`
+          }),
+        ),
+      )
+      yield* Effect.sleep("1 second")
+      const output = yield* reconcile(props)
+      expect(output).toEqual({ name })
+      expect(yield* databases(url, name)).toHaveLength(1)
+      yield* Fiber.join(holder)
       yield* remove(props, output)
     }))
 

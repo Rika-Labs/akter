@@ -2,7 +2,7 @@ import { isResolved } from "alchemy/Diff"
 import * as Provider from "alchemy/Provider"
 import type { Resource } from "alchemy/Resource"
 import { PgClient } from "@effect/sql-pg"
-import { Effect, Layer, Redacted, Schema } from "effect"
+import { Effect, Layer, Redacted, Schedule, Schema } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
 import type { Providers } from "./providers.ts"
 import { Neki } from "./resources.ts"
@@ -29,8 +29,10 @@ export interface NekiLogicalDatabaseAttributes {
  * a run that created it before its state write was lost converges instead of failing on the name.
  * A Neki router refuses `DROP DATABASE ... WITH (FORCE)`, so the drop is plain and only falls back
  * to forcing its sessions closed when the database is still in use, which only plain Postgres
- * allows. A router that refuses a statement fails the deploy with its own error rather than
- * falling back to another layout.
+ * allows. `CREATE DATABASE` copies `template1` and fails while any other session is in it, which
+ * happens whenever two deploys create their databases on one cluster at once, so the create is
+ * retried for up to two minutes while the template is in use. A router that refuses a statement
+ * fails the deploy with its own error rather than falling back to another layout.
  *
  * @example
  * ```typescript
@@ -56,7 +58,7 @@ const BARRIER =
 
 const isServerResponse = Schema.is(Schema.Struct({ code: Schema.String }))
 
-/** SQLSTATE `55006`: the database still has sessions. */
+/** SQLSTATE `55006`: the database, or the template a new one copies, still has sessions. */
 const inUse = (error: SqlError.SqlError) =>
   isServerResponse(error.reason.cause) && error.reason.cause.code === "55006"
 
@@ -100,7 +102,15 @@ export const NekiLogicalDatabaseProvider = Provider.succeed(Neki.LogicalDatabase
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient
         if (yield* exists(news.name)) return
-        yield* sql`CREATE DATABASE ${sql(news.name)}`
+        yield* sql`CREATE DATABASE ${sql(news.name)}`.pipe(
+          Effect.retry({
+            while: inUse,
+            schedule: Schedule.min([
+              Schedule.exponential("250 millis"),
+              Schedule.spaced("5 seconds"),
+            ]).pipe(Schedule.upTo({ duration: "2 minutes" })),
+          }),
+        )
         yield* sql.unsafe(BARRIER).pipe(Effect.ignore)
       }),
     )
