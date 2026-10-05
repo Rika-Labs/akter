@@ -167,7 +167,6 @@ export const dimensions = stylex.defineVars({
   sidebar: "15rem",
   aside: "16.25rem",
   settingsColumn: "47.5rem",
-  authColumn: "20rem",
   dialog: "28rem",
   palette: "38rem",
   menu: "13.5rem",
