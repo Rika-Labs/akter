@@ -24,6 +24,7 @@ import { ControlLayers } from "./control.ts"
 import { SqlClient } from "effect/sql"
 import { billingInfrastructure, BillingLive, billingWebhook, UsageLive } from "./billing.ts"
 import { LocalBillingOptions, localBillingRoutes } from "./local-billing.ts"
+import { RequestLogLive } from "./request-log.ts"
 import { publishedKeys } from "@akter/deployments"
 import { DeploymentsLive } from "./deployments.ts"
 import { RuntimeLive } from "./runtime.ts"
@@ -290,10 +291,9 @@ const eventStreamKeepalive = HttpMiddleware.make((app) =>
 )
 
 export const routes = Layer.mergeAll(
-  apiRoutes,
-  authRoutes,
-  billingWebhook,
-  localBillingRoutes,
+  Layer.mergeAll(apiRoutes, authRoutes, billingWebhook, localBillingRoutes).pipe(
+    Layer.provide(RequestLogLive),
+  ),
   HttpRouter.middleware(
     Effect.map(Auth, (auth) =>
       HttpMiddleware.cors({ allowedOrigins: auth.allowedBrowserOrigins, credentials: true }),

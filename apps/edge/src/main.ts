@@ -6,6 +6,7 @@ import { Config, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { loadOptions } from "./config.ts"
 import { EdgeLive } from "./server.ts"
+import { TelemetryLive } from "./telemetry.ts"
 
 /**
  * Hosted ingress: deployment hosts to runners, credentials to signed
@@ -27,6 +28,7 @@ const program = Effect.gen(function* () {
           FetchHttpClient.layer,
           BunCrypto.layer,
           PricingLive(pricing),
+          TelemetryLive,
         ),
       ),
     ),

@@ -34,7 +34,9 @@ export const sharedDatasets = Effect.gen(function* () {
  * which watches only its own environment: previews are expected to break. Axiom validates a
  * monitor's fields against the dataset when the monitor is created, and a dataset that has not
  * yet received a span with those attributes has no such fields, so the query reads them with
- * `column_ifexists`.
+ * `column_ifexists`. Axiom stores a resource attribute it has no column for, such as
+ * `deployment.environment`, in the `resource.custom` map of the traces dataset, so the stage is
+ * read from there.
  */
 export const telemetry = (deployment: Deployment) =>
   Effect.gen(function* () {
@@ -47,7 +49,7 @@ export const telemetry = (deployment: Deployment) =>
         aplQuery: traces.name.pipe(
           Output.map(
             (name) =>
-              `['${name}'] | where column_ifexists('status.code', '') == 'ERROR' | where column_ifexists('resource.deployment.environment', '') == '${layout.stage}' | summarize count()`,
+              `['${name}'] | where column_ifexists('status.code', '') == 'ERROR' | where tostring(column_ifexists('resource.custom', dynamic(null))['deployment.environment']) == '${layout.stage}' | summarize count()`,
           ),
         ),
         operator: "Above",
