@@ -29,6 +29,12 @@ export const exemptions: ReadonlyArray<Exemption> = [
       "The Compose E2E exercises login, whoami, deploy and logout against the API, edge and runner image together rather than one source module.",
   },
   {
+    path: "infra/src/fly-service-image.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "It exercises the patched Alchemy Fly.Service image build that the console and the site share, which has no source module in this repository.",
+  },
+  {
     path: "tooling/oxlint/anti-slop",
     rule: "tests-beside-sources",
     reason:
