@@ -249,7 +249,7 @@ Required by [contract 11](../contracts/11-control-plane.md). The edge rows run t
 
 ## Control-plane authentication
 
-These scenarios use real Postgres and HTTP in `apps/api/src/server.test.ts` and a loopback OIDC IdP in `apps/api/src/auth.test.ts`; they do not establish real Neki, SES, external OAuth, DNS verification or SAML support.
+These scenarios use real Postgres and HTTP in `apps/api/src/server.test.ts` and a loopback OIDC IdP in `apps/api/src/auth.test.ts`; they do not establish real Neki, Resend, external OAuth, DNS verification or SAML support.
 
 | Fault point                                                                            | Required result                                                                                    |
 | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |

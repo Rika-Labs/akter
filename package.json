@@ -18,6 +18,8 @@
       "@distilled.cloud/axiom": "1.0.0-rc.13",
       "@distilled.cloud/stripe": "1.0.0-rc.13",
       "@distilled.cloud/github": "1.0.0-rc.13",
+      "@distilled.cloud/fly-io": "1.0.0-rc.13",
+      "@distilled.cloud/resend": "1.0.0-rc.13",
       "effect": "4.0.0",
       "@effect/platform-browser": "4.0.0",
       "@effect/platform-bun": "4.0.0",

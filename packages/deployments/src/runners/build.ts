@@ -54,7 +54,8 @@ const isImageId = Schema.is(ImageId)
 /**
  * Where a local build reads its source: the build `context` directory and the
  * `dockerfile` path inside it. `platform` defaults to `linux/arm64`, the
- * architecture the local runners start with. A build that runs longer than
+ * architecture the local runners start with, which is not the hosted
+ * architecture (linux/amd64). A build that runs longer than
  * `timeout` (default 15 minutes) is stopped and fails. An uploaded context
  * may unpack to at most `maxContextBytes` (default 512 MiB) in at most
  * `maxContextEntries` tar entries (default 100,000).

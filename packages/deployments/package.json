@@ -10,11 +10,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
-    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src/runners/ecs.test.ts packages/deployments/src/runners/migrations.test.ts",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src/runners/fly.test.ts packages/deployments/src/runners/migrations.test.ts",
     "test:integration": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. packages/deployments/src"
   },
   "dependencies": {
-    "@distilled.cloud/aws": "catalog:",
+    "@distilled.cloud/fly-io": "catalog:",
     "@rikalabs/akter": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"

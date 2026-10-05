@@ -37,7 +37,7 @@ export type RunnerState = "starting" | "running" | "stopped"
 
 /**
  * A runner as the platform reports it. `id` names it in `describe` and
- * `stop`. `url` is the origin the edge forwards to (`http://host:port`, no
+ * `stop`. `url` is the origin the edge forwards to (`scheme://host[:port]`, no
  * path), null until the platform has assigned an address. `basePath` is where
  * the runner's `Actor.serve` mounts its routes, for `deployment_runner`.
  */
@@ -59,24 +59,22 @@ const Code = Schema.Literals([
   "invalid-input",
   "unknown-region",
   "unavailable",
+  "capacity",
   "refused",
   "no-task",
-  "wrong-architecture",
   "unreadable",
-  "definition-mismatch",
 ])
 
 type Code = typeof Code.Type
 
 const reasons = {
   "invalid-input": "the start request is invalid",
-  "unknown-region": "no cluster is configured for the region",
+  "unknown-region": "no placement is configured for the region",
   unavailable: "the platform could not be reached",
+  capacity: "the platform has no capacity for the runner in an allowed region",
   refused: "the platform refused the request",
-  "no-task": "the platform started no task",
-  "wrong-architecture": "the task does not run arm64",
+  "no-task": "the platform started no runner",
   unreadable: "the platform's answer could not be read",
-  "definition-mismatch": "the task definition for the image does not match what was asked",
 } satisfies Record<Code, string>
 
 /**
@@ -84,7 +82,8 @@ const reasons = {
  * and `message` is its fixed sentence, optionally followed by the provider's
  * own error name in parentheses. Nothing the provider or a child process said
  * is copied in, because it can echo the request, and the request carries
- * secrets.
+ * secrets. `unavailable` and `capacity` are transient: the same start can
+ * succeed when retried later.
  */
 export class RunnerPlatformError extends Schema.TaggedError<RunnerPlatformError>()(
   "RunnerPlatformError",
@@ -138,8 +137,8 @@ export class RunnerPlatform extends Context.Service<
 >()("@akter/deployments/runners/contract/RunnerPlatform") {}
 
 /**
- * The provider-safe name of a start: 64 lowercase hex characters, the
- * longest and strictest a provider accepts (ECS client tokens), the same for
+ * The provider-safe name of a start: 64 lowercase hex characters, which any
+ * provider accepts as a token or truncates to a shorter name, the same for
  * the same deployment and key, and different for any other pair. A deployment
  * id never contains a NUL, so the separator keeps the pair unambiguous.
  */

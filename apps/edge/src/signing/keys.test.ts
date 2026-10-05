@@ -65,7 +65,7 @@ const optionsFor = Effect.fnUntraced(function* (url: string, kid: string) {
     coldStartTimeout: Duration.seconds(30),
     leaseTtl: Duration.seconds(30),
     leaseHeartbeat: Duration.seconds(10),
-    trustedProxies: { nlbOnly: false, cloudflare: [] },
+    trustedProxies: { flyProxy: false },
   } satisfies EdgeOptions
 })
 

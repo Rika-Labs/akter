@@ -3,16 +3,14 @@ import { isIP } from "node:net"
 /**
  * What the edge may believe about a request's origin.
  *
- * `nlbOnly` is a deployment statement, not something a request can show: the
- * edge's network admits traffic only through an NLB that keeps the client's
- * source address, so the TCP peer of every connection is the host that
- * connected to the NLB. Only then is the peer meaningful, and only then is
- * `CF-Connecting-IP` believed, and only from a peer inside `cloudflare`.
+ * `flyProxy` is a deployment statement, not something a request can show: the
+ * edge is reachable from the internet only through Fly's proxy, which sets
+ * `Fly-Client-IP` to the address it accepted the connection from and replaces
+ * any value the client sent. Only then is that header believed; the TCP peer
+ * is then the proxy itself.
  */
 export interface TrustedProxies {
-  readonly nlbOnly: boolean
-  /** Cloudflare's published ranges. */
-  readonly cloudflare: ReadonlyArray<string>
+  readonly flyProxy: boolean
 }
 
 interface Address {
@@ -77,68 +75,22 @@ export const normalizeIp = (text: string) => {
   return text.toLowerCase()
 }
 
-const compile = (block: string) => {
-  const [text = "", length, extra] = block.trim().split("/")
-  const base = parse(text)
-
-  if (base === undefined || extra !== undefined) return undefined
-
-  const prefix = length === undefined ? base.bits : /^\d{1,3}$/u.test(length) ? Number(length) : -1
-
-  if (prefix < 0 || prefix > base.bits) return undefined
-
-  const shift = BigInt(base.bits - prefix)
-
-  return { bits: base.bits, network: base.value >> shift, shift }
-}
-
-/**
- * Compiles CIDR blocks into a membership test. A block that does not parse is
- * a configuration mistake, so it throws rather than silently trusting less or
- * more than the operator wrote.
- */
-export const cidrs = (blocks: ReadonlyArray<string>) => {
-  const compiled = blocks.map((block) => {
-    const entry = compile(block)
-
-    if (entry === undefined) throw new Error(`Not an IP address or CIDR block: ${block}`)
-
-    return entry
-  })
-
-  return (text: string) => {
-    const address = parse(text)
-
-    return (
-      address !== undefined &&
-      compiled.some(
-        (entry) => entry.bits === address.bits && address.value >> entry.shift === entry.network,
-      )
-    )
-  }
-}
-
 /**
  * Builds the client IP rule of the hosted edge.
  *
- * `CF-Connecting-IP` is only a claim by whoever sent it. The edge believes it
- * when `nlbOnly` is set and the TCP peer is a Cloudflare address. A peer
- * inside a VPC or NLB range proves nothing, so it is never trusted. Every
- * other peer is the client, whatever headers it sent, and so is a Cloudflare
- * peer that sent no valid `CF-Connecting-IP`.
+ * `Fly-Client-IP` is only a claim by whoever sent it. The edge believes it
+ * when `flyProxy` is set, and only when it is exactly one address; every
+ * other header, however plausible, is ignored. Without the gate the client is
+ * the TCP peer, whatever headers it sent, and so it is with the gate when the
+ * header is absent or not an address.
  */
-export const clientIps = (trusted: TrustedProxies) => {
-  const viaCloudflare = trusted.nlbOnly ? cidrs(trusted.cloudflare) : () => false
-
-  return (peer: string | undefined, headers: Headers) => {
+export const clientIps =
+  (trusted: TrustedProxies) => (peer: string | undefined, headers: Headers) => {
     const address = peer === undefined ? undefined : normalizeIp(peer)
 
-    if (address === undefined) return undefined
+    if (address === undefined || !trusted.flyProxy) return address
 
-    if (!viaCloudflare(address)) return address
-
-    const claimed = headers.get("cf-connecting-ip")?.trim()
+    const claimed = headers.get("fly-client-ip")?.trim()
 
     return (claimed === undefined ? undefined : normalizeIp(claimed)) ?? address
   }
-}
