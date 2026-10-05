@@ -347,7 +347,6 @@
   },
   "catalog": {
     "@alchemy.run/frontend-frameworks": "2.0.0-beta.80",
-    "@distilled.cloud/aws": "1.0.0-rc.13",
     "@distilled.cloud/axiom": "1.0.0-rc.13",
     "@distilled.cloud/core": "1.0.0-rc.13",
     "@distilled.cloud/fly-io": "1.0.0-rc.13",

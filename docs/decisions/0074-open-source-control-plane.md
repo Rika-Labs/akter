@@ -1,6 +1,6 @@
 # ADR 0074: The open-source cloud control plane: ownership, evidence, compute and trust
 
-**Status:** accepted (2026-10-03). Records Dallen's decisions of 2026-10-02 and 2026-10-03 for the Akter Cloud control plane. It supersedes the `apps/*` licensing caveat in [ADR 0029](0029-licence-package-name-and-release-policy.md) and amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) with the control plane's own access path.
+**Status:** accepted (2026-10-03). Records Dallen's decisions of 2026-10-02 and 2026-10-03 for the Akter Cloud control plane. It supersedes the `apps/*` licensing caveat in [ADR 0029](0029-licence-package-name-and-release-policy.md) and amends [ADR 0031](0031-hosted-ingress-tenant-directory-and-regions.md) with the control plane's own access path. Its compute decision (item 5) is superseded by [ADR 0089](0089-fly-infrastructure-and-environments.md) and [ADR 0090](0090-fly-machines-runner-platform.md): hosted runners and platform services run on Fly Machines in `iad`, not AWS ECS on Fargate.
 
 **Responsibility:** decide who owns the control plane's records, how they are verified, where customer code runs, and how the control plane reaches it.
 
