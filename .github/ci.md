@@ -162,3 +162,5 @@ An `AMP_TOKEN` secret alone does not enable issue replies or pull request review
 This repository does not define an Amp mention or review workflow. Those behaviors
 require a separately configured integration; the verification and evidence workflows
 do not invoke Amp.
+
+Alchemy holds a Postgres session advisory lock for the stage it deploys. If the connection that holds it drops mid-run, Alchemy stops with "state lock ... was lost mid-run" before writing anything unlocked; the deploy step retries up to three times on that error alone, which is safe because every Alchemy apply is an idempotent reconcile.

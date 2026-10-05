@@ -144,7 +144,12 @@ jobs:
           IMAGE_TAG="$(git rev-parse HEAD)"
           export IMAGE_TAG
           bun --bun run --cwd infra guard deploy "$STAGE"
-          bun --bun run --cwd infra deploy --stage "$STAGE" --yes
+          for attempt in 1 2 3; do
+            if bun --bun run --cwd infra deploy --stage "$STAGE" --yes 2>&1 | tee deploy.log; then exit 0; fi
+            grep -q "state lock .* was lost mid-run" deploy.log || exit 1
+            echo "::warning::The Postgres state lock connection dropped; retrying the deploy (attempt $attempt)"
+          done
+          exit 1
       - name: Destroy the preview
         if: matrix.operation == 'destroy'
         env:
