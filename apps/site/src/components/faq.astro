@@ -1,45 +1,31 @@
 ---
 import * as stylex from "@stylexjs/stylex"
+import { questionMarker } from "../styles/markers.stylex.ts"
 import { faq } from "./faq.styles.ts"
 
-/** One question and the answer shown when it is opened. */
-interface Entry {
-  readonly question: string
-  readonly answer: string
-}
-
 interface Props {
-  entries: ReadonlyArray<Entry>
+  entries: ReadonlyArray<{ readonly question: string; readonly answer: string }>
 }
 
 const { entries } = Astro.props
 ---
 
-<div {...stylex.attrs(faq.list)}>
+<ul {...stylex.attrs(faq.list)}>
   {
     entries.map((entry, index) => (
-      <details data-faq {...stylex.attrs(faq.item)}>
-        <summary {...stylex.attrs(faq.summary)}>
-          <span {...stylex.attrs(faq.number)}>{String(index + 1).padStart(2, "0")}</span>
-          <span {...stylex.attrs(faq.question)}>{entry.question}</span>
-          <svg {...stylex.attrs(faq.icon)} data-faq-icon viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true">
-            <path d="M1.5 6h9"></path>
-            <path d="M6 1.5v9" data-faq-plus></path>
-          </svg>
-        </summary>
-        <p {...stylex.attrs(faq.answer)}>{entry.answer}</p>
-      </details>
+      <li {...stylex.attrs(faq.item)}>
+        <details {...stylex.attrs(questionMarker)}>
+          <summary {...stylex.attrs(faq.summary)}>
+            <span {...stylex.attrs(faq.number)}>{String(index + 1).padStart(2, "0")}</span>
+            <span {...stylex.attrs(faq.question)}>{entry.question}</span>
+            <svg {...stylex.attrs(faq.icon)} width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+              <path d="M1.5 6h9"></path>
+              <path d="M6 1.5v9" {...stylex.attrs(faq.stem)}></path>
+            </svg>
+          </summary>
+          <p {...stylex.attrs(faq.answer)}>{entry.answer}</p>
+        </details>
+      </li>
     ))
   }
-</div>
-
-<script>
-  for (const details of document.querySelectorAll<HTMLDetailsElement>("details[data-faq]")) {
-    const plus = details.querySelector<SVGPathElement>("[data-faq-plus]")
-    const update = () => {
-      if (plus !== null) plus.style.display = details.open ? "none" : ""
-    }
-    details.addEventListener("toggle", update)
-    update()
-  }
-</script>
+</ul>

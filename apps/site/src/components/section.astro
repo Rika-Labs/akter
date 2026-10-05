@@ -1,0 +1,26 @@
+---
+import * as stylex from "@stylexjs/stylex"
+import { text } from "../styles/text.styles.ts"
+import { section } from "./section.styles.ts"
+
+interface Props {
+  heading: string
+}
+
+const { heading } = Astro.props
+const hasBelow = Astro.slots.has("below")
+---
+
+<section {...stylex.attrs(section.root)}>
+  <h2 {...stylex.attrs(text.section, section.heading)}>{heading}</h2>
+  <div {...stylex.attrs(section.content)}>
+    <slot />
+  </div>
+  {
+    hasBelow && (
+      <div {...stylex.attrs(section.below)}>
+        <slot name="below" />
+      </div>
+    )
+  }
+</section>

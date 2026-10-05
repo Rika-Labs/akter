@@ -1,28 +1,27 @@
 ---
 import * as stylex from "@stylexjs/stylex"
+import Art from "../components/art.astro"
 import Button from "../components/button.astro"
 import Container from "../components/container.astro"
-import SectionHeading from "../components/section-heading.astro"
-import Drawing from "../illustrations/drawing.astro"
-import { missingScene } from "../illustrations/scenes.ts"
 import Base from "../layouts/base.astro"
 import { docsUrl } from "../site.ts"
 import { notFound } from "../styles/not-found.styles.ts"
 import { text } from "../styles/text.styles.ts"
 ---
 
-<Base title="Not found" description="This address is not on the manifest." path="/404" footer="compact" noindex>
+<Base title="Not found" description="This page isn't here." path="/404" noindex>
   <Container>
     <div {...stylex.attrs(notFound.root)}>
-      <svg viewBox="0 0 420 190" role="img" aria-label="A stack of containers with one slot empty, and a crane waiting over it" {...stylex.attrs(notFound.svg)}>
-        <Drawing items={missingScene} />
-      </svg>
-      <SectionHeading level={1} size="page" align="center" lead="That page isn't on the manifest. It may have moved, or it never shipped.">No such address.</SectionHeading>
+      <div {...stylex.attrs(text.label)}>Error 404</div>
+      <h1 {...stylex.attrs(text.hero, text.page, notFound.title)}>This page isn't here.</h1>
+      <p {...stylex.attrs(text.lede, notFound.lede)}>It may have moved, or it never shipped.</p>
       <div {...stylex.attrs(notFound.actions)}>
-        <Button href="/" variant="primary">Back to the port</Button>
-        <Button href={docsUrl}>Read the docs</Button>
+        <Button href="/">Go home</Button>
+        <Button href={docsUrl} variant="ghost" external arrow>Search the docs</Button>
       </div>
-      <p {...stylex.attrs(text.label)}>404</p>
+      <div {...stylex.attrs(notFound.art)}>
+        <Art source="crane" viewBox="0 0 1080 300" phoneCrop />
+      </div>
     </div>
   </Container>
 </Base>

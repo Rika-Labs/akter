@@ -1,6 +1,5 @@
-import type { Figure, Paint } from "@akter/ui/brand"
+import type { Drawing, Figure, Paint } from "@akter/ui/brand"
 import { escapeMarkup } from "../escape-markup.ts"
-import type { SceneItem } from "../illustrations/render-drawing.ts"
 
 /** Literal colours for each brand paint role, for images that cannot use the site's tokens. */
 export const flatPalette: Readonly<Record<Paint, string>> = {
@@ -25,14 +24,14 @@ const figure = (item: Figure): string => {
   return `<${item.tag} fill="${flatPalette[item.fill]}"${stroke}${opacity}${dashes}${attributes}/>`
 }
 
-const render = (item: SceneItem): string =>
+const render = (item: Drawing): string =>
   "children" in item ? `<g>${item.children.map(render).join("")}</g>` : figure(item)
 
 /**
  * Renders scene descriptors as plain SVG with literal colours and no animation, for the favicon
  * and the Open Graph image. Text figures are skipped because those images load no mono font.
  */
-export const renderFlat = (items: ReadonlyArray<SceneItem>): string =>
+export const renderFlat = (items: ReadonlyArray<Drawing>): string =>
   items
     .flatMap((item) => ("children" in item || item.tag !== "text" ? [render(item)] : []))
     .join("")
