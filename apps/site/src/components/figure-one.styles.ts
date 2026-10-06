@@ -20,8 +20,8 @@ export const figureOne = stylex.create({
   },
   tile: { fill: siteColors.tile, stroke: siteColors.hairline },
   page: { fill: siteColors.page },
-  ink: { fill: siteColors.ink },
-  mark: { stroke: siteColors.page },
+  ink: { fill: siteColors.accent },
+  mark: { stroke: siteColors.markOnAccent },
   caption: {
     marginTop: "0.75rem",
     fontSize: "0.875rem",

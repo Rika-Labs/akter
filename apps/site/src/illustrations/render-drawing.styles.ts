@@ -1,6 +1,7 @@
 import { colors } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
 import { queries } from "../styles/breakpoints.stylex.ts"
+import { siteColors } from "../styles/site-tokens.stylex.ts"
 
 const glide = stylex.keyframes({
   from: { strokeDashoffset: 0 },
@@ -37,9 +38,18 @@ const bobbing = stylex.keyframes({
 /** Fill and stroke paints for each brand paint role, mapped to design tokens so themes apply. */
 export const fills = stylex.create({
   ink: { fill: colors.foreground },
-  face: { fill: colors.illustrationFace },
-  top: { fill: colors.illustrationTop },
-  end: { fill: colors.illustrationEnd },
+  face: { fill: siteColors.sceneFace },
+  top: { fill: siteColors.sceneTop },
+  end: { fill: siteColors.sceneEnd },
+  none: { fill: "none" },
+})
+
+/** Fills for the container on the crane's hoist, the one object in the scene painted in the accent. */
+export const hoistFills = stylex.create({
+  ink: { fill: colors.foreground },
+  face: { fill: siteColors.accent },
+  top: { fill: siteColors.accentTop },
+  end: { fill: siteColors.accentEnd },
   none: { fill: "none" },
 })
 

@@ -4,13 +4,21 @@ import { escapeMarkup } from "../escape-markup.ts"
 /** Literal colours for each brand paint role, for images that cannot use the site's tokens. */
 export const flatPalette: Readonly<Record<Paint, string>> = {
   ink: "#0b0d0b",
-  face: "#fafaf9",
-  top: "#f3f2ef",
-  end: "#ebe9e4",
+  face: "#fbf1d1",
+  top: "#faf5e3",
+  end: "#fceaae",
   none: "none",
 }
 
-const figure = (item: Figure): string => {
+/** Literal colours for the container on the crane's hoist, which carries the accent. */
+export const hoistPalette: Readonly<Record<Paint, string>> = {
+  ...flatPalette,
+  face: "#ffc300",
+  top: "#ffd54d",
+  end: "#cc9c00",
+}
+
+const figure = (item: Figure, palette: Readonly<Record<Paint, string>>): string => {
   const attributes = Object.entries(item.attributes)
     .map(([name, value]) => ` ${name}="${escapeMarkup(String(value))}"`)
     .join("")
@@ -19,13 +27,16 @@ const figure = (item: Figure): string => {
   const stroke =
     item.stroke === "none"
       ? ""
-      : ` stroke="${flatPalette[item.stroke]}" stroke-width="${item.strokeWidth ?? 1}" stroke-linejoin="round"`
+      : ` stroke="${palette[item.stroke]}" stroke-width="${item.strokeWidth ?? 1}" stroke-linejoin="round"`
 
-  return `<${item.tag} fill="${flatPalette[item.fill]}"${stroke}${opacity}${dashes}${attributes}/>`
+  return `<${item.tag} fill="${palette[item.fill]}"${stroke}${opacity}${dashes}${attributes}/>`
 }
 
-const render = (item: Drawing): string =>
-  "children" in item ? `<g>${item.children.map(render).join("")}</g>` : figure(item)
+const render = (item: Drawing, palette: Readonly<Record<Paint, string>> = flatPalette): string => {
+  if (!("children" in item)) return figure(item, palette)
+  const inner = item.className === "hoist" ? hoistPalette : palette
+  return `<g>${item.children.map((child) => render(child, inner)).join("")}</g>`
+}
 
 /**
  * Renders scene descriptors as plain SVG with literal colours and no animation, for the favicon

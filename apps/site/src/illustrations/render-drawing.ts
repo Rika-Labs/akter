@@ -1,12 +1,10 @@
 import type { Drawing, Figure, Group, Paint } from "@akter/ui/brand"
 import * as stylex from "@stylexjs/stylex"
 import { escapeMarkup } from "../escape-markup.ts"
-import { fills, motion, strokes, text } from "./render-drawing.styles.ts"
+import { fills, hoistFills, motion, strokes, text } from "./render-drawing.styles.ts"
 
 const classOf = (...styles: ReadonlyArray<stylex.StyleXStyles | false>): string =>
   stylex.props(...styles).className ?? ""
-
-const paintFill = (paint: Paint) => fills[paint]
 
 const paintStroke = (paint: Paint) => strokes[paint]
 
@@ -24,6 +22,7 @@ const isGroup = (item: Drawing): item is Group => "children" in item
  */
 export const renderDrawing = (items: ReadonlyArray<Drawing>): string => {
   let waterRows = 0
+  let hoisted = false
 
   const figure = (item: Figure): string => {
     const water = item.className === "water"
@@ -31,7 +30,11 @@ export const renderDrawing = (items: ReadonlyArray<Drawing>): string => {
       ? classOf(motion.water, waterRows++ % 2 === 1 && motion.waterReverse)
       : ""
     const classes = [
-      classOf(paintFill(item.fill), paintStroke(item.stroke), item.tag === "text" && text.mono),
+      classOf(
+        (hoisted ? hoistFills : fills)[item.fill],
+        paintStroke(item.stroke),
+        item.tag === "text" && text.mono,
+      ),
       animation,
     ]
       .filter((name) => name !== "")
@@ -45,7 +48,11 @@ export const renderDrawing = (items: ReadonlyArray<Drawing>): string => {
 
   const group = (item: Group): string => {
     const offset = item.offset === undefined ? "" : ` style="--reach:${item.offset.toFixed(1)}px"`
-    return `<g class="${classOf(motion[item.className])}"${offset}>${item.children.map(render).join("")}</g>`
+    const outer = hoisted
+    hoisted = hoisted || item.className === "hoist"
+    const children = item.children.map(render).join("")
+    hoisted = outer
+    return `<g class="${classOf(motion[item.className])}"${offset}>${children}</g>`
   }
 
   const render = (item: Drawing): string => {
