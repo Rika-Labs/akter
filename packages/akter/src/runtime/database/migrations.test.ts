@@ -17,6 +17,7 @@ import { afterAll, describe, expect, it } from "vitest"
 import { Database } from "../layer.ts"
 import { migrations, migrator } from "./migrations.ts"
 import { disposableDatabase } from "../../testing/database.ts"
+import { AUTHORITY_MOVED_TABLES } from "../storage/placements.ts"
 
 /** Deployment registries and coordination rows are not actor data and stay in one shard group. */
 const registries = [
@@ -92,6 +93,9 @@ describe("migrations with Postgres", () => {
             ).toEqual(["routing_key", "tenant_id", "actor_type", "actor_id", "timer_key"])
 
             const actorTables = [...new Set(actorKeys.map((key) => key.table_name))]
+            expect([...AUTHORITY_MOVED_TABLES].sort()).toEqual(
+              actorTables.filter((table) => !table.startsWith("tenant_")).sort(),
+            )
             const triggers = sql<{ table_name: string; trigger: string }>`
               SELECT c.relname AS table_name, t.tgname AS trigger
               FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
@@ -230,7 +234,7 @@ describe("migrations with Postgres", () => {
       ),
     ))
 
-  it("records a parent type exactly for parent placement", () =>
+  it("records a parent type exactly for parent placement, and authority placement without one", () =>
     runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -273,6 +277,8 @@ describe("migrations with Postgres", () => {
           expect(Exit.isFailure(yield* insert("parent", null))).toBe(true)
           expect(Exit.isFailure(yield* insert("actor", "Order"))).toBe(true)
           expect(Exit.isFailure(yield* insert("region", null))).toBe(true)
+          expect(Exit.isSuccess(yield* insert("authority", null))).toBe(true)
+          expect(Exit.isFailure(yield* insert("authority", "Tactor"))).toBe(true)
         }),
       ),
     ))

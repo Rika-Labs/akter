@@ -60,9 +60,22 @@ const hexByte = (byte: number) => byte.toString(16).padStart(2, "0")
 
 const signedBucket = (index: number) => index - 128
 
+const bucketIndex = (bucket: number) => bucket + 128
+
+/**
+ * The bucket every routing key of an authority-placed actor falls in. Those actors read and
+ * write tables the topology does not route inside their turns, so their bucket stays on the
+ * authoritative shard whatever the number of data shards: one turn's rows and the control
+ * tables it touches then commit on one shard.
+ */
+export const AUTHORITY_BUCKET = -128
+
+/** The highest shard count: past one shard, the data shards split every bucket but `AUTHORITY_BUCKET`. */
+const MAX_SHARDS = BUCKET_COUNT - 1
+
 const checkRange = (shardCount: number) => {
-  if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > BUCKET_COUNT)
-    throw new RangeError(`shardCount must be an integer from 1 to ${BUCKET_COUNT}`)
+  if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > MAX_SHARDS)
+    throw new RangeError(`shardCount must be an integer from 1 to ${MAX_SHARDS}`)
 }
 
 /**
@@ -132,11 +145,16 @@ export const bucketHex = (bucket: number) => {
   return hexByte(bucket + 128)
 }
 
-/** The first bucket index, 0..255, owned by each shard when 256 buckets are split into near-equal runs. */
+/**
+ * The first bucket index, 0..255, owned by each data shard. One shard owns all 256. More
+ * split the buckets after `AUTHORITY_BUCKET`'s into near-equal runs.
+ */
 const startBytes = (shardCount: number) => {
   checkRange(shardCount)
-  return Array.from({ length: shardCount }, (_, shard) =>
-    Math.floor((shard * BUCKET_COUNT) / shardCount),
+  const first = shardCount === 1 ? 0 : bucketIndex(AUTHORITY_BUCKET) + 1
+  return Array.from(
+    { length: shardCount },
+    (_, shard) => first + Math.floor((shard * (BUCKET_COUNT - first)) / shardCount),
   )
 }
 
@@ -148,22 +166,30 @@ const keyRange = (shard: string, start: string | undefined, end: string | undefi
 }
 
 /**
- * Contiguous key ranges over `ROUTING_BUCKET` that cover every routing key, one per
- * shard, with every boundary on a bucket boundary. The first range has no start and
- * the last has no end, so no 64-bit key falls outside them.
+ * Contiguous key ranges over `ROUTING_BUCKET` that cover every routing key, with every
+ * boundary on a bucket boundary. A single data shard owns every key. Past one, the
+ * authoritative shard keeps `AUTHORITY_BUCKET` and each data shard owns one run of the
+ * others. The first range has no start and the last has no end, so no 64-bit key falls
+ * outside them.
  */
-export const keyRanges = (shards: ReadonlyArray<string>): ReadonlyArray<KeyRange> => {
-  const starts = startBytes(shards.length)
-  return shards.map((shard, index) =>
+export const keyRanges = (input: {
+  readonly authoritativeShard: string
+  readonly dataShards: ReadonlyArray<string>
+}): ReadonlyArray<KeyRange> => {
+  const { authoritativeShard, dataShards } = input
+  const starts = startBytes(dataShards.length)
+  const owners = dataShards.length === 1 ? dataShards : [authoritativeShard, ...dataShards]
+  const bounds = dataShards.length === 1 ? starts : [0, ...starts]
+  return owners.map((shard, index) =>
     keyRange(
       shard,
-      index === 0 ? undefined : hexByte(starts[index] ?? 0),
-      index === shards.length - 1 ? undefined : hexByte(starts[index + 1] ?? 0),
+      index === 0 ? undefined : hexByte(bounds[index] ?? 0),
+      index === owners.length - 1 ? undefined : hexByte(bounds[index + 1] ?? 0),
     ),
   )
 }
 
-/** The inclusive run of signed buckets each shard owns, in shard order. */
+/** The inclusive run of signed buckets each data shard owns, in shard order. */
 export const shardBucketSpans = (shardCount: number): ReadonlyArray<BucketSpan> => {
   const starts = startBytes(shardCount)
   return starts.map((start, shard) => ({
@@ -177,7 +203,8 @@ export const shardBucketSpans = (shardCount: number): ReadonlyArray<BucketSpan> 
  * and the default for every table, in the schema and elsewhere. Only the routed
  * tables are placed in the data group, routed by a range index on the bucket of
  * `routing_key` across the data shards. One data shard, the authoritative one, is the
- * initial unsharded layout.
+ * initial unsharded layout. With more, the data group still keeps `AUTHORITY_BUCKET` on
+ * the authoritative shard.
  *
  * Routing is opt-in because a table that lacks `routing_key` cannot be written in
  * the data group, and a table whose SQL needs the control tables beside it (a
@@ -194,7 +221,7 @@ export const dataTopology = (input: TopologyInput): DataTopology => ({
     {
       uid: ACTOR_DATA_GROUP,
       default_shard_index: ROUTING_KEY_INDEX,
-      key_ranges: keyRanges(input.dataShards),
+      key_ranges: keyRanges(input),
     },
   ],
   databases: {
@@ -280,9 +307,20 @@ const dataRanges = (topology: LiveTopology) =>
     }))
     .sort((left, right) => (left.from < right.from ? -1 : 1))
 
-/** The data shards a topology routes `routing_key` to, in key order. */
-export const dataShardsOf = (topology: LiveTopology) =>
-  dataRanges(topology).map((range) => range.shard)
+/**
+ * The data shards a topology routes `routing_key` to, in key order. The authoritative
+ * shard counts as one only while it is the only shard the data group names; beside data
+ * shards it holds `AUTHORITY_BUCKET` alone.
+ */
+export const dataShardsOf = (topology: LiveTopology) => {
+  const shards = dataRanges(topology).map((range) => range.shard)
+  const authoritative = topology.shard_groups.find(
+    (group) => group.uid === topology.authoritative_shard_group,
+  )?.key_ranges
+  return shards.length > 1 && authoritative?.length === 1
+    ? shards.filter((shard) => shard !== authoritative[0]?.shard_uid)
+    : shards
+}
 
 /**
  * What a topology places and where, as a string two topologies can be compared by:

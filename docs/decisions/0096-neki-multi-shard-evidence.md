@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-05). Observed on a temporary three-shard Neki cluster; no Akter database has been split.
 
+**Amended by:** [ADR 0097](0097-authority-placed-control-plane-actors.md), which replaces decision item 4 for `UsageActor`, `BillingActor`, `DeploymentLifecycle`, `TenantHome` and `CloudRunners` with authority placement, and keeps bucket -128 on the authoritative shard in every split topology.
+
 **Responsibility:** record how Neki routes, commits, joins and reshards across physical shards, fix the routing topology the stack generates, and decide which control-plane actor turns can run once actor rows leave the authoritative shard.
 
 **Authority:** implementation decision record. It amends [ADR 0093](0093-neki-routing-topology.md) (its key ranges and its plan for moving to routed actor data) and the Neki rule of [contract 06](../contracts/06-storage-ownership.md).

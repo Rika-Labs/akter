@@ -30,8 +30,14 @@ import { DeliveryFailed, Executed, Outcome, Request } from "../request.ts"
 import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef, callerKey } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
-import { parentPlacement, routingKey } from "../storage/codec.ts"
-import { onShard, ShardDirectory, ShardTarget, targetShard } from "../database/shards.ts"
+import { parentPlacement, rootPlacement, routingKey } from "../storage/codec.ts"
+import {
+  onShard,
+  requireAuthoritative,
+  ShardDirectory,
+  ShardTarget,
+  targetShard,
+} from "../database/shards.ts"
 import { ownership } from "../../tables/owned.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { activationMailbox } from "./mailbox.ts"
@@ -385,9 +391,15 @@ export const registerActor = Effect.fnUntraced(function* (
    * data shard other than the authoritative one: owned tables the topology
    * does not route, or the host's usage accounting rows. Such a session sees
    * only that shard's empty copy of the table, so the write would commit
-   * where nothing reads it. On one shard the copy is the table itself.
+   * where nothing reads it. On one shard the copy is the table itself. An
+   * authority-placed actor declares that its turns read and write such
+   * tables, its own SQL included, so its turn runs only on the authoritative
+   * shard, wherever the topology puts its bucket.
    */
   const writesHere = Effect.gen(function* () {
+    if (rootPlacement(registration.placement) === "authority")
+      return yield* requireAuthoritative(registration.name)
+
     const directory = yield* Effect.serviceOption(ShardDirectory)
     const target = yield* targetShard
 

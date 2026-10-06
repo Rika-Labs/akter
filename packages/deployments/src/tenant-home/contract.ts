@@ -78,9 +78,14 @@ export const Create = Actor.command("Create", {
 /** The tenant's home, or undefined when none is recorded. */
 export const Lookup = Actor.query("Lookup", { success: Schema.UndefinedOr(Home) })
 
-/** Where one hosted tenant lives, keyed by `<deployment>/<tenant>`. */
+/**
+ * Where one hosted tenant lives, keyed by `<deployment>/<tenant>`. Its directory row
+ * references `deployment` and takes its version from one sequence, so it is
+ * authority-placed: its turns run on the shard that holds both.
+ */
 export const TenantHome = Actor.make("TenantHome", {
   key: TenantHomeKey,
+  placement: "authority",
   tables: [tenantDirectory],
   api: { Create, Lookup },
 })

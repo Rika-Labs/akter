@@ -473,7 +473,18 @@ describe("NekiDatabase provider against a recorded PlanetScale API", () => {
       expect(state.bodies.updateTopology?.[0]?.data_topology).toEqual(
         topologyOf(created, ["actor_outbox"]),
       )
-      expect(keyRanges(created).map((range) => range.start)).toEqual([undefined, "40", "80", "c0"])
+      expect(
+        keyRanges({ authoritativeShard: "meta", dataShards: created }).map((range) => [
+          range.shard_uid,
+          range.start,
+        ]),
+      ).toEqual([
+        ["meta", undefined],
+        ["zeta", "01"],
+        ["yankee", "40"],
+        ["xray", "80"],
+        ["whiskey", "c0"],
+      ])
       expect(state.bodies.updateRouter?.[0]).toMatchObject({
         router_size: "NKR_2",
         replicas_per_cell: 2,

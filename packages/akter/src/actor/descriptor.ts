@@ -67,7 +67,7 @@ const NAME = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]{0,79}$/u
 /** The declaration `Actor.make` compiles, before its type parameters are erased. */
 export interface Declaration {
   readonly key?: KeySchema | SingletonKey | undefined
-  readonly placement?: "tenant" | "actor" | { readonly parent: object } | undefined
+  readonly placement?: "tenant" | "actor" | "authority" | { readonly parent: object } | undefined
   readonly state?: ActorState | undefined
   readonly events?: ReadonlyArray<EventClass> | undefined
   readonly feeds?: ReadonlyArray<EventClass> | undefined
@@ -220,19 +220,19 @@ const placementOf = (
 ) => {
   const option = declared.placement ?? "tenant"
 
-  if (option === "tenant" || option === "actor")
+  if (option === "tenant" || option === "actor" || option === "authority")
     return { placement: option as Placement, parent: undefined, depth: 0 }
 
   if (!Predicate.hasProperty(option, "parent"))
-    throw new Error(`placement is "tenant", "actor", or { parent }`)
+    throw new Error(`placement is "tenant", "actor", "authority", or { parent }`)
 
   const parent = descriptorOf(option.parent)
 
   if (parent === undefined) throw new Error("placement.parent takes an Actor.make definition")
 
-  if (parent.placement === "tenant")
+  if (parent.placement === "tenant" || parent.placement === "authority")
     throw new Error(
-      `${name}'s parent ${parent.name} is tenant-placed, so its children already share its shard; place ${name} by "tenant"`,
+      `${name}'s parent ${parent.name} is ${parent.placement}-placed, so its children already share its shard; place ${name} by "${parent.placement}"`,
     )
 
   if (parent.depth + 1 > MAX_PLACEMENT_DEPTH)

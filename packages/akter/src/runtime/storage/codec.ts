@@ -12,23 +12,44 @@ export const PLACEMENT_ENCODING = 1
 export type Placement =
   | "tenant"
   | "actor"
+  | "authority"
   | { readonly parent: string; readonly placement: Placement }
 
+/**
+ * The bucket every authority-placed key falls in. A topology that splits a
+ * database keeps it on the authoritative shard, beside the tables it does not
+ * route, so a turn of an authority-placed actor reads and writes the real
+ * control tables in a transaction that reaches one shard.
+ */
+export const AUTHORITY_BUCKET = -128
+
+const LOW_56 = (1n << 56n) - 1n
+
+/** `key` moved into `AUTHORITY_BUCKET`, keeping its low 56 bits, so distinct keys stay distinct. */
+export const authorityKey = (key: bigint): bigint =>
+  BigInt.asIntN(64, (key & LOW_56) | (BigInt(AUTHORITY_BUCKET + 256) << 56n))
+
+const isRoot = (placement: Placement): placement is "tenant" | "actor" | "authority" =>
+  placement === "tenant" || placement === "actor" || placement === "authority"
+
 /** A parent-placed type's parent and the parent's placement; `undefined` for any other. */
-export const parentPlacement = (placement: Placement) =>
-  placement === "tenant" || placement === "actor" ? undefined : placement
+export const parentPlacement = (placement: Placement) => (isRoot(placement) ? undefined : placement)
 
 /** The value `actor_placements.placement` records for `placement`. */
-export const placementKind = (placement: Placement) =>
-  placement === "tenant" || placement === "actor" ? placement : "parent"
+export const placementKind = (placement: Placement) => (isRoot(placement) ? placement : "parent")
+
+/** The placement at the root of `placement`'s parent chain. */
+export const rootPlacement = (placement: Placement): "tenant" | "actor" | "authority" =>
+  isRoot(placement) ? placement : rootPlacement(placement.placement)
 
 /**
  * The 64-bit shard key shared by every row an actor owns. Tenant
- * placement colocates a tenant's actors; actor placement spreads them; a
- * parent-placed actor takes its root's key, read from the parent id its own
- * id carries, so a family shares one shard. A parent-placed id without a
- * parent id throws: ids are decoded against their actor's key before any
- * routing, so that is a defect, not an input error.
+ * placement colocates a tenant's actors; actor placement spreads them;
+ * authority placement colocates a tenant's authority-placed actors in
+ * `AUTHORITY_BUCKET`; a parent-placed actor takes its root's key, read from
+ * the parent id its own id carries, so a family shares one shard. A
+ * parent-placed id without a parent id throws: ids are decoded against their
+ * actor's key before any routing, so that is a defect, not an input error.
  */
 export const routingKey = ({
   ref,
@@ -50,6 +71,8 @@ export const routingKey = ({
       placement: above.placement,
     })
   }
+
+  if (placement === "authority") return authorityKey(tenantRoutingKey(ref.tenant))
 
   return placement === "tenant"
     ? tenantRoutingKey(ref.tenant)

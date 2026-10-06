@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   ACTOR_DATA_GROUP,
   AUTHORITATIVE_GROUP,
+  AUTHORITY_BUCKET,
   bucketHex,
   checkRoutedTables,
   dataShardsOf,
@@ -18,7 +19,9 @@ import {
 } from "./topology.ts"
 
 const SPAN = 2n ** 56n
-const SHARD_COUNTS = [1, 2, 3, 4, 5, 7, 8, 10, 16, 31, 64, 100, 128, 200, 255, 256]
+const SHARD_COUNTS = [1, 2, 3, 4, 5, 7, 8, 10, 16, 31, 64, 100, 128, 200, 254, 255]
+
+const AUTH = "auth"
 
 const bucketKey = (bucket: number, offset: bigint) => BigInt(bucket) * SPAN + offset
 
@@ -31,6 +34,9 @@ const sampleKeys = buckets.flatMap((bucket) => [
 ])
 
 const shardNames = (count: number) => Array.from({ length: count }, (_, index) => `shard-${index}`)
+
+const rangesOf = (dataShards: ReadonlyArray<string>) =>
+  keyRanges({ authoritativeShard: AUTH, dataShards })
 
 const boundary = (hex: string) => BigInt(`0x${hex}`)
 
@@ -94,45 +100,61 @@ describe("routing key to bucket hex", () => {
 })
 
 describe("key ranges", () => {
-  it("cover the whole routing-key space with exactly one owner for every shard count", () => {
+  it("cover the whole routing-key space with exactly one owner for every shard count, bucket -128 on the authoritative shard past one shard", () => {
     for (const count of SHARD_COUNTS) {
       const names = shardNames(count)
-      const ranges = keyRanges(names)
+      const ranges = rangesOf(names)
       for (const key of sampleKeys) {
         const found = owners(ranges, key)
         expect(found).toHaveLength(1)
-        expect(names).toContain(found[0])
+        expect(key >> 56n === BigInt(AUTHORITY_BUCKET) && count > 1 ? [AUTH] : names).toContain(
+          found[0],
+        )
       }
     }
   })
 
   it("start unbounded, end unbounded and join end to start without a gap or overlap", () => {
     for (const count of SHARD_COUNTS) {
-      const ranges = keyRanges(shardNames(count))
+      const ranges = rangesOf(shardNames(count))
+      const length = count === 1 ? 1 : count + 1
+      expect(ranges).toHaveLength(length)
       expect(ranges[0]?.start).toBeUndefined()
-      expect(ranges[count - 1]?.end).toBeUndefined()
+      expect(ranges[length - 1]?.end).toBeUndefined()
       const edges = ranges.flatMap((range) => [range.start, range.end])
       const inner = edges.slice(1, -1)
-      expect(inner).toHaveLength(2 * (count - 1))
-      for (let index = 0; index < count - 1; index++) {
+      expect(inner).toHaveLength(2 * (length - 1))
+      for (let index = 0; index < length - 1; index++) {
         expect(ranges[index]?.end).toBe(ranges[index + 1]?.start)
         expect(ranges[index]?.end).toMatch(/^[0-9a-f]{2}$/)
       }
       const starts = ranges.slice(1).map((range) => boundary(range.start ?? ""))
       expect(starts).toEqual([...starts].sort((a, b) => (a < b ? -1 : 1)))
-      expect(new Set(starts).size).toBe(count - 1)
+      expect(new Set(starts).size).toBe(length - 1)
     }
   })
 
+  it("keeps the one shard whole, and past one shard keeps exactly bucket -128 on the authoritative shard", () => {
+    expect(rangesOf([AUTH])).toEqual([{ shard_uid: AUTH }])
+    expect(rangesOf(["solo"])).toEqual([{ shard_uid: "solo" }])
+    const ranges = rangesOf(["a", "b"])
+    expect(ranges[0]).toEqual({ shard_uid: AUTH, end: "01" })
+    expect(owners(ranges, -(2n ** 63n))).toEqual([AUTH])
+    expect(owners(ranges, bucketKey(-128, SPAN - 1n))).toEqual([AUTH])
+    expect(owners(ranges, bucketKey(-127, 0n))).toEqual(["a"])
+  })
+
   it("gives a boundary bucket to the range that starts there and its predecessor to the one before", () => {
-    const ranges = keyRanges(["a", "b", "c", "d"])
-    expect(ranges.map((range) => [range.start, range.end])).toEqual([
-      [undefined, "40"],
-      ["40", "80"],
-      ["80", "c0"],
-      ["c0", undefined],
+    const ranges = rangesOf(["a", "b", "c", "d"])
+    expect(ranges.map((range) => [range.shard_uid, range.start, range.end])).toEqual([
+      [AUTH, undefined, "01"],
+      ["a", "01", "40"],
+      ["b", "40", "80"],
+      ["c", "80", "c0"],
+      ["d", "c0", undefined],
     ])
-    expect(owners(ranges, bucketKey(-128, 0n))).toEqual(["a"])
+    expect(owners(ranges, bucketKey(-128, 0n))).toEqual([AUTH])
+    expect(owners(ranges, bucketKey(-127, 0n))).toEqual(["a"])
     expect(owners(ranges, bucketKey(-65, SPAN - 1n))).toEqual(["a"])
     expect(owners(ranges, bucketKey(-64, 0n))).toEqual(["b"])
     expect(owners(ranges, bucketKey(-1, SPAN - 1n))).toEqual(["b"])
@@ -142,9 +164,10 @@ describe("key ranges", () => {
     expect(owners(ranges, bucketKey(127, SPAN - 1n))).toEqual(["d"])
   })
 
-  it("puts the negative half of the signed key space on the first shard, as the live router did", () => {
-    const ranges = keyRanges(["low", "high"])
-    expect(owners(ranges, -(2n ** 63n))).toEqual(["low"])
+  it("puts the negative half of the signed key space but bucket -128 on the first data shard, as the live router did", () => {
+    const ranges = rangesOf(["low", "high"])
+    expect(owners(ranges, -(2n ** 63n))).toEqual([AUTH])
+    expect(owners(ranges, -(2n ** 63n) + SPAN)).toEqual(["low"])
     expect(owners(ranges, -1n)).toEqual(["low"])
     expect(owners(ranges, 0n)).toEqual(["high"])
     expect(owners(ranges, 127n)).toEqual(["high"])
@@ -152,46 +175,49 @@ describe("key ranges", () => {
     expect(owners(ranges, 2n ** 63n - 1n)).toEqual(["high"])
   })
 
-  it("splits 256 buckets into whole buckets that differ by at most one", () => {
-    expect(keyRanges(["a", "b", "c"]).map((range) => [range.start, range.end])).toEqual([
-      [undefined, "55"],
-      ["55", "aa"],
-      ["aa", undefined],
+  it("splits the data buckets into whole buckets that differ by at most one", () => {
+    expect(rangesOf(["a", "b", "c"]).map((range) => [range.start, range.end])).toEqual([
+      [undefined, "01"],
+      ["01", "56"],
+      ["56", "ab"],
+      ["ab", undefined],
     ])
     for (const count of SHARD_COUNTS) {
       const names = shardNames(count)
-      const ranges = keyRanges(names)
+      const ranges = rangesOf(names)
       const owned = buckets.flatMap((bucket) => owners(ranges, bucketKey(bucket, 0n)))
       const sizes = names.map((name) => owned.filter((owner) => owner === name).length)
-      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(256)
+      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(count === 1 ? 256 : 255)
+      expect(owned.filter((owner) => owner === AUTH)).toHaveLength(count === 1 ? 0 : 1)
       expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThanOrEqual(1)
       expect(Math.min(...sizes)).toBeGreaterThanOrEqual(1)
     }
   })
 
   it("rejects shard counts that cannot align to buckets", () => {
-    expect(() => keyRanges([])).toThrow(RangeError)
-    expect(() => keyRanges(shardNames(257))).toThrow(RangeError)
+    expect(() => rangesOf([])).toThrow(RangeError)
+    expect(() => rangesOf(shardNames(256))).toThrow(RangeError)
   })
 })
 
 describe("bucket spans", () => {
-  it("lists one contiguous run of signed buckets per shard", () => {
+  it("lists one contiguous run of signed buckets per data shard", () => {
+    expect(shardBucketSpans(1)).toEqual([{ first: -128, last: 127 }])
     expect(shardBucketSpans(2)).toEqual([
-      { first: -128, last: -1 },
+      { first: -127, last: -1 },
       { first: 0, last: 127 },
     ])
     expect(shardBucketSpans(3)).toEqual([
-      { first: -128, last: -44 },
-      { first: -43, last: 41 },
-      { first: 42, last: 127 },
+      { first: -127, last: -43 },
+      { first: -42, last: 42 },
+      { first: 43, last: 127 },
     ])
   })
 
   it("match the owner of every bucket in the generated key ranges", () => {
     for (const count of SHARD_COUNTS) {
       const names = shardNames(count)
-      const ranges = keyRanges(names)
+      const ranges = rangesOf(names)
       const spans = shardBucketSpans(count)
       const claimed = spans.flatMap((span, shard) =>
         Array.from({ length: span.last - span.first + 1 }, (_, index) => {
@@ -201,7 +227,9 @@ describe("bucket spans", () => {
           return bucket
         }),
       )
-      expect([...claimed].sort((a, b) => a - b)).toEqual(buckets)
+      expect([...claimed].sort((a, b) => a - b)).toEqual(
+        count === 1 ? buckets : buckets.filter((bucket) => bucket !== AUTHORITY_BUCKET),
+      )
     }
   })
 })
@@ -257,7 +285,7 @@ describe("data topology", () => {
     ])
     const data = groups.find((group) => group.uid === ACTOR_DATA_GROUP)
     expect(data?.default_shard_index).toBe(ROUTING_KEY_INDEX)
-    expect(data?.key_ranges.map((range) => range.shard_uid)).toEqual(["s1", "s2", "s3"])
+    expect(data?.key_ranges.map((range) => range.shard_uid)).toEqual(["meta", "s1", "s2", "s3"])
     expect(topology.default_shard_group).toBe(topology.authoritative_shard_group)
     expect(topology.databases).toEqual({
       postgres: { schemas: { public: { default_shard_group: AUTHORITATIVE_GROUP, tables: {} } } },
@@ -313,7 +341,8 @@ describe("placement comparison", () => {
           uid: ACTOR_DATA_GROUP,
           default_shard_index: ROUTING_KEY_INDEX,
           key_ranges: [
-            { shard_uid: "s1", start: null, end },
+            { shard_uid: "meta", start: null, end: "001" },
+            { shard_uid: "s1", start: "0001", end },
             { shard_uid: "s2", start, end: "" },
           ],
         },

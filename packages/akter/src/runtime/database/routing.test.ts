@@ -90,6 +90,7 @@ const database = <A, E>(
         const client = yield* Layer.build(Database.postgres({ url, offTurnConnections: 2 }))
         yield* migrate.pipe(Effect.provideContext(client))
         yield* installGuard.pipe(Effect.provideContext(client))
+        yield* installControl.pipe(Effect.provideContext(client))
 
         return yield* body.pipe(Effect.provideContext(client))
       }),
@@ -168,6 +169,70 @@ const actors = Layer.mergeAll(
   ),
 )
 
+const Bump = Actor.command("Bump", { success: Schema.Int })
+const Plan = Actor.command("Plan")
+const Count = Actor.query("Count", { success: Schema.Int })
+const Tick = Actor.job("Tick", { payload: {}, success: Schema.Void })
+const Counted = Actor.event("Counted", { value: Schema.String })
+
+/**
+ * A control-plane actor: its handler counts its turns in a table the topology
+ * does not route, as `BillingActor` or `CloudRunners` read and write theirs.
+ */
+const Controller = Actor.make("Controller", {
+  key: Schema.String,
+  placement: "authority",
+  state: Actor.state({
+    bumps: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+  }),
+  events: [Counted],
+  api: { Bump, Plan, Count },
+  jobs: { Tick: { job: Tick, onSuccess: Bump } },
+})
+
+const bump = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const turn = yield* Controller.Turn
+  const bumps = turn.state.bumps + 1
+  yield* turn.state.set({ bumps })
+  yield* turn.emit(Counted.make({ value: String(bumps) }))
+  yield* sql`INSERT INTO routing_control VALUES (${turn.id}, 1)
+    ON CONFLICT (actor_id) DO UPDATE SET bumps = routing_control.bumps + 1`.pipe(Effect.orDie)
+  return bumps
+})
+
+const controller = Layer.mergeAll(
+  Controller.toLayer(
+    Effect.succeed({
+      Bump: () => bump,
+      Plan: () =>
+        Effect.gen(function* () {
+          const turn = yield* Controller.Turn
+          yield* (yield* Controller.intents(turn.id)).Bump().pipe(Intent.after("1 second"))
+          yield* turn.enqueue(Tick.make({}))
+        }),
+    }),
+  ),
+  Controller.toJobLayer(Effect.succeed({ Tick: () => Effect.void })),
+  Controller.toQueryLayer({
+    Count: () => Effect.map(Controller.Read, (read) => read.state.bumps),
+  }),
+)
+
+/** Records the session target of every write to the control table. */
+const installControl = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql`CREATE TABLE routing_control (actor_id text PRIMARY KEY, bumps integer NOT NULL)`
+  yield* sql`CREATE TABLE routing_control_writes (session text)`
+  yield* sql.unsafe(`CREATE FUNCTION routing_control_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      INSERT INTO routing_control_writes VALUES (nullif(current_setting('__neki.shard', true), ''));
+      RETURN NEW;
+    END $$`)
+  yield* sql`CREATE TRIGGER routing_control_guard BEFORE INSERT OR UPDATE ON routing_control
+    FOR EACH ROW EXECUTE FUNCTION routing_control_guard()`
+})
+
 /** The shards of the guard's initial owners: negative buckets on `shard-a`, the rest on `shard-b`. */
 const split: ReadonlyArray<BucketRange> = [
   { first: -128, last: -1, shard: "shard-a" },
@@ -193,7 +258,7 @@ const runActors = <A, E, R, M, X = never>(
   Effect.gen(function* () {
     const postgres = yield* PgClient.PgClient
     const context = yield* Layer.build(
-      actors.pipe(
+      Layer.mergeAll(actors, controller).pipe(
         Layer.provideMerge(
           ActorTest.layer({
             database: postgres.config.url!,
@@ -417,6 +482,61 @@ describe("shard-targeted sessions with Postgres", () => {
         }),
       ),
   )
+
+  it("runs an authority-placed actor's turns, timers, jobs and queries on the authoritative shard that holds its bucket, and fails them closed once its bucket moves to a data shard", () =>
+    database(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient
+        const guard = yield* guardDirectory
+        yield* guard.directory.refresh
+        guard.place({ authoritative: "shard-a", routes: (table) => routed.includes(table) })
+
+        yield* runActors(
+          Layer.succeed(ShardDirectory, guard.directory),
+          Effect.gen(function* () {
+            const test = yield* ActorTest
+            const handle = yield* Controller.get("billing")
+            const key = routingKey({ ref: handle.ref, placement: "authority" })
+
+            expect(key >> 56n).toBe(-128n)
+            expect(yield* handle.Bump()).toBe(1)
+            yield* handle.Plan()
+            yield* test.advance("1 second")
+            yield* test.advance(0)
+            expect(yield* handle.Count()).toBe(3)
+            expect(yield* sql`SELECT bumps FROM routing_control`).toEqual([{ bumps: 3 }])
+
+            const mine = (yield* writes).filter((write) => write.bucket === -128)
+            expect(new Set(mine.map((write) => write.tbl))).toEqual(
+              new Set([
+                "actor_events",
+                "actor_generations",
+                "actor_outbox",
+                "actor_receipts",
+                "actor_state",
+              ]),
+            )
+            expect(mine.filter((write) => write.session !== "shard-a")).toEqual([])
+            expect(yield* sql`SELECT DISTINCT session FROM routing_control_writes`).toEqual([
+              { session: "shard-a" },
+            ])
+
+            const receipts = yield* test.receiptsFor(handle.ref, "Bump")
+            yield* move(-128, "shard-b")
+            yield* guard.directory.refresh
+            const refused = yield* handle.Bump().pipe(Effect.exit)
+            expect(String(refused)).toContain(
+              "Controller is authority-placed, but the topology puts its bucket on shard shard-b, not on the authoritative shard shard-a",
+            )
+            expect(String(yield* handle.Count().pipe(Effect.exit))).toContain(
+              "Controller is authority-placed",
+            )
+            expect(yield* test.receiptsFor(handle.ref, "Bump")).toBe(receipts)
+            expect(yield* sql`SELECT bumps FROM routing_control`).toEqual([{ bumps: 3 }])
+          }),
+        )
+      }),
+    ))
 
   it("refuses a turn that writes host rows from a data shard other than the authoritative one, and runs it on the authoritative shard", () =>
     database(

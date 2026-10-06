@@ -56,7 +56,9 @@ const Snapshot = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Strin
 /**
  * The environment pointer, host mapping, usage binding and lifecycle status
  * share the same fenced actor transaction, so a deployment can never serve
- * without the binding its edge needs to meter it.
+ * without the binding its edge needs to meter it. That transaction runs on a
+ * Neki session targeted at the authoritative shard, which refuses `now()`
+ * beside a table, so its timestamps read `clock_timestamp()`.
  */
 export const rolloutRouting = (options: ApiOptions) =>
   Layer.effect(
@@ -136,7 +138,7 @@ export const rolloutRouting = (options: ApiOptions) =>
           yield* sql`INSERT INTO deployment_host (host, deployment_id) VALUES (${host}, ${release.deploymentId}) ON CONFLICT (host) DO UPDATE SET deployment_id = EXCLUDED.deployment_id`.pipe(
             Effect.orDie,
           )
-          yield* sql`UPDATE deployment SET serving = id = ${release.deploymentId}, last_activity_at = CASE WHEN id = ${release.deploymentId} THEN now() ELSE last_activity_at END WHERE id IN (${release.deploymentId}, ${release.previousDeploymentId})`.pipe(
+          yield* sql`UPDATE deployment SET serving = id = ${release.deploymentId}, last_activity_at = CASE WHEN id = ${release.deploymentId} THEN clock_timestamp() ELSE last_activity_at END WHERE id IN (${release.deploymentId}, ${release.previousDeploymentId})`.pipe(
             Effect.orDie,
           )
           if (release.previousDeploymentId !== null) {
@@ -149,7 +151,7 @@ export const rolloutRouting = (options: ApiOptions) =>
             yield* sql`UPDATE hosted_api_key SET deployment_id = ${release.deploymentId} WHERE deployment_id = ${release.previousDeploymentId} AND subject <> 'akter-control-plane'`.pipe(
               Effect.orDie,
             )
-            yield* sql`UPDATE hosted_api_key SET revoked_at = now() WHERE deployment_id = ${release.previousDeploymentId} AND subject = 'akter-control-plane'`.pipe(
+            yield* sql`UPDATE hosted_api_key SET revoked_at = clock_timestamp() WHERE deployment_id = ${release.previousDeploymentId} AND subject = 'akter-control-plane'`.pipe(
               Effect.orDie,
             )
           }

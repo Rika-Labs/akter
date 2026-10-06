@@ -143,7 +143,7 @@ Raw SQL, Drizzle's relational query API (`db.query`), `returning`, `onConflict` 
 
 ## Placement group reads
 
-`group` is a read-only Drizzle select scoped to the actor's placement group: every actor of the tenant under `placement: "tenant"`, or the actor itself under `placement: "actor"` ([ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md)). It is available on `X.Turn` (reading through the turn transaction) and `X.Read`, and one select is one snapshot.
+`group` is a read-only Drizzle select scoped to the actor's placement group: every actor of the tenant under `placement: "tenant"`, every authority-placed actor of the tenant under `placement: "authority"`, or the actor itself under `placement: "actor"` ([ADR 0006](../decisions/0006-scale-rules-placement-and-query-tiers.md)). It is available on `X.Turn` (reading through the turn transaction) and `X.Read`, and one select is one snapshot.
 
 ```ts
 import { Actor } from "@rikalabs/akter"

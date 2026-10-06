@@ -10,10 +10,10 @@ import type { Holder } from "./connections/holder.ts"
 import type { ReadSet } from "./connections/reads.ts"
 import { watchStream } from "./connections/watch.ts"
 import { caughtUp, QueryPool } from "./database/replica.ts"
-import { onShard } from "./database/shards.ts"
+import { onShard, requireAuthoritative } from "./database/shards.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
-import { decompress, routingKey } from "./storage/codec.ts"
+import { decompress, rootPlacement, routingKey } from "./storage/codec.ts"
 import { accountsUsage, UsageAccounting } from "./telemetry/usage.ts"
 import { decodeResult } from "./workflows/engine.ts"
 
@@ -102,6 +102,9 @@ export const committedReads = ({
 
       const read = (client: SqlClient.SqlClient) =>
         Effect.gen(function* () {
+          if (rootPlacement(registration.placement) === "authority")
+            yield* requireAuthoritative(registration.name)
+
           const rows = yield* client<{
             head: string | null
             key: string | null

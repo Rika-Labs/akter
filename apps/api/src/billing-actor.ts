@@ -372,10 +372,13 @@ const SubscriptionReconciled = Actor.command("SubscriptionReconciled", {
 /**
  * The billing authority of one organization, keyed by organization id. Its
  * turns write the account, the request and the event tables; every provider
- * call is a job whose result returns through an internal command.
+ * call is a job whose result returns through an internal command. A trigger
+ * projects the account into `cloud_billing_account`, so it is
+ * authority-placed: its rows commit with that table on one shard.
  */
 export const BillingActor = Actor.make("BillingActor", {
   key: OrganizationId,
+  placement: "authority",
   tables: [billingState, billingRequest, billingEvent],
   api: {
     InitializeAccount,

@@ -61,7 +61,7 @@ type Key = KeySchema | SingletonKey | undefined
 export declare const PlacedType: unique symbol
 
 /** Type-level record of how a definition is placed and what its ids are. */
-export interface Placed<Kind extends "tenant" | "actor" | "parent", Id> {
+export interface Placed<Kind extends "tenant" | "actor" | "authority" | "parent", Id> {
   readonly [PlacedType]?: { readonly kind: Kind; readonly id: Id }
 }
 
@@ -71,12 +71,13 @@ interface ParentDefinition extends Placed<"actor" | "parent", string> {
 }
 
 /**
- * Which rows share a shard: the tenant's, each actor's own, or the parent
- * actor's, whose id every child id carries.
+ * Which rows share a shard: the tenant's, each actor's own, the tenant's
+ * authority-placed actors' on the authoritative shard, or the parent actor's,
+ * whose id every child id carries.
  */
-type PlacementOption = "tenant" | "actor" | { readonly parent: ParentDefinition }
+type PlacementOption = "tenant" | "actor" | "authority" | { readonly parent: ParentDefinition }
 
-type PlacementKind<Pl> = Pl extends "tenant" | "actor" ? Pl : "parent"
+type PlacementKind<Pl> = Pl extends "tenant" | "actor" | "authority" ? Pl : "parent"
 
 /** Type-only key of `DefinitionWithInternal`; no value exists at runtime. */
 export declare const InternalHandleType: unique symbol
@@ -388,10 +389,13 @@ interface Definition<
    */
   readonly key?: Key
   /**
-   * Which rows share a shard: the tenant (default), each actor on its own, or
-   * `{ parent: P }`, the shard of the parent actor whose id each child id
-   * carries. `P` is placed by `"actor"` or by a parent, at most four levels
-   * below an actor-placed root.
+   * Which rows share a shard: the tenant (default), each actor on its own,
+   * `"authority"`, or `{ parent: P }`, the shard of the parent actor whose id
+   * each child id carries. `P` is placed by `"actor"` or by a parent, at most
+   * four levels below an actor-placed root. `"authority"` colocates a
+   * tenant's authority-placed actors like `"tenant"`, in the one bucket every
+   * split topology keeps on the authoritative shard, for an actor whose turns
+   * read or write tables the database does not route.
    */
   readonly placement?: Pl
   /** `Actor.state` fields and migrations; an actor without it has no state. */
