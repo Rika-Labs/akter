@@ -611,16 +611,28 @@ const Guarded = Actor.make("Guarded", {
 
 const GuardedLive = Guarded.toLayer(Effect.succeed({ Ping: () => Effect.void }))
 
-const start = (ddl: string | undefined, claim?: string) =>
+/**
+ * Builds `GuardedLive` in a fresh runtime over `live` once `owned_guarded` and
+ * its claim are reset to `ddl` and `claim`. The scenarios share one migrated
+ * database, so each start costs a runtime startup, not a new database that
+ * runs every migration again.
+ */
+const start = (live: PGlite, ddl: string | undefined, claim?: string) =>
   Effect.gen(function* () {
     const setup = ManagedRuntime.make(
-      Layer.empty.pipe(Layer.provideMerge(ActorTest.layer({})), Layer.provide(BunCrypto.layer)),
+      Layer.empty.pipe(
+        Layer.provideMerge(ActorTest.layer({ database: { liveClient: live } })),
+        Layer.provide(BunCrypto.layer),
+      ),
     )
 
     return yield* Effect.promise(() =>
       setup.runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient
+
+          yield* sql`DROP TABLE IF EXISTS owned_guarded`
+          yield* sql`DELETE FROM actor_tables WHERE table_name = 'owned_guarded'`
 
           if (ddl !== undefined) yield* sql.unsafe(ddl)
 
@@ -637,6 +649,10 @@ describe("owned table startup", () => {
   it("refuses to start without a correctly keyed table or under a second owner", () =>
     Effect.runPromise(
       Effect.gen(function* () {
+        const live = yield* Effect.acquireRelease(
+          Effect.promise(() => PGlite.create()),
+          (client) => Effect.promise(() => client.close()),
+        )
         const keyed = `CREATE TABLE owned_guarded (routing_key bigint, tenant_id text, actor_id text, id text,
           PRIMARY KEY (routing_key, tenant_id, actor_id, id))`
 
@@ -645,12 +661,12 @@ describe("owned table startup", () => {
           ["CREATE TABLE owned_guarded (id text PRIMARY KEY)", undefined, "needs primary key"],
           [keyed, "Other", "owned by actor Other, not Guarded"],
         ] as const) {
-          const exit = yield* start(ddl, claim)
+          const exit = yield* start(live, ddl, claim)
           expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(message)
         }
 
-        expect(Exit.isSuccess(yield* start(keyed))).toBe(true)
-      }),
+        expect(Exit.isSuccess(yield* start(live, keyed))).toBe(true)
+      }).pipe(Effect.scoped),
     ))
 })
 

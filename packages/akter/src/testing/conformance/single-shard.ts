@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Deferred, Effect, Exit } from "effect"
 import { SqlClient } from "effect/sql"
 import { ActorTest } from "../actor-test.ts"
 import type {
@@ -102,6 +102,13 @@ const scatteredOf = (
     ),
   )
 
+/**
+ * Cases that each framework statement routes to one Neki shard. The minted-child case
+ * records only the trace of the child's delivery, and holds that delivery at
+ * `afterClaim` until a statement of another trace, such as the relay's poll
+ * pass, has run beside it, so every run checks the turn's own statements
+ * whatever else the runner does meanwhile.
+ */
 export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "single-shard: a minted child's first turn touches only its own routing key, not its parent's outbox",
@@ -109,21 +116,35 @@ export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
       Effect.runPromise(
         Effect.gen(function* () {
           const log = statementLog()
+          const beside = Deferred.makeUnsafe<void>()
           const fixture = fixtureOf(mintSuite)
           let child: Effect.Success<ReturnType<typeof planAcrossShard>> | undefined
 
           yield* environment.stop
           yield* Effect.acquireUseRelease(
-            Effect.sync(() => environment.build({ observe: log.observe })),
+            Effect.sync(() =>
+              environment.build({
+                observe: (statement, span) => {
+                  log.observe(statement, span)
+
+                  if (log.elsewhere > 0) Deferred.doneUnsafe(beside, Exit.void)
+                },
+              }),
+            ),
             (runtime) =>
               Effect.promise(() =>
                 runtime.runPromise(
                   Effect.gen(function* () {
                     child = yield* planAcrossShard("child-statements")
-                    fixture.onTurn = (point, request) => {
+                    fixture.onTurn = (point, request, trace) => {
                       if (request.ref.id !== child!.ref.id) return
-                      if (point === "afterClaim") log.recording = true
                       if (point === "beforeOutboxDelete") log.recording = false
+                      if (point !== "afterClaim") return
+
+                      log.trace = trace
+                      log.recording = true
+
+                      return Deferred.await(beside)
                     }
                     yield* (yield* ActorTest).advance("1 minute")
                   }),

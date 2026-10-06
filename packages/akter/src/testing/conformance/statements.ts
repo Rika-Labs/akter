@@ -1,3 +1,4 @@
+import type { Tracer } from "effect"
 import type { Statement } from "effect/sql"
 
 export interface RecordedStatement {
@@ -87,16 +88,32 @@ export const scopeOf = (sql: string): StatementScope => {
 /** The statements the runtime compiled while recording, first sighting of each text. */
 export interface StatementLog {
   recording: boolean
+  /**
+   * The trace a recording keeps, or undefined to keep every statement. The
+   * relay's poll pass and other background loops run in traces of their own,
+   * so a recording of one delivery and the turn it sends leaves them out and
+   * counts them in `elsewhere`, however the runner's fibers interleave.
+   */
+  trace: string | undefined
+  /** Statements compiled while recording in a trace other than `trace`. */
+  elsewhere: number
   readonly seen: Map<string, RecordedStatement>
-  readonly observe: (statement: Statement.Statement<unknown>) => void
+  readonly observe: (statement: Statement.Statement<unknown>, span: Tracer.Span) => void
 }
 
 export const statementLog = (): StatementLog => {
   const log: StatementLog = {
     recording: false,
+    trace: undefined,
+    elsewhere: 0,
     seen: new Map(),
-    observe: (statement) => {
+    observe: (statement, span) => {
       if (!log.recording) return
+
+      if (log.trace !== undefined && span.traceId !== log.trace) {
+        log.elsewhere += 1
+        return
+      }
 
       const [text, params] = statement.compile()
       const sql = collapse(text)
