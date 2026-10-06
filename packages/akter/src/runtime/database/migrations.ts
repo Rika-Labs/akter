@@ -1271,7 +1271,7 @@ export const migrations = {
    * on the authoritative shard, so its turns reach the tables the database does not route on
    * the shard that holds them.
    */
-  "0034_authority_placement": Effect.gen(function* () {
+  "0032_authority_placement": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE actor_placements DROP CONSTRAINT actor_placements_placement_check,
         ADD CONSTRAINT actor_placements_placement_check

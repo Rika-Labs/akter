@@ -45,7 +45,7 @@ The framework had no way to do (a): `placement` (`tenant`, `actor`, `{ parent }`
 
 `Actor.make(name, { placement: "authority" })` places an actor like `"tenant"`, then moves its key into one reserved bucket. Its `routing_key` is the tenant key with the top byte replaced by `0x80`, so `routing_key >> 56` is `-128` (`AUTHORITY_BUCKET`) and the low 56 bits stay the tenant key's. A tenant's authority-placed actors share one key, as tenant-placed ones do, and `group` reads them together. A parent-placed type may not name an authority-placed parent, as it may not name a tenant-placed one. A fleet view refuses an authority-placed source, as it refuses every non-tenant placement.
 
-`actor_placements` records `authority`; migration `0034_authority_placement` widens its check constraint.
+`actor_placements` records `authority`; migration `0032_authority_placement` widens its check constraint.
 
 ### Every split topology keeps bucket -128 on the authoritative shard
 

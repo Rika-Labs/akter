@@ -28,7 +28,7 @@ afterAll(() => harness.dispose())
 const previous = Object.fromEntries(Object.entries(migrations).filter(([key]) => key < "0026"))
 const expectedIds = [
   1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 29,
-  30, 31, 34,
+  30, 31, 32,
 ]
 const query = (pool: Pool, sql: string) => Effect.promise(() => pool.query(sql))
 
