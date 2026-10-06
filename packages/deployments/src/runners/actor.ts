@@ -46,9 +46,14 @@ const Checked = Actor.command("Checked", {
 const CheckFailed = Actor.command("CheckFailed", { payload: Actor.DeadLetter(Check) })
 const Reconcile = Actor.command("Reconcile")
 
-/** One region's runner capacity is serialized by durable actor turns, not by a polling process. */
+/**
+ * One region's runner capacity is serialized by durable actor turns, not by a polling
+ * process. Its turns lock `deployment` and write the runner rows, so it is
+ * authority-placed: its rows commit with them on one shard.
+ */
 export const Runners = Actor.make("CloudRunners", {
   key: Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/u)),
+  placement: "authority",
   state: Actor.state({
     status: Schema.Literals([
       "stopped",

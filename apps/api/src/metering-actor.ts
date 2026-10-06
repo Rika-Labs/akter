@@ -284,10 +284,13 @@ const FlushDeadLettered = Actor.command("FlushDeadLettered", {
 
 /**
  * The metering authority of one deployment tenant, keyed by `usageKey`. Only
- * `System` callers reach it: the collector and the job routes.
+ * `System` callers reach it: the collector and the job routes. Its turns
+ * write meter tables whose triggers roll usage up into shared control tables,
+ * so it is authority-placed: its rows commit with those tables on one shard.
  */
 export const UsageActor = Actor.make("UsageActor", {
   key: UsageKey,
+  placement: "authority",
   tables: [meterEvidence, meterHour, meterSeal, meterExport],
   api: { Import, Seal, GetHour },
   internal: { FlushResolved, FlushDeadLettered },

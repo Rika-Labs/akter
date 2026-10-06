@@ -323,11 +323,18 @@ describe("actor declarations", () => {
     )
   })
 
-  it("places by tenant by default and by actor on request", () => {
+  it("places by tenant by default, and by actor or by authority on request", () => {
     const Read = Actor.command("Read")
     const ref = { tenant: "t", actor: "Session", id: "a" }
     const other = { ...ref, id: "b" }
     expect(() => Actor.make("Session", { api: { Read }, placement: "actor" })).not.toThrow()
+    expect(() => Actor.make("Ledger", { api: { Read }, placement: "authority" })).not.toThrow()
+    expect(routingKey({ ref, placement: "authority" })).toBe(
+      routingKey({ ref: other, placement: "authority" }),
+    )
+    expect(routingKey({ ref, placement: "authority" })).not.toBe(
+      routingKey({ ref, placement: "tenant" }),
+    )
     expect(routingKey({ ref, placement: "tenant" })).toBe(
       routingKey({ ref: other, placement: "tenant" }),
     )
@@ -338,9 +345,9 @@ describe("actor declarations", () => {
       routingKey({ ref, placement: "tenant" }),
     )
     expect(() =>
-      // @ts-expect-error placement is "tenant", "actor", or { parent }
+      // @ts-expect-error placement is "tenant", "actor", "authority", or { parent }
       Actor.make("Bad", { api: { Read }, placement: "region" }),
-    ).toThrow('placement is "tenant", "actor", or { parent }')
+    ).toThrow('placement is "tenant", "actor", "authority", or { parent }')
   })
 
   it("splits commands and queries between toLayer and toQueryLayer", () => {

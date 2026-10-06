@@ -2,6 +2,8 @@
 
 **Status:** implementation decision (2026-10-05). Demonstrated on `akter-preview` with the framework's 18 per-actor tables routed on its one shard, and on a lab cluster with two data shards. Routing the control plane's tables and splitting its database are later steps.
 
+**Amended by:** [ADR 0097](0097-authority-placed-control-plane-actors.md), which makes the five control-plane actors of "Authoritative writes inside turns" authority-placed: their bucket stays on the authoritative shard, and their turns and queries die when the map puts it elsewhere.
+
 **Responsibility:** decide how the runtime learns where each `routing_key` bucket lives, which session each statement goes through, how statements on authoritative tables reach the authoritative shard, and how a turn that reaches the wrong shard fails.
 
 **Authority:** implementation decision record. It is step 1 of [ADR 0093](0093-neki-routing-topology.md)'s "Moving to routed actor data later", amends [ADR 0067](0067-due-work-shard-ranges.md) (where the shard map comes from and how a range's session is targeted) and [ADR 0066](0066-authoritative-coordination.md) (which client takes deployment registries), and adds to [contract 06](../contracts/06-storage-ownership.md)'s Neki rule.

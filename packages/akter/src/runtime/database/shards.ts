@@ -136,6 +136,30 @@ export const targetShard = Effect.flatMap(ShardTarget, (target) => {
   return Effect.map(rangeOf(bucketOf(target.routingKey)), (range) => range?.shard)
 })
 
+/**
+ * Dies unless the current fiber's statements reach the authoritative shard,
+ * for an authority-placed actor named `actor`, whose turns and queries read
+ * tables the topology does not route. A database without a live map, or a
+ * map that names no shard, has one copy of every table.
+ */
+export const requireAuthoritative = (actor: string) =>
+  Effect.gen(function* () {
+    const directory = yield* Effect.serviceOption(ShardDirectory)
+    const target = yield* targetShard
+
+    if (Option.isNone(directory) || target === undefined) return
+
+    const { authoritative } = yield* directory.value.placement
+
+    if (authoritative === target) return
+
+    return yield* Effect.die(
+      new Error(
+        `${actor} is authority-placed, but the topology puts its bucket on shard ${target}, not on the authoritative shard ${authoritative ?? "(none)"}`,
+      ),
+    )
+  })
+
 /** Runs `effect` against `range`'s shard, or untargeted when the range names none. */
 export const onRange =
   (range: BucketRange) =>

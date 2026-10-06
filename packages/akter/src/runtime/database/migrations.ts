@@ -1266,6 +1266,17 @@ export const migrations = {
         ${rows.map(([view, version]) => `('${view}', ${version})`).join(", ")}
       ) AS v(view_name, version)`)
   }),
+  /**
+   * An authority-placed type keeps every routing key in the one bucket a split topology leaves
+   * on the authoritative shard, so its turns reach the tables the database does not route on
+   * the shard that holds them.
+   */
+  "0032_authority_placement": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE actor_placements DROP CONSTRAINT actor_placements_placement_check,
+        ADD CONSTRAINT actor_placements_placement_check
+          CHECK (placement IN ('tenant', 'actor', 'parent', 'authority'))`
+  }),
 }
 
 /**

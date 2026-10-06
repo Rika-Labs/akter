@@ -60,8 +60,9 @@ export interface NekiDatabaseProps {
   /**
    * Shards that hold actor data. `1` keeps the data on the authoritative shard,
    * which is the unsharded start. `2` or more creates that many further shards and
-   * splits the 256 `routing_key >> 56` buckets across them, leaving the
-   * authoritative shard as a standalone control shard.
+   * splits the `routing_key >> 56` buckets across them, leaving the authoritative
+   * shard as the control shard that also holds bucket -128, where every
+   * authority-placed actor's rows live.
    * @default 1
    */
   shardCount?: number
@@ -105,7 +106,7 @@ export interface NekiDatabaseAttributes {
   configurationProfile: string
   /** The control shard: the topology's authoritative group. */
   authoritativeShard: string
-  /** Shards the live topology routes `routing_key` to, in key order. */
+  /** Shards the live topology routes `routing_key` to, in key order, besides the authoritative shard's bucket -128. */
   dataShards: string[]
   /** Router groups other than the default one that this resource created. */
   routerGroups: string[]
@@ -118,7 +119,8 @@ export interface NekiDatabaseAttributes {
  * `shardCount` is above one, and writes a data topology that routes the `routedTables` of
  * the schema by a `range` shard index on the bucket of `routing_key` and keeps every other
  * table on the authoritative shard. Each data shard owns a run of the signed buckets
- * `routing_key >> 56` in signed order; see `ROUTING_BUCKET` in `./topology.ts`.
+ * `routing_key >> 56` in signed order, and the authoritative shard keeps bucket -128; see
+ * `ROUTING_BUCKET` and `AUTHORITY_BUCKET` in `./topology.ts`.
  *
  * After creation the topology is only read. Neki moves rows through its own
  * resharding workflows, which this resource does not run, and writing a topology

@@ -3,7 +3,14 @@ import { Arbitrary } from "effect"
 import { describe, expect, it } from "vitest"
 import { ActorRef } from "../../identity/caller.ts"
 import { checkProperty } from "../../testing/property.ts"
-import { compress, decompress, PLACEMENT_ENCODING, routingKey } from "./codec.ts"
+import {
+  AUTHORITY_BUCKET,
+  authorityKey,
+  compress,
+  decompress,
+  PLACEMENT_ENCODING,
+  routingKey,
+} from "./codec.ts"
 
 const ref = Arbitrary.schema(ActorRef)
 
@@ -47,6 +54,24 @@ describe("storage codec", () => {
     expect(BigInt.asIntN(64, Bun.hash.xxHash3('[1,"actor","acme","Counter","c-1"]'))).toBe(
       golden[0].actor,
     )
+  })
+
+  it("keys authority placement in the authority bucket, keeping the tenant key's low 56 bits", () => {
+    const low = (key: bigint) => key & ((1n << 56n) - 1n)
+
+    for (const vector of golden) {
+      const key = routingKey({ ref: vector.ref, placement: "authority" })
+
+      expect(key >> 56n).toBe(BigInt(AUTHORITY_BUCKET))
+      expect(low(key)).toBe(low(vector.tenant))
+      expect(
+        routingKey({ ref: { ...vector.ref, actor: "Other", id: "x" }, placement: "authority" }),
+      ).toBe(key)
+    }
+
+    expect(routingKey({ ref: golden[0].ref, placement: "authority" })).toBe(-9200931648040412679n)
+    expect(authorityKey(-1n)).toBe(-(2n ** 63n) + (2n ** 56n - 1n))
+    expect(authorityKey(2n ** 63n - 1n)).toBe(authorityKey(-1n))
   })
 
   it("gives a parent-placed child and grandchild their root's routing key", () => {

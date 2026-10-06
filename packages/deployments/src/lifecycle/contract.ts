@@ -391,9 +391,14 @@ export const StepDeadLettered = Actor.command("StepDeadLettered", {
   payload: Actor.DeadLetter(RolloutStepJob),
 })
 
-/** The environment's deployment lifecycle: one actor per `<projectId>/<environment>` in the organization's tenant. */
+/**
+ * The environment's deployment lifecycle: one actor per `<projectId>/<environment>` in the
+ * organization's tenant. Its turns read and write the deployment, key, host and project
+ * rows, so it is authority-placed: its rows commit with them on one shard.
+ */
 export const DeploymentLifecycle = Actor.make("DeploymentLifecycle", {
   key: LifecycleKey,
+  placement: "authority",
   tables: [deploymentRollout, rolloutStep, rolloutRunner, rolloutBuildLog],
   api: { Create, Redeploy, RecordBuild, FailBuild, Rollback, List, Get, GetBuildLog },
   internal: { StepFinished, StepDeadLettered },
