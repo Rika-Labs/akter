@@ -32,7 +32,7 @@ export const chip = stylex.create({
   dot: {
     width: 6,
     height: 6,
-    backgroundColor: siteColors.ink,
+    backgroundColor: siteColors.accent,
     borderRadius: "50%",
     flexShrink: 0,
   },

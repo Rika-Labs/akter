@@ -28,7 +28,8 @@ export const prose = stylex.create({
     fontWeight: 500,
     textDecorationLine: "underline",
     textDecorationStyle: "dotted",
-    textDecorationColor: "rgb(11 13 11 / 0.4)",
+    textDecorationColor: siteColors.accent,
+    textDecorationThickness: "2px",
     textUnderlineOffset: "0.25rem",
   },
   strong: { fontWeight: 600, color: siteColors.ink },
@@ -149,7 +150,7 @@ export const proof = stylex.create({
     backgroundSize: "100% 25%",
   },
   bar: { flex: 1, backgroundColor: siteColors.bar },
-  barAkter: { backgroundColor: siteColors.ink },
+  barAkter: { backgroundColor: siteColors.accent },
   barLabels: { display: "flex", gap: "0.625rem", marginTop: "0.5rem" },
   barLabel: {
     flex: 1,

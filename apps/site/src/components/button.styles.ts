@@ -24,12 +24,17 @@ export const button = stylex.create({
   small: { height: "2.125rem", paddingInline: "0.875rem", fontSize: "0.75rem" },
   block: { display: "flex", width: "100%" },
   primary: {
-    backgroundColor: siteColors.ink,
-    color: siteColors.page,
-    borderColor: siteColors.ink,
+    backgroundColor: siteColors.accent,
+    color: siteColors.accentInk,
+    borderColor: siteColors.accent,
     paddingInline: "1rem",
   },
   tiled: { paddingInlineStart: 0 },
+  accent: {
+    backgroundColor: siteColors.accent,
+    color: siteColors.accentInk,
+    borderColor: siteColors.accent,
+  },
   inverse: {
     backgroundColor: siteColors.page,
     color: siteColors.ink,
@@ -50,6 +55,6 @@ export const button = stylex.create({
     backgroundColor: siteColors.page,
     color: siteColors.ink,
   },
-  tileInverse: { backgroundColor: siteColors.ink, color: siteColors.page },
+  tileInverse: { backgroundColor: siteColors.accent, color: siteColors.markOnAccent },
   icon: { marginInlineStart: "0.4375rem" },
 })

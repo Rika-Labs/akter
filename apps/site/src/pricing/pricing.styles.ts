@@ -24,7 +24,7 @@ export const tiers = stylex.create({
     borderStyle: "solid",
     borderColor: siteColors.hairline,
   },
-  featured: { borderColor: siteColors.ink, boxShadow: `inset 0 3px 0 ${siteColors.ink}` },
+  featured: { borderColor: siteColors.ink, boxShadow: `inset 0 3px 0 ${siteColors.accent}` },
   price: {
     marginTop: "1.375rem",
     fontSize: "2.75rem",

@@ -1,5 +1,6 @@
 import { typography } from "@akter/ui/tokens.stylex"
 import * as stylex from "@stylexjs/stylex"
+import { siteColors } from "../styles/site-tokens.stylex.ts"
 
 export const wordmark = stylex.create({
   root: {
@@ -12,4 +13,5 @@ export const wordmark = stylex.create({
     letterSpacing: "-0.025em",
     lineHeight: 1,
   },
+  mark: { color: siteColors.mark },
 })

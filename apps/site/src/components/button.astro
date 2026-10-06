@@ -37,6 +37,7 @@ const inverse = variant === "inverse"
     variant === "ghost" ? button.ghost : button.primary,
     inverse && button.inverse,
     tile && button.tiled,
+    tile && !inverse && button.accent,
     size === "small" && button.small,
     block && button.block,
     xstyle,

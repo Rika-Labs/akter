@@ -1,11 +1,13 @@
 ---
 import { mark, markViewBox } from "@akter/ui/brand"
+import * as stylex from "@stylexjs/stylex"
 
 interface Props {
   size?: number | string
+  xstyle?: stylex.StyleXStyles
 }
 
-const { size = 24 } = Astro.props
+const { size = 24, xstyle } = Astro.props
 ---
 
 <svg
@@ -15,6 +17,7 @@ const { size = 24 } = Astro.props
   aria-hidden="true"
   fill="none"
   stroke="currentColor"
+  {...stylex.attrs(xstyle)}
 >
   {
     mark.map((figure) =>
