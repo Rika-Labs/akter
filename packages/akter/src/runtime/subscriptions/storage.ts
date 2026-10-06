@@ -80,7 +80,10 @@ export const summarize = ({
  * its rows would then count as new. Locking reads the latest committed
  * version of each row, so a concurrent change that committed first is never
  * counted twice. A summary count the change lowered to 0 is deleted in the
- * same transaction, so no committed summary row counts 0. Returns how many
+ * same transaction, so no committed summary row counts 0. That delete joins on
+ * the columns of a subquery over the emptied keys rather than on expressions
+ * over `json_array_elements` itself, a join shape the Neki router drops the
+ * connection on when the table is sharded. Returns how many
  * rows `change` wrote. A `change` that reads the outbox clock passes its
  * `clock` CTE, which leads the statement's `WITH`.
  */
@@ -115,9 +118,11 @@ export const changeRows = Effect.fnUntraced(function* (
 
       if (result!.emptied !== null)
         yield* sql`DELETE FROM actor_subscription_tags t
-          USING json_array_elements(${result!.emptied}::json) AS e
-          WHERE t.routing_key = (e->>0)::bigint AND t.tenant_id = e->>1
-            AND t.source_type = e->>2 AND t.source_id = e->>3 AND t.event = e->>4
+          USING (SELECT (e->>0)::bigint AS routing_key, e->>1 AS tenant_id, e->>2 AS source_type,
+              e->>3 AS source_id, e->>4 AS event
+            FROM json_array_elements(${result!.emptied}::json) AS e) AS k
+          WHERE t.routing_key = k.routing_key AND t.tenant_id = k.tenant_id
+            AND t.source_type = k.source_type AND t.source_id = k.source_id AND t.event = k.event
             AND t.rows = 0`
 
       return result!.rows
