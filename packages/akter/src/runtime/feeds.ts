@@ -23,6 +23,7 @@ import type { Transport } from "./connections/transport.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
 import { routingKey } from "./storage/codec.ts"
+import { onShard } from "./database/shards.ts"
 import type { FrameworkClock } from "./turn/admission.ts"
 
 /** How often a subscriber checks that a stream's owner on another runner is alive. */
@@ -84,7 +85,7 @@ export const eventFeeds = ({
         if (row === undefined) return yield* ActorError.make({ reason: NotCreated.make({}) })
 
         return yield* replayEvents(ref, key, tags, after, BigInt(row.head), limit)
-      }).pipe(withTenant(ref.tenant))
+      }).pipe(withTenant(ref.tenant), onShard(key))
 
       return yield* Effect.forEach(events, (event) =>
         registration.upcastEvent(event.tag, event.version, event.value).pipe(

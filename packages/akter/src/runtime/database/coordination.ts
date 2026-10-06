@@ -3,6 +3,7 @@ import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { Migrator, SqlClient } from "effect/sql"
 import { boundedPool } from "./bounded.ts"
+import { Authority, currentRanges } from "./shards.ts"
 import { NekiTurnSessions } from "./neki/session.ts"
 import {
   MigrationBarrier,
@@ -14,6 +15,33 @@ import {
 export const Coordination = Context.Reference<SqlClient.SqlClient | undefined>(
   "@rikalabs/akter/runtime/database/coordination/Coordination",
   { defaultValue: () => undefined },
+)
+
+/**
+ * The client for the data database's deployment registries and other tables
+ * outside the routed group: its authority sessions while the map names data
+ * shards, else the default client, which reaches the one database already.
+ * With data shards it is a client of its own even for an untargeted fiber, so
+ * a transaction on it never swallows the statements a fiber sends to a shard,
+ * and a statement made inside a turn's transaction never reaches the shard's
+ * copy of the table.
+ */
+export const registry = Effect.gen(function* () {
+  if ((yield* currentRanges).some((range) => range.shard !== undefined)) {
+    const sessions = yield* Authority
+
+    if (sessions !== undefined) return sessions
+  }
+
+  return yield* SqlClient.SqlClient
+})
+
+/** The client deployment-wide locks are taken on: the designated coordination pool, else `registry`. */
+export const authority = Coordination.pipe(
+  Effect.filterOrElse(
+    (designated): designated is SqlClient.SqlClient => designated !== undefined,
+    () => registry,
+  ),
 )
 
 /** Creates the transaction-owned coordination rows on the authoritative database. */
@@ -75,19 +103,24 @@ export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
  * Row identities are retained so deleting an idle resource cannot split its lock.
  * The local fence has its own namespace because independent clients may point
  * to the same database and must not wait on their own authority transaction.
+ * Work that writes no actor data, such as reading every data shard to accept
+ * a deployment, passes `writesData: false` and holds no data transaction, so
+ * its reads reach each shard instead of the one session a fence would pin.
  */
 export const coordinated = <A, E, R>({
   resource,
   work,
+  writesData = true,
 }: {
   readonly resource: string
   readonly work: Effect.Effect<A, E, R>
+  readonly writesData?: boolean
 }) =>
   Effect.gen(function* () {
     const data = yield* SqlClient.SqlClient
-    const sql = (yield* Coordination) ?? data
+    const sql = yield* authority
     const guarded =
-      sql === data
+      sql === data || !writesData
         ? work
         : data.withTransaction(
             data`INSERT INTO actor_coordination (resource) VALUES (${`local/${resource}`})

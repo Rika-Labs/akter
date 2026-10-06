@@ -1,6 +1,8 @@
 # ADR 0093: The control plane's Neki database routes no table until every statement on a routed table runs on its shard
 
-**Status:** accepted (2026-10-05). Demonstrated on the live `akter-preview` cluster (one shard); a split onto separate data shards is not demonstrated.
+**Status:** accepted (2026-10-05). Demonstrated on the live `akter-preview` cluster (one shard); a split onto separate data shards is not demonstrated. [ADR 0094](0094-neki-shard-targeted-sessions.md) implements step 1 of the move to routed actor data.
+
+**Amended by:** [ADR 0096](0096-neki-multi-shard-evidence.md), which observed this topology on three shards: its `range` bounds split keys at 128 rather than at a bucket, so the data group now routes by bucket; only the framework's per-actor tables may be routed; and steps 1, 4 and 5 below gain conditions.
 
 **Amended by:** [ADR 0096](0096-neki-multi-shard-evidence.md), which observed this topology on three shards: its `range` bounds split keys at 128 rather than at a bucket, so the data group now routes by bucket; only the framework's per-actor tables may be routed; and steps 1, 4 and 5 below gain conditions.
 

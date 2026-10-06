@@ -105,7 +105,9 @@ import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { admissionLimit, isOverloaded, overloaded } from "./admission.ts"
-import { boundedLayer, isPoolRefusal } from "./database/bounded.ts"
+import { isPoolRefusal, routedLayer } from "./database/bounded.ts"
+import { nekiDirectory } from "./database/neki/topology.ts"
+import { onShard, untargeted } from "./database/shards.ts"
 import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
@@ -936,6 +938,7 @@ export const layer = (options: Options = {}) => {
           )
         },
         Effect.provideContext(services),
+        untargeted,
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
@@ -1413,12 +1416,13 @@ export const layer = (options: Options = {}) => {
             return Option.none()
 
           const sql = yield* SqlClient.SqlClient
+          const key = routingKey({ ref, placement: registration.placement })
 
-          const [found] = yield* sql<{ hash: string; size: number }>`
+          const [found] = yield* onShard(key)(sql<{ hash: string; size: number }>`
             SELECT hash, size::float8 AS size FROM actor_content_refs
-            WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
+            WHERE routing_key = ${key}
               AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
-              AND blob = ${blob} AND name = ${name}`
+              AND blob = ${blob} AND name = ${name}`)
 
           const timeoutMs =
             "policy" in registration ? registration.policy.executionMs : registration.timeoutMs
@@ -1633,6 +1637,11 @@ export const Database = {
    * reports no commit version for a replica to wait for, so `neki` refuses a
    * `replica`.
    *
+   * On a Neki database whose topology routes tables, the runtime reads the
+   * bucket ranges from the router, and the off-turn, query and turn pools
+   * each open one more pool of the same size per data shard, whose sessions
+   * are targeted at that shard. Count them against `max_connections`.
+   *
    * Registers a `regclass` codec because the pinned driver lacks one and the
    * migrator needs it on restart; remove once Effect #8309 lands.
    */
@@ -1664,7 +1673,7 @@ export const Database = {
     const pool = withKeepalives(configured)
 
     const database = Layer.mergeAll(
-      boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+      routedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
       neki === true
         ? turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types })
         : turnGroups.pipe(
@@ -1678,9 +1687,10 @@ export const Database = {
         coordination === undefined ? undefined : { ...withKeepalives(coordination), types },
       ),
     )
+    const located = neki === true ? nekiDirectory.pipe(Layer.provideMerge(database)) : database
     return neki === undefined
-      ? database
-      : database.pipe(Layer.provideMerge(Layer.succeed(NekiTurnSessions, neki)))
+      ? located
+      : located.pipe(Layer.provideMerge(Layer.succeed(NekiTurnSessions, neki)))
   },
   pglite,
   /**

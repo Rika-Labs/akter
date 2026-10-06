@@ -1,6 +1,12 @@
 import { DateTime, Effect, Match, Result, Schema } from "effect"
 import { SqlClient, SqlError, type Statement } from "effect/sql"
-import { type BucketRange } from "../database/shards.ts"
+import {
+  type BucketRange,
+  forEachRange,
+  onShard,
+  untargeted,
+  withinRange,
+} from "../database/shards.ts"
 import { SubscriptionFailure } from "../../errors/subscription.ts"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"
@@ -551,7 +557,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       delivery: envelope,
     })
 
-    return yield* options.deliver(request).pipe(Effect.result)
+    return yield* options.deliver(request).pipe(untargeted, Effect.result)
   })
 
   const failure = (outcome: Result.Result<Outcome, ActorError>): string | undefined => {
@@ -581,37 +587,38 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const target = sql`${pk} AND s.subscriber_type = ${subscriber.actor}
       AND s.subscription = ${row.command} AND s.subscriber_id = ${subscriber.id}`
 
-    const rejected = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+    const rejected = yield* onShard(key)(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
           VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}) ON CONFLICT DO NOTHING`
 
-        const [generation] = yield* sql<{ head: string }>`
+          const [generation] = yield* sql<{ head: string }>`
           SELECT event_sequence::text AS head FROM actor_generations g
           WHERE ${eventsOf("g", key, source)} FOR SHARE`
 
-        const head = BigInt(generation!.head)
+          const head = BigInt(generation!.head)
 
-        const [existing] = yield* sql<{ epoch: string; active: boolean }>`
+          const [existing] = yield* sql<{ epoch: string; active: boolean }>`
           SELECT s.epoch::text AS epoch, s.active FROM actor_subscriptions s
           WHERE ${target} FOR UPDATE`
 
-        const refused =
-          change.op === "subscribe" &&
-          change.start !== "now" &&
-          change.start !== "start" &&
-          BigInt(change.start) > head
+          const refused =
+            change.op === "subscribe" &&
+            change.start !== "now" &&
+            change.start !== "start" &&
+            BigInt(change.start) > head
 
-        if (existing !== undefined && BigInt(existing.epoch) >= epoch)
-          return refused && BigInt(existing.epoch) === epoch && !existing.active
+          if (existing !== undefined && BigInt(existing.epoch) >= epoch)
+            return refused && BigInt(existing.epoch) === epoch && !existing.active
 
-        const old = sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+          const old = sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
           WHERE ${target} FOR UPDATE`
 
-        if (change.op === "remove" || refused) {
-          yield* changeRows(
-            old,
-            sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
+          if (change.op === "remove" || refused) {
+            yield* changeRows(
+              old,
+              sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
                 subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
               VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
                 ${row.command}, ${subscriber.id}, ${textArray({ sql, values: change.events })}, ${epoch}, false,
@@ -620,20 +627,20 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
               DO UPDATE SET epoch = EXCLUDED.epoch, active = false, due_at_ms = NULL, attempts = 0,
                 last_error = NULL, gap_at_ms = NULL, gap_through = NULL
               RETURNING ${rowColumns({ sql, alias: "s" })}`,
+            )
+
+            return refused
+          }
+
+          const delivered = Match.value(change.start).pipe(
+            Match.when("now", () => head),
+            Match.when("start", () => 0n),
+            Match.orElse((cursor) => BigInt(cursor)),
           )
 
-          return refused
-        }
-
-        const delivered = Match.value(change.start).pipe(
-          Match.when("now", () => head),
-          Match.when("start", () => 0n),
-          Match.orElse((cursor) => BigInt(cursor)),
-        )
-
-        yield* changeRows(
-          old,
-          sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
+          yield* changeRows(
+            old,
+            sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
               subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket,
               due_at_ms)
             SELECT ${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
@@ -649,11 +656,12 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
               delivered = EXCLUDED.delivered, marked = 0, due_at_ms = EXCLUDED.due_at_ms, attempts = 0,
               last_error = NULL, gap_at_ms = NULL, gap_through = NULL
             RETURNING ${rowColumns({ sql, alias: "s" })}`,
-          statementClock,
-        )
+            statementClock,
+          )
 
-        return false
-      }),
+          return false
+        }),
+      ),
     )
 
     const claim = sql`routing_key = ${BigInt(row.routing_key)} AND intent_id = ${row.intent_id}
@@ -1014,15 +1022,16 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
 
   /**
    * Widens the rows of one dynamic subscription to its declaration's event
-   * classes, 1,000 rows per transaction, with their tag summary. It keeps every cursor and epoch, never
+   * classes on every range, 1,000 rows per transaction, with their tag summary. It keeps every cursor and epoch, never
    * narrows a row, and is idempotent, so every runner of a rolling deploy may
    * run it. A widened row with an event of an added class after its
    * `delivered` becomes due. Rows claimed right now are skipped; their settle
    * widens them.
    */
-  const widen = Effect.fnUntraced(function* (
+  const widenRange = Effect.fnUntraced(function* (
     subscriberType: string,
     declared: RegisteredSubscription,
+    range: BucketRange,
   ) {
     const tags = textArray({ sql, values: declared.events })
 
@@ -1030,7 +1039,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       const widened = yield* changeRows(
         sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
           WHERE s.subscriber_type = ${subscriberType} AND s.subscription = ${declared.tag}
-            AND s.active AND NOT s.events @> ${tags}
+            AND s.active AND NOT s.events @> ${tags} ${withinRange({ sql, range, column: "s.routing_key" })}
           LIMIT ${EXPANSION_PAGE}
           FOR UPDATE SKIP LOCKED`,
         sql`UPDATE actor_subscriptions s
@@ -1055,9 +1064,12 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     }
   })
 
+  const widen = (subscriberType: string, declared: RegisteredSubscription) =>
+    Effect.asVoid(forEachRange((range) => widenRange(subscriberType, declared, range)))
+
   /**
-   * Deletes rows of `subscriberType` whose subscription this runner doesn't
-   * declare once they have been due for a day. Such a row is never claimed
+   * Deletes rows of `subscriberType` on every range whose subscription this
+   * runner doesn't declare once they have been due for a day. Such a row is never claimed
    * here, so a rolling deploy's newer runners get a day to take it first.
    */
   const cleanupRemoved = Effect.fnUntraced(function* (
@@ -1066,14 +1078,18 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   ) {
     const cutoff = (yield* databaseTime) - REMOVED_AFTER_MS
 
-    return yield* changeRows(
-      sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
-        WHERE s.subscriber_type = ${subscriberType}
-          AND NOT s.subscription = ANY(${textArray({ sql, values: declared })})
-          AND s.due_at_ms < ${cutoff}
-        FOR UPDATE`,
-      deleteLocked,
+    const counts = yield* forEachRange((range) =>
+      changeRows(
+        sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+          WHERE s.subscriber_type = ${subscriberType}
+            AND NOT s.subscription = ANY(${textArray({ sql, values: declared })})
+            AND s.due_at_ms < ${cutoff} ${withinRange({ sql, range, column: "s.routing_key" })}
+          FOR UPDATE`,
+        deleteLocked,
+      ),
     )
+
+    return counts.reduce((sum, one) => sum + one, 0)
   })
 
   const run = (work: SubscriptionWork, handoff: Handoff) => {
@@ -1102,7 +1118,10 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             Match.orElse(() => register(work)),
           )
 
-    return running.pipe(Effect.onInterrupt(() => release(work, claim)))
+    return running.pipe(
+      Effect.onInterrupt(() => release(work, claim)),
+      onShard(BigInt(work.routing_key)),
+    )
   }
 
   return { claim, decode, run, widen, cleanupRemoved }

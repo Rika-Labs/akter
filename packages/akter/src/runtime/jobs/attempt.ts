@@ -1,5 +1,6 @@
 import { Cause, Clock, Data, Deferred, Effect, Option, Result, Schema } from "effect"
 import { SqlClient, type Statement } from "effect/sql"
+import { onShard, untargeted } from "../database/shards.ts"
 import { ActorRef, principal } from "../../identity/caller.ts"
 import type { JobFailure, JobRoute, RegisteredJob } from "../members.ts"
 import { Request } from "../request.ts"
@@ -629,6 +630,7 @@ export const jobAttempts = Effect.fnUntraced(function* (options: {
             },
             { captureStackTrace: false },
           ),
+          untargeted,
           Effect.result,
           Effect.raceFirst(renewals),
           Effect.raceFirst(deadline),
@@ -672,6 +674,7 @@ export const jobAttempts = Effect.fnUntraced(function* (options: {
    */
   return (row: ClaimedJob, registered: RegisteredJob, claim: Claim) => {
     const attempt = run(row, registered, claim).pipe(
+      onShard(BigInt(row.routing_key)),
       Effect.tap((terminal) =>
         terminal
           ? requestOf(row).pipe(
@@ -695,7 +698,9 @@ export const jobAttempts = Effect.fnUntraced(function* (options: {
       : attempt.pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              const woke = yield* wakeWaiting({ sql, group: row, at: yield* databaseTime })
+              const woke = yield* wakeWaiting({ sql, group: row, at: yield* databaseTime }).pipe(
+                onShard(BigInt(row.routing_key)),
+              )
 
               if (woke.length > 0) yield* options.wake
             }).pipe(Effect.ignore),

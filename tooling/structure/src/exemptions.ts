@@ -29,6 +29,12 @@ export const exemptions: ReadonlyArray<Exemption> = [
       "The Compose E2E exercises login, whoami, deploy and logout against the API, edge and runner image together rather than one source module.",
   },
   {
+    path: "packages/akter/src/runtime/database/routing.test.ts",
+    rule: "tests-beside-sources",
+    reason:
+      "Exercises turns, relays, jobs, cron, retention and holder liveness together on shard-targeted sessions, checking each committed write's session against the shard that holds its row, rather than one source module.",
+  },
+  {
     path: "infra/src/fly-service-image.test.ts",
     rule: "tests-beside-sources",
     reason:

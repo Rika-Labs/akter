@@ -1,5 +1,7 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
+import { registry } from "../database/coordination.ts"
+import { forEachRange, withinRange } from "../database/shards.ts"
 import { descriptorOf } from "../../actor/descriptor.ts"
 import { type DefinitionPayloads, type PayloadDeclaration } from "../../members/payload.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
@@ -106,17 +108,26 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
             `version ${row.version} may still be stored below this chain's first version ${first}; run akter payloads clear once its events are gone`,
           )
     } else {
-      const [stored] = yield* sql<{ version: number | null; rows: number }>`
+      const shards = (yield* forEachRange(
+        (range) => sql<{ version: number | null; rows: number }>`
         SELECT min(v)::int AS version, count(*)::int AS rows FROM (
           SELECT payload_version AS v FROM actor_outbox
           WHERE kind = 'job' AND actor_type = ${declared.actorType} AND command = ${declared.tag}
-            AND payload_version < ${first}
+            AND payload_version < ${first} ${withinRange({ sql, range, column: "routing_key" })}
           UNION ALL
           SELECT payload_version FROM actor_dead_letters
           WHERE actor_type = ${declared.actorType} AND job = ${declared.tag}
-            AND payload_version < ${first}) stored`
+            AND payload_version < ${first} ${withinRange({ sql, range, column: "routing_key" })}) stored`,
+      )).flat()
 
-      if (stored !== undefined && stored.version !== null)
+      const versions = shards.flatMap((row) => (row.version === null ? [] : [row.version]))
+
+      const stored = {
+        version: versions.length === 0 ? null : Math.min(...versions),
+        rows: shards.reduce((sum, row) => sum + row.rows, 0),
+      }
+
+      if (stored.version !== null)
         problem(
           `version ${stored.version} stored in ${stored.rows} pending job or dead letter row${stored.rows === 1 ? "" : "s"} below this chain's first version ${first}`,
         )
@@ -138,14 +149,20 @@ export const findPayloadProblems = Effect.fnUntraced(function* (
     ]
 
     for (const tag of removed) {
-      const [pending] = yield* sql<{ subscriber_type: string; subscription: string }>`
+      const [pending] = (yield* forEachRange(
+        (range) => sql<{
+          subscriber_type: string
+          subscription: string
+        }>`
         SELECT s.subscriber_type, s.subscription FROM actor_subscriptions s
         WHERE s.source_type = ${writer.actorType} AND ${tag} = ANY(s.events)
           AND EXISTS (SELECT 1 FROM actor_events e
             WHERE e.routing_key = s.routing_key AND e.tenant_id = s.tenant_id
               AND e.actor_type = s.source_type AND e.actor_id = s.source_id
               AND e.event = ${tag} AND e.sequence > s.delivered)
-        LIMIT 1`
+          ${withinRange({ sql, range, column: "s.routing_key" })}
+        LIMIT 1`,
+      )).flat()
 
       if (pending !== undefined)
         problems.push({
@@ -280,7 +297,8 @@ export interface ClearResult {
  */
 export const clearPayloads = (actors: ReadonlyArray<object>) =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
+    const data = yield* SqlClient.SqlClient
+    const sql = yield* registry
     const definitions = definitionsOf(actors)
     const commandTimeoutMs = Math.max(0, ...definitions.map((d) => d.commandTimeoutMs))
     const results: Array<ClearResult> = []
@@ -319,12 +337,14 @@ export const clearPayloads = (actors: ReadonlyArray<object>) =>
 
               if ((yield* writing).length > 0) return "writer" as const
 
-              const stored = yield* sql`SELECT 1 FROM actor_events
+              const stored = yield* forEachRange(
+                (range) => data`SELECT 1 FROM actor_events
                 WHERE actor_type = ${declared.actorType} AND event = ${declared.tag}
-                  AND payload_version = ${version}
-                LIMIT 1`
+                  AND payload_version = ${version} ${withinRange({ sql: data, range, column: "routing_key" })}
+                LIMIT 1`,
+              )
 
-              if (stored.length > 0) return "stored" as const
+              if (stored.some((rows) => rows.length > 0)) return "stored" as const
 
               if ((yield* writing).length > 0) return "writer" as const
 

@@ -46,6 +46,7 @@ export default defineConfig({
             `${testing}/conformance/neki/backend.test.ts`,
             "packages/akter/src/runtime/database/migrations.test.ts",
             "packages/akter/src/runtime/database/shards.test.ts",
+            "packages/akter/src/runtime/database/routing.test.ts",
             "packages/akter/src/runtime/database/keepalive.test.ts",
             "packages/akter/src/runtime/database/bounded.test.ts",
             "packages/akter/src/runtime/storage/generation.test.ts",

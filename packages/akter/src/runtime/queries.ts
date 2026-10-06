@@ -10,6 +10,7 @@ import type { Holder } from "./connections/holder.ts"
 import type { ReadSet } from "./connections/reads.ts"
 import { watchStream } from "./connections/watch.ts"
 import { caughtUp, QueryPool } from "./database/replica.ts"
+import { onShard } from "./database/shards.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
 import { decompress, routingKey } from "./storage/codec.ts"
@@ -63,11 +64,14 @@ export const committedReads = ({
 
       const sql = yield* SqlClient.SqlClient
 
+      const key = routingKey({ ref, placement: registration.placement })
+
       const rows = yield* sql`
           SELECT 1 FROM actor_generations
-          WHERE routing_key = ${routingKey({ ref, placement: registration.placement })}
+          WHERE routing_key = ${key}
             AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
         withTenant(ref.tenant),
+        onShard(key),
       )
 
       return rows.length > 0
@@ -141,7 +145,11 @@ export const committedReads = ({
             return yield* outcome.cause
 
           return outcome
-        }).pipe(withTenant(request.ref.tenant), Effect.provideService(SqlClient.SqlClient, client))
+        }).pipe(
+          withTenant(request.ref.tenant),
+          Effect.provideService(SqlClient.SqlClient, client),
+          onShard(key),
+        )
 
       const owned = registration.tables.length > 0 || registration.blobs.length > 0
       const local = owned ? primary : (queryPool ?? primary)
@@ -261,12 +269,14 @@ export const committedReads = ({
         yield* allow(request)
         const sql = yield* SqlClient.SqlClient
 
+        const key = routingKey({ ref: request.ref, placement: registration.placement })
+
         const [row] = yield* sql<{ status: string; result: Uint8Array | null }>`
           SELECT status, result FROM actor_workflow_executions
-          WHERE routing_key = ${routingKey({ ref: request.ref, placement: registration.placement })}
+          WHERE routing_key = ${key}
             AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
             AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-            AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant))
+            AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant), onShard(key))
 
         yield* allow(request)
 

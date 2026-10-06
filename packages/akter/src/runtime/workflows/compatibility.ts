@@ -1,6 +1,7 @@
 import { DateTime, Effect, Schema } from "effect"
 import { SqlClient } from "effect/sql"
-import { coordinated } from "../database/coordination.ts"
+import { coordinated, registry } from "../database/coordination.ts"
+import { currentRanges, forEachRange, withinRange } from "../database/shards.ts"
 import { type AnyWorkflow, isWorkflow, type VersionRange } from "../../members/workflow.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { type Declared, manifestOf, toJson } from "./manifest.ts"
@@ -177,6 +178,7 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
   options: { readonly everyActorType: boolean },
 ) {
   const sql = yield* SqlClient.SqlClient
+  const manifests = yield* registry
   const current = new Map<string, Map<string, { member: AnyWorkflow; declared: Declared }>>()
 
   for (const actor of declared) {
@@ -240,20 +242,86 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
     return verdict
   })
 
-  const groups = yield* sql<{
-    actor_type: string
-    workflow: string
-    manifest_hash: string
-    manifest: string | null
-    open: number
-    oldest: string
-  }>`SELECT x.actor_type, x.workflow, x.manifest_hash, m.manifest::text AS manifest,
-      count(*)::integer AS open, min(x.started_at_ms)::text AS oldest
-    FROM actor_workflow_executions x
-    LEFT JOIN actor_workflow_manifests m ON m.actor_type = x.actor_type AND m.workflow = x.workflow
-      AND m.manifest_hash = x.manifest_hash
-    WHERE x.status <> 'finished' AND ${scope}
-    GROUP BY x.actor_type, x.workflow, x.manifest_hash, m.manifest::text`
+  /**
+   * Executions live on the data shards and manifests on the authority, so
+   * each shard's rows are grouped there, summed across shards, and given
+   * their start manifest afterwards.
+   */
+  const merged = <Row extends { readonly open: number; readonly oldest: string | null }>(
+    rows: ReadonlyArray<Row>,
+    keyOf: (row: Row) => string,
+  ) => {
+    const byKey = new Map<string, Row>()
+
+    for (const row of rows) {
+      const seen = byKey.get(keyOf(row))
+
+      byKey.set(
+        keyOf(row),
+        seen === undefined
+          ? row
+          : {
+              ...seen,
+              open: seen.open + row.open,
+              oldest:
+                seen.oldest === null ||
+                (row.oldest !== null && BigInt(row.oldest) < BigInt(seen.oldest))
+                  ? row.oldest
+                  : seen.oldest,
+            },
+      )
+    }
+
+    return [...byKey.values()]
+  }
+
+  const startManifests = Effect.fnUntraced(function* (
+    rows: ReadonlyArray<{ actor_type: string; workflow: string; manifest_hash: string }>,
+  ) {
+    if (rows.length === 0) return new Map<string, string>()
+
+    const found = yield* manifests<{
+      actor_type: string
+      workflow: string
+      manifest_hash: string
+      manifest: string
+    }>`SELECT m.actor_type, m.workflow, m.manifest_hash, m.manifest::text AS manifest
+      FROM actor_workflow_manifests m
+      JOIN jsonb_to_recordset(${toJson(rows)}::jsonb)
+        AS k (actor_type text, workflow text, manifest_hash text)
+        ON k.actor_type = m.actor_type AND k.workflow = m.workflow AND k.manifest_hash = m.manifest_hash`
+
+    return new Map(
+      found.map((row) => [toJson([row.actor_type, row.workflow, row.manifest_hash]), row.manifest]),
+    )
+  })
+
+  const startKey = (row: { actor_type: string; workflow: string; manifest_hash: string }) =>
+    toJson([row.actor_type, row.workflow, row.manifest_hash])
+
+  const executions = merged(
+    (yield* forEachRange(
+      (range) => sql<{
+        actor_type: string
+        workflow: string
+        manifest_hash: string
+        open: number
+        oldest: string
+      }>`SELECT x.actor_type, x.workflow, x.manifest_hash,
+        count(*)::integer AS open, min(x.started_at_ms)::text AS oldest
+      FROM actor_workflow_executions x
+      WHERE x.status <> 'finished' AND ${scope} ${withinRange({ sql, range, column: "x.routing_key" })}
+      GROUP BY x.actor_type, x.workflow, x.manifest_hash`,
+    )).flat(),
+    startKey,
+  )
+
+  const started = yield* startManifests(executions)
+  const groups = executions.map((row) => ({
+    ...row,
+    oldest: row.oldest!,
+    manifest: started.get(startKey(row)) ?? null,
+  }))
 
   for (const group of groups) {
     const oldest = Number(group.oldest)
@@ -282,26 +350,36 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
       add(group.actor_type, group.workflow, problem, group.open, oldest)
   }
 
-  const recorded = yield* sql<{
-    actor_type: string
-    workflow: string
-    manifest_hash: string
-    manifest: string | null
-    step: string
-    kind: string
-    version: number | null
-    open: number
-    oldest: string
-  }>`SELECT x.actor_type, x.workflow, x.manifest_hash, m.manifest::text AS manifest, s.step, s.kind,
-      CASE WHEN s.kind = 'version' THEN s.version END AS version,
-      count(DISTINCT x.execution_id)::integer AS open, min(x.started_at_ms)::text AS oldest
-    FROM actor_workflow_executions x
-    JOIN actor_workflow_step s ON s.routing_key = x.routing_key AND s.execution_id = x.execution_id
-    LEFT JOIN actor_workflow_manifests m ON m.actor_type = x.actor_type AND m.workflow = x.workflow
-      AND m.manifest_hash = x.manifest_hash
-    WHERE x.status <> 'finished' AND ${scope} AND (s.kind = 'version' OR s.exit IS NOT NULL)
-    GROUP BY x.actor_type, x.workflow, x.manifest_hash, m.manifest::text, s.step, s.kind,
-      CASE WHEN s.kind = 'version' THEN s.version END`
+  const steps = merged(
+    (yield* forEachRange(
+      (range) => sql<{
+        actor_type: string
+        workflow: string
+        manifest_hash: string
+        step: string
+        kind: string
+        version: number | null
+        open: number
+        oldest: string
+      }>`SELECT x.actor_type, x.workflow, x.manifest_hash, s.step, s.kind,
+        CASE WHEN s.kind = 'version' THEN s.version END AS version,
+        count(DISTINCT x.execution_id)::integer AS open, min(x.started_at_ms)::text AS oldest
+      FROM actor_workflow_executions x
+      JOIN actor_workflow_step s ON s.routing_key = x.routing_key AND s.execution_id = x.execution_id
+      WHERE x.status <> 'finished' AND ${scope} AND (s.kind = 'version' OR s.exit IS NOT NULL)
+        ${withinRange({ sql, range, column: "x.routing_key" })}
+      GROUP BY x.actor_type, x.workflow, x.manifest_hash, s.step, s.kind,
+        CASE WHEN s.kind = 'version' THEN s.version END`,
+    )).flat(),
+    (row) => toJson([startKey(row), row.step, row.kind, row.version]),
+  )
+
+  const stepManifests = yield* startManifests(steps)
+  const recorded = steps.map((row) => ({
+    ...row,
+    oldest: row.oldest!,
+    manifest: stepManifests.get(startKey(row)) ?? null,
+  }))
 
   for (const row of recorded) {
     const workflow = current.get(row.actor_type)?.get(row.workflow)
@@ -337,12 +415,18 @@ export const findIncompatibilities = Effect.fnUntraced(function* (
 
         if (problems.length === 0) continue
 
-        const [predating] = yield* sql<{ open: number; oldest: string | null }>`
+        const [predating] = merged(
+          (yield* forEachRange(
+            (range) => sql<{ open: number; oldest: string | null }>`
           SELECT count(*)::integer AS open, min(x.started_at_ms)::text AS oldest
           FROM actor_workflow_executions x
           WHERE x.actor_type = ${actorType} AND x.workflow = ${tag} AND x.status <> 'finished'
+            ${withinRange({ sql, range, column: "x.routing_key" })}
             AND NOT EXISTS (SELECT 1 FROM actor_workflow_step s WHERE s.routing_key = x.routing_key
-              AND s.execution_id = x.execution_id AND s.kind = 'version' AND s.step = ${name})`
+              AND s.execution_id = x.execution_id AND s.kind = 'version' AND s.step = ${name})`,
+          )).flat(),
+          () => "",
+        )
 
         if (predating !== undefined && predating.open > 0)
           for (const problem of problems)
@@ -376,20 +460,33 @@ export const formatIncompatibility = (incompatibility: Incompatibility) =>
  */
 export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor) {
   const sql = yield* SqlClient.SqlClient
+  const manifests = yield* registry
+  const sharded = (yield* currentRanges).some((range) => range.shard !== undefined)
 
   if (actor.workflows.length === 0) {
-    const [history] = yield* sql<{ accepted: boolean; executions: boolean }>`SELECT
-      EXISTS (SELECT 1 FROM actor_workflow_manifests WHERE actor_type = ${actor.name}) AS accepted,
-      EXISTS (SELECT 1 FROM actor_workflow_executions WHERE actor_type = ${actor.name}) AS executions`
+    const [accepted] = yield* manifests<{ accepted: boolean }>`SELECT
+      EXISTS (SELECT 1 FROM actor_workflow_manifests WHERE actor_type = ${actor.name}) AS accepted`
 
-    if (!history!.accepted)
-      return { checked: false, incompatibilities: [], retained: history!.executions }
+    if (!accepted!.accepted) {
+      const executions = yield* forEachRange(
+        (range) => sql<{ executions: boolean }>`SELECT
+        EXISTS (SELECT 1 FROM actor_workflow_executions WHERE actor_type = ${actor.name}
+          ${withinRange({ sql, range, column: "routing_key" })}) AS executions`,
+      )
+
+      return {
+        checked: false,
+        incompatibilities: [],
+        retained: executions.some(([row]) => row!.executions),
+      }
+    }
   }
 
   return yield* coordinated({
     resource: `akter/workflows/${actor.name}`,
+    writesData: !sharded,
     work: Effect.gen(function* () {
-      const latest = yield* sql<{ workflow: string; manifest_hash: string }>`
+      const latest = yield* manifests<{ workflow: string; manifest_hash: string }>`
         SELECT DISTINCT ON (workflow) workflow, manifest_hash FROM actor_workflow_manifests
         WHERE actor_type = ${actor.name}
         ORDER BY workflow, accepted_at_ms DESC, manifest_hash`
@@ -422,12 +519,15 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
 
       const foreign =
         unchanged &&
-        (yield* sql`SELECT 1 FROM actor_workflow_executions x
+        (yield* forEachRange(
+          (range) => sql`SELECT 1 FROM actor_workflow_executions x
           WHERE x.actor_type = ${actor.name} AND x.status <> 'finished'
+            ${withinRange({ sql, range, column: "x.routing_key" })}
             AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(${toJson(rows)}::jsonb)
               AS d (workflow text, manifest_hash text)
               WHERE d.workflow = x.workflow AND d.manifest_hash = x.manifest_hash)
-          LIMIT 1`).length > 0
+          LIMIT 1`,
+        )).some((found) => found.length > 0)
 
       if (unchanged && !foreign) return { checked: false, incompatibilities: [], retained: true }
 
@@ -436,7 +536,7 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
       if (incompatibilities.length > 0) return { checked: true, incompatibilities, retained: true }
 
       if (rows.length > 0)
-        yield* sql`INSERT INTO actor_workflow_manifests AS a (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
+        yield* manifests`INSERT INTO actor_workflow_manifests AS a (actor_type, workflow, manifest_hash, manifest, accepted_at_ms)
           SELECT m.actor_type, m.workflow, m.manifest_hash, m.manifest::jsonb,
             GREATEST(floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint,
               (SELECT max(l.accepted_at_ms) + 1 FROM actor_workflow_manifests l
@@ -446,7 +546,7 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
           ON CONFLICT (actor_type, workflow, manifest_hash)
             DO UPDATE SET accepted_at_ms = EXCLUDED.accepted_at_ms`
 
-      yield* sql`DELETE FROM actor_workflow_manifests WHERE actor_type = ${actor.name}
+      yield* manifests`DELETE FROM actor_workflow_manifests WHERE actor_type = ${actor.name}
         AND workflow NOT IN (SELECT jsonb_array_elements_text(${toJson(rows.map((row) => row.workflow))}::jsonb))`
 
       return { checked: true, incompatibilities: [], retained: true }
