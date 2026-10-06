@@ -5,6 +5,16 @@ export const AUTHORITATIVE_GROUP = "authoritative"
 export const ACTOR_DATA_GROUP = "actor_data"
 export const ROUTING_KEY_INDEX = "routing_key_range"
 
+/**
+ * The value the `range` shard index routes by: the signed bucket `routing_key >> 56`
+ * moved to 0..255. Neki's `range` index orders its value as a signed 64-bit integer and
+ * reads each key-range bound as a hexadecimal integer that must fit a signed 64-bit
+ * integer, so no bound can be negative. Routed on `routing_key` itself, every negative key
+ * would land on the first shard and a bound such as `80` would split the key space at the
+ * key 128, not at a bucket.
+ */
+export const ROUTING_BUCKET = "(routing_key >> 56) + 128"
+
 export type KeyRange = {
   readonly shard_uid: string
   readonly start?: string
@@ -48,11 +58,49 @@ export type TopologyScope = { readonly database: string; readonly schema: string
 
 const hexByte = (byte: number) => byte.toString(16).padStart(2, "0")
 
-const signedBucket = (byte: number) => (byte < 128 ? byte : byte - BUCKET_COUNT)
+const signedBucket = (index: number) => index - 128
 
 const checkRange = (shardCount: number) => {
   if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > BUCKET_COUNT)
     throw new RangeError(`shardCount must be an integer from 1 to ${BUCKET_COUNT}`)
+}
+
+/**
+ * The tables a data group may hold: the framework's per-actor tables. Each keeps
+ * `routing_key` in every unique key, carries no trigger and references only another of
+ * them, so no statement, trigger or foreign key on one of its rows reaches a control
+ * table. On a data shard that would be the shard's own copy of the control table, which
+ * is empty, and Neki reads and writes it without an error. Every other table stays on
+ * the authoritative shard, whatever the number of shards.
+ */
+export const ROUTABLE_TABLES: ReadonlyArray<string> = [
+  "actor_blobs",
+  "actor_connections",
+  "actor_content_refs",
+  "actor_dead_letters",
+  "actor_events",
+  "actor_generations",
+  "actor_operator_audit",
+  "actor_outbox",
+  "actor_receipts",
+  "actor_state",
+  "actor_subscription_cursors",
+  "actor_subscription_tags",
+  "actor_subscriptions",
+  "actor_workflow_executions",
+  "actor_workflow_step",
+  "tenant_content_chunks",
+  "tenant_content_sweeps",
+  "tenant_contents",
+]
+
+/** Refuses a routed table that is not one of `ROUTABLE_TABLES`. */
+export const checkRoutedTables = (routedTables: ReadonlyArray<string>) => {
+  const refused = routedTables.filter((table) => !ROUTABLE_TABLES.includes(table))
+  if (refused.length > 0)
+    throw new RangeError(
+      `routedTables may list only the framework's per-actor tables; ${refused.join(", ")} must stay on the authoritative shard`,
+    )
 }
 
 /**
@@ -73,21 +121,18 @@ export const checkShardCount = (input: {
 }
 
 /**
- * The unsigned top byte that `routing_key >> 56` selects once the signed bigint is
- * read as its 64-bit two's-complement pattern, which is how a Neki `range` index
- * orders it: bucket 0 is `00`, bucket 127 is `7f`, bucket -128 is `80` and bucket
- * -1 is `ff`. Neki documents key ranges as hexadecimal prefixes of an unsigned
- * 64-bit space and a `range` index as using the integer directly, but not how a
- * negative integer is encoded, so this is the one place to change if a run against
- * Neki shows otherwise.
+ * The key-range bound at which a signed bucket starts: the value of `ROUTING_BUCKET`
+ * for that bucket, in hexadecimal. Bucket -128 is `00`, bucket -1 is `7f`, bucket 0 is
+ * `80` and bucket 127 is `ff`, so the shards hold the buckets in signed order, the order
+ * the runtime's bucket ranges use.
  */
 export const bucketHex = (bucket: number) => {
   if (!Number.isInteger(bucket) || bucket < -128 || bucket > 127)
     throw new RangeError("bucket must be an integer from -128 to 127")
-  return hexByte(bucket & 0xff)
+  return hexByte(bucket + 128)
 }
 
-/** The first top byte owned by each shard when 256 buckets are split into near-equal runs. */
+/** The first bucket index, 0..255, owned by each shard when 256 buckets are split into near-equal runs. */
 const startBytes = (shardCount: number) => {
   checkRange(shardCount)
   return Array.from({ length: shardCount }, (_, shard) =>
@@ -103,9 +148,9 @@ const keyRange = (shard: string, start: string | undefined, end: string | undefi
 }
 
 /**
- * Contiguous key ranges that cover the whole routing-key space, one per shard,
- * with every boundary on a bucket boundary. The first range has no start and the
- * last has no end, so no 64-bit value falls outside them.
+ * Contiguous key ranges over `ROUTING_BUCKET` that cover every routing key, one per
+ * shard, with every boundary on a bucket boundary. The first range has no start and
+ * the last has no end, so no 64-bit key falls outside them.
  */
 export const keyRanges = (shards: ReadonlyArray<string>): ReadonlyArray<KeyRange> => {
   const starts = startBytes(shards.length)
@@ -118,30 +163,21 @@ export const keyRanges = (shards: ReadonlyArray<string>): ReadonlyArray<KeyRange
   )
 }
 
-/**
- * The signed buckets each shard owns, in shard order. Neki orders by the unsigned
- * byte, so a shard whose run crosses `7f`/`80` owns the end of the positive
- * buckets and the start of the negative ones as two spans.
- */
-export const shardBucketSpans = (shardCount: number): ReadonlyArray<ReadonlyArray<BucketSpan>> => {
+/** The inclusive run of signed buckets each shard owns, in shard order. */
+export const shardBucketSpans = (shardCount: number): ReadonlyArray<BucketSpan> => {
   const starts = startBytes(shardCount)
-  return starts.map((start, shard) => {
-    const last = (starts[shard + 1] ?? BUCKET_COUNT) - 1
-    if (start < 128 && last >= 128)
-      return [
-        { first: start, last: 127 },
-        { first: -128, last: signedBucket(last) },
-      ]
-    return [{ first: signedBucket(start), last: signedBucket(last) }]
-  })
+  return starts.map((start, shard) => ({
+    first: signedBucket(start),
+    last: signedBucket((starts[shard + 1] ?? BUCKET_COUNT) - 1),
+  }))
 }
 
 /**
  * The topology Neki is given. The authoritative group is the single control shard
  * and the default for every table, in the schema and elsewhere. Only the routed
- * tables are placed in the data group, routed by a range index on `routing_key`
- * across the data shards. One data shard, the authoritative one, is the initial
- * unsharded layout.
+ * tables are placed in the data group, routed by a range index on the bucket of
+ * `routing_key` across the data shards. One data shard, the authoritative one, is the
+ * initial unsharded layout.
  *
  * Routing is opt-in because a table that lacks `routing_key` cannot be written in
  * the data group, and a table whose SQL needs the control tables beside it (a
@@ -152,7 +188,7 @@ export const shardBucketSpans = (shardCount: number): ReadonlyArray<ReadonlyArra
 export const dataTopology = (input: TopologyInput): DataTopology => ({
   authoritative_shard_group: AUTHORITATIVE_GROUP,
   default_shard_group: AUTHORITATIVE_GROUP,
-  shard_indexes: { [ROUTING_KEY_INDEX]: { type: "range", columns: ["routing_key"] } },
+  shard_indexes: { [ROUTING_KEY_INDEX]: { type: "range", columns: [ROUTING_BUCKET] } },
   shard_groups: [
     { uid: AUTHORITATIVE_GROUP, key_ranges: [{ shard_uid: input.authoritativeShard }] },
     {
@@ -225,20 +261,22 @@ export const LiveTopology = Schema.Struct({
 
 export type LiveTopology = typeof LiveTopology.Type
 
-const KEY_SPACE = 2n ** 64n
+const LOWEST = -(2n ** 63n)
+const BEYOND = 2n ** 63n
 
+/** A `range` index bound is a hexadecimal integer, so `40` and `0040` are one bound. */
 const bound = (hex: string | null | undefined, open: bigint) => {
   if (hex === undefined || hex === null || hex === "") return open
-  if (!/^[0-9a-f]{1,16}$/i.test(hex)) throw new RangeError(`"${hex}" is not a hexadecimal prefix`)
-  return BigInt(`0x${hex.padEnd(16, "0")}`)
+  if (!/^[0-9a-f]{1,16}$/i.test(hex)) throw new RangeError(`"${hex}" is not a hexadecimal bound`)
+  return BigInt(`0x${hex}`)
 }
 
 const dataRanges = (topology: LiveTopology) =>
   (topology.shard_groups.find((group) => group.uid === ACTOR_DATA_GROUP)?.key_ranges ?? [])
     .map((range) => ({
       shard: range.shard_uid,
-      from: bound(range.start, 0n),
-      to: bound(range.end, KEY_SPACE),
+      from: bound(range.start, LOWEST),
+      to: bound(range.end, BEYOND),
     }))
     .sort((left, right) => (left.from < right.from ? -1 : 1))
 
@@ -248,10 +286,9 @@ export const dataShardsOf = (topology: LiveTopology) =>
 
 /**
  * What a topology places and where, as a string two topologies can be compared by:
- * the authoritative shard, the data ranges as numeric bounds so `40` and
- * `4000000000000000` are the same bound, and the schema's table bindings. Group
- * names and sections this module does not generate do not take part. The active
- * shard index and cluster/schema defaults detect changes in routing semantics.
+ * the authoritative shard, the data ranges as numeric bounds, and the schema's table
+ * bindings. Group names and sections this module does not generate do not take part.
+ * The active shard index and cluster/schema defaults detect changes in routing semantics.
  */
 export const placementOf = (scope: TopologyScope) => (topology: LiveTopology) => {
   const authoritative = topology.shard_groups.find(

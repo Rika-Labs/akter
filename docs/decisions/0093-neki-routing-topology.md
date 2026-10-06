@@ -2,6 +2,8 @@
 
 **Status:** accepted (2026-10-05). Demonstrated on the live `akter-preview` cluster (one shard); a split onto separate data shards is not demonstrated. [ADR 0094](0094-neki-shard-targeted-sessions.md) implements step 1 of the move to routed actor data.
 
+**Amended by:** [ADR 0096](0096-neki-multi-shard-evidence.md), which observed this topology on three shards: its `range` bounds split keys at 128 rather than at a bucket, so the data group now routes by bucket; only the framework's per-actor tables may be routed; and steps 1, 4 and 5 below gain conditions.
+
 **Responsibility:** decide which shard group each table of a Neki database belongs to, what a router must accept before a table is routed by `routing_key`, and how the database later moves to routed actor data.
 
 **Authority:** implementation decision record. It amends [ADR 0089](0089-fly-infrastructure-and-environments.md)'s database item (the list of unsharded tables in `infra/src/placement.ts` is gone) and the "sharded topologies" limit of [ADR 0092](0092-neki-runtime-sql.md), and it adds a Neki rule to [contract 06](../contracts/06-storage-ownership.md).

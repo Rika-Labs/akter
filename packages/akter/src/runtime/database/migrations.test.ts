@@ -56,7 +56,7 @@ describe("migrations with Postgres", () => {
   const runtime = ManagedRuntime.make(BunCrypto.layer)
   afterAll(() => runtime.dispose())
 
-  it("enumerates every framework primary and unique key and requires routing_key outside deployment registries", () =>
+  it("enumerates every framework primary and unique key, requires routing_key outside deployment registries, and finds no trigger or outside reference on per-actor tables", () =>
     runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -90,6 +90,40 @@ describe("migrations with Postgres", () => {
             expect(
               actorKeys.find((key) => key.index_name === "actor_outbox_timer")?.columns,
             ).toEqual(["routing_key", "tenant_id", "actor_type", "actor_id", "timer_key"])
+
+            const actorTables = [...new Set(actorKeys.map((key) => key.table_name))]
+            const triggers = sql<{ table_name: string; trigger: string }>`
+              SELECT c.relname AS table_name, t.tgname AS trigger
+              FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE NOT t.tgisinternal AND n.nspname = current_schema()
+                AND c.relname IN ${sql.in(actorTables)}`
+            expect(yield* triggers).toEqual([])
+            const references = sql<{ child: string; parent: string }>`
+              SELECT c.relname AS child, p.relname AS parent
+              FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid
+              JOIN pg_class p ON p.oid = k.confrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE k.contype = 'f' AND n.nspname = current_schema()
+                AND (c.relname IN ${sql.in(actorTables)} OR p.relname IN ${sql.in(actorTables)})`
+            const outside = (rows: ReadonlyArray<{ child: string; parent: string }>) =>
+              rows.filter(
+                (reference) =>
+                  !actorTables.includes(reference.child) || !actorTables.includes(reference.parent),
+              )
+            expect((yield* references).length).toBeGreaterThan(0)
+            expect(outside(yield* references)).toEqual([])
+
+            yield* sql`CREATE FUNCTION trigger_regression() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`
+            yield* sql`CREATE TRIGGER trigger_regression AFTER INSERT ON actor_state FOR EACH ROW EXECUTE FUNCTION trigger_regression()`
+            expect(yield* triggers).toEqual([
+              { table_name: "actor_state", trigger: "trigger_regression" },
+            ])
+            yield* sql`CREATE TABLE reference_regression (id text PRIMARY KEY)`
+            yield* sql`ALTER TABLE actor_state ADD COLUMN reference_regression text REFERENCES reference_regression (id)`
+            expect(outside(yield* references)).toEqual([
+              { child: "actor_state", parent: "reference_regression" },
+            ])
 
             yield* sql`CREATE UNIQUE INDEX unkeyed_regression ON actor_outbox (intent_id)`
             expect(violations(yield* schemaKeys(sql))).toEqual([

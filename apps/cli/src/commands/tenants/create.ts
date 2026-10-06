@@ -11,7 +11,7 @@ import {
   TenantName,
 } from "@akter/deployments"
 import { BunCrypto } from "@effect/platform-bun"
-import { Console, Effect, Layer, type Redacted } from "effect"
+import { Config, Console, Effect, Layer } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { UsageError, fail } from "../../failure.ts"
 
@@ -31,6 +31,13 @@ const flags = {
   databaseUrl: Flag.Redacted("database-url").pipe(
     Flag.withDescription("The control plane's Postgres URL"),
   ),
+  engine: Flag.Literals("engine", ["postgres", "neki"]).pipe(
+    Flag.withFallbackConfig(Config.Literals(["postgres", "neki"], "CONTROL_PLANE_DATABASE_ENGINE")),
+    Flag.withDefault("postgres"),
+    Flag.withDescription(
+      "The control plane database's engine (default CONTROL_PLANE_DATABASE_ENGINE, then postgres)",
+    ),
+  ),
   operator: Flag.String("operator").pipe(
     Flag.withDescription("The subject of the User the directory change's receipt records"),
   ),
@@ -39,12 +46,19 @@ const flags = {
 /** Parsed arguments of `tenants create`. */
 export type CreateOptions = Command.Command.Config.Infer<typeof flags>
 
-/** The control plane's actors, embedded against its database; only operators run this. */
-export const controlPlane = (databaseUrl: Redacted.Redacted) =>
+/**
+ * The control plane's actors, embedded against its database; only operators run this.
+ * On Neki the turn sessions refuse to reach a second shard, so a `Create` whose actor rows
+ * and directory row sit on different shards fails instead of committing on one of them.
+ */
+export const controlPlane = ({
+  databaseUrl,
+  engine,
+}: Pick<CreateOptions, "databaseUrl" | "engine">) =>
   Layer.mergeAll(TenantHomeCommands, TenantHomeReads).pipe(
     Layer.provide(DeploymentsLive),
     Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
-    Layer.provideMerge(Database.postgres({ url: databaseUrl })),
+    Layer.provideMerge(Database.postgres({ url: databaseUrl, neki: engine === "neki" })),
     Layer.provide(BunCrypto.layer),
   )
 
@@ -74,7 +88,7 @@ export const create = (options: CreateOptions) =>
 /** `akter tenants create <tenant>`: records the tenant's home region in the control plane's directory. */
 export const createCommand = Command.make("create", flags, (options) =>
   Effect.gen(function* () {
-    const services = yield* Layer.build(controlPlane(options.databaseUrl))
+    const services = yield* Layer.build(controlPlane(options))
 
     yield* Console.log(yield* create(options).pipe(Effect.provideContext(services)))
   }).pipe(

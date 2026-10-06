@@ -9,6 +9,7 @@ import { Effect, Schema, Stream } from "effect"
 import type { Providers } from "./providers.ts"
 import { Neki } from "./resources.ts"
 import {
+  checkRoutedTables,
   checkShardCount,
   dataShardsOf,
   dataTopology,
@@ -77,8 +78,8 @@ export interface NekiDatabaseProps {
    */
   schema?: string
   /**
-   * Tables in the schema routed by `routing_key` across the data shards. Every other
-   * table stays on the authoritative shard.
+   * Tables in the schema routed by `routing_key` across the data shards, from
+   * `ROUTABLE_TABLES`. Every other table stays on the authoritative shard.
    */
   routedTables?: ReadonlyArray<string>
   /**
@@ -115,10 +116,9 @@ export interface NekiDatabaseAttributes {
  *
  * Creating it makes the database, waits for its first shard, adds data shards when
  * `shardCount` is above one, and writes a data topology that routes the `routedTables` of
- * the schema by a `range` shard index on `routing_key` and keeps every other table on the
- * authoritative shard. The key space is split on
- * bucket boundaries, `routing_key >> 56`, read as the unsigned top byte of the
- * two's-complement key; see `bucketHex` in `./topology.ts`.
+ * the schema by a `range` shard index on the bucket of `routing_key` and keeps every other
+ * table on the authoritative shard. Each data shard owns a run of the signed buckets
+ * `routing_key >> 56` in signed order; see `ROUTING_BUCKET` in `./topology.ts`.
  *
  * After creation the topology is only read. Neki moves rows through its own
  * resharding workflows, which this resource does not run, and writing a topology
@@ -225,6 +225,7 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
     Effect.sync(() => {
       if (!isResolved(news)) return undefined
       checkShardCount({ shardCount: news.shardCount ?? 1, routedTables: news.routedTables ?? [] })
+      checkRoutedTables(news.routedTables ?? [])
       if (
         output !== undefined &&
         ((news.organization !== undefined && news.organization !== output.organization) ||
@@ -269,6 +270,7 @@ export const NekiDatabaseProvider = Provider.succeed(Neki.Database, {
     const name = output?.name ?? (yield* resolveName(id, news.name))
     const shardCount = news.shardCount ?? 1
     checkShardCount({ shardCount, routedTables: news.routedTables ?? [] })
+    checkRoutedTables(news.routedTables ?? [])
     const scope: TopologyScope = {
       database: news.logicalDatabase ?? "postgres",
       schema: news.schema ?? "public",
