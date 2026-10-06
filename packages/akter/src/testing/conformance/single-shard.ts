@@ -103,11 +103,11 @@ const scatteredOf = (
   )
 
 /**
- * Cases that each framework statement routes to one Neki shard. The minted-child case
- * records only the trace of the child's delivery, and holds that delivery at
- * `afterClaim` until a statement of another trace, such as the relay's poll
- * pass, has run beside it, so every run checks the turn's own statements
- * whatever else the runner does meanwhile.
+ * Cases that each framework statement routes to one Neki shard. The
+ * minted-child case records only the trace of the child's delivery, and holds
+ * that delivery at `afterClaim` until a statement of another trace, such as
+ * the relay's poll pass, has run beside it, so every run checks the turn's
+ * own statements whatever else the runner does meanwhile.
  */
 export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
   {
