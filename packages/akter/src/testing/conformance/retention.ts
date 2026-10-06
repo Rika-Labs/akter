@@ -340,8 +340,10 @@ export const retentionConformance: ReadonlyArray<ConformanceCase<RetentionFixtur
             WHERE o.tenant_id = ${test.tenant} AND o.actor_id = 'sender'
               AND actor_receipts.tenant_id = ${test.tenant} AND actor_receipts.actor_id = 'bystander'`
 
-          yield* test.crashNext("beforeOutboxDelete")
-          yield* test.crashNext("beforeOutboxDelete")
+          const [intent] = yield* sql<{ intent_id: string }>`SELECT intent_id FROM actor_outbox
+            WHERE tenant_id = ${test.tenant} AND actor_id = 'sender'`
+          yield* test.crashNext("beforeOutboxDelete", { commandId: intent!.intent_id })
+          yield* test.crashNext("beforeOutboxDelete", { commandId: intent!.intent_id })
           yield* test.advance("10 days")
           expect(yield* test.receiptsFor(receiver.ref, "Receive")).toBe(1)
           expect(yield* test.inspect(sender.ref)).toMatchObject({ outbox: 1 })

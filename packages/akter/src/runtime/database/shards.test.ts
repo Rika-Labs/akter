@@ -389,9 +389,9 @@ describe("data shard bucket ranges with Postgres", () => {
             }),
           )
         }).pipe(
-          Effect.provideService(Statement.CurrentTransformer, (statement) =>
+          Effect.provideService(Statement.CurrentTransformer, (statement, _sql, _fiber, span) =>
             Effect.sync(() => {
-              log.observe(statement)
+              log.observe(statement, span)
               executions++
               return statement
             }),

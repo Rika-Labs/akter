@@ -417,6 +417,17 @@ const rival = (database: Redacted.Redacted<string>) =>
   )
 
 /**
+ * Whether another backend waits on a lock the calling transaction holds. The
+ * lock manager is read afresh by every statement. `pg_stat_activity` is not: a
+ * transaction sees the backends as of its first read of it, so a turn session
+ * the pool opens after that read never shows as waiting, and a transaction
+ * polling for it would hold its lock forever.
+ */
+const blockedBehind = (sql: SqlClient.SqlClient) =>
+  sql<{ waiting: boolean }>`SELECT EXISTS (SELECT 1 FROM pg_locks
+    WHERE NOT granted AND pg_backend_pid() = ANY (pg_blocking_pids(pid))) AS waiting`
+
+/**
  * Warms each `Plain` actor with one `Add(1)`; `start` then sends one call to
  * each with a fresh command id and holds every turn before its handler until
  * all of them arrived, so they joined one group before any handed over.
@@ -674,10 +685,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
                   WHERE actor_type = 'Plain' AND actor_id = ${meter.ref.id} FOR UPDATE`
                 turn = yield* Effect.forkDetach(add)
                 yield* Effect.gen(function* () {
-                  const waiting = yield* sql<{ waiting: boolean }>`
-                    SELECT count(*) > 0 AS waiting FROM pg_stat_activity
-                    WHERE wait_event_type = 'Lock' AND datname = current_database()
-                      AND pid <> pg_backend_pid()`
+                  const waiting = yield* blockedBehind(sql)
 
                   if (!waiting[0]!.waiting) return yield* Effect.fail("not yet")
                 }).pipe(Effect.retry(Schedule.spaced("20 millis")))

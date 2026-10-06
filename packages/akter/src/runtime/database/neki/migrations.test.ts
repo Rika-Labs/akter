@@ -4,6 +4,7 @@ import {
   Config,
   Effect,
   Fiber,
+  FileSystem,
   Layer,
   ManagedRuntime,
   Option,
@@ -23,7 +24,15 @@ import { MigrationBoundary, NEKI_DDL_BARRIER, prepareRunnerStorage } from "./mig
 import { disposableDatabase } from "../../../testing/database.ts"
 
 const harness = ManagedRuntime.make(Layer.merge(BunCrypto.layer, BunServices.layer))
-afterAll(() => harness.dispose())
+afterAll(() =>
+  harness
+    .runPromise(
+      Effect.flatMap(FileSystem.FileSystem, (fs) =>
+        fs.remove(childDirectory, { recursive: true, force: true }),
+      ).pipe(Effect.ignore),
+    )
+    .finally(() => harness.dispose()),
+)
 
 const previous = Object.fromEntries(Object.entries(migrations).filter(([key]) => key < "0026"))
 const expectedIds = [
@@ -137,19 +146,30 @@ const spawn = Effect.fnUntraced(function* (command: ChildProcess.Command) {
   }
 })
 
-/** A real child pauses after the database operation; SIGKILL cannot release its lock in a finalizer. */
-const child = Effect.fnUntraced(function* (
-  url: string,
-  point?: string,
-  coordinationUrl?: string,
-  neki = true,
-) {
-  const code = `
+const childDirectory = fileURLToPath(
+  new URL(`../../../../.cache/migration-child-${process.pid}/`, import.meta.url),
+)
+
+/**
+ * The migration child, bundled once for the file. A walk starts a fresh
+ * process for each of its hundreds of kill points, and Bun transpiles every
+ * source file a process imports, so starting from one bundled file keeps the
+ * walk's cost in its migrations rather than in re-reading the framework.
+ */
+const childBundle = Effect.runSync(
+  Effect.cached(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const entry = `${childDirectory}child.ts`
+      yield* fs.makeDirectory(childDirectory, { recursive: true })
+      yield* fs.writeFileString(
+        entry,
+        `
     import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
-    import { Database } from "./packages/akter/src/runtime/layer.ts";
-    import { migrate } from "./packages/akter/src/runtime/database/migrations.ts";
-    import { Coordination } from "./packages/akter/src/runtime/database/coordination.ts";
-    import { MigrationBoundary, prepareRunnerStorage } from "./packages/akter/src/runtime/database/neki/migrations.ts";
+    import { Database } from "../../src/runtime/layer.ts";
+    import { migrate } from "../../src/runtime/database/migrations.ts";
+    import { Coordination } from "../../src/runtime/database/coordination.ts";
+    import { MigrationBoundary, prepareRunnerStorage } from "../../src/runtime/database/neki/migrations.ts";
     import { ShardingConfig } from "effect/cluster";
     import { SqlClient } from "effect/sql";
     const boundary = p => p === process.env.MIGRATION_POINT ? Effect.sync(() => console.log("READY")).pipe(Effect.andThen(Effect.never)) : Effect.void;
@@ -162,9 +182,31 @@ const child = Effect.fnUntraced(function* (
       const result = await runtime.runPromise(migrate.pipe(Effect.tap(() => prepare), Effect.provideService(ShardingConfig.ShardingConfig, {...ShardingConfig.defaults, shardLockDisableAdvisory: true}), Effect.provideService(MigrationBoundary, boundary)));
       console.log("RESULT " + JSON.stringify(result));
     } finally { await runtime.dispose(); }
-  `
+  `,
+      )
+      const built = yield* Effect.promise(() =>
+        Bun.build({ entrypoints: [entry], target: "bun", outdir: childDirectory }),
+      )
+
+      if (!built.success)
+        return yield* Effect.die(
+          new AggregateError(built.logs, "The migration child did not bundle"),
+        )
+
+      return built.outputs.find((output) => output.kind === "entry-point")!.path
+    }).pipe(Effect.orDie),
+  ),
+)
+
+/** A real child pauses after the database operation; SIGKILL cannot release its lock in a finalizer. */
+const child = Effect.fnUntraced(function* (
+  url: string,
+  point?: string,
+  coordinationUrl?: string,
+  neki = true,
+) {
   return yield* spawn(
-    ChildProcess.make("bun", ["-e", code], {
+    ChildProcess.make("bun", [yield* childBundle], {
       env: {
         MIGRATION_URL: url,
         MIGRATION_POINT: point ?? "",

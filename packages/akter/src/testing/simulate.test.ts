@@ -105,6 +105,14 @@ const script = (seed: string, tag = seed) =>
 
 const scripted = new Map<string, ReadonlyMap<string, number>>()
 
+/**
+ * The seeds this run simulates. The exactly-once case gets 3 seconds per
+ * seed, the budget a caller's retry delay needs, so its timeout follows the
+ * seed count a nightly shard sets instead of capping thousands of seeds at the
+ * pull-request run's total.
+ */
+const seeds = Effect.runSync(simulationSeeds)
+
 const totals = (seed: string) =>
   Effect.gen(function* () {
     const test = yield* ActorTest
@@ -125,7 +133,7 @@ describe("ActorTest.simulate", () => {
     () =>
       runtime.runPromise(
         Effect.gen(function* () {
-          for (const seed of yield* simulationSeeds) {
+          for (const seed of seeds) {
             const report = yield* script(`s${seed}`)
             expect(report.steps).toHaveLength(12)
             expect(yield* totals(`s${seed}`)).toEqual(
@@ -134,7 +142,7 @@ describe("ActorTest.simulate", () => {
           }
         }),
       ),
-    60_000,
+    seeds.length * 3_000,
   )
 
   it("reruns a seed to the same fault schedule and outcome", () =>

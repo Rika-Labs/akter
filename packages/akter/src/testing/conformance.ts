@@ -1,6 +1,6 @@
 import { Effect, Layer, Logger, ManagedRuntime, Option, type Crypto, type Scope } from "effect"
 import { constVoid } from "effect/Function"
-import type { Redacted } from "effect"
+import type { Redacted, Tracer } from "effect"
 import type { HttpServer } from "effect/http"
 import { type SqlClient, Statement } from "effect/sql"
 import type { Actors } from "../index.ts"
@@ -177,7 +177,7 @@ export interface ConformanceEnvironment {
      * the current statement transformer of every fiber the runtime starts, so
      * a case that installs its own on a caller cannot share the runtime.
      */
-    readonly observe?: (statement: Statement.Statement<unknown>) => void
+    readonly observe?: (statement: Statement.Statement<unknown>, span: Tracer.Span) => void
   }) => ConformanceRuntime
   /** Stops the current runtime; the retained database survives. */
   readonly stop: Effect.Effect<void>
@@ -634,9 +634,9 @@ export const registerConformance = (options: {
                   Layer.succeed(NekiTurnSessions, backend.neki === true),
                   overrides?.observe === undefined
                     ? Layer.empty
-                    : Layer.succeed(Statement.CurrentTransformer, (statement) =>
+                    : Layer.succeed(Statement.CurrentTransformer, (statement, _sql, _fiber, span) =>
                         Effect.sync(() => {
-                          overrides.observe!(statement)
+                          overrides.observe!(statement, span)
 
                           return statement
                         }),

@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import {
   Actor,
@@ -24,7 +24,18 @@ import { CLAIM_LEASE } from "./outbox.ts"
 /** Captures real relay requests and brackets their child-side statements. */
 export interface MintFixture {
   readonly deliveries: Map<string, Request>
-  onTurn: ((point: TurnPoint, request: Request) => void) | undefined
+  /**
+   * Sees each turn point with the trace it runs in, which a relay delivery
+   * shares with the turn it sends; an effect it returns runs at that point
+   * before the delivery goes on.
+   */
+  onTurn:
+    | ((
+        point: TurnPoint,
+        request: Request,
+        trace: string | undefined,
+      ) => Effect.Effect<void> | void)
+    | undefined
 }
 
 class Refused extends Schema.TaggedError<Refused>()("Refused", {}) {}
@@ -986,8 +997,11 @@ export const mintSuite: ConformanceSuite<MintFixture> = {
   fixture: () => ({ deliveries: new Map(), onTurn: undefined }),
   layer: () => mintLayer,
   turn: (fixture) => (point, request) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       if (point === "afterClaim") fixture.deliveries.set(request.ref.id, request)
-      fixture.onTurn?.(point, request)
+      const span = yield* Effect.option(Effect.currentSpan)
+      const at = fixture.onTurn?.(point, request, Option.getOrUndefined(span)?.traceId)
+
+      if (at !== undefined) yield* at
     }),
 }

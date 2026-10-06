@@ -273,6 +273,47 @@ const killDuringTurn = (expect: ConformanceExpect, point: "beforeCommit" | "afte
     )
   })
 
+/**
+ * Kills an actor's owner while a command from another runner is paused after
+ * COMMIT on it and releases the turn at once, so the owner's runner server
+ * sends the reply while the caller's connection to it is closing; the cluster
+ * simulation's seed 1467822534 left a killed runner's server open this way, and
+ * the cluster then failed to wind down. The caller still gets its committed
+ * result through the next owner.
+ */
+const killWhileReplying = (expect: ConformanceExpect) =>
+  Effect.gen(function* () {
+    const cluster = yield* ActorCluster
+    const id = "killed-replying"
+    const ref = yield* refOf(id)
+    const owner = (yield* cluster.owner(ref))!
+    const caller = (owner + 1) % 3
+    expect(yield* add(caller, id, 1)).toBe(1)
+
+    const commandId = yield* cluster.on(caller)(
+      Effect.gen(function* () {
+        return yield* (yield* Actors).mintCommandId
+      }),
+    )
+
+    const pause = yield* cluster.on(owner)(ActorTest.use((test) => test.pauseNext("afterCommit")))
+
+    const replayed = yield* cluster
+      .on(caller)(
+        Tally.get(id).pipe(
+          Effect.flatMap((tally) => tally.Add(2).pipe(Actor.commandId(commandId))),
+        ),
+      )
+      .pipe(Effect.forkChild)
+
+    yield* pause.reached
+    yield* cluster.kill(owner)
+    yield* pause.release
+
+    expect(yield* Fiber.join(replayed)).toBe(3)
+    expect(yield* inspect(caller, ref)).toMatchObject({ state: { count: 3 }, receipts: 2 })
+  })
+
 /** Multi-runner cases on three runners: placement on exactly one runner, merging of commutative calls into one turn, and retry on the next owner after a kill. */
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
   {
@@ -412,6 +453,12 @@ export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       withCluster(environment, 3, killDuringTurn(expect, "afterCommit")),
+  },
+  {
+    name: "winds down a runner killed while it sends a committed turn's reply to a caller on another runner",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => withCluster(environment, 3, killWhileReplying(expect)),
   },
   {
     name: "fails a stale activation's fence once another runner commits for the actor, then reloads",

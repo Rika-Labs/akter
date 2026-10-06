@@ -49,6 +49,9 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           save-cache: "true"
+      - name: Start the streaming replica
+        if: matrix.script == 'test:integration'
+        run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
       - run: bun run --filter @rikalabs/akter ${{ matrix.script }}
   simulation:
     name: Deterministic simulation, 2,500 seeds, shard ${{ matrix.shard }} of 4
@@ -71,7 +74,7 @@ jobs:
         run: |
           export SIMULATION_SEED_BASE=$(( GITHUB_RUN_NUMBER * 10000 + MATRIX_SHARD * 2500 ))
           echo "Seeds from $SIMULATION_SEED_BASE"
-          bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/testing/simulate.test.ts --testTimeout=0 -t "exactly once"
+          bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/testing/simulate.test.ts -t "exactly once"
         env:
           MATRIX_SHARD: ${{ matrix.shard }}
           SIMULATION_SEEDS: "2500"
