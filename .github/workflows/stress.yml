@@ -89,18 +89,25 @@ jobs:
           trap 'kill %1' EXIT
           failed=0
           # Each suite is one Vitest command, so the reporter flags reach the run they name.
-          for suite in test test:integration:postgres test:integration:drills; do
-            name="${suite//:/-}-$RUN"
+          # The migration crash file walks hundreds of sequential kill points, so it runs
+          # as a suite of its own, as Verify gives it a job no other file competes with.
+          while read -r suite script projects; do
+            name="$suite-$RUN"
             status=0
             # A hung run is cut off and reported instead of eating the budget.
             # Vitest resolves the report path from the repository root.
-            timeout --kill-after=30s 35m bun run "$suite" --reporter=default --reporter=json \
+            timeout --kill-after=30s 35m bun run "$script" $projects --reporter=default --reporter=json \
               --outputFile.json="stress/$name.json" \
               > "../../stress/$name.log" 2>&1 || status=$?
             echo "$status" > "../../stress/$name.status"
             echo "run $RUN $suite exited $status"
             if [ "$status" -ne 0 ]; then failed=1; fi
-          done
+          done <<'SUITES'
+          test test
+          test-integration-postgres test:integration:postgres --project=!integration:migrations
+          test-integration-migrations test:integration:postgres --project=integration:migrations
+          test-integration-drills test:integration:drills
+          SUITES
           exit "$failed"
       - uses: actions/upload-artifact@v7.0.1
         if: always()
@@ -130,7 +137,7 @@ jobs:
         env:
           STRESS_DIR: stress
           STRESS_RUNS: ${{ needs.plan.outputs.runs }}
-          STRESS_SUITES: test test-integration-postgres test-integration-drills
+          STRESS_SUITES: test test-integration-postgres test-integration-migrations test-integration-drills
         run: bun .github/src/stress-summary.ts
       - uses: actions/upload-artifact@v7.0.1
         if: always()
