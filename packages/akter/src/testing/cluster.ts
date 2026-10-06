@@ -150,6 +150,44 @@ const unreachable = (address: RunnerAddress.RunnerAddress) =>
   })
 
 /**
+ * The accepting end of a connection, whose writes fail once its reader has
+ * closed, as they do on a closed TCP socket. `Socket.fromTransformStream`
+ * holds such a write until a reader opens again, which lets a client ride out
+ * a redial, but an accepted connection never opens again. Its reader also
+ * closes asynchronously, and the runner server keeps sending to the
+ * connection until that close finishes, from a region that cannot be
+ * interrupted: a reply sent meanwhile would wait forever and keep the killed
+ * runner's server from closing.
+ */
+const accepted = (socket: Socket.Socket) => {
+  let closed = false
+
+  const refused = Socket.SocketError.make({
+    reason: Socket.SocketWriteError.make({ cause: new Error("Connection closed") }),
+  })
+
+  return Socket.make({
+    reader: socket.reader.pipe(
+      Effect.tap(() =>
+        Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            closed = true
+          }),
+        ),
+      ),
+    ),
+    writer: socket.writer.pipe(
+      Effect.map((writer): Socket.Writer => ({
+        write: (chunk) =>
+          Effect.suspend(() => (closed ? Effect.fail(refused) : writer.write(chunk))),
+        writeAll: (chunks) =>
+          Effect.suspend(() => (closed ? Effect.fail(refused) : writer.writeAll(chunks))),
+      })),
+    ),
+  })
+}
+
+/**
  * Runner-to-runner connections inside one process. Every frame is encoded and
  * decoded as it would be on a socket, and a killed runner's connections fail
  * mid-stream.
@@ -185,7 +223,7 @@ const makeNetwork = Effect.sync(() => {
       return Socket.fromTransformStream(
         Effect.succeed({ readable: up.readable, writable: down.writable }),
       ).pipe(
-        Effect.flatMap((socket) => Queue.offer(accept, socket)),
+        Effect.flatMap((socket) => Queue.offer(accept, accepted(socket))),
         Effect.as({ readable: down.readable, writable: up.writable }),
       )
     })
