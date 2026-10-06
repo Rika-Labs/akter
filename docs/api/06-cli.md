@@ -504,5 +504,6 @@ FLAGS
   --deployment string      The deployment the tenant belongs to
   --region string          The tenant's home region: the deployment's primary region
   --database-url string    The control plane's Postgres URL
+  --engine choice          The control plane database's engine (default CONTROL_PLANE_DATABASE_ENGINE, then postgres) (choices: postgres, neki)
   --operator string        The subject of the User the directory change's receipt records
 ```

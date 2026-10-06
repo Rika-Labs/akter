@@ -121,7 +121,7 @@ akter tenants create acme --deployment dep-1 --region us-east \
   --database-url "$CONTROL_PLANE_DATABASE_URL" --operator ops@example.com
 ```
 
-It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `akter tenants move` arrives with L.1.
+Against a Neki control plane, set `CONTROL_PLANE_DATABASE_ENGINE=neki` (or pass `--engine neki`) as the API does, so the embedded runtime migrates with Neki's protocol and its turns refuse to reach a second shard ([ADR 0096](../decisions/0096-neki-multi-shard-evidence.md)). It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `akter tenants move` arrives with L.1.
 
 ## The hosted edge
 

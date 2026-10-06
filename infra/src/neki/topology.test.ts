@@ -4,11 +4,14 @@ import {
   ACTOR_DATA_GROUP,
   AUTHORITATIVE_GROUP,
   bucketHex,
+  checkRoutedTables,
   dataShardsOf,
   dataTopology,
   LiveTopology,
   keyRanges,
   placementOf,
+  ROUTABLE_TABLES,
+  ROUTING_BUCKET,
   ROUTING_KEY_INDEX,
   shardBucketSpans,
   type KeyRange,
@@ -29,15 +32,16 @@ const sampleKeys = buckets.flatMap((bucket) => [
 
 const shardNames = (count: number) => Array.from({ length: count }, (_, index) => `shard-${index}`)
 
-const boundary = (hex: string) => BigInt(`0x${hex.padEnd(16, "0")}`)
+const boundary = (hex: string) => BigInt(`0x${hex}`)
 
 /**
- * Reads key ranges the way Neki's documentation describes them: left-justified
- * hexadecimal prefixes over the unsigned 64-bit routing key, start inclusive, end
- * exclusive, a missing start or end unbounded.
+ * Reads key ranges the way a live Neki router placed rows of a `range` index: the
+ * index value compared as a signed integer, each bound a hexadecimal integer, start
+ * inclusive, end exclusive, a missing start or end unbounded. The value is
+ * `ROUTING_BUCKET`, the signed bucket moved to 0..255.
  */
 const owners = (ranges: ReadonlyArray<KeyRange>, key: bigint) => {
-  const routing = BigInt.asUintN(64, key)
+  const routing = (key >> 56n) + 128n
   return ranges.flatMap((range) =>
     (range.start === undefined || routing >= boundary(range.start)) &&
     (range.end === undefined || routing < boundary(range.end))
@@ -47,13 +51,17 @@ const owners = (ranges: ReadonlyArray<KeyRange>, key: bigint) => {
 }
 
 describe("routing key to bucket hex", () => {
-  it("maps signed buckets to the unsigned top byte of the two's-complement key", () => {
+  it("routes by the signed bucket moved to 0..255", () => {
+    expect(ROUTING_BUCKET).toBe("(routing_key >> 56) + 128")
+  })
+
+  it("maps signed buckets to bounds in signed order", () => {
     expect([0, 1, 63, 64, 127, -128, -127, -64, -2, -1].map((bucket) => bucketHex(bucket))).toEqual(
-      ["00", "01", "3f", "40", "7f", "80", "81", "c0", "fe", "ff"],
+      ["80", "81", "bf", "c0", "ff", "00", "01", "40", "7e", "7f"],
     )
   })
 
-  it("agrees with the top byte of every sampled key as Neki reads it", () => {
+  it("agrees with the routed value of every sampled key", () => {
     for (const key of [
       ...sampleKeys,
       -(2n ** 63n),
@@ -65,17 +73,17 @@ describe("routing key to bucket hex", () => {
       SPAN - 1n,
       -SPAN - 1n,
     ]) {
-      const top = BigInt.asUintN(64, key).toString(16).padStart(16, "0").slice(0, 2)
-      expect(bucketHex(Number(key >> 56n))).toBe(top)
+      const routed = ((key >> 56n) + 128n).toString(16).padStart(2, "0")
+      expect(bucketHex(Number(key >> 56n))).toBe(routed)
     }
   })
 
-  it("rejects a mapping that prints the signed value or offsets it into signed order", () => {
+  it("rejects a mapping that prints the signed value or reads the two's-complement top byte", () => {
     expect(bucketHex(-1)).not.toContain("-")
-    expect(bucketHex(-1)).not.toBe("7f")
-    expect(bucketHex(-128)).not.toBe("00")
-    expect(bucketHex(0)).not.toBe("80")
-    expect(bucketHex(127)).not.toBe("ff")
+    expect(bucketHex(-1)).not.toBe("ff")
+    expect(bucketHex(-128)).not.toBe("80")
+    expect(bucketHex(0)).not.toBe("00")
+    expect(bucketHex(127)).not.toBe("7f")
   })
 
   it("rejects values that are not buckets", () => {
@@ -124,22 +132,24 @@ describe("key ranges", () => {
       ["80", "c0"],
       ["c0", undefined],
     ])
-    expect(owners(ranges, bucketKey(63, SPAN - 1n))).toEqual(["a"])
-    expect(owners(ranges, bucketKey(64, 0n))).toEqual(["b"])
-    expect(owners(ranges, bucketKey(127, SPAN - 1n))).toEqual(["b"])
-    expect(owners(ranges, bucketKey(-128, 0n))).toEqual(["c"])
-    expect(owners(ranges, bucketKey(-65, SPAN - 1n))).toEqual(["c"])
-    expect(owners(ranges, bucketKey(-64, 0n))).toEqual(["d"])
-    expect(owners(ranges, bucketKey(-1, SPAN - 1n))).toEqual(["d"])
-    expect(owners(ranges, bucketKey(0, 0n))).toEqual(["a"])
+    expect(owners(ranges, bucketKey(-128, 0n))).toEqual(["a"])
+    expect(owners(ranges, bucketKey(-65, SPAN - 1n))).toEqual(["a"])
+    expect(owners(ranges, bucketKey(-64, 0n))).toEqual(["b"])
+    expect(owners(ranges, bucketKey(-1, SPAN - 1n))).toEqual(["b"])
+    expect(owners(ranges, bucketKey(0, 0n))).toEqual(["c"])
+    expect(owners(ranges, bucketKey(63, SPAN - 1n))).toEqual(["c"])
+    expect(owners(ranges, bucketKey(64, 0n))).toEqual(["d"])
+    expect(owners(ranges, bucketKey(127, SPAN - 1n))).toEqual(["d"])
   })
 
-  it("puts the negative half of the signed key space on the later shard", () => {
+  it("puts the negative half of the signed key space on the first shard, as the live router did", () => {
     const ranges = keyRanges(["low", "high"])
-    expect(owners(ranges, 0n)).toEqual(["low"])
-    expect(owners(ranges, 2n ** 63n - 1n)).toEqual(["low"])
-    expect(owners(ranges, -(2n ** 63n))).toEqual(["high"])
-    expect(owners(ranges, -1n)).toEqual(["high"])
+    expect(owners(ranges, -(2n ** 63n))).toEqual(["low"])
+    expect(owners(ranges, -1n)).toEqual(["low"])
+    expect(owners(ranges, 0n)).toEqual(["high"])
+    expect(owners(ranges, 127n)).toEqual(["high"])
+    expect(owners(ranges, 128n)).toEqual(["high"])
+    expect(owners(ranges, 2n ** 63n - 1n)).toEqual(["high"])
   })
 
   it("splits 256 buckets into whole buckets that differ by at most one", () => {
@@ -166,15 +176,15 @@ describe("key ranges", () => {
 })
 
 describe("bucket spans", () => {
-  it("lists the signed buckets each shard owns, split where a run crosses 7f to 80", () => {
-    expect(shardBucketSpans(2)).toEqual([[{ first: 0, last: 127 }], [{ first: -128, last: -1 }]])
+  it("lists one contiguous run of signed buckets per shard", () => {
+    expect(shardBucketSpans(2)).toEqual([
+      { first: -128, last: -1 },
+      { first: 0, last: 127 },
+    ])
     expect(shardBucketSpans(3)).toEqual([
-      [{ first: 0, last: 84 }],
-      [
-        { first: 85, last: 127 },
-        { first: -128, last: -87 },
-      ],
-      [{ first: -86, last: -1 }],
+      { first: -128, last: -44 },
+      { first: -43, last: 41 },
+      { first: 42, last: 127 },
     ])
   })
 
@@ -183,17 +193,36 @@ describe("bucket spans", () => {
       const names = shardNames(count)
       const ranges = keyRanges(names)
       const spans = shardBucketSpans(count)
-      const claimed = spans.flatMap((shardSpans, shard) =>
-        shardSpans.flatMap((span) =>
-          Array.from({ length: span.last - span.first + 1 }, (_, index) => {
-            const bucket = span.first + index
-            expect(owners(ranges, bucketKey(bucket, 0n))).toEqual([names[shard]])
-            return bucket
-          }),
-        ),
+      const claimed = spans.flatMap((span, shard) =>
+        Array.from({ length: span.last - span.first + 1 }, (_, index) => {
+          const bucket = span.first + index
+          expect(owners(ranges, bucketKey(bucket, 0n))).toEqual([names[shard]])
+          expect(owners(ranges, bucketKey(bucket, SPAN - 1n))).toEqual([names[shard]])
+          return bucket
+        }),
       )
       expect([...claimed].sort((a, b) => a - b)).toEqual(buckets)
     }
+  })
+})
+
+describe("routable tables", () => {
+  it("are the 18 framework per-actor tables", () => {
+    expect(ROUTABLE_TABLES).toHaveLength(18)
+    expect(ROUTABLE_TABLES.every((table) => /^(actor|tenant)_/.test(table))).toBe(true)
+    expect(() => checkRoutedTables(ROUTABLE_TABLES)).not.toThrow()
+    expect(() => checkRoutedTables([])).not.toThrow()
+  })
+
+  it("refuse an owned table with a trigger, a control table and a registry", () => {
+    for (const table of [
+      "cloud_billing_state",
+      "cloud_meter_evidence",
+      "tenant_directory",
+      "deployment",
+      "actor_placements",
+    ])
+      expect(() => checkRoutedTables(["actor_state", table])).toThrow(table)
   })
 })
 
@@ -220,7 +249,7 @@ describe("data topology", () => {
   it("keeps the authoritative group standalone and the default for the schema and the cluster", () => {
     const topology = dataTopology(input)
     expect(topology.shard_indexes).toEqual({
-      [ROUTING_KEY_INDEX]: { type: "range", columns: ["routing_key"] },
+      [ROUTING_KEY_INDEX]: { type: "range", columns: [ROUTING_BUCKET] },
     })
     const groups = topology.shard_groups
     expect(groups.find((group) => group.uid === AUTHORITATIVE_GROUP)?.key_ranges).toEqual([
@@ -274,9 +303,9 @@ describe("placement comparison", () => {
     expect(place(live(JSON.parse(JSON.stringify(generated))))).toBe(place(generated))
   })
 
-  it("compares bounds numerically, so a prefix and its expansion are one bound", () => {
+  it("compares bounds as integers, so leading zeros do not change a bound and trailing ones do", () => {
     const generated = dataTopology(input)
-    const expanded = {
+    const withBounds = (end: string, start: string) => ({
       ...generated,
       shard_groups: [
         ...generated.shard_groups.slice(0, 1),
@@ -284,13 +313,14 @@ describe("placement comparison", () => {
           uid: ACTOR_DATA_GROUP,
           default_shard_index: ROUTING_KEY_INDEX,
           key_ranges: [
-            { shard_uid: "s1", start: null, end: "8000000000000000" },
-            { shard_uid: "s2", start: "80", end: "" },
+            { shard_uid: "s1", start: null, end },
+            { shard_uid: "s2", start, end: "" },
           ],
         },
       ],
-    }
-    expect(place(live(expanded))).toBe(place(generated))
+    })
+    expect(place(live(withBounds("0080", "080")))).toBe(place(generated))
+    expect(place(live(withBounds("8000", "8000")))).not.toBe(place(generated))
   })
 
   it("detects a moved boundary, a swapped shard, another authoritative shard and a rebound table", () => {

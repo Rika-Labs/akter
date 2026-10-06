@@ -1,9 +1,10 @@
 import { BunCrypto } from "@effect/platform-bun"
 import { migrate } from "@akter/postgres/migrate"
-import { Config, Crypto, Effect, ManagedRuntime } from "effect"
+import { liveNeki, nekiDatabase } from "@akter/postgres/neki"
+import { Config, Crypto, Effect, ManagedRuntime, Redacted } from "effect"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { runCli } from "../../testing.ts"
+import { runCli, runCliWith } from "../../testing.ts"
 
 const runtime = ManagedRuntime.make(BunCrypto.layer)
 
@@ -40,6 +41,7 @@ describe("akter tenants create arguments", () => {
       const refused = [
         [valid.slice(0, 9), "MissingOption", "Missing required flag: --operator"],
         [[...valid, "--force"], "UnrecognizedOption", "Unrecognized flag: --force"],
+        [[...valid, "--engine", "mysql"], "InvalidValue", "--engine"],
         [
           [...valid.slice(0, 2), "bad tenant", ...valid.slice(3)],
           "InvalidValue",
@@ -150,5 +152,57 @@ describe.skipIf(!postgres)("akter tenants create on Postgres", () => {
         ),
       ),
     60_000,
+  )
+
+  it(
+    "runs TenantHome on a Neki control plane when CONTROL_PLANE_DATABASE_ENGINE says neki",
+    () =>
+      runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const url = Redacted.value(yield* nekiDatabase("cli"))
+            yield* Effect.promise(() => migrate(url, { neki: true }))
+            const pool = yield* Effect.acquireRelease(
+              Effect.sync(() => new Pool({ connectionString: url, max: 1 })),
+              (opened) => Effect.promise(() => opened.end()),
+            )
+            const barriers = () =>
+              Effect.promise(() => pool.query("SELECT calls FROM neki_barriers")).pipe(
+                Effect.map((result) => Number(result.rows[0].calls)),
+              )
+            const before = liveNeki === undefined ? yield* barriers() : 0
+            yield* Effect.promise(() =>
+              pool.query("INSERT INTO deployment (id, primary_region) VALUES ('dep-1', 'us-east')"),
+            )
+
+            const created = yield* runCliWith({ env: { CONTROL_PLANE_DATABASE_ENGINE: "neki" } })([
+              "tenants",
+              "create",
+              "acme",
+              "--deployment",
+              "dep-1",
+              "--region",
+              "us-east",
+              "--database-url",
+              url,
+              "--operator",
+              "ops@example.com",
+            ])
+
+            expect(created).toEqual({
+              stdout: "dep-1/acme lives in us-east (active)\n",
+              stderr: "",
+              exitCode: 0,
+              reason: "",
+            })
+            if (liveNeki === undefined) expect(yield* barriers()).toBeGreaterThan(before)
+            const rows = yield* Effect.promise(() =>
+              pool.query("SELECT tenant, region FROM tenant_directory"),
+            )
+            expect(rows.rows).toEqual([{ tenant: "acme", region: "us-east" }])
+          }),
+        ),
+      ),
+    900_000,
   )
 })
