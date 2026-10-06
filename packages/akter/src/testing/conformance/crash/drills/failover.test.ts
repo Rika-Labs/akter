@@ -15,9 +15,14 @@ interface Done {
   readonly latency: number
 }
 
+/** Runner log lines kept per process for a failure report; older lines are dropped. */
+const KEPT_LOG_LINES = 400
+
 interface Process {
   readonly done: Array<Done>
   readonly acked: Set<string>
+  /** The runner's own log output, everything on stdout that is not a protocol line. */
+  readonly log: Array<string>
   ready: boolean
   finished: boolean
   exited: boolean
@@ -42,6 +47,7 @@ describe("Postgres primary failover under load with separate runner processes", 
             const process: Process = {
               done: [],
               acked: new Set(),
+              log: [],
               ready: false,
               finished: false,
               exited: false,
@@ -74,6 +80,11 @@ describe("Postgres primary failover under load with separate runner processes", 
 
                   if (tag === "DONE")
                     process.done.push({ started: Number(started), latency: Number(latency) })
+
+                  if (tag !== "READY" && tag !== "FINISHED" && tag !== "ACKED" && tag !== "DONE")
+                    process.log.push(line)
+
+                  if (process.log.length > KEPT_LOG_LINES) process.log.shift()
                 }),
               ),
               Effect.forkScoped,
@@ -176,6 +187,27 @@ describe("Postgres primary failover under load with separate runner processes", 
             ).pipe(Effect.map((rows) => rows[0]!.count === 0)),
             "the outbox to drain",
             "60 seconds",
+          ).pipe(
+            Effect.tapCause(() =>
+              Effect.gen(function* () {
+                const left = yield* query(
+                  promoted,
+                  `SELECT kind, intent_id, target_type, target_id, command, attempts, last_error,
+                    due_at_ms - floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS due_in_ms
+                  FROM actor_outbox ORDER BY due_at_ms LIMIT 20`,
+                )
+                const sessions = yield* query(
+                  promoted,
+                  `SELECT pid, state, wait_event_type, wait_event, xact_start, left(query, 200) AS query
+                  FROM pg_stat_activity WHERE datname = 'drill' AND state <> 'idle'`,
+                )
+
+                yield* Console.error("UNDRAINED", left, "SESSIONS", sessions)
+
+                for (const [index, { process }] of runners.entries())
+                  yield* Console.error(`RUNNER ${index} LOG\n${process.log.join("\n")}`)
+              }).pipe(Effect.ignoreCause),
+            ),
           )
 
           const receipts = yield* query<{ command: string; command_id: string }>(
