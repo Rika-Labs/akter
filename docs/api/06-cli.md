@@ -13,8 +13,6 @@ description: "The akter command-line tool: its commands, flags, output, and exit
 
 `akter` is the `apps/cli` bin, named `durable` before [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md). It parses its arguments with Effect's `effect/cli` module: one root `akter` command whose subcommands are the groups below, each flag typed and described, so `akter --help` and `akter <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
 
-## Exit statuses
-
 ## `akter env`
 
 These commands use the stored Akter Cloud session. All take `--project <id>` (default `AKTER_PROJECT`) and `--env <production|staging|dev>` (default `production`).

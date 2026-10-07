@@ -81,12 +81,18 @@ layer(BunServices.layer)("akter env commands", (it) => {
             "Bearer stored-session",
           ],
         ])
-        expect(Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(received[1]!.body)).toEqual({ value: "unequal-secret-value" })
-        expect(Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(received[3]!.body)).toEqual({
+        expect(
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(received[1]!.body),
+        ).toEqual({ value: "unequal-secret-value" })
+        expect(
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(received[3]!.body),
+        ).toEqual({
           content: "TOKEN=another-secret\nEXTRA=third-secret",
         })
         for (const value of ["unequal-secret-value", "another-secret", "third-secret"])
-          expect(results.map(({ stdout, stderr }) => `${stdout}${stderr}`).join("\n")).not.toContain(value)
+          expect(
+            results.map(({ stdout, stderr }) => `${stdout}${stderr}`).join("\n"),
+          ).not.toContain(value)
       }),
   )
 
@@ -99,10 +105,9 @@ layer(BunServices.layer)("akter env commands", (it) => {
         const path = `${directory}/oversized-value`
         yield* fs.writeFileString(path, "x".repeat(65537))
         const server = scriptedFetch(() =>
-          Response.json(
-            Cloud.Forbidden.make({ message: "Project access is denied" }),
-            { status: 403 },
-          ),
+          Response.json(Cloud.Forbidden.make({ message: "Project access is denied" }), {
+            status: 403,
+          }),
         )
         const run = runCliWith({ fetch: server.fetch, env: { AKTER_CONFIG_DIR: directory } })
         const oversized = yield* run([
