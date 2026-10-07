@@ -59,8 +59,10 @@ const resolveSpecifiers = (
 
 /**
  * The manifest npm receives: `publishConfig` entries replace the workspace's
- * source-pointing `types` and `exports`, `catalog:` versions become exact, and
- * scripts and dev dependencies are dropped because a consumer never runs them.
+ * source-pointing `types` and `exports`, runtime dependencies stay exact, and
+ * shared-library peers accept compatible releases so an application's installed
+ * Effect can remain the one runtime identity. Workspace catalogs stay pinned for CI.
+ * Scripts and dev dependencies are dropped because a consumer never runs them.
  */
 export function publishManifest({
   manifest,
@@ -87,10 +89,15 @@ export function publishManifest({
     types,
     exports,
     dependencies: resolveSpecifiers(manifest.dependencies ?? {}, catalog, workspaceVersions),
-    peerDependencies: resolveSpecifiers(
-      manifest.peerDependencies ?? {},
-      catalog,
-      workspaceVersions,
+    peerDependencies: Object.fromEntries(
+      Object.entries(
+        resolveSpecifiers(manifest.peerDependencies ?? {}, catalog, workspaceVersions),
+      ).map(([name, version]) => [
+        name,
+        name === "effect" || name.startsWith("@effect/") || name === "drizzle-orm"
+          ? `^${version}`
+          : version,
+      ]),
     ),
     publishConfig,
   }

@@ -16,7 +16,7 @@ You need [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 
 
 ```sh
 mkdir my-app && cd my-app && bun init -y
-bun add @rikalabs/akter@alpha effect@4.0.0 @effect/platform-bun@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
+bun add @rikalabs/akter effect @effect/platform-bun @effect/sql-pg @effect/sql-pglite drizzle-orm
 ```
 
 For Node, install the Node platform instead:
@@ -24,10 +24,10 @@ For Node, install the Node platform instead:
 ```sh
 mkdir my-app && cd my-app && npm init -y
 npm pkg set type=module
-npm install @rikalabs/akter@alpha effect@4.0.0 @effect/platform-node@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
+npm install @rikalabs/akter effect @effect/platform-node @effect/sql-pg @effect/sql-pglite drizzle-orm
 ```
 
-Effect, the Effect SQL drivers and Drizzle are peer dependencies pinned to the exact versions the framework is tested against.
+Effect, the Effect SQL drivers and Drizzle are shared peer dependencies. Published peers accept compatible caret ranges so the app and framework share one Effect copy. These commands install the current compatible releases rather than promise a fixed dependency cohort; keep the generated lockfile and check the resolved graph when upgrading.
 
 ## 2. Declare an actor
 
