@@ -144,7 +144,7 @@ See [migrations](../operations/02-migrations.md) and [backup and restore](../ope
 
 ## Checklist
 
-- a Postgres database dedicated to this app, with `DATABASE_URL` in a secret.
+- A Postgres database dedicated to this app, with `DATABASE_URL` in a secret.
 - Owned-table migrations applied before start.
 - `authorize` allows only the callers and tenants you expect, and `Actors.serve` has a real auth provider.
 - TLS in front of the HTTP server, and `origins` set for browser clients.

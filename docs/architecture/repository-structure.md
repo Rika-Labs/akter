@@ -7,24 +7,34 @@
 
 ## Tree
 
-The OSS launch layout retains the framework, the Cloud client contract, the CLI, repo-only client tooling, and repository tooling. Akter Cloud's service apps, provider packages, infrastructure, and product research move out of this repository.
-
 ```text
-apps/
-  cli/                      @akter/cli           self-host operations and Akter Cloud client commands
+apps/                       deployables and the CLI bin; never imported by another package
+  api/                      @akter/api        control-plane HTTP API: Better Auth, access checks, and the `Repository` over the cloud_project, cloud_environment, cloud_preference and cloud_audit tables
+  console/                  @akter/console    the hosted product console: FoldKit client app on Vite (ADR 0064)
+  e2e/                      @akter/e2e        Playwright browser tests against read-only console fixtures
+  edge/                     @akter/edge       hosted ingress: deployment hosts → runners, credentials → signed assertions, proxied sockets, limits
+  site/                     @akter/site       the public website: Astro, static output, StyleX (ADR 0064)
+  cli/                      @akter/cli        the `akter` bin: local dev, deploy checks, adoption, operator inspection and repair, Akter Cloud login and deploy
 packages/
-  akter/                    @rikalabs/akter       published framework
-  cloud-api/                @akter/cloud-api     browser-safe Cloud client contract and schemas
-  react/                    @akter/react         repo-only React hooks; not published at launch
-  python-client/            @akter/python-client repo-only generator; not published at launch
+  akter/           @rikalabs/akter       the framework; published (other published packages follow ADR 0029)
+  cloud-api/                @akter/cloud-api  the console API's HttpApi contract and Schema types; implemented by apps/api, consumed by the console
+  billing/                  @akter/billing    configurable provisional prices and Effect services for Distilled Stripe and local SQL billing
+  metering/                 @akter/metering   opt-in hosted cell usage journal, storage samples and sealed-hour import boundary
+  react/                    @akter/react      React hooks over @rikalabs/akter/client
+  deployments/              @akter/deployments  hosted deployment records, signing-key publication and tenant-home actors
+  python-client/            @akter/python-client  generates a Python client from a served OpenAPI document; python/ holds its runtime and tests
+  postgres/                 @akter/postgres   control-plane database: schema per domain, migrations/, bin/migrate.ts
+  flags/                    @akter/flags      control-plane flag declarations, evaluation and override stores; browser entry excludes SQL (ADR 0073)
+  ui/                       @akter/ui         the shared design system: StyleX tokens, FoldKit components, charts, brand geometry (ADR 0064)
 tooling/
-  oxlint/                   @akter/oxlint        source rules and directives check
-  structure/                @akter/structure     repository structure checks
-BENCHMARKS.md                consolidated performance and recovery report
-docs/  .github/
+  oxlint/                   @akter/oxlint     anti-slop rules, directives check, naming, runtime-import and comment rules
+  structure/                @akter/structure  tree checker (names, dependency direction, exports, colocated tests) and the exemptions file
+infra/                      @akter/infra      Alchemy Fly.io/Vercel/Neki/Axiom/Stripe infrastructure: the service stack for prod and pr-<n>, the preview stage they share, and a GitHub environments stack (ADR 0089)
+BENCHMARKS.md               consolidated performance and recovery report
+docs/  research/  .github/src/
 ```
 
-Dependency direction: `apps → packages → nothing app-ward`. `packages/akter` imports no other workspace package. The framework imports no cloud service implementation. `packages/cloud-api` retains only the public client contract; it is not the control-plane runtime.
+Dependency direction: `apps → packages → nothing app-ward`. `packages/akter` imports no other workspace package. Control-plane packages depend on the framework through `workspace:*`; the control plane is the first customer.
 
 ## The framework package
 
@@ -37,7 +47,7 @@ Dependency direction: `apps → packages → nothing app-ward`. `packages/akter`
 - Files are kebab-case and named for an operation (`create.ts`) or a role (`contract.ts layer.ts queries.ts handler.ts repository.ts schema.ts errors.ts state.ts config.ts client.ts`). Never `<parent>-<x>.ts`, never `<x>-service.ts`.
 - A small actor is one module named for it, such as `counter.ts`, holding its `Actor.make` definition and its layers. Split it into an `<actor>/` folder with role files — `contract.ts` (the definition), `layer.ts` (`X.toLayer`), `queries.ts` (`X.toQueryLayer`), `jobs.ts` (`X.toJobLayer`), `workflows/` — when a responsibility needs its own module: a browser client or another process imports the definition without the handlers, an executor layer deploys separately, or one file no longer reads as one responsibility. Do not create empty role files.
 - `index.ts` exists only as a package or subpath entry and names real files; no `./*` wildcard exports.
-- Unit and integration tests are `x.test.ts` beside the corresponding `src/x.ts`, one test file per source file. Browser E2E specs belong with the application they test; the public framework retains its colocated runtime and protocol suites.
+- Unit and integration tests are `x.test.ts` beside the corresponding `src/x.ts`, one test file per source file. Browser E2E specs alone live outside source under `apps/e2e/` as `*.e2e.ts`.
 - Every deviation is one entry in `tooling/structure/src/exemptions.ts` with a reason; an entry that matches nothing fails the check.
 
 Two checks implement this specification, each owning different rules. Per-file oxlint rules in `tooling/oxlint` check file and folder names (`filename-kebab-case`, `no-parent-echo-in-filename`, `no-role-suffix-filename`, `no-generic-directory-segment`) and the runtime import boundary (`no-runtime-import-outside-runtime`). The tree checker in `tooling/structure` (`bun run lint:structure`) reads every `package.json` and owns package names, dependency direction, explicit `exports` with no wildcards, `index.ts` placement, and colocated tests. Module size is not checked: split a module when its responsibilities diverge, not to satisfy a count.
@@ -45,13 +55,13 @@ Two checks implement this specification, each owning different rules. Per-file o
 ## Ways to run, mapped to the tree
 
 - **Embedded:** an application provides `Actors.layer` from `@rikalabs/akter/runtime` and calls actors as Effects.
-- **Served:** `Actors.serve` in the application process with the matching Effect HTTP platform layer. The public framework does not provide a hosted runner app.
-- **Cloud client:** the public CLI uses the Cloud API contract for `login`, `logout`, `whoami`, and `deploy`; the hosted service is separate from self-host runtime construction.
+- **Served:** `Actors.serve` in its own process; the `docker/` images and a customer's BYO runner are this shape. There is no `apps/runner`: a managed runner is the customer's served container started by a `Deployment` actor job.
+- **Hosted:** the same layer on our runners behind `apps/edge`, with Neki as the database.
 
 ## Implemented, planned and published
 
 A directory exists when it holds code; there are no `.gitkeep` reservations for planned work. A planned package, command or folder is named in its design document until its first real module and test land. Do not add placeholder passing tests.
 
-`apps/cli` ships the `akter` bin, built with Effect's `effect/cli` module, as a working local development, deploy-check, adoption and operator tool. New commands, hosted ones included, use `effect/cli` too. Public launch commands: `dev`, `workflows check`, `payloads`, `adopt`, `fleet`, `defects`, `inspect`, `export`, `receipts`, `dead-letters`, `subscriptions`, `login`, `logout`, `whoami`, `deploy` ([CLI reference](../api/06-cli.md); the hosted ones are [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md)). A hosted `migrate` command is not implemented and has no reserved directory ([ADR 0063](../decisions/0063-framework-simplification.md)).
+`apps/cli` ships the `akter` bin, built with Effect's `effect/cli` module, as a working local development, deploy-check, adoption and operator tool. New commands, hosted ones included, use `effect/cli` too. Current commands: `dev`, `workflows check`, `payloads`, `adopt`, `fleet`, `defects`, `inspect`, `export`, `receipts`, `dead-letters`, `subscriptions`, `login`, `logout`, `whoami`, `deploy`, `tenants` and `billing` ([CLI reference](../api/06-cli.md); the hosted ones are [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md)). A hosted `migrate` command is not implemented and has no reserved directory ([ADR 0063](../decisions/0063-framework-simplification.md)).
 
-`@rikalabs/akter` is the one published package today. The workspace resolves its entries to TypeScript sources; `bun run --cwd packages/akter build` emits `dist/`, and `publishConfig` points the tarball's `exports` and `types` there. `.github/src/pack.ts` stages and checks the tarball in CI, and `.github/workflows/release.yml` publishes it on a `v<version>` tag ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md); the first publish is CR.1b, [#99](https://github.com/Rika-Labs/akter/issues/99)). The scaffolder was removed before release; use the inline [quickstart](../quickstart.md). `@akter/react` and the Python client generator remain repo-only and are not published at launch.
+`@rikalabs/akter` is the one published package today. The workspace resolves its entries to TypeScript sources; `bun run --cwd packages/akter build` emits `dist/`, and `publishConfig` points the tarball's `exports` and `types` there. `.github/src/pack.ts` stages and checks the tarball in CI, and `.github/workflows/release.yml` publishes it on a `v<version>` tag ([ADR 0029](../decisions/0029-licence-package-name-and-release-policy.md); the first publish is CR.1b, [#99](https://github.com/Rika-Labs/akter/issues/99)). `@akter/create` stays private until that release; its build resolves the scaffold's pinned versions from the workspace catalog, and `.github/src/release/quickstart.ts` installs both tarballs into each generated app.
