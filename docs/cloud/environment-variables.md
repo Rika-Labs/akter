@@ -33,6 +33,22 @@ Use one `NAME=value` per line, optionally prefixed with `export`. Blank lines an
 
 - Names begin with a letter or `_`, followed by letters, digits or `_`, with at most 256 characters.
 - A value cannot contain a NUL character. The CLI accepts at most 64 KiB of UTF-8 input for one value and 1 MiB for a dotenv import.
-- You cannot set or remove platform-managed names: `DATABASE_URL`, `DEPLOYMENT_ID`, `FLY_API_TOKEN`, or names beginning with `AKTER_`, `ASSERTION_` or `RUNNER_`.
+- You cannot set or remove platform-managed names such as `DEPLOYMENT_ID` and `FLY_API_TOKEN`, or names beginning with `AKTER_`, `ASSERTION_` or `RUNNER_`. `AKTER_DATABASE_ENGINE` is the customer-settable exception to the `AKTER_` prefix rule.
 
-The platform provisions database configuration for you. Do not paste a separate database URL into a managed variable. After changing your customer variables, [deploy again](/cloud/deploy).
+## Database connection
+
+You set `DATABASE_URL` for your own database. It must use `postgres://` or `postgresql://`, include a host and omit fragments, whitespace, control characters and shell syntax, including their percent-encoded forms. The API rejects invalid input without echoing the URL.
+
+```sh
+bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../database-url.txt
+```
+
+Store only the URL in that secure file, without quotes or a trailing newline, and keep it outside the deployment directory. Values remain file/stdin input, not positional command arguments. Database connection reads expose only `database: { configured, engine }`, never any URL-derived host, username, password or database name.
+
+`AKTER_DATABASE_ENGINE` accepts `postgres` or `neki`; it defaults to `postgres` when absent. For a Neki database:
+
+```sh
+printf %s neki | bunx akter env set AKTER_DATABASE_ENGINE --project PROJECT_ID --env production
+```
+
+Unsetting `DATABASE_URL` leaves the external database untouched but makes subsequent deploy admissions fail until you configure a connection again. See [Bring your database](/cloud/bring-your-database). After changing variables, [deploy again](/cloud/deploy).

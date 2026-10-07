@@ -3,11 +3,11 @@ title: "Deploy to Akter Cloud"
 description: "Upload an Akter app and follow its managed build and rollout."
 ---
 
-First [sign in with the CLI](/cloud/get-started). The examples use `bunx akter`; with Node, use `npx akter` instead.
+First [sign in with the CLI](/cloud/get-started) and [bring your database](/cloud/bring-your-database). Each target environment needs a customer-owned Postgres database or Neki database configured through `DATABASE_URL`. The examples use `bunx akter`; with Node, use `npx akter` instead.
 
 ## Prepare your app
 
-The uploaded directory must contain `src/app.ts`, default-exporting `App.make({ actors, layer })` from `@rikalabs/akter/runtime`. See the [quickstart](/quickstart) for defining actors and their layers. The Cloud host supplies runtime infrastructure, including the [customer database](/cloud/database); do not start a separate server from the entrypoint. You do not need a Dockerfile: the platform generates the build definition.
+The uploaded directory must contain `src/app.ts`, default-exporting `App.make({ actors, layer })` from `@rikalabs/akter/runtime`. See the [quickstart](/quickstart) for defining actors and their layers. The Cloud host supplies the actor runtime and connects it to [your database](/cloud/database); do not start a separate server from the entrypoint. You do not need a Dockerfile: the platform generates the build definition.
 
 For the quickstart's `Counter` and `CounterLive`, the hosted entrypoint is:
 
@@ -34,7 +34,19 @@ An ignored `src/app.ts` makes deployment fail. The compressed source archive mus
 
 ## Deploy
 
-Replace `PROJECT_ID` with your project's ID:
+Replace `PROJECT_ID` with your project's ID. If you have not configured the database yet, save its connection URL securely outside the upload directory, with no trailing newline, and set it before deploying. From your app directory, this example reads a secret file in the parent directory:
+
+```sh
+bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../database-url.txt
+```
+
+The default engine is `postgres`; for a Neki database, also set `AKTER_DATABASE_ENGINE` to `neki` as shown in [Bring your database](/cloud/bring-your-database). The URL is write-only. A deploy without it is refused with:
+
+```text
+No database is configured; set DATABASE_URL with akter env set before deploying
+```
+
+Once configured, deploy from your app directory:
 
 ```sh
 bunx akter deploy --project PROJECT_ID --env production

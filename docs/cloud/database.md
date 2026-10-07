@@ -1,26 +1,26 @@
 ---
-title: "Your customer database"
-description: "How Cloud provisions, preserves and removes a project's environment database."
+title: "Your database"
+description: "Connect each Cloud environment to a database you own and control."
 ---
 
-Akter Cloud provisions a logical customer database and a dedicated customer login for each project environment on its Neki customer cell. This is not a dedicated database server per customer. Production customer databases are separate from the control-plane database that stores Cloud identity, deployment and billing records.
+Akter Cloud runs your app against **your own Postgres database or Neki database**. PlanetScale is the recommended provider. Each project environment needs a connection configured before you can deploy; Akter does not create a database for it. Follow [Bring your database](/cloud/bring-your-database) to get started.
 
-## Managed configuration
+## Ownership and configuration
 
-Provisioning installs the platform-owned usage journal and the managed `DATABASE_URL`, `AKTER_DATABASE_ID` and `AKTER_DATABASE_ENGINE` variables before the database becomes ready. Their values cannot be read back or changed through `akter env`. The Cloud host uses them to connect your app; you do not need to supply database credentials to deploy.
+Set `DATABASE_URL` with [`akter env`](/cloud/environment-variables). The default engine is `postgres`; set `AKTER_DATABASE_ENGINE` to `neki` when connecting to a Neki database.
 
-The customer login can create application objects in its own `public` schema. It cannot connect to another environment's database, assume platform roles, or alter the protected metering journal. Your application's tenant authorization still matters: database separation between environments does not replace authorization inside your app.
+The connection URL is encrypted at rest and write-only. Environment reads expose only `database: { configured, engine }` about the connection, never its URL, host, username, password or database name. Keep your own secure copy of the credentials.
 
-## Deployments preserve data
+You own the database credentials, capacity, backups, recovery and provider bill. The login you supply must have the permissions your app needs for its migrations and runtime. Your app's tenant authorization still matters; a database connection does not replace authorization inside your app.
 
-Replacement deployments of the same environment reuse its stable database identity. A rollout migrates that database before starting the new runners. Keep migrations compatible with the previous release; a failed rollout or a rollback is not a database restore.
+## Deployments and data
 
-Deleting an environment or project retires its database generation. Recreating the same environment name gets a new generation rather than adopting the old database. Do not use deletion as a reset you can undo.
+A deployment captures the environment's database connection with its other variables. Migration and serving use that same encrypted snapshot. Deployment creation, redeploy and rollback all require a configured `DATABASE_URL`. Changing it affects the next deployment, not a running one, and does not move data to the new database. Rollback uses the selected deployment's captured connection and does not undo database changes.
 
-## Storage and cleanup
+Use separate databases for environments whose data must stay isolated. Keep migrations compatible with the previous release, and use your database provider's backup and recovery tools rather than treating a failed rollout or rollback as a restore.
 
-Storage usage is sampled from attributable logical row bytes, not physical disk, indexes or bloat. See [pricing and limits](/cloud/pricing-and-limits) for the Free cap, paid allowances and sampling limitations.
+## Deletion leaves your database alone
 
-Database removal is asynchronous. Cleanup waits for mapped deployments and runners to retire and for their metering obligations to settle before dropping the database and login. A provider failure leaves cleanup pending for retry; the console accepting deletion does not mean the database has already disappeared.
+Deleting an environment or project removes Akter's stored variables and platform records. Deleting an organization retires its runners and removes its Cloud records. None of these operations deletes, erases or administers your external database.
 
-Customer point-in-time recovery (PITR), a second region and a restore workflow are not offered at launch. Do not treat Cloud as having a customer-accessible PITR guarantee.
+If you want to remove that database, do so separately with its provider after exporting or backing up anything you need. Akter Cloud does not provide database backups or a customer database restore workflow.

@@ -3,7 +3,7 @@ title: "Get started with Akter Cloud"
 description: "Create an account, organization and project, then connect the CLI."
 ---
 
-Akter Cloud hosts your Akter app and provisions its customer database. You upload source with the CLI; the platform builds it, applies migrations and rolls out runners. You can also [self-host Akter](/guides/deploy).
+Akter Cloud hosts your Akter app on managed runners connected to your own Postgres database or Neki database. You upload source with the CLI; the platform builds it, applies migrations and rolls out runners. You can also [self-host Akter](/guides/deploy).
 
 ## Sign up
 
@@ -55,7 +55,7 @@ bunx akter whoami
 
 `whoami` prints your email, organization slugs, roles and organization IDs. Credentials are stored in the platform's configuration directory; `AKTER_CONFIG_DIR` overrides that location. On macOS the default is `~/Library/Application Support/akter`. Do not commit this directory.
 
-Next, [deploy your app](/cloud/deploy), review the [pricing and limits](/cloud/pricing-and-limits), and configure [environment variables](/cloud/environment-variables).
+Next, [bring your database](/cloud/bring-your-database) and configure its write-only `DATABASE_URL` for each environment you want to deploy. Then [deploy your app](/cloud/deploy) and review the [pricing and limits](/cloud/pricing-and-limits). See [environment variables](/cloud/environment-variables) for your other configuration.
 
 ## Sign out
 

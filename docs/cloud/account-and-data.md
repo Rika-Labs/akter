@@ -15,7 +15,7 @@ This is a personal-data export, not a backup of your actors or customer database
 
 Only an unsuspended owner can request organization deletion. In **Settings → Organization**, choose **Delete organization**, type the organization's name and confirm.
 
-Acceptance immediately fences new mutations and deployments and revokes API keys and serving routes. Cleanup then runs in the background: billing cancellation, runner retirement, database removal and final organization-record removal, in that order. The organization remains listed while cleanup is pending. A failure retains the obligation for retry rather than declaring deletion complete. A suspended organization cannot accept a deletion request; contact support instead.
+Acceptance immediately fences new mutations and deployments and revokes API keys and serving routes. Cleanup then runs in the background: billing cancellation, runner retirement and final organization-record removal, in that order. Akter removes its stored variables and platform records but never deletes or erases your customer-owned database. The organization remains listed while cleanup is pending. A failure retains the obligation for retry rather than declaring deletion complete. A suspended organization cannot accept a deletion request; contact support instead.
 
 Existing subscriptions are cancelled immediately without automatic proration, with a final invoice for outstanding metered usage. Existing invoices and accounting obligations remain authoritative. Export what you need before confirming; there is no documented undo or customer restore path.
 

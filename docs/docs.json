@@ -70,6 +70,7 @@
             "group": "Akter Cloud",
             "pages": [
               "cloud/get-started",
+              "cloud/bring-your-database",
               "cloud/deploy",
               "cloud/environment-variables",
               "cloud/logs",
