@@ -22,7 +22,7 @@ The public repository currently includes the hosted control plane, deployment in
 4. The public tree keeps `packages/akter`, `packages/react`, `packages/python-client`, `packages/cloud-api`, `apps/cli`, tooling and framework documentation. The CLI keeps `login`, `logout`, `whoami` and `deploy`; billing catalog setup and tenant-directory creation move to the private Effect CLI in `apps/ops`. Their tests move with them, and hosted stack integration tests remain private.
 5. Hosted apps, billing, metering, deployment, database, feature-flag and UI packages, infrastructure, research and `plan.md` move private. Cloud-only docs and decisions move with their implementation. A decision that defines framework behavior remains public even when the cloud motivated it, including assertions, runtime routing, mutual TLS, telemetry and authority placement.
 6. PolySans and Sagittaire are commercial assets and are removed from the public tree. The OFL Geist Mono asset can remain public. Public docs use it alongside a system sans stack until the marketing site's stable HTTPS font URL is proven to send CORS headers. The private proprietary notice grants no additional font rights.
-7. Public CI and releases verify only public code. The private repository has cloud-only CI, deploys and an hourly/manual submodule-update workflow. The GitHub environments stack targets the private repository. Moving workflow files does not authorize provisioning environments, enabling Actions or a production cutover without the orchestrator's coordinated review.
+7. Public CI and releases verify only public code. The private repository has cloud-only CI, deploys and an hourly/manual submodule-update workflow. The GitHub environments stack targets the private repository. Actions remain disabled until maintainers explicitly enable them after reviewing the bootstrap pull request, and production cutover remains a separate maintainer-approved operation.
 
 ## Consequences
 
@@ -30,4 +30,4 @@ The framework can install, build and verify without cloud source or credentials.
 
 ## Verification
 
-The split's pull requests record frozen installs, focused CLI and tooling tests, public CI, cloud CI, the copied test locations and a check for cloud changes after the copy point. Actions and production GitHub environments are cut over by the orchestrator only after those results are reviewed.
+The split's pull requests record frozen installs, focused CLI and tooling tests, public CI, cloud CI, the copied test locations and a check for cloud changes after the copy point. Maintainers enable Actions and provision production and preview GitHub environments only after those results are reviewed.
