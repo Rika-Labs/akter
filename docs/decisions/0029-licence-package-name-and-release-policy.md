@@ -10,6 +10,8 @@
 
 **Change policy:** supersede through a new ADR.
 
+The `apps/*` licensing clause is superseded by [ADR 0098](0098-proprietary-cloud-repository.md); the public framework and CLI remain Apache-2.0.
+
 ## Context
 
 ADR 0001 settled one framework distribution named `akter` with four entries (`.`, `/runtime`, `/client`, `/testing`) and kept it `private: true`. The repository had no licence, so nobody else could use the code.

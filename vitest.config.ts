@@ -6,7 +6,6 @@ export default defineConfig({
       "apps/*/src/**/*.test.ts",
       "packages/*/src/**/*.test.ts",
       "tooling/*/src/**/*.test.ts",
-      "infra/src/**/*.test.ts",
       ".github/src/**/*.test.ts",
     ],
     exclude: ["**/node_modules/**", "**/templates/**"],

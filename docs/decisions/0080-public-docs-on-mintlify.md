@@ -12,7 +12,7 @@
 
 ## Context
 
-[ADR 0064](0064-web-front-ends.md) made `apps/site` the public website, and the site rendered the repository's public docs itself at `/docs/**`, with a raw Markdown copy of each page, `/llms.txt`, `/llms-full.txt` and a search index, through its own Markdown pipeline (an Astro content collection, a remark renderer, link rewriting and a docs layout). Hosted docs platforms give search, an AI assistant, per-page Markdown, `llms.txt` and analytics without that code. Issue [#549](https://github.com/Rika-Labs/akter/issues/549).
+ADR 0064 (a hosted-platform record, private) made `apps/site` the public website, and the site rendered the repository's public docs itself at `/docs/**`, with a raw Markdown copy of each page, `/llms.txt`, `/llms-full.txt` and a search index, through its own Markdown pipeline (an Astro content collection, a remark renderer, link rewriting and a docs layout). Hosted docs platforms give search, an AI assistant, per-page Markdown, `llms.txt` and analytics without that code. Issue [#549](https://github.com/Rika-Labs/akter/issues/549).
 
 ## Decision
 

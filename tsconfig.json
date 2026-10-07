@@ -19,6 +19,6 @@
       }
     ]
   },
-  "include": ["**/*.ts", ".github/**/*.ts", ".amp/plugins/**/*.ts"],
+  "include": ["**/*.ts", ".github/**/*.ts"],
   "exclude": ["node_modules", "dist", ".local"]
 }

@@ -20,10 +20,8 @@ import { checkCommand as payloadsCheckCommand, clearCommand } from "./commands/p
 import { showCommand } from "./commands/receipts/show.ts"
 import { listCommand as subscriptionsListCommand } from "./commands/subscriptions/list.ts"
 import { skipCommand } from "./commands/subscriptions/skip.ts"
-import { createCommand } from "./commands/tenants/create.ts"
 import { checkCommand as workflowsCheckCommand } from "./commands/workflows/check.ts"
 import { CommandFailed } from "./failure.ts"
-import { billingSetupCommand } from "./commands/billing/setup.ts"
 import { deployCommand } from "./commands/cloud/deploy.ts"
 import { loginCommand } from "./commands/cloud/login.ts"
 import { logoutCommand } from "./commands/cloud/logout.ts"
@@ -94,13 +92,6 @@ export const akter = Command.make("akter").pipe(
     {
       group: "Akter Cloud",
       commands: [loginCommand, logoutCommand, whoamiCommand, deployCommand],
-    },
-    {
-      group: "Control plane",
-      commands: [
-        group("tenants", "Manage the tenant directory", [createCommand]),
-        group("billing", "Set up the billing catalog", [billingSetupCommand]),
-      ],
     },
   ]),
 )

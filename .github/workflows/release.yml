@@ -19,9 +19,12 @@ jobs:
     timeout-minutes: 15
     environment: npm
     permissions:
-      contents: write
+      contents: read
       actions: read
       id-token: write
+    outputs:
+      release-tag: ${{ steps.release.outputs.release_tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
@@ -67,6 +70,9 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          if [[ "$core" == *-* ]]; then prerelease=true; else prerelease=false; fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
       - name: Require a successful Verify run for the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -95,19 +101,39 @@ jobs:
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
+      - name: Upload the validated release notes
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-notes-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.publish.outputs.release-tag }}
+      PRERELEASE: ${{ needs.publish.outputs.prerelease }}
+    steps:
+      - name: Download the validated release notes
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-notes-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-notes
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="$(jq -r .version packages/akter/package.json)"
-          notes="$RUNNER_TEMP/release-notes.md"
-          prerelease=false
-          if [[ "${version%%+*}" == *-* ]]; then prerelease=true; fi
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes" \
-              --prerelease="$prerelease"
+          notes="$RUNNER_TEMP/release-notes/release-notes.md"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" --notes-file "$notes" --prerelease="$PRERELEASE"
           else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes" \
-              --verify-tag --prerelease="$prerelease"
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" --notes-file "$notes" --verify-tag --prerelease="$PRERELEASE"
           fi

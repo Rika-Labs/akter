@@ -26,9 +26,10 @@ describe("akter", () => {
         "logout",
         "whoami",
         "deploy",
-        "tenants",
       ])
         expect(root.stdout).toMatch(new RegExp(`^  ${command} +\\S`, "m"))
+
+      expect(root.stdout).not.toMatch(/^  (tenants|billing) +\S/m)
 
       const retry = yield* runCli(["dead-letters", "retry", "--help"])
 
@@ -93,6 +94,8 @@ describe("akter", () => {
           "Missing required argument: actor",
         ],
         [["launch"], "UnknownSubcommand", 'Unknown subcommand "launch"'],
+        [["billing", "setup"], "UnknownSubcommand", 'Unknown subcommand "billing"'],
+        [["tenants", "create"], "UnknownSubcommand", 'Unknown subcommand "tenants"'],
         [["deploy"], "MissingOption", "Missing required flag: --project"],
       ] as const) {
         const refused = yield* runCli(args)
