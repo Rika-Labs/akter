@@ -1,11 +1,12 @@
 ---
 title: "Deploy"
-description: "Take an app from the quickstart to a production process on Postgres, and what is supported today."
+description: "Take an app from the quickstart to a production process on a Postgres database, and what is supported today."
 ---
 
 # Deploy
 
-**Responsibility:** take an app from the quickstart to a production process on Postgres, and state what is and is not supported today.  
+**Responsibility:** take an app from the quickstart to a production process on a Postgres database, and state what is and is not supported today.
+
 **Authority:** operational.  
 **Owner role:** operations/platform.  
 **Change policy:** change with the [support matrix](../operations/support-matrix.md) and [deployment](../operations/01-deployment.md) when a supported shape or limit changes; those documents win on any conflict.
@@ -14,15 +15,15 @@ description: "Take an app from the quickstart to a production process on Postgre
 
 Akter is alpha. Before you deploy, know the limits the [support matrix](../operations/support-matrix.md) records:
 
-- **Postgres only.** PGlite is for development and tests, one process per data directory. Production PGlite is not supported.
+- **Postgres server 18.6.** This is the server version CI tests and the launch-supported server range; other server versions are unverified. File-backed PGlite also supports one-process production within the limits of [embedded deployment](../operations/01-deployment.md#embedded-pglite-in-production), without multi-runner or power-loss guarantees.
 - **Single runner or a TCP runner cluster.** `Runner.socket` is the public Postgres configuration for separate processes. Runners authenticate each other with mutual TLS (`Runner.mtls`). Three-process command, relay, singleton, schedule, SIGKILL, and rolling-drain drills run on one host; separate-host networks and hosting providers still require their own evidence.
-- **Embedded or served.** `Actors.serve` serves commands, reducers, and queries over HTTP, connections over WebSocket, and feeds, streams, and watches over SSE. These transports are verified behind Bun's HTTP server on loopback; no proxy, load balancer, or hosting provider has been verified.
-- **No managed hosting.** Hosted runners are planned.
-- **Not on npm yet.** Install `@rikalabs/akter` from a locally packed tarball, as in the [quickstart](../quickstart.md), until the first alpha release.
+- **Embedded or served.** `Actors.serve` serves commands, reducers, and queries over HTTP, connections over WebSocket, and feeds, streams, and watches over SSE. Core transport conformance runs on Bun's and Node's HTTP servers on loopback; no proxy, load balancer, or hosting provider has been verified by those cases. The three-process crash-drill claim is Bun-specific.
+- **Self-host scope.** These instructions deploy the framework in your own processes. Akter Cloud's service implementation and provider verification are separate from the OSS launch claim; its client commands are in the [CLI reference](../api/06-cli.md).
+- **Published package.** Install `@rikalabs/akter@alpha` from npm as in the [quickstart](../quickstart.md). `@akter/react` and the Python client generator remain repo-only at launch.
 
 ## The process
 
-A deployed app is one Bun process that builds the runtime over Postgres and, if clients call it over HTTP, serves it. This is the `chat` example's `src/main.ts`:
+A deployed app builds the runtime over a Postgres server and, if clients call it over HTTP, serves it. The following inline entrypoint shows the shape:
 
 ```ts
 const runtime = Layer.unwrap(
@@ -114,7 +115,7 @@ Gate traffic on `RuntimeControl.readiness` or served `GET /ready`, not on a list
 
 Each runner owns its pools. Keep `processes × (maxConnections + offTurnConnections + queryConnections)`, plus the `coordination` pool's connections when configured, plus operator headroom below the database's `max_connections`.
 
-- **Connections.** Each command holds one Postgres connection until its transaction ends; a pipelined chain keeps its session until the chain ends. `Database.postgres({ maxConnections })` defaults to 50, `offTurnConnections` and `queryConnections` to 10 each; count every pool targeting the server, plus migrations, backups, and operator sessions, under its `max_connections`. A pooler in front of Postgres is unverified.
+- **Connections.** Each command holds one Postgres connection until its transaction ends; a pipelined chain keeps its session until the chain ends. `Database.postgres({ maxConnections })` defaults to 50, `offTurnConnections` and `queryConnections` to 10 each; count every pool targeting the server, plus migrations, backups, and operator sessions, under its `max_connections`. A pooler in front of a Postgres server is unverified.
 - **Memory.** A resident actor holds about 20 KiB of JavaScript heap on the measured runner, so the default `maxResidentActors` of 10,000 is about 200 MiB. A command that needs a new activation past the limit fails `RunnerAtCapacity`, and its handle retries until an idle actor hibernates.
 
 See [deployment](../operations/01-deployment.md#postgres-connections-across-runners) for the arithmetic.
@@ -136,14 +137,14 @@ A command the old process had not committed is not applied. Retrying the same co
 Before you release:
 
 1. Apply owned-table migrations that the old and new code both accept (expand before contract).
-2. If you changed a workflow, check that no open execution needs a removed or renamed step. Startup refuses such a deploy. `akter workflows check --entry <module> --database-url <url>`, from `apps/cli` in the repository (not yet published), runs the same check first.
+2. If you changed a workflow, check that no open execution needs a removed or renamed step. Startup refuses such a deploy. `akter workflows check --entry <module> --database-url <url>` (from `@rikalabs/akter-cli`) runs the same check first.
 3. Keep every event, job, and workflow payload decodable until the records that use it have passed their retention.
 
 See [migrations](../operations/02-migrations.md) and [backup and restore](../operations/04-backup-restore.md).
 
 ## Checklist
 
-- Postgres, a database for this app alone, and `DATABASE_URL` in a secret.
+- A Postgres database dedicated to this app, with `DATABASE_URL` in a secret.
 - Owned-table migrations applied before start.
 - `authorize` allows only the callers and tenants you expect, and `Actors.serve` has a real auth provider.
 - TLS in front of the HTTP server, and `origins` set for browser clients.

@@ -9,7 +9,7 @@ Akter is the framework for durable, stateful backends that power realtime apps, 
 
 You declare an actor with `Actor.make`, and each command it receives runs as one turn inside one database transaction: the actor's state, its owned Drizzle rows, its events, the command's receipt, and the work it hands off all commit together or not at all.
 
-The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) runs it from a checkout. What has shipped is listed in each API page's implemented subset; everything else on those pages is accepted design.
+The framework is published on npm as `@rikalabs/akter`; install the `alpha` dist-tag as shown in the [quickstart](../quickstart.md). The alpha supports multi-runner operation on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a Postgres database. Separate hosts and hosting providers still need their own evidence. What has shipped is listed in each API page's implemented subset; everything else on those pages is accepted design. `@akter/react` and the Python client generator are repo-only and are not published at launch.
 
 ## Guides
 
@@ -18,7 +18,7 @@ The framework is alpha and not yet on npm. The [quickstart](../quickstart.md) ru
 - Guides:
   - [Effect all the way into the commit](effect-into-the-commit.md): how a handler's Effect runs inside the turn's transaction.
   - [Testing](testing.md): `ActorTest`, crash points, time, and which database to test on.
-  - [Deploy](deploy.md): running on Postgres in production, and what is supported today.
+  - [Deploy](deploy.md): running on a Postgres server in production, and what is supported today.
 - [API reference](../api/README.md): the server API, the context services, the TypeScript SDK, Drizzle, generated clients, naming, and versioning.
 - [Comparison](comparison.md): Akter next to Cloudflare Durable Objects, Rivet, Restate, and Temporal, citing their documentation.
 

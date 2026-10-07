@@ -42,6 +42,21 @@
           {
             "group": "Compare",
             "pages": ["guides/comparison"]
+          },
+          {
+            "group": "Self-host operations",
+            "pages": [
+              "operations/01-deployment",
+              "operations/02-migrations",
+              "operations/03-observability",
+              "operations/04-backup-restore",
+              "operations/support-matrix",
+              "operations/runbooks",
+              "operations/inspection-views",
+              "operations/retention",
+              "operations/alpha-upgrades",
+              "operations/05-releasing"
+            ]
           }
         ]
       },
@@ -109,10 +124,6 @@
     {
       "source": "/architecture/:slug*",
       "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/architecture/:slug*.md"
-    },
-    {
-      "source": "/operations/:slug*",
-      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/operations/:slug*.md"
     },
     {
       "source": "/vision/:slug*",

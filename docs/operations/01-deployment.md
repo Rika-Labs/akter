@@ -1,3 +1,8 @@
+---
+title: "Self-host deployment"
+description: "Run embedded or served applications and configure one-host runner peering."
+---
+
 # Deployment
 
 **Responsibility:** define supported operating shapes.  
@@ -11,13 +16,13 @@ The intended deployment has one shared relational database and one `Actors.layer
 
 - **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside the application.
 - **Served:** add `Actors.serve` for HTTP, WebSocket, SSE, and OpenAPI access.
-- **Hosted:** deploy served containers on our runners behind `apps/edge`, with Neki; runners hold parked sockets.
+- **Akter Cloud client:** the public CLI retains `login`, `logout`, `whoami`, and `deploy`. The hosted service implementation belongs to the private Akter Cloud repository; it is not required for self-hosting.
 
-The hosted control plane uses `packages/deployments`: `Deployment`, the `Runners` singleton, and `UsageMeter` run embedded in `apps/api`. `apps/edge` resolves deployment hosts to runners, converts API keys to `Principal`, routes each tenant to its home region from the tenant directory, signs a per-request assertion, enforces limits, and proxies client sockets to the runners that hold them ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)). Infrastructure is Alchemy plus Railway.
+The `akter` CLI in `apps/cli` runs an app locally (`akter dev`), checks a deploy against stored workflows and payloads, adopts existing tables, and inspects and repairs a running deployment through its operator routes. Cloud client commands are separate from self-host operations; see the [CLI reference](../api/06-cli.md). Customer-served deployments do not require the hosted control plane.
 
-The `akter` CLI in `apps/cli` runs an app locally (`akter dev`), checks a deploy against stored workflows and payloads, adopts existing tables, and inspects and repairs a running deployment through its operator routes ([CLI reference](../api/06-cli.md)). It has no hosted `login` or `deploy` command. Customer-served deployments do not require the hosted control plane.
+Every runner must advertise a unique private address reachable directly by its peers. Separate-host networks and provider topologies require their own reachability and failover evidence; the OSS launch claim is multi-runner on one host. Use `Runner.mtls` on the peer listener and never expose it to public clients.
 
-Before enabling multiple Railway replicas, prove that every replica advertises a private `railnet0` address reachable by every other replica. A one-service-per-runner alternative requires its own reachability and failover evidence; `Topology.k8s` is not part of the current API. Also verify singleton failover and Neki conformance before claiming those capabilities.
+The supported Postgres server version at launch is **18.6**, the version tested in CI. Other server versions are unverified; see the [support matrix](support-matrix.md).
 
 Intended deployment order: provision database and secrets; run framework and actor-table migrations; start compatible runners; verify readiness; route new traffic; drain old runners. Keep database URLs redacted and set auth explicitly—`Actors.serve` requires an auth policy.
 
@@ -31,7 +36,7 @@ runners × (maxConnections + offTurnConnections + queryConnections + coordinatio
 
 Apply the budget per server: count the coordination pool here only when it points at this primary, otherwise budget it on its own authority server. An optional replica pool uses its configured `maxConnections` (default 10) on the replica server instead. When multiple configured pools point at the same physical server, count all of them.
 
-`reserved` covers `superuser_reserved_connections` (3 by default), migrations, backups, monitoring, and operator sessions. Without `coordination`, count it as 0. Postgres's default `max_connections` of 100 fits one runner at the default pools (70 connections) with that headroom, not two. For more runners either lower the pools per runner, for example `maxConnections: 10` with 5 off-turn and 5 query connections each for four runners, or raise `max_connections` with the memory the server has. A pooler in front of Postgres is unverified: turns rely on transaction-scoped `set_config`, row locks, and Cluster's SQL shard locks, and no pooler mode has been tested with them.
+`reserved` covers `superuser_reserved_connections` (3 by default), migrations, backups, monitoring, and operator sessions. Without `coordination`, count it as 0. The default `max_connections` of 100 on a Postgres server fits one runner at the default pools (70 connections) with that headroom, not two. For more runners either lower the pools per runner, for example `maxConnections: 10` with 5 off-turn and 5 query connections each for four runners, or raise `max_connections` with the memory the server has. A pooler in front of a Postgres server is unverified: turns rely on transaction-scoped `set_config`, row locks, and Cluster's SQL shard locks, and no pooler mode has been tested with them.
 
 Measured on one machine (see [performance](../../BENCHMARKS.md)): under 64 callers each runner reached its pool size and no more, so peak connections were the sum of the runners' pools plus one connection outside them. With one runner and 64 callers over 10,000 actors, 50 connections lowered steady-state p99 against 25 in both runs (96 against 179 ms, and 130 against 166 ms). Those runners shared one process and CPU, so the runs show how connections add up across runners, not what latency separate runner processes would see; separate-process functional support is scoped by the [support matrix](support-matrix.md), and this benchmark is not its performance evidence.
 
@@ -39,7 +44,7 @@ Memory bounds the other runner limit. A resident activation holds about 20 KiB o
 
 ## Postgres primary failover
 
-`Database.postgres` sends TCP keepalive defaults through startup options to every pool: `tcp_keepalives_idle=5`, `tcp_keepalives_interval=2`, and `tcp_keepalives_count=3`. A runner that disappears without closing its sockets can otherwise keep shard advisory locks and open transactions alive for the operating system's long default timeout. With these probes Postgres can drop an unresponsive TCP peer after roughly 11 seconds; detection, shard acquisition, activation, and caller backoff still add recovery time. Caller values in `startupParameters`, `startupOptions`, or the URL's `options` win; the replica has its own overrides. Values of `0` restore the OS defaults rather than disabling TCP keepalive entirely. Unix sockets ignore these settings. A proxy may reject or filter startup options; no pooler or Neki compatibility is claimed by these tests.
+`Database.postgres` sends TCP keepalive defaults through startup options to every pool: `tcp_keepalives_idle=5`, `tcp_keepalives_interval=2`, and `tcp_keepalives_count=3`. A runner that disappears without closing its sockets can otherwise keep shard advisory locks and open transactions alive for the operating system's long default timeout. With these probes a Postgres server can drop an unresponsive TCP peer after roughly 11 seconds; detection, shard acquisition, activation, and caller backoff still add recovery time. Caller values in `startupParameters`, `startupOptions`, or the URL's `options` win; the replica has its own overrides. Values of `0` restore the OS defaults rather than disabling TCP keepalive entirely. Unix sockets ignore these settings. A proxy may reject or filter startup options; no pooler or Neki compatibility is claimed by these tests.
 
 Gate external traffic on `GET /ready`. The underlying Effect Bun server can briefly accept connections and answer `404 not found` before routes install during startup; listening on the port is not readiness. PostgreSQL shutdown/startup and resource-exhaustion errors follow the retryable `ActorUnavailable` path, so preserve the command id when retrying. The failure drills, versions, and caveats are in [BENCHMARKS.md](../../BENCHMARKS.md).
 
@@ -108,51 +113,9 @@ Stopping an executor cannot undo a completed external call; ambiguous provider o
 
 `RuntimeControl` from `@rikalabs/akter/runtime` implements this (M4.2); [the server API](../api/01-server-api.md#runtime-control-readiness-and-drain) lists its signatures. There is no default deadline: every `drain` names its own, so no timeout is an implied availability guarantee. The drained runner keeps its shard locks until its layer closes, so exit the process as soon as `drain` returns; a graceful exit hands the shards to the other runners at once, while a crash leaves them to lock expiry. Readiness answers `{ ready: false, reason }` with `draining`, `drained`, `storage`, `routing`, or `unregistered`; `Actors.serve` answers it at `GET /ready` without credentials (`200`, or `503` with the reason; [ADR 0053](../decisions/0053-served-readiness-route.md)), so point the load balancer's or orchestrator's readiness probe there, and restart a runner only when the probe fails to connect, never on a `503`. The [runbook](runbooks.md#drain-a-runner) gives the required drain sequence. `conformance/drain.ts` covers clean and deadline-expired drains, new-work rejection, interrupted transactions, pending delivery, safe takeover, receipt replay, and provider ambiguity.
 
-## The hosted tenant directory
-
-Implemented (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md) §5): the control-plane database holds each hosted `deployment` with its `primary_region`, and the `tenant_directory` table maps `(deployment, tenant)` to `{ region, state, version }` (`packages/postgres/migrations/0002_tenant_directory.sql`). A tenant with no row lives in its deployment's primary region, and no request writes a row.
-
-Only the `TenantHome` actor in `packages/deployments`, keyed by `<deployment>/<tenant>`, writes the directory, so every change is a receipted command attributed to its operator. Its `Create` command records the tenant's home and returns it again when repeated with the same region. It refuses an unknown deployment (`UnknownDeployment`), any region but the primary (`NotPrimaryRegion`), and a second region for a tenant that already has one (`TenantAlreadyHomed`), because moves wait for L.1. A trigger gives every insert and update the next `version` from one sequence, under a transaction-scoped advisory lock, so versions are assigned in commit order. A reader that holds every row up to version `v` can poll for rows above `v` and never skip a change that commits later with a lower number.
-
-The operator command runs the control-plane actors embedded against the control-plane database:
-
-```sh
-akter tenants create acme --deployment dep-1 --region us-east \
-  --database-url "$CONTROL_PLANE_DATABASE_URL" --operator ops@example.com
-```
-
-Against a Neki control plane, set `CONTROL_PLANE_DATABASE_ENGINE=neki` (or pass `--engine neki`) as the API does, so the embedded runtime migrates with Neki's protocol and its turns refuse to reach a second shard ([ADR 0096](../decisions/0096-neki-multi-shard-evidence.md)). It prints `dep-1/acme lives in us-east (active)`, and exits with status 2 and the refusal otherwise. `--operator` names the `User` the receipt records. Deployments themselves are rows written by the `Deployment` actor once it exists; until then an operator inserts the `deployment` row. `akter tenants move` arrives with L.1.
-
-## The hosted edge
-
-Implemented (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)): `apps/edge` is the only hosted ingress. For every request it does the following:
-
-1. It maps the `Host` (lowercase, without a port) to a deployment through `deployment_host`. An unknown host is `404` before anything is authenticated.
-2. It authenticates `authorization: Bearer` as a hosted API key (`hosted_api_key`, stored as its SHA-256, and read on every request so a revocation applies from the moment it commits) or as a JWT under the deployment's `deployment_jwt` settings. For a JWT, the tenant is a claim path or a fixed value.
-3. It looks up the tenant's home region in the cached tenant directory.
-4. It signs a 10-second assertion bound to the request and forwards it to a ready runner of that region from `deployment_runner`.
-
-The edge removes `authorization` and any client `durable-assertion` before forwarding. A request without a credential is forwarded without an assertion, and the runner refuses it unless the route is public (`/protocol`, preflight).
-
-WebSockets are proxied, and holders stay in runners. The edge verifies the `hello` and `reauthenticate` credentials. It replaces each with an assertion carrying the session's random `sid`, and its `cexp` is the credential's expiry. An API key has no expiry, so it gets `EDGE_API_KEY_SESSION` (default 5 minutes): that is the revocation bound of a session opened with an API key.
-
-Configuration: `EDGE_ISSUER`, `CONTROL_PLANE_DATABASE_URL`, `CONTROL_PLANE_DATABASE_ENGINE` (`postgres`, the default, or `neki`; the API reads it too), `EDGE_SIGNING_KEYS` (a secret JSON array of Ed25519 private JWKs `{ kid, x, d }`), `PORT`, `EDGE_ASSERTION_LIFETIME` (at most 60 seconds), `EDGE_API_KEY_SESSION`, `EDGE_PUBLICATION_LEAD` (default 5 minutes), and `EDGE_COLD_START_TIMEOUT` (default 30 seconds).
-
-### Scale to zero
-
-Implemented (M6.7, [ADR 0062](../decisions/0062-scale-to-zero-serving.md)): a deployment with `deployment.scale_to_zero` may have no runners. When a request finds no ready runner in its tenant's home region, the edge upserts a `runner_wake (deployment_id, region)` row once. It then probes each registered runner's `GET <base_path>/ready` every 100 ms, and forwards to the first that answers `200`. Concurrent requests on one edge share that wait. After `EDGE_COLD_START_TIMEOUT` with no ready runner, the edge answers `503 ActorUnavailable` with `retry-after`, and the client retries with the same command id. A deployment without the flag is refused at once, as before.
-
-A runner provider watches `runner_wake`. For each row it starts a runner, registers it in `deployment_runner` as soon as the runner has an address, and deletes the row. To scale down, it deletes the runner's `deployment_runner` row first, then sends SIGTERM so the runner drains before it exits. No provider ships yet; until the `Runners` actor exists, an operator or a platform script plays this role.
-
-At zero, nothing runs due work. Timers, intents, jobs, and schedule ticks that come due run on the next cold start, late but not lost; a schedule fires once inside `policy.maxScheduleLag`. A deployment whose due work must run on time should keep one runner. WebSocket and SSE sessions end with their runner, and clients reconnect.
-
-At startup the edge publishes each key's public half to `edge_key`, and refuses to start if a `kid` is already published with a different public key, because a `kid` names one key for good. It signs only with a key that has been published for `EDGE_PUBLICATION_LEAD` (default 5 minutes) and is neither revoked nor expiring within an assertion's lifetime. The lead must cover the runners' key-set refresh interval in production; `0 seconds` is useful for local development only. Runners serve with `Auth.assertion({ issuer, audience: <deployment id>, region, keys: new URL("<api>/edge/keys") })`; `apps/api` serves that key set. When an operator revokes a key (`edge_key.revoked_at`), every edge pushes a key-set refresh to each ready runner at `deployment_runner.url` (an origin such as `http://10.0.0.7:8080`, with no path) plus `base_path` (the runner's `Actors.serve` base path). A runner that doesn't accept the push is pushed again on every edge poll until it does or stops being ready, so runners refuse the key within seconds.
-
-Hosts, runners, hosted API keys, and JWT settings have no writer yet. The `Deployment` and `Runners` actors and the accounts API keys will own them, so until then an operator writes the rows. Rate limits are not built.
-
 ## Embedded PGlite in production
 
-Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actors.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer takes an exclusive `flock` on `<dataDir>/.akter.lock` before PGlite opens and holds it until the layer closes, so a second process, or a second layer in the same process, fails with `DataDirLocked`; the kernel drops the lock when the process dies, so a restart after a crash needs no manual step. A `dataDir` written by another Postgres major fails with `DataDirVersion`, and `relaxedDurability` is refused. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to Postgres with `DATABASE_URL` when those limits bind.
+Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)). One process embeds `Actors.layer`, and optionally `Actors.serve`, with `Database.pglite({ dataDir })` on a local Linux or macOS filesystem. The layer takes an exclusive `flock` on `<dataDir>/.akter.lock` before PGlite opens and holds it until the layer closes, so a second process, or a second layer in the same process, fails with `DataDirLocked`; the kernel drops the lock when the process dies, so a restart after a crash needs no manual step. A `dataDir` written by another Postgres major fails with `DataDirVersion`, and `relaxedDurability` is refused. It recovers from a process crash to the last commit, but power-loss durability is not claimed. It runs one turn or query at a time on one connection, with no replicas, failover, or multi-runner support. Back it up by stopping the process and copying the `dataDir`. Move to a Postgres server with `DATABASE_URL` when those limits bind.
 
 ## Command overload
 

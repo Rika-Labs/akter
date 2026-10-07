@@ -90,7 +90,7 @@ The tail is WAL flush latency, not group forming:
 
 In the traced cohorts, requests over 10 ms spent 22.5–25.2 ms (median across repeats) in `akter.commit`, out of 25.3–27.9 ms of server time, on all three commits. For a lone command on the group path, joining the group took 0.09 ms at p50 and 0.21 ms at p99. Leasing the group's session took 0.012 ms at p50, and there is no group-forming window. The group's commit flight (`group.ts:428`, from `execute.ts:1511`) followed the same tail as the lone path's commit. At the median, the group path adds about 0.1 ms to the commit wait (0.35 against 0.26 ms) plus the 0.09 ms join, a small fixed cost per lone command. The traced cohorts include span-recording overhead, so their absolute throughput is lower than the untraced cohorts.
 
-The harness, per-request latencies, spans, Postgres logs, pressure and WAL samples, and analysis are outside the repository at `~/.capy/work/akter-perf/sequential-tail/`. Two sandboxes were created for this follow-up: one stopped after a sampler change and one completed the run. A final lookup found both deleted and no sandbox with this follow-up's label. The same caveats apply: one sandbox on shared storage, no production SLO or Neki claim.
+The harness, per-request latencies, spans, Postgres logs, pressure and WAL samples, and analysis are outside the repository in externally retained benchmark artifacts. Two sandboxes were created for this follow-up: one stopped after a sampler change and one completed the run. A final lookup found both deleted and no sandbox with this follow-up's label. The same caveats apply: one sandbox on shared storage, no production SLO or Neki claim.
 
 ### Where the time goes on `main` after group commit
 
@@ -114,7 +114,7 @@ On `main`, the receipt `INSERT`, the state upsert and the fenced generation-lock
 
 These attributions come from 0.5-second CPU and wait-event samples and cumulative `pg_stat_statements`. They are diagnostics, not profiles. This is a single-node comparison of these snapshots and limits, not a production SLO, a separate-host scale-out result or a Neki claim.
 
-The harness, source bundles, cohort JSON, CPU and wait samples, statement dumps, shard counts and logs are outside the repository at `~/.capy/work/akter-perf/main-after-group-commit/`; final results are in `results/daytona`. The one sandbox created for this round was deleted, and a final lookup found it gone and no sandbox with this round's label.
+The harness, source bundles, cohort JSON, CPU and wait samples, statement dumps, shard counts and logs are outside the repository in externally retained benchmark artifacts; final results are in `results/daytona`. The one sandbox created for this round was deleted, and a final lookup found it gone and no sandbox with this round's label.
 
 ## App CPU per served command (#491, 2026-10-04)
 
@@ -192,7 +192,7 @@ The same three-CPU container ran two and three `Runner.socket` processes of the 
 
 The one-runner row is the after median above. Both multi-runner runs acknowledged all 10,000 setup writes and had no errors. Two runners served 32% more commands than one, and three served 37% more. App CPU per command rose 33% and 45%, because a forwarded command is serialized, sent over the socket and answered back. With three runners the container used about 2.8 of its 3 CPUs. More processes buy throughput on spare cores, but not efficiency. The default topology is unchanged; changing it would need an ADR.
 
-These are single-node diagnostics, not production SLOs or Neki claims. The harness, source bundles, cohort JSON, samplers, CPU profiles and instrumentation are outside the repository at `~/.capy/work/akter-perf/app-cpu/`; final results are in `results/final`, and exploratory runs are in `results/profile-main`, `results/explore1` and `results/explore2`. All four sandboxes created for this task were deleted, and a final lookup found no sandbox with this task's label.
+These are single-node diagnostics, not production SLOs or Neki claims. The harness, source bundles, cohort JSON, samplers, CPU profiles and instrumentation are outside the repository in externally retained benchmark artifacts; final results are in `results/final`, and exploratory runs are in `results/profile-main`, `results/explore1` and `results/explore2`. All four sandboxes created for this task were deleted, and a final lookup found no sandbox with this task's label.
 
 ## Cross-actor group commit (#495)
 
@@ -235,7 +235,7 @@ The app still uses about 1.2 cores in both versions, so the Bun process remains 
 
 Correctness evidence on real Postgres, run with the full integration config: the `groups` conformance cases (`testing/conformance/groups.ts`) prove that five concurrent warm turns commit in one transaction (one `xmin` across their receipts) while a declared failure keeps only its failure receipt and a defect leaves no receipt and no state; that a member fenced by a newer generation leaves before its handler runs, holds its row lock only until the group commits, and commits alone while its neighbours share a transaction; that a member interrupted by its execution timeout after handing over its writes commits nothing with the group and runs again; that a member still running when the group's wait ends is evicted and commits exactly once alone; and that a statement error in one member's writes fails only that member while the others run again alone. The pipeline cases prove a three-member group sends 13 statements with one `BEGIN`, one `COMMIT` and one version read, and that a group whose `COMMIT` reply is lost answers every member from its receipt with one handler run each. The crash drills (`crash/turns/groups.test.ts`) SIGKILL a runner with a group's writes handed over but unsent (every member absent, one open transaction) and with its `COMMIT` sent and held on an advisory lock (every member committed in one transaction after the lock is released); a new process then answers every command id exactly once. The existing drain case "a turn the deadline interrupts while its sent COMMIT is still running" keeps passing: when every member waiting on a sent commit is interrupted, the group cancels its backend as a lone turn does.
 
-The harness copy, source bundles, cohort JSON, samplers, statement dumps and logs are outside the repository at `~/.capy/work/akter-perf/495-group-commit/`; results are in `results/daytona`. The one sandbox created for this run was deleted, and a final lookup found it gone and no sandbox with this run's label.
+The harness copy, source bundles, cohort JSON, samplers, statement dumps and logs are outside the repository in externally retained benchmark artifacts; results are in `results/daytona`. The one sandbox created for this run was deleted, and a final lookup found it gone and no sandbox with this run's label.
 
 ## Main after the performance fixes (#529, 2026-10-04)
 
@@ -287,7 +287,7 @@ On `main` with 64 callers, three per-command statements took about 75% of Postgr
 
 These attributions come from sampled process CPU, cumulative `pg_stat_statements`, which includes the setup writes, and 0.5-second wait-event snapshots. They are diagnostics, not profiles. This is a single-node comparison of these snapshots and limits, not a production SLO or a Neki claim.
 
-The harness, source bundles, cohort JSON, samplers, statement dumps and logs are outside the repository at `~/.capy/work/akter-perf/main-after-perf/`; final results are in `results/daytona`. Three earlier attempts stopped during sandbox setup or at the first statistics dump, because of a connection reset, a missing shell and a SQL cast error. They produced no included measurements. All four sandboxes created for this task were deleted, and a final lookup found none of them and no sandbox with this task's label.
+The harness, source bundles, cohort JSON, samplers, statement dumps and logs are outside the repository in externally retained benchmark artifacts; final results are in `results/daytona`. Three earlier attempts stopped during sandbox setup or at the first statistics dump, because of a connection reset, a missing shell and a SQL cast error. They produced no included measurements. All four sandboxes created for this task were deleted, and a final lookup found none of them and no sandbox with this task's label.
 
 ## Issue #493: served commands in two database flights (2026-10-03)
 
@@ -318,7 +318,7 @@ Cells are the median of the three cohort statistics, with minimum–maximum in b
 
 The done condition is measured: an ordinary served command goes from four database flights to two, and nine wire statements to seven. Median sequential throughput improved 15% and spread throughput nearly doubled. Sequential p50 fell 10% and p99 fell 13% in these three repeats; the candidate had one slow sequential cohort, so neither these local tails nor the maxima establish a production latency guarantee. Replay now costs a fenced owner turn and three more statements, though it still uses two flights and never runs the handler. This is an explicit cost tradeoff, not a claim that replay became faster.
 
-The harness, source bundles, cohort JSON and logs are outside the repository at `~/.capy/work/akter-perf/493/`; final results are in `results/daytona`. Every sandbox created for this task was deleted. Earlier Mac runs under severe cross-project load, HTTPS-preview runs dominated by about 45 ms of proxy latency, and the direct-network run before the admission-proven recovery correction were retained as diagnostics and are not included above. The remainder of this report describes the earlier comparison and its distinct setup, not this 3+1 CPU split.
+The harness, source bundles, cohort JSON and logs are outside the repository in externally retained benchmark artifacts; final results are in `results/daytona`. Every sandbox created for this task was deleted. Earlier Mac runs under severe cross-project load, HTTPS-preview runs dominated by about 45 ms of proxy latency, and the direct-network run before the admission-proven recovery correction were retained as diagnostics and are not included above. The remainder of this report describes the earlier comparison and its distinct setup, not this 3+1 CPU split.
 
 ## Served-command CPU follow-up (#491, 2026-10-03)
 
@@ -328,7 +328,7 @@ generator reuse in `runtime/entity/register.ts`, `runtime/turn/execute.ts`, and
 showed no reliable sequential benefit. The durable protocol, generation fence, SQL groups, receipts,
 reply ordering, observability, and request-body limits are unchanged. The harness
 and raw profiles remain outside the repository in
-`~/.capy/work/akter-perf/cpu-profile/`.
+externally retained benchmark artifacts.
 
 The app, Postgres, and driver shared a Daytona sandbox capped at four CPUs and
 4 GiB. App and database containers each had `--cpus=3` and were pinned to CPUs
@@ -411,7 +411,7 @@ Akter keeps actor state, receipts, events, and pending work in Postgres. The use
 
 The systems were Durable Actors, Rivet Actors with default saves, Rivet Actors with an awaited immediate save, Cloudflare Durable Objects on local workerd, Restate, Temporal, DBOS, a plain Postgres server, and a plain Redis server. Orleans and Akka were not run. They are architectural context, not measured competitors here.
 
-All agent work, recovery of the old checkout, code edits, research, and repository tests ran on Dallen's Mac. The comparison load and the framework's internal benchmark suite ran on Daytona, not the Mac. The old worktree and scratch results were preserved outside the repository; the benchmark CLI, committed results/profiles, benchmark scripts, and Statements CI job were removed. This file is the consolidated repository artifact. No Markdown, document-link, or evidence linter was added.
+Repository checks and the benchmark suite ran in the environments described by each measurement. Exploratory workspaces and scratch results are not part of this repository; this file is the consolidated benchmark artifact. No Markdown, document-link, or evidence linter was added.
 
 ## Hardware, isolation, and method
 
@@ -627,7 +627,7 @@ Cells are the median across the selected repeat cohorts followed by the minimum�
 
 ### Admission control: bounded overload (#494)
 
-This separate 2026-10-03 experiment compares `782771f79` before admission control with the #494 implementation; it does not replace the earlier head-to-head samples. One four-CPU/four-GiB Daytona sandbox ran Postgres 18.6 and the Bun 1.4.2 app together in a `--cpus=3 --memory=3g` Docker container. A separate `--cpus=1 --memory=1g` Docker driver container reached it over loopback (`--network=host`), with no HTTPS preview proxy. These are CPU quotas, not a claim of exclusive physical host cores. Three repeats alternated before/after order (before–after, after–before, before–after). Each cohort started fresh, prepopulated the same 1,000 keys, and offered 200, 500, 1,000, 2,000, and 4,000 writes/s for 20 s each, with unique command ids, no retry, a 4,096 in-flight cap, and a 10 s timeout. The harness and raw JSON remain outside the repo at `~/.capy/work/akter-perf/494/` (`daytona/local/` contains this topology's final records).
+This separate 2026-10-03 experiment compares `782771f79` before admission control with the #494 implementation; it does not replace the earlier head-to-head samples. One four-CPU/four-GiB Daytona sandbox ran Postgres server 18.6 and the Bun 1.4.2 app together in a `--cpus=3 --memory=3g` Docker container. A separate `--cpus=1 --memory=1g` Docker driver container reached it over loopback (`--network=host`), with no HTTPS preview proxy. These are CPU quotas, not a claim of exclusive physical host cores. Three repeats alternated before/after order (before–after, after–before, before–after). Each cohort started fresh, prepopulated the same 1,000 keys, and offered 200, 500, 1,000, 2,000, and 4,000 writes/s for 20 s each, with unique command ids, no retry, a 4,096 in-flight cap, and a 10 s timeout. The harness and raw JSON remain outside the repository in externally retained benchmark artifacts (`daytona/local/` contains this topology's final records).
 
 Accepted latency starts at scheduled arrival. Refusal rate uses all scheduled arrivals as its denominator. Every cell is the three-repeat median and range of the statistic, not a pooled percentile or a confidence interval. The max column is the median of each run's maximum, with the range of those maxima.
 
@@ -1296,7 +1296,7 @@ The current-main Akter snapshot passed the focused retry and real-Postgres setti
 
 ## Artifact retention and cleanup
 
-All result JSON, container logs, queue outcomes, adapter lockfiles, and source archives were retrieved to `~/.capy/work/bench-1001` on Dallen's Mac before deleting the sandboxes. The broken original checkout was preserved; its uncommitted work was exported and carried onto the renamed current main. The final artifacts are identified by SHA-256:
+Result JSON, container logs, queue outcomes, adapter lockfiles, and source archives were retrieved before deleting the sandboxes. The final artifacts are identified by SHA-256:
 
 | Local archive                | SHA-256                                                            | Contents                                                                                              |
 | ---------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |

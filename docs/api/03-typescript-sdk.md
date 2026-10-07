@@ -134,7 +134,7 @@ Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or bra
 
 ## React (CR.6)
 
-`@akter/react` wraps the Promise client in hooks. Every hook talks to the server only from effects and event handlers, so rendering on a server does no I/O: state hooks return `undefined` and feeds and connections start empty.
+`@akter/react` is repo-only and is not published at launch. In this repository it wraps the Promise client in hooks. Every hook talks to the server only from effects and event handlers, so rendering on a server does no I/O: state hooks return `undefined` and feeds and connections start empty.
 
 - `useActor(client, id)` returns `client.get(id)`, stable while `client` and `id` are.
 - `useCommand(client, (input, options) => handle.Member(input, options))` holds one user intent. `run(input)` mints a command id with `client.commandId()` before sending and passes it in `options`. `retry()` sends the same input under the same id, so a retry after a lost response or a timeout replays the receipt instead of running the command twice. `state` is `idle`, `pending`, `success` with `data`, or `error` with the failure and `expired`. `expired` is true for `CommandExpired`: `retry` cannot help, and a new `run` is a new operation. `reset()` forgets the intent.
@@ -145,7 +145,7 @@ Effect callers can catch the wrapper with `Effect.catchTag("ActorError")` or bra
 - `useConnection(handle.Member, params, { key?, onResync?, keep? })` holds one connection while mounted with the same member and session key. Primitive params (or none) are their own key; object params require `key`, a string, number, or boolean, and do not compile without one. A new key closes the connection and opens one with that render's params; params that change under the same key are not sent. It returns `status` (`connecting`, `open`, or `closed`), the latest `keep` frames (default 100), the latest `keep` executor `progress` messages (default 100; the Promise client's `Progress` messages, typed by job as above, and display-only, so a `seq` gap within one `jobId` and `attempt` is a dropped one), the `error` that ended it, and `send`. A closed connection is not reopened by itself, because a new one is a new session.
 - `useActorState(handle)` is the handle's `state`: committed state with pending optimistic reducer inputs applied, through `useSyncExternalStore`.
 
-The chat example's `/react/rooms/<id>` page uses every hook under `StrictMode`.
+The former chat React page and its browser tests were removed in `bf802d606`; they are not a runnable example or current browser evidence.
 
 ## Offline queue (M6.5)
 
@@ -177,7 +177,7 @@ await queue.discard(commandId) // the only way to resolve an `expired`, `failed`
 - **Expiry.** A command whose id passed its retry window is never sent and is never given a new id. Its caller is rejected with `CommandExpired`, and it stays in `pending` as `expired` until `discard`. A declared or other final failure stays as `failed` with the server's answer, decoded again after a reload. A repeated id with the same input joins the queued command; with other input it fails `CommandConflict`.
 - **Failures of the store.** A command that could not be saved rejects with `OfflineStoreError` (`operation` `save`) and was never sent. An unreadable store rejects `queue.ready` and every later call with `OfflineStoreError`. A failed removal after a commit is reported through `reportError` and the receipt answers the replay. On Node, which has no browser `reportError`, the client reports through Effect's error logger instead; a listener's failure never interrupts notification of the other listeners.
 - **Minting.** With a store, a mint that cannot reach the server within three seconds uses the retry window and clock offset this page last learned; a page that never reached the server rejects with the network error.
-- **React.** `useCommand` needs nothing more: `run` mints its id through `client.commandId()`, which works offline, the queued command keeps that id, and `retry` joins it or replays its receipt. Show the queue with `useSyncExternalStore` over `client.offline.subscribe` and `pending`, as the chat example's React page does with `?offline=1`.
+- **React.** `useCommand` needs nothing more: `run` mints its id through `client.commandId()`, which works offline, the queued command keeps that id, and `retry` joins it or replays its receipt. Show the queue with `useSyncExternalStore` over `client.offline.subscribe` and `pending`.
 - **Reducers.** An optimistic reducer stays applied while its command waits and follows the command's delivery, not the call's timeout. After a reload `handle.state` shows committed state until the queue's commands land.
 
 Queued commands hold their input as JSON on the device. The queue never stores headers or credentials.

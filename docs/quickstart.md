@@ -185,4 +185,4 @@ PGlite has one connection and belongs to the one process that opened its data di
 - nothing on PGlite proves lock contention, independent connections, multi-runner relay, or process-kill recovery, which the framework verifies on a Postgres server only;
 - file-backed PGlite is a production backend for one process per data directory, within the limits of [ADR 0035](decisions/0035-pglite-embedded-production-backend.md): the data directory is locked to one process, a process crash recovers to the last commit (power loss is not claimed), backups are stopped copies, and there are no replicas or multiple runners. Move to a Postgres server when those limits bind; see the [support matrix](operations/support-matrix.md).
 
-On a Postgres server the alpha is single-runner: run one runtime process per database.
+On a Postgres server the alpha supports multiple runners on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a database. Separate hosts and hosting providers still need their own evidence; see the [deploy guide](guides/deploy.md) and [support matrix](operations/support-matrix.md).

@@ -1,3 +1,8 @@
+---
+title: "Releasing"
+description: "Publish framework alphas through the npm trusted-publishing workflow."
+---
+
 # Releasing
 
 **Responsibility:** publish `@rikalabs/akter` and `@rikalabs/akter-cli` to npm and bootstrap the npm trusted publishers.
@@ -7,7 +12,7 @@
 
 ## Status
 
-`0.1.0-alpha.0` was published by hand on 2026-10-04 and tagged `v0.1.0-alpha.0`; the npm trusted publisher for `Rika-Labs/akter`'s `release.yml` in the `npm` environment is configured. Every later version publishes from `.github/workflows/release.yml` without an npm token.
+`0.1.0-alpha.1` is published on the npm `alpha` dist-tag. `0.1.0-alpha.0` was bootstrapped by hand on 2026-10-04 and tagged `v0.1.0-alpha.0`; the npm trusted publisher for `Rika-Labs/akter`'s `release.yml` in the `npm` environment is configured. Every later version publishes from `.github/workflows/release.yml` without an npm token.
 
 ## Prerequisites
 
@@ -32,7 +37,7 @@ SMOKE_RUNTIME=bun bun .github/src/release/smoke.ts --package .local/package --cl
 
 `pack.ts` builds and stages the framework and CLI tarballs with `publishConfig` applied and `catalog:` versions resolved, copies `LICENSE` and `NOTICE`, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, when a dependency is still `catalog:` or `workspace:`, when the manifest is private or its version is not semantic, or when compiled code imports a package the manifest does not declare. `smoke.ts` packs both staged directories, installs them with their exact dependencies into a new temporary project, typechecks a framework consumer, runs its PGlite command, and runs `akter --help`, `akter login --help`, and `akter dev` readiness and inspector checks on Node and Bun. Without package arguments it stages fresh copies first.
 
-## One-time bootstrap (Dallen, from a Mac)
+## One-time bootstrap
 
 1. Check out the release commit on `main` and stage the tarballs as above: `bun .github/src/pack.ts --out .local/package --cli-out .local/package-cli`, then run both `SMOKE_RUNTIME=node bun .github/src/release/smoke.ts --package .local/package --cli-package .local/package-cli` and `SMOKE_RUNTIME=bun bun .github/src/release/smoke.ts --package .local/package --cli-package .local/package-cli`.
 2. `npm login` with the account that owns the `@rikalabs` scope, with 2FA enabled.
@@ -63,4 +68,5 @@ Check that `alpha` and `latest` both name the released alpha. This deliberately 
 
 - The workflow cannot publish a package name that does not exist on npm yet; each new package needs the bootstrap above.
 - A tag whose version is already on npm runs every check and the smoke test, then skips `npm publish`; npm versions are immutable, so a changed build needs a new version, not a retag.
-- The first alpha supports one runner per database, as the package README says.
+- The OSS launch claim is multi-runner on one host with `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a Postgres database. Separate-host and hosting-provider support need their own evidence in the [support matrix](support-matrix.md).
+- `@akter/react` and the Python client generator are repo-only and are not published at launch. Check the [CLI reference](../api/06-cli.md) for its current installation status.

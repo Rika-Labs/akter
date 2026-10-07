@@ -1,3 +1,8 @@
+---
+title: "Observability"
+description: "Inspect runner metrics, traces, durable work, and defects."
+---
+
 # Observability
 
 **Responsibility:** make behavior explainable in production.  

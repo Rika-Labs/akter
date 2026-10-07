@@ -72,7 +72,7 @@ A server under `Auth.none` declares no schemes. Never put a credential in the UR
 
 ## Python
 
-`packages/python-client` generates a Python 3.9+ package, using only the standard library, from an OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)):
+The repo-only `packages/python-client` generator is not published at launch. From a checkout it generates a Python 3.9+ package, using only the standard library, from an OpenAPI document ([ADR 0060](../decisions/0060-generated-protocols-mcp-and-python-client.md)):
 
 ```sh
 bun packages/python-client/src/main.ts http://localhost:8080/openapi.json --out ./clients --name chat_client

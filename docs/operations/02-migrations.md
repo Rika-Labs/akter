@@ -1,3 +1,8 @@
+---
+title: "Migrations"
+description: "Apply framework, application, and stored-state changes safely."
+---
+
 # Migrations
 
 **Responsibility:** change runtime and application schemas safely.  
@@ -84,11 +89,11 @@ Framework migrations follow the same phases across framework releases:
 - Every migration runs inside the boot transaction, so it cannot use `CREATE INDEX CONCURRENTLY`. An index on a large table holds its table lock for the build, which blocks turns, and its release notes must say so.
 - A contract of a framework column waits for the retained-record horizons above, because receipts, outbox rows, events, and workflow records outlive the release that wrote them.
 
-Nothing is released yet, so framework migrations still carry no compatibility code; these rules bind from the first release that runs beside another ([versioning](../api/versioning.md)).
+The framework is published as an alpha. Do not infer rolling compatibility from the alpha label or from additive SQL alone; rehearse the exact old/new runtime pair on a restored copy before rollout. The planned alpha.1 → alpha.2 changes are listed in the [alpha upgrade notes](alpha-upgrades.md), and the non-alpha compatibility rules are in [versioning](../api/versioning.md).
 
 ### Two runtime versions behind one database
 
-During a rolling deploy a runner of the old release and one of the new release serve one database, and an actor's shard moves from one to the other as runners restart. What stays true, and is verified on Postgres by `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` in [`conformance/restore.ts`](../../packages/akter/src/testing/conformance/restore.ts):
+During a rolling deploy a runner of the old release and one of the new release serve one database, and an actor's shard moves from one to the other as runners restart. What stays true, and is verified on a Postgres database by `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` in [`conformance/restore.ts`](../../packages/akter/src/testing/conformance/restore.ts):
 
 - A command id admitted under one version replays its receipt under the other, without running either version's handler.
 - An expired id is refused by every runner, before and after a sweep prunes its receipt, because expiry is bound to the id and read from the database clock.
@@ -96,13 +101,7 @@ During a rolling deploy a runner of the old release and one of the new release s
 
 What stays per-process: actor policies. A new release that lowers `keepReceipts` can prune a receipt that an old runner's in-flight retry still counts on, so lower it in two releases, or while no retries of old ids are in flight ([retention](retention.md)). The retry window, protocol, and placements cannot differ between versions: startup refuses the runner.
 
-## Hosted and brownfield
-
-Hosted Neki migrations must preserve `routing_key` shard placement and the `actor_outbox` relay, and run in every region of a multi-region deployment. Never assume every actor is awake or that rows on different shards share a transaction.
-
-Brownfield adoption is observe-then-enforce ([ADR 0054](../decisions/0054-existing-schema-adoption.md)). Observe mode records direct writes without changing outcomes; enforce mode makes the database refuse them; the sequence is below. The framework must not claim adoption is complete until direct writers have been removed or explicitly routed through an approved privileged path.
-
-### Adopting an existing schema
+## Brownfield adoption
 
 Migration `0024_adoption` adds `actor_adoptions` (one row per adopted table and its state), `actor_adoption_writes` (one row per observed statement), and the trigger functions. Neither table has a `durable` view, because their rows name roles and applications across every tenant; the CLI reads them with its own login. Each command takes `--entry <module>` (the module exporting `actors`) and `--database-url <url>`; the login must own the table or be able to alter it, and is never the runtime's.
 
@@ -120,4 +119,4 @@ The runtime refuses to start an enforced table whose guard trigger is missing or
 
 ## Before rollout
 
-Test the migration through `@rikalabs/akter/testing` against PGlite and Postgres, on a copy of production-shaped data, with a runner of the previous release still serving; run the same conformance cases on Neki when hosted support is affected.
+Test the migration through `@rikalabs/akter/testing` against PGlite and a Postgres database, on a copy of production-shaped data, with a runner of the previous release still serving; run the same conformance cases on Neki when hosted support is affected.

@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a change to the open-source framework or CLI
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to build, and where does the current API get in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the behavior you need, with an example if useful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What have you tried, and why doesn't it meet the need?
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Constraints
+      description: Mention durability, compatibility, tenancy, deployment, or recovery requirements that affect the design.

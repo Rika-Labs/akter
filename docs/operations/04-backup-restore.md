@@ -1,3 +1,8 @@
+---
+title: "Backup and restore"
+description: "Back up and restore a deployment without creating dual writable authority."
+---
+
 # Backup and restore
 
 **Responsibility:** restore service without duplicating authority or external calls.  
@@ -7,7 +12,7 @@
 
 The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, messages, events, workflows, jobs, dead letters, database-backed `actor_blobs` chunks, and the Neki outbox when applicable. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
 
-## Backups on Postgres
+## Backups on a Postgres database
 
 A backup must be **one mutually consistent snapshot of the whole database**. Any of these produces one:
 
@@ -68,7 +73,7 @@ Do not delete receipts or outbox rows to make a restore start.
 - `replays a receipt the backup holds and runs an unexpired command the backup lost once`
 - `retries an effect in flight at the backup with its idempotency key after restore, and routes its result once`
 
-On Postgres, `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` covers mixed versions ([migrations](02-migrations.md#two-runtime-versions-behind-one-database)).
+On a Postgres database, `keeps receipt replay, expiry, and pending intents across two runtime versions behind one database during a rolling deploy` covers mixed versions ([migrations](02-migrations.md#two-runtime-versions-behind-one-database)).
 
 ### Online `pg_dump` and point-in-time recovery
 

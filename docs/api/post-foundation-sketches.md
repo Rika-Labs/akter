@@ -62,4 +62,4 @@ const TodoList = Actor.make("TodoList", {
 
 Generated `TodoList` source is validated in isolation and activated as a versioned build; no generated handler runs in the control-plane process.
 
-The `Agent.definition` sketch for ADR 0015 was removed: the agent runtime is Outlast, a separate product ([ADR 0017](../decisions/0017-m1-record-corrections.md)).
+The `Agent.definition` sketch for ADR 0015 was removed: agent runtimes are separate products ([ADR 0017](../decisions/0017-m1-record-corrections.md)).
