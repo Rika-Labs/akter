@@ -66,10 +66,19 @@ const computePlan = {
 }
 
 const storagePlan = {
-  ...computePlan,
-  allowances: { ...computePlan.allowances, storageGb: 10 },
-  overage: { ...computePlan.overage, storageCentsPerGbMonth: 25 },
+  id: "free",
+  name: "Free",
+  basePriceCents: 0,
+  currency: "usd",
+  allowances: {
+    commands: 1_000_000,
+    commandCap: 1_000_000,
+    storageGb: 1,
+    concurrentConnections: 50,
+  },
+  overage: { commandCentsPerMillion: 0, storageCentsPerGbMonth: 25 },
   features: ["command-cap", "storage-overage", "storage-cap"],
+  provisional: false,
 }
 
 const catalog = (plans: ReadonlyArray<Schema.Json>) => ({
@@ -91,16 +100,8 @@ describe("plan catalog", () => {
     expect(validCatalog(catalog([computePlan, capped]))).toBe(true)
   })
 
-  it("still decodes the deprecated storage allowance, storage overage rate and storage features", () => {
+  it("still decodes a storage-era plan that carries no compute fields", () => {
     expect(validCatalog(catalog([storagePlan]))).toBe(true)
-  })
-
-  it("refuses a plan without its compute allowance, cap or overage rate", () => {
-    const { computeUnitHours: _hours, ...noHours } = computePlan.allowances
-    const { computeUnitHourCap: _cap, ...noCap } = computePlan.allowances
-    expect(validPlan({ ...storagePlan, allowances: { ...noHours, storageGb: 10 } })).toBe(false)
-    expect(validPlan({ ...computePlan, allowances: noCap })).toBe(false)
-    expect(validPlan({ ...computePlan, overage: { commandCentsPerMillion: 40 } })).toBe(false)
   })
 
   it("refuses negative compute allowances, caps and rates, and an unknown feature", () => {
@@ -216,23 +217,26 @@ const computeUsage = {
 }
 
 const storageUsage = {
-  ...computeUsage,
+  period: "2026-09",
   meters: [
-    ...computeUsage.meters,
-    { meter: "storageGb", used: 1.2, included: 10, overage: 0, overageCostCents: 0 },
+    { meter: "commands", used: 900, included: 1000, overage: 0, overageCostCents: 0 },
+    { meter: "storageGb", used: 1.2, included: 1, overage: 0.2, overageCostCents: 5 },
   ],
-  latestStorageSample: { bytes: 1_200_000_000, sampledAt: "2026-10-07T10:00:00.000Z" },
-  caps: [{ cap: "storage", limit: 10_000_000_000, used: 1, atCap: false, refusing: false }],
+  latestStorageSample: { bytes: 1_200_000_000, sampledAt: "2026-09-30T23:00:00.000Z" },
+  caps: [
+    { cap: "storage", limit: 1_000_000_000, used: 1_200_000_000, atCap: true, refusing: true },
+  ],
+  commandsPerDay: [{ day: "2026-09-30", commands: 900 }],
   byProject: [
     {
       projectId: "prj_1",
       name: "Storefront",
-      commands: 120,
-      storageGbMonths: 0.4,
-      estimatedCostCents: 0,
+      commands: 900,
+      storageGbMonths: 1.2,
+      estimatedCostCents: 5,
     },
   ],
-  pricing: { ...computeUsage.pricing, storagePerGbCents: 25 },
+  pricing: { freeCommands: 1000, readCommandWeight: 0.1, storagePerGbCents: 25 },
 }
 
 describe("usage report", () => {
@@ -242,17 +246,15 @@ describe("usage report", () => {
     expect(validUsage(computeUsage)).toBe(true)
   })
 
-  it("still decodes the deprecated storage meter, sample, cap, project storage and storage price", () => {
+  it("still decodes a storage-era report that carries no compute fields", () => {
     expect(validUsage(storageUsage)).toBe(true)
   })
 
-  it("refuses pricing without a compute rate, and negative or inconsistent project compute", () => {
-    const { computeCentsPerUnitHour: _rate, ...legacyPricing } = storageUsage.pricing
+  it("refuses a negative compute rate, negative or inconsistent project compute and a negative compute cap", () => {
     const withProject = (patch: Record<string, Schema.Json>) => ({
       ...computeUsage,
       byProject: [{ ...meteredProject, ...patch }],
     })
-    expect(validUsage({ ...storageUsage, pricing: legacyPricing })).toBe(false)
     expect(
       validUsage({
         ...computeUsage,

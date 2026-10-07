@@ -168,8 +168,10 @@ export type PlanFeature = typeof PlanFeature.Type
  * included compute unit-hours and `allowances.computeUnitHourCap` its hard
  * stop (null when overage is billed instead at
  * `overage.computeCentsPerUnitHour`). A compute unit-hour is one hour of a
- * shared CPU with 256 MiB of memory; see `ComputeUsage`. A provisional tier's
- * prices are not yet published.
+ * shared CPU with 256 MiB of memory; see `ComputeUsage`. The compute fields
+ * are optional so responses from servers that predate compute pricing still
+ * decode; current servers always send them. A provisional tier's prices are
+ * not yet published.
  *
  * `allowances.storageGb` and `overage.storageCentsPerGbMonth` are deprecated
  * and optional: the server no longer reports them, and they stay decodable
@@ -183,14 +185,14 @@ export const CatalogPlan = Schema.Struct({
   allowances: Schema.Struct({
     commands: NonNegativeInt,
     commandCap: Schema.NullOr(NonNegativeInt),
-    computeUnitHours: NonNegative,
-    computeUnitHourCap: Schema.NullOr(NonNegative),
+    computeUnitHours: Schema.optionalKey(NonNegative),
+    computeUnitHourCap: Schema.optionalKey(Schema.NullOr(NonNegative)),
     storageGb: Schema.optionalKey(NonNegative),
     concurrentConnections: NonNegativeInt,
   }),
   overage: Schema.Struct({
     commandCentsPerMillion: NonNegative,
-    computeCentsPerUnitHour: NonNegative,
+    computeCentsPerUnitHour: Schema.optionalKey(NonNegative),
     storageCentsPerGbMonth: Schema.optionalKey(NonNegative),
   }),
   features: Schema.Array(PlanFeature),
@@ -234,13 +236,15 @@ export type UsageMeter = typeof UsageMeter.Type
 /**
  * The published rules usage is priced by, sent with every usage report.
  * `computeCentsPerUnitHour` prices compute unit-hours beyond the plan's
- * allowance. `storagePerGbCents` is deprecated and optional: the server no
+ * allowance; it is optional so responses from servers that predate compute
+ * pricing still decode, and current servers always send it.
+ * `storagePerGbCents` is deprecated and optional: the server no
  * longer reports it, and it stays decodable only for older responses.
  */
 export const UsagePricing = Schema.Struct({
   freeCommands: NonNegativeInt,
   readCommandWeight: NonNegative,
-  computeCentsPerUnitHour: NonNegative,
+  computeCentsPerUnitHour: Schema.optionalKey(NonNegative),
   storagePerGbCents: Schema.optionalKey(NonNegative),
   provisional: Schema.optionalKey(Schema.Boolean),
 })
