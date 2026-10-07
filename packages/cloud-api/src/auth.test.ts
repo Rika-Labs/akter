@@ -102,6 +102,8 @@ const AccountHandlers = HttpApiBuilder.group(Api, "account", (handlers) =>
         }),
       )
       .handle("updateProfile", () => Effect.fail(NotImplemented.make({ operation: "x" })))
+      .handle("deleteAccount", () => Effect.fail(NotImplemented.make({ operation: "x" })))
+      .handle("exportData", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("setActiveOrganization", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("getPreferences", () => Effect.fail(NotImplemented.make({ operation: "x" })))
       .handle("updatePreferences", () => Effect.fail(NotImplemented.make({ operation: "x" })))

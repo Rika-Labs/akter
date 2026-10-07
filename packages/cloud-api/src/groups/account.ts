@@ -8,13 +8,16 @@ import {
   CreatedApiKey,
   CreateInvitation,
   CreateOrganization,
+  DeleteAccount,
   Invitation,
   InvitationPreview,
   Me,
   Member,
   NotificationSettings,
   Organization,
+  OrganizationDeletion,
   OrganizationMembership,
+  PersonalDataExport,
   PinActor,
   PinnedActor,
   Preferences,
@@ -38,6 +41,14 @@ const organizationParams = { organizationId: OrganizationId }
 
 export class AccountGroup extends HttpApiGroup.make("account").add(
   HttpApiEndpoint.get("me", "/me", { success: Me, error: SelfErrors }),
+  HttpApiEndpoint.get("exportData", "/me/export", {
+    success: PersonalDataExport,
+    error: SelfErrors,
+  }),
+  HttpApiEndpoint.delete("deleteAccount", "/me", {
+    payload: DeleteAccount,
+    error: WriteErrors,
+  }),
   HttpApiEndpoint.patch("updateProfile", "/me", {
     payload: UpdateProfile,
     success: User,
@@ -106,6 +117,11 @@ export class OrganizationsGroup extends HttpApiGroup.make("organizations").add(
   HttpApiEndpoint.delete("delete", "/organizations/:organizationId", {
     params: organizationParams,
     error: WriteErrors,
+  }),
+  HttpApiEndpoint.get("getDeletion", "/organizations/:organizationId/deletion", {
+    params: organizationParams,
+    success: OrganizationDeletion,
+    error: ReadErrors,
   }),
 ) {}
 
