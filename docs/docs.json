@@ -72,6 +72,7 @@
               "cloud/get-started",
               "cloud/deploy",
               "cloud/environment-variables",
+              "cloud/logs",
               "cloud/database",
               "cloud/pricing-and-limits",
               "cloud/account-and-data"
