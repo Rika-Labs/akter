@@ -11,9 +11,10 @@ The uploaded directory must contain `src/app.ts`, default-exporting `App.make({ 
 
 For the quickstart's `Counter` and `CounterLive`, the hosted entrypoint is:
 
-```ts src/app.ts
+```ts title="src/app.ts"
 import { App } from "@rikalabs/akter/runtime"
-import { Counter, CounterLive } from "./counter.ts"
+import { Counter } from "./counter/contract.ts"
+import { CounterLive } from "./counter/layer.ts"
 
 export default App.make({ actors: [Counter], layer: CounterLive })
 ```

@@ -18,6 +18,8 @@ Start with the available home region. Adding a second region is not part of the 
 
 The package is `@rikalabs/akter-cli`; its executable is `akter`. It supports Bun 1.4.2+ or Node 24+.
 
+Use the `alpha` dist-tag for both packages: `@rikalabs/akter-cli@alpha` for the CLI and `@rikalabs/akter@alpha` for your app, as in the [quickstart](/quickstart). The framework's `latest` tag may still point to an older alpha.
+
 <Warning>
 The first registry publication is pending. These registry install commands become available after that publication.
 </Warning>
@@ -25,13 +27,13 @@ The first registry publication is pending. These registry install commands becom
 <Tabs>
   <Tab title="Bun">
     ```sh
-    bun add -d @rikalabs/akter-cli
+    bun add -d @rikalabs/akter-cli@alpha
     bunx akter login
     ```
   </Tab>
   <Tab title="Node / npm">
     ```sh
-    npm install --save-dev @rikalabs/akter-cli
+    npm install --save-dev @rikalabs/akter-cli@alpha
     npx akter login
     ```
   </Tab>
