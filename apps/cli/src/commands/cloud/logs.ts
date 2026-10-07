@@ -5,8 +5,11 @@ import {
   MAX_LOG_WAIT_SECONDS,
   MAX_LOG_WINDOW_SECONDS,
   ProjectId,
+  type RunnerLogPage,
+  type Unavailable,
 } from "@akter/cloud-api"
 import { Config, Console, DateTime, Effect, Option, Schema } from "effect"
+import type { HttpClientError } from "effect/http"
 import { Command, Flag } from "effect/cli"
 
 import { reportFailures, signedIn } from "./client.ts"
@@ -51,16 +54,24 @@ export const logsCommand = Command.make(
   (options) =>
     Effect.gen(function* () {
       const { client } = yield* signedIn
-      const now = yield* DateTime.now
-      const since = DateTime.subtract(now, { seconds: options.since })
+      const since = DateTime.subtract(yield* DateTime.now, { seconds: options.since })
       let cursor: string | undefined
+      let more = false
       let failures = 0
+      const retryRead = (error: HttpClientError.HttpClientError | Unavailable) =>
+        Effect.gen(function* () {
+          if (!options.follow || failures >= 5) return yield* error
+          failures += 1
+          yield* Console.error("Log read unavailable; reconnecting from the last cursor.")
+          yield* Effect.sleep(`${Math.min(2 ** (failures - 1), 8)} seconds`)
+          return undefined
+        })
       while (true) {
-        const query = {
+        const query: Parameters<typeof client.deployments.getLogs>[0]["query"] = {
           since,
           limit: options.limit,
           cursor,
-          wait: options.follow && cursor !== undefined ? MAX_LOG_WAIT_SECONDS : 0,
+          wait: options.follow && cursor !== undefined && !more ? MAX_LOG_WAIT_SECONDS : 0,
         }
         const request = Option.isSome(options.deployment)
           ? client.deployments.getLogs({
@@ -71,30 +82,19 @@ export const logsCommand = Command.make(
               params: { projectId: options.project, environment: options.environment },
               query,
             })
-        const page = yield* request.pipe(
-          Effect.catchTag("HttpClientError", (error) =>
-            Effect.gen(function* () {
-              if (!options.follow || failures >= 5) return yield* error
-              failures += 1
-              yield* Console.error("Log connection dropped; reconnecting from the last cursor.")
-              yield* Effect.sleep(`${Math.min(2 ** (failures - 1), 8)} seconds`)
-              return undefined
-            }),
-          ),
+        const page: RunnerLogPage | undefined = yield* request.pipe(
+          Effect.catchTags({ HttpClientError: retryRead, Unavailable: retryRead }),
         )
         if (page === undefined) continue
         failures = 0
         for (const line of page.lines)
           yield* Console.log(
-            `${DateTime.formatIso(line.at)}\t${line.runnerId}\t${line.stream}\t${line.text.replace(colourSequence, "").replace(/\p{Cc}|[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, "�")}`,
+            `${DateTime.formatIso(line.at)}\t${line.runnerId}\t${line.stream}\t${line.text.replace(colourSequence, "").replace(/\p{Cc}|[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, "�")}${line.clipped ? " …" : ""}`,
           )
         cursor = page.cursor
-        if (page.truncated)
-          yield* Console.error(
-            "Log output was truncated; provider retention only covers recent lines.",
-          )
-        if (!options.follow) return
-        if (page.lines.length === 0) yield* Effect.sleep("1 second")
+        more = page.more
+        if (!options.follow && !more) return
+        if (page.lines.length === 0 && !more) yield* Effect.sleep("1 second")
       }
     }).pipe(reportFailures),
 ).pipe(

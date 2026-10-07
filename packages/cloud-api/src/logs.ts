@@ -9,7 +9,7 @@ export const MAX_LOG_WINDOW_SECONDS = 3600
 export const MAX_LOG_WAIT_SECONDS = 20
 
 /** An opaque position, bound to the authorized resource, never a provider app selector. */
-export const LogCursor = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16384))
+export const LogCursor = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048))
 
 export const LogLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_LOG_LINES }))
 
@@ -39,13 +39,14 @@ export const RunnerLogLine = Schema.Struct({
         "Log text exceeds the byte limit",
     ),
   ),
+  clipped: Schema.Boolean,
 })
 export type RunnerLogLine = typeof RunnerLogLine.Type
 
-/** The cursor advances even on an empty poll; truncated also covers clipped line text. */
+/** More means another page can be read immediately; clipping is reported independently on each line. */
 export const RunnerLogPage = Schema.Struct({
   lines: Schema.Array(RunnerLogLine).check(Schema.isMaxLength(MAX_LOG_LINES)),
   cursor: LogCursor,
-  truncated: Schema.Boolean,
+  more: Schema.Boolean,
 })
 export type RunnerLogPage = typeof RunnerLogPage.Type

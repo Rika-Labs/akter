@@ -3,7 +3,7 @@ import { OpenApi } from "effect/http-api"
 import { describe, expect, it } from "vitest"
 
 import { CloudApi } from "./contract.ts"
-import { LogLimit, LogWait, RunnerLogPage } from "./logs.ts"
+import { LogCursor, LogLimit, LogWait, RunnerLogPage } from "./logs.ts"
 
 const valid = <S extends Schema.Top & { readonly DecodingServices: never }>(
   schema: S,
@@ -18,6 +18,8 @@ describe("customer runner logs contract", () => {
     expect(valid(LogWait, 0)).toBe(true)
     expect(valid(LogWait, 20)).toBe(true)
     for (const wait of [-1, 21, 0.5]) expect(valid(LogWait, wait)).toBe(false)
+    expect(valid(LogCursor, "c".repeat(2048))).toBe(true)
+    expect(valid(LogCursor, "c".repeat(2049))).toBe(false)
     const line = {
       id: "line-1",
       deploymentId: "deployment-a",
@@ -25,20 +27,21 @@ describe("customer runner logs contract", () => {
       at: "2026-10-07T01:02:03.000Z",
       stream: "stderr",
       text: "é".repeat(2048),
+      clipped: true,
     }
     const codec = Schema.toCodecJson(RunnerLogPage)
-    expect(valid(codec, { lines: [line], cursor: "position-a", truncated: false })).toBe(true)
+    expect(valid(codec, { lines: [line], cursor: "position-a", more: false })).toBe(true)
     expect(
-      valid(codec, { lines: [{ ...line, text: `${line.text}x` }], cursor: "a", truncated: false }),
+      valid(codec, { lines: [{ ...line, text: `${line.text}x` }], cursor: "a", more: false }),
     ).toBe(false)
     expect(
       valid(codec, {
         lines: Array.from({ length: 201 }, () => line),
         cursor: "a",
-        truncated: false,
+        more: false,
       }),
     ).toBe(false)
-    expect(valid(codec, { lines: [], cursor: "", truncated: false })).toBe(false)
+    expect(valid(codec, { lines: [], cursor: "", more: false })).toBe(false)
   })
 
   it("addresses environments and deployments under their project, with resumable bounded polls", () => {
