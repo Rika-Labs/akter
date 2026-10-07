@@ -13,11 +13,11 @@ import {
   releaseAdoption,
   type AdoptionRefused,
 } from "@rikalabs/akter/runtime"
-import { BunCrypto } from "@effect/platform-bun"
 import { Clock, Console, Effect, Layer, Option, type Redacted } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { Database } from "@rikalabs/akter/runtime"
 import { CommandFailed, fail } from "../../failure.ts"
+import { PlatformCrypto } from "../../platform.ts"
 import { actorsOf, entryFlags, loadEntry } from "../workflows/check.ts"
 
 /** The commands `akter adopt` runs. */
@@ -174,7 +174,9 @@ const run = (options: AdoptOptions) =>
         : yield* actorsOf({ module: yield* loadEntry(options.entry), entry: options.entry })
 
     const services = yield* Layer.build(
-      Database.postgres({ url: options.databaseUrl }).pipe(Layer.provideMerge(BunCrypto.layer)),
+      Database.postgres({ url: options.databaseUrl }).pipe(
+        Layer.provideMerge(PlatformCrypto.layer),
+      ),
     )
 
     const { output, exitCode } = yield* adopt({ options, actors }).pipe(

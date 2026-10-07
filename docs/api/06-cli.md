@@ -11,7 +11,7 @@ description: "The akter command-line tool: its commands, flags, output, and exit
 **Owner role:** API/SDK.  
 **Change policy:** a changed command, flag, or exit status updates this page, the runbooks, and the guides that use it.
 
-`akter` is the `apps/cli` bin, named `durable` before [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md). It parses its arguments with Effect's `effect/cli` module: one root `akter` command whose subcommands are the groups below, each flag typed and described, so `akter --help` and `akter <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
+`akter` is the CLI package selected for publication as the unscoped `akter` name (see [ADR 0103](../decisions/0103-cli-distribution.md)); its first registry publish is a maintainer bootstrap. Once published, install it with `npm install --save-dev akter` or `bun add --dev akter`, then run it with `npx akter` or `bunx akter`. It supports Node 24+ and Bun 1.4.2+, and the framework package does not carry a second bin. The command parses its arguments with Effect's `effect/cli` module: one root `akter` command whose subcommands are the groups below, each flag typed and described, so `akter --help` and `akter <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
 
 ## Exit statuses
 
@@ -42,7 +42,7 @@ GLOBAL FLAGS
   --log-level <all|trace|debug|info|warn|warning|error|fatal|none>    Sets the minimum log level (choices: all, trace, debug, info, warn, warning, error, fatal, none)
 
 Develop and check:
-  dev          Run the entry's app locally with a read-only inspector at /_durable/inspector
+  dev          Run the entry's app locally with a read-only inspector at /_akter/inspector
   workflows    Check workflow changes against open executions
   payloads     Check and clear stored event and job payload versions
   adopt        Adopt existing tables: plan, observe legacy writers, backfill, enforce, and check status
@@ -70,7 +70,7 @@ Control plane:
 
 ## Operator commands
 
-`defects list`, `inspect`, `export`, `receipts show`, `dead-letters`, and `subscriptions` call a runner's `Operators.serve` routes. Each reads its bearer token from `DURABLE_OPERATOR_TOKEN`, or from the environment variable `--token-env` names. `--url` repeats; `defects list` reads every runner named, and the single-actor commands use the first. See [ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md) for the grants each command needs and the [runbooks](../operations/runbooks.md) for when to use them.
+`defects list`, `inspect`, `export`, `receipts show`, `dead-letters`, and `subscriptions` call a runner's `Operators.serve` routes. Each reads its bearer token from `AKTER_OPERATOR_TOKEN`, or from the environment variable `--token-env` names. `--url` repeats; `defects list` reads every runner named, and the single-actor commands use the first. See [ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md) for the grants each command needs and the [runbooks](../operations/runbooks.md) for when to use them.
 
 ## Akter Cloud commands
 
@@ -87,10 +87,12 @@ USAGE
   akter login [flags]
 
 FLAGS
-  --api-url string    The control plane to sign in to (default AKTER_API_URL, then http://localhost:3001)
+  --api-url string    The control plane to sign in to (default AKTER_API_URL, then https://api.akter.dev)
 ```
 
 It prints the console's `/device` page and a code written `XXXX-XXXX` (never a link that carries the code), then polls at the interval the control plane names, five seconds slower after each `slow_down`, until the code is approved, denied or past its own expiry. Approving the code saves the session, which starts in the approver's active organization, and prints who it signs in as; a denied or expired code exits 1 and saves nothing. If the control plane will not say who the new session belongs to, `login` signs the session out again and saves nothing.
+
+For a local control plane, run `akter login --api-url http://localhost:3001`, or set `AKTER_API_URL=http://localhost:3001`. The flag overrides the environment variable, which overrides the hosted default.
 
 ### `akter logout`
 
@@ -147,7 +149,7 @@ Local mode is the default and uses only the SQL-backed Stripe implementation. St
 
 ### `akter dev`
 
-Run the entry's app locally with a read-only inspector at /_durable/inspector
+Run the entry's app locally with a read-only inspector at /_akter/inspector
 
 ```text
 USAGE
@@ -346,7 +348,7 @@ USAGE
 
 FLAGS
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
   --tenant string       The tenant to read, or * for every tenant the operator's grant covers (default *)
   --actor string        Only defects of this actor type
@@ -369,7 +371,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --receipts integer    How many of the newest receipts to show, 1 to 1000 (default 20)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -388,7 +390,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --output file         The seed file to create; an existing file is never replaced
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -407,7 +409,7 @@ ARGUMENTS
 FLAGS
   --tenant string       The tenant the request acts in
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -427,7 +429,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --reason string       Why, recorded in the operator audit log (up to 500 characters)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
   --provider-checked    Confirm the provider never applied an ambiguous attempt, so running it again is safe
 ```
@@ -448,7 +450,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --reason string       Why, recorded in the operator audit log (up to 500 characters)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -466,7 +468,7 @@ FLAGS
   --min-attempts integer    Only rows with at least this many failed attempts
   --limit integer           At most this many rows, 1 to 1000
   --url string              A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string        The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string        The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                    Print the runner's answer as JSON
 ```
 
@@ -486,7 +488,7 @@ FLAGS
   --tenant string          The tenant the request acts in
   --reason string          Why, recorded in the operator audit log (up to 500 characters)
   --url string             A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string       The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string       The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                   Print the runner's answer as JSON
 ```
 

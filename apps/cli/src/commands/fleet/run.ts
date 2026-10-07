@@ -1,10 +1,10 @@
 import type { AnyFleetView } from "@rikalabs/akter"
 import { Database, rebuildFleetView, setupFleet } from "@rikalabs/akter/runtime"
-import { BunCrypto } from "@effect/platform-bun"
 import { Console, Effect, Layer, Predicate, type Redacted } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import type { SqlClient } from "effect/sql"
 import { CommandFailed, UsageError, fail } from "../../failure.ts"
+import { PlatformCrypto } from "../../platform.ts"
 import { loadEntry } from "../workflows/check.ts"
 
 const isView = (value: unknown): value is AnyFleetView =>
@@ -55,7 +55,7 @@ const onDatabase = <E, R>(
 ) =>
   Effect.gen(function* () {
     const services = yield* Layer.build(
-      Database.postgres({ url: databaseUrl }).pipe(Layer.provideMerge(BunCrypto.layer)),
+      Database.postgres({ url: databaseUrl }).pipe(Layer.provideMerge(PlatformCrypto.layer)),
     )
 
     const { output, exitCode } = yield* run.pipe(Effect.provideContext(services))

@@ -101,7 +101,7 @@ describe("akter subscriptions list --lagging", () => {
       const read = (token: string) =>
         runCliWith({
           fetch,
-          env: { DURABLE_OPERATOR_TOKEN: token },
+          env: { AKTER_OPERATOR_TOKEN: token },
         })(["subscriptions", "list", "--lagging", "--url", "http://runner", "--tenant", tenant])
 
       expect(yield* read("look-token")).toEqual({
@@ -111,7 +111,7 @@ describe("akter subscriptions list --lagging", () => {
         reason: "",
       })
 
-      const json = yield* runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: "look-token" } })([
+      const json = yield* runCliWith({ fetch, env: { AKTER_OPERATOR_TOKEN: "look-token" } })([
         "subscriptions",
         "list",
         "--lagging",

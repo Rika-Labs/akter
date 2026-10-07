@@ -1,4 +1,5 @@
 import { Effect, Layer } from "effect"
+import { BunFileSystem } from "@effect/platform-bun"
 import { HttpRouter } from "effect/http"
 import { describe, expect, it } from "vitest"
 
@@ -9,9 +10,12 @@ describe("inspector page", () => {
     "serves the HTML shell pointing at its API and the bundled client beside it",
     () =>
       Effect.gen(function* () {
-        const web = HttpRouter.toWebHandler(Layer.mergeAll(pageRoutes("/_durable/inspector")), {
-          disableLogger: true,
-        })
+        const web = HttpRouter.toWebHandler(
+          pageRoutes("/_akter/inspector").pipe(Layer.provide(BunFileSystem.layer)),
+          {
+            disableLogger: true,
+          },
+        )
 
         yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
 
@@ -29,16 +33,16 @@ describe("inspector page", () => {
             }
           })
 
-        const html = yield* fetch("/_durable/inspector")
+        const html = yield* fetch("/_akter/inspector")
         expect(html).toMatchObject({
           status: 200,
           type: "text/html; charset=utf-8",
           cache: "no-store",
         })
-        expect(html.body).toContain(`data-api="/_durable/inspector/api"`)
-        expect(html.body).toContain(`<script type="module" src="/_durable/inspector/client.js">`)
+        expect(html.body).toContain(`data-api="/_akter/inspector/api"`)
+        expect(html.body).toContain(`<script type="module" src="/_akter/inspector/client.js">`)
 
-        const script = yield* fetch("/_durable/inspector/client.js")
+        const script = yield* fetch("/_akter/inspector/client.js")
         expect(script).toMatchObject({ status: 200, type: "text/javascript; charset=utf-8" })
 
         for (const route of ["/overview", "/actor?", "/dead-letters", "/workflows?status="])

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The `akter` CLI is packaged for Node 24+ and Bun 1.4.2+, versioned with the framework, with `@akter/cloud-api` bundled rather than published separately.
+- Operator commands now read `AKTER_OPERATOR_TOKEN` instead of `DURABLE_OPERATOR_TOKEN`; set the new environment variable or use `--token-env` explicitly. There is no implicit alias during the alpha.
+- The local inspector page and its API move from `/_durable/inspector` to `/_akter/inspector`. Update bookmarks and local API requests. Stored `durable` SQL schemas and stored format identifiers are unchanged.
+- `akter login` defaults to `https://api.akter.dev`; local stacks need `--api-url http://localhost:3001` or `AKTER_API_URL=http://localhost:3001`.
+
 ## 0.1.0-alpha.1 (2026-10-04)
 
 The first version published by the release workflow, through npm trusted publishing with provenance. The framework code is unchanged from `0.1.0-alpha.0`.

@@ -4,7 +4,7 @@ import { HttpClient, HttpClientRequest } from "effect/http"
 import { fail } from "../../failure.ts"
 
 /** The environment variable an operator command reads its bearer token from, unless `--token-env` names another. */
-export const TOKEN_ENV = "DURABLE_OPERATOR_TOKEN"
+export const TOKEN_ENV = "AKTER_OPERATOR_TOKEN"
 
 /** No runner at `url` answered. */
 export class RunnerUnreachable extends Schema.TaggedError<RunnerUnreachable>()(

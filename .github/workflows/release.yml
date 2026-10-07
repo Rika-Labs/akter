@@ -93,14 +93,27 @@ jobs:
           bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts
           bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
           bun run prepare
-          bun .github/src/pack.ts --out "$RUNNER_TEMP/package"
-      - name: Install the tarball into a clean project and run it
-        run: bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package"
+          bun .github/src/pack.ts --out "$RUNNER_TEMP/package" --cli-out "$RUNNER_TEMP/package-cli"
+          npm publish "$RUNNER_TEMP/package-cli" --dry-run --ignore-scripts --access public --tag "${{ steps.release.outputs.tag }}"
+      - name: Install the tarballs into a clean project and run them on Node and Bun
+        run: |
+          SMOKE_RUNTIME=node bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package" --cli-package "$RUNNER_TEMP/package-cli"
+          SMOKE_RUNTIME=bun bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package" --cli-package "$RUNNER_TEMP/package-cli"
       - name: Publish through npm trusted publishing
         if: steps.release.outputs.published == 'false'
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
+      - name: Publish the CLI through npm trusted publishing
+        env:
+          DIST_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name="$(jq -r .name "$RUNNER_TEMP/package-cli/package.json")"
+          version="$(jq -r .version "$RUNNER_TEMP/package-cli/package.json")"
+          if [ "$(npm view "$name@$version" version 2>/dev/null || true)" != "$version" ]; then
+            npm publish "$RUNNER_TEMP/package-cli" --provenance --access public --tag "$DIST_TAG"
+          fi
       - name: Upload the validated release notes
         uses: actions/upload-artifact@v7.0.1
         with:

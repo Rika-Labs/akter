@@ -29,7 +29,7 @@
   "type": "module",
   "scripts": {
     "prepare": "effect-tsgo patch --oxlint",
-    "dev": "bun run --cwd apps/cli src/main.ts dev",
+    "dev": "bun run --cwd apps/cli build:inspector && bun run --cwd apps/cli src/main.ts dev",
     "build": "turbo run build",
     "typecheck": "bun run typecheck:ci && GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
     "typecheck:ci": "tsc --noEmit -p .github/tsconfig.verify.json",

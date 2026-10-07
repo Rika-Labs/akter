@@ -1,4 +1,5 @@
 import { Effect, FileSystem, Option, Schema } from "effect"
+import { gzipSync } from "node:zlib"
 
 /** One `.dockerignore` line: a compiled pattern, its segments, and whether `!` makes it an exception. */
 interface Rule {
@@ -241,7 +242,7 @@ const tar = (entries: ReadonlyArray<Entry>) => {
     offset += block.byteLength
   }
 
-  return Bun.gzipSync(bytes)
+  return gzipSync(bytes)
 }
 
 /**
