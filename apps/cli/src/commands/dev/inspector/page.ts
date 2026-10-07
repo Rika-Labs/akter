@@ -1,5 +1,6 @@
-import { Effect } from "effect"
+import { Effect, FileSystem } from "effect"
 import { HttpRouter, HttpServerResponse } from "effect/http"
+import { fileURLToPath } from "node:url"
 
 const STYLES = `
 :root {
@@ -144,22 +145,19 @@ export const page = ({
 </body>
 </html>`
 
-const CLIENT = new URL("./client.ts", import.meta.url).pathname
-
-/** Bundles the browser client once, when the server starts. */
-const bundle = Effect.promise(() =>
-  Bun.build({ entrypoints: [CLIENT], target: "browser", minify: true }),
-).pipe(
-  Effect.flatMap((built) =>
-    built.success && built.outputs[0] !== undefined
-      ? Effect.promise(() => built.outputs[0]!.text())
-      : Effect.die(
-          new Error(
-            `Cannot bundle the inspector client: ${built.logs.map((log) => log.message).join("\n")}`,
-          ),
-        ),
-  ),
-)
+const bundle = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  return yield* fs.readFileString(
+    fileURLToPath(
+      new URL(
+        import.meta.url.endsWith(".ts")
+          ? "../../../../.cache/inspector-client.js"
+          : "./inspector-client.js",
+        import.meta.url,
+      ),
+    ),
+  )
+})
 
 /** Serves the inspector page at `path` and its script beside it; the API lives at `${path}/api`. */
 export const pageRoutes = (path: string) =>

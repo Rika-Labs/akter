@@ -1,11 +1,11 @@
 import { Database, checkWorkflows, formatIncompatibility } from "@rikalabs/akter/runtime"
 import type { Incompatibility } from "@rikalabs/akter/runtime"
-import { BunCrypto } from "@effect/platform-bun"
-import { Console, Effect, Layer, Schema } from "effect"
+import { Console, Effect, Layer, Schema, type Crypto } from "effect"
 import { Command, Flag } from "effect/cli"
-import type { SqlError } from "effect/sql"
+import type { SqlClient, SqlError } from "effect/sql"
 import { pathToFileURL } from "node:url"
 import { CommandFailed, UsageError, fail } from "../../failure.ts"
+import { PlatformCrypto } from "../../platform.ts"
 
 /** Flags of the commands that load an entry module and read its database. */
 export const entryFlags = {
@@ -26,7 +26,7 @@ export const entryFlags = {
  * the report; a report with exit code 1 ends the command with it. `reading`
  * names what a database failure could not read.
  */
-export const entryCommand = <R>({
+export const entryCommand = ({
   options,
   reading,
   run,
@@ -35,14 +35,20 @@ export const entryCommand = <R>({
   readonly reading: string
   readonly run: (
     actors: ReadonlyArray<{ readonly name: string; readonly api: object }>,
-  ) => Effect.Effect<{ readonly output: string; readonly exitCode: number }, SqlError.SqlError, R>
-}) =>
+  ) => Effect.Effect<
+    { readonly output: string; readonly exitCode: number },
+    SqlError.SqlError,
+    SqlClient.SqlClient | Crypto.Crypto
+  >
+}): Effect.Effect<void, CommandFailed> =>
   Effect.gen(function* () {
     const module = yield* loadEntry(options.entry)
     const actors = yield* actorsOf({ module, entry: options.entry })
 
     const services = yield* Layer.build(
-      Database.postgres({ url: options.databaseUrl }).pipe(Layer.provideMerge(BunCrypto.layer)),
+      Database.postgres({ url: options.databaseUrl }).pipe(
+        Layer.provideMerge(PlatformCrypto.layer),
+      ),
     )
 
     const { output, exitCode } = yield* run(actors).pipe(Effect.provideContext(services))

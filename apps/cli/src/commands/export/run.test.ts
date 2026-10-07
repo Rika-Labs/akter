@@ -141,7 +141,7 @@ describe("akter export", () => {
         web.handler(new Request(input, init))) as typeof globalThis.fetch
 
       const exportAs = (token: string) =>
-        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+        runCliWith({ fetch, env: { AKTER_OPERATOR_TOKEN: token } })([
           "export",
           "CliVault/v1",
           "--url",

@@ -1,4 +1,5 @@
 import { Effect, FileSystem, Option, Schema } from "effect"
+import { gzipSync } from "node:zlib"
 
 /**
  * One ignore-file line: a compiled pattern, whether `!` makes it an
@@ -218,7 +219,7 @@ const tar = (entries: ReadonlyArray<Entry>) => {
     offset += block.byteLength
   }
 
-  return Bun.gzipSync(bytes)
+  return gzipSync(bytes)
 }
 
 /** Git's own directory, never part of an app's source whatever the ignore file says. */

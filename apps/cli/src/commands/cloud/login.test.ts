@@ -106,6 +106,35 @@ const paths = (server: { readonly requests: ReadonlyArray<{ readonly url: string
 
 layer(BunServices.layer, { excludeTestServices: true })("akter login", (it) => {
   it.effect(
+    "uses the hosted default, lets the environment override it, and gives an explicit flag precedence",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const directory = yield* fs.makeTempDirectoryScoped()
+        for (const [env, args, expected] of [
+          [{}, [], "https://api.akter.dev/auth/device/code"],
+          [
+            { AKTER_API_URL: "http://localhost:3001" },
+            [],
+            "http://localhost:3001/auth/device/code",
+          ],
+          [
+            { AKTER_API_URL: "https://unused.example.dev" },
+            ["--api-url", "http://127.0.0.1:9"],
+            "http://127.0.0.1:9/auth/device/code",
+          ],
+        ] as const) {
+          const server = scriptedFetch(() => json(503, { error: "unavailable" }))
+          const result = yield* runCliWith({
+            fetch: server.fetch,
+            env: { AKTER_CONFIG_DIR: directory, ...env },
+          })(["login", ...args])
+          expect(result.exitCode).not.toBe(0)
+          expect(server.requests.map((request) => request.url)).toEqual([expected])
+        }
+      }),
+  )
+  it.effect(
     "prints the verification page and the code as XXXX-XXXX, then stores the session for whoever approved it",
     () =>
       Effect.gen(function* () {

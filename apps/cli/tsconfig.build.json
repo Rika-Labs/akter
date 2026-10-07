@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "stripInternal": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "../..",
+    "outDir": ".cache/declarations",
+    "plugins": [],
+    "paths": {
+      "@rikalabs/akter": ["../../packages/akter/dist/index.d.ts"],
+      "@rikalabs/akter/runtime": ["../../packages/akter/dist/runtime/index.d.ts"],
+      "@rikalabs/akter/client": ["../../packages/akter/dist/client/index.d.ts"],
+      "@akter/cloud-api": ["../../packages/cloud-api/src/index.ts"]
+    }
+  },
+  "exclude": ["src/**/*.test.ts", "src/testing.ts"]
+}

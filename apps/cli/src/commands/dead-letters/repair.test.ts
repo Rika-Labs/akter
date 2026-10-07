@@ -61,7 +61,7 @@ describe("akter dead-letters", () => {
 
       const retried = yield* runCliWith({
         fetch: runner.fetch,
-        env: { DURABLE_OPERATOR_TOKEN: "repair-token" },
+        env: { AKTER_OPERATOR_TOKEN: "repair-token" },
       })([
         "dead-letters",
         "retry",
@@ -166,7 +166,7 @@ describe("akter dead-letters", () => {
         web.handler(new Request(input, init))) as typeof globalThis.fetch
 
       const repair = (action: "retry" | "discard", token: string) =>
-        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+        runCliWith({ fetch, env: { AKTER_OPERATOR_TOKEN: token } })([
           "dead-letters",
           action,
           letter!.job_id,

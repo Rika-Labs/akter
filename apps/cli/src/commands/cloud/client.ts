@@ -11,8 +11,8 @@ import {
   type NotLoggedIn,
 } from "./credentials.ts"
 
-/** The control plane `login` signs in to when neither `--api-url` nor `AKTER_API_URL` names one: the local stack. */
-export const DEFAULT_API_URL = "http://localhost:3001"
+/** The control plane `login` signs in to when neither `--api-url` nor `AKTER_API_URL` names one. */
+export const DEFAULT_API_URL = "https://api.akter.dev"
 
 /** The `CloudApi` client for the control plane `credentials` name, sending their session token as a bearer token. */
 export const cloudClient = (credentials: Credentials) =>

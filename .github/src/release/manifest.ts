@@ -15,6 +15,7 @@ export const FrameworkManifest = Schema.StructWithRest(
     files: Schema.Array(Schema.String),
     dependencies: Schema.optionalKey(Specifiers),
     peerDependencies: Schema.optionalKey(Specifiers),
+    bin: Schema.optionalKey(Specifiers),
     publishConfig: Schema.StructWithRest(
       Schema.Struct({ types: Schema.String, exports: Exports }),
       [Schema.Record(Schema.String, Schema.Json)],
@@ -34,12 +35,18 @@ const FORBIDDEN_FILE = /(^|\/)src\/|\.test\.|(^|\/)crash\/|\.tsbuildinfo$|(?<!\.
 const resolveSpecifiers = (
   specifiers: Readonly<Record<string, string>>,
   catalog: Readonly<Record<string, string>>,
+  workspaceVersions: Readonly<Record<string, string>>,
 ) => {
   const resolved: Record<string, string> = {}
 
   for (const [name, specifier] of Object.entries(specifiers)) {
-    if (specifier.startsWith("workspace:"))
-      throw new Error(`${name} is a workspace dependency this manifest may not have`)
+    if (specifier.startsWith("workspace:")) {
+      const version = workspaceVersions[name]
+      if (version === undefined)
+        throw new Error(`${name} is a workspace dependency this manifest may not have`)
+      resolved[name] = version
+      continue
+    }
 
     const version = specifier === "catalog:" ? catalog[name] : specifier
 
@@ -58,9 +65,11 @@ const resolveSpecifiers = (
 export function publishManifest({
   manifest,
   catalog,
+  workspaceVersions = {},
 }: {
   manifest: FrameworkManifest
   catalog: Readonly<Record<string, string>>
+  workspaceVersions?: Readonly<Record<string, string>>
 }) {
   if (manifest.private === true) throw new Error("framework manifest is private")
 
@@ -77,8 +86,12 @@ export function publishManifest({
     ...rest,
     types,
     exports,
-    dependencies: resolveSpecifiers(manifest.dependencies ?? {}, catalog),
-    peerDependencies: resolveSpecifiers(manifest.peerDependencies ?? {}, catalog),
+    dependencies: resolveSpecifiers(manifest.dependencies ?? {}, catalog, workspaceVersions),
+    peerDependencies: resolveSpecifiers(
+      manifest.peerDependencies ?? {},
+      catalog,
+      workspaceVersions,
+    ),
     publishConfig,
   }
 }
@@ -106,16 +119,15 @@ export function undeclaredImports({
     ...Object.keys(manifest.peerDependencies ?? {}),
   ])
 
+  const parser = new Bun.Transpiler({ loader: "js" })
   const specifiers = sources.flatMap((source) =>
-    [...source.matchAll(/(?:from|import)\s*\(?\s*(["'])([^"'./][^"']*)\1/g)].flatMap((match) =>
-      match[2] === undefined ? [] : [match[2]],
-    ),
+    parser.scanImports(source.replace(/^#![^\n]*(?:\n|$)/, "")).map((entry) => entry.path),
   )
 
   return [
     ...new Set(
       specifiers.flatMap((specifier) => {
-        if (/^(node|bun):/.test(specifier)) return []
+        if (/^(node|bun):/.test(specifier) || specifier.startsWith(".")) return []
 
         const name = packageOf(specifier)
 
@@ -131,6 +143,7 @@ export interface PackedManifest {
   readonly version: string
   readonly private?: boolean
   readonly exports: Exports
+  readonly bin?: Readonly<Record<string, string>>
   readonly dependencies?: Readonly<Record<string, string>>
   readonly peerDependencies?: Readonly<Record<string, string>>
 }
@@ -161,6 +174,7 @@ export function tarballProblems({
   const expected = [
     ...REQUIRED_FILES,
     ...exportTargets(manifest.exports).map((target) => target.replace(/^\.\//, "")),
+    ...Object.values(manifest.bin ?? {}).map((target) => target.replace(/^\.\//, "")),
   ]
 
   const problems = expected.flatMap((file) => (present.has(file) ? [] : [`missing ${file}`]))

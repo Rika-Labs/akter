@@ -31,6 +31,7 @@ const TallyLive = Tally.toLayer({
 const runtime = TallyLive.pipe(
   Layer.provideMerge(ActorTest.layer()),
   Layer.provideMerge(BunCrypto.layer),
+  Layer.provideMerge(BunFileSystem.layer),
 )
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))

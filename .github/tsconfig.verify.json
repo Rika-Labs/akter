@@ -6,6 +6,9 @@
     "src/replica.ts",
     "src/node-postgres.ts",
     "src/release/smoke.ts",
+    "src/pack.ts",
+    "src/release/version.ts",
+    "src/release/version.test.ts",
     "src/evidence-gate.ts",
     "src/github.ts"
   ]
