@@ -9,9 +9,11 @@ import {
   Duration,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Option,
+  Predicate,
   Result,
   Schedule,
   Schema,
@@ -304,6 +306,17 @@ const DEFAULT_CLAIM_LEASE_MS = 37_000
 const PROGRESS_SEND_TIMEOUT = "5 seconds"
 
 /**
+ * The reply to a command the closing runtime scope cut off or never started.
+ * The caller cannot interrupt an admitted command, so an interrupt there comes
+ * from shutdown, and the caller can retry on a runtime that is still serving.
+ */
+const shuttingDown = Exit.fail(
+  ActorError.make({
+    reason: ActorUnavailable.make({ cause: new Error("Runtime is shutting down") }),
+  }),
+)
+
+/**
  * An entity type with no messages, registered before any actor. The cluster's
  * idle sweep takes its interval from the first entity type registered and
  * sleeps that long before it reads any later one, so an actor type with a
@@ -322,7 +335,10 @@ const IdleSweep = Entity.make("akter/IdleSweep", [])
  * Constraints the wiring keeps:
  * - Turns run through the drain gate, so a drain refuses new turns and
  *   interrupts the rest. The runtime scope, not the caller, owns an in-flight
- *   turn: interrupting a waiter never cancels it.
+ *   turn: interrupting a waiter never cancels it. Closing that scope does, and
+ *   a command it cuts off, or one sent after it starts closing, fails with a
+ *   retryable `ActorUnavailable` instead of an interrupt or a wait that never
+ *   ends; delivery stops retrying once the scope is closed.
  * - Commands are direct, so Cluster keeps no messages and the receipt is the
  *   only admission record; a restarted activation or lost runner drops the
  *   uncommitted attempt, the handle retries with the same command id, and the
@@ -905,8 +921,9 @@ export const layer = (options: Options = {}) => {
               deliver.pipe(
                 Effect.catchIf(
                   (error) =>
-                    (Schema.is(ActorUnavailable)(error.reason) && !isOverloaded(error)) ||
-                    Schema.is(RunnerAtCapacity)(error.reason),
+                    !Predicate.isTagged(scope.state, "Closed") &&
+                    ((Schema.is(ActorUnavailable)(error.reason) && !isOverloaded(error)) ||
+                      Schema.is(RunnerAtCapacity)(error.reason)),
                   (error) =>
                     Effect.sleep(retryDelay(attempt)(error)).pipe(
                       Effect.andThen(Effect.suspend(() => retrying(attempt + 1))),
@@ -1325,13 +1342,19 @@ export const layer = (options: Options = {}) => {
             const reply = yield* Deferred.make<Executed, ActorError>()
             const pending = new Set<Fiber.Fiber<unknown, unknown>>()
 
-            yield* admission
+            const settle = (exit: Exit.Exit<Executed, ActorError>) =>
+              Deferred.done(
+                reply,
+                Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? shuttingDown : exit,
+              )
+
+            const admitted = yield* admission
               .admit(
                 dispatch(request, true, pending).pipe(
                   Effect.tap(observe),
                   Effect.onExit((exit) =>
                     [...pending].some((fiber) => fiber.pollUnsafe() === undefined)
-                      ? Deferred.done(reply, exit)
+                      ? settle(exit)
                       : Effect.void,
                   ),
                   Effect.ensuring(
@@ -1339,11 +1362,9 @@ export const layer = (options: Options = {}) => {
                   ),
                 ),
               )
-              .pipe(
-                Effect.onExit((exit) => Deferred.done(reply, exit)),
-                Effect.ignoreCause,
-                Effect.forkIn(scope),
-              )
+              .pipe(Effect.onExit(settle), Effect.ignoreCause, Effect.forkIn(scope))
+
+            admitted.addObserver(() => Deferred.doneUnsafe(reply, shuttingDown))
 
             return yield* Deferred.await(reply)
           }),

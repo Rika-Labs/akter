@@ -9,6 +9,7 @@ import {
   Fiber,
   Layer,
   Option,
+  Predicate,
   Schema,
   Scope,
 } from "effect"
@@ -88,6 +89,13 @@ const HibernationLive = Layer.mergeAll(
 
 /** The longest an idle activation may outlive its `hibernateAfter`: the idle sweep runs every 5 seconds. */
 const SWEEP_MS = 5_000
+
+/**
+ * How long a command or shutdown may take to settle once the runtime closes.
+ * A caller that waits on a reply nobody completes would block until this
+ * bound, so the bound is what turns that hang into a failed assertion.
+ */
+const SHUTDOWN_BOUND = "3 seconds"
 
 const CapacityLive = Layer.mergeAll(
   Sleepy.toLayer(
@@ -397,6 +405,65 @@ export const capacityConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* touch).toBe(1)
           expect(yield* test.inspect(actor.ref)).toMatchObject({ receipts: 1, state: { count: 1 } })
           expect(yield* other.Touch()).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "a command cut off by runtime shutdown, or sent through a retained handle while or after the runtime closes, fails retryable ActorUnavailable within the bound and shutdown returns",
+    timeoutMs: 30_000,
+    run: ({ environment, expect }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const database = yield* environment.freshDatabase
+          const runtime = yield* Scope.make()
+
+          const services = yield* Layer.buildWithScope(
+            Layer.fresh(
+              CapacityLive.pipe(
+                Layer.provideMerge(ActorTest.layer({ database, maxResidentActors: 8 })),
+                Layer.provide(Layer.succeed(Crypto.Crypto, yield* Crypto.Crypto)),
+                Layer.orDie,
+              ),
+            ),
+            runtime,
+          )
+
+          const actor = yield* WarmUp.get("warm-up").pipe(
+            Effect.flatMap((warmUp) => warmUp.Touch()),
+            Effect.andThen(Unbounded.get("shutdown")),
+            Effect.provideContext(services),
+          )
+
+          const retained = actor.Touch()
+          expect(yield* retained).toBe(1)
+          const pause = yield* Context.get(services, ActorTest).pauseNext("beforeDelivery")
+          const settle = (call: typeof retained) =>
+            call.pipe(Effect.exit, Effect.timeoutOption(SHUTDOWN_BOUND))
+          const inFlight = yield* settle(actor.Touch()).pipe(Effect.forkChild)
+          yield* pause.reached
+
+          const closing = yield* Scope.close(runtime, Exit.void).pipe(
+            Effect.timeoutOption(SHUTDOWN_BOUND),
+            Effect.forkChild,
+          )
+          yield* Effect.yieldNow.pipe(
+            Effect.repeat({ until: () => Predicate.isTagged(runtime.state, "Closed") }),
+          )
+          const during = yield* settle(actor.Touch())
+          const closed = yield* Fiber.join(closing)
+          const after = yield* settle(retained)
+
+          expect(Option.isSome(closed)).toBe(true)
+
+          const outcomes = [yield* Fiber.join(inFlight), during, after]
+          expect(outcomes.map(Option.map(reasonOf))).toEqual(
+            Array.from({ length: 3 }, () => Option.some("ActorUnavailable")),
+          )
+
+          for (const exit of outcomes.map(Option.getOrThrow)) {
+            expect(Exit.hasInterrupts(exit)).toBe(false)
+            expect(Exit.findErrorOption(exit)).toMatchObject({ value: { isRetryable: true } })
+          }
         }),
       ),
   },
