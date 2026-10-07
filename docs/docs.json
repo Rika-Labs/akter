@@ -130,6 +130,14 @@
       "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/vision/:slug*.md"
     },
     {
+      "source": "/milestones/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/milestones/:slug*.md"
+    },
+    {
+      "source": "/BENCHMARKS",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/BENCHMARKS.md"
+    },
+    {
       "source": "/product/competitive-positioning",
       "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/product/competitive-positioning.md"
     },
