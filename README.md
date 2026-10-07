@@ -126,7 +126,7 @@ export const checkout = Effect.gen(function* () {
 
 ```sh
 mkdir my-app && cd my-app && bun init -y
-bun add @rikalabs/akter@alpha effect@4.0.0 @effect/platform-bun@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
+bun add @rikalabs/akter@alpha effect @effect/platform-bun @effect/sql-pg @effect/sql-pglite
 ```
 
 The [quickstart](docs/quickstart.md) adds a counter actor in three short files, runs it twice to show its state surviving a restart, and tests a retry and a crash. It runs on [PGlite](https://pglite.dev), an embedded Postgres database, so there's no Docker or database server to set up; `Database.postgres` runs the same code on a Postgres database.
@@ -167,10 +167,10 @@ The [comparison](docs/guides/comparison.md) covers each in detail and says when 
 ## Install
 
 ```sh
-bun add @rikalabs/akter@alpha effect@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
+bun add @rikalabs/akter@alpha effect @effect/sql-pg @effect/sql-pglite
 ```
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. The [quickstart](docs/quickstart.md) includes both runtimes; use `@effect/platform-node` layers on Node instead of `@effect/platform-bun`. Effect, its SQL drivers, and Drizzle are peer dependencies pinned to the versions the framework is tested with, so your app and the framework share one copy of each.
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. The [quickstart](docs/quickstart.md) includes both runtimes; use `@effect/platform-node` layers on Node instead of `@effect/platform-bun`. Effect, its SQL drivers, and Drizzle are peer dependencies with compatible caret ranges (`^4.0.1` for the Effect packages), so your app and the framework share one copy of each. The framework is tested against the Effect cohort that its CI runs, not a fixed version you must install; if you pin `effect@4.0.1`, pin `@effect/sql-pg` and `@effect/sql-pglite` at `4.0.1` too, or let all three resolve to the latest 4.0.x.
 
 | Import                    | What it holds                                                                                  |
 | ------------------------- | ---------------------------------------------------------------------------------------------- |
