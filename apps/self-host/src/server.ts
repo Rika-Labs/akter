@@ -33,11 +33,26 @@ const runtime = Layer.unwrap(
         }),
       }),
     })
+    const encoder = new TextEncoder()
+    const expected = new Uint8Array(
+      yield* Effect.promise(() =>
+        crypto.subtle.digest("SHA-256", encoder.encode(`Bearer ${Redacted.value(token)}`)),
+      ),
+    )
     const auth = Auth.make((request) =>
-      Option.getOrElse(Headers.get(request.headers, "authorization"), () => "") ===
-      `Bearer ${Redacted.value(token)}`
-        ? Effect.succeed({ tenant: "default", caller: User.make({ subject: "self-host-client" }) })
-        : Effect.fail(Unauthorized.make({ code: "invalid_credentials" })),
+      Effect.gen(function* () {
+        const header = Option.getOrElse(Headers.get(request.headers, "authorization"), () => "")
+        const actual = new Uint8Array(
+          yield* Effect.promise(() => crypto.subtle.digest("SHA-256", encoder.encode(header))),
+        )
+        let difference = 0
+        for (let index = 0; index < expected.length; index++)
+          difference |= expected[index]! ^ actual[index]!
+
+        return difference === 0
+          ? { tenant: "default", caller: User.make({ subject: "self-host-client" }) }
+          : yield* Unauthorized.make({ code: "invalid_credentials" })
+      }),
     )
     const health = HttpRouter.add("GET", "/health", HttpServerResponse.text("alive"))
     const live = CounterLive.pipe(
