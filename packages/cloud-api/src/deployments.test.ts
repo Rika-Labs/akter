@@ -95,6 +95,16 @@ describe("deployment rollback", () => {
       ),
     ).toBe(true)
   })
+
+  it("accepts a deployment environment host when the control plane provides one", () => {
+    const decoded = decode({ ...summary, environmentHost: "storefront-production.akter.run" })
+    expect(Exit.isSuccess(decoded) && decoded.value.environmentHost).toBe(
+      "storefront-production.akter.run",
+    )
+    expect(Exit.isSuccess(decode(summary))).toBe(true)
+    expect(Exit.isFailure(decode({ ...summary, environmentHost: 17 }))).toBe(true)
+  })
+
   it("records the deployment a rollback redeploys, and null for an ordinary deployment", () => {
     const rolledBack = decode(summary)
     const ordinary = decode({ ...summary, rolledBackFrom: null })
