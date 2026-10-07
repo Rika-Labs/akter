@@ -1,7 +1,15 @@
-import { Schema } from "effect"
+import { Effect, Exit, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
-import { CardPaymentMethod, LinkPaymentMethod, PaymentMethod } from "./billing.ts"
+import {
+  CardPaymentMethod,
+  CatalogPlan,
+  ComputeUsage,
+  LinkPaymentMethod,
+  PaymentMethod,
+  PlanCatalog,
+  Usage,
+} from "./billing.ts"
 
 const valid = Schema.is(PaymentMethod)
 
@@ -26,5 +34,240 @@ describe("payment method", () => {
     expect(valid({ brand: "visa", lastFour: "4242", expiryMonth: 7, expiryYear: 2031 })).toBe(false)
     expect(valid({ ...LinkPaymentMethod.make({ email: null }), email: undefined })).toBe(false)
     expect(valid({ ...visa, expiryMonth: 13 })).toBe(false)
+  })
+})
+
+const wire =
+  <T, E>(schema: Schema.Codec<T, E>) =>
+  (input: Schema.Json) =>
+    Exit.isSuccess(
+      Effect.runSyncExit(
+        Schema.decodeEffect(Schema.fromJsonString(Schema.toCodecJson(schema)))(
+          JSON.stringify(input),
+        ),
+      ),
+    )
+
+const computePlan = {
+  id: "pro",
+  name: "Pro",
+  basePriceCents: 2900,
+  currency: "usd",
+  allowances: {
+    commands: 5_000_000,
+    commandCap: null,
+    computeUnitHours: 1460,
+    computeUnitHourCap: null,
+    concurrentConnections: 1000,
+  },
+  overage: { commandCentsPerMillion: 40, computeCentsPerUnitHour: 0.3 },
+  features: ["command-overage", "compute-overage", "checkout"],
+  provisional: true,
+}
+
+const storagePlan = {
+  ...computePlan,
+  allowances: { ...computePlan.allowances, storageGb: 10 },
+  overage: { ...computePlan.overage, storageCentsPerGbMonth: 25 },
+  features: ["command-cap", "storage-overage", "storage-cap"],
+}
+
+const catalog = (plans: ReadonlyArray<Schema.Json>) => ({
+  plans,
+  readCommandWeight: 0.1,
+  provisional: true,
+})
+
+describe("plan catalog", () => {
+  const validCatalog = wire(PlanCatalog)
+  const validPlan = wire(CatalogPlan)
+
+  it("decodes compute allowances, a nullable compute cap and a compute overage rate with no storage fields", () => {
+    const capped = {
+      ...computePlan,
+      allowances: { ...computePlan.allowances, computeUnitHourCap: 730 },
+      features: ["command-cap", "compute-cap"],
+    }
+    expect(validCatalog(catalog([computePlan, capped]))).toBe(true)
+  })
+
+  it("still decodes the deprecated storage allowance, storage overage rate and storage features", () => {
+    expect(validCatalog(catalog([storagePlan]))).toBe(true)
+  })
+
+  it("refuses a plan without its compute allowance, cap or overage rate", () => {
+    const { computeUnitHours: _hours, ...noHours } = computePlan.allowances
+    const { computeUnitHourCap: _cap, ...noCap } = computePlan.allowances
+    expect(validPlan({ ...storagePlan, allowances: { ...noHours, storageGb: 10 } })).toBe(false)
+    expect(validPlan({ ...computePlan, allowances: noCap })).toBe(false)
+    expect(validPlan({ ...computePlan, overage: { commandCentsPerMillion: 40 } })).toBe(false)
+  })
+
+  it("refuses negative compute allowances, caps and rates, and an unknown feature", () => {
+    const allowances = (patch: Record<string, Schema.Json>) => ({
+      ...computePlan,
+      allowances: { ...computePlan.allowances, ...patch },
+    })
+    expect(validPlan(allowances({ computeUnitHours: -1 }))).toBe(false)
+    expect(validPlan(allowances({ computeUnitHourCap: -0.5 }))).toBe(false)
+    expect(
+      validPlan({
+        ...computePlan,
+        overage: { ...computePlan.overage, computeCentsPerUnitHour: -0.3 },
+      }),
+    ).toBe(false)
+    expect(validPlan({ ...computePlan, features: ["compute-limit"] })).toBe(false)
+  })
+})
+
+const sharedRecord = {
+  environmentId: "env_production",
+  cpuKind: "shared",
+  cpus: 1,
+  memoryMb: 1024,
+  machineHours: 10,
+  computeUnitHours: 40,
+}
+
+const performanceRecord = {
+  environmentId: "env_staging",
+  cpuKind: "performance",
+  cpus: 2,
+  memoryMb: 4096,
+  machineHours: 1.5,
+  computeUnitHours: 24,
+}
+
+describe("compute usage dimensions", () => {
+  const validRecord = wire(ComputeUsage)
+
+  it("accepts unit-hours weighed by the larger of CPU and memory against a shared CPU with 256 MiB", () => {
+    expect(validRecord(sharedRecord)).toBe(true)
+    expect(validRecord(performanceRecord)).toBe(true)
+    expect(
+      validRecord({ ...sharedRecord, cpuKind: "performance", cpus: 4, computeUnitHours: 160 }),
+    ).toBe(true)
+    expect(
+      validRecord({
+        ...sharedRecord,
+        cpus: 2,
+        memoryMb: 256,
+        machineHours: 3,
+        computeUnitHours: 6,
+      }),
+    ).toBe(true)
+    expect(validRecord({ ...sharedRecord, machineHours: 0, computeUnitHours: 0 })).toBe(true)
+    expect(
+      validRecord({ ...sharedRecord, memoryMb: 768, machineHours: 0.1, computeUnitHours: 0.3 }),
+    ).toBe(true)
+  })
+
+  it("refuses unit-hours that disagree with the machine size's weight", () => {
+    expect(validRecord({ ...sharedRecord, computeUnitHours: 10 })).toBe(false)
+    expect(validRecord({ ...performanceRecord, computeUnitHours: 8 })).toBe(false)
+    expect(
+      validRecord({ ...sharedRecord, cpuKind: "performance", cpus: 4, computeUnitHours: 40 }),
+    ).toBe(false)
+    expect(validRecord({ ...sharedRecord, computeUnitHours: 40.001 })).toBe(false)
+  })
+
+  it("refuses negative hours, a machine with no CPU or memory, fractional CPUs, an unknown CPU kind and an empty environment", () => {
+    expect(validRecord({ ...sharedRecord, machineHours: -10, computeUnitHours: -40 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, cpus: 0, memoryMb: 1024 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, cpus: -1 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, cpus: 1.5, computeUnitHours: 40 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, memoryMb: 0, computeUnitHours: 10 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, memoryMb: 1024.5 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, cpuKind: "dedicated" })).toBe(false)
+    expect(validRecord({ ...sharedRecord, environmentId: "" })).toBe(false)
+  })
+})
+
+const computeCaps: Schema.JsonArray = [
+  { cap: "compute", limit: 1460, used: 64, atCap: false, refusing: false },
+  { cap: "commands", limit: 1000, used: 120, atCap: false, refusing: false, unitsPerCommand: 10 },
+]
+
+const meteredProject = {
+  projectId: "prj_1",
+  name: "Storefront",
+  commands: 120,
+  computeUnitHours: 64,
+  compute: [sharedRecord, performanceRecord],
+  estimatedCostCents: 0,
+}
+
+const computeProjects: Schema.JsonArray = [
+  meteredProject,
+  { projectId: "prj_2", name: "Unmetered", commands: 0, estimatedCostCents: 0 },
+]
+
+const computeUsage = {
+  period: "2026-10",
+  meters: [
+    { meter: "commands", used: 120, included: 1000, overage: 0, overageCostCents: 0 },
+    { meter: "runnerHours", used: 64, included: 1460, overage: 0, overageCostCents: 0 },
+    { meter: "egressGb", used: 2.5, included: 100, overage: 0, overageCostCents: 0 },
+  ],
+  caps: computeCaps,
+  commandsPerDay: [{ day: "2026-10-07", commands: 120 }],
+  byProject: computeProjects,
+  pricing: { freeCommands: 1000, readCommandWeight: 0.1, computeCentsPerUnitHour: 0.3 },
+}
+
+const storageUsage = {
+  ...computeUsage,
+  meters: [
+    ...computeUsage.meters,
+    { meter: "storageGb", used: 1.2, included: 10, overage: 0, overageCostCents: 0 },
+  ],
+  latestStorageSample: { bytes: 1_200_000_000, sampledAt: "2026-10-07T10:00:00.000Z" },
+  caps: [{ cap: "storage", limit: 10_000_000_000, used: 1, atCap: false, refusing: false }],
+  byProject: [
+    {
+      projectId: "prj_1",
+      name: "Storefront",
+      commands: 120,
+      storageGbMonths: 0.4,
+      estimatedCostCents: 0,
+    },
+  ],
+  pricing: { ...computeUsage.pricing, storagePerGbCents: 25 },
+}
+
+describe("usage report", () => {
+  const validUsage = wire(Usage)
+
+  it("decodes compute caps, project compute unit-hours and per-machine-size records with no storage fields", () => {
+    expect(validUsage(computeUsage)).toBe(true)
+  })
+
+  it("still decodes the deprecated storage meter, sample, cap, project storage and storage price", () => {
+    expect(validUsage(storageUsage)).toBe(true)
+  })
+
+  it("refuses pricing without a compute rate, and negative or inconsistent project compute", () => {
+    const { computeCentsPerUnitHour: _rate, ...legacyPricing } = storageUsage.pricing
+    const withProject = (patch: Record<string, Schema.Json>) => ({
+      ...computeUsage,
+      byProject: [{ ...meteredProject, ...patch }],
+    })
+    expect(validUsage({ ...storageUsage, pricing: legacyPricing })).toBe(false)
+    expect(
+      validUsage({
+        ...computeUsage,
+        pricing: { ...computeUsage.pricing, computeCentsPerUnitHour: -1 },
+      }),
+    ).toBe(false)
+    expect(validUsage(withProject({ computeUnitHours: -64 }))).toBe(false)
+    expect(validUsage(withProject({ compute: [{ ...sharedRecord, computeUnitHours: 10 }] }))).toBe(
+      false,
+    )
+    expect(
+      validUsage({
+        ...computeUsage,
+        caps: [{ cap: "compute", limit: -1, used: 64, atCap: false, refusing: false }],
+      }),
+    ).toBe(false)
   })
 })

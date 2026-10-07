@@ -6,6 +6,7 @@ import {
   BillingPeriod,
   CalendarDay,
   Email,
+  EnvironmentId,
   InvoiceId,
   NonNegative,
   NonNegativeInt,
@@ -77,9 +78,12 @@ const capFields = {
  * `QuotaExceeded`'s `limitUnits` and `usedUnits`: a read weighs one unit and a
  * command `unitsPerCommand` units, which this cap always carries and no other
  * does, so commands are `used / unitsPerCommand`. They are cents for `spend`,
- * open connections for `connections`, and for `storage` the largest latest
- * sample of a serving deployment's tenant, since storage is capped per
- * deployment and tenant.
+ * open connections for `connections`, and compute unit-hours used in the
+ * current billing period for `compute`.
+ *
+ * `storage` is deprecated: the server no longer reports it, and it stays
+ * decodable only so clients reading older responses keep working. It was the
+ * largest latest sample of a serving deployment's tenant.
  */
 export const CapState = Schema.Union([
   Schema.Struct({
@@ -87,7 +91,10 @@ export const CapState = Schema.Union([
     ...capFields,
     unitsPerCommand: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   }),
-  Schema.Struct({ cap: Schema.Literals(["spend", "connections", "storage"]), ...capFields }),
+  Schema.Struct({
+    cap: Schema.Literals(["spend", "connections", "compute", "storage"]),
+    ...capFields,
+  }),
 ])
 export type CapState = typeof CapState.Type
 
@@ -137,12 +144,17 @@ export type HostedSession = typeof HostedSession.Type
 
 /**
  * What a plan offers, derived from the pricing configuration: a hard command
- * cap, billed command overage, billed storage overage, a storage admission
- * cap, and a paid subscription bought through checkout.
+ * cap, billed command overage, billed compute overage, a hard compute cap,
+ * and a paid subscription bought through checkout.
+ *
+ * `storage-overage` and `storage-cap` are deprecated: the server no longer
+ * reports them, and they stay decodable only for older responses.
  */
 export const PlanFeature = Schema.Literals([
   "command-cap",
   "command-overage",
+  "compute-overage",
+  "compute-cap",
   "storage-overage",
   "storage-cap",
   "checkout",
@@ -151,9 +163,17 @@ export type PlanFeature = typeof PlanFeature.Type
 
 /**
  * One tier of the pricing configuration. `allowances.commands` is the
- * included command equivalents, `allowances.commandCap` the hard stop (null
- * when overage is billed instead) and `allowances.storageGb` decimal
- * gigabytes. A provisional tier's prices are not yet published.
+ * included command equivalents and `allowances.commandCap` its hard stop
+ * (null when overage is billed instead). `allowances.computeUnitHours` is the
+ * included compute unit-hours and `allowances.computeUnitHourCap` its hard
+ * stop (null when overage is billed instead at
+ * `overage.computeCentsPerUnitHour`). A compute unit-hour is one hour of a
+ * shared CPU with 256 MiB of memory; see `ComputeUsage`. A provisional tier's
+ * prices are not yet published.
+ *
+ * `allowances.storageGb` and `overage.storageCentsPerGbMonth` are deprecated
+ * and optional: the server no longer reports them, and they stay decodable
+ * only for older responses.
  */
 export const CatalogPlan = Schema.Struct({
   id: PlanId,
@@ -163,12 +183,15 @@ export const CatalogPlan = Schema.Struct({
   allowances: Schema.Struct({
     commands: NonNegativeInt,
     commandCap: Schema.NullOr(NonNegativeInt),
-    storageGb: NonNegative,
+    computeUnitHours: NonNegative,
+    computeUnitHourCap: Schema.NullOr(NonNegative),
+    storageGb: Schema.optionalKey(NonNegative),
     concurrentConnections: NonNegativeInt,
   }),
   overage: Schema.Struct({
     commandCentsPerMillion: NonNegative,
-    storageCentsPerGbMonth: NonNegative,
+    computeCentsPerUnitHour: NonNegative,
+    storageCentsPerGbMonth: Schema.optionalKey(NonNegative),
   }),
   features: Schema.Array(PlanFeature),
   provisional: Schema.Boolean,
@@ -183,6 +206,13 @@ export const PlanCatalog = Schema.Struct({
 })
 export type PlanCatalog = typeof PlanCatalog.Type
 
+/**
+ * `runnerHours` is measured in compute unit-hours (see `ComputeUsage`), not
+ * machine hours; raw machine hours are reported per machine size in
+ * `ComputeUsage.machineHours`. `egressGb` is outbound traffic in decimal
+ * gigabytes. `storageGb` is deprecated: the server no longer reports it, and
+ * it stays decodable only for older responses.
+ */
 export const UsageMeterName = Schema.Literals([
   "commands",
   "reads",
@@ -201,25 +231,71 @@ export const UsageMeter = Schema.Struct({
 })
 export type UsageMeter = typeof UsageMeter.Type
 
-/** The published rules usage is priced by, sent with every usage report. */
+/**
+ * The published rules usage is priced by, sent with every usage report.
+ * `computeCentsPerUnitHour` prices compute unit-hours beyond the plan's
+ * allowance. `storagePerGbCents` is deprecated and optional: the server no
+ * longer reports it, and it stays decodable only for older responses.
+ */
 export const UsagePricing = Schema.Struct({
   freeCommands: NonNegativeInt,
   readCommandWeight: NonNegative,
-  storagePerGbCents: NonNegative,
+  computeCentsPerUnitHour: NonNegative,
+  storagePerGbCents: Schema.optionalKey(NonNegative),
   provisional: Schema.optionalKey(Schema.Boolean),
 })
 export type UsagePricing = typeof UsagePricing.Type
 
 /**
+ * Compute used by one machine size in one environment during the period.
+ * `computeUnitHours` normalizes `machineHours` to a baseline of one shared CPU
+ * with 256 MiB of memory: each machine hour weighs
+ * `max(cpus * (cpuKind === "performance" ? 4 : 1), memoryMb / 256)` units, so
+ * a shared 1 CPU, 1024 MiB machine weighs 4 and a performance 2 CPU, 4096 MiB
+ * machine weighs 16. A record whose `computeUnitHours` disagrees with that
+ * weight beyond floating-point rounding is refused, so machine hours cannot
+ * be reported as unit-hours.
+ */
+export const ComputeUsage = Schema.Struct({
+  environmentId: EnvironmentId,
+  cpuKind: Schema.Literals(["shared", "performance"]),
+  cpus: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  memoryMb: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  machineHours: NonNegative,
+  computeUnitHours: NonNegative,
+}).check(
+  Schema.makeFilter((usage) => {
+    const weight = Math.max(
+      usage.cpus * (usage.cpuKind === "performance" ? 4 : 1),
+      usage.memoryMb / 256,
+    )
+    const expected = usage.machineHours * weight
+    return (
+      Math.abs(usage.computeUnitHours - expected) <= 1e-9 * Math.max(1, expected) ||
+      "computeUnitHours must equal machineHours times the machine size's unit weight"
+    )
+  }),
+)
+export type ComputeUsage = typeof ComputeUsage.Type
+
+/**
  * The organization's latest storage sample: the sum of every tenant's latest
- * sampled logical bytes, and the newest hour among those samples.
+ * sampled logical bytes, and the newest hour among those samples. Deprecated:
+ * the server no longer reports it, and it stays decodable only for older
+ * responses.
  */
 export const StorageSample = Schema.Struct({ bytes: NonNegative, sampledAt: Timestamp })
 export type StorageSample = typeof StorageSample.Type
 
 /**
- * `latestStorageSample` and `caps` describe now whatever `period` is
- * reported; the sample is null before any tenant was sampled.
+ * `caps` describe now whatever `period` is reported. A project's
+ * `computeUnitHours` is its compute for the period and `compute` breaks it
+ * down by environment and machine size; both are omitted when the server
+ * does not meter compute for the project.
+ *
+ * `latestStorageSample` and a project's `storageGbMonths` are deprecated: the
+ * server no longer reports them, and they stay decodable only for older
+ * responses.
  */
 export const Usage = Schema.Struct({
   period: BillingPeriod,
@@ -233,6 +309,8 @@ export const Usage = Schema.Struct({
       name: Schema.String,
       commands: NonNegativeInt,
       reads: Schema.optionalKey(NonNegativeInt),
+      computeUnitHours: Schema.optionalKey(NonNegative),
+      compute: Schema.optionalKey(Schema.Array(ComputeUsage)),
       storageGbMonths: Schema.optionalKey(NonNegative),
       estimatedCostCents: NonNegative,
     }),

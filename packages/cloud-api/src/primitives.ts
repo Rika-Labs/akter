@@ -32,6 +32,10 @@ export type DeadLetterId = typeof DeadLetterId.Type
 export const InvoiceId = identifier.pipe(Schema.brand("InvoiceId"))
 export type InvoiceId = typeof InvoiceId.Type
 
+/** An opaque environment identifier assigned by the control plane. */
+export const EnvironmentId = identifier.pipe(Schema.brand("EnvironmentId"))
+export type EnvironmentId = typeof EnvironmentId.Type
+
 /** Lowercase letters, digits and inner hyphens, 1 to 40 characters. */
 export const Slug = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/)),
