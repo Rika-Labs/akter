@@ -32,4 +32,20 @@ In particular, declaring an existing tenant-placed actor type as authority-place
 5. Rename operator configuration to `AKTER_OPERATOR_TOKEN` and update inspector URLs to `/_akter/inspector`. For hosted deployment clients, use `src/app.ts` and remove `source.dockerfile`. Update cloud response decoders for nullable latency values, `since`, payment-method variants and stream gaps; use `--api-url` when testing login against a preview rather than the default production API.
 6. Confirm readiness, an existing receipt replay with the original command id, new commands, pending outbox/job recovery and inspection with the deployment's tenant role. Commands cut off by runtime shutdown now answer retryable `ActorUnavailable`; interruption or reply loss does not prove a command never committed. Only after these checks pass, start the remaining alpha.2 runners and resume ingress and scheduled execution. Record the rehearsal results before promotion.
 
+After alpha.2 is published and while it is the current `alpha` release, select that tag explicitly rather than relying on `latest`:
+
+```sh
+bun add @rikalabs/akter@alpha
+bun add -d @rikalabs/akter-cli@alpha
+```
+
+Or with npm:
+
+```sh
+npm install @rikalabs/akter@alpha
+npm install -D @rikalabs/akter-cli@alpha
+```
+
+Confirm both installed versions are `0.1.0-alpha.2` before starting runners. For a repeatable deployment after the `alpha` tag advances, use the explicit versions in step 2 and the rehearsed lockfile. Moving `latest` is a separate maintainer operation; it is not automatic when publishing to `alpha`.
+
 There are no framework down migrations. A failed rehearsal is a stop, not permission to delete migration-history rows. A rollback after incompatible schema or placement changes requires stopping all alpha.2 runners and restoring the verified backup with the alpha.1 runtime and configuration; simply restarting alpha.1 binaries is not a safe rollback procedure.
