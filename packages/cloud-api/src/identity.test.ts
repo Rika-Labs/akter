@@ -1,14 +1,19 @@
 import { DateTime, Effect, Exit, Schema } from "effect"
 import { describe, expect, it } from "vitest"
+import { OpenApi } from "effect/http-api"
+import { CloudApi } from "./contract.ts"
 
 import {
   ApiKey,
   CreateApiKey,
   CreatedApiKey,
   CreateInvitation,
+  DeleteAccount,
   KnownPlan,
   Me,
   Organization,
+  OrganizationDeletion,
+  PersonalDataExport,
   UnboundPlan,
   UnknownPlan,
 } from "./identity.ts"
@@ -50,6 +55,39 @@ const key = {
   expiresAt: null,
   revokedAt: null,
 }
+
+describe("account lifecycle contract", () => {
+  it("requires an email confirmation and rejects an unknown deletion phase", () => {
+    expect(rejects(DeleteAccount, { confirmation: "" })).toBe(true)
+    expect(
+      rejects(OrganizationDeletion, {
+        organizationId: "org-a",
+        phase: "accepted",
+        blocked: false,
+      }),
+    ).toBe(true)
+  })
+
+  it("exports table-keyed JSON metadata without constraining future user-scoped tables", () => {
+    const data = {
+      userId: "person-a",
+      exportedAt: "2026-10-06T12:00:00.000Z",
+      tables: {
+        session: [{ id: "session-a", userAgent: "test-browser" }],
+        new_user_scoped_table: [{ preference: { enabled: true } }],
+      },
+    }
+    expect(decode(PersonalDataExport, data).tables).toEqual(data.tables)
+  })
+
+  it("declares self-only export and deletion and organization deletion progress", () => {
+    const spec = OpenApi.fromApi(CloudApi)
+    expect(spec.paths["/api/me/export"]?.get?.parameters ?? []).toEqual([])
+    expect(spec.paths["/api/me"]?.delete?.requestBody).toBeDefined()
+    expect(spec.paths["/api/me"]?.delete?.responses["409"]).toBeDefined()
+    expect(spec.paths["/api/organizations/{organizationId}/deletion"]?.get).toBeDefined()
+  })
+})
 
 describe("identity models", () => {
   it("carries an unbound, known or unknown plan, keeping an unknown plan's stored id", () => {

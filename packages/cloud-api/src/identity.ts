@@ -89,6 +89,34 @@ export const UpdateProfile = Schema.Struct({
 })
 export type UpdateProfile = typeof UpdateProfile.Type
 
+/** Exact email confirmation for removing the authenticated person's account. */
+export const DeleteAccount = Schema.Struct({ confirmation: Email })
+export type DeleteAccount = typeof DeleteAccount.Type
+
+/**
+ * The authenticated person's data, grouped by durable table. Credentials, session tokens and
+ * verification values are excluded; sessions and provider accounts contain metadata only.
+ * No user selector is accepted: the verified session determines whose data is returned.
+ */
+export const PersonalDataExport = Schema.Struct({
+  userId: UserId,
+  exportedAt: Timestamp,
+  tables: Schema.Record(Schema.String, Schema.Array(Schema.Json)),
+})
+export type PersonalDataExport = typeof PersonalDataExport.Type
+
+/**
+ * Progress of an accepted organization deletion. Acceptance is not completion: billing,
+ * runner retirement and database deprovisioning must finish before organization records disappear.
+ * A blocked step remains durable and can be retried by repeating the deletion request.
+ */
+export const OrganizationDeletion = Schema.Struct({
+  organizationId: OrganizationId,
+  phase: Schema.Literals(["billing", "runners", "databases", "records", "completed"]),
+  blocked: Schema.Boolean,
+})
+export type OrganizationDeletion = typeof OrganizationDeletion.Type
+
 export const SetActiveOrganization = Schema.Struct({ organizationId: OrganizationId })
 export type SetActiveOrganization = typeof SetActiveOrganization.Type
 
