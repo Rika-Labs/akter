@@ -1,5 +1,5 @@
 # Only the public docs are published. Everything else under docs/ (decisions, contracts,
-# architecture, verification, operations, vision, research notes) stays in the repository.
+# architecture, verification, vision, research notes) stays in the repository.
 /*
 !/docs.json
 !/.mintignore
@@ -10,6 +10,7 @@
 !/quickstart.md
 
 !/guides/
+!/operations/
 
 !/product/
 /product/*
@@ -17,4 +18,5 @@
 
 !/api/
 /api/07-cloud-api.md
+/api/08-deploy-pipeline.md
 /api/feature-flags.md

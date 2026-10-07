@@ -129,13 +129,15 @@ mkdir my-app && cd my-app && bun init -y
 bun add @rikalabs/akter@alpha effect@4.0.0 @effect/platform-bun@4.0.0 @effect/sql-pg@4.0.0 @effect/sql-pglite@4.0.0 drizzle-orm@1.0.0-rc.5-5935859
 ```
 
-The [quickstart](docs/quickstart.md) adds a counter actor in three short files, runs it twice to show its state surviving a restart, and tests a retry and a crash. It runs on [PGlite](https://pglite.dev), an embedded Postgres, so there's no Docker or database server to set up; `Database.postgres` runs the same code on Postgres.
+The [quickstart](docs/quickstart.md) adds a counter actor in three short files, runs it twice to show its state surviving a restart, and tests a retry and a crash. It runs on [PGlite](https://pglite.dev), an embedded Postgres database, so there's no Docker or database server to set up; `Database.postgres` runs the same code on a Postgres database.
+
+The OSS launch claim is multi-runner on one host. Configure `Runner.socket` and `Runner.mtls` to share one Postgres database across separate processes; the launch verification starts three Bun processes on one host and exercises command routing, relay delivery, singleton work, schedules, crash recovery, and rolling drain. Separate hosts and hosting providers still need their own evidence.
 
 ## What you get
 
 - **One transaction per command.** State, rows, events, files, timers, messages to other actors, and jobs commit together. Handlers never hold the transaction open while waiting on the network; slow or external work is recorded and runs after the commit.
 - **Safe retries.** Every command carries an ID. A retry with the same ID returns the stored result, and reusing an ID with different input is rejected.
-- **Data you own.** State and rows live in your own Postgres as ordinary Drizzle tables, scoped to their actor and tenant. Report across them with plain SQL.
+- **Data you own.** State and rows live in your own Postgres database as ordinary Drizzle tables, scoped to their actor and tenant. Report across them with plain SQL.
 - **Work that outlives the request.** Jobs with retries and dead letters, timers, cron schedules, and workflows that sleep and wait for events.
 - **Realtime.** Event feeds that resume from a cursor, WebSocket connections that stay open while an idle actor sleeps, and live streams for output such as tokens.
 - **One definition, every interface.** Typed Effect handles, a browser-safe Promise client with optimistic updates, and, through `Actors.serve`, HTTP, WebSocket, and SSE endpoints, an OpenAPI document, and an MCP endpoint.
@@ -156,7 +158,7 @@ Each command checks that this process still owns the actor, looks for a stored r
 
 ## How it compares
 
-- **Cloudflare Durable Objects** have the same one-request-at-a-time model on Cloudflare's platform, with storage attached to each object. Akter keeps data in your Postgres and runs in your own process.
+- **Cloudflare Durable Objects** have the same one-request-at-a-time model on Cloudflare's platform, with storage attached to each object. Akter keeps data in your Postgres server and runs in your own process.
 - **Rivet Actors** keep state in memory and save it on an interval. Here a command's reply waits for its transaction to commit, and a retry returns the recorded result.
 - **Temporal and Restate** record a function's steps so it can resume after a crash. An Akter command is a short transaction instead, and anything slow becomes a job or workflow owned by the actor.
 
@@ -178,6 +180,8 @@ The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nod
 | `@rikalabs/akter/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
 
 ## Documentation
+
+Akter is alpha software. The launch-supported Postgres server version is **18.6**, the version exercised by CI; other server versions and providers are unverified. [Support matrix](docs/operations/support-matrix.md) scopes each backend and feature, and [alpha upgrade notes](docs/operations/alpha-upgrades.md) describe the planned alpha.1 → alpha.2 database changes. `@akter/react` and the Python client generator are repo-only and are not published at launch.
 
 - [Quickstart](docs/quickstart.md): create, run, and test an app.
 - [Concepts](docs/guides/concepts.md): actors, commands, receipts, and the work that continues after a commit.

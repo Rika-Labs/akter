@@ -54,12 +54,12 @@ There is one package, `@rikalabs/akter`, with four entries:
 
 ## First five minutes
 
-`bun add @rikalabs/akter` and three short files give a counter that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `Database.postgres` moves the same code to Postgres. The [quickstart](../quickstart.md) is the path. PGlite there is for development, and for one-process production within the limits of [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md).
+`bun add @rikalabs/akter` and three short files give a counter that runs, restarts with its state, and passes its own retry and crash tests on file-backed PGlite with no Docker; `Database.postgres` moves the same code to a Postgres database. The [quickstart](../quickstart.md) is the path. PGlite there is for development, and for one-process production within the limits of [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md).
 
 ## Testing
 
-`ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. In-memory PGlite is its fast default; real Postgres must prove locking and multi-connection behavior, and the same conformance suite gates Neki support. The harness includes callers, virtual time, crashes, pauses, stale generations, jobs, workflows, seeded old state, and inspection without inventing a fake handler runtime; the conformance ledger records the evidence for each.
+`ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. In-memory PGlite is its fast default; a real Postgres server must prove locking and multi-connection behavior, and the same conformance suite gates Neki support. The harness includes callers, virtual time, crashes, pauses, stale generations, jobs, workflows, seeded old state, and inspection without inventing a fake handler runtime; the conformance suites record the evidence for each.
 
-The same contract also derives an MCP endpoint and a generated Python client ([generating clients](../api/05-generated-clients.md)). This does not make the framework AI-specific: MCP is a transport. A durable agent runtime is a separate product, Outlast, built on the published package and compiling to ordinary actors ([ADR 0017](../decisions/0017-m1-record-corrections.md)).
+The same contract also derives an MCP endpoint and a generated Python client ([generating clients](../api/05-generated-clients.md)). This does not make the framework AI-specific: MCP is a transport. A durable agent runtime is outside this repository and can be built on the published package using ordinary actors ([ADR 0017](../decisions/0017-m1-record-corrections.md)).
 
 The developer experience must also support brownfield adoption. Existing Postgres tables should be adoptable through explicit ownership mappings and an observe-then-enforce migration path; automatic scoping is only a guarantee after the enforcement gate passes.

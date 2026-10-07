@@ -11,9 +11,9 @@ The programming model and correctness contracts remain the same in three deploym
 
 ## Ways to run
 
-- **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside an Effect application and call actor handles directly. The control-plane actors in `packages/deployments` run this way inside `apps/api`.
+- **Embedded:** provide `Actors.layer` from `@rikalabs/akter/runtime` inside an Effect application and call actor handles directly.
 - **Served:** run `Actors.serve` from `@rikalabs/akter/runtime` in its own process. It exposes HTTP, WebSocket, SSE, and OpenAPI for browsers, other languages, and customer-operated runners.
-- **Hosted:** run the same framework on our runners behind `apps/edge`, with Neki as the Postgres service. The edge authenticates, routes each tenant to its home region, and proxies sockets; parked sockets stay with runners ([ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)).
+- **Hosted:** a service can operate the same served runtime, with separate authentication, ingress, database, and provider verification. Akter Cloud's implementation is outside the public framework repository.
 
 The hosted product consists of edge ingress and runners. A managed runner is the customer's served container coordinated by control-plane actors; it is not a separate framework model.
 
@@ -32,4 +32,4 @@ Self-hosting must not require the hosted control plane. Operators need standard 
 - parked connections and replay gaps;
 - drain, restore, and reconciliation progress.
 
-Repository ownership follows this model: `apps/{api,console,edge,cli}`, a `akter` CLI, the framework in `packages/akter`, control-plane actors in `packages/deployments`, and runnable examples under `examples/`. See [repository structure](../architecture/repository-structure.md).
+Repository ownership follows the public model in [repository structure](../architecture/repository-structure.md): the framework, CLI, Cloud API contract, repo-only client tooling, and repository tooling remain here; Akter Cloud service code and provider infrastructure are separate.

@@ -11,7 +11,11 @@ description: "The akter command-line tool: its commands, flags, output, and exit
 **Owner role:** API/SDK.  
 **Change policy:** a changed command, flag, or exit status updates this page, the runbooks, and the guides that use it.
 
-`akter` is the `apps/cli` bin, named `durable` before [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md). It parses its arguments with Effect's `effect/cli` module: one root `akter` command whose subcommands are the groups below, each flag typed and described, so `akter --help` and `akter <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
+`akter` is the `apps/cli` bin, named `durable` before [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md). It parses its arguments with Effect's `effect/cli` module: one root `akter` command whose public subcommands are the groups below, each flag typed and described. Use `akter --help` and `akter <command> --help` for the installed binary's full help. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
+
+## Installation status
+
+The framework package is published as `@rikalabs/akter@alpha`. The `akter` CLI is currently a repository-only workspace binary in `apps/cli`; there is no published `@akter/cli` package or npm installation command yet. Run it from a checkout with `bun apps/cli/src/main.ts --help` when developing the repository. The CLI page describes the source tree's current command surface, not a downloadable CLI artifact.
 
 ## Exit statuses
 
@@ -19,13 +23,13 @@ description: "The akter command-line tool: its commands, flags, output, and exit
 | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0      | The command succeeded, or printed help, its version, or completions.                                                                                                                                                                                                                                                                                                                                                                                                       |
 | 1      | The command ran and reported a refusal: `workflows check` or `payloads check` found a deploy that would be refused, `payloads clear` left a version uncleared, `adopt plan` found a table problem or an `adopt` step was refused, a runner refused an operator request (`Refused (<status>): <body>`), the control plane refused a hosted command or no longer accepts the stored session, a `login` was denied or expired, or a `deploy` failed or outlasted `--timeout`. |
-| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner or control plane, a database `workflows check`, `payloads`, or `adopt` cannot read, a refused `tenants create`, a hosted command run before `login`, or stored credentials other users can read. An invalid invocation prints the command's help on stdout and the error on stderr.                                                      |
+| 2      | Usage error: an unknown command or flag, a missing or invalid value, an entry module that cannot be loaded, an unreachable runner or control plane, a database `workflows check`, `payloads`, or `adopt` cannot read, a hosted command run before `login`, or stored credentials other users can read. An invalid invocation prints the command's help on stdout and the error on stderr.                                                                                  |
 
 ## Global flags
 
 Every command takes `--help` (`-h`), `--version` (`-v`), `--completions <bash|zsh|fish|sh>`, which prints a shell completion script, `--log-level <level>`, and `--wizard`, which builds a command interactively.
 
-## `akter --help`
+## Public command groups
 
 ```text
 DESCRIPTION
@@ -56,15 +60,12 @@ Operate a running deployment:
   dead-letters     Repair dead-lettered jobs; the runner audits each repair
   subscriptions    List and skip stuck subscription rows
 
-Akter Cloud:
+Akter Cloud client:
   login     Sign in to Akter Cloud through the browser and store the session for deploy
   logout    Sign out of Akter Cloud and delete the stored session
   whoami    Show who the stored Akter Cloud session signs in as
   deploy    Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
 
-Control plane:
-  tenants    Manage the tenant directory
-  billing    Set up the billing catalog
 ```
 
 ## Operator commands
@@ -73,7 +74,9 @@ Control plane:
 
 ## Akter Cloud commands
 
-`login`, `logout`, `whoami` and `deploy` talk to a control plane (`apps/api`) through its `CloudApi` client ([ADR 0085](../decisions/0085-cli-login-and-source-deploys.md)). `login` signs in through Better Auth's device authorization grant and stores the session in `credentials.json` in the CLI's configuration directory: `AKTER_CONFIG_DIR` when set, else `~/Library/Application Support/akter` on macOS, `%APPDATA%\akter` on Windows and `$XDG_CONFIG_HOME/akter` (default `~/.config/akter`) elsewhere. The file is `0600` in a `0700` directory, written under a random temporary name that must not already exist and renamed into place, and a file the group or others can read is refused until it is fixed or replaced by another `login`. The other commands send the stored session as a bearer token to the control plane it came from, which must be `https`, or `http` only on a loopback host (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`); `login --api-url` refuses any other URL with exit 2, and stored credentials naming one are refused as unreadable. A session acts in every organization its user belongs to, like `gh` or `vercel`; the control plane checks membership on every request.
+`login`, `logout`, `whoami` and `deploy` are the Akter Cloud client commands. They talk to its control plane through the public `CloudApi` contract ([ADR 0085](../decisions/0085-cli-login-and-source-deploys.md)). `login` signs in through Better Auth's device authorization grant and stores the session in `credentials.json` in the CLI's configuration directory: `AKTER_CONFIG_DIR` when set, else `~/Library/Application Support/akter` on macOS, `%APPDATA%\akter` on Windows and `$XDG_CONFIG_HOME/akter` (default `~/.config/akter`) elsewhere. The file is `0600` in a `0700` directory, written under a random temporary name that must not already exist and renamed into place, and a file the group or others can read is refused until it is fixed or replaced by another `login`. The other commands send the stored session as a bearer token to the control plane it came from, which must be `https`, or `http` only on a loopback host (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`); `login --api-url` refuses any other URL with exit 2, and stored credentials naming one are refused as unreadable. A session acts in every organization its user belongs to; the control plane checks membership on every request.
+
+`production`, `staging`, and `dev` are customer project environment names accepted by the public Cloud API. They describe where a customer's deployment runs, not the infrastructure stages used to provision Akter Cloud itself.
 
 ## Commands
 
@@ -133,20 +136,9 @@ FLAGS
 
 It packs the context as `docker build` would send it (`<Dockerfile>.dockerignore`, else `.dockerignore`; the Dockerfile always included): symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. `--dockerfile` is cleaned (`./a//Dockerfile` is `a/Dockerfile`), and a path starting at `/` or containing `..` is refused with exit 2 before anything is read. It uploads it to `POST /api/projects/:projectId/sources`, creates the deployment from the returned digest, and prints each rollout step as it starts and ends. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
 
-### `akter billing setup`
-
-Create or reconcile products, meters and prices using the configured provisional pricing. Every provider creation has a stable identity; repeating setup does not duplicate catalog objects.
-
-```text
-akter billing setup --mode local --database-url postgres://project:project@localhost:55415/project
-akter billing setup --mode stripe
-```
-
-Local mode is the default and uses only the SQL-backed Stripe implementation. Stripe mode reads `STRIPE_API_KEY` from the environment; it is not a command-line argument. API, edge and setup consume the same optional `BILLING_PRICING_CONFIG` JSON configuration. Setup does not publish the planning prices or establish live tax/provider support.
-
 ### `akter dev`
 
-Run the entry's app locally with a read-only inspector at /_durable/inspector
+Run the entry's app locally with a read-only inspector at `/_durable/inspector`
 
 ```text
 USAGE
@@ -487,23 +479,4 @@ FLAGS
   --url string             A runner's base URL; repeat to name several, a single-actor command uses the first
   --token-env string       The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
   --json                   Print the runner's answer as JSON
-```
-
-### `akter tenants create`
-
-Record a new tenant's home region in the control plane's directory, attributed to --operator
-
-```text
-USAGE
-  akter tenants create [flags] <tenant>
-
-ARGUMENTS
-  tenant string    The tenant's name: 1 to 128 of A-Z a-z 0-9 . _ : -
-
-FLAGS
-  --deployment string      The deployment the tenant belongs to
-  --region string          The tenant's home region: the deployment's primary region
-  --database-url string    The control plane's Postgres URL
-  --engine choice          The control plane database's engine (default CONTROL_PLANE_DATABASE_ENGINE, then postgres) (choices: postgres, neki)
-  --operator string        The subject of the User the directory change's receipt records
 ```

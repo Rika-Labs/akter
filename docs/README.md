@@ -7,7 +7,7 @@
 
 This directory is the implementation-facing source of truth for Akter. The settled v4 design has been incorporated into these specifications; the [research archive](../research/README.md) retains evidence and exploration.
 
-These specifications describe accepted design; only part of it has shipped. The root, `/runtime`, and `/testing` entrypoints implement M0 and M1.1–M1.3 (see [M1](milestones/M1.md)); `/client` is still a scaffold. [ADR 0002](decisions/0002-v4-contract-clarifications.md) reconciles the v4 contracts; [ADR 0003](decisions/0003-failure-scoping-drain-and-hosted-trust.md) resolves declared-failure rollback, automatic adapter scoping, bounded drain, and hosted trust. [ADR 0004](decisions/0004-receipt-access-revocation-and-expiry.md) settles receipt access, revocation, and command expiry. Executable support is tracked in the [support matrix](operations/support-matrix.md).
+These specifications describe accepted design; only part of it has shipped. The root, `/runtime`, `/client`, and `/testing` entrypoints implement the shipped foundation and client subset described in [M1](milestones/M1.md) and the [TypeScript SDK](api/03-typescript-sdk.md). [ADR 0002](decisions/0002-v4-contract-clarifications.md) reconciles the v4 contracts; [ADR 0003](decisions/0003-failure-scoping-drain-and-hosted-trust.md) resolves declared-failure rollback, automatic adapter scoping, bounded drain, and hosted trust. [ADR 0004](decisions/0004-receipt-access-revocation-and-expiry.md) settles receipt access, revocation, and command expiry. Executable support is tracked in the [support matrix](operations/support-matrix.md).
 
 Start with the [quickstart](quickstart.md) to run an actor app.
 
@@ -30,7 +30,7 @@ The framework is one `@rikalabs/akter` distribution with root, `/runtime`, `/cli
 
 Actors run embedded, served, or hosted. One database serves each deployment region; tenants are rows and placement is selected by shard group. See [Public APIs](api/README.md), [Repository structure](architecture/repository-structure.md), and the [Glossary](GLOSSARY.md).
 
-The gates in [v4 verification](../research/v4/DECISIONS.md#4-verification-gates-must-pass-before-the-decision-is-claimed) remain evidence requirements until their checks pass. In particular, Neki transaction and locking behavior, Railway advertise addresses, PGlite compatibility, multi-runner recovery, workflow isolation, connection parking, and singleton uniqueness must not be claimed from design alone.
+The [support matrix](operations/support-matrix.md) records the executable evidence and its limits. Neki transaction and locking behavior, provider advertise addresses, backend compatibility, multi-runner recovery, workflow isolation, connection parking, and singleton uniqueness must not be claimed from design alone. The OSS launch claim is multi-runner on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes; separate-host and hosting-provider behavior still need their own evidence.
 
 ## Document responsibility
 

@@ -30,4 +30,4 @@ Assume clients are hostile, input is untrusted, networks fail, runners restart, 
 
 `ActorError` exposes bounded reasons—`ActorUnavailable`, `MailboxFull`, `RunnerAtCapacity`, `Timeout`, `CommandConflict`, `NotCreated`, `Unauthorized`, `SessionEnded`, `InvalidInput`, and `TransportError`—without leaking secret internals. `isRetryable` and `retryAfter` guide clients without granting authority.
 
-Every control needs a conformance or integration test, an observable failure signal, and a recovery procedure. Hosted claims additionally require the Neki relay and Railway topology verification gates.
+Every control needs a conformance or integration test, an observable failure signal, and a recovery procedure. Hosted claims additionally require database- and provider-specific relay, topology, and isolation verification; the one-host OSS runner evidence does not certify a hosting provider.

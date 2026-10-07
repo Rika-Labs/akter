@@ -1,3 +1,8 @@
+---
+title: "Releasing"
+description: "Publish framework alphas through the npm trusted-publishing workflow."
+---
+
 # Releasing
 
 **Responsibility:** publish `@rikalabs/akter` to npm and bootstrap the npm trusted publisher.
@@ -7,7 +12,7 @@
 
 ## Status
 
-`0.1.0-alpha.0` was published by hand on 2026-10-04 and tagged `v0.1.0-alpha.0`; the npm trusted publisher for `Rika-Labs/akter`'s `release.yml` in the `npm` environment is configured. Every later version publishes from `.github/workflows/release.yml` without an npm token.
+`0.1.0-alpha.1` is published on the npm `alpha` dist-tag. `0.1.0-alpha.0` was bootstrapped by hand on 2026-10-04 and tagged `v0.1.0-alpha.0`; the npm trusted publisher for `Rika-Labs/akter`'s `release.yml` in the `npm` environment is configured. Every later version publishes from `.github/workflows/release.yml` without an npm token.
 
 ## Prerequisites
 
@@ -30,10 +35,10 @@ bun .github/src/release/smoke.ts --package .local/package
 
 `pack.ts` builds the framework, stages the tarball with `publishConfig` applied and `catalog:` versions resolved, copies `LICENSE` and `NOTICE`, runs `npm pack --dry-run`, and fails when a required file or export target is missing, when sources, tests or the crash fixtures would ship, when a dependency is still `catalog:` or `workspace:`, when the manifest is private or its version is not semantic, or when compiled code imports a package the manifest does not declare. `smoke.ts` packs the staged directory, installs the tarball with its exact peer dependencies into a new temporary project, typechecks a consumer against the published declarations, and runs one command on PGlite. Without `--package` it stages a fresh copy first; `bun run pack:smoke` does that.
 
-## One-time bootstrap (Dallen, from a Mac)
+## One-time bootstrap
 
 1. Check out the release commit on `main` and stage the tarball as above: `bun .github/src/pack.ts --out .local/package`, then `bun .github/src/release/smoke.ts --package .local/package`.
-2. `npm login` with the account that owns the `@akter` scope, with 2FA enabled.
+2. `npm login` with the account that owns the `@rikalabs` scope, with 2FA enabled.
 3. Publish from the staged directory, not from `packages/akter` (whose `prepublishOnly` refuses a local publish): `cd .local/package && npm publish --access public --tag alpha`. npm asks for the 2FA code. This first version has no provenance.
 4. On npmjs.com open `@rikalabs/akter` → Settings → Trusted Publisher, choose GitHub Actions, and enter organization `Rika-Labs`, repository `akter`, workflow filename `release.yml`, environment `npm`. Every field must match exactly.
 5. Optionally, under Publishing access, choose "Require two-factor authentication and disallow tokens", so only the trusted publisher (and interactive 2FA publishes) can release. Revoke any npm automation token created for this package.
@@ -51,4 +56,5 @@ The dist-tag is the first prerelease identifier: `0.1.0-alpha.1` publishes to `a
 
 - The workflow cannot publish a package name that does not exist on npm yet; each new package needs the bootstrap above.
 - A tag whose version is already on npm runs every check and the smoke test, then skips `npm publish`; npm versions are immutable, so a changed build needs a new version, not a retag.
-- The first alpha supports one runner per database, as the package README says.
+- The OSS launch claim is multi-runner on one host with `Runner.socket` and `Runner.mtls`, verified with three Bun processes sharing a Postgres database. Separate-host and hosting-provider support need their own evidence in the [support matrix](support-matrix.md).
+- `@akter/react` and the Python client generator are repo-only and are not published at launch. Check the [CLI reference](../api/06-cli.md) for its current installation status.

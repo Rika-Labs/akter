@@ -1,3 +1,8 @@
+---
+title: "Inspection views"
+description: "Read tenant-scoped actor state, receipts, work, and workflow records."
+---
+
 # Inspection views
 
 **Responsibility:** document the read-only SQL views over runtime tables, their columns, privileges, and example queries.  
@@ -60,7 +65,7 @@ FROM durable.actors_v2 a LEFT JOIN durable.placements_v2 p ON p.actor_type = a.a
 WHERE a.tenant_id = 'acme' AND a.actor_type = 'Order';
 ```
 
-- **Where each set exists.** The first set is created wherever a database can serve it: Postgres, PGlite and a Neki database that routes none of the tables a view reads. On a Neki database that routes the actor tables, migrations `0013` to `0030` create none of it, and `durable.views` lists only the views that exist. The `_v2` set exists everywhere.
+- **Where each set exists.** The first set is created wherever a database can serve it: Postgres database, PGlite and a Neki database that routes none of the tables a view reads. On a Neki database that routes the actor tables, migrations `0013` to `0030` create none of it, and `durable.views` lists only the views that exist. The `_v2` set exists everywhere.
 - **Routing tables later.** A topology rewrite leaves existing joined views in place, and the router then refuses every read of them. Before or with routing the actor tables, run `DROP VIEW durable.actors, durable.state, durable.receipts, durable.events, durable.outbox, durable.timers, durable.jobs, durable.dead_letters, durable.workflows, durable.workflow_steps, durable.contents, durable.content_refs, durable.operator_audit` and rewrite `durable.views` without them. Tools move to the `_v2` names first.
 - **Read-only.** A view over one table can be updated through, so the migration revokes `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` on each `_v2` view from its owner, and no role is granted them. A write fails with `permission denied` for every role that is not a superuser; a router refuses it as well on a routed group. Handing the views to a view-owner role keeps the revocation. Rerun the `GRANT SELECT` after the migration.
 
@@ -119,7 +124,21 @@ The reader still holds no grant on any `actor_*` table, and the columns and vers
 
 ## The local inspector
 
-`akter dev --entry <module>` runs an application locally and serves a read-only inspector over these views (CR.5). The entry module exports `app`: its routes, usually `Actors.serve`, with the actor layers and `Actors.layer` provided, leaving the database to the command (see `examples/chat/src/app.ts`).
+`akter dev --entry <module>` runs an application locally and serves a read-only inspector over these views (CR.5). The entry module exports `app`: its routes, usually `Actors.serve`, with the actor layers and `Actors.layer` provided, leaving the database to the command. For the counter contract and layer in the [quickstart](../quickstart.md), a local-only entry is:
+
+```ts title="src/app.ts"
+import { Actors, Auth } from "@rikalabs/akter/runtime"
+import { Effect, Layer } from "effect"
+import { Counter } from "./counter/contract.ts"
+import { CounterLive } from "./counter/layer.ts"
+
+export const app = Actors.serve({ actors: [Counter], auth: Auth.none }).pipe(
+  Layer.provide(CounterLive),
+  Layer.provideMerge(Actors.layer({ authorize: () => Effect.succeed(true) })),
+)
+```
+
+Run `akter dev --entry src/app.ts`. This example deliberately allows anonymous callers and is for loopback development only; use your application's authentication and authorization policy before exposing served routes.
 
 ```sh
 akter dev --entry src/app.ts [--database-url <url> | --data-dir <dir>] [--port 3000] [--hostname 127.0.0.1] [--tenant default]
@@ -154,7 +173,7 @@ Compressed values (state, event values, workflow payloads, results, and step exi
 The inspector adds no access of its own:
 
 - **Tenant.** The tenant comes only from the authenticated principal, never from the request, and every statement filters on it. A tenant named in the query string is ignored. Inside that tenant the inspector reads every actor, so `auth` must authenticate operators, not the end users `Actors.serve` authenticates.
-- **Read-only.** It reads only the single-table `durable.*_v2` views and `durable.views`, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and Postgres refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
+- **Read-only.** It reads only the single-table `durable.*_v2` views and `durable.views`, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and the Postgres backend refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
 - **Step history.** Steps are shown while an execution is open; the engine deletes a finished execution's steps, so a finished execution shows its result and no steps.
 
 Connections are not shown: no inspection view covers `actor_connections` yet. `akter export Room/r1 --output r1.seed` writes an actor's current state and pending intents and jobs as a seed that `test.actor(Room, "r1", { seed })` starts from; it needs the `export` capability, is audited, and carries no history ([M6.4](../milestones/M6.md)). Retrying or discarding a dead letter is an operator repair: `akter dead-letters retry|discard` through `Operators.serve` ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)).
@@ -220,7 +239,7 @@ WHERE routing_key = $1 AND execution_id = $2 ORDER BY started_at_ms;
 
 ## Cost
 
-Historical `inspection-views` benchmark (see [BENCHMARKS.md](../../BENCHMARKS.md)), 2026-09-27 at `583d074`, one 8-vCPU, 31 GiB Linux VM running client and database: 100,000 actors over 100 tenants seeded directly into the runtime tables with hashed routing keys, each with one receipt, one event, and one day-away timer, and a dead letter for every hundredth actor. One sequential caller, 500 queries per case after 20 warm-up queries. Each backend had two runs on Postgres 18.6 and PGlite 0.5.8. The earlier `6badc85` measurements used arithmetic routing keys; figures agreed within noise. The harness and committed raw result directory have since been retired; these numbers are not the 2026-10-01 clean-hardware comparison.
+Historical `inspection-views` benchmark (see [BENCHMARKS.md](../../BENCHMARKS.md)), 2026-09-27 at `583d074`, one 8-vCPU, 31 GiB Linux VM running client and database: 100,000 actors over 100 tenants seeded directly into the runtime tables with hashed routing keys, each with one receipt, one event, and one day-away timer, and a dead letter for every hundredth actor. One sequential caller, 500 queries per case after 20 warm-up queries. Each backend had two runs on Postgres server 18.6 and PGlite 0.5.8. The earlier `6badc85` measurements used arithmetic routing keys; figures agreed within noise. The harness and committed raw result directory have since been retired; these numbers are not the 2026-10-01 clean-hardware comparison.
 
 | Query                                                  | Postgres p50 / p95 / p99 (ms)                   | PGlite p50 / p95 / p99 (ms)                     |
 | ------------------------------------------------------ | ----------------------------------------------- | ----------------------------------------------- |

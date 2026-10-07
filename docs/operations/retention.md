@@ -1,3 +1,8 @@
+---
+title: "Retention"
+description: "Configure receipt, event, and blob retention without losing obligations."
+---
+
 # Retention policy
 
 **Responsibility:** connect cleanup to correctness.  
@@ -31,12 +36,6 @@ Every runtime sweeps once a minute, per registered actor type and across every t
 An interrupted sweep leaves whole batches and resumes on the next one. A replay whose cursor precedes pruned events fails `RetentionGap`, and the reader resynchronizes from state and `read.cursor`. Lowering a horizon takes effect at the next sweep and removes history that readers may still hold cursors into; raising it cannot bring pruned rows back. Every process uses its own policy values, so during a rolling deploy that lowers `keepReceipts`, a new process can prune a receipt that an old process's in-flight turn still counts on; lower it in two steps, or while no retries of old ids are in flight. Version-skew support is an M4 item. Blob quotas and emit budgets bound what a single actor stores, not how long it keeps it.
 
 Restore of a whole-database snapshot, including across pruned history, follows [backup and restore](04-backup-restore.md). Per-tenant horizons and automatic dead-letter retention are not implemented.
-
-## Control-plane command keys
-
-The API retains a command-key assignment until its runner-minted command id expires. It stores the scoped key hash, canonical payload hash and runner receipt reference, not the full request or result. Once a minute each API process clears at most 1,000 expired assignments into tombstones and prunes at most 1,000 tombstones older than 30 days past expiry, using row locks with `SKIP LOCKED`. Concurrent reuse cannot remint a retained key. Clients must keep keys unique for at least the retry window plus 30 days; after the tombstone is pruned, reuse starts a new command.
-
-The first upgrade from full JSON assignments backfills their hashes and encoded expiry while holding an exclusive table lock, then removes raw keys and payloads. Drain and stop older API processes before that schema upgrade; their old SQL is not compatible with the hashed table. Runner receipts and accepted work are unaffected.
 
 ## Content sweep
 

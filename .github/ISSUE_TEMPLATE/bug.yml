@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible problem in the open-source framework or CLI
+body:
+  - type: markdown
+    attributes:
+      value: "For security vulnerabilities, follow SECURITY.md instead of opening a public issue. Remove credentials, database URLs, personal data, and tokens from all examples and logs."
+  - type: input
+    id: version
+    attributes:
+      label: Akter version
+      description: Package version or commit SHA, including the CLI version if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Bun or Node version, Effect version, database backend and server version, and runner count/process topology.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide a minimal example and the exact steps or command that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the error, relevant redacted logs, and the resulting stored state or pending work when relevant.
+    validations:
+      required: true

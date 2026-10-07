@@ -27,6 +27,6 @@ A device actor owns desired state, readings, and command history. `schedules` ru
 
 ## Control plane
 
-`Deployment`, singleton `Runners`, and `UsageMeter` actors in `packages/deployments` run embedded in `apps/api`. Jobs start or drain served customer runners; `apps/edge` handles hosted ingress. This is both a product story and the framework's first internal customer.
+Akter Cloud uses the framework as an internal customer: deployment actors record lifecycle state and schedule jobs that start or drain customer runners. Its hosted ingress and service implementation are separate from this public framework repository; this product story is not provider-specific verification.
 
 Each showcase must demonstrate contract, transaction, failure, recovery, realtime behavior, and operational inspection—not only a happy-path API call.
