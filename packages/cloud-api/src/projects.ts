@@ -45,6 +45,12 @@ export const Environment = Schema.Struct({
   name: EnvironmentName,
   projectId: ProjectId,
   currentDeploymentId: Schema.NullOr(DeploymentId),
+  database: Schema.optionalKey(
+    Schema.Struct({
+      configured: Schema.Boolean,
+      engine: Schema.Literals(["postgres", "neki"]),
+    }),
+  ),
 })
 export type Environment = typeof Environment.Type
 

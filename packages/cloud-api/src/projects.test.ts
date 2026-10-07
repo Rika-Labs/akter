@@ -5,6 +5,7 @@ import {
   CreateProject,
   EnvVariable,
   EnvVariableName,
+  Environment,
   Hostname,
   SetEnvVariable,
 } from "./projects.ts"
@@ -25,6 +26,29 @@ const accepts = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   rejects(schema, input) === false
 
 describe("project models", () => {
+  it("exposes only database presence and engine, rejecting URL-derived metadata", () => {
+    const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
+    expect(decode(Environment, environment).database).toBeUndefined()
+    for (const engine of ["postgres", "neki"]) {
+      const database = { configured: engine === "neki", engine }
+      expect(decode(Environment, { ...environment, database }).database).toEqual(database)
+      for (const field of ["url", "host", "user", "password", "databaseName"]) {
+        const input = { ...environment, database: { ...database, [field]: "private" } }
+        expect(decode(Environment, input).database).toEqual(database)
+        expect(
+          Exit.isFailure(
+            Effect.runSyncExit(
+              Schema.decodeUnknownEffect(Environment, { onExcessProperty: "error" })(input),
+            ),
+          ),
+        ).toBe(true)
+      }
+    }
+    expect(
+      rejects(Environment, { ...environment, database: { configured: true, engine: "mysql" } }),
+    ).toBe(true)
+  })
+
   it("drops a value or masked tail if a server leaks one into an environment variable read", () => {
     const read = decode(EnvVariable, {
       name: "DATABASE_URL",
