@@ -21,20 +21,6 @@
     "href": "https://akter.dev"
   },
   "favicon": "/favicon.svg",
-  "fonts": {
-    "heading": {
-      "family": "PolySans",
-      "weight": 450,
-      "source": "https://akter.dev/fonts/PolySans-variable.woff2",
-      "format": "woff2"
-    },
-    "body": {
-      "family": "PolySans",
-      "weight": 400,
-      "source": "https://akter.dev/fonts/PolySans-variable.woff2",
-      "format": "woff2"
-    }
-  },
   "styling": {
     "codeblocks": {
       "theme": "css-variables"
