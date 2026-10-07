@@ -21,7 +21,13 @@ import { Database } from "../layer.ts"
 import { routingKey } from "../storage/codec.ts"
 import { UsageAccounting } from "../telemetry/usage.ts"
 import { migrate } from "./migrations.ts"
-import { type BucketRange, type Placement, ShardDirectory, ShardMap } from "./shards.ts"
+import {
+  type BucketRange,
+  type Placement,
+  ShardDirectory,
+  ShardMap,
+  ShardTarget,
+} from "./shards.ts"
 
 const runtime = ManagedRuntime.make(BunCrypto.layer)
 afterAll(() => runtime.dispose())
@@ -403,9 +409,16 @@ describe("shard-targeted sessions with Postgres", () => {
           const handle = yield* Routed.get(String(idOn(test.tenant, true)))
           yield* handle.Hold()
           yield* Deferred.await(slow.started).pipe(Effect.timeout("10 seconds"))
+          const sql = yield* SqlClient.SqlClient
+          const key = routingKey({ ref: handle.ref, placement: "actor" })
+          yield* sql`DELETE FROM actor_outbox
+            WHERE routing_key = ${key} AND tenant_id = ${handle.ref.tenant}
+              AND actor_type = ${handle.ref.actor} AND actor_id = ${handle.ref.id}
+              AND timer_key LIKE '$cron:%'`.pipe(
+            Effect.provideService(ShardTarget, { shard: "shard-a" }),
+          )
           const before = (yield* writes).length
           const advancing = yield* test.advance("1 second").pipe(Effect.forkChild)
-          const sql = yield* SqlClient.SqlClient
           yield* sql<{ n: number }>`SELECT count(*)::int AS n FROM shard_guard_writes`.pipe(
             Effect.repeat({
               until: ([row]) => row!.n > before,

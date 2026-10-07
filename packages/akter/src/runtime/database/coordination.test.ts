@@ -4,6 +4,7 @@ import {
   Config,
   Context,
   Crypto,
+  Deferred,
   Duration,
   Effect,
   Exit,
@@ -26,7 +27,7 @@ import { claimCapped } from "../turn/relay.ts"
 import { sweep } from "../storage/retention.ts"
 import { coordinatedRunnerStorage, tableShardLease } from "../topology/locks.ts"
 import { acceptWorkflows } from "../workflows/compatibility.ts"
-import { Coordination } from "./coordination.ts"
+import { coordinated, Coordination } from "./coordination.ts"
 import { migrate } from "./migrations.ts"
 
 const Work = Actor.workflow("Work", { success: Schema.String })
@@ -219,11 +220,29 @@ describe("authoritative coordination across data databases", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const { control, a } = yield* databases
-          const { release } = yield* gate(a.pool, "actor_receipts")
-          const first = yield* Effect.forkChild(
-            Effect.exit(Effect.provide(sweep([policy], 1), a.services)),
+          const reached = yield* Deferred.make<void>()
+          const released = yield* Deferred.make<void>()
+          const release = Deferred.succeed(released, undefined)
+          const sql = Context.get(a.services, SqlClient.SqlClient)
+          /**
+           * A data write can remain in flight after authority loss; cancellation
+           * must not erase the overlap whose local fence this scenario checks.
+           */
+          const work = sql`DELETE FROM actor_receipts`.pipe(
+            Effect.andThen(Deferred.succeed(reached, undefined)),
+            Effect.andThen(Deferred.await(released)),
+            Effect.uninterruptible,
           )
-          yield* blocked(a.pool, a.name)
+          const first = yield* Effect.forkChild(
+            Effect.exit(
+              Effect.provide(
+                coordinated({ resource: `akter/retention/${actor.name}`, work }),
+                a.services,
+              ),
+            ),
+          )
+          yield* Effect.addFinalizer(() => release)
+          yield* Deferred.await(reached)
           const replacement = yield* Layer.build(
             Database.postgres({
               url: a.url,
