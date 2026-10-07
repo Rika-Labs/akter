@@ -12,6 +12,7 @@ import {
   SourceArchive,
 } from "../deployments.ts"
 import { PayloadTooLarge, ReadErrors, WriteErrors } from "../errors.ts"
+import { logQuery, RunnerLogPage } from "../logs.ts"
 import {
   DeploymentId,
   EnvironmentName,
@@ -25,6 +26,24 @@ const projectParams = { projectId: ProjectId }
 const deploymentParams = { ...projectParams, deploymentId: DeploymentId }
 
 export class DeploymentsGroup extends HttpApiGroup.make("deployments").add(
+  HttpApiEndpoint.get("getEnvironmentLogs", "/projects/:projectId/environments/:environment/logs", {
+    params: { ...projectParams, environment: EnvironmentName },
+    query: logQuery,
+    success: RunnerLogPage,
+    error: ReadErrors,
+  }).annotate(
+    OpenApi.Description,
+    "Reads recent stdout/stderr from the environment's current deployment. Authorization is checked on every read, including resumed polls, and suspended organizations remain readable. Defaults: since five minutes ago, limit 100, wait 0. Since must be within the past hour; limit is 1–200 and wait is 0–20 seconds. A cursor resumes the same authorized resource and takes precedence over since. Follow by repeating bounded long polls with wait 20 and the returned cursor. Provider retention is recent and best-effort, not an archive; output lost beyond retention cannot be recovered. No current deployment returns an empty page. Text is clipped at 4096 UTF-8 bytes; truncated signals clipping or more available lines.",
+  ),
+  HttpApiEndpoint.get("getLogs", "/projects/:projectId/deployments/:deploymentId/logs", {
+    params: deploymentParams,
+    query: logQuery,
+    success: RunnerLogPage,
+    error: ReadErrors,
+  }).annotate(
+    OpenApi.Description,
+    "Reads only the authorized deployment's customer runner stdout/stderr, with the same bounds and cursor protocol as environment logs. A deployment from another project or organization is not visible. Runner identifiers come only from the deployment's stored runner records, never from the cursor or caller input.",
+  ),
   HttpApiEndpoint.get("list", "/projects/:projectId/deployments", {
     params: projectParams,
     query: {

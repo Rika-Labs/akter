@@ -213,6 +213,19 @@ export {
 export { CloudApi } from "./contract.ts"
 
 export {
+  LogCursor,
+  LogLimit,
+  LogWait,
+  MAX_LOG_LINES,
+  MAX_LOG_TEXT_BYTES,
+  MAX_LOG_WAIT_SECONDS,
+  MAX_LOG_WINDOW_SECONDS,
+  RunnerLogLine,
+  RunnerLogPage,
+  logQuery,
+} from "./logs.ts"
+
+export {
   AccountGroup,
   ApiKeysGroup,
   InvitationsGroup,
