@@ -57,10 +57,33 @@ const detail = (
 
 const building = () => detail("in-progress", ["running", "pending", "pending", "pending"])
 
-/** The control plane: stores the upload, creates `dep_42`, then answers each poll with the next of `polls`. */
-const controlPlane = (polls: ReadonlyArray<ReturnType<typeof detail>>) =>
+/** A build log line as the control plane encodes it. */
+const logLine = (index: number, text: string) => ({
+  index,
+  at: "2026-10-04T10:00:01.000Z",
+  stream: "stderr",
+  text,
+})
+
+/** The whole log of a build that has ended: 25 numbered lines. */
+const endedLog = {
+  lines: Array.from({ length: 25 }, (_, index) => logLine(index, `build line ${index}`)),
+  complete: true,
+}
+
+/**
+ * The control plane: stores the upload, creates `dep_42`, then answers each
+ * poll with the next of `polls`. A build log read is answered with the lines
+ * of `log` at or after its `after` cursor, `log` being the next of `logs`
+ * once the earlier ones are spent.
+ */
+const controlPlane = (
+  polls: ReadonlyArray<ReturnType<typeof detail>>,
+  logs: ReadonlyArray<typeof endedLog> = [endedLog],
+) =>
   Effect.map(refusals, ({ unauthorized, notFound }) => {
     const answers = [...polls]
+    const logAnswers = [...logs]
 
     return scriptedFetch((request) => {
       const path = new URL(request.url).pathname
@@ -73,16 +96,15 @@ const controlPlane = (polls: ReadonlyArray<ReturnType<typeof detail>>) =>
           sizeBytes: request.bytes.byteLength,
         })
       if (path === "/api/projects/prj_1/deployments") return Response.json(building())
-      if (path === "/api/projects/prj_1/deployments/dep_42/build-log")
+      if (path === "/api/projects/prj_1/deployments/dep_42/build-log") {
+        const log = logAnswers.length > 1 ? logAnswers.shift()! : logAnswers[0]!
+        const after = Number(new URL(request.url).searchParams.get("after") ?? "0")
+
         return Response.json({
-          lines: Array.from({ length: 25 }, (_, index) => ({
-            index,
-            at: "2026-10-04T10:00:01.000Z",
-            stream: "stderr",
-            text: `build line ${index}`,
-          })),
-          complete: true,
+          lines: log.lines.filter((line) => line.index >= after),
+          complete: log.complete,
         })
+      }
       if (path === "/api/projects/prj_1/deployments/dep_42")
         return Response.json(answers.shift() ?? building())
 
@@ -92,13 +114,18 @@ const controlPlane = (polls: ReadonlyArray<ReturnType<typeof detail>>) =>
 
 type Server = Effect.Success<ReturnType<typeof controlPlane>>
 
-/** Runs `akter deploy` of a small context to `project` (default `prj_1`), with `stored` as the stored session (default `credentials`, none for null). */
+/**
+ * Runs `akter deploy` of a small app directory to `project` (default
+ * `prj_1`), with `stored` as the stored session (default `credentials`, none
+ * for null) and `entry` as the contents of `src/app.ts` (none for null).
+ */
 const deploy = (
   server: Server,
   options: {
     readonly args?: ReadonlyArray<string>
     readonly stored?: typeof credentials | null
     readonly project?: string
+    readonly entry?: string | null
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -108,10 +135,11 @@ const deploy = (
     )
     const root = yield* fs.makeTempDirectoryScoped()
 
-    yield* fs.writeFileString(`${root}/Dockerfile`, "FROM scratch\nCOPY app.ts /app.ts\n")
-    yield* fs.writeFileString(`${root}/app.ts`, "export {}\n")
-    yield* fs.writeFileString(`${root}/.dockerignore`, "*.log\n")
-    yield* fs.writeFileString(`${root}/debug.log`, "left out")
+    yield* fs.makeDirectory(`${root}/src`)
+    if (options.entry !== null)
+      yield* fs.writeFileString(`${root}/src/app.ts`, options.entry ?? "export default app\n")
+    yield* fs.writeFileString(`${root}/.akterignore`, "*.log\n")
+    yield* fs.writeFileString(`${root}/src/debug.log`, "left out")
 
     return yield* runCliWith({ fetch: server.fetch, env: { AKTER_CONFIG_DIR: directory } })([
       "deploy",
@@ -147,6 +175,7 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
         expect(routes(server)).toEqual([
           "POST /api/projects/prj_1/sources",
           "POST /api/projects/prj_1/deployments",
+          "GET /api/projects/prj_1/deployments/dep_42/build-log",
           "GET /api/projects/prj_1/deployments/dep_42",
           "GET /api/projects/prj_1/deployments/dep_42",
         ])
@@ -154,16 +183,16 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
         const [upload, create] = server.requests
         const uploaded = yield* Effect.promise(() => new Bun.Archive(upload!.bytes).files())
 
-        expect([...uploaded.keys()].toSorted()).toEqual([".dockerignore", "Dockerfile", "app.ts"])
+        expect([...uploaded.keys()].toSorted()).toEqual([".akterignore", "src/app.ts"])
         expect(yield* parse(create!.body)).toEqual({
           environment: "staging",
           commitSha: "abcdef1234",
           message: "Ship it",
-          source: { digest: `sha256:${sha256(upload!.bytes)}`, dockerfile: "Dockerfile" },
+          source: { digest: `sha256:${sha256(upload!.bytes)}` },
         })
         expect(run.stdout).toContain("Deployment dep_42 of abcdef1 to staging started")
         expect(run.stdout).toContain(
-          "  build running\n  build succeeded in 1.3s\n  migrate running\n",
+          `  build running\n${endedLog.lines.map((line) => `    ${line.text}\n`).join("")}  build succeeded in 1.3s\n  migrate running\n`,
         )
         expect(run.stdout).toContain(
           "  start-runners succeeded in 1.3s\n  drain-previous skipped\n",
@@ -195,7 +224,7 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
   )
 
   it.effect(
-    "fails with exit 1 at a failed rollout step after the build, without reading the build log",
+    "fails with exit 1 at a failed rollout step after the build, without printing the build's last lines",
     () =>
       Effect.gen(function* () {
         const server = yield* controlPlane([
@@ -211,7 +240,14 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
         expect(run.stderr).toContain(
           "Deployment dep_42 failed at start-runners: Runner never became ready. The previous deployment, if any, is still serving.",
         )
-        expect(routes(server)).not.toContain("GET /api/projects/prj_1/deployments/dep_42/build-log")
+        expect(routes(server)).toEqual([
+          "POST /api/projects/prj_1/sources",
+          "POST /api/projects/prj_1/deployments",
+          "GET /api/projects/prj_1/deployments/dep_42/build-log",
+          "GET /api/projects/prj_1/deployments/dep_42",
+        ])
+        expect(new URL(server.requests[2]!.url).searchParams.get("after")).toBe("0")
+        expect(run.stderr).not.toContain("build line")
       }),
   )
 
@@ -259,26 +295,65 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
   )
 
   it.effect(
-    "sends the Dockerfile path it packed, cleaned, and refuses one outside the context before contacting anyone",
+    "prints the build log while the build runs, asking only for lines after the last it printed, and the rest before the build's end",
     () =>
       Effect.gen(function* () {
-        const cleaned = yield* controlPlane([
-          detail("live", ["succeeded", "succeeded", "succeeded", "skipped"]),
-        ])
-        const run = yield* deploy(cleaned, { args: ["--dockerfile", "./Dockerfile"] })
+        const server = yield* controlPlane(
+          [
+            building(),
+            detail("in-progress", ["succeeded", "running", "pending", "pending"]),
+            detail("live", ["succeeded", "succeeded", "succeeded", "skipped"]),
+          ],
+          [
+            { lines: [logLine(0, "resolve"), logLine(1, "install")], complete: false },
+            { lines: [0, 1, 2].map((index) => logLine(index, `step ${index}`)), complete: false },
+            {
+              lines: [0, 1, 2, 3, 4].map((index) => logLine(index, `step ${index}`)),
+              complete: true,
+            },
+          ],
+        )
+        const run = yield* deploy(server)
+        const logReads = server.requests
+          .map((request) => new URL(request.url))
+          .filter((url) => url.pathname.endsWith("/build-log"))
+          .map((url) => url.searchParams.get("after"))
 
-        expect(run.exitCode).toBe(0)
-        expect(yield* parse(cleaned.requests[1]!.body)).toMatchObject({
-          source: { dockerfile: "Dockerfile" },
-        })
+        expect(run).toMatchObject({ exitCode: 0, reason: "" })
+        expect(logReads).toEqual(["0", "2", "3"])
+        expect(run.stdout).toContain(
+          [
+            "  build running",
+            "    resolve",
+            "    install",
+            "    step 2",
+            "    step 3",
+            "    step 4",
+            "  build succeeded in 1.3s",
+            "  migrate running",
+            "",
+          ].join("\n"),
+        )
+        expect(run.stdout.match(/step 2/gu)).toHaveLength(1)
+      }),
+  )
 
-        for (const dockerfile of ["../Dockerfile", "/etc/Dockerfile"]) {
-          const refused = yield* controlPlane([])
-          const outside = yield* deploy(refused, { args: ["--dockerfile", dockerfile] })
+  it.effect(
+    "sends no Dockerfile, and refuses an app directory without src/app.ts before contacting anyone",
+    () =>
+      Effect.gen(function* () {
+        const legacy = yield* controlPlane([])
+        const flagged = yield* deploy(legacy, { args: ["--dockerfile", "Dockerfile"] })
 
-          expect(outside, dockerfile).toMatchObject({ exitCode: 2, reason: "InvalidValue" })
-          expect(refused.requests).toEqual([])
-        }
+        expect(flagged).toMatchObject({ exitCode: 2 })
+        expect(legacy.requests).toEqual([])
+
+        const missing = yield* controlPlane([])
+        const run = yield* deploy(missing, { entry: null })
+
+        expect(run).toMatchObject({ exitCode: 2, reason: "ContextInvalid" })
+        expect(run.stderr).toContain(`No ${Cloud.SOURCE_ENTRY} in `)
+        expect(missing.requests).toEqual([])
       }),
   )
 })
