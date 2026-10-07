@@ -51,6 +51,7 @@ export const transportWebSocketConformance: ReadonlyArray<ConformanceCase> = [
           yield* ws.close
           yield* Effect.gen(function* () {
             while (true) {
+              yield* blocker.query("SELECT pg_stat_clear_snapshot()")
               const blocked = yield* blocker.query(
                 "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE '%actor_connections%'",
               )
