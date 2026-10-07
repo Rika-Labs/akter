@@ -79,6 +79,7 @@
               "api/05-generated-clients",
               "api/06-cli",
               "api/07-cloud-logs",
+              "api/08-cloud-usage",
               "api/generated-contracts"
             ]
           },

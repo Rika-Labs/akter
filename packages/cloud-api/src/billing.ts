@@ -6,6 +6,7 @@ import {
   BillingPeriod,
   CalendarDay,
   Email,
+  EnvironmentId,
   InvoiceId,
   NonNegative,
   NonNegativeInt,
@@ -77,9 +78,12 @@ const capFields = {
  * `QuotaExceeded`'s `limitUnits` and `usedUnits`: a read weighs one unit and a
  * command `unitsPerCommand` units, which this cap always carries and no other
  * does, so commands are `used / unitsPerCommand`. They are cents for `spend`,
- * open connections for `connections`, and for `storage` the largest latest
- * sample of a serving deployment's tenant, since storage is capped per
- * deployment and tenant.
+ * open connections for `connections`, and compute unit-hours used in the
+ * current billing period for `compute`.
+ *
+ * `storage` is deprecated: the server no longer reports it, and it stays
+ * decodable only so clients reading older responses keep working. It was the
+ * largest latest sample of a serving deployment's tenant.
  */
 export const CapState = Schema.Union([
   Schema.Struct({
@@ -87,7 +91,10 @@ export const CapState = Schema.Union([
     ...capFields,
     unitsPerCommand: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   }),
-  Schema.Struct({ cap: Schema.Literals(["spend", "connections", "storage"]), ...capFields }),
+  Schema.Struct({
+    cap: Schema.Literals(["spend", "connections", "compute", "storage"]),
+    ...capFields,
+  }),
 ])
 export type CapState = typeof CapState.Type
 
@@ -135,14 +142,25 @@ export type PlanChange = typeof PlanChange.Type
 export const HostedSession = Schema.Struct({ url: Schema.String })
 export type HostedSession = typeof HostedSession.Type
 
+const machineSizeFields = {
+  cpuKind: Schema.Literals(["shared", "performance"]),
+  cpus: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  memoryMb: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+}
+
 /**
  * What a plan offers, derived from the pricing configuration: a hard command
- * cap, billed command overage, billed storage overage, a storage admission
- * cap, and a paid subscription bought through checkout.
+ * cap, billed command overage, billed compute overage, a hard compute cap,
+ * and a paid subscription bought through checkout.
+ *
+ * `storage-overage` and `storage-cap` are deprecated: the server no longer
+ * reports them, and they stay decodable only for older responses.
  */
 export const PlanFeature = Schema.Literals([
   "command-cap",
   "command-overage",
+  "compute-overage",
+  "compute-cap",
   "storage-overage",
   "storage-cap",
   "checkout",
@@ -151,9 +169,19 @@ export type PlanFeature = typeof PlanFeature.Type
 
 /**
  * One tier of the pricing configuration. `allowances.commands` is the
- * included command equivalents, `allowances.commandCap` the hard stop (null
- * when overage is billed instead) and `allowances.storageGb` decimal
- * gigabytes. A provisional tier's prices are not yet published.
+ * included command equivalents and `allowances.commandCap` its hard stop
+ * (null when overage is billed instead). `allowances.computeUnitHours` is the
+ * included compute unit-hours and `allowances.computeUnitHourCap` its hard
+ * stop (null when overage is billed instead at
+ * `overage.computeCentsPerUnitHour`). A machine size's hour bills the
+ * compute unit-hours `PlanCatalog.computeSizes` gives it. The compute fields
+ * are optional so responses from servers that predate compute pricing still
+ * decode; current servers always send them. A provisional tier's prices are
+ * not yet published.
+ *
+ * `allowances.storageGb` and `overage.storageCentsPerGbMonth` are deprecated
+ * and optional: the server no longer reports them, and they stay decodable
+ * only for older responses.
  */
 export const CatalogPlan = Schema.Struct({
   id: PlanId,
@@ -163,26 +191,54 @@ export const CatalogPlan = Schema.Struct({
   allowances: Schema.Struct({
     commands: NonNegativeInt,
     commandCap: Schema.NullOr(NonNegativeInt),
-    storageGb: NonNegative,
+    computeUnitHours: Schema.optionalKey(NonNegative),
+    computeUnitHourCap: Schema.optionalKey(Schema.NullOr(NonNegative)),
+    storageGb: Schema.optionalKey(NonNegative),
     concurrentConnections: NonNegativeInt,
   }),
   overage: Schema.Struct({
     commandCentsPerMillion: NonNegative,
-    storageCentsPerGbMonth: NonNegative,
+    computeCentsPerUnitHour: Schema.optionalKey(NonNegative),
+    storageCentsPerGbMonth: Schema.optionalKey(NonNegative),
   }),
   features: Schema.Array(PlanFeature),
   provisional: Schema.Boolean,
 })
 export type CatalogPlan = typeof CatalogPlan.Type
 
-/** Every plan, cheapest first; `provisional` is true while any plan's prices are provisional. */
+/**
+ * One machine size's weight in compute units: an hour of the size bills
+ * `unitsPerHour` compute unit-hours. The weights come from the pricing
+ * configuration.
+ */
+export const ComputeSize = Schema.Struct({
+  ...machineSizeFields,
+  unitsPerHour: Schema.Finite.check(Schema.isGreaterThan(0)),
+})
+export type ComputeSize = typeof ComputeSize.Type
+
+/**
+ * Every plan, cheapest first; `provisional` is true while any plan's prices
+ * are provisional. `computeSizes` lists the compute unit weight of every
+ * machine size the platform runs; it is optional so responses from servers
+ * that predate compute pricing still decode, and current servers always send
+ * it.
+ */
 export const PlanCatalog = Schema.Struct({
   plans: Schema.Array(CatalogPlan),
   readCommandWeight: NonNegative,
+  computeSizes: Schema.optionalKey(Schema.Array(ComputeSize)),
   provisional: Schema.Boolean,
 })
 export type PlanCatalog = typeof PlanCatalog.Type
 
+/**
+ * `runnerHours` is measured in compute unit-hours (see `ComputeUsage`), not
+ * machine hours; raw machine hours are reported per machine size in
+ * `ComputeUsage.machineHours`. `egressGb` is outbound traffic in decimal
+ * gigabytes. `storageGb` is deprecated: the server no longer reports it, and
+ * it stays decodable only for older responses.
+ */
 export const UsageMeterName = Schema.Literals([
   "commands",
   "reads",
@@ -201,25 +257,54 @@ export const UsageMeter = Schema.Struct({
 })
 export type UsageMeter = typeof UsageMeter.Type
 
-/** The published rules usage is priced by, sent with every usage report. */
+/**
+ * The published rules usage is priced by, sent with every usage report.
+ * `computeCentsPerUnitHour` prices compute unit-hours beyond the plan's
+ * allowance; it is optional so responses from servers that predate compute
+ * pricing still decode, and current servers always send it.
+ * `storagePerGbCents` is deprecated and optional: the server no
+ * longer reports it, and it stays decodable only for older responses.
+ */
 export const UsagePricing = Schema.Struct({
   freeCommands: NonNegativeInt,
   readCommandWeight: NonNegative,
-  storagePerGbCents: NonNegative,
+  computeCentsPerUnitHour: Schema.optionalKey(NonNegative),
+  storagePerGbCents: Schema.optionalKey(NonNegative),
   provisional: Schema.optionalKey(Schema.Boolean),
 })
 export type UsagePricing = typeof UsagePricing.Type
 
 /**
+ * Compute used by one machine size in one environment during the period:
+ * `machineHours` raw machine hours, billed as `computeUnitHours` at the
+ * size's `ComputeSize.unitsPerHour` in the plan catalog.
+ */
+export const ComputeUsage = Schema.Struct({
+  environmentId: EnvironmentId,
+  ...machineSizeFields,
+  machineHours: NonNegative,
+  computeUnitHours: NonNegative,
+})
+export type ComputeUsage = typeof ComputeUsage.Type
+
+/**
  * The organization's latest storage sample: the sum of every tenant's latest
- * sampled logical bytes, and the newest hour among those samples.
+ * sampled logical bytes, and the newest hour among those samples. Deprecated:
+ * the server no longer reports it, and it stays decodable only for older
+ * responses.
  */
 export const StorageSample = Schema.Struct({ bytes: NonNegative, sampledAt: Timestamp })
 export type StorageSample = typeof StorageSample.Type
 
 /**
- * `latestStorageSample` and `caps` describe now whatever `period` is
- * reported; the sample is null before any tenant was sampled.
+ * `caps` describe now whatever `period` is reported. A project's
+ * `computeUnitHours` is its compute for the period and `compute` breaks it
+ * down by environment and machine size; both are omitted when the server
+ * does not meter compute for the project.
+ *
+ * `latestStorageSample` and a project's `storageGbMonths` are deprecated: the
+ * server no longer reports them, and they stay decodable only for older
+ * responses.
  */
 export const Usage = Schema.Struct({
   period: BillingPeriod,
@@ -233,6 +318,8 @@ export const Usage = Schema.Struct({
       name: Schema.String,
       commands: NonNegativeInt,
       reads: Schema.optionalKey(NonNegativeInt),
+      computeUnitHours: Schema.optionalKey(NonNegative),
+      compute: Schema.optionalKey(Schema.Array(ComputeUsage)),
       storageGbMonths: Schema.optionalKey(NonNegative),
       estimatedCostCents: NonNegative,
     }),
