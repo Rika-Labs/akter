@@ -28,6 +28,7 @@ import { logoutCommand } from "./commands/cloud/logout.ts"
 import { whoamiCommand } from "./commands/cloud/whoami.ts"
 
 import { envCommand } from "./commands/cloud/env.ts"
+import { logsCommand } from "./commands/cloud/logs.ts"
 
 const group = <const Subcommands extends ReadonlyArray<Command.Command.SubcommandEntry>>(
   name: string,
@@ -93,7 +94,14 @@ export const akter = Command.make("akter").pipe(
     },
     {
       group: "Akter Cloud",
-      commands: [loginCommand, logoutCommand, whoamiCommand, deployCommand, envCommand],
+      commands: [
+        loginCommand,
+        logoutCommand,
+        whoamiCommand,
+        deployCommand,
+        envCommand,
+        logsCommand,
+      ],
     },
   ]),
 )

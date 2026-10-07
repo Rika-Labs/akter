@@ -13,6 +13,7 @@ This is the accepted API design, not a claim that every interface is implemented
 - [Drizzle integration](04-drizzle.md)
 - [Generating clients](05-generated-clients.md)
 - [The `akter` CLI](06-cli.md)
+- [Customer runner logs](07-cloud-logs.md)
 - [Generated contracts](generated-contracts.md)
 - [Naming](naming.md)
 - [Versioning](versioning.md)

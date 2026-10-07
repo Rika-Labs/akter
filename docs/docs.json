@@ -75,7 +75,12 @@
           },
           {
             "group": "Clients and CLI",
-            "pages": ["api/05-generated-clients", "api/06-cli", "api/generated-contracts"]
+            "pages": [
+              "api/05-generated-clients",
+              "api/06-cli",
+              "api/07-cloud-logs",
+              "api/generated-contracts"
+            ]
           },
           {
             "group": "Conventions",

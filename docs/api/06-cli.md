@@ -62,6 +62,7 @@ Akter Cloud client:
   whoami    Show who the stored Akter Cloud session signs in as
   deploy    Upload the app directory, build and roll it out on Akter Cloud, and follow it until it is live
   env       List, set, unset and import encrypted write-only environment variables
+  logs      Read recent customer runner logs, or follow with resumable long polls
 
 ```
 
@@ -133,6 +134,29 @@ FLAGS
 ```
 
 It packs the app directory with `.akterignore`, or `.gitignore` when there is none, read with Git's root `.gitignore` rules: a pattern with a `/` before its end is anchored at the directory, any other matches at every depth, a trailing `/` matches only directories, and nothing inside a left-out directory comes back. `.git` is always left out. Symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. No Dockerfile is sent: the platform builds the app from its `src/app.ts`, whose default export is an `App.make` value ([hosted apps](01-server-api.md#composition)), and a directory whose ignore file leaves out or lacks `src/app.ts` is refused with exit 2 before anything is uploaded. It uploads the archive to `POST /api/projects/:projectId/sources`, creates the deployment with `source: { digest }`, and prints each rollout step as it starts and ends. While the build runs it prints the build log's new lines on every poll, reading `GET .../build-log?after=<next index>` so each line is printed once, and when the build succeeds it prints the rest before the step's end. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines to stderr. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
+
+### `akter logs`
+
+Read recent customer runner stdout/stderr, or follow with resumable bounded long polls.
+
+```text
+USAGE
+  akter logs [flags]
+
+FLAGS
+  --project string       The project (default AKTER_PROJECT)
+  --env choice           The environment (default production; production, staging, dev)
+  --deployment string    Read this deployment instead of the environment's current deployment
+  --since integer        Seconds of recent output to request, from 1 to 3600 (default 300)
+  --limit integer        Maximum lines per response, from 1 to 200 (default 100)
+  --follow               Resume long polls until interrupted
+```
+
+Each line prints its UTC timestamp, runner identifier, stream and text, separated by tabs. Terminal color sequences are removed and control, Unicode line separators, and bidirectional-formatting characters are replaced so customer text cannot forge terminal lines. A trailing `…` marks text clipped at 4096 UTF-8 bytes. Fly merges stdout and stderr, so its stream is `unknown`; Docker preserves the two streams. This reads customer runner output only, not build output or platform internals. A suspended organization remains readable. The provider retains only recent output, not a durable archive; a dropped connection resumes from the last successful cursor but cannot recover expired provider output.
+
+Recent mode reads every page in the bounded time window, using the returned cursor while `more` is true, then exits. `--limit` bounds each response rather than the total output. The server clamps the requested timestamp into its most recent hour, so the maximum `--since` is not rejected by network delay or client clock skew. Follow drains available pages immediately before waiting at most 20 seconds for more output. Transport failures and typed 503 `Unavailable` responses retry from the last successful cursor with capped exponential delays; six consecutive failed requests stop the command. Authentication, authorization, missing-resource and unsupported-operation refusals are never retried. SIGINT interrupts the Effect runtime and cancels the in-flight request; no background follower remains.
+
+Following an environment switches to its new current deployment after a rollout and resets its provider position within the original bounded time window. `--deployment` stays on the selected deployment. See the [logs API contract](07-cloud-logs.md).
 
 ### `akter dev`
 
