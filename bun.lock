@@ -51,6 +51,21 @@
         "effect": "catalog:",
       },
     },
+    "apps/self-host": {
+      "name": "@akter/self-host",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@effect/platform-node": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "@rikalabs/akter": "workspace:*",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "typescript": "catalog:",
+      },
+    },
     "packages/akter": {
       "name": "@rikalabs/akter",
       "version": "0.1.0-alpha.2",
@@ -176,6 +191,8 @@
     "@akter/python-client": ["@akter/python-client@workspace:packages/python-client"],
 
     "@akter/react": ["@akter/react@workspace:packages/react"],
+
+    "@akter/self-host": ["@akter/self-host@workspace:apps/self-host"],
 
     "@akter/structure": ["@akter/structure@workspace:tooling/structure"],
 
