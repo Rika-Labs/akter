@@ -1,29 +1,8 @@
 # Automation contracts
 
-Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes or auto-merges, only `Release` publishes, from a maintainer's tag, and only `Deploy` deploys.
+Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<issue>-slug`; Dependabot gets a narrow author+branch exception. Titles remain plain language. No workflow force-pushes or auto-merges. Only `Release` publishes from a maintainer's tag; this public repository does not deploy anything.
 
 `Verify` runs PR code without long-lived repository secrets or persisted checkout credentials on GitHub-hosted `ubuntu-24.04` runners. `Trusted policy` and `Evidence gate` execute only main code. The gate checks successful current-head-SHA run/artifact metadata through Distilled and refuses a PR-modified verification workflow. It never extracts or executes PR artifacts. A policy workflow change therefore requires a separately approved rollout. Configure branch rules to require `verify` (the job that aggregates every other job), `branch`, and `Current SHA evidence`; those settings were not applied. A review-complete label is informational, never proof or merge permission. Artifact metadata establishes executed CI provenance, not correctness of arbitrary PR tests; independent review remains required.
-
-## Deploy
-
-`Deploy` runs Alchemy against Fly.io from `infra/`. A first job, on an Arm runner, decides which stages to touch from the event and a second applies them, one matrix entry per stage, each with the secrets of one GitHub environment; [ADR 0089](../docs/decisions/0089-fly-infrastructure-and-environments.md) describes the stages and environments and `infra/README.md` the bootstrap.
-
-| Event                                                           | Stage      | Environment  | Operation                                               |
-| --------------------------------------------------------------- | ---------- | ------------ | ------------------------------------------------------- |
-| Pull request from this repository opened, reopened or pushed to | `pr-<n>`   | `preview`    | deploy                                                  |
-| That pull request closed                                        | `pr-<n>`   | `preview`    | destroy                                                 |
-| `Verify` succeeds for a push to `main`                          | `prod`     | `production` | deploy the verified commit, with no approval step       |
-| The same push changed `infra/` or this workflow                 | `preview`  | `preview`    | deploy                                                  |
-| Manual run from `main`, choosing `prod` (default) or `preview`  | the choice | by stage     | deploy                                                  |
-| Nightly schedule                                                | `pr-<n>`   | `preview`    | destroy each stage whose pull request is no longer open |
-
-The `preview` stage owns the Neki cluster and Axiom datasets that the previews share and must exist before the first preview. Each stage has its own concurrency group, so runs of one stage queue instead of overlapping or cancelling one that is applying, and two deploys of `prod` never run at once. `infra`'s `guard` script refuses an unknown stage and any destroy of `prod` or `preview` from CI, and the workflow refuses to destroy anything but `pr-<n>`. Fork and Dependabot pull requests never run it, and a manual run from another branch does nothing.
-
-Nothing waits for a reviewer: the `production` environment accepts deployments from `main` alone, so a merge that passes `Verify` reaches production. Feature flags, not the workflow, keep unfinished work dark.
-
-Unlike `Verify`, this workflow runs pull-request code with the `preview` environment's secrets. Any collaborator who can push a branch to this repository can read them through a workflow change, so give that environment credentials that reach preview resources only, including a state database of its own, and keep production credentials in `production`. The Vercel token is the one secret both share.
-
-Fly Machines run amd64 only, so the apply job runs on `ubuntu-24.04` and builds `linux/amd64` images natively.
 
 ## Framework tarball and release
 

@@ -1,6 +1,0 @@
-[install]
-# Isolated installs keep package boundaries honest. Validate native tool compatibility.
-linker = "isolated"
-
-[install.lockfile]
-save = true

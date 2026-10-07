@@ -10,18 +10,6 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   display: none;
 }
 
-/*
- * Akter docs theme: the marketing site's palette, PolySans and Geist Mono, hairline borders,
- * square corners, and mono uppercase labels. Mintlify's `fonts` setting only emits fixed-weight
- * faces, so the variable files are declared here with a weight range.
- */
-@font-face {
-  font-family: "Akter Sans";
-  src: url("/fonts/PolySans-variable.woff2") format("woff2");
-  font-weight: 300 800;
-  font-display: swap;
-}
-
 @font-face {
   font-family: "Akter Mono";
   src: url("/fonts/GeistMono-latin.woff2") format("woff2");
@@ -37,7 +25,7 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   --ak-hair: rgba(55, 48, 31, 0.13);
   --ak-muted: rgba(11, 13, 11, 0.55);
   --ak-body: rgba(11, 13, 11, 0.75);
-  --ak-sans: "Akter Sans", "PolySans", system-ui, sans-serif;
+  --ak-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --ak-mono: "Akter Mono", "Geist Mono", ui-monospace, monospace;
   --font-family-headings-custom: var(--ak-sans);
   --font-family-body-custom: var(--ak-sans);

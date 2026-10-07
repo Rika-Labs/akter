@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "paths": {
-      "@effect/vitest": ["../../node_modules/.bun/@effect+vitest@4.0.0-rc.116+364f88b553c53a23/node_modules/@effect/vitest/dist/index.d.ts"]
-    }
-  },
-  "include": ["**/*.ts"]
-}

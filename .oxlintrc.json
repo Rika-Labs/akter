@@ -68,10 +68,7 @@
       }
     },
     {
-      "files": [
-        "packages/akter/src/runtime/peering/*.ts",
-        "packages/deployments/src/runners/docker.test.ts"
-      ],
+      "files": ["packages/akter/src/runtime/peering/*.ts"],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
       }
@@ -81,22 +78,6 @@
       "rules": {
         "effecttsgo/async-function": "off",
         "effecttsgo/missing-pipeable-signature": "off"
-      }
-    },
-    {
-      "files": ["apps/site/**/*.ts"],
-      "rules": {
-        "effecttsgo/async-function": "off",
-        "effecttsgo/global-fetch": "off",
-        "effecttsgo/missing-pipeable-signature": "off",
-        "effecttsgo/node-builtin-import": "off"
-      }
-    },
-    {
-      "files": ["apps/e2e/*.ts"],
-      "rules": {
-        "effecttsgo/async-function": "off",
-        "effecttsgo/process-env": "off"
       }
     }
   ],

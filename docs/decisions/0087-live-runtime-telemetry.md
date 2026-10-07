@@ -1,6 +1,6 @@
 # ADR 0087: Live runtime telemetry for the console
 
-**Status:** implementation decision (2026-10-04), for [#574](https://github.com/Rika-Labs/akter/issues/574); extends the read-only inspector of [ADR 0028](0028-sql-inspection-views.md) and the console runtime endpoints of #577, and composes with [ADR 0082](0082-attributed-console-commands.md)'s service credential.
+**Status:** implementation decision (2026-10-04), for [#574](https://github.com/Rika-Labs/akter/issues/574); extends the read-only inspector of [ADR 0028](0028-sql-inspection-views.md) and the console runtime endpoints of #577, and composes with ADR 0082 (a hosted-platform record, private)'s service credential.
 
 **Responsibility:** decide what a runner records durably and what it reports live for the console's runtime pages, how the live command stream reaches the console, and the bounds, redaction, tenant scoping and cost of each.
 
@@ -74,7 +74,7 @@ Each committed command adds one bound `bigint` and one column default to its rec
 - `ConnectionsSummary.parked`, `replayGaps`, `openVersusParked` and `byActorType[].parked` are nullable: runners do not measure them.
 - `Schedule.nextRunAt` is nullable.
 - `streamCommands` declares `CommandStreamGap` as its stream failure.
-- `CommandCaller.kind` is `user`, `anonymous` or `system`; there is no `apiKey` kind, since a runner records an API key's command as `User` with subject `api-key:<id>` ([ADR 0082](0082-attributed-console-commands.md)).
+- `CommandCaller.kind` is `user`, `anonymous` or `system`; there is no `apiKey` kind, since a runner records an API key's command as `User` with subject `api-key:<id>` (ADR 0082 (a hosted-platform record, private)).
 
 ## Alternatives
 

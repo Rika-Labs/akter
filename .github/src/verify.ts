@@ -89,7 +89,6 @@ if (import.meta.main) {
             "test",
             "build",
             "test:integration",
-            "test:e2e",
             "--concurrency=100%",
             "--summarize",
             ...process.argv.slice(2),

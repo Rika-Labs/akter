@@ -222,7 +222,7 @@ Required by the accepted M4 design ADRs; each slice runs its rows when it builds
 
 ## Control-plane rows
 
-Required by [contract 11](../contracts/11-control-plane.md); they run against real Postgres in `apps/api/src/repository.test.ts`. Neki is not covered.
+Required by contract 11 (a hosted-platform record, private); they run against real Postgres in `apps/api/src/repository.test.ts`. Neki is not covered.
 
 | Fault point                                                     | Required result                                                               |
 | --------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -236,7 +236,7 @@ Required by [contract 11](../contracts/11-control-plane.md); they run against re
 
 ## Control-plane runtime and builds
 
-Required by [contract 11](../contracts/11-control-plane.md). The edge rows run through the real `apps/edge` on Postgres in `apps/edge/src/quotas.test.ts`; the stack rows run real runners, a real edge process and the API in `apps/api/src/deployment-stack.test.ts`; the build rows run the lifecycle actor on Postgres in `packages/deployments/src/lifecycle/layer.test.ts` and a real Docker build in `packages/deployments/src/runners/build.test.ts`.
+Required by contract 11 (a hosted-platform record, private). The edge rows run through the real `apps/edge` on Postgres in `apps/edge/src/quotas.test.ts`; the stack rows run real runners, a real edge process and the API in `apps/api/src/deployment-stack.test.ts`; the build rows run the lifecycle actor on Postgres in `packages/deployments/src/lifecycle/layer.test.ts` and a real Docker build in `packages/deployments/src/runners/build.test.ts`.
 
 | Fault point                                                              | Required result                                                                                             |
 | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |

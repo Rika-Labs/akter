@@ -12,7 +12,7 @@ The deployment lifecycle and runner-provider slice uses the same Postgres author
 | Fly proxy edge                        | Local peer-trust tests and streaming HTTP/WebSocket/SSE regressions; configured Fly proxy trust and the edge and wildcard certificate declarations    | Real Fly proxy traffic, certificate issuance or hosted TLS     |
 | Deploy workflow                       | Reusable GitHub Actions template and typed digest/commit registration endpoint                                                                        | A credential-bearing Fly registry push or GitHub App install   |
 
-These rows state the required verification boundary, not a claim that an unrun scenario passed. The control-plane API currently hosts its actors in one embedded process, so the infrastructure keeps one API machine. Multiple control-plane processes require explicit public socket-runner wiring and topology evidence. See [ADR 0075](../decisions/0075-deployment-and-runner-orchestration.md) and the [deployment verification guide](../verification/cloud-deployments.md).
+These rows state the required verification boundary, not a claim that an unrun scenario passed. The control-plane API currently hosts its actors in one embedded process, so the infrastructure keeps one API machine. Multiple control-plane processes require explicit public socket-runner wiring and topology evidence. See [ADR 0075](../decisions/0075-deployment-and-runner-orchestration.md) and the deployment verification guide (a hosted-platform record, private).
 
 **Responsibility:** show real capability differences by backend.  
 **Authority:** operational evidence.  

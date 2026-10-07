@@ -88,8 +88,8 @@ jobs:
           overwrite: true
           retention-days: 14
 
-  workspaces:
-    name: workspaces
+  public-workspaces:
+    name: public-workspaces
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -123,7 +123,7 @@ jobs:
           turbo-team: ${{ vars.TURBO_TEAM }}
       - name: Start the streaming replica
         run: echo "TEST_REPLICA_DATABASE_URL=$(bun .github/src/replica.ts)" >> "$GITHUB_ENV"
-      - name: Build and test every workspace except the framework and the browser project
+      - name: Build and test public clients, CLI and tooling
         run: |
           mkdir -p evidence/workspaces
           affected=()
@@ -132,60 +132,17 @@ jobs:
             affected=(--affected)
           fi
           bun run turbo run build test test:integration \
-            --filter='!@rikalabs/akter' --filter='!@akter/e2e' \
+            --filter='!@rikalabs/akter' \
             --concurrency=100% --summarize "${affected[@]}" 2>&1 | tee evidence/workspaces/check.log
       - name: Collect Turbo run summaries
         if: always()
         run: |
           mkdir -p evidence/workspaces/turbo
           cp .turbo/runs/*.json evidence/workspaces/turbo/ 2>/dev/null || true
-          cp apps/api/.cache/integration-results.json evidence/workspaces/ 2>/dev/null || true
       - uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: evidence-part-workspaces
-          path: evidence/
-          include-hidden-files: true
-          if-no-files-found: ignore
-          overwrite: true
-          retention-days: 14
-
-  e2e:
-    name: e2e
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ env.HEAD_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          turbo-team: ${{ vars.TURBO_TEAM }}
-      - name: Install Chromium
-        run: bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell
-      - name: Browser tests
-        run: |
-          mkdir -p evidence/e2e
-          affected=()
-          if [[ -n "$BASE_SHA" ]]; then
-            export TURBO_SCM_BASE="$BASE_SHA" TURBO_SCM_HEAD="$HEAD_SHA"
-            affected=(--affected)
-          fi
-          bun run test:e2e --summarize "${affected[@]}" 2>&1 | tee evidence/e2e/check.log
-      - name: Collect Turbo run summaries
-        if: always()
-        run: |
-          mkdir -p evidence/e2e/turbo
-          cp .turbo/runs/*.json evidence/e2e/turbo/ 2>/dev/null || true
-      - uses: actions/upload-artifact@v7.0.1
-        if: always()
-        with:
-          name: evidence-part-e2e
           path: evidence/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -457,8 +414,7 @@ jobs:
     needs:
       - static
       - pack
-      - workspaces
-      - e2e
+      - public-workspaces
       - framework-unit
       - framework-pglite
       - framework-postgres

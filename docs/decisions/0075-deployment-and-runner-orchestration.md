@@ -1,6 +1,6 @@
 # ADR 0075: Deployment and runner orchestration
 
-**Status:** implementation decision for #503, #504, #507 and #510; provider support remains gated by its own evidence. The ECS Fargate provider, ARM64 task definitions, ECR registry and the NLB/Cloudflare client-IP gate are superseded by [ADR 0090](0090-fly-machines-runner-platform.md).
+**Status:** implementation decision for #503, #504, #507 and #510; provider support remains gated by its own evidence. The ECS Fargate provider, ARM64 task definitions, ECR registry and the NLB/Cloudflare client-IP gate are superseded by ADR 0090 (a hosted-platform record, private).
 
 **Responsibility:** serialize rollouts, preserve rollback snapshots, recover runner provisioning and establish the hosted client-IP trust boundary.
 
