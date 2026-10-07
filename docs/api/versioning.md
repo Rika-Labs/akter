@@ -15,6 +15,8 @@ The four package entries version together. Published packages start at `0.1.0-al
 
 Alpha upgrades require a backup and a check of the [upgrade notes](../operations/alpha-upgrades.md), including framework SQL migrations and inspection-view changes. `@akter/react` and the Python client generator are repo-only and not published at launch.
 
+The framework and CLI are one release unit. Published `effect`, `@effect/*` and `drizzle-orm` peer dependencies accept caret ranges with the exact workspace catalog versions as floors, so compatible consumer versions share one library identity. Runtime dependencies and the catalog remain exact; quickstart installs resolve current compatible releases and record them in the consumer lockfile. A compatible range is not provider or runtime-feature verification for every version it admits: check the resolved graph and run application smoke tests before upgrading dependencies.
+
 Evolution is additive by default: add schema fields with decoding defaults before requiring them, retain stable actor and member tags, and do not reuse a command identity for different semantics. Keyed state changes use a validated `Actor.migration` chain; table changes use SQL migrations.
 
 Receipts must replay both successful results and declared failures under newer code, subject to current receipt-access and external retry-horizon rules. Retained events and pending jobs decode through their declared migration chains for their full retention window, and a deploy that would strand one is refused at startup (M4.7, [ADR 0032](../decisions/0032-event-and-effect-payload-evolution.md)). Command inputs and outputs stay additive. A TypeScript-only change without runtime-schema, stored-payload, OpenAPI, and rolling-deployment review is not compatible.
