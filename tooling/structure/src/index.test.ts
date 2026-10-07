@@ -72,10 +72,19 @@ describe("package names", () => {
 
 describe("dependency direction", () => {
   it("rejects a library depending on the published CLI", () => {
-    expect(analyze({
-      files: [manifest("packages/other", { name: "@akter/other", dependencies: { akter: "0.1.0-alpha.1" } })],
-      exemptions: [],
-    }).map((finding) => finding.message)).toEqual(["depends on app package 'akter'; dependency direction is apps -> packages, never app-ward"])
+    expect(
+      analyze({
+        files: [
+          manifest("packages/other", {
+            name: "@akter/other",
+            dependencies: { akter: "0.1.0-alpha.1" },
+          }),
+        ],
+        exemptions: [],
+      }).map((finding) => finding.message),
+    ).toEqual([
+      "depends on app package 'akter'; dependency direction is apps -> packages, never app-ward",
+    ])
   })
   it("rejects app-ward dependencies and framework workspace deps, allows apps -> packages", () => {
     const findings = analyze({
