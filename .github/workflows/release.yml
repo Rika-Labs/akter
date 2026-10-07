@@ -19,7 +19,8 @@ jobs:
     timeout-minutes: 15
     environment: npm
     permissions:
-      contents: read
+      contents: write
+      actions: read
       id-token: write
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -66,8 +67,25 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Require a successful Verify run for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          runs="$(gh api --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${commit}&status=completed&per_page=100" \
+            --jq '.workflow_runs[] | select(.conclusion == "success" and .status == "completed") | .id')"
+          if [[ -z "$runs" ]]; then
+            echo "No successful Verify run found for $commit" >&2
+            exit 1
+          fi
+          echo "Successful Verify run(s) for $commit: ${runs//$'\n'/, }"
       - name: Build, stage and check the tarball
         run: |
+          bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts
+          bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
           bun run prepare
           bun .github/src/pack.ts --out "$RUNNER_TEMP/package"
       - name: Install the tarball into a clean project and run it
@@ -77,3 +95,19 @@ jobs:
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version packages/akter/package.json)"
+          notes="$RUNNER_TEMP/release-notes.md"
+          prerelease=false
+          if [[ "${version%%+*}" == *-* ]]; then prerelease=true; fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes" \
+              --prerelease="$prerelease"
+          else
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$notes" \
+              --verify-tag --prerelease="$prerelease"
+          fi
