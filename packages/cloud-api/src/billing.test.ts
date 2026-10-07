@@ -87,6 +87,11 @@ const catalog = (plans: ReadonlyArray<Schema.Json>) => ({
   provisional: true,
 })
 
+const computeSizes: Schema.JsonArray = [
+  { cpuKind: "shared", cpus: 1, memoryMb: 512, unitsPerHour: 1.5 },
+  { cpuKind: "performance", cpus: 2, memoryMb: 4096, unitsPerHour: 7 },
+]
+
 describe("plan catalog", () => {
   const validCatalog = wire(PlanCatalog)
   const validPlan = wire(CatalogPlan)
@@ -97,7 +102,28 @@ describe("plan catalog", () => {
       allowances: { ...computePlan.allowances, computeUnitHourCap: 730 },
       features: ["command-cap", "compute-cap"],
     }
-    expect(validCatalog(catalog([computePlan, capped]))).toBe(true)
+    expect(validCatalog({ ...catalog([computePlan, capped]), computeSizes })).toBe(true)
+  })
+
+  it("decodes per-size compute unit weights taken from the pricing configuration", () => {
+    expect(validCatalog({ ...catalog([computePlan]), computeSizes })).toBe(true)
+    expect(validCatalog({ ...catalog([computePlan]), computeSizes: [] })).toBe(true)
+  })
+
+  it("refuses a size whose weight is not positive or whose machine has no whole CPU or memory", () => {
+    const size = { cpuKind: "shared", cpus: 1, memoryMb: 512, unitsPerHour: 1.5 }
+    const withSize = (patch: Record<string, Schema.Json>) => ({
+      ...catalog([computePlan]),
+      computeSizes: [{ ...size, ...patch }],
+    })
+    expect(validCatalog(withSize({}))).toBe(true)
+    expect(validCatalog(withSize({ unitsPerHour: 0 }))).toBe(false)
+    expect(validCatalog(withSize({ unitsPerHour: -1.5 }))).toBe(false)
+    expect(validCatalog(withSize({ cpus: 0 }))).toBe(false)
+    expect(validCatalog(withSize({ cpus: 0.5 }))).toBe(false)
+    expect(validCatalog(withSize({ memoryMb: 0 }))).toBe(false)
+    expect(validCatalog(withSize({ memoryMb: 512.5 }))).toBe(false)
+    expect(validCatalog(withSize({ cpuKind: "dedicated" }))).toBe(false)
   })
 
   it("still decodes a storage-era plan that carries no compute fields", () => {
@@ -127,7 +153,7 @@ const sharedRecord = {
   cpus: 1,
   memoryMb: 1024,
   machineHours: 10,
-  computeUnitHours: 40,
+  computeUnitHours: 13.7,
 }
 
 const performanceRecord = {
@@ -136,48 +162,26 @@ const performanceRecord = {
   cpus: 2,
   memoryMb: 4096,
   machineHours: 1.5,
-  computeUnitHours: 24,
+  computeUnitHours: 0.9,
 }
 
 describe("compute usage dimensions", () => {
   const validRecord = wire(ComputeUsage)
 
-  it("accepts unit-hours weighed by the larger of CPU and memory against a shared CPU with 256 MiB", () => {
+  it("accepts any non-negative unit-hours, since machine size weights come from the pricing configuration", () => {
     expect(validRecord(sharedRecord)).toBe(true)
     expect(validRecord(performanceRecord)).toBe(true)
-    expect(
-      validRecord({ ...sharedRecord, cpuKind: "performance", cpus: 4, computeUnitHours: 160 }),
-    ).toBe(true)
-    expect(
-      validRecord({
-        ...sharedRecord,
-        cpus: 2,
-        memoryMb: 256,
-        machineHours: 3,
-        computeUnitHours: 6,
-      }),
-    ).toBe(true)
     expect(validRecord({ ...sharedRecord, machineHours: 0, computeUnitHours: 0 })).toBe(true)
-    expect(
-      validRecord({ ...sharedRecord, memoryMb: 768, machineHours: 0.1, computeUnitHours: 0.3 }),
-    ).toBe(true)
+    expect(validRecord({ ...sharedRecord, machineHours: 0, computeUnitHours: 2 })).toBe(true)
   })
 
-  it("refuses unit-hours that disagree with the machine size's weight", () => {
-    expect(validRecord({ ...sharedRecord, computeUnitHours: 10 })).toBe(false)
-    expect(validRecord({ ...performanceRecord, computeUnitHours: 8 })).toBe(false)
-    expect(
-      validRecord({ ...sharedRecord, cpuKind: "performance", cpus: 4, computeUnitHours: 40 }),
-    ).toBe(false)
-    expect(validRecord({ ...sharedRecord, computeUnitHours: 40.001 })).toBe(false)
-  })
-
-  it("refuses negative hours, a machine with no CPU or memory, fractional CPUs, an unknown CPU kind and an empty environment", () => {
-    expect(validRecord({ ...sharedRecord, machineHours: -10, computeUnitHours: -40 })).toBe(false)
-    expect(validRecord({ ...sharedRecord, cpus: 0, memoryMb: 1024 })).toBe(false)
+  it("refuses negative hours, a machine with no whole CPU or memory, an unknown CPU kind and an empty environment", () => {
+    expect(validRecord({ ...sharedRecord, machineHours: -10 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, computeUnitHours: -13.7 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, cpus: 0 })).toBe(false)
     expect(validRecord({ ...sharedRecord, cpus: -1 })).toBe(false)
-    expect(validRecord({ ...sharedRecord, cpus: 1.5, computeUnitHours: 40 })).toBe(false)
-    expect(validRecord({ ...sharedRecord, memoryMb: 0, computeUnitHours: 10 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, cpus: 1.5 })).toBe(false)
+    expect(validRecord({ ...sharedRecord, memoryMb: 0 })).toBe(false)
     expect(validRecord({ ...sharedRecord, memoryMb: 1024.5 })).toBe(false)
     expect(validRecord({ ...sharedRecord, cpuKind: "dedicated" })).toBe(false)
     expect(validRecord({ ...sharedRecord, environmentId: "" })).toBe(false)
@@ -250,7 +254,7 @@ describe("usage report", () => {
     expect(validUsage(storageUsage)).toBe(true)
   })
 
-  it("refuses a negative compute rate, negative or inconsistent project compute and a negative compute cap", () => {
+  it("refuses a negative compute rate, negative project compute and a negative compute cap", () => {
     const withProject = (patch: Record<string, Schema.Json>) => ({
       ...computeUsage,
       byProject: [{ ...meteredProject, ...patch }],
@@ -262,7 +266,7 @@ describe("usage report", () => {
       }),
     ).toBe(false)
     expect(validUsage(withProject({ computeUnitHours: -64 }))).toBe(false)
-    expect(validUsage(withProject({ compute: [{ ...sharedRecord, computeUnitHours: 10 }] }))).toBe(
+    expect(validUsage(withProject({ compute: [{ ...sharedRecord, computeUnitHours: -10 }] }))).toBe(
       false,
     )
     expect(

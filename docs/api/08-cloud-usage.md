@@ -4,13 +4,7 @@
 
 ## Compute units
 
-A compute unit-hour is one hour of one shared CPU with 256 MiB of memory. A machine hour weighs
-
-```text
-max(cpus × (cpuKind = performance ? 4 : 1), memoryMb ÷ 256)
-```
-
-units, so a shared 1 CPU, 1024 MiB machine weighs 4 and a performance 2 CPU, 4096 MiB machine weighs 16. The weight depends only on machine size. It does not depend on what the runner does with the machine.
+Compute is billed in compute unit-hours. The plan catalog's `computeSizes` gives the unit weight of every machine size: each `ComputeSize` is `{ cpuKind, cpus, memoryMb, unitsPerHour }`, and one hour of that size bills `unitsPerHour` compute unit-hours. `cpuKind` is `shared` or `performance`, `cpus` and `memoryMb` are positive integers, and `unitsPerHour` is greater than zero. The weights come from the hosted pricing configuration and are not fixed by the contract. `computeSizes` is optional so older catalogs still decode; current servers always send it.
 
 ## Plan catalog
 
@@ -32,7 +26,7 @@ The compute fields are optional in the schema so that responses from servers tha
 - `UsagePricing.computeCentsPerUnitHour` is the published compute overage price. It is optional for the same reason as the catalog fields, and current servers always send it.
 - A `CapState` with `cap: "compute"` reports `limit` and `used` in compute unit-hours for the current billing period.
 - Each `byProject` entry may carry `computeUnitHours`, the project's compute for the period, and `compute`, an array of `ComputeUsage` records. Both are omitted for a project whose compute is not metered.
-- A `ComputeUsage` record is `{ environmentId, cpuKind, cpus, memoryMb, machineHours, computeUnitHours }` for one machine size in one environment. `environmentId` is an opaque control-plane identifier. `cpuKind` is `shared` or `performance`. `cpus` and `memoryMb` are positive integers. `machineHours` holds the raw machine hours, and `computeUnitHours` holds the same hours normalized by the weight above. Decoding refuses negative hours, a machine with no CPU or memory, fractional CPUs or memory, an unknown CPU kind, and a record whose unit-hours disagree with its weight beyond floating-point rounding.
+- A `ComputeUsage` record is `{ environmentId, cpuKind, cpus, memoryMb, machineHours, computeUnitHours }` for one machine size in one environment. `environmentId` is an opaque control-plane identifier. `cpuKind` is `shared` or `performance`. `cpus` and `memoryMb` are positive integers. `machineHours` holds the raw machine hours, and `computeUnitHours` holds the unit-hours billed for them at the size's catalog weight. Decoding refuses negative hours, a machine with no CPU or memory, fractional CPUs or memory, an unknown CPU kind and an empty environment. It does not recompute unit-hours from the machine size, because the weights belong to the pricing configuration.
 
 ## Deprecated storage fields
 

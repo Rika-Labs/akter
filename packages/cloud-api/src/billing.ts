@@ -142,6 +142,12 @@ export type PlanChange = typeof PlanChange.Type
 export const HostedSession = Schema.Struct({ url: Schema.String })
 export type HostedSession = typeof HostedSession.Type
 
+const machineSizeFields = {
+  cpuKind: Schema.Literals(["shared", "performance"]),
+  cpus: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  memoryMb: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+}
+
 /**
  * What a plan offers, derived from the pricing configuration: a hard command
  * cap, billed command overage, billed compute overage, a hard compute cap,
@@ -167,8 +173,8 @@ export type PlanFeature = typeof PlanFeature.Type
  * (null when overage is billed instead). `allowances.computeUnitHours` is the
  * included compute unit-hours and `allowances.computeUnitHourCap` its hard
  * stop (null when overage is billed instead at
- * `overage.computeCentsPerUnitHour`). A compute unit-hour is one hour of a
- * shared CPU with 256 MiB of memory; see `ComputeUsage`. The compute fields
+ * `overage.computeCentsPerUnitHour`). A machine size's hour bills the
+ * compute unit-hours `PlanCatalog.computeSizes` gives it. The compute fields
  * are optional so responses from servers that predate compute pricing still
  * decode; current servers always send them. A provisional tier's prices are
  * not yet published.
@@ -200,10 +206,28 @@ export const CatalogPlan = Schema.Struct({
 })
 export type CatalogPlan = typeof CatalogPlan.Type
 
-/** Every plan, cheapest first; `provisional` is true while any plan's prices are provisional. */
+/**
+ * One machine size's weight in compute units: an hour of the size bills
+ * `unitsPerHour` compute unit-hours. The weights come from the pricing
+ * configuration.
+ */
+export const ComputeSize = Schema.Struct({
+  ...machineSizeFields,
+  unitsPerHour: Schema.Finite.check(Schema.isGreaterThan(0)),
+})
+export type ComputeSize = typeof ComputeSize.Type
+
+/**
+ * Every plan, cheapest first; `provisional` is true while any plan's prices
+ * are provisional. `computeSizes` lists the compute unit weight of every
+ * machine size the platform runs; it is optional so responses from servers
+ * that predate compute pricing still decode, and current servers always send
+ * it.
+ */
 export const PlanCatalog = Schema.Struct({
   plans: Schema.Array(CatalogPlan),
   readCommandWeight: NonNegative,
+  computeSizes: Schema.optionalKey(Schema.Array(ComputeSize)),
   provisional: Schema.Boolean,
 })
 export type PlanCatalog = typeof PlanCatalog.Type
@@ -251,35 +275,16 @@ export const UsagePricing = Schema.Struct({
 export type UsagePricing = typeof UsagePricing.Type
 
 /**
- * Compute used by one machine size in one environment during the period.
- * `computeUnitHours` normalizes `machineHours` to a baseline of one shared CPU
- * with 256 MiB of memory: each machine hour weighs
- * `max(cpus * (cpuKind === "performance" ? 4 : 1), memoryMb / 256)` units, so
- * a shared 1 CPU, 1024 MiB machine weighs 4 and a performance 2 CPU, 4096 MiB
- * machine weighs 16. A record whose `computeUnitHours` disagrees with that
- * weight beyond floating-point rounding is refused, so machine hours cannot
- * be reported as unit-hours.
+ * Compute used by one machine size in one environment during the period:
+ * `machineHours` raw machine hours, billed as `computeUnitHours` at the
+ * size's `ComputeSize.unitsPerHour` in the plan catalog.
  */
 export const ComputeUsage = Schema.Struct({
   environmentId: EnvironmentId,
-  cpuKind: Schema.Literals(["shared", "performance"]),
-  cpus: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  memoryMb: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  ...machineSizeFields,
   machineHours: NonNegative,
   computeUnitHours: NonNegative,
-}).check(
-  Schema.makeFilter((usage) => {
-    const weight = Math.max(
-      usage.cpus * (usage.cpuKind === "performance" ? 4 : 1),
-      usage.memoryMb / 256,
-    )
-    const expected = usage.machineHours * weight
-    return (
-      Math.abs(usage.computeUnitHours - expected) <= 1e-9 * Math.max(1, expected) ||
-      "computeUnitHours must equal machineHours times the machine size's unit weight"
-    )
-  }),
-)
+})
 export type ComputeUsage = typeof ComputeUsage.Type
 
 /**

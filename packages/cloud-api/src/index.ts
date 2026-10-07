@@ -193,6 +193,7 @@ export {
   CapState,
   CardPaymentMethod,
   CatalogPlan,
+  ComputeSize,
   ComputeUsage,
   PlanCatalog,
   PlanFeature,
