@@ -506,6 +506,14 @@ Applications run actors in three forms:
 - **served:** add `Actors.serve` for HTTP, WebSocket, SSE, and OpenAPI;
 - **hosted:** run the same layers on managed runners with Neki.
 
+A hosted app's `src/app.ts` default-exports `App.make({ actors, layer })` from `@rikalabs/akter/runtime`; `akter deploy` uploads it with no Dockerfile. `actors` are the definitions to serve, each with its `name` and `api`, and `layer` registers their handlers and builds any service they need from `AppServices` alone: what `Actors.layer` provides, the SQL client and `Crypto`. A requirement outside that union fails to compile at `App.make`, so an app provides other services in its own layer and never constructs a runtime. The host accepts the export only when `App.is` holds, which only an `App.make` value satisfies because a layer's requirements cannot be checked at run time; it runs `checkWorkflows(app.actors)` before a rollout, then provides `app.layer` with its runtime, database and `Crypto` and serves `app.actors`. A failure building the layer is `AppLayerFailed` with the original cause.
+
+```ts
+import { App } from "@rikalabs/akter/runtime"
+
+export default App.make({ actors: [Counter], layer: CounterLive })
+```
+
 `Actors.serve` requires authentication; `Auth.none` is the explicit public opt-out. Authentication sets `CurrentCaller` at the edge. Authorization is the actor's: `Actor.make(name, { access })` takes `({ caller, ref, command, kind, of }) => boolean | Effect<boolean>` with the `kind` values of `authorize`, and when both exist both must allow. With neither, `System` callers are allowed and every `User` and `Anonymous` caller is denied with `Unauthorized` `access_denied`, so a served actor answers `403` until it declares a policy. `Actor.access.public` is a ready-made policy that allows every caller and kind:
 
 ```ts

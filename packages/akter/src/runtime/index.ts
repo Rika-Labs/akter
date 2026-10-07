@@ -29,6 +29,10 @@ export { actorErrorBody, closeCodeOf, statusOf } from "../protocol/wire.ts"
 
 export { Database } from "./layer.ts"
 
+export { App, AppLayerFailed } from "./app.ts"
+
+export type { AppActor, AppServices } from "./app.ts"
+
 export { Runner } from "./runner.ts"
 
 export type { SocketRunnerOptions } from "./runner.ts"

@@ -60,7 +60,7 @@ Akter Cloud:
   login     Sign in to Akter Cloud through the browser and store the session for deploy
   logout    Sign out of Akter Cloud and delete the stored session
   whoami    Show who the stored Akter Cloud session signs in as
-  deploy    Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+  deploy    Upload the app directory, build and roll it out on Akter Cloud, and follow it until it is live
   env       List, set, unset and import encrypted write-only environment variables
 
 Control plane:
@@ -116,7 +116,7 @@ It prints the email address and control plane, then one line per organization: i
 
 ### `akter deploy`
 
-Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+Upload the app directory, build and roll it out on Akter Cloud, and follow it until it is live
 
 ```text
 USAGE
@@ -125,14 +125,13 @@ USAGE
 FLAGS
   --project string       The project to deploy to (default AKTER_PROJECT)
   --env choice           The environment to deploy to (default production) (choices: production, staging, dev)
-  --context directory    The build context to upload (default the current directory)
-  --dockerfile string    The Dockerfile's path inside the context (default Dockerfile)
+  --context directory    The app directory to upload, holding src/app.ts (default the current directory)
   --commit string        The commit SHA the deployment is labeled with (default the context's git HEAD)
   --message string       The deployment's message (default the commit's subject)
   --timeout integer      Seconds to follow the rollout before giving up on it (default 900)
 ```
 
-It packs the context as `docker build` would send it (`<Dockerfile>.dockerignore`, else `.dockerignore`; the Dockerfile always included): symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. `--dockerfile` is cleaned (`./a//Dockerfile` is `a/Dockerfile`), and a path starting at `/` or containing `..` is refused with exit 2 before anything is read. It uploads it to `POST /api/projects/:projectId/sources`, creates the deployment from the returned digest, and prints each rollout step as it starts and ends. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
+It packs the app directory with `.akterignore`, or `.gitignore` when there is none, read with Git's root `.gitignore` rules: a pattern with a `/` before its end is anchored at the directory, any other matches at every depth, a trailing `/` matches only directories, and nothing inside a left-out directory comes back. `.git` is always left out. Symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. No Dockerfile is sent: the platform builds the app from its `src/app.ts`, whose default export is an `App.make` value ([hosted apps](01-server-api.md#composition)), and a directory whose ignore file leaves out or lacks `src/app.ts` is refused with exit 2 before anything is uploaded. It uploads the archive to `POST /api/projects/:projectId/sources`, creates the deployment with `source: { digest }`, and prints each rollout step as it starts and ends. While the build runs it prints the build log's new lines on every poll, reading `GET .../build-log?after=<next index>` so each line is printed once, and when the build succeeds it prints the rest before the step's end. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines to stderr. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
 
 ### `akter billing setup`
 

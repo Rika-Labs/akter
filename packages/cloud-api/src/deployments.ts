@@ -103,27 +103,22 @@ export const SourceArchive = Schema.Struct({
 })
 export type SourceArchive = typeof SourceArchive.Type
 
-/** A path inside a build context: relative, `/`-separated, and never leaving it. */
-export const ContextPath = Schema.String.pipe(
-  Schema.check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(255),
-    Schema.makeFilter(
-      (path) =>
-        (!path.startsWith("/") &&
-          !path.includes("\\") &&
-          path
-            .split("/")
-            .every((segment) => segment !== "" && segment !== "." && segment !== "..")) ||
-        "A context path is relative and stays inside the context",
-    ),
-  ),
-)
+/** The module inside an uploaded source that the managed host loads and serves. */
+export const SOURCE_ENTRY = "src/app.ts"
 
-/** What the control plane's builder builds a deployment from: an uploaded archive and the Dockerfile inside it. */
+/**
+ * What the control plane's builder builds a deployment from: an uploaded
+ * archive, launched from `SOURCE_ENTRY` with a Dockerfile the platform
+ * generates. A `dockerfile` field is refused rather than ignored, so a client
+ * that still names one learns its Dockerfile would not be used.
+ */
 export const DeploymentSource = Schema.Struct({
   digest: SourceDigest,
-  dockerfile: ContextPath,
+  dockerfile: Schema.optionalKey(
+    Schema.Never.annotate({
+      message: `source.dockerfile is not accepted: the platform builds every source from ${SOURCE_ENTRY}`,
+    }),
+  ),
 })
 export type DeploymentSource = typeof DeploymentSource.Type
 
