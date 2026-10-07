@@ -1,6 +1,7 @@
 import { BunServices } from "@effect/platform-bun"
 import { Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
 import { Manifest } from "./catalogs.ts"
+import { releaseVersion } from "./release/version.ts"
 import {
   FrameworkManifest,
   publishManifest,
@@ -145,9 +146,8 @@ const program = Effect.gen(function* () {
     yield* fs.readFileString(path.join(framework, "package.json")),
   )
   const cliManifest = yield* decode(yield* fs.readFileString(path.join(cli, "package.json")))
-  if (frameworkManifest.version !== cliManifest.version)
-    return yield* Effect.die(new Error("CLI version must match the framework version"))
-  const versions = { [frameworkManifest.name]: frameworkManifest.version }
+  const version = releaseVersion({ framework: frameworkManifest.version, cli: cliManifest.version })
+  const versions = { [frameworkManifest.name]: version }
   const catalog = workspace.workspaces?.catalog ?? {}
 
   yield* stagePackage({

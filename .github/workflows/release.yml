@@ -56,6 +56,7 @@ jobs:
           commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           test "$(git rev-parse HEAD)" = "$commit" || { echo "Checkout is not $RELEASE_TAG"; exit 1; }
           version="$(jq -r .version packages/akter/package.json)"
+          bun .github/src/release/version.ts
           test "$RELEASE_TAG" = "v$version" || { echo "Tag $RELEASE_TAG does not match version $version"; exit 1; }
           git merge-base --is-ancestor "$commit" origin/main || { echo "$commit is not on main"; exit 1; }
           core="${version%%+*}"
@@ -90,7 +91,7 @@ jobs:
           echo "Successful Verify run(s) for $commit: ${runs//$'\n'/, }"
       - name: Build, stage and check the tarball
         run: |
-          bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts
+          bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts .github/src/release/version.test.ts
           bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
           bun run prepare
           bun .github/src/pack.ts --out "$RUNNER_TEMP/package" --cli-out "$RUNNER_TEMP/package-cli"

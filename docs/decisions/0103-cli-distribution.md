@@ -12,7 +12,7 @@ The public repository now contains `apps/cli`, while the framework already publi
 
 ## Decision
 
-- The CLI publishes as the unscoped `akter` package. `npm view akter` returned 404, and `npm publish --dry-run` is part of the release pack check; no real publish is performed during development. Users install it with `npm install akter` or `bun add akter` and invoke it with `npx akter` or `bunx akter`.
+- The CLI publishes as `@rikalabs/akter-cli` with the `akter` bin. ADR 0029 records npm's refusal of the unscoped `akter` name as too similar to existing packages; a registry dry-run cannot prove that similarity check will accept a real publish. Users install it with `bun add -d @rikalabs/akter-cli` or `npm i -D @rikalabs/akter-cli`, then invoke `bunx akter` or `npx akter`. One-off use is `npx -p @rikalabs/akter-cli akter login`, and a global install is `npm i -g @rikalabs/akter-cli`.
 - `@rikalabs/akter` does not carry a second `akter` bin. There is one CLI package and one executable, so framework installs cannot shadow an independently versioned CLI.
 - The CLI ships compiled ESM and declarations only. Its executable has a `#!/usr/bin/env node` entry and selects the Node or Bun Effect platform layers at runtime. The browser inspector client is bundled during package build, so `akter dev` does not require Bun when run under Node.
 - The CLI and framework share the framework version. The `@akter/cloud-api` contract is bundled into the CLI executable and remains private; it is not a second npm release unit. Libraries whose schemas or runtime identity must be shared with the application remain exact-version peers, while both platform packages are exact-version runtime dependencies so a standalone CLI install runs on either engine.
@@ -23,4 +23,4 @@ The public repository now contains `apps/cli`, while the framework already publi
 
 The release workflow stages and smoke-tests both tarballs on Node and Bun, then publishes both through npm trusted publishing under the same tag. A CLI release requires the framework release checks to pass, and a changed CLI needs a new framework version because they are one release unit.
 
-The dry-run proves npm accepts the local package shape, not that the registry will reserve the name. The first real publish and trusted-publisher bootstrap are maintainer actions; a registry name refusal requires changing only the package name to `@rikalabs/akter-cli`, retaining bin `akter`, and changing the documented commands to `npx @rikalabs/akter-cli` and `bunx @rikalabs/akter-cli` before release.
+The first CLI publish is a one-time maintainer bootstrap: publish the packed tarball interactively, then configure its trusted publisher before enabling workflow publication. The dry-run checks the tarball shape only.

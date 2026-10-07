@@ -23,7 +23,7 @@ const TEST_FILE = /\.test\.[cm]?[jt]sx?$/
 
 const E2E_FILE = /\.e2e\.[cm]?[jt]sx?$/
 
-const APP_PACKAGE = /^(?:akter|@akter\/(?:api|console|edge|cli))$/
+const APP_PACKAGE = /^(?:@rikalabs\/akter-cli|@akter\/(?:api|console|edge|cli))$/
 
 const WORKSPACE_PACKAGE = /^@akter\//
 
@@ -134,7 +134,7 @@ const checkManifests = (input: {
 
     const expected =
       dir === "apps/cli/"
-        ? "akter"
+        ? "@rikalabs/akter-cli"
         : basename === "akter"
           ? "@rikalabs/akter"
           : `@akter/${dir === "" ? "monorepo" : basename}`

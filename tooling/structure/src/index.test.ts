@@ -25,16 +25,16 @@ describe("package names", () => {
   it("allows the published CLI name only in apps/cli", () => {
     expect(
       analyze({
-        files: [manifest("apps/cli", { name: "akter" })],
+        files: [manifest("apps/cli", { name: "@rikalabs/akter-cli" })],
         exemptions: [],
       }),
     ).toEqual([])
     expect(
       analyze({
-        files: [manifest("packages/other", { name: "akter" })],
+        files: [manifest("packages/other", { name: "@rikalabs/akter-cli" })],
         exemptions: [],
       }).map((finding) => finding.message),
-    ).toEqual(["package name 'akter' must be '@akter/other'"])
+    ).toEqual(["package name '@rikalabs/akter-cli' must be '@akter/other'"])
   })
   it("requires @akter/<basename> and names the framework @rikalabs/akter", () => {
     const findings = analyze({
@@ -77,13 +77,13 @@ describe("dependency direction", () => {
         files: [
           manifest("packages/other", {
             name: "@akter/other",
-            dependencies: { akter: "0.1.0-alpha.1" },
+            dependencies: { "@rikalabs/akter-cli": "0.1.0-alpha.1" },
           }),
         ],
         exemptions: [],
       }).map((finding) => finding.message),
     ).toEqual([
-      "depends on app package 'akter'; dependency direction is apps -> packages, never app-ward",
+      "depends on app package '@rikalabs/akter-cli'; dependency direction is apps -> packages, never app-ward",
     ])
   })
   it("rejects app-ward dependencies and framework workspace deps, allows apps -> packages", () => {
