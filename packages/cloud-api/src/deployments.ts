@@ -68,6 +68,8 @@ export const DeploymentSummary = Schema.Struct({
   id: DeploymentId,
   projectId: ProjectId,
   environment: EnvironmentName,
+  /** The public environment host, omitted when the control plane has no runtime domain. */
+  environmentHost: Schema.optional(Schema.String),
   commitSha: CommitSha,
   message: Schema.String,
   author: DeploymentAuthor,
