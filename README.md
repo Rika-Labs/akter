@@ -181,6 +181,10 @@ The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nod
 | `@rikalabs/akter/client`  | The browser-safe Promise client: commands, queries, reducers, feeds, streams, and connections. |
 | `@rikalabs/akter/testing` | `ActorTest`, crash and clock controls, and inspection.                                         |
 
+## Akter Cloud
+
+[Akter Cloud](https://app.akter.dev) hosts your app with a managed customer database. Install the CLI with `bun add -d @rikalabs/akter-cli`, sign in with `bunx akter login`, then deploy with `bunx akter deploy --project <project-id>` (Node: `npm install --save-dev @rikalabs/akter-cli` and `npx akter`). The first registry publication is pending. See the [Cloud guide](docs/cloud/get-started.md) for signup, configuration, billing and account cleanup; paid pricing is provisional.
+
 ## Documentation
 
 Akter is alpha software. The launch-supported Postgres server version is **18.6**, the version exercised by CI; other server versions and providers are unverified. [Support matrix](docs/operations/support-matrix.md) scopes each backend and feature, and [alpha upgrade notes](docs/operations/alpha-upgrades.md) describe the planned alpha.1 → alpha.2 database changes. `@akter/react` and the Python client generator are repo-only and are not published at launch.

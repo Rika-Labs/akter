@@ -64,6 +64,22 @@
         ]
       },
       {
+        "tab": "Akter Cloud",
+        "groups": [
+          {
+            "group": "Akter Cloud",
+            "pages": [
+              "cloud/get-started",
+              "cloud/deploy",
+              "cloud/environment-variables",
+              "cloud/database",
+              "cloud/pricing-and-limits",
+              "cloud/account-and-data"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "API reference",
         "groups": [
           {
