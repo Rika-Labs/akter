@@ -45,10 +45,45 @@ it("points the published manifest at dist, resolves the catalog, and drops dev-o
   expect(packed.types).toBe("./dist/index.d.ts")
   expect(packed.exports).toEqual(manifest.publishConfig.exports)
   expect(packed.dependencies).toEqual({ "@electric-sql/pglite": "0.5.8" })
-  expect(packed.peerDependencies).toEqual({ effect: "4.0.0-rc.116" })
+  expect(packed.peerDependencies).toEqual({ effect: "^4.0.0-rc.116" })
   expect(packed.publishConfig).toEqual({ access: "public" })
   expect(packed).not.toHaveProperty("scripts")
   expect(packed).not.toHaveProperty("devDependencies")
+  expect(manifest.peerDependencies?.effect).toBe("catalog:")
+})
+
+it("ranges shared-library peers without widening runtime dependencies or unrelated peers", () => {
+  const packed = publishManifest({
+    manifest: {
+      ...manifest,
+      dependencies: { "@effect/platform-node-shared": "catalog:" },
+      peerDependencies: {
+        effect: "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/platform-bun": "catalog:",
+        "drizzle-orm": "catalog:",
+        "other-library": "2.3.4",
+      },
+      peerDependenciesMeta: { "@effect/platform-bun": { optional: true } },
+    },
+    catalog: {
+      effect: "4.0.0",
+      "@effect/sql-pg": "4.0.0",
+      "@effect/platform-bun": "4.0.0",
+      "@effect/platform-node-shared": "4.0.0",
+      "drizzle-orm": "1.0.0-rc.5-5935859",
+    },
+  })
+  expect(packed.dependencies).toEqual({ "@effect/platform-node-shared": "4.0.0" })
+  expect(packed.peerDependencies).toEqual({
+    effect: "^4.0.0",
+    "@effect/sql-pg": "^4.0.0",
+    "@effect/platform-bun": "^4.0.0",
+    "drizzle-orm": "^1.0.0-rc.5-5935859",
+    "other-library": "2.3.4",
+  })
+  expect(packed.peerDependenciesMeta).toEqual({ "@effect/platform-bun": { optional: true } })
+  expect(packed.dependencies).not.toHaveProperty("effect")
   expect(manifest.peerDependencies?.effect).toBe("catalog:")
 })
 

@@ -1,0 +1,19 @@
+FROM oven/bun:1.4.2-debian AS build
+WORKDIR /app
+COPY . .
+RUN bun install --frozen-lockfile --ignore-scripts
+RUN bun run --cwd packages/akter build
+RUN bun -e 'const p = await Bun.file("packages/akter/package.json").json(); p.exports = p.publishConfig.exports; p.types = p.publishConfig.types; await Bun.write("packages/akter/package.json", JSON.stringify(p));'
+
+FROM node:24.18.0-bookworm-slim
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/packages/akter/package.json ./packages/akter/package.json
+COPY --from=build /app/packages/akter/dist ./packages/akter/dist
+COPY --from=build /app/packages/akter/node_modules ./packages/akter/node_modules
+COPY --from=build /app/apps/self-host ./apps/self-host
+USER node
+STOPSIGNAL SIGTERM
+EXPOSE 8080 9000
+HEALTHCHECK --interval=2s --timeout=3s --start-period=30s --retries=30 CMD ["node", "apps/self-host/src/probe.ts", "ready"]
+CMD ["node", "apps/self-host/src/node.ts"]

@@ -1,0 +1,22 @@
+{
+  "name": "@akter/self-host",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 src",
+    "test:recipe": "bash verify.sh"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "@effect/sql-pglite": "catalog:",
+    "@rikalabs/akter": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

@@ -10,6 +10,7 @@ The hosted Akter Cloud implementation is maintained separately in a private repo
 ```text
 apps/
   cli/                      @rikalabs/akter-cli the `akter` bin: local development, inspection, repair and cloud client commands
+  self-host/                @akter/self-host private example app and Docker Compose deployment recipe
 packages/
   akter/                    @rikalabs/akter  the framework; published with browser-safe, runtime and testing entries
   cloud-api/                @akter/cloud-api public Akter Cloud HTTP contract and Schema types

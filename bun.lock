@@ -21,7 +21,7 @@
     },
     "apps/cli": {
       "name": "@rikalabs/akter-cli",
-      "version": "0.1.0-alpha.1",
+      "version": "0.1.0-alpha.2",
       "bin": {
         "akter": "dist/main.js",
       },
@@ -51,9 +51,24 @@
         "effect": "catalog:",
       },
     },
+    "apps/self-host": {
+      "name": "@akter/self-host",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@effect/platform-node": "catalog:",
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "@rikalabs/akter": "workspace:*",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "typescript": "catalog:",
+      },
+    },
     "packages/akter": {
       "name": "@rikalabs/akter",
-      "version": "0.1.0-alpha.1",
+      "version": "0.1.0-alpha.2",
       "dependencies": {
         "@effect/platform-node-shared": "catalog:",
         "@electric-sql/pglite": "0.5.8",
@@ -152,17 +167,17 @@
   },
   "catalog": {
     "@distilled.cloud/github": "1.0.0-rc.13",
-    "@effect/platform-bun": "4.0.0",
-    "@effect/platform-node": "4.0.0",
-    "@effect/platform-node-shared": "4.0.0",
-    "@effect/sql-pg": "4.0.0",
-    "@effect/sql-pglite": "4.0.0",
-    "@effect/vitest": "4.0.0",
+    "@effect/platform-bun": "4.0.1",
+    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node-shared": "4.0.1",
+    "@effect/sql-pg": "4.0.1",
+    "@effect/sql-pglite": "4.0.1",
+    "@effect/vitest": "4.0.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "drizzle-kit": "1.0.0-rc.5-5935859",
     "drizzle-orm": "1.0.0-rc.5-5935859",
-    "effect": "4.0.0",
+    "effect": "4.0.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "typescript": "7.0.2",
@@ -177,6 +192,8 @@
 
     "@akter/react": ["@akter/react@workspace:packages/react"],
 
+    "@akter/self-host": ["@akter/self-host@workspace:apps/self-host"],
+
     "@akter/structure": ["@akter/structure@workspace:tooling/structure"],
 
     "@distilled.cloud/core": ["@distilled.cloud/core@1.0.0-rc.13", "", { "dependencies": { "graphql": "16.11.0" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-RYyrxW+F5zrTuu1UWV/JoycholBCIkXIusYJdDniDwCdmbjdKGl07KlkkeeY774uBawNGf+pt1ESNGeLVnNHsg=="],
@@ -185,15 +202,15 @@
 
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.12.1", "", {}, "sha512-yHwomvolVafvUXhy5TdiJVkuNCxXn+bKOs2aWiWEQh/5YaV97Oa/abJz3dmx7lxgIUsUlS1Jl4mEfvJPo3YsVw=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-g9O41Sub/+JKfLjvBNEoqR1Pg6wtc2bbYzv7Kw8YsMihbt/ypCn7ZoydEXaHvTTUvbVrXOQbVFlfplyo84Clug=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-m+QR4bp39ZWujCuEsUhZADIYIOFZcUHHlmrixENZqZRbEYgaPLMUWiPrRJ69CM4BuuHW8oCOxfMGUU7oSw/o5g=="],
 
-    "@effect/platform-node": ["@effect/platform-node@4.0.0", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.0", "redis": ">=5.0.0 <7.0.0" } }, "sha512-/L+4MUbl8FejPKLHLROYSOebvHnfixkP8KiblSD/DE5uH5xENZBHaux4nH6XMnRP+lr8ajpEJFS8sUrmmxFJeQ=="],
+    "@effect/platform-node": ["@effect/platform-node@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.1", "redis": ">=5.0.0 <7.0.0" } }, "sha512-FT0Fu5LO0/XP9zBpj0HqrtJNLluK4StNKqf6TSulUsjp8FPBsDVXGJiDuyoN5J2yVMT7tgvhxSwaDcObWVRIaQ=="],
 
-    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.22.0" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-VBXHJU9UXVZPdQGGDRjGXpo+TpOzRwZuMrdKAtIxi1qwcRftmacZ1zTgIrzBa0Z2RA2KVkoOecQUsTlt/nJZhw=="],
+    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.1", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.22.0" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-VanaejudEhKJ4mpmqnEzdncVUhN6sGSO9ZDND54mRxAlZxj+4dYAWjDTYAy9o4tJo9aALeP2U8cVcOFzEdSeLg=="],
 
-    "@effect/sql-pg": ["@effect/sql-pg@4.0.0", "", { "peerDependencies": { "effect": "^4.0.0" } }, "sha512-w0sRMA08Tgz73aReYpFSxD+nz2LUKYhH/4zaRpo4G5b5YG+eqiAL7XYhqIjvGZ8MZacazbG71Jhprv6ccz9HDg=="],
+    "@effect/sql-pg": ["@effect/sql-pg@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-X5aqOxHNWqVXL+vyTQZLYDip65lm5rrZHuNkWyyr672iup1tjYAs5Dn9tHR5h1t0blpJ57j8Ng5G5AUQ8teIqA=="],
 
-    "@effect/sql-pglite": ["@effect/sql-pglite@4.0.0", "", { "dependencies": { "@electric-sql/pglite": "^0.5.8" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-BTlCPSipKMHZJEoJ94rR4f8Gx8cv8tLpZeHc3sajg2ko/2GY8s6CyycSra3Z6GLFUhcivRTYQ9Zc5LThz64qfQ=="],
+    "@effect/sql-pglite": ["@effect/sql-pglite@4.0.1", "", { "dependencies": { "@electric-sql/pglite": "^0.5.8" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-May68TQgqr5VrnBW0yCYqC46x1vw/jJPFfZVIyW+jnWcbVd2xpd3jBkiIhf5noWMRMXK6AK/dlAqFuZ2oG4Axw=="],
 
     "@effect/tsgo": ["@effect/tsgo@0.45.0", "", { "optionalDependencies": { "@effect/tsgo-darwin-arm64": "0.45.0", "@effect/tsgo-darwin-x64": "0.45.0", "@effect/tsgo-linux-arm": "0.45.0", "@effect/tsgo-linux-arm64": "0.45.0", "@effect/tsgo-linux-x64": "0.45.0", "@effect/tsgo-win32-arm64": "0.45.0", "@effect/tsgo-win32-x64": "0.45.0" }, "bin": { "effect-tsgo": "dist/effect-tsgo.cjs" } }, "sha512-gPG0ixVHgtYBUe5DbKX9vzHlhqd9+ZEfs4m/XWy0808av0A2XqMzaG3F5rnPBN7EUJRPlo9TluIi8WHx/pBV+A=="],
 
@@ -211,7 +228,7 @@
 
     "@effect/tsgo-win32-x64": ["@effect/tsgo-win32-x64@0.45.0", "", { "os": "win32", "cpu": "x64" }, "sha512-1Hsr/sT5dmIafoY9L0ASJo4VqGyPNzM1nwTb4Wj1Lmjq6kGuwO/PVozFg3WZZ0piChFmgiU3nx1AKZfyqgjGUw=="],
 
-    "@effect/vitest": ["@effect/vitest@4.0.0", "", { "peerDependencies": { "effect": "^4.0.0", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-kGElCPFGtP+CgMCwV/HjJWqtE3zYo6I1+8MSA54l+EI24lPU9p2Efa+TBp1jfkg9j711KKzEqgSAy3VzTsb76Q=="],
+    "@effect/vitest": ["@effect/vitest@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-DbY9kf/018zBxRIX7rJwBnPVPzSarnUpcshm0vfYPFiDkSa7AFrXTh2BlDNUbrdrmqcIOBhVZ7GkEtxf8WiQrg=="],
 
     "@electric-sql/pglite": ["@electric-sql/pglite@0.5.8", "", {}, "sha512-n9tsbUOhwx2epK1V0ZG9Ar4SHWUju04dhmzZXiSBXwBoleOvIfals33NAaWgagQVAL4Rbvx/Ptsu3P+pA09f6Q=="],
 
@@ -609,7 +626,7 @@
 
     "drizzle-orm": ["drizzle-orm@1.0.0-rc.5-5935859", "", { "peerDependencies": { "@aws-sdk/client-rds-data": ">=3", "@cloudflare/workers-types": ">=4", "@drizzle-team/minipg": ">=0.3.2", "@effect/sql-d1": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-libsql": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-mysql2": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-pg": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-pglite": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-bun": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-do": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-node": ">=4.0.0-beta.105 || >=4.0.0", "@effect/sql-sqlite-wasm": ">=4.0.0-beta.105 || >=4.0.0", "@electric-sql/pglite": ">=0.2.0", "@libsql/client": ">=0.10.0", "@libsql/client-wasm": ">=0.10.0", "@neondatabase/serverless": ">=0.10.0", "@op-engineering/op-sqlite": ">=17", "@opentelemetry/api": "^1.4.1", "@planetscale/database": ">=1.13", "@sinclair/typebox": ">=0.34.8", "@sqlitecloud/drivers": ">=1.0.653", "@tidbcloud/serverless": "*", "@tursodatabase/database": ">=0.7.1", "@tursodatabase/database-common": ">=0.7.1", "@tursodatabase/database-wasm": ">=0.7.1", "@tursodatabase/serverless": ">=1.4.0", "@tursodatabase/sync": ">=0.7.1", "@types/better-sqlite3": "*", "@types/mssql": "^9.1.4", "@types/pg": "*", "@types/sql.js": "*", "@upstash/redis": ">=1.34.7", "@vercel/postgres": ">=0.8.0", "@xata.io/client": "*", "arktype": ">=2.0.0", "better-sqlite3": ">=9.3.0", "bun-types": "*", "effect": ">=4.0.0-beta.105 || >=4.0.0", "expo-sqlite": ">=14.0.0", "mssql": "^11.0.1", "mysql2": ">=2", "pg": ">=8", "postgres": ">=3", "sql.js": ">=1", "sqlite3": ">=5", "typebox": ">=1.2.0", "valibot": ">=1.0.0-beta.7", "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["@aws-sdk/client-rds-data", "@cloudflare/workers-types", "@drizzle-team/minipg", "@effect/sql-d1", "@effect/sql-libsql", "@effect/sql-mysql2", "@effect/sql-pg", "@effect/sql-pglite", "@effect/sql-sqlite-bun", "@effect/sql-sqlite-do", "@effect/sql-sqlite-node", "@effect/sql-sqlite-wasm", "@electric-sql/pglite", "@libsql/client", "@libsql/client-wasm", "@neondatabase/serverless", "@op-engineering/op-sqlite", "@opentelemetry/api", "@planetscale/database", "@sinclair/typebox", "@sqlitecloud/drivers", "@tidbcloud/serverless", "@tursodatabase/database", "@tursodatabase/database-common", "@tursodatabase/database-wasm", "@tursodatabase/serverless", "@tursodatabase/sync", "@types/better-sqlite3", "@types/mssql", "@types/pg", "@types/sql.js", "@upstash/redis", "@vercel/postgres", "@xata.io/client", "arktype", "better-sqlite3", "bun-types", "effect", "expo-sqlite", "mssql", "mysql2", "pg", "postgres", "sql.js", "sqlite3", "typebox", "valibot", "zod"] }, "sha512-PkVjyxhamD7IOVfpDMn3BmV9afyvj3eeLvIPind3NmPv+cfv6/jh6GN0fHP0zzgrprGx/jGE4mkE0ttRFlzHwA=="],
 
-    "effect": ["effect@4.0.0", "", {}, "sha512-ooc1TG5t+FfzgYnFz2ff6BBKyZ7EwBRVXC7c4RhQUAD6/TZ2gTXXMeb4WX7a19ozQo4J73/QW+S00YAIresoMQ=="],
+    "effect": ["effect@4.0.1", "", {}, "sha512-b1VlQG9g8fwxE5QnIZuPoOP/0MsqHJSRKxUijjoM80E5q95FXrX5yWtY5XI8G+GJsBQAVSDbLS458z9a++uVvw=="],
 
     "es-module-lexer": ["es-module-lexer@2.3.2", "", {}, "sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw=="],
 

@@ -46,6 +46,7 @@
           {
             "group": "Self-host operations",
             "pages": [
+              "operations/self-host",
               "operations/01-deployment",
               "operations/02-migrations",
               "operations/03-observability",
@@ -133,6 +134,14 @@
     {
       "source": "/vision/:slug*",
       "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/vision/:slug*.md"
+    },
+    {
+      "source": "/milestones/:slug*",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/milestones/:slug*.md"
+    },
+    {
+      "source": "/BENCHMARKS",
+      "destination": "https://github.com/Rika-Labs/akter/blob/main/BENCHMARKS.md"
     },
     {
       "source": "/product/competitive-positioning",

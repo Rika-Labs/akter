@@ -339,6 +339,9 @@ const program = Effect.gen(function* () {
       [`@effect/platform-${engine}`]: pinned(`@effect/platform-${engine}`),
       "@effect/platform-node-shared": pinned("@effect/platform-node-shared"),
     },
+    overrides: {
+      [staged.name]: `file:${path.join(tarballs, tarball)}`,
+    },
     devDependencies: {
       "@types/bun": pinned("@types/bun"),
       typescript: pinned("typescript"),
