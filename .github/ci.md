@@ -73,7 +73,7 @@ not pipeable Effect functions, so `async-function` and
 
 `check:ci` still runs everything in one process group for a local run. Unlike the old single job, the framework suites are not skipped by `--affected`; only Turbo's tasks are.
 
-Every job caches Bun's package store, not mutable `node_modules`; one job per workflow saves it. `static` also restores TypeScript incremental metadata using a toolchain/configuration key and a per-commit snapshot. TypeScript validates that state on a Turbo miss; Turbo restores successful exact results on a hit. Do not add ESLint's per-file cache under typed lint: this repository uses Oxlint, and cross-file type changes matter.
+Every job caches Bun's package store, not mutable `node_modules`; one job per workflow saves it. `static` restores TypeScript incremental metadata only from a run of the same commit, never from another commit: since the repository split, state another commit saved made `tsc` report `@rikalabs/akter` imports as unresolvable in whichever workspace a change affected, while a clean typecheck of the same tree passed. Turbo restores successful exact results on a hit. Do not add ESLint's per-file cache under typed lint: this repository uses Oxlint, and cross-file type changes matter.
 
 Inside a job, Turbo concurrency follows available CPUs. Oxlint uses one thread per package, Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses one isolated worker, except the integration, PGlite and Node shard configs, which allow two. No isolation is disabled. PostgreSQL integration results are never cached; their task is selected by the affected graph and requires explicit disposable database configuration.
 

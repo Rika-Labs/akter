@@ -42,7 +42,6 @@ runs:
         path: |
           **/.cache/typecheck.tsbuildinfo
         key: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-${{ github.sha }}
-        restore-keys: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-
     - name: Set up Turborepo Remote Cache
       if: >-
         inputs.turbo-team != '' &&
