@@ -8,6 +8,7 @@ import {
   DeploymentRunner,
   DeploymentSummary,
   RecordBuild,
+  SOURCE_ENTRY,
 } from "./deployments.ts"
 
 const summary = {
@@ -54,26 +55,24 @@ describe("deployment rollback", () => {
     expect(valid({ ...input, commitSha: "not-a-commit" })).toBe(false)
   })
 
-  it("names a source by its archive digest and keeps its Dockerfile inside the context", () => {
+  it("names a source by its archive digest alone and refuses a Dockerfile path", () => {
     const input = {
       environment: "production",
       commitSha: "abcdef1234",
-      source: { digest: `sha256:${"c".repeat(64)}`, dockerfile: "infra/runner/Dockerfile" },
+      source: { digest: `sha256:${"c".repeat(64)}` },
     }
-    const valid = (value: Schema.Json) =>
-      Exit.isSuccess(Effect.runSyncExit(Schema.decodeUnknownEffect(CreateDeployment)(value)))
+    const decoded = (value: Schema.Json) =>
+      Effect.runSyncExit(Schema.decodeUnknownEffect(CreateDeployment)(value))
+    const valid = (value: Schema.Json) => Exit.isSuccess(decoded(value))
     expect(valid(input)).toBe(true)
-    expect(valid({ ...input, source: { ...input.source, dockerfile: "Dockerfile" } })).toBe(true)
-    for (const dockerfile of [
-      "",
-      "/etc/Dockerfile",
-      "../Dockerfile",
-      "infra/../../Dockerfile",
-      "./Dockerfile",
-      "infra//Dockerfile",
-      "infra\\Dockerfile",
-    ])
-      expect(valid({ ...input, source: { ...input.source, dockerfile } })).toBe(false)
+    for (const dockerfile of ["Dockerfile", "infra/runner/Dockerfile", ""]) {
+      const refused = decoded({ ...input, source: { ...input.source, dockerfile } })
+
+      expect(Exit.isFailure(refused), dockerfile).toBe(true)
+      expect(String(refused)).toContain(
+        `source.dockerfile is not accepted: the platform builds every source from ${SOURCE_ENTRY}`,
+      )
+    }
     for (const digest of [`sha256:${"c".repeat(63)}`, `sha256:${"C".repeat(64)}`, "c".repeat(64)])
       expect(valid({ ...input, source: { ...input.source, digest } })).toBe(false)
   })
@@ -96,6 +95,16 @@ describe("deployment rollback", () => {
       ),
     ).toBe(true)
   })
+
+  it("accepts a deployment environment host when the control plane provides one", () => {
+    const decoded = decode({ ...summary, environmentHost: "storefront-production.akter.run" })
+    expect(Exit.isSuccess(decoded) && decoded.value.environmentHost).toBe(
+      "storefront-production.akter.run",
+    )
+    expect(Exit.isSuccess(decode(summary))).toBe(true)
+    expect(Exit.isFailure(decode({ ...summary, environmentHost: 17 }))).toBe(true)
+  })
+
   it("records the deployment a rollback redeploys, and null for an ordinary deployment", () => {
     const rolledBack = decode(summary)
     const ordinary = decode({ ...summary, rolledBackFrom: null })

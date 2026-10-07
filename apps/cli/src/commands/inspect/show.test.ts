@@ -122,7 +122,7 @@ describe("akter inspect and akter receipts show", () => {
       const cli = (args: ReadonlyArray<string>, token: string) =>
         runCliWith({
           fetch,
-          env: { DURABLE_OPERATOR_TOKEN: token },
+          env: { AKTER_OPERATOR_TOKEN: token },
         })([...args, "--url", "http://runner", "--tenant", tenant])
 
       const looked = (yield* cli(["inspect", "CliRoom/r1"], "look-token")).stdout.split("\n")

@@ -20,25 +20,35 @@
       },
     },
     "apps/cli": {
-      "name": "@akter/cli",
+      "name": "@rikalabs/akter-cli",
       "version": "0.1.0-alpha.1",
       "bin": {
-        "akter": "./src/main.ts",
+        "akter": "dist/main.js",
       },
       "dependencies": {
-        "@akter/cloud-api": "workspace:*",
         "@effect/platform-bun": "catalog:",
-        "@effect/sql-pg": "catalog:",
+        "@effect/platform-node": "catalog:",
         "@rikalabs/akter": "workspace:*",
-        "effect": "catalog:",
       },
       "devDependencies": {
+        "@akter/cloud-api": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/platform-node": "catalog:",
+        "@effect/sql-pg": "catalog:",
         "@effect/sql-pglite": "catalog:",
         "@effect/vitest": "catalog:",
         "@types/pg": "8.23.1",
         "drizzle-orm": "catalog:",
+        "effect": "catalog:",
         "pg": "8.23.0",
+        "typescript": "catalog:",
         "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "@effect/sql-pg": "catalog:",
+        "@effect/sql-pglite": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
       },
     },
     "packages/akter": {
@@ -159,8 +169,6 @@
     "vitest": "5.0.1",
   },
   "packages": {
-    "@akter/cli": ["@akter/cli@workspace:apps/cli"],
-
     "@akter/cloud-api": ["@akter/cloud-api@workspace:packages/cloud-api"],
 
     "@akter/oxlint": ["@akter/oxlint@workspace:tooling/oxlint"],
@@ -478,6 +486,8 @@
     "@redis/time-series": ["@redis/time-series@6.3.0", "", { "peerDependencies": { "@redis/client": "^6.3.0" } }, "sha512-+fJOB8mN1z5WRakCJNh5lVdz1KqvHGSOistsKeitD24QsCtPwyRQXWC0iq6T/i/ubLE/YcguZqPm8F598MKk4A=="],
 
     "@rikalabs/akter": ["@rikalabs/akter@workspace:packages/akter"],
+
+    "@rikalabs/akter-cli": ["@rikalabs/akter-cli@workspace:apps/cli"],
 
     "@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.9", "", { "os": "android", "cpu": "arm" }, "sha512-tNISae1QEf/vkb3xkRcjV5SEdzPE97We5IVaa2Z8jSszQPZ8U60B/YCYpw4QI7VidYsBtKavczXf+DyDs9WGxw=="],
 

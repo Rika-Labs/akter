@@ -1,6 +1,5 @@
 import { User } from "@rikalabs/akter"
 import { Auth, Database, Inspector } from "@rikalabs/akter/runtime"
-import { BunCrypto, BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Schema } from "effect"
 import type { Cause, Crypto } from "effect"
 import { Command, Flag } from "effect/cli"
@@ -8,6 +7,7 @@ import { HttpRouter, HttpServer } from "effect/http"
 import type { SqlClient } from "effect/sql"
 
 import { UsageError, fail } from "../../failure.ts"
+import { PlatformCrypto, PlatformHttpServer } from "../../platform.ts"
 import { loadEntry } from "../workflows/check.ts"
 import { pageRoutes } from "./inspector/page.ts"
 
@@ -69,7 +69,7 @@ export const appOf = ({ module, entry }: { readonly module: object; readonly ent
   )
 
 /** Where `akter dev` serves the inspector page; its API is under `/api`. */
-export const INSPECTOR_PATH = "/_durable/inspector"
+export const INSPECTOR_PATH = "/_akter/inspector"
 
 /**
  * The inspector's principal in `akter dev`: the developer who started it,
@@ -125,13 +125,13 @@ export const devCommand = Command.make("dev", flags, (options) =>
       ),
     )
 
-    return Layer.mergeAll(
-      HttpRouter.serve(devRoutes({ app, tenant: options.tenant })),
-      banner,
-    ).pipe(
-      Layer.provide(BunHttpServer.layer({ port: options.port, hostname: options.hostname })),
+    return banner.pipe(
+      Layer.provideMerge(
+        HttpRouter.serve(devRoutes({ app, tenant: options.tenant }), { disableListenLog: true }),
+      ),
+      Layer.provide(PlatformHttpServer.layer({ port: options.port, hostname: options.hostname })),
       Layer.provide(database),
-      Layer.provide(BunCrypto.layer),
+      Layer.provide(PlatformCrypto.layer),
     )
   }).pipe(
     Effect.flatMap(Layer.launch),
@@ -139,6 +139,6 @@ export const devCommand = Command.make("dev", flags, (options) =>
   ),
 ).pipe(
   Command.withDescription(
-    "Run the entry's app locally with a read-only inspector at /_durable/inspector",
+    "Run the entry's app locally with a read-only inspector at /_akter/inspector",
   ),
 )

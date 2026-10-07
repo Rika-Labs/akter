@@ -163,3 +163,28 @@ it("rejects versions outside the SemVer grammar", () => {
     ["version 1.2 is not a semantic version"],
   ])
 })
+
+it("does not mistake bundled command strings and documentation for imports", () => {
+  const packed = publishManifest({ manifest, catalog: { effect: "4.0.0" } })
+
+  expect(
+    undeclaredImports({
+      manifest: packed,
+      sources: [
+        '#!/usr/bin/env node\nconst command = "import"; const alphabet = "0123456789abcdef";\nconst text = `from "not-a-package"`;',
+      ],
+    }),
+  ).toEqual([])
+})
+
+it("resolves only explicitly named release-unit workspace dependencies and checks bin targets", () => {
+  const packed = publishManifest({
+    manifest: { ...manifest, dependencies: { "@rikalabs/akter": "workspace:*" } },
+    catalog: { effect: "4.0.0" },
+    workspaceVersions: { "@rikalabs/akter": "0.1.0-alpha.7" },
+  })
+  expect(packed.dependencies).toEqual({ "@rikalabs/akter": "0.1.0-alpha.7" })
+  expect(
+    tarballProblems({ files: complete, manifest: { ...packed, bin: { akter: "./dist/main.js" } } }),
+  ).toEqual(["missing dist/main.js"])
+})

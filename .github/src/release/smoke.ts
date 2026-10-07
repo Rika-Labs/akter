@@ -1,9 +1,24 @@
 import { BunServices } from "@effect/platform-bun"
-import { Config, Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
+import {
+  Config,
+  Console,
+  Effect,
+  FileSystem,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Path,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 const args = process.argv.slice(2)
 
 const packageIndex = args.indexOf("--package")
+const cliPackageIndex = args.indexOf("--cli-package")
 
 const Versions = Schema.Record(Schema.String, Schema.String)
 
@@ -93,6 +108,143 @@ const program = Effect.gen(function* () {
 await Effect.runPromise(Effect.scoped(Layer.build(live).pipe(Effect.flatMap((context) => program.pipe(Effect.provide(context))))))
 `
 
+const cliMain = `import { Actor } from "@rikalabs/akter"
+import { Actors, Auth } from "@rikalabs/akter/runtime"
+import { Effect, Layer, Schema } from "effect"
+
+const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
+const Counter = Actor.make("Counter", {
+  key: Schema.String,
+  state: Actor.state({ count: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))) }),
+  access: Actor.access.public,
+  api: { Add },
+})
+const CounterLive = Counter.toLayer({
+  Add: Effect.fn(function* (amount) {
+    const turn = yield* Counter.Turn
+    yield* turn.state.set({ count: turn.state.count + amount })
+    return turn.state.count
+  }),
+})
+export const app = Actors.serve({ actors: [Counter], auth: Auth.none }).pipe(
+  Layer.provide(CounterLive.pipe(Layer.provideMerge(Actors.layer()))),
+)
+`
+
+const cliSmoke = Effect.fn("cliSmoke")(function* ({
+  engine,
+  consumer,
+  bin,
+}: {
+  readonly engine: "node" | "bun"
+  readonly consumer: string
+  readonly bin: string
+}) {
+  const help = yield* run([engine, bin, "--help"], consumer)
+  if (!help.includes("Akter Cloud") || !help.includes("/_akter/inspector"))
+    return yield* Effect.die(new Error("akter --help did not print the public command tree"))
+
+  const loginHelp = yield* run(
+    [engine, bin, "login", "--api-url", "http://127.0.0.1:9", "--help"],
+    consumer,
+  )
+  if (!loginHelp.includes("--api-url"))
+    return yield* Effect.die(new Error("akter login --help did not print --api-url"))
+
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+  const child = yield* spawner.spawn(
+    ChildProcess.make(engine, [bin, "dev", "--entry", "app.ts", "--port", "0"], {
+      cwd: consumer,
+      forceKillAfter: "5 seconds",
+    }),
+  )
+  const printed = { stdout: "", stderr: "" }
+  yield* child.stdout.pipe(
+    Stream.decodeText(),
+    Stream.runForEach((text) =>
+      Effect.sync(() => {
+        printed.stdout += text
+      }),
+    ),
+    Effect.forkScoped,
+  )
+  yield* child.stderr.pipe(
+    Stream.decodeText(),
+    Stream.runForEach((text) =>
+      Effect.sync(() => {
+        printed.stderr += text
+      }),
+    ),
+    Effect.forkScoped,
+  )
+  const origin = yield* Effect.gen(function* () {
+    if (!(yield* child.isRunning))
+      return yield* Effect.die(
+        new Error(`akter dev exited before readiness: ${printed.stdout}\n${printed.stderr}`),
+      )
+    return Option.fromUndefinedOr(/^ {2}app +(http:\/\/\S+)$/m.exec(printed.stdout)?.[1])
+  }).pipe(
+    Effect.repeat({ schedule: Schedule.spaced("100 millis"), until: Option.isSome }),
+    Effect.timeout("60 seconds"),
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.die(new Error("akter dev printed no origin")),
+        onSome: Effect.succeed,
+      }),
+    ),
+  )
+  const client = yield* HttpClient.HttpClient
+  yield* Effect.gen(function* () {
+    const response = yield* client.get(`${origin}/ready`)
+    const body = yield* HttpClientResponse.schemaBodyJson(Schema.Struct({ ready: Schema.Boolean }))(
+      response,
+    )
+    if (response.status === 200 && body.ready) return true
+    if (response.status !== 503 || body.ready)
+      return yield* Effect.die(new Error("akter dev returned an invalid readiness response"))
+    return false
+  }).pipe(
+    Effect.repeat({ schedule: Schedule.spaced("100 millis"), until: (ready) => ready }),
+    Effect.timeout("60 seconds"),
+  )
+  for (const [amount, expected] of [
+    [7, 7],
+    [2, 9],
+  ] as const) {
+    const minted = yield* client.post(`${origin}/command-ids`)
+    if (minted.status !== 200)
+      return yield* Effect.die(new Error("akter dev could not mint a command id"))
+    const { commandId } = yield* HttpClientResponse.schemaBodyJson(
+      Schema.Struct({ commandId: Schema.String }),
+    )(minted)
+    const response = yield* client.execute(
+      HttpClientRequest.post(`${origin}/actors/Counter/smoke/Add`).pipe(
+        HttpClientRequest.setHeader("idempotency-key", commandId),
+        HttpClientRequest.bodyJsonUnsafe(amount),
+      ),
+    )
+    if (
+      response.status !== 200 ||
+      (yield* HttpClientResponse.schemaBodyJson(Schema.Int)(response)) !== expected
+    )
+      return yield* Effect.die(
+        new Error(`akter dev counter increment ${amount} did not return ${expected}`),
+      )
+  }
+  const inspector = yield* client.get(`${origin}/_akter/inspector`)
+  if (
+    inspector.status !== 200 ||
+    !(yield* inspector.text).includes('data-api="/_akter/inspector/api"')
+  )
+    return yield* Effect.die(new Error("akter dev inspector page failed"))
+  const script = yield* client.get(`${origin}/_akter/inspector/client.js`)
+  if (script.status !== 200 || (yield* script.text).includes('from "effect"'))
+    return yield* Effect.die(new Error("akter dev inspector asset is not bundled"))
+  const legacy = yield* client.get(`${origin}/_durable/inspector`)
+  if (legacy.status !== 404)
+    return yield* Effect.die(new Error("the legacy inspector path still exists"))
+})
+
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
@@ -111,7 +263,16 @@ const program = Effect.gen(function* () {
 
   const stage = packageIndex === -1 ? path.join(work, "package") : path.resolve(given ?? "")
 
-  if (packageIndex === -1) yield* run(["bun", ".github/src/pack.ts", "--out", stage], root)
+  const cliGiven = args[cliPackageIndex + 1]
+  if (
+    cliPackageIndex !== -1 &&
+    (cliGiven === undefined || cliGiven === "" || cliGiven.startsWith("--"))
+  )
+    return yield* Effect.die(new Error("--cli-package needs a staged CLI directory"))
+  const cliStage = cliPackageIndex === -1 ? `${stage}-cli` : path.resolve(cliGiven ?? "")
+
+  if (packageIndex === -1)
+    yield* run(["bun", ".github/src/pack.ts", "--out", stage, "--cli-out", cliStage], root)
 
   const staged = yield* Schema.decodeEffect(StagedManifest)(
     yield* fs.readFileString(path.join(stage, "package.json")),
@@ -145,6 +306,21 @@ const program = Effect.gen(function* () {
   if (tarball === undefined || tarball === "")
     return yield* Effect.die(new Error("npm pack printed no tarball"))
 
+  const cliStaged = yield* Schema.decodeEffect(StagedManifest)(
+    yield* fs.readFileString(path.join(cliStage, "package.json")),
+  )
+  if (cliStaged.version !== staged.version)
+    return yield* Effect.die(new Error("CLI version does not match the framework"))
+  const cliTarball = (yield* run(
+    ["npm", "pack", "--ignore-scripts", "--pack-destination", tarballs, cliStage],
+    root,
+  ))
+    .trim()
+    .split("\n")
+    .at(-1)
+  if (cliTarball === undefined || cliTarball === "")
+    return yield* Effect.die(new Error("npm pack printed no CLI tarball"))
+
   const consumer = path.join(work, "consumer")
   yield* fs.makeDirectory(consumer, { recursive: true })
 
@@ -154,6 +330,7 @@ const program = Effect.gen(function* () {
     type: "module",
     dependencies: {
       [staged.name]: `file:${path.join(tarballs, tarball)}`,
+      [cliStaged.name]: `file:${path.join(tarballs, cliTarball)}`,
       ...Object.fromEntries(
         Object.entries(staged.peerDependencies ?? {}).filter(
           ([name]) => name !== "@effect/platform-bun" && name !== "@effect/platform-node",
@@ -178,6 +355,7 @@ const program = Effect.gen(function* () {
     `${yield* encode(consumerTsconfig)}\n`,
   )
   yield* fs.writeFileString(path.join(consumer, "main.ts"), main)
+  yield* fs.writeFileString(path.join(consumer, "app.ts"), cliMain)
 
   yield* run(["bun", "install", "--ignore-scripts"], consumer)
 
@@ -240,13 +418,16 @@ console.log("quickstart retry and rollback passed")
 `,
   )
   yield* run([engine, "test.ts"], consumer)
+  yield* cliSmoke({ engine, consumer, bin: path.join(consumer, "node_modules/.bin/akter") }).pipe(
+    Effect.scoped,
+  )
 
   yield* Console.log(
-    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and runs on ${engine}: memory ${output}, quickstart restart ${first} -> ${restarted}`,
+    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and runs on ${engine}: memory ${output}, quickstart restart ${first} -> ${restarted}; ${cliStaged.name}@${cliStaged.version}: help, offline login help, dev readiness, counter [7,9], inspector asset, and old-route refusal pass`,
   )
 }).pipe(Effect.scoped)
 
-const runtime = ManagedRuntime.make(BunServices.layer)
+const runtime = ManagedRuntime.make(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))
 
 try {
   await runtime.runPromise(program)

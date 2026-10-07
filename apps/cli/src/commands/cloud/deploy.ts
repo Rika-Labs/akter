@@ -3,12 +3,13 @@ import {
   EnvironmentName,
   MAX_SOURCE_BYTES,
   ProjectId,
+  SOURCE_ENTRY,
 } from "@akter/cloud-api"
 import { Clock, Config, Console, Duration, Effect, Option, Schema, Stream } from "effect"
 import { Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { fail } from "../../failure.ts"
-import { contextPath, packContext } from "./archive.ts"
+import { ContextInvalid, packContext } from "./archive.ts"
 import { reportFailures, signedIn } from "./client.ts"
 
 /** The rollout ended `failed`; `step` is the step that failed and `detail` why. */
@@ -36,12 +37,9 @@ const flags = {
   ),
   context: Flag.Directory("context", { mustExist: true }).pipe(
     Flag.withDefault("."),
-    Flag.withDescription("The build context to upload (default the current directory)"),
-  ),
-  dockerfile: Flag.String("dockerfile").pipe(
-    Flag.withDefault("Dockerfile"),
-    Flag.filterMap(contextPath, () => "a path inside the context, without .. or a leading /"),
-    Flag.withDescription("The Dockerfile's path inside the context (default Dockerfile)"),
+    Flag.withDescription(
+      `The app directory to upload, holding ${SOURCE_ENTRY} (default the current directory)`,
+    ),
   ),
   commit: Flag.String("commit").pipe(
     Flag.optional,
@@ -105,7 +103,11 @@ const seconds = (durationMs: number | null) =>
 
 /**
  * Follows a deployment until it is `live` or `failed`, printing each rollout
- * step as it starts and ends. A failed build prints the build's last lines.
+ * step as it starts and ends. While the build runs it prints the build log's
+ * new lines on every poll, asking from the index after the last line it
+ * printed, and when the build succeeds it prints the rest before the step's
+ * end, until the log says it is complete. A failed build prints the build's
+ * last lines.
  */
 const follow = Effect.fnUntraced(function* (input: {
   readonly client: Effect.Success<typeof signedIn>["client"]
@@ -117,16 +119,39 @@ const follow = Effect.fnUntraced(function* (input: {
   const deadline = (yield* Clock.currentTimeMillis) + input.timeoutSeconds * 1000
   const printed = new Map<string, string>()
   let detail = input.deployment
+  let cursor = 0
+  let following = false
+  let logComplete = false
+
+  const printLog = Effect.gen(function* () {
+    const log = yield* input.client.deployments.getBuildLog({ params, query: { after: cursor } })
+    const last = log.lines.at(-1)
+
+    for (const line of log.lines) yield* Console.log(`    ${line.text}`)
+
+    if (last !== undefined) cursor = last.index + 1
+    following = true
+    logComplete = log.complete
+  })
 
   while (true) {
     for (const step of detail.steps) {
       if (step.status === "pending" || printed.get(step.name) === step.status) continue
+
+      if (step.name === "build" && step.status === "succeeded" && following && !logComplete)
+        yield* printLog
 
       printed.set(step.name, step.status)
       yield* Console.log(
         `  ${step.name} ${step.status}${step.status === "running" ? "" : seconds(step.durationMs)}`,
       )
     }
+
+    if (
+      !logComplete &&
+      detail.steps.some((step) => step.name === "build" && step.status === "running")
+    )
+      yield* printLog
 
     if (detail.status === "live") return detail
 
@@ -158,19 +183,24 @@ const follow = Effect.fnUntraced(function* (input: {
 })
 
 /**
- * `akter deploy`: uploads the build context to the control plane's
+ * `akter deploy`: uploads the app directory to the control plane's
  * builder, creates a deployment from it, and follows the rollout until it is
  * live or failed.
  */
 export const deployCommand = Command.make("deploy", flags, (options) =>
   Effect.gen(function* () {
     const { client, credentials } = yield* signedIn
-    const packed = yield* packContext({ context: options.context, dockerfile: options.dockerfile })
+    const packed = yield* packContext({ context: options.context })
+
+    if (!packed.files.includes(SOURCE_ENTRY))
+      return yield* ContextInvalid.make({
+        message: `No ${SOURCE_ENTRY} in ${options.context}, or its .akterignore or .gitignore leaves it out; the platform serves the App that file exports by default`,
+      })
 
     if (packed.archive.byteLength > MAX_SOURCE_BYTES)
       return yield* fail({
         reason: "ContextTooLarge",
-        message: `The build context is ${packed.archive.byteLength} bytes compressed; the control plane accepts at most ${MAX_SOURCE_BYTES}. Exclude more files in .dockerignore.`,
+        message: `The app directory is ${packed.archive.byteLength} bytes compressed; the control plane accepts at most ${MAX_SOURCE_BYTES}. Exclude more files in .akterignore.`,
       })
 
     yield* Console.log(
@@ -193,7 +223,7 @@ export const deployCommand = Command.make("deploy", flags, (options) =>
         environment: options.environment,
         commitSha,
         message,
-        source: { digest: source.digest, dockerfile: options.dockerfile },
+        source: { digest: source.digest },
       },
     })
 
@@ -229,6 +259,6 @@ export const deployCommand = Command.make("deploy", flags, (options) =>
   ),
 ).pipe(
   Command.withDescription(
-    "Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live",
+    "Upload the app directory, build and roll it out on Akter Cloud, and follow it until it is live",
   ),
 )

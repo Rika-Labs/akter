@@ -1,49 +1,25 @@
 import { Effect, FileSystem, Option, Schema } from "effect"
+import { gzipSync } from "node:zlib"
 
-/** One `.dockerignore` line: a compiled pattern, its segments, and whether `!` makes it an exception. */
+/**
+ * One ignore-file line: a compiled pattern, whether `!` makes it an
+ * exception, and whether a trailing `/` limits it to directories.
+ */
 interface Rule {
   readonly exception: boolean
+  readonly directory: boolean
   readonly pattern: RegExp
-  readonly segments: ReadonlyArray<string>
 }
 
-/** The build context cannot be sent: `message` says why. */
+/** The app directory cannot be sent: `message` says why. */
 export class ContextInvalid extends Schema.TaggedError<ContextInvalid>()("ContextInvalid", {
   message: Schema.String,
 }) {}
 
-/** A cleaned `/`-separated path: no leading `/`, no `.` or empty segments, `..` resolved. */
-const clean = (path: string) => {
-  const segments: Array<string> = []
-
-  for (const segment of path.replaceAll("\\", "/").split("/")) {
-    if (segment === "" || segment === ".") continue
-    if (segment === "..") segments.pop()
-    else segments.push(segment)
-  }
-
-  return segments.join("/")
-}
-
 /**
- * A path inside the build context as the control plane accepts it:
- * relative, `/`-separated, with `.` and empty segments dropped. A path that
- * starts at `/` or climbs out with `..` names nothing inside the context.
- */
-export const contextPath = (path: string) => {
-  const segments = path.replaceAll("\\", "/").split("/")
-
-  if (path.startsWith("/") || segments.includes("..")) return Option.none()
-
-  const kept = segments.filter((segment) => segment !== "" && segment !== ".").join("/")
-
-  return kept === "" ? Option.none() : Option.some(kept)
-}
-
-/**
- * Translates a `.dockerignore` pattern into a regular expression the way
- * Docker's pattern matcher does: `*` and `?` stay inside one segment, `**`
- * spans any number of them, and `\` escapes the next character.
+ * Translates a gitignore pattern into a regular expression the way Git's
+ * matcher does: `*` and `?` stay inside one segment, `**` spans any number of
+ * them, and `\` escapes the next character.
  */
 const compile = (pattern: string) => {
   let source = "^"
@@ -67,52 +43,54 @@ const compile = (pattern: string) => {
   return new RegExp(`${source}$`, "u")
 }
 
-/** The rules of a `.dockerignore` file's text, in order. */
+/**
+ * The rules of an `.akterignore` or `.gitignore` file's text, in order, read
+ * as Git reads a repository's root `.gitignore`: a pattern with a `/` before
+ * its end is anchored at the app directory, any other matches at every depth,
+ * and a trailing `/` matches only directories.
+ */
 export const ignoreRules = (text: string): ReadonlyArray<Rule> =>
   text
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#"))
-    .map((line) => {
+    .flatMap((line) => {
       const exception = line.startsWith("!")
-      const pattern = clean(exception ? line.slice(1).trim() : line)
+      const body = exception ? line.slice(1) : line
+      const directory = body.endsWith("/")
+      const trimmed = body.replace(/\/+$/u, "")
+      const pattern = trimmed.replace(/^\//u, "")
 
-      return { exception, pattern: compile(pattern), segments: pattern.split("/") }
+      if (pattern === "") return []
+
+      return [
+        {
+          exception,
+          directory,
+          pattern: compile(trimmed.includes("/") ? pattern : `**/${pattern}`),
+        },
+      ]
     })
-    .filter((rule) => rule.segments.join("/") !== "")
 
 /**
- * Whether `path` is left out of the context: the last rule that matches it
- * or one of its parent directories decides, as Docker decides it.
+ * Whether `path`, a directory when `directory` is set, is left out of the
+ * archive: as in Git, it is when one of its parent directories is, and
+ * otherwise the last rule that matches it decides, so an exception never
+ * brings back a path inside a directory that is left out.
  */
-export const isIgnored = (rules: ReadonlyArray<Rule>) => (path: string) => {
+export const isIgnored = (rules: ReadonlyArray<Rule>) => (path: string, directory: boolean) => {
   const segments = path.split("/")
-  let ignored = false
 
-  for (const rule of rules) {
-    if (rule.exception !== ignored) continue
+  return segments.some((_, index) => {
+    const prefix = segments.slice(0, index + 1).join("/")
+    const isDirectory = index < segments.length - 1 || directory
 
-    const matches = segments.some((_, index) =>
-      rule.pattern.test(segments.slice(0, index + 1).join("/")),
+    return rules.reduce(
+      (ignored, rule) =>
+        (!rule.directory || isDirectory) && rule.pattern.test(prefix) ? !rule.exception : ignored,
+      false,
     )
-
-    if (matches) ignored = !rule.exception
-  }
-
-  return ignored
-}
-
-/** Whether exception `rule` could match some path inside directory `segments`, so the directory must be walked. */
-const reaches = (rule: Rule, segments: ReadonlyArray<string>) => {
-  for (const [index, segment] of segments.entries()) {
-    const own = rule.segments[index]
-
-    if (own === undefined) return false
-    if (own.includes("**")) return true
-    if (!compile(own).test(segment)) return false
-  }
-
-  return true
+  })
 }
 
 /** One tar entry: a regular file with its permission bits, or a symbolic link with its target. */
@@ -241,34 +219,34 @@ const tar = (entries: ReadonlyArray<Entry>) => {
     offset += block.byteLength
   }
 
-  return Bun.gzipSync(bytes)
+  return gzipSync(bytes)
 }
 
+/** Git's own directory, never part of an app's source whatever the ignore file says. */
+const GIT_DIRECTORY = ignoreRules(".git")
+
 /**
- * Packs a build context the way `docker build` would send it: every file
- * under `context` that its ignore file keeps, as a gzip-compressed tar with
- * `/`-separated paths in sorted order. The ignore file is `<dockerfile>.dockerignore`
- * when it exists, as BuildKit reads it, otherwise `.dockerignore`. The
- * Dockerfile, a path `contextPath` accepted, is always included and must be
- * a regular file. A symbolic link is sent as a link, never followed, so
- * nothing it points at outside the context is read and a link loop cannot
- * recurse. Files keep their permission bits; owners and times are zeroed.
+ * Packs an app directory: every file under `context` that its ignore file
+ * keeps, as a gzip-compressed tar with `/`-separated paths in sorted order.
+ * The ignore file is `.akterignore` when it exists, otherwise `.gitignore`,
+ * because an app already lists there what is not source; `.git` is always
+ * left out. A symbolic link is sent as a link, never followed, so nothing it
+ * points at outside the directory is read and a link loop cannot recurse.
+ * Files keep their permission bits; owners and times are zeroed.
  */
-export const packContext = (input: { readonly context: string; readonly dockerfile: string }) =>
+export const packContext = (input: { readonly context: string }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = input.context.replace(/[\\/]+$/u, "")
-    const dockerfile = input.dockerfile
-    const ignoreFile = [`${dockerfile}.dockerignore`, ".dockerignore"]
     let rules: ReadonlyArray<Rule> = []
 
-    for (const candidate of ignoreFile)
+    for (const candidate of [".akterignore", ".gitignore"])
       if (yield* fs.exists(`${root}/${candidate}`)) {
         rules = ignoreRules(yield* fs.readFileString(`${root}/${candidate}`))
         break
       }
 
-    const exceptions = rules.filter((rule) => rule.exception)
+    const ignored = isIgnored([...rules, ...GIT_DIRECTORY])
     const entries: Array<Entry> = []
 
     const walk = (directory: string): Effect.Effect<void, ContextInvalid, never> =>
@@ -279,26 +257,18 @@ export const packContext = (input: { readonly context: string; readonly dockerfi
 
         for (const name of names) {
           const path = directory === "" ? name : `${directory}/${name}`
-          const kept = path === dockerfile || !isIgnored(rules)(path)
           const link = yield* Effect.option(fs.readLink(`${root}/${path}`))
 
           if (Option.isSome(link)) {
-            if (kept) entries.push({ path, target: link.value })
+            if (!ignored(path, false)) entries.push({ path, target: link.value })
             continue
           }
 
           const info = yield* fs.stat(`${root}/${path}`)
 
           if (info.type === "Directory") {
-            if (
-              !kept &&
-              !dockerfile.startsWith(`${path}/`) &&
-              !exceptions.some((rule) => reaches(rule, path.split("/")))
-            )
-              continue
-
-            yield* walk(path)
-          } else if (info.type === "File" && kept)
+            if (!ignored(path, true)) yield* walk(path)
+          } else if (info.type === "File" && !ignored(path, false))
             entries.push({
               path,
               mode: info.mode & 0o777,
@@ -314,9 +284,6 @@ export const packContext = (input: { readonly context: string; readonly dockerfi
       )
 
     yield* walk("")
-
-    if (!entries.some((entry) => entry.path === dockerfile && !("target" in entry)))
-      return yield* ContextInvalid.make({ message: `No Dockerfile at ${root}/${dockerfile}` })
 
     return { archive: tar(entries), files: entries.map((entry) => entry.path) }
   })

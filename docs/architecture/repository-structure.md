@@ -9,7 +9,7 @@ The hosted Akter Cloud implementation is maintained separately in a private repo
 
 ```text
 apps/
-  cli/                      @akter/cli       the `akter` bin: local development, inspection, repair and cloud client commands
+  cli/                      @rikalabs/akter-cli the `akter` bin: local development, inspection, repair and cloud client commands
 packages/
   akter/                    @rikalabs/akter  the framework; published with browser-safe, runtime and testing entries
   cloud-api/                @akter/cloud-api public Akter Cloud HTTP contract and Schema types
@@ -41,7 +41,7 @@ The oxlint rules in `tooling/oxlint` check names, runtime-import boundaries, dec
 
 ## Public CLI and cloud contract
 
-`apps/cli` ships the `akter` bin, built with Effect's `effect/cli` module. It supports local development, deployment checks, adoption, operator inspection and repair, and the public cloud client commands `login`, `logout`, `whoami` and `deploy`. Cloud operator commands such as billing catalog setup and tenant-directory creation belong to the private platform.
+`apps/cli` publishes the `@rikalabs/akter-cli` package with the `akter` bin, built with Effect's `effect/cli` module. It supports local development, deployment checks, adoption, operator inspection and repair, and the public cloud client commands `login`, `logout`, `whoami`, `env` and `deploy`. Cloud operator commands such as billing catalog setup and tenant-directory creation belong to the private platform.
 
 `packages/cloud-api` defines the public HTTP contract used by those client commands and by the hosted console. It does not contain the hosted service implementation.
 

@@ -11,11 +11,7 @@ description: "The akter command-line tool: its commands, flags, output, and exit
 **Owner role:** API/SDK.  
 **Change policy:** a changed command, flag, or exit status updates this page, the runbooks, and the guides that use it.
 
-`akter` is the `apps/cli` bin, named `durable` before [ADR 0085](../decisions/0085-cli-login-and-source-deploys.md). It parses its arguments with Effect's `effect/cli` module: one root `akter` command whose public subcommands are the groups below, each flag typed and described. Use `akter --help` and `akter <command> --help` for the installed binary's full help. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
-
-## Installation status
-
-The framework package is published as `@rikalabs/akter@alpha`. The `akter` CLI is currently a repository-only workspace binary in `apps/cli`; there is no published `@akter/cli` package or npm installation command yet. Run it from a checkout with `bun apps/cli/src/main.ts --help` when developing the repository. The CLI page describes the source tree's current command surface, not a downloadable CLI artifact.
+`akter` is the CLI package selected for publication as the `@rikalabs/akter-cli` name (see [ADR 0103](../decisions/0103-cli-distribution.md)); its first registry publish is a maintainer bootstrap. Once published, install it with `npm i -D @rikalabs/akter-cli` or `bun add -d @rikalabs/akter-cli`, then run it with `npx akter` or `bunx akter`. For one-off use, run `npx -p @rikalabs/akter-cli akter login`; for a global install, run `npm i -g @rikalabs/akter-cli`. It supports Node 24+ and Bun 1.4.2+, and the framework package does not carry a second bin. The command parses its arguments with Effect's `effect/cli` module: one root `akter` command whose subcommands are the groups below, each flag typed and described, so `akter --help` and `akter <command> --help` print the same reference as this page. Flags take their value as `--flag value` or `--flag=value`, and `--` ends flag parsing.
 
 ## Exit statuses
 
@@ -46,7 +42,7 @@ GLOBAL FLAGS
   --log-level <all|trace|debug|info|warn|warning|error|fatal|none>    Sets the minimum log level (choices: all, trace, debug, info, warn, warning, error, fatal, none)
 
 Develop and check:
-  dev          Run the entry's app locally with a read-only inspector at /_durable/inspector
+  dev          Run the entry's app locally with a read-only inspector at /_akter/inspector
   workflows    Check workflow changes against open executions
   payloads     Check and clear stored event and job payload versions
   adopt        Adopt existing tables: plan, observe legacy writers, backfill, enforce, and check status
@@ -64,13 +60,14 @@ Akter Cloud client:
   login     Sign in to Akter Cloud through the browser and store the session for deploy
   logout    Sign out of Akter Cloud and delete the stored session
   whoami    Show who the stored Akter Cloud session signs in as
-  deploy    Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+  deploy    Upload the app directory, build and roll it out on Akter Cloud, and follow it until it is live
+  env       List, set, unset and import encrypted write-only environment variables
 
 ```
 
 ## Operator commands
 
-`defects list`, `inspect`, `export`, `receipts show`, `dead-letters`, and `subscriptions` call a runner's `Operators.serve` routes. Each reads its bearer token from `DURABLE_OPERATOR_TOKEN`, or from the environment variable `--token-env` names. `--url` repeats; `defects list` reads every runner named, and the single-actor commands use the first. See [ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md) for the grants each command needs and the [runbooks](../operations/runbooks.md) for when to use them.
+`defects list`, `inspect`, `export`, `receipts show`, `dead-letters`, and `subscriptions` call a runner's `Operators.serve` routes. Each reads its bearer token from `AKTER_OPERATOR_TOKEN`, or from the environment variable `--token-env` names. `--url` repeats; `defects list` reads every runner named, and the single-actor commands use the first. See [ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md) for the grants each command needs and the [runbooks](../operations/runbooks.md) for when to use them.
 
 ## Akter Cloud commands
 
@@ -89,10 +86,12 @@ USAGE
   akter login [flags]
 
 FLAGS
-  --api-url string    The control plane to sign in to (default AKTER_API_URL, then http://localhost:3001)
+  --api-url string    The control plane to sign in to (default AKTER_API_URL, then https://api.akter.dev)
 ```
 
 It prints the console's `/device` page and a code written `XXXX-XXXX` (never a link that carries the code), then polls at the interval the control plane names, five seconds slower after each `slow_down`, until the code is approved, denied or past its own expiry. Approving the code saves the session, which starts in the approver's active organization, and prints who it signs in as; a denied or expired code exits 1 and saves nothing. If the control plane will not say who the new session belongs to, `login` signs the session out again and saves nothing.
+
+For a local control plane, run `akter login --api-url http://localhost:3001`, or set `AKTER_API_URL=http://localhost:3001`. The flag overrides the environment variable, which overrides the hosted default.
 
 ### `akter logout`
 
@@ -118,7 +117,7 @@ It prints the email address and control plane, then one line per organization: i
 
 ### `akter deploy`
 
-Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+Upload the app directory, build and roll it out on Akter Cloud, and follow it until it is live
 
 ```text
 USAGE
@@ -127,18 +126,17 @@ USAGE
 FLAGS
   --project string       The project to deploy to (default AKTER_PROJECT)
   --env choice           The environment to deploy to (default production) (choices: production, staging, dev)
-  --context directory    The build context to upload (default the current directory)
-  --dockerfile string    The Dockerfile's path inside the context (default Dockerfile)
+  --context directory    The app directory to upload, holding src/app.ts (default the current directory)
   --commit string        The commit SHA the deployment is labeled with (default the context's git HEAD)
   --message string       The deployment's message (default the commit's subject)
   --timeout integer      Seconds to follow the rollout before giving up on it (default 900)
 ```
 
-It packs the context as `docker build` would send it (`<Dockerfile>.dockerignore`, else `.dockerignore`; the Dockerfile always included): symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. `--dockerfile` is cleaned (`./a//Dockerfile` is `a/Dockerfile`), and a path starting at `/` or containing `..` is refused with exit 2 before anything is read. It uploads it to `POST /api/projects/:projectId/sources`, creates the deployment from the returned digest, and prints each rollout step as it starts and ends. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
+It packs the app directory with `.akterignore`, or `.gitignore` when there is none, read with Git's root `.gitignore` rules: a pattern with a `/` before its end is anchored at the directory, any other matches at every depth, a trailing `/` matches only directories, and nothing inside a left-out directory comes back. `.git` is always left out. Symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. No Dockerfile is sent: the platform builds the app from its `src/app.ts`, whose default export is an `App.make` value ([hosted apps](01-server-api.md#composition)), and a directory whose ignore file leaves out or lacks `src/app.ts` is refused with exit 2 before anything is uploaded. It uploads the archive to `POST /api/projects/:projectId/sources`, creates the deployment with `source: { digest }`, and prints each rollout step as it starts and ends. While the build runs it prints the build log's new lines on every poll, reading `GET .../build-log?after=<next index>` so each line is printed once, and when the build succeeds it prints the rest before the step's end. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines to stderr. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
 
 ### `akter dev`
 
-Run the entry's app locally with a read-only inspector at `/_durable/inspector`
+Run the entry's app locally with a read-only inspector at `/_akter/inspector`
 
 ```text
 USAGE
@@ -337,7 +335,7 @@ USAGE
 
 FLAGS
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
   --tenant string       The tenant to read, or * for every tenant the operator's grant covers (default *)
   --actor string        Only defects of this actor type
@@ -360,7 +358,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --receipts integer    How many of the newest receipts to show, 1 to 1000 (default 20)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -379,7 +377,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --output file         The seed file to create; an existing file is never replaced
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -398,7 +396,7 @@ ARGUMENTS
 FLAGS
   --tenant string       The tenant the request acts in
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -418,7 +416,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --reason string       Why, recorded in the operator audit log (up to 500 characters)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
   --provider-checked    Confirm the provider never applied an ambiguous attempt, so running it again is safe
 ```
@@ -439,7 +437,7 @@ FLAGS
   --tenant string       The tenant the request acts in
   --reason string       Why, recorded in the operator audit log (up to 500 characters)
   --url string          A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string    The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string    The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                Print the runner's answer as JSON
 ```
 
@@ -457,7 +455,7 @@ FLAGS
   --min-attempts integer    Only rows with at least this many failed attempts
   --limit integer           At most this many rows, 1 to 1000
   --url string              A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string        The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string        The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                    Print the runner's answer as JSON
 ```
 
@@ -477,6 +475,17 @@ FLAGS
   --tenant string          The tenant the request acts in
   --reason string          Why, recorded in the operator audit log (up to 500 characters)
   --url string             A runner's base URL; repeat to name several, a single-actor command uses the first
-  --token-env string       The environment variable holding the operator bearer token (default DURABLE_OPERATOR_TOKEN)
+  --token-env string       The environment variable holding the operator bearer token (default AKTER_OPERATOR_TOKEN)
   --json                   Print the runner's answer as JSON
 ```
+
+## `akter env`
+
+These commands use the stored Akter Cloud session. All take `--project <id>` (default `AKTER_PROJECT`) and `--env <production|staging|dev>` (default `production`).
+
+- `akter env list` prints each variable's name and UTC update time, with `managed` provenance for platform-provisioned names. Values cannot be read back.
+- `akter env set <name> --file <path>` reads the exact UTF-8 file contents, including a final newline, and writes the value without printing it. Omit `--file` to read piped stdin; interactive terminal input is refused so a secret is never echoed. Input is limited to 65,536 bytes. Use `printf %s "$TOKEN" | akter env set TOKEN` rather than placing the value in arguments or shell history.
+- `akter env unset <name>` removes a customer variable. Repeating the deletion is safe.
+- `akter env import [file]` imports a dotenv file atomically. `-` or no file reads piped stdin; the document is limited to 1 MiB. The result reports created and updated counts, not values.
+
+Changes apply to the next deployment. Platform-managed values, including the managed `DATABASE_URL`, cannot be replaced or deleted through these commands. Rollback restores the original captured environment rather than current settings. Refused writes exit 1; input/configuration errors exit 2.

@@ -48,7 +48,7 @@ describe("akter defects list", () => {
 
       const listed = yield* runCliWith({
         fetch: runners.fetch,
-        env: { DURABLE_OPERATOR_TOKEN: "ops-token" },
+        env: { AKTER_OPERATOR_TOKEN: "ops-token" },
       })([
         "defects",
         "list",
@@ -185,7 +185,7 @@ describe("akter defects list", () => {
         web.handler(new Request(input, init))) as typeof globalThis.fetch
 
       const cli = (token: string, tenant: string) =>
-        runCliWith({ fetch, env: { DURABLE_OPERATOR_TOKEN: token } })([
+        runCliWith({ fetch, env: { AKTER_OPERATOR_TOKEN: token } })([
           "defects",
           "list",
           "--url",

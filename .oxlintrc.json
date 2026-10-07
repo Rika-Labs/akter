@@ -53,6 +53,10 @@
   },
   "overrides": [
     {
+      "files": ["apps/cli/src/platform.ts"],
+      "rules": { "effecttsgo/node-builtin-import": "off" }
+    },
+    {
       "files": [
         "packages/akter/src/testing/conformance/*/harness.ts",
         "packages/akter/src/testing/conformance/transports/wire.ts"

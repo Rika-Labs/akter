@@ -10,7 +10,7 @@ Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<
 
 ## Streaming replica for read-your-writes
 
-Every job that runs the Postgres conformance suites (`workspaces`, `framework-postgres`, `node-postgres`) has its own `postgres` service container and runs `bun .github/src/replica.ts` to export the connection string it prints as `TEST_REPLICA_DATABASE_URL`; locally `check:ci` does the same. The script finds the container that publishes `TEST_DATABASE_URL`'s port (the `postgres` service), admits replication connections in its `pg_hba.conf`, and starts `durable-replica`, a `pg_basebackup` clone of it on port 5433 that follows the primary as a physical streaming replica. Locally, `.github/src/node-postgres.ts` creates `durable-node-postgres` on port 5435 for Node, and `replica.ts` clones that primary with `TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434`; in CI every job is its own machine, so the Bun and Node suites never share a primary. Fleet's logical slot name is cluster-global, and the read-your-writes cases pause replay server-wide, so concurrent runtimes must have separate primaries and replicas. Control connections wait only for the newly created database to reach the standby; subsequent version checks and queries are not retried. Without `TEST_DATABASE_URL` or Docker the replica bootstrap prints nothing; with `CI` set, the script and Postgres suite fail instead. Startup refuses an existing container instead of deleting it. Locally, remove only the exact containers you created, including their replicas; never prune the shared Docker daemon.
+Every job that runs the Postgres conformance suites (`public-workspaces`, `framework-postgres`, `node-postgres`) has its own `postgres` service container and runs `bun .github/src/replica.ts` to export the connection string it prints as `TEST_REPLICA_DATABASE_URL`; locally `check:ci` does the same. The script finds the container that publishes `TEST_DATABASE_URL`'s port (the `postgres` service), admits replication connections in its `pg_hba.conf`, and starts `durable-replica`, a `pg_basebackup` clone of it on port 5433 that follows the primary as a physical streaming replica. Locally, `.github/src/node-postgres.ts` creates `durable-node-postgres` on port 5435 for Node, and `replica.ts` clones that primary with `TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434`; in CI every job is its own machine, so the Bun and Node suites never share a primary. Fleet's logical slot name is cluster-global, and the read-your-writes cases pause replay server-wide, so concurrent runtimes must have separate primaries and replicas. Control connections wait only for the newly created database to reach the standby; subsequent version checks and queries are not retried. Without `TEST_DATABASE_URL` or Docker the replica bootstrap prints nothing; with `CI` set, the script and Postgres suite fail instead. Startup refuses an existing container instead of deleting it. Locally, remove only the exact containers you created, including their replicas; never prune the shared Docker daemon.
 
 `Release` runs on a pushed `v<version>` tag, or by manual dispatch with that tag as its `tag` input; CR.1b (#99) owns the first publish. It checks out the tag, checks that it matches `packages/akter/package.json` and that the tagged commit is on main, checks the runner's npm is at least 11.5.1, packs with the same script, installs the tarball into a clean project with `bun .github/src/release/smoke.ts` (typecheck plus one command on PGlite), and runs `npm publish --provenance --access public` through npm Trusted Publishing. The job uses the `npm` environment and its job-scoped `id-token: write` permission, so npm exchanges the GitHub Actions OIDC identity for a short-lived publish credential; no npm secret or auth-token environment variable is configured. A maintainer can require environment reviewers, and a tag ruleset on `v*` limits who can start a release. npm can only trust a package that already exists, so the first version is published by hand; [Releasing](../docs/operations/05-releasing.md) has the bootstrap. A prerelease version publishes to the dist-tag named by its first prerelease identifier (`0.1.0-alpha.0` goes to `alpha`); that id must start with a letter, and a version without one goes to `latest`. It runs on a GitHub-hosted runner because npm provenance does not accept self-hosted runners, and provenance requires the repository to be public. The workspace `prepublishOnly` script refuses a local `npm publish` from the source package.
 
@@ -23,7 +23,7 @@ Every job that runs the Postgres conformance suites (`workspaces`, `framework-po
 `Verify` uses `vercel/setup-turborepo-remote-cache-action@v1.1.0` with job-scoped
 `id-token: write` and the repository-accessible organization/repository variable
 `TURBO_TEAM`. The action exchanges GitHub OIDC for a short-lived cache token and
-exports `TURBO_TOKEN` and `TURBO_TEAM` before the jobs that run Turbo (`static`, `workspaces`, `e2e`).
+exports `TURBO_TOKEN` and `TURBO_TEAM` before the jobs that run Turbo (`static`, `public-workspaces`).
 No PAT or `TURBO_TOKEN` secret is required. Other workflows do not run Turbo.
 
 The cache setup runs on main pushes/manual runs and same-repository PRs, excluding Dependabot.
@@ -48,17 +48,11 @@ Only tasks consuming build artifacts wait for builds. Typechecks and typed lint
 use transit dependencies: dependency source changes invalidate downstream checks
 without serializing their execution. Task-level inputs exclude documentation;
 root TypeScript configuration, lint plugins, Vitest configuration, and the
-`.github` sources consumed by infra are included in their owning checks.
+`.github` verification sources are included in their owning checks.
 The real-Turbo regression test exercises these invalidation boundaries.
 
 File-scoped type-aware lint exceptions are limited to platform boundaries:
-`effecttsgo/async-function` plus `effecttsgo/process-env` for the imperative
-Playwright project in `apps/e2e`. Playwright's test functions return promises
-and its configuration reads `CI` directly. `examples/chat/src/web/app.ts` is
-browser code written against the Promise client, the way an application without
-Effect uses it, so `async-function`, `global-fetch`, `global-timers`, and
-`instance-of-schema` are off there, as `instance-of-schema` is for the chat
-example's Promise-client script. `packages/react/src` holds React hooks, whose
+`packages/react/src` holds React hooks, whose
 effects and event handlers are Promise code and whose exports are React APIs,
 not pipeable Effect functions, so `async-function` and
 `missing-pipeable-signature` are off there. All other rules still run on these files.
@@ -69,8 +63,7 @@ not pipeable Effect functions, so `async-function` and
 
 - `static`: `check:static` (directives, structure, format, `typecheck:ci`, the verify-runner test), then Turbo `lint lint:root typecheck`. It also saves the Bun package cache and the incremental typecheck state.
 - `pack`: `check:pack` (pack check and the tarball quickstart on Node and Bun).
-- `workspaces`: Turbo `build test test:integration` for every workspace except `@rikalabs/akter` and `@akter/e2e`, with a Postgres service and replica. The filter keeps the framework's own tasks out, but `^build` still builds it for dependents.
-- `e2e`: Playwright through `test:e2e`.
+- `public-workspaces`: Turbo `build test test:integration` for the public CLI, clients, cloud API contract and tooling workspaces, with a Postgres service and replica.
 - `framework-unit`: the framework's `test` script minus the PGlite conformance file.
 - `framework-pglite-*`: `packages/akter/vitest.pglite.config.ts` runs `testing/conformance/pglite/backend.test.ts` once per conformance shard (the same registry as the Postgres shards), and each job selects shards with `--project`. The last job of a family lists only negated projects, so a shard added to the registry runs there until someone assigns it.
 - `framework-postgres-*`: the Postgres conformance shards on Bun, one Postgres service and replica per job, plus the `integration` project (crash and process tests) in two jobs. The Neki migration file, whose SIGKILL-at-every-boundary case is one sequential test of about three minutes, has a job to itself and sets the floor for the whole workflow.
@@ -80,7 +73,7 @@ not pipeable Effect functions, so `async-function` and
 
 `check:ci` still runs everything in one process group for a local run. Unlike the old single job, the framework suites are not skipped by `--affected`; only Turbo's tasks are.
 
-Every job caches Bun's package store, not mutable `node_modules`; one job per workflow saves it. `static` also restores TypeScript incremental metadata using a toolchain/configuration key and a per-commit snapshot. TypeScript validates that state on a Turbo miss; Turbo restores successful exact results on a hit. Do not add ESLint's per-file cache under typed lint: this repository uses Oxlint, and cross-file type changes matter.
+Every job caches Bun's package store, not mutable `node_modules`; one job per workflow saves it. `static` restores TypeScript incremental metadata only from a run of the same commit, never from another commit: since the repository split, state another commit saved made `tsc` report `@rikalabs/akter` imports as unresolvable in whichever workspace a change affected, while a clean typecheck of the same tree passed. Turbo restores successful exact results on a hit. Do not add ESLint's per-file cache under typed lint: this repository uses Oxlint, and cross-file type changes matter.
 
 Inside a job, Turbo concurrency follows available CPUs. Oxlint uses one thread per package, Go-based TypeScript tools inherit `GOMAXPROCS=1`, and each Vitest process uses one isolated worker, except the integration, PGlite and Node shard configs, which allow two. No isolation is disabled. PostgreSQL integration results are never cached; their task is selected by the affected graph and requires explicit disposable database configuration.
 
@@ -103,20 +96,19 @@ bun .github/src/update-catalogs.ts package.json          # registry-backed repor
 bun .github/src/update-catalogs.ts package.json --write  # local manifest + Bun lock update
 ```
 
-The adapter uses standard `npm view` registry metadata, updates default/named Bun catalogs, and excludes majors/downgrades/prereleases. Effect, Alchemy/BetterAuth, FoldKit, TS/native and Oxlint are a coupled cohort: changes are held for explicit compatibility work. Prerelease pins never silently promote, even to stable. Test updates with `bun run check`, build, and provider typecheck before review. No publishing or automatic merge is included.
+The adapter uses standard `npm view` registry metadata, updates default/named Bun catalogs, and excludes majors/downgrades/prereleases. Effect, TS/native and Oxlint are a coupled cohort: changes are held for explicit compatibility work. Prerelease pins never silently promote, even to stable. Test updates with `bun run check`, build, and provider typecheck before review. No publishing or automatic merge is included.
 
 Dependabot is turned off for this repository; dependency updates, catalog or not, are local commands; there is no GitHub Amp plugin or webhook/scheduled dispatch to orbs.
 
 ### Compatibility pins (2026-09-20 audit)
 
-- Effect and its adapters are on the stable `4.0.0`; Effect's `unstable/*` modules graduated to `effect/<area>` (for example `effect/sql`, `effect/http-api`). FoldKit `0.163.0` still declares rc116 peers; the console only imports modules that work on 4.0.0. Vitest 5 matches the adapter's peer range.
+- Effect and its adapters are on the stable `4.0.0`; Effect's `unstable/*` modules graduated to `effect/<area>` (for example `effect/sql`, `effect/http-api`). Vitest 5 matches the adapter's peer range.
 - Drizzle ORM and Kit use the matching `rc5` snapshot `1.0.0-rc.5-5935859`; this is an intentional prerelease channel, not a stable-version claim.
 - Oxlint/plugins stay at `1.82.0` with `oxlint-tsgolint` `7.0.2001`. `@effect/tsgo` `0.45.0` rejects the newer Oxlint patch target; update this cohort together when supported.
 - Oxlint's `RuleTester` requires Node >=22 and rejects Bun. Its package test script uses `npm exec --package=node@26.7.0` and prints the selected version, so local and CI runs do not depend on the runner's default Node. This requires npm and registry access on a cold npm cache; it installs only into npm's cache, not the repository or global toolchain. Use `npm exec`, not `npx`, which Bun rewrites to `bun x` in package scripts. The vendored anti-slop rule files run through Node's test runner, not Vitest. Directive tests and application tests still run on Bun. No tests or evidence checks are skipped.
-- Babel uses 8.0.6 with the newest v8 TypeScript transform (8.0.0-rc.6). Babel supplies its own types; StyleX is loaded through Babel's plugin resolver. Node types use 26.6.2. The application runtime remains Bun 1.4.2.
 - CI and Compose use PostgreSQL 18.6. Orb setup installs PostgreSQL 18 from the official PGDG repository. Compose mounts the v18 image at `/var/lib/postgresql`, using a separate `postgres18` volume; orbs use `.local/postgres18`. Older volumes/directories are preserved, not migrated or deleted. Existing development data needs an explicit dump/restore or reviewed major-version upgrade before reuse.
 
-Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins. Historical `research/` snapshots are not active dependency manifests and remain unchanged.
+Frozen installation, the Effect compiler patch, and full workspace checks are required after changing these pins.
 
 Vercel OIDC authentication has been exercised in GitHub Actions. Pin action refs to reviewed immutable revisions before enabling in a sensitive repository; current version tags are conventional bootstrap refs.
 
@@ -124,7 +116,3 @@ An `AMP_TOKEN` secret alone does not enable issue replies or pull request review
 This repository does not define an Amp mention or review workflow. Those behaviors
 require a separately configured integration; the verification and evidence workflows
 do not invoke Amp.
-
-Alchemy holds a Postgres session advisory lock for the stage it runs. If the connection that holds it drops mid-run, Alchemy stops with "state lock ... was lost mid-run" before writing anything unlocked. A connection to the state database can also drop or fail to open (`StateStoreError: PgConnection: ...`, seen as resets and timeouts from hosted runners). The deploy step, the preview destroy and the nightly sweep each retry up to three times on those two errors alone. The deploy step also retries when Alchemy refuses to resume a create that an earlier run of the same stage interrupted ("Cannot resume creating resource"), which only `--adopt` lets it finish. Alchemy records a resource as `creating`, with the instance id its physical names derive from, before it creates it, so a retry looks for what the interrupted run made. Deploy retries pass `--adopt`, so a resource its provider finds but cannot prove the stage owns, such as a Fly app or a Fly secret with a fixed name, is adopted instead of refused. Not every provider finds what it made: Axiom's `ApiToken` and `Monitor` and GitHub's `Comment` look only for the id in state, so a drop during their create leaves a second one behind, and a Stripe webhook endpoint is adopted without its signing secret, which Stripe returns only on create, so the deploy then fails until that endpoint is deleted.
-
-A prod deploy is triggered by `Verify` succeeding on `main`. Those runs can finish out of order, so the plan job deploys a verified commit only while it is still the head of `main`; an older commit is skipped, because the newer head's own verification deploys it.

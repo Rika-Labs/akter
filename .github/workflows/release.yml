@@ -56,6 +56,7 @@ jobs:
           commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           test "$(git rev-parse HEAD)" = "$commit" || { echo "Checkout is not $RELEASE_TAG"; exit 1; }
           version="$(jq -r .version packages/akter/package.json)"
+          bun .github/src/release/version.ts
           test "$RELEASE_TAG" = "v$version" || { echo "Tag $RELEASE_TAG does not match version $version"; exit 1; }
           git merge-base --is-ancestor "$commit" origin/main || { echo "$commit is not on main"; exit 1; }
           core="${version%%+*}"
@@ -90,17 +91,30 @@ jobs:
           echo "Successful Verify run(s) for $commit: ${runs//$'\n'/, }"
       - name: Build, stage and check the tarball
         run: |
-          bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts
+          bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts .github/src/release/version.test.ts
           bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
           bun run prepare
-          bun .github/src/pack.ts --out "$RUNNER_TEMP/package"
-      - name: Install the tarball into a clean project and run it
-        run: bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package"
+          bun .github/src/pack.ts --out "$RUNNER_TEMP/package" --cli-out "$RUNNER_TEMP/package-cli"
+          npm publish "$RUNNER_TEMP/package-cli" --dry-run --ignore-scripts --access public --tag "${{ steps.release.outputs.tag }}"
+      - name: Install the tarballs into a clean project and run them on Node and Bun
+        run: |
+          SMOKE_RUNTIME=node bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package" --cli-package "$RUNNER_TEMP/package-cli"
+          SMOKE_RUNTIME=bun bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package" --cli-package "$RUNNER_TEMP/package-cli"
       - name: Publish through npm trusted publishing
         if: steps.release.outputs.published == 'false'
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
+      - name: Publish the CLI through npm trusted publishing
+        env:
+          DIST_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name="$(jq -r .name "$RUNNER_TEMP/package-cli/package.json")"
+          version="$(jq -r .version "$RUNNER_TEMP/package-cli/package.json")"
+          if [ "$(npm view "$name@$version" version 2>/dev/null || true)" != "$version" ]; then
+            npm publish "$RUNNER_TEMP/package-cli" --provenance --access public --tag "$DIST_TAG"
+          fi
       - name: Upload the validated release notes
         uses: actions/upload-artifact@v7.0.1
         with:
