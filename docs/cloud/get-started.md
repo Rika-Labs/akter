@@ -53,7 +53,7 @@ The flag is `--api-url`, not `--api`. `AKTER_API_URL` also selects the API for l
 bunx akter whoami
 ```
 
-`whoami` prints your email, organizations and active organization. Credentials are stored in the platform's configuration directory; `AKTER_CONFIG_DIR` overrides that location. On macOS the default is `~/Library/Application Support/akter`. Do not commit this directory.
+`whoami` prints your email, organization slugs, roles and organization IDs. Credentials are stored in the platform's configuration directory; `AKTER_CONFIG_DIR` overrides that location. On macOS the default is `~/Library/Application Support/akter`. Do not commit this directory.
 
 Next, [deploy your app](/cloud/deploy), review the [pricing and limits](/cloud/pricing-and-limits), and configure [environment variables](/cloud/environment-variables).
 
@@ -63,4 +63,4 @@ Next, [deploy your app](/cloud/deploy), review the [pricing and limits](/cloud/p
 bunx akter logout
 ```
 
-This signs out the stored CLI session and removes its local credentials. It does not delete your account, organization or deployments.
+This attempts to sign out the stored CLI session and removes its local credentials. If the API cannot revoke the session, the CLI warns that it remains valid until expiry. Logout does not delete your account, organization or deployments.
