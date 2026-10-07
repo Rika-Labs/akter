@@ -17,6 +17,29 @@ defaults:
   run:
     shell: bash
 jobs:
+  self-host:
+    name: self-host-recipe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - name: Build and boot both self-host runtime images
+        run: |
+          mkdir -p evidence/self-host
+          for runtime in bun node; do
+            SELFHOST_RUNTIME="$runtime" bash apps/self-host/verify.sh 2>&1 | tee "evidence/self-host/$runtime.log"
+          done
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: self-host-recipe-${{ env.HEAD_SHA }}
+          path: evidence/self-host/
+          if-no-files-found: error
+          retention-days: 14
+
   static:
     name: static
     runs-on: ubuntu-24.04

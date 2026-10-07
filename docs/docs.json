@@ -46,6 +46,7 @@
           {
             "group": "Self-host operations",
             "pages": [
+              "operations/self-host",
               "operations/01-deployment",
               "operations/02-migrations",
               "operations/03-observability",
