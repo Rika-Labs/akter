@@ -9,8 +9,6 @@
 
 ## Groups
 
-Environment variables are write-only per project environment. List and set return names, provenance, update times and attribution only; no value, masked value or tail is returned. Delete is idempotent. Import accepts an atomic line-based dotenv document with comments, optional `export`, empty values and matched quotes; duplicate names, malformed lines and NUL values are refused without echoing input. Platform-managed names are identified by `usedBy: ["platform"]` and cannot be replaced or removed by customers. Changes take effect on the next deployment; rollback retains its captured values.
-
 - **Account:** `me`, profile, active organization, preferences (`/me/preferences`), notifications and pinned actors (`/me/pinned-actors`).
 - **Organizations, members, invitations, API keys.** An organization's `plan` (in `/me`, `/me/active-organization`, organization reads and invitation previews) is a tagged value: `{ "_tag": "known", "id": <plan id> }` for a plan the pricing configuration defines, `{ "_tag": "unknown", "id": <stored id> }` for a stored plan it does not, so org context still loads, and `{ "_tag": "unbound" }` for an organization with no billing account, which is never reported as Free.
 - **Projects:** list and create under `/organizations/:organizationId/projects`, then by id; environments, endpoints, variables, domains, regions and integrations. When the control plane starts runners on Fly, a `homeRegion` its runner configuration does not place is a 409 `Conflict` at project creation, and so is a deployment of a project homed in such a region or naming one.
