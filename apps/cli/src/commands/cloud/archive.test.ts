@@ -1,8 +1,8 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { Effect, FileSystem, Option, Stream } from "effect"
+import { Effect, FileSystem, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { ContextInvalid, contextPath, ignoreRules, isIgnored, packContext } from "./archive.ts"
+import { ignoreRules, isIgnored, packContext } from "./archive.ts"
 
 /** Runs the system `tar` on `args` with `archive` on stdin, independently of the packer under test. */
 const systemTar = (archive: Uint8Array, args: ReadonlyArray<string>) =>
@@ -48,7 +48,7 @@ const unpack = (archive: Uint8Array) =>
   })
 
 layer(BunServices.layer)("build context packing", (it) => {
-  it("matches .dockerignore patterns as Docker does: segments, globstars, parent directories and the last matching rule", () => {
+  it("matches ignore patterns as Git does: unanchored names at every depth, anchored paths, globstars, directory-only rules, pruned directories and the last matching rule", () => {
     const rules = ignoreRules(
       [
         "# comment",
@@ -59,126 +59,106 @@ layer(BunServices.layer)("build context packing", (it) => {
         "!keep.log",
         "docs/**/draft.md",
         "build?",
-        "./tmp/",
+        "tmp/",
+        "vendor",
+        "!vendor/kept.ts",
       ].join("\n"),
     )
     const ignored = isIgnored(rules)
 
-    expect(ignored("node_modules")).toBe(true)
-    expect(ignored("node_modules/pkg/index.js")).toBe(true)
-    expect(ignored("apps/web/node_modules/pkg/index.js")).toBe(true)
-    expect(ignored("apps/web/node_modules_cache/index.js")).toBe(false)
-    expect(ignored("secret.env")).toBe(true)
-    expect(ignored("config/secret.env")).toBe(false)
-    expect(ignored("error.log")).toBe(true)
-    expect(ignored("keep.log")).toBe(false)
-    expect(ignored("logs/error.log")).toBe(false)
-    expect(ignored("docs/draft.md")).toBe(true)
-    expect(ignored("docs/a/b/draft.md")).toBe(true)
-    expect(ignored("docs/final.md")).toBe(false)
-    expect(ignored("build1/out.js")).toBe(true)
-    expect(ignored("build12/out.js")).toBe(false)
-    expect(ignored("tmp/scratch")).toBe(true)
-    expect(ignored("README.md")).toBe(false)
-    expect(isIgnored(ignoreRules("a.b"))("a.b")).toBe(true)
-    expect(isIgnored(ignoreRules("a.b"))("aXb")).toBe(false)
+    expect(ignored("node_modules", true)).toBe(true)
+    expect(ignored("node_modules/pkg/index.js", false)).toBe(true)
+    expect(ignored("apps/web/node_modules/pkg/index.js", false)).toBe(true)
+    expect(ignored("apps/web/node_modules_cache/index.js", false)).toBe(false)
+    expect(ignored("secret.env", false)).toBe(true)
+    expect(ignored("config/secret.env", false)).toBe(false)
+    expect(ignored("error.log", false)).toBe(true)
+    expect(ignored("keep.log", false)).toBe(false)
+    expect(ignored("logs/error.log", false)).toBe(true)
+    expect(ignored("logs/keep.log", false)).toBe(false)
+    expect(ignored("docs/draft.md", false)).toBe(true)
+    expect(ignored("docs/a/b/draft.md", false)).toBe(true)
+    expect(ignored("docs/final.md", false)).toBe(false)
+    expect(ignored("build1/out.js", false)).toBe(true)
+    expect(ignored("build12/out.js", false)).toBe(false)
+    expect(ignored("tmp/scratch", false)).toBe(true)
+    expect(ignored("src/tmp/scratch", false)).toBe(true)
+    expect(ignored("src/tmp", false)).toBe(false)
+    expect(ignored("vendor/kept.ts", false)).toBe(true)
+    expect(ignored("README.md", false)).toBe(false)
+    expect(isIgnored(ignoreRules("a.b"))("a.b", false)).toBe(true)
+    expect(isIgnored(ignoreRules("a.b"))("aXb", false)).toBe(false)
   })
 
   it.effect(
-    "packs only what a Dockerfile-specific allow list keeps, never descending into a directory no exception can reach",
+    "packs what .akterignore keeps over .gitignore, never descending into a directory it leaves out, and always leaves out .git",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const root = yield* context({
           "package.json": "{}",
           "bun.lock": "lock",
-          ".dockerignore": "README.md\n",
-          "README.md": "kept by the root ignore file, left out by the runner's",
-          "apps/api/package.json": '{"name":"api"}',
-          "apps/api/src/server.ts": "server",
-          "packages/akter/src/index.ts": "framework",
-          "packages/akter/node_modules/dep/index.js": "dependency",
-          "infra/local/runner/Dockerfile": "FROM scratch\n",
-          "infra/local/runner/main.ts": "runner",
-          "infra/local/runner/Dockerfile.dockerignore": [
+          ".gitignore": "README.md\n",
+          "README.md": "left out by .gitignore, kept by .akterignore",
+          ".akterignore": [
             "*",
+            "!*/",
             "!package.json",
             "!bun.lock",
-            "!apps/*/package.json",
-            "!packages/akter",
-            "!infra/local/runner",
+            "!README.md",
+            "!src/**",
             "**/node_modules",
+            "!.akterignore",
           ].join("\n"),
+          "src/app.ts": "export default app",
+          "src/actors/counter.ts": "counter",
+          "src/node_modules/dep/index.js": "dependency",
           "docs/guide.md": "docs",
+          ".git/HEAD": "ref: refs/heads/main",
         })
 
         yield* fs.makeDirectory(`${root}/node_modules`)
         yield* fs.symlink(`${root}/missing-target`, `${root}/node_modules/dangling`)
 
-        const packed = yield* packContext({
-          context: `${root}/`,
-          dockerfile: "infra/local/runner/Dockerfile",
-        })
+        const packed = yield* packContext({ context: `${root}/` })
         const files = yield* unpack(packed.archive)
 
         expect(Object.keys(files)).toEqual([
-          "apps/api/package.json",
+          ".akterignore",
+          "README.md",
           "bun.lock",
-          "infra/local/runner/Dockerfile",
-          "infra/local/runner/Dockerfile.dockerignore",
-          "infra/local/runner/main.ts",
           "package.json",
-          "packages/akter/src/index.ts",
+          "src/actors/counter.ts",
+          "src/app.ts",
         ])
         expect(packed.files.toSorted()).toEqual(Object.keys(files))
-        expect(files["apps/api/package.json"]).toBe('{"name":"api"}')
-        expect(files["infra/local/runner/main.ts"]).toBe("runner")
+        expect(files["src/app.ts"]).toBe("export default app")
       }),
   )
 
   it.effect(
-    "falls back to the root .dockerignore, always sends the Dockerfile, and refuses a context without one",
+    "falls back to .gitignore, packs every file without an ignore file but .git, and needs no Dockerfile",
     () =>
       Effect.gen(function* () {
-        const root = yield* context({
-          ".dockerignore": "Dockerfile\n*.md\n",
-          Dockerfile: "FROM scratch\n",
+        const fs = yield* FileSystem.FileSystem
+        const ignoring = yield* context({
+          ".gitignore": "*.md\n.env\n",
+          ".env": "SECRET=1",
           "notes.md": "left out",
           "src/app.ts": "app",
+          "src/.env": "SECRET=2",
         })
-        const packed = yield* packContext({ context: root, dockerfile: "Dockerfile" })
+        const plain = yield* context({ "src/app.ts": "app", "notes.md": "kept", ".git/HEAD": "x" })
 
-        expect(Object.keys(yield* unpack(packed.archive))).toEqual([
-          ".dockerignore",
-          "Dockerfile",
-          "src/app.ts",
-        ])
-
-        const refused = yield* Effect.flip(
-          packContext({ context: root, dockerfile: "deploy/Dockerfile" }),
-        )
-
-        expect(refused).toEqual(
-          ContextInvalid.make({ message: `No Dockerfile at ${root}/deploy/Dockerfile` }),
-        )
+        expect(
+          Object.keys(yield* unpack((yield* packContext({ context: ignoring })).archive)),
+        ).toEqual([".gitignore", "src/app.ts"])
+        expect(
+          Object.keys(yield* unpack((yield* packContext({ context: plain })).archive)),
+        ).toEqual(["notes.md", "src/app.ts"])
+        expect(yield* fs.exists(`${plain}/.git/HEAD`)).toBe(true)
       }),
   )
-
-  it("accepts a Dockerfile path inside the context, cleaned, and nothing that leaves it", () => {
-    expect(contextPath("Dockerfile")).toEqual(Option.some("Dockerfile"))
-    expect(contextPath("./infra//runner/./Dockerfile")).toEqual(
-      Option.some("infra/runner/Dockerfile"),
-    )
-    for (const path of [
-      "",
-      ".",
-      "/etc/Dockerfile",
-      "../Dockerfile",
-      "infra/../../Dockerfile",
-      "a/..",
-    ])
-      expect(contextPath(path), path).toEqual(Option.none())
-  })
 
   it.effect(
     "sends symbolic links as links without reading what they point at, so neither a secret outside the context nor a loop is followed",
@@ -187,7 +167,7 @@ layer(BunServices.layer)("build context packing", (it) => {
         const fs = yield* FileSystem.FileSystem
         const outside = yield* fs.makeTempDirectoryScoped()
         const root = yield* context({
-          Dockerfile: "FROM scratch\n",
+          "src/app.ts": "app",
           "app/run.sh": "#!/bin/sh\necho run\n",
         })
 
@@ -197,17 +177,17 @@ layer(BunServices.layer)("build context packing", (it) => {
         yield* fs.symlink("run.sh", `${root}/app/start.sh`)
         yield* fs.chmod(`${root}/app/run.sh`, 0o755)
 
-        const packed = yield* packContext({ context: root, dockerfile: "Dockerfile" })
+        const packed = yield* packContext({ context: root })
         const listing = yield* systemTar(packed.archive, ["-tvzf", "-"])
         const extracted = yield* fs.makeTempDirectoryScoped()
 
         expect(listing.code).toBe(0)
         expect(packed.files).toEqual([
-          "Dockerfile",
           "app/loop",
           "app/run.sh",
           "app/start.sh",
           "deploy-key",
+          "src/app.ts",
         ])
         expect(new TextDecoder().decode(Bun.gunzipSync(packed.archive))).not.toContain(
           "PRIVATE KEY MATERIAL",
@@ -217,7 +197,7 @@ layer(BunServices.layer)("build context packing", (it) => {
         expect(yield* fs.readLink(`${extracted}/app/loop`)).toBe(".")
         expect(yield* fs.readLink(`${extracted}/app/start.sh`)).toBe("run.sh")
         expect((yield* fs.stat(`${extracted}/app/run.sh`)).mode & 0o777).toBe(0o755)
-        expect((yield* fs.stat(`${extracted}/Dockerfile`)).mode & 0o111).toBe(0)
+        expect((yield* fs.stat(`${extracted}/src/app.ts`)).mode & 0o111).toBe(0)
       }),
   )
 
@@ -227,9 +207,9 @@ layer(BunServices.layer)("build context packing", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const deep = `${"nested-directory-name/".repeat(6)}file-with-a-long-name-ünïcode.txt`
-        const root = yield* context({ Dockerfile: "FROM scratch\n", [deep]: "deep contents" })
-        const first = yield* packContext({ context: root, dockerfile: "Dockerfile" })
-        const second = yield* packContext({ context: root, dockerfile: "Dockerfile" })
+        const root = yield* context({ "src/app.ts": "app", [deep]: "deep contents" })
+        const first = yield* packContext({ context: root })
+        const second = yield* packContext({ context: root })
         const extracted = yield* fs.makeTempDirectoryScoped()
 
         expect(deep.length).toBeGreaterThan(100)

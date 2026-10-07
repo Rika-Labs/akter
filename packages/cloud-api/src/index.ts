@@ -122,7 +122,6 @@ export {
 export {
   BuildLog,
   BuildLogLine,
-  ContextPath,
   CreateDeployment,
   DeploymentAuthor,
   DeploymentDetail,
@@ -136,6 +135,7 @@ export {
   FailBuild,
   RolloutStep,
   RolloutStepName,
+  SOURCE_ENTRY,
   SourceArchive,
   SourceDigest,
 } from "./deployments.ts"
