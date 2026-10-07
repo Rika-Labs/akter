@@ -18,12 +18,12 @@ The plausible wrong implementations these tests must reject are:
 The file is in the Postgres integration project. Existing session, topology, schema, migration and routed-session suites remain evidence for unchanged safeguards and live-topology behavior. Run with `TEST_DATABASE_URL` pointing at a disposable-capable real PostgreSQL server:
 
 ```sh
-~/.capy/work/akter-launch/heavy.sh bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/runtime/database/neki/access.test.ts
+bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/runtime/database/neki/access.test.ts
 ```
 
 ## Preview Neki cell: 2026-10-07
 
-Two disposable customer databases and roles were created through hosted `CustomerCell.provision` on `akter-preview`, using only a preview credential. The customer's catalog checks returned schema USAGE `true`, topology EXECUTE `false`, revision EXECUTE `false`. The initial document call failed `42501`, `permission denied for function get_data_topology`.
+Two disposable customer databases and roles were created through the hosted provisioner on a preview Neki cell, using only a preview credential. The customer's catalog checks returned schema USAGE `true`, topology EXECUTE `false`, revision EXECUTE `false`. The initial document call failed `42501`, `permission denied for function get_data_topology`.
 
 The cell owner and preview admin each attempted schema USAGE and both functions' EXECUTE grants. All failed `42501`, `DDL on schema __neki is not allowed through the router`, naming the target. After a successful `wait_for_ddl(ddl_versions())` barrier, customer topology and revision calls still failed `42501`. There is no successful customer document read and no evidence broader metadata access is tenant-filtered.
 
@@ -31,4 +31,4 @@ The admin document contained authoritative and routing-key-indexed actor-data gr
 
 Both databases and logins were dropped through the provisioner. Fresh `pg_database` and `pg_roles` queries returned no matching objects. Production was untouched. The original hosted failure was confirmed in preview runner logs: `permission denied for function get_data_topology`.
 
-The sanitized execution log was retained as task evidence, not a committed fixture. This probe proves grant refusal and unrouted map selection, not a fixed hosted deployment reaching live. That deployment remains pending the framework change. [ADR 0093](../decisions/0093-neki-routing-topology.md) and [ADR 0094](../decisions/0094-neki-shard-targeted-sessions.md) contain earlier provider-specific routed-statement refusals; they are not a universal routing-mistake detection proof.
+The sanitized execution log was retained privately, not a committed fixture. This probe proves grant refusal and unrouted map selection, not a fixed hosted deployment reaching live. That deployment remains pending the framework change. [ADR 0093](../decisions/0093-neki-routing-topology.md) and [ADR 0094](../decisions/0094-neki-shard-targeted-sessions.md) contain earlier provider-specific routed-statement refusals; they are not a universal routing-mistake detection proof.

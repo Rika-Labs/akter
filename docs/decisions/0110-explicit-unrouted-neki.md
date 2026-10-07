@@ -10,7 +10,7 @@
 
 ## Evidence and problem
 
-ADR 0094 established readable topology for a service role, not an isolated customer login. On 2026-10-07, two disposable customer databases were provisioned through the hosted provisioner on the real `akter-preview` cell. The runtime login had `__neki` schema USAGE but neither topology function's EXECUTE privilege. Both the cell owner and preview admin were refused schema USAGE and EXECUTE grants on `__neki.get_data_topology()` and `__neki.get_data_topology_revision()`: SQLSTATE `42501`, `DDL on schema __neki is not allowed through the router`. A DDL propagation wait changed nothing. Both databases and logins were dropped and their absence checked in the catalogs.
+ADR 0094 established readable topology for a service role, not an isolated customer login. On 2026-10-07, two disposable customer databases were provisioned through the hosted provisioner on a preview Neki cell. The runtime login had `__neki` schema USAGE but neither topology function's EXECUTE privilege. Both the cell owner and preview admin were refused schema USAGE and EXECUTE grants on `__neki.get_data_topology()` and `__neki.get_data_topology_revision()`: SQLSTATE `42501`, `DDL on schema __neki is not allowed through the router`. A DDL propagation wait changed nothing. Both databases and logins were dropped and their absence checked in the catalogs.
 
 The admin's topology was a cluster document containing shard groups, shard UIDs and a `databases` map. It named only `postgres`, not either customer database. Neither customer could read it, so customer-specific filtering and the safety of broader role membership are unknown. We do not grant a broader metadata role as a workaround.
 
