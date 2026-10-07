@@ -45,7 +45,7 @@ export { RunnerAuthority } from "./peering/authority.ts"
 
 export type { IssueOptions } from "./peering/authority.ts"
 
-export { DataDirLocked, DataDirVersion } from "../errors/database.ts"
+export { DataDirLocked, DataDirVersion, NekiTopologyAccessDenied } from "../errors/database.ts"
 
 export type { Options } from "./layer.ts"
 

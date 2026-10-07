@@ -12,6 +12,11 @@ export const NekiTurnSessions = Context.Reference<boolean>("akter/NekiTurnSessio
   defaultValue: () => false,
 })
 
+/** Whether to read routing topology or trust an explicit guarantee that no table is routed. */
+export const NekiRouting = Context.Reference<"live" | "none">("akter/NekiRouting", {
+  defaultValue: () => "live",
+})
+
 /**
  * Session settings a turn connection needs on Neki, in the order they are set.
  * The router reads the transaction mode when `BEGIN` arrives, so both are set

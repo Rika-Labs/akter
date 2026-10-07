@@ -99,4 +99,6 @@ Decisions do not override newer accepted requirements. When a decision is supers
 
 Cloud-only decision records live in the private Akter Cloud repository.
 
+- [ADR 0110: Explicitly unrouted Neki databases](0110-explicit-unrouted-neki.md) (accepted 2026-10-07) adds `neki: { routing: "none" }` for a platform-guaranteed unrouted database, preserves Neki transaction and DDL rules without topology reads, and keeps default topology privilege failures typed and fail-closed.
+
 - [ADR 0098: Akter Cloud lives in a private proprietary repository](0098-proprietary-cloud-repository.md) (accepted 2026-10-06) supersedes ADR 0074 item 1 and ADR 0029's apps licensing clause, separates the hosted implementation into a private proprietary repository and retains the Apache-2.0 framework, public CLI and cloud API contract.

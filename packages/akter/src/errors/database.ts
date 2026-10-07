@@ -1,5 +1,15 @@
 import { Schema } from "effect"
 
+/** The runtime cannot read the Neki topology with its database login. */
+export class NekiTopologyAccessDenied extends Schema.TaggedError<NekiTopologyAccessDenied>()(
+  "NekiTopologyAccessDenied",
+  {},
+) {
+  override get message() {
+    return 'Neki topology access requires USAGE on schema __neki and EXECUTE on __neki.get_data_topology() and __neki.get_data_topology_revision(); use Database.postgres({ neki: { routing: "none" } }) only when the platform guarantees this database routes no table'
+  }
+}
+
 /** Another process, or another open layer in this one, holds the data directory's lock. */
 export class DataDirLocked extends Schema.TaggedError<DataDirLocked>()("DataDirLocked", {
   dataDir: Schema.String,

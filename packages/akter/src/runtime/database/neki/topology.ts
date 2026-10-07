@@ -1,5 +1,7 @@
 import { Data, Effect, Layer, Schema, Semaphore } from "effect"
 import { SqlClient } from "effect/sql"
+import { topologyRead } from "./access.ts"
+import { NekiRouting } from "./session.ts"
 import { BUCKETS } from "../../turn/outbox.ts"
 import {
   Authority,
@@ -240,10 +242,11 @@ const REFRESH_EVERY = "10 seconds"
  */
 export const nekiDirectory = Layer.unwrap(
   Effect.gen(function* () {
+    if ((yield* NekiRouting) === "none") return Layer.empty
     const sql = (yield* Authority) ?? (yield* SqlClient.SqlClient)
     const [found] = yield* sql<{ present: boolean }>`
       SELECT to_regprocedure('__neki.get_data_topology()') IS NOT NULL AS present`.pipe(
-      Effect.orDie,
+      topologyRead,
     )
 
     if (found?.present !== true) return Layer.empty
@@ -252,7 +255,7 @@ export const nekiDirectory = Layer.unwrap(
       ShardDirectory,
       Effect.gen(function* () {
         const read = readMap.pipe(Effect.provideService(SqlClient.SqlClient, sql))
-        let current = yield* read.pipe(Effect.orDie)
+        let current = yield* read.pipe(topologyRead)
         const reading = Semaphore.makeUnsafe(1)
 
         const refresh = reading.withPermit(
@@ -328,6 +331,7 @@ const decodeBindings = Schema.decodeUnknownEffect(Bindings)
  * topology function nor a topology that does not name the database routes anything.
  */
 export const routedTables = Effect.fnUntraced(function* (tables: ReadonlyArray<string>) {
+  if ((yield* NekiRouting) === "none") return []
   const sql = yield* SqlClient.SqlClient
 
   const [available] = yield* sql<{

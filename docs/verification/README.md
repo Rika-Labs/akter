@@ -1,5 +1,7 @@
 # Verification
 
+[Explicit unrouted Neki](neki-unrouted.md) records real PostgreSQL privilege-denial and runtime regressions plus preview-cell grant refusal and untargeted-map evidence. It does not claim hosted live deployment or universal routing-mistake detection.
+
 The cross-database coordination regression suite is `packages/akter/src/runtime/database/coordination.test.ts`, included in the Postgres integration project. It creates two actor-data databases and one shared authority, proves retention/workflow contention and rollback/release, terminates the authority backend to test the local data fence, and exercises Cluster session/table locks, singleton lease reads, fleet lock release, and shard-local capped-job locking. It does not prove Neki advisory routing or multi-shard provider failover; those remain gated by #66 ([ADR 0066](../decisions/0066-authoritative-coordination.md)).
 
 **Responsibility:** index the verification documents and their evidence requirements.  
