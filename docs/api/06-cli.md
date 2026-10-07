@@ -61,6 +61,7 @@ Akter Cloud:
   logout    Sign out of Akter Cloud and delete the stored session
   whoami    Show who the stored Akter Cloud session signs in as
   deploy    Upload the build context, build and roll it out on Akter Cloud, and follow it until it is live
+  env       List, set, unset and import encrypted write-only environment variables
 
 Control plane:
   tenants    Manage the tenant directory
@@ -507,3 +508,14 @@ FLAGS
   --engine choice          The control plane database's engine (default CONTROL_PLANE_DATABASE_ENGINE, then postgres) (choices: postgres, neki)
   --operator string        The subject of the User the directory change's receipt records
 ```
+
+## `akter env`
+
+These commands use the stored Akter Cloud session. All take `--project <id>` (default `AKTER_PROJECT`) and `--env <production|staging|dev>` (default `production`).
+
+- `akter env list` prints each variable's name and UTC update time, with `managed` provenance for platform-provisioned names. Values cannot be read back.
+- `akter env set <name> --file <path>` reads the exact UTF-8 file contents, including a final newline, and writes the value without printing it. Omit `--file` to read piped stdin; interactive terminal input is refused so a secret is never echoed. Input is limited to 65,536 bytes. Use `printf %s "$TOKEN" | akter env set TOKEN` rather than placing the value in arguments or shell history.
+- `akter env unset <name>` removes a customer variable. Repeating the deletion is safe.
+- `akter env import [file]` imports a dotenv file atomically. `-` or no file reads piped stdin; the document is limited to 1 MiB. The result reports created and updated counts, not values.
+
+Changes apply to the next deployment. Platform-managed values, including the managed `DATABASE_URL`, cannot be replaced or deleted through these commands. Rollback restores the original captured environment rather than current settings. Refused writes exit 1; input/configuration errors exit 2.
