@@ -1,6 +1,6 @@
 # ADR 0086: Mutual TLS between runners
 
-**Status:** implementation decision (2026-10-04), for [#541](https://github.com/Rika-Labs/akter/issues/541); amends [ADR 0068](0068-production-multi-runner.md)'s trusted-peer transport and the runner-to-runner clause of [contract 10](../contracts/10-security.md); the hosted provisioning path below is a proposal that [ADR 0075](0075-deployment-and-runner-orchestration.md)'s gate on hosted peering still covers, and [ADR 0090](0090-fly-machines-runner-platform.md) withdraws its AWS Private CA, Secrets Manager and KMS design.
+**Status:** implementation decision (2026-10-04), for [#541](https://github.com/Rika-Labs/akter/issues/541); amends [ADR 0068](0068-production-multi-runner.md)'s trusted-peer transport and the runner-to-runner clause of [contract 10](../contracts/10-security.md); the hosted provisioning path below is a proposal that [ADR 0075](0075-deployment-and-runner-orchestration.md)'s gate on hosted peering still covers, and ADR 0090 (a hosted-platform record, private) withdraws its AWS Private CA, Secrets Manager and KMS design.
 
 **Responsibility:** authenticate and encrypt runner-to-runner traffic, so runners of one deployment accept messages only from each other, on a network other deployments share.
 
@@ -28,7 +28,7 @@ The Effect platform socket layers that `Runner.socket` accepted have no peer aut
 
 ## Hosted provisioning (proposal, not built)
 
-Hosted runners are ECS Fargate tasks on Graviton (ARM64) per [ADR 0065](0065-aws-alchemy-infrastructure.md) and ADR 0075. The proposed path:
+Hosted runners are ECS Fargate tasks on Graviton (ARM64) per ADR 0065 (a hosted-platform record, private) and ADR 0075. The proposed path:
 
 - **Authority: AWS Private CA in short-lived certificate mode**, one CA per release region, a subordinate of an offline organization root. It issues certificates valid for at most seven days for $50 a month per CA plus $0.058 per certificate (AWS list prices, October 2026). Short lifetimes stand in for revocation, so no CRL or OCSP is needed. CloudTrail and the CA's audit report record every issued certificate, and an end-entity template fixes the key usages.
 - **Issuance:** only the control plane may call `acm-pca:IssueCertificate` on that CA. When `DeploymentLifecycle` registers a deployment, and again whenever its certificate passes about half of its lifetime, it generates a P-256 key and requests a certificate whose only subject alternative name is the deployment's identity. The key is never logged or recorded in the deployment's environment snapshot.

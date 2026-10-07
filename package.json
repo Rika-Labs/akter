@@ -5,22 +5,11 @@
     "packages": [
       "apps/*",
       "packages/*",
-      "tooling/*",
-      "infra"
+      "tooling/*"
     ],
     "catalog": {
-      "alchemy": "2.0.0-beta.80",
-      "@alchemy.run/frontend-frameworks": "2.0.0-beta.80",
-      "@distilled.cloud/core": "1.0.0-rc.13",
-      "@distilled.cloud/planetscale": "1.0.0-rc.13",
-      "@distilled.cloud/vercel": "1.0.0-rc.13",
-      "@distilled.cloud/axiom": "1.0.0-rc.13",
-      "@distilled.cloud/stripe": "1.0.0-rc.13",
       "@distilled.cloud/github": "1.0.0-rc.13",
-      "@distilled.cloud/fly-io": "1.0.0-rc.13",
-      "@distilled.cloud/resend": "1.0.0-rc.13",
       "effect": "4.0.0",
-      "@effect/platform-browser": "4.0.0",
       "@effect/platform-bun": "4.0.0",
       "@effect/platform-node-shared": "4.0.0",
       "@effect/platform-node": "4.0.0",
@@ -29,32 +18,23 @@
       "@effect/vitest": "4.0.0",
       "typescript": "7.0.2",
       "vitest": "5.0.1",
-      "foldkit": "0.163.0",
-      "@foldkit/vite-plugin": "0.24.0",
-      "@stylexjs/stylex": "0.19.1",
-      "@stylexjs/unplugin": "0.19.1",
-      "astro": "7.3.5",
       "drizzle-orm": "1.0.0-rc.5-5935859",
       "drizzle-kit": "1.0.0-rc.5-5935859",
       "react": "19.3.0",
       "react-dom": "19.3.0",
       "@types/react": "19.3.0",
-      "@types/react-dom": "19.3.0",
-      "vite": "8.3.0",
-      "unplugin": "2.3.11"
+      "@types/react-dom": "19.3.0"
     }
   },
   "type": "module",
   "scripts": {
     "prepare": "effect-tsgo patch --oxlint",
-    "dev": "docker compose -f infra/local/compose.yaml up --build",
-    "dev:apps": "bun --env-file=.env run turbo run dev",
+    "dev": "bun run --cwd apps/cli src/main.ts dev",
     "build": "turbo run build",
     "typecheck": "bun run typecheck:ci && GOMAXPROCS=1 turbo run typecheck --concurrency=100%",
     "typecheck:ci": "tsc --noEmit -p .github/tsconfig.verify.json",
     "test": "turbo run test --concurrency=100%",
     "test:integration": "turbo run test:integration --concurrency=100%",
-    "test:e2e": "turbo run test:e2e --filter=@akter/e2e",
     "lint:directives": "bun tooling/oxlint/src/directives.ts",
     "lint": "bun run lint:directives && bun run lint:structure && GOMAXPROCS=1 turbo run lint lint:root --concurrency=100%",
     "lint:structure": "bun tooling/structure/src/index.ts",
@@ -65,12 +45,12 @@
     "test:node:core": "bun run test:node:conformance && bun run test:node:units",
     "test:node": "bun run test:node:core && SMOKE_RUNTIME=node bun run pack:smoke",
     "lint:root": "oxlint --type-aware --deny-warnings --threads 1 *.ts .github/src/verify.ts .github/src/evidence-gate.ts .github/src/github.ts .github/src/policy.ts .github/src/verify.test.ts .github/src/replica.ts .github/src/node-postgres.ts .github/src/release/smoke.ts",
-    "format": "oxfmt . '!research/**'",
-    "format:check": "oxfmt --check . '!research/**'",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
     "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100% && bun run pack:check",
     "check:static": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run typecheck:ci && bun --bun node_modules/vitest/vitest.mjs run .github/src/verify.test.ts",
     "check:pack": "bun run pack:check && SMOKE_RUNTIME=node bun run pack:smoke && bun run pack:smoke",
-    "check:ci": "bun run check:static && bun run check:pack && bun run --cwd apps/e2e playwright install --with-deps chromium --only-shell && REPLICA=$(bun .github/src/replica.ts) && NODE_DATABASE=$(bun .github/src/node-postgres.ts) && NODE_REPLICA=$(TEST_DATABASE_URL=$NODE_DATABASE TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434 bun .github/src/replica.ts) && TEST_REPLICA_DATABASE_URL=$REPLICA TEST_NODE_REPLICA_DATABASE_URL=$NODE_REPLICA TEST_NODE_DATABASE_URL=$NODE_DATABASE GOMAXPROCS=1 bun .github/src/verify.ts"
+    "check:ci": "bun run check:static && bun run check:pack && REPLICA=$(bun .github/src/replica.ts) && NODE_DATABASE=$(bun .github/src/node-postgres.ts) && NODE_REPLICA=$(TEST_DATABASE_URL=$NODE_DATABASE TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434 bun .github/src/replica.ts) && TEST_REPLICA_DATABASE_URL=$REPLICA TEST_NODE_REPLICA_DATABASE_URL=$NODE_REPLICA TEST_NODE_DATABASE_URL=$NODE_DATABASE GOMAXPROCS=1 bun .github/src/verify.ts"
   },
   "devDependencies": {
     "@distilled.cloud/github": "catalog:",
@@ -86,8 +66,5 @@
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
-  "packageManager": "bun@1.4.2",
-  "patchedDependencies": {
-    "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch"
-  }
+  "packageManager": "bun@1.4.2"
 }

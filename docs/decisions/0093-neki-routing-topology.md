@@ -8,7 +8,7 @@
 
 **Responsibility:** decide which shard group each table of a Neki database belongs to, what a router must accept before a table is routed by `routing_key`, and how the database later moves to routed actor data.
 
-**Authority:** implementation decision record. It amends [ADR 0089](0089-fly-infrastructure-and-environments.md)'s database item (the list of unsharded tables in `infra/src/placement.ts` is gone) and the "sharded topologies" limit of [ADR 0092](0092-neki-runtime-sql.md), and it adds a Neki rule to [contract 06](../contracts/06-storage-ownership.md).
+**Authority:** implementation decision record. It amends ADR 0089 (a hosted-platform record, private)'s database item (the list of unsharded tables in `infra/src/placement.ts` is gone) and the "sharded topologies" limit of [ADR 0092](0092-neki-runtime-sql.md), and it adds a Neki rule to [contract 06](../contracts/06-storage-ownership.md).
 
 **Owner role:** runtime, control plane and infrastructure.
 

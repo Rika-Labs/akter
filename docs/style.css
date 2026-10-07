@@ -17,7 +17,7 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
  */
 @font-face {
   font-family: "Akter Sans";
-  src: url("/fonts/PolySans-variable.woff2") format("woff2");
+  src: url("https://akter.dev/fonts/PolySans-variable.woff2") format("woff2");
   font-weight: 300 800;
   font-display: swap;
 }

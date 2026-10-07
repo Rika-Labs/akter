@@ -25,13 +25,13 @@
     "heading": {
       "family": "PolySans",
       "weight": 450,
-      "source": "/fonts/PolySans-variable.woff2",
+      "source": "https://akter.dev/fonts/PolySans-variable.woff2",
       "format": "woff2"
     },
     "body": {
       "family": "PolySans",
       "weight": 400,
-      "source": "/fonts/PolySans-variable.woff2",
+      "source": "https://akter.dev/fonts/PolySans-variable.woff2",
       "format": "woff2"
     }
   },

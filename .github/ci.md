@@ -6,7 +6,7 @@ Merge target is main. Human branches use `feat|fix|chore|docs|refactor|test|ci/<
 
 ## Deploy
 
-`Deploy` runs Alchemy against Fly.io from `infra/`. A first job, on an Arm runner, decides which stages to touch from the event and a second applies them, one matrix entry per stage, each with the secrets of one GitHub environment; [ADR 0089](../docs/decisions/0089-fly-infrastructure-and-environments.md) describes the stages and environments and `infra/README.md` the bootstrap.
+`Deploy` runs Alchemy against Fly.io from `infra/`. A first job, on an Arm runner, decides which stages to touch from the event and a second applies them, one matrix entry per stage, each with the secrets of one GitHub environment; ADR 0089 (a hosted-platform record, private) describes the stages and environments and `infra/README.md` the bootstrap.
 
 | Event                                                           | Stage      | Environment  | Operation                                               |
 | --------------------------------------------------------------- | ---------- | ------------ | ------------------------------------------------------- |

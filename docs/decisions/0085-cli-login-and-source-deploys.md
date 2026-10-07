@@ -46,8 +46,8 @@ The deployment is labeled with `--commit`, otherwise the context's git `HEAD`. W
 
 ## Alternatives
 
-- **A locally built image recorded with `RecordBuild`.** The CLI would run `docker build` and send the image id. A local `sha256:` id only means something to a runner provider that shares the CLI's Docker daemon. Anything else would need the CLI to push to a registry with credentials it doesn't have. On a control plane that builds, it would also race the build job that every create starts. The CI path ([deploy pipeline](../api/08-deploy-pipeline.md)) stays the way to deploy a prebuilt image.
-- **API keys for the CLI.** They are organization-owned and represent the organization, not a person. Commands sent with one would be attributed to `api-key:<id>` instead of the user ([ADR 0082](0082-attributed-console-commands.md)).
+- **A locally built image recorded with `RecordBuild`.** The CLI would run `docker build` and send the image id. A local `sha256:` id only means something to a runner provider that shares the CLI's Docker daemon. Anything else would need the CLI to push to a registry with credentials it doesn't have. On a control plane that builds, it would also race the build job that every create starts. The CI path (deploy pipeline (a hosted-platform record, private)) stays the way to deploy a prebuilt image.
+- **API keys for the CLI.** They are organization-owned and represent the organization, not a person. Commands sent with one would be attributed to `api-key:<id>` instead of the user (ADR 0082 (a hosted-platform record, private)).
 - **Tokens scoped to one organization.** This would need a grant extension and an organization picker at approval. Per-request membership checks already bound what a token can reach, and that matches the tools developers already use.
 - **The operating system keychain.** It would need a native integration on each platform. A file the user alone can read is what `gh`, `gcloud` and `aws` use by default.
 - **Following symbolic links, as the first version did.** That uploaded whatever a link pointed at, including files outside the context, and recursed on loops. Docker itself sends links as links.

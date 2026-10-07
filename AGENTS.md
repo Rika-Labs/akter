@@ -9,7 +9,7 @@ Read this file before changing code or documentation.
 - `docs/architecture/` defines internal design.
 - `docs/api/` defines public developer interfaces.
 - `docs/verification/` defines evidence required before claiming support.
-- `research/` is supporting research, not an implementation override.
+- Hosted-platform code, research and deployment infrastructure live in the private Akter Cloud repository; they do not define the framework contract.
 
 If these conflict, stop and record an ADR. Do not silently choose the easiest interpretation.
 
@@ -19,9 +19,10 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 
 - The framework is `packages/akter`, published as `@rikalabs/akter`; it imports no other workspace package.
 - Other reusable code belongs in `packages/*` as `@akter/<directory>`.
-- Deployable processes and the CLI belong in `apps/*`.
+- This public repository contains the framework, derived React and Python clients, the CLI, the public cloud API contract, tooling and framework documentation.
+- The CLI belongs in `apps/cli`; cloud client commands (`login`, `logout`, `whoami`, `deploy`) remain public. Cloud operator commands and integration tests live with the private platform.
 - The CLI (`apps/cli`) is built with Effect's `effect/cli` module. Every command, including hosted ones such as `login` and `deploy`, uses it; do not add another argument parser or CLI framework.
-- Infrastructure belongs in `infra/`.
+- Hosted infrastructure, the API, edge, console, marketing site and cloud-only packages belong in the private Akter Cloud repository, which consumes this repository through an `akter/` submodule.
 - Tooling belongs in `tooling/*`.
 - Effect is the runtime foundation; do not create a separate Effect package.
 - The ordinary TypeScript SDK is `@rikalabs/akter/client`, a derived surface, not a second runtime.

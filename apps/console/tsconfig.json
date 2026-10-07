@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "noUncheckedIndexedAccess": true,
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": ["bun", "vite/client"]
-  },
-  "include": ["src/**/*.ts", "vite.config.ts", "vitest.config.ts"]
-}
