@@ -30,15 +30,7 @@ import { DeliveryFailed, Executed, Outcome, Request } from "../request.ts"
 import { type RegisteredCommand, type Registration } from "../members.ts"
 import { ActorRef, callerKey } from "../../identity/caller.ts"
 import { bootstrapTicks } from "../cron/schedule.ts"
-import { parentPlacement, rootPlacement, routingKey } from "../storage/codec.ts"
-import {
-  onShard,
-  requireAuthoritative,
-  ShardDirectory,
-  ShardTarget,
-  targetShard,
-} from "../database/shards.ts"
-import { ownership } from "../../tables/owned.ts"
+import { parentPlacement, routingKey } from "../storage/codec.ts"
 import { ShardLease } from "../topology/locks.ts"
 import { activationMailbox } from "./mailbox.ts"
 import { overloaded } from "../admission.ts"
@@ -278,7 +270,6 @@ const keepSingletonAwake = Effect.fnUntraced(function* (
 
   yield* bootstrapTicks(key, ref, registration.cron).pipe(
     Effect.provideContext(services),
-    onShard(key),
     Effect.orDie,
   )
   const address = yield* encodeEntityId([registration.tenant, "singleton"]).pipe(Effect.orDie)
@@ -369,7 +360,7 @@ export const registerActor = Effect.fnUntraced(function* (
       const ref = { actor: registration.name, tenant, id }
       const key = routingKey({ ref, placement: registration.placement })
 
-      return owner.enter(entityId, ref, key).pipe(onShard(key))
+      return owner.enter(entityId, ref, key)
     })
 
   const services = yield* Effect.context<
@@ -379,48 +370,6 @@ export const registerActor = Effect.fnUntraced(function* (
   const accounting = accountsUsage(usage) ? usage : undefined
 
   const entity = commandEntity(registration.name)
-
-  const ownedTables = registration.tables.flatMap((table) => {
-    const info = ownership(table)
-
-    return info === undefined ? [] : [info]
-  })
-
-  /**
-   * Refuses a turn that would write a table outside the routed group from a
-   * data shard other than the authoritative one: owned tables the topology
-   * does not route, or the host's usage accounting rows. Such a session sees
-   * only that shard's empty copy of the table, so the write would commit
-   * where nothing reads it. On one shard the copy is the table itself. An
-   * authority-placed actor declares that its turns read and write such
-   * tables, its own SQL included, so its turn runs only on the authoritative
-   * shard, wherever the topology puts its bucket.
-   */
-  const writesHere = Effect.gen(function* () {
-    if (rootPlacement(registration.placement) === "authority")
-      return yield* requireAuthoritative(registration.name)
-
-    const directory = yield* Effect.serviceOption(ShardDirectory)
-    const target = yield* targetShard
-
-    if (Option.isNone(directory) || target === undefined) return
-
-    const placement = yield* directory.value.placement
-
-    if (placement.authoritative === target) return
-
-    const local = ownedTables
-      .filter((info) => info.schema !== undefined || !placement.routes(info.table))
-      .map((info) => info.name)
-
-    if (local.length === 0 && accounting === undefined) return
-
-    return yield* Effect.die(
-      new Error(
-        `${registration.name} writes ${[...local, ...(accounting === undefined ? [] : ["usage accounting rows"])].join(", ")} in its turns, which stay on the authoritative shard, but its data is on shard ${target}`,
-      ),
-    )
-  })
 
   const routingKeyOf = (ref: Request["ref"]) =>
     routingKey({ ref, placement: registration.placement })
@@ -936,37 +885,27 @@ export const registerActor = Effect.fnUntraced(function* (
       const run = (batch: ReadonlyArray<Waiting>, pipelining: boolean) => {
         const { owned } = current
 
-        return Effect.matchCauseEffect(writesHere, {
-          onFailure: (cause) =>
-            Effect.succeed<Stopped<Waiting>>({
-              batch,
-              orphan: undefined,
-              cause,
-              committed: false,
-            }),
-          onSuccess: () =>
-            executeBatches(
-              {
-                first: batch,
-                next: pipelining ? following : Effect.undefined,
-                prepare: owner.prepare(owned),
-                committed: publish,
-                publishesUnderLock: (batch) =>
-                  batch.some(({ request }) => workflowRoutes.has(request.command)),
-                observe,
-              },
-              owned.cache,
-              owned.key,
-              policy,
-              registration.mintable,
-              parentPlacement(registration.placement)?.parent,
-              statements,
-              waited,
-              owner.hasConnections ? owner.list(owned) : undefined,
-              registration.cron,
-              accounting,
-            ),
-        }).pipe(onShard(owned.key))
+        return executeBatches(
+          {
+            first: batch,
+            next: pipelining ? following : Effect.undefined,
+            prepare: owner.prepare(owned),
+            committed: publish,
+            publishesUnderLock: (batch) =>
+              batch.some(({ request }) => workflowRoutes.has(request.command)),
+            observe,
+          },
+          owned.cache,
+          owned.key,
+          policy,
+          registration.mintable,
+          parentPlacement(registration.placement)?.parent,
+          statements,
+          waited,
+          owner.hasConnections ? owner.list(owned) : undefined,
+          registration.cron,
+          accounting,
+        )
       }
 
       const recover: (
@@ -1148,30 +1087,21 @@ export const registerActor = Effect.fnUntraced(function* (
 
         yield* Effect.addFinalizer(() => owner.endStreams(owned))
 
-        const onOwned = onShard(owned.key)
-
         return connections.of({
           Progress: ({ payload }) =>
-            owner.progress(owned, payload).pipe(Effect.provideContext(connectionServices), onOwned),
+            owner.progress(owned, payload).pipe(Effect.provideContext(connectionServices)),
           ProgressClosed: ({ payload }) =>
-            owner
-              .progressClosed(owned, payload)
-              .pipe(Effect.provideContext(connectionServices), onOwned),
+            owner.progressClosed(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Subscribe: ({ payload }) =>
-            owner
-              .subscribe(owned, payload)
-              .pipe(
-                Stream.provideContext(connectionServices),
-                Stream.provideService(ShardTarget, { routingKey: owned.key }),
-              ),
+            owner.subscribe(owned, payload).pipe(Stream.provideContext(connectionServices)),
           Open: ({ payload }) =>
-            owner.open(owned, payload).pipe(Effect.provideContext(connectionServices), onOwned),
+            owner.open(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Frame: ({ payload }) =>
-            owner.frame(owned, payload).pipe(Effect.provideContext(connectionServices), onOwned),
+            owner.frame(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Close: ({ payload }) =>
-            owner.close(owned, payload).pipe(Effect.provideContext(connectionServices), onOwned),
+            owner.close(owned, payload).pipe(Effect.provideContext(connectionServices)),
           Resync: ({ payload }) =>
-            owner.resync(owned, payload).pipe(Effect.provideContext(connectionServices), onOwned),
+            owner.resync(owned, payload).pipe(Effect.provideContext(connectionServices)),
         })
       }),
       { concurrency: "unbounded", maxIdleTime: registration.policy.idleMs },

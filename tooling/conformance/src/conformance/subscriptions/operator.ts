@@ -63,7 +63,7 @@ export const subscriptionOperatorConformance: ReadonlyArray<ConformanceCase<Subs
 
             const audit = yield* query(
               (sql) => sql<{ action: string; reason: string | null; outcome: string }>`
-              SELECT action, reason, outcome FROM durable.operator_audit_v2
+              SELECT action, reason, outcome FROM durable.operator_audit
               WHERE tenant_id = ${test.tenant} AND actor_id = 'skip-a'`,
             )
 

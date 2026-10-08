@@ -29,17 +29,8 @@ import type { TurnPolicy } from "../../policies/command.ts"
 import { type CronEntry, writeTicks } from "../cron/schedule.ts"
 import type { WriteSet } from "../connections/protocol.ts"
 import { eventsStatement, notifyEvents } from "../events/append.ts"
-import { COMMIT_VERSION, NEKI_COMMIT_VERSION } from "../database/replica.ts"
+import { COMMIT_VERSION } from "../database/replica.ts"
 import { isPoolRefusal } from "../database/bounded.ts"
-import { NekiTurnSessions } from "../database/neki/session.ts"
-import {
-  currentRanges,
-  rangeOf,
-  ShardDirectory,
-  ShardTarget,
-  targetShard,
-  untargeted,
-} from "../database/shards.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -49,7 +40,6 @@ import { hashedPayload } from "../subscriptions/identity.ts"
 import { tenantSettings, TenantScope } from "../database/tenancy.ts"
 import { type ActivationCache, actorRow as rowOf, forget } from "../storage/generation.ts"
 import { checkIdentity, databaseTime, FrameworkClock } from "./admission.ts"
-import { bucketOf } from "./outbox.ts"
 import { abortedBefore, errorOf, type Member, Shared, TurnGroups, Unseated } from "./group.ts"
 import { RetryTurn, TurnHooks } from "./hooks.ts"
 import { OutboxRuntime, type OutboxReplies, outboxStatements } from "./outbox.ts"
@@ -498,10 +488,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   accounting?: UsageAccountingService,
 ) {
   const sql = yield* SqlClient.SqlClient
-  const commitVersion = (yield* NekiTurnSessions) ? NEKI_COMMIT_VERSION : COMMIT_VERSION
-  const target = yield* targetShard
-  const directory = Option.getOrUndefined(yield* Effect.serviceOption(ShardDirectory))
-  const revision = target === undefined ? undefined : directory
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
   const scope = yield* TenantScope
@@ -587,38 +573,18 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           AND s.source_id = c.source_id`
       : sql.literal("")
 
-    let observedRevision: string | undefined
-
     const group: ReadonlyArray<Statement> = [
       ...begin,
-      ...(revision === undefined
-        ? []
-        : [
-            Effect.map(sql.unsafe<{ revision: string }>(revision.revisionStatement), (rows) => {
-              observedRevision = rows[0]?.revision
-            }),
-          ]),
       ...(grouped
         ? []
-        : target !== undefined
-          ? [
-              Effect.asVoid(sql`SELECT ${timeouts}`),
-              ...(cold
-                ? [
-                    Effect.asVoid(sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-                      VALUES (${routingKey}, ${tenant}, ${actor}, ${id})
-                      ON CONFLICT DO NOTHING`),
-                  ]
-                : []),
-            ]
-          : [
-              cold
-                ? Effect.asVoid(sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+        : [
+            cold
+              ? Effect.asVoid(sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
                   SELECT ${routingKey}, ${tenant}, ${actor}, ${id}
                   FROM (SELECT ${timeouts}) AS timeouts
                   ON CONFLICT DO NOTHING`)
-                : Effect.asVoid(sql`SELECT ${timeouts}`),
-            ]),
+              : Effect.asVoid(sql`SELECT ${timeouts}`),
+          ]),
       Effect.map(
         sql<Admission>`
           WITH locked AS MATERIALIZED (
@@ -669,34 +635,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       ...(statements ? [session.control(`SAVEPOINT ${HANDLER_SAVEPOINT}`)] : []),
     ]
 
-    /**
-     * Whether the router is at a newer topology than the map this turn's
-     * session was leased from, and the actor's bucket is no longer on that
-     * session's shard once the map is reread. It also runs when the admission
-     * flight failed, since a stale shard may refuse a write before the
-     * revision is compared, and the next attempt must lease from the new map.
-     */
-    const moved = Effect.gen(function* () {
-      if (revision === undefined || observedRevision === (yield* revision.revision)) return false
-
-      yield* revision.refresh
-
-      return (
-        observedRevision === undefined ||
-        BigInt(yield* revision.revision) < BigInt(observedRevision) ||
-        (yield* rangeOf(bucketOf(routingKey)))?.shard !== target
-      )
-    })
-
     const resume = Effect.fnUntraced(function* () {
-      if (yield* moved) {
-        forget(cache)
-
-        return yield* Effect.die(
-          RetryTurn.make({ message: "The actor's data shard moved since its session was leased" }),
-        )
-      }
-
       const first = admissions[0]
 
       if (first === undefined && grouped) return yield* Effect.die(new Unseated())
@@ -1141,7 +1080,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       } satisfies Plan
     })
 
-    return { group, resume, moved }
+    return { group, resume }
   }
 
   const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -1279,10 +1218,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             const held = yield* Scope.fork(scope)
             const leasing = yield* Clock.currentTimeMillis
             const connection = yield* Scope.provide(turns.lease, held).pipe(
-              Effect.provideService(
-                ShardTarget,
-                target === undefined ? undefined : { shard: target },
-              ),
               Effect.tapError((error) =>
                 Effect.sync(() => {
                   poolRefused = isPoolRefusal(error)
@@ -1396,7 +1331,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
               if (!chained) open = false
             }),
-            Effect.map(session().query(commitVersion, [], true), (result) => {
+            Effect.map(session().query(COMMIT_VERSION, [], true), (result) => {
               const ended = result.rows[0] as { version: string; now: string }
               version = ended.version
               endedAtMs = Number(ended.now)
@@ -1442,7 +1377,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           taken?: ReadonlyArray<W>,
         ) =>
           awaitReplies(admitted).pipe(
-            Effect.tapError(() => Effect.ignore(admission.moved)),
             Effect.andThen(() => admission.resume()),
             Effect.flatMap((plan) =>
               Effect.flatMap(taken === undefined ? run.next : Effect.succeed(taken), (following) =>
@@ -1492,9 +1426,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     [asSqlConnection({ connection, send: (statement) => statement }), 0],
                   ),
                 cancel: (connection) =>
-                  Effect.ignore(sql`SELECT pg_cancel_backend(${connection.processId})`).pipe(
-                    untargeted,
-                  ),
+                  Effect.ignore(sql`SELECT pg_cancel_backend(${connection.processId})`),
                 admission: (member) => admission.group.map(onMember(member)),
               })
               .pipe(
@@ -1648,7 +1580,6 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
             if (Cause.hasInterrupts(exit.cause))
               return sql`SELECT pg_cancel_backend(${connection.processId})`.pipe(
-                untargeted,
                 Effect.ignore,
                 Effect.andThen(turns.invalidate(connection)),
               )
@@ -1701,7 +1632,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             ),
         )
 
-        const [ended] = yield* sql.unsafe<{ version: string; now: string }>(commitVersion)
+        const [ended] = yield* sql.unsafe<{ version: string; now: string }>(COMMIT_VERSION)
 
         return {
           plan,
@@ -1714,10 +1645,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const turns = yield* Effect.serviceOption(TurnConnections)
 
   const groups =
-    statements ||
-    waited.size > 0 ||
-    (yield* NekiTurnSessions) ||
-    (yield* currentRanges).some((range) => range.shard !== undefined)
+    statements || waited.size > 0
       ? undefined
       : Option.getOrUndefined(yield* Effect.serviceOption(TurnGroups))
 

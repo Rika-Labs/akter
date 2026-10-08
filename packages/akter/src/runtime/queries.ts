@@ -10,10 +10,9 @@ import type { Holder } from "./connections/holder.ts"
 import type { ReadSet } from "./connections/reads.ts"
 import { watchStream } from "./connections/watch.ts"
 import { caughtUp, QueryPool } from "./database/replica.ts"
-import { onShard, requireAuthoritative } from "./database/shards.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
-import { decompress, rootPlacement, routingKey } from "./storage/codec.ts"
+import { decompress, routingKey } from "./storage/codec.ts"
 import { accountsUsage, UsageAccounting } from "./telemetry/usage.ts"
 import { decodeResult } from "./workflows/engine.ts"
 
@@ -71,7 +70,6 @@ export const committedReads = ({
           WHERE routing_key = ${key}
             AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}`.pipe(
         withTenant(ref.tenant),
-        onShard(key),
       )
 
       return rows.length > 0
@@ -102,9 +100,6 @@ export const committedReads = ({
 
       const read = (client: SqlClient.SqlClient) =>
         Effect.gen(function* () {
-          if (rootPlacement(registration.placement) === "authority")
-            yield* requireAuthoritative(registration.name)
-
           const rows = yield* client<{
             head: string | null
             key: string | null
@@ -148,11 +143,7 @@ export const committedReads = ({
             return yield* outcome.cause
 
           return outcome
-        }).pipe(
-          withTenant(request.ref.tenant),
-          Effect.provideService(SqlClient.SqlClient, client),
-          onShard(key),
-        )
+        }).pipe(withTenant(request.ref.tenant), Effect.provideService(SqlClient.SqlClient, client))
 
       const owned = registration.tables.length > 0 || registration.blobs.length > 0
       const local = owned ? primary : (queryPool ?? primary)
@@ -279,7 +270,7 @@ export const committedReads = ({
           WHERE routing_key = ${key}
             AND execution_id = ${request.payload} AND tenant_id = ${request.ref.tenant}
             AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-            AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant), onShard(key))
+            AND workflow = ${request.command}`.pipe(withTenant(request.ref.tenant))
 
         yield* allow(request)
 

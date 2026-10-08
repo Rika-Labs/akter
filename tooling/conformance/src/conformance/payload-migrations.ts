@@ -501,6 +501,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               [30, "receipt_timing"],
               [31, "routable_views"],
               [32, "authority_placement"],
+              [33, "joined_inspection"],
             ])
           }).pipe(Effect.provideContext(client))
         }),
@@ -525,9 +526,9 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
             const views = yield* query(
               (sql) => sql<{
                 version: number
-              }>`SELECT payload_version AS version FROM durable.events_v2
+              }>`SELECT payload_version AS version FROM durable.events
                 WHERE actor_type = 'Ledger' UNION ALL
-                SELECT payload_version FROM durable.jobs_v2 WHERE actor_type = 'Ledger'`,
+                SELECT payload_version FROM durable.jobs WHERE actor_type = 'Ledger'`,
             )
 
             expect(views).toEqual([{ version: 1 }, { version: 1 }])

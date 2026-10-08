@@ -48,7 +48,7 @@ export const Environment = Schema.Struct({
   database: Schema.optionalKey(
     Schema.Struct({
       configured: Schema.Boolean,
-      engine: Schema.Literals(["postgres", "neki"]),
+      engine: Schema.Literal("postgres"),
     }),
   ),
 })

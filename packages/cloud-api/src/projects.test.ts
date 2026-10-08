@@ -29,8 +29,8 @@ describe("project models", () => {
   it("exposes only database presence and engine, rejecting URL-derived metadata", () => {
     const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
     expect(decode(Environment, environment).database).toBeUndefined()
-    for (const engine of ["postgres", "neki"]) {
-      const database = { configured: engine === "neki", engine }
+    for (const configured of [false, true]) {
+      const database = { configured, engine: "postgres" }
       expect(decode(Environment, { ...environment, database }).database).toEqual(database)
       for (const field of ["url", "host", "user", "password", "databaseName"]) {
         const input = { ...environment, database: { ...database, [field]: "private" } }
@@ -46,6 +46,9 @@ describe("project models", () => {
     }
     expect(
       rejects(Environment, { ...environment, database: { configured: true, engine: "mysql" } }),
+    ).toBe(true)
+    expect(
+      rejects(Environment, { ...environment, database: { configured: true, engine: "neki" } }),
     ).toBe(true)
   })
 

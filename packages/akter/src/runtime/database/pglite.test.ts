@@ -6,8 +6,7 @@ import { pgTable, text } from "drizzle-orm/pg-core"
 import { Migrator, SqlClient } from "effect/sql"
 import { describe, expect, it } from "vitest"
 import { Actor, NotCreated } from "../../index.ts"
-import { migrate, migrations, migrator, ROUTABLE_VIEWS } from "./migrations.ts"
-import { routedTables } from "./neki/topology.ts"
+import { migrate, migrations, migrator } from "./migrations.ts"
 import { Database } from "../index.ts"
 import { orderCapped } from "../turn/outbox.ts"
 import { ActorRef } from "../../identity/caller.ts"
@@ -108,155 +107,6 @@ describe("PGlite migrations", () => {
       .finally(() => runtime.dispose())
   })
 
-  describe("on a Neki topology", () => {
-    const ROUTED = [
-      "actor_blobs",
-      "actor_connections",
-      "actor_content_refs",
-      "actor_dead_letters",
-      "actor_events",
-      "actor_generations",
-      "actor_operator_audit",
-      "actor_outbox",
-      "actor_receipts",
-      "actor_state",
-      "actor_subscription_cursors",
-      "actor_subscription_tags",
-      "actor_subscriptions",
-      "actor_workflow_executions",
-      "actor_workflow_step",
-      "tenant_content_chunks",
-      "tenant_content_sweeps",
-      "tenant_contents",
-    ]
-
-    const topology = (input: {
-      readonly database?: string
-      readonly tables: ReadonlyArray<string>
-      readonly schemaDefault?: string
-      readonly clusterDefault?: string
-    }) =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        yield* sql`CREATE SCHEMA IF NOT EXISTS __neki`
-        yield* sql`DROP FUNCTION IF EXISTS __neki.get_data_topology()`
-
-        const tables = Object.fromEntries(
-          input.tables.map((table) => [table, { shard_group: "actor_data" }]),
-        )
-
-        const schema =
-          input.schemaDefault === undefined
-            ? { tables }
-            : { default_shard_group: input.schemaDefault, tables }
-
-        const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
-          default_shard_group: input.clusterDefault ?? "authoritative",
-          shard_groups: [
-            { uid: "authoritative" },
-            { uid: "actor_data", default_shard_index: "routing_key_range" },
-          ],
-          databases: { [input.database ?? "template1"]: { schemas: { public: schema } } },
-        })
-
-        const body = encoded.replaceAll("'", "''")
-
-        yield* sql.unsafe(
-          `CREATE FUNCTION __neki.get_data_topology(OUT data_topology_json text)
-            LANGUAGE sql AS $fn$ SELECT '${body}'::text $fn$`,
-        )
-      })
-
-    const views = Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-
-      const rows = yield* sql<{
-        readonly view: string
-      }>`SELECT viewname AS view FROM pg_views WHERE schemaname = 'durable' ORDER BY viewname`
-
-      return rows.map(({ view }) => view)
-    })
-
-    const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) => {
-      const runtime = ManagedRuntime.make(Database.pglite())
-      return runtime.runPromise(effect).finally(() => runtime.dispose())
-    }
-
-    it("creates no joined view where the actor tables are routed, and every single-table view", () =>
-      run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          const [database] = yield* sql<{
-            readonly name: string
-          }>`SELECT current_database() AS name`
-          yield* topology({ database: database!.name, tables: ROUTED })
-          yield* migrate
-
-          expect(yield* views).toEqual(
-            [...ROUTABLE_VIEWS, "views"].sort((left, right) => (left < right ? -1 : 1)),
-          )
-
-          expect(yield* sql`SELECT view_name FROM durable.views ORDER BY view_name`).toEqual(
-            [...ROUTABLE_VIEWS, "views"]
-              .sort((left, right) => (left < right ? -1 : 1))
-              .map((view_name) => ({ view_name })),
-          )
-
-          for (const view of ROUTABLE_VIEWS) yield* sql.unsafe(`SELECT * FROM durable.${view}`)
-        }),
-      ))
-
-    it.each([
-      ["a topology that routes none of the tables", { tables: [] }],
-      ["a topology that routes another database", { database: "elsewhere", tables: ROUTED }],
-    ])("creates both sets of views under %s", (_, input) =>
-      run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          const [database] = yield* sql<{
-            readonly name: string
-          }>`SELECT current_database() AS name`
-          yield* topology({ database: database!.name, ...input })
-          yield* migrate
-
-          const present = yield* views
-
-          for (const view of ROUTABLE_VIEWS) expect(present).toContain(view)
-          for (const view of ["actors", "receipts", "jobs", "contents", "content_refs"])
-            expect(present).toContain(view)
-        }),
-      ),
-    )
-
-    it("routes through the schema's default group and the cluster's", () =>
-      run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          const [database] = yield* sql<{
-            readonly name: string
-          }>`SELECT current_database() AS name`
-          const probe = (tables: ReadonlyArray<string>) => routedTables(tables)
-
-          yield* topology({ database: database!.name, tables: [], schemaDefault: "actor_data" })
-          expect(yield* probe(["actor_generations", "actor_placements"])).toEqual([
-            "actor_generations",
-            "actor_placements",
-          ])
-
-          yield* topology({
-            database: "elsewhere",
-            tables: [],
-            clusterDefault: "actor_data",
-          })
-          expect(yield* probe(["actor_generations"])).toEqual(["actor_generations"])
-
-          yield* topology({ database: database!.name, tables: ["actor_state"] })
-          expect(yield* probe(["actor_generations", "actor_state"])).toEqual(["actor_state"])
-          expect(yield* sql`SELECT 1 AS one`).toEqual([{ one: 1 }])
-        }),
-      ))
-  })
-
   it("rolls back partial foundation DDL and safely reruns the migration", () => {
     const runtime = ManagedRuntime.make(Database.pglite())
 
@@ -303,6 +153,13 @@ describe("PGlite migrations", () => {
             { migration_id: 30 },
             { migration_id: 31 },
             { migration_id: 32 },
+            { migration_id: 33 },
+          ])
+          expect(
+            yield* sql`SELECT count(*)::int AS views FROM pg_views WHERE schemaname = 'durable' AND viewname LIKE '%\_v2' ESCAPE '\'`,
+          ).toEqual([{ views: 0 }])
+          expect(yield* sql`SELECT count(*)::int AS views FROM durable.views`).toEqual([
+            { views: 14 },
           ])
           expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
             { receipts: 0 },

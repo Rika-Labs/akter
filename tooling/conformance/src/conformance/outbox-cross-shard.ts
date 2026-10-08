@@ -68,10 +68,8 @@ export const crossShardLayer = Layer.mergeAll(
 
 /**
  * A sender and a receiver whose routing keys sit in opposite halves of the
- * 64-bit range: with two or more shards splitting that range, they are on
- * different ones. The Neki run's topology has to split it; the pair only
- * guarantees they are far apart. Ids carry the scenario, so cases sharing a
- * tenant never share an actor.
+ * 64-bit range, so the cases exercise distinct scheduling buckets. Ids carry
+ * the scenario, so cases sharing a tenant never share an actor.
  */
 const across = Effect.fnUntraced(function* (scenario: string) {
   const test = yield* ActorTest
@@ -111,12 +109,10 @@ const keysOf = Effect.fnUntraced(function* (table: string, ref: ActorRef) {
 })
 
 /**
- * The cross-shard cases of the Outbox delivery gate. The sender's outbox row
+ * The cross-key cases of the Outbox delivery gate. The sender's outbox row
  * lives under the sender's routing key and the receiver's receipt under the
- * receiver's, so each delivery is a write on one shard followed by a write on
- * another, with the row deleted only after the second commits. On Postgres
- * and PGlite these prove the protocol holds across routing keys; whether the
- * keys are on different Neki shards is the topology of the run in #66.
+ * receiver's, with the row deleted only after the receiver commits. These
+ * cases prove the protocol holds across routing keys on one database.
  */
 export const crossShardOutboxConformance: ReadonlyArray<ConformanceCase> = [
   {

@@ -1,12 +1,10 @@
 import { Deferred, Effect, Exit } from "effect"
-import { SqlClient } from "effect/sql"
 import { ActorTest } from "../../../../packages/akter/src/testing/actor-test.ts"
 import type {
   ConformanceCase,
   ConformanceEnvironment,
   ConformanceServices,
 } from "../conformance.ts"
-import { touchesOneShard } from "./neki/plan.ts"
 import { mintSuite, mintWorkload, planAcrossShard } from "./mint.ts"
 import { placementWorkload } from "./placement.ts"
 import { type RecordedStatement, scopeOf, statementLog, type StatementScope } from "./statements.ts"
@@ -73,37 +71,8 @@ const byScope = (statements: ReadonlyArray<RecordedStatement>) => {
   return scopes
 }
 
-/** The statements whose Neki plan reaches anything other than one shard, with the plan. */
-const scatteredOf = (
-  environment: ConformanceEnvironment,
-  statements: ReadonlyArray<RecordedStatement>,
-) =>
-  Effect.promise(() =>
-    environment.run(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        const scattered: Array<{ statement: string; plan: string }> = []
-
-        for (const { sql: statement, params } of statements) {
-          const rows = yield* sql
-            .unsafe(
-              `EXPLAIN (NEKI_PLAN, COSTS OFF, FORMAT TEXT) ${statement}`,
-              params as Array<never>,
-            )
-            .values.pipe(Effect.orDie)
-
-          const plan = rows.map(([line]) => String(line)).join("\n")
-
-          if (!touchesOneShard(plan)) scattered.push({ statement: statement.slice(0, 160), plan })
-        }
-
-        return scattered
-      }),
-    ),
-  )
-
 /**
- * Cases that each framework statement routes to one Neki shard. The
+ * Cases that each framework statement names its ownership key or scan range. The
  * minted-child case records only the trace of the child's delivery, and holds
  * that delivery at `afterClaim` until a statement of another trace, such as
  * the relay's poll pass, has run beside it, so every run checks the turn's
@@ -200,32 +169,6 @@ export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
           ).toBe(true)
 
           expect(scopes.unkeyed.map(({ sql }) => sql)).toEqual([])
-        }),
-      ),
-  },
-  {
-    name: "single-shard: EXPLAIN (NEKI_PLAN) plans every keyed framework statement of a turn and a wake on one shard",
-    requiresNeki: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const scopes = byScope(yield* frameworkStatements(environment))
-
-          expect(yield* scatteredOf(environment, scopes.keyed)).toEqual([])
-        }),
-      ),
-  },
-  {
-    name: "single-shard: EXPLAIN (NEKI_PLAN) plans each due-work scan statement on one shard",
-    requiresNeki: true,
-    timeoutMs: 120_000,
-    run: ({ expect, environment }) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const scopes = byScope(yield* frameworkStatements(environment))
-
-          expect(yield* scatteredOf(environment, scopes.scan)).toEqual([])
         }),
       ),
   },

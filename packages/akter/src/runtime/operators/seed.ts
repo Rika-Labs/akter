@@ -6,7 +6,6 @@ import { ActorRef, type Caller } from "../../identity/caller.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { compress, routingKey } from "../storage/codec.ts"
-import { onShard } from "../database/shards.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
@@ -188,7 +187,7 @@ export const seedRuntime = (deps: {
             for (const statement of staged.statements) yield* statement
           }),
         )
-        .pipe(withTenant(ref.tenant), onShard(key))
+        .pipe(withTenant(ref.tenant))
 
       yield* deps.wake
     },

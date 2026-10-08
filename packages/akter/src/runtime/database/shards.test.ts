@@ -26,7 +26,7 @@ import { CallerJson } from "../turn/outbox.ts"
 import { claimIntents, outboxRelay, type RelaySettings } from "../turn/relay.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { migrate } from "./migrations.ts"
-import { onRange, ShardMap, shardRanges, ShardTarget } from "./shards.ts"
+import { ShardMap, shardRanges } from "./shards.ts"
 import { routingKey } from "../storage/codec.ts"
 import { connectionHolder, type HeldActorType } from "../connections/holder.ts"
 import { FrameworkClock } from "../turn/admission.ts"
@@ -378,16 +378,14 @@ describe("data shard bucket ranges with Postgres", () => {
         const rows = yield* Effect.gen(function* () {
           const ranges = yield* shardRanges
           expect(ranges).toEqual([{ first: -128, last: 127 }])
-          return yield* onRange(ranges[0]!)(
-            claimIntents({
-              sql,
-              range: ranges[0]!,
-              now: 1000,
-              limit: 10,
-              leaseMs: 5000,
-              maxBackoffMs: 5000,
-            }),
-          )
+          return yield* claimIntents({
+            sql,
+            range: ranges[0]!,
+            now: 1000,
+            limit: 10,
+            leaseMs: 5000,
+            maxBackoffMs: 5000,
+          })
         }).pipe(
           Effect.provideService(Statement.CurrentTransformer, (statement, _sql, _fiber, span) =>
             Effect.sync(() => {
@@ -427,9 +425,7 @@ describe("data shard bucket ranges with Postgres", () => {
           .pipe(Effect.forkChild)
         yield* Deferred.await(locked)
         const claim = (range: (typeof clients)[number]) =>
-          onRange(range)(
-            claimIntents({ sql, range, now: 1000, limit: 10, leaseMs: 5000, maxBackoffMs: 5000 }),
-          )
+          claimIntents({ sql, range, now: 1000, limit: 10, leaseMs: 5000, maxBackoffMs: 5000 })
         const rows = (yield* Effect.forEach(clients, claim, { concurrency: "unbounded" })).flat()
         expect(
           rows
@@ -485,49 +481,6 @@ describe("data shard bucket ranges with Postgres", () => {
           { bucket: 4, attempts: 0 },
           { bucket: 127, attempts: 0 },
         ])
-      }),
-    ))
-
-  it("targets each shard's sessions from their startup packet, follows a key through the map, and never targets the untargeted pool", () =>
-    database(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient
-        const map = [
-          { first: -128, last: -1, shard: "shard-a" },
-          { first: 0, last: 127, shard: "shard-b" },
-        ]
-        const read = sql<{ target: string | null; pid: number }>`
-          SELECT current_setting('__neki.shard', true) AS target, pg_backend_pid() AS pid`
-        const [a] = yield* onRange(map[0]!)(read)
-        const [b] = yield* onRange(map[1]!)(read)
-        expect(a!.target).toBe("shard-a")
-        expect(b!.target).toBe("shard-b")
-        expect(a!.pid).not.toBe(b!.pid)
-        const keyed = (bucket: number) =>
-          read.pipe(
-            Effect.provideService(ShardTarget, { routingKey: BigInt(bucket) << 56n }),
-            Effect.provideService(ShardMap, map),
-          )
-        expect((yield* keyed(-1))[0]!.target).toBe("shard-a")
-        expect((yield* keyed(0))[0]!.target).toBe("shard-b")
-        const reset = yield* onRange(map[0]!)(
-          sql.withTransaction(
-            Effect.gen(function* () {
-              const [before] = yield* read
-              yield* sql`RESET __neki.shard`
-              const [after] = yield* read
-              return { before: before!, after: after! }
-            }),
-          ),
-        )
-        expect(reset.after).toEqual(reset.before)
-        expect(reset.after.target).toBe("shard-a")
-        expect((yield* read)[0]!.target).toBeNull()
-        const quoted = { first: -128, last: 127, shard: "shard-'b -c role=postgres" }
-        expect((yield* onRange(quoted)(read).pipe(Effect.exit))._tag).toBe("Failure")
-        expect(
-          (yield* shardRanges.pipe(Effect.provideService(ShardMap, [quoted]), Effect.exit))._tag,
-        ).toBe("Failure")
       }),
     ))
 

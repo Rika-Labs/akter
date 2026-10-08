@@ -1,9 +1,10 @@
 import { Effect, Option, Schedule, Schema } from "effect"
 import { PgClient } from "@effect/sql-pg"
 import { Migrator, SqlClient, SqlError } from "effect/sql"
-import { NekiTurnSessions } from "./neki/session.ts"
-import { MigrationResuming, nekiMigrator, withMigrationCoordination } from "./neki/migrations.ts"
-import { routedTables } from "./neki/topology.ts"
+import { withMigrationCoordination } from "./coordination.ts"
+
+/** Transactional migrations never resume a partially committed body. */
+const MigrationResuming = Effect.succeed(false)
 
 /** How long a migration's table DDL waits for its lock before giving way. */
 const LOCK_TIMEOUT = "2s"
@@ -18,24 +19,18 @@ const isLockBusy = Schema.is(Schema.Struct({ code: Schema.Literal("55P03") }))
  * transaction on the table and hold every turn queued behind it, waiting at
  * most `LOCK_TIMEOUT` for the lock. On Postgres each attempt runs in a
  * savepoint of the migration's transaction, so one that gave way is rolled
- * back and tried again. Neki's protocol runs DDL without a transaction and
- * journals each statement, so there the attempt is not repeated here: a lock
- * that gives way fails the migration, and the next start resumes it from its
- * journal. The previous `lock_timeout` is restored either way.
+ * back and tried again. The previous `lock_timeout` is restored afterwards.
  */
 const briefLocks = <E>(ddl: Effect.Effect<void, E, SqlClient.SqlClient>) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
-    const neki = yield* NekiTurnSessions
     const [previous] = yield* sql<{
       readonly value: string
     }>`SELECT current_setting('lock_timeout') AS value`
-    const limit = sql`SELECT set_config('lock_timeout', ${LOCK_TIMEOUT}, ${!neki})`
-    const restore = sql`SELECT set_config('lock_timeout', ${previous!.value}, ${!neki})`.pipe(
+    const limit = sql`SELECT set_config('lock_timeout', ${LOCK_TIMEOUT}, true)`
+    const restore = sql`SELECT set_config('lock_timeout', ${previous!.value}, true)`.pipe(
       Effect.ignore,
     )
-
-    if (neki) return yield* Effect.andThen(limit, ddl).pipe(Effect.ensuring(restore))
 
     return yield* sql.withTransaction(Effect.andThen(limit, ddl)).pipe(
       Effect.retry({
@@ -84,15 +79,13 @@ export const ROUTABLE_VIEWS = [
 ] as const
 
 /**
- * Runs `views`, which create views that join `actor_placements` to `tables`, unless a Neki
- * router places one of those tables in a shard group routed by `routing_key`. A routed group
- * serves only a view over a single table, so the join is refused there and the migration
- * would never finish; the single-table views of `0031_routable_views` serve that layout.
+ * Applied migration bodies retain their original calls; every supported database
+ * creates the joined inspection views.
  */
 const joinedViews = <E>(
-  tables: ReadonlyArray<string>,
+  _tables: ReadonlyArray<string>,
   views: Effect.Effect<void, E, SqlClient.SqlClient>,
-) => Effect.flatMap(routedTables(tables), (routed) => (routed.length > 0 ? Effect.void : views))
+) => views
 
 /** Every framework migration by id, applied in order above the latest applied id. */
 export const migrations = {
@@ -1277,6 +1270,15 @@ export const migrations = {
         ADD CONSTRAINT actor_placements_placement_check
           CHECK (placement IN ('tenant', 'actor', 'parent', 'authority'))`
   }),
+  /** Retires the single-table inspection variants without rewriting the applied migration that created them. */
+  "0033_joined_inspection": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql.unsafe(`DROP VIEW ${ROUTABLE_VIEWS.map((view) => `durable.${view}`).join(", ")}`)
+    yield* sql.unsafe(`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ${[...FIRST_VIEWS, ["views", 1] as const].map(([view, version]) => `('${view}', ${version})`).join(", ")}
+      ) AS v(view_name, version)`)
+  }),
 }
 
 /**
@@ -1325,18 +1327,9 @@ export const migrator = <E>(
     Effect.tap(() => refuseSkipped),
   )
   return Effect.gen(function* () {
-    const neki = yield* NekiTurnSessions
-    const selected = neki
-      ? nekiMigrator({
-          record: Object.fromEntries(
-            Object.entries(record).map(([key, effect]) => [key, Effect.orDie(effect)]),
-          ),
-          refuseSkipped,
-        })
+    return yield* Option.isSome(yield* Effect.serviceOption(PgClient.PgClient))
+      ? withMigrationCoordination(transactional)
       : transactional
-    return yield* neki || Option.isSome(yield* Effect.serviceOption(PgClient.PgClient))
-      ? withMigrationCoordination(selected)
-      : selected
   })
 }
 

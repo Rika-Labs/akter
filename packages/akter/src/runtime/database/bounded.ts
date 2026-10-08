@@ -1,14 +1,12 @@
 import { PgClient, PgPool } from "@effect/sql-pg"
 import type { PgConnection } from "@effect/sql-pg"
-import { Context, Duration, Effect, Layer, Redacted, Schedule, Schema, Scope } from "effect"
-import { Reactivity } from "effect/reactivity"
+import { Duration, Effect, Schedule, Schema, Scope } from "effect"
 import { SqlClient, SqlError, Statement } from "effect/sql"
 import type { SqlConnection } from "effect/sql"
 import { admissionLimit, isOverloaded } from "../admission.ts"
 import { ActorError } from "../../errors/actor.ts"
 import { asSqlConnection } from "./connection.ts"
 import { fairGate } from "./gate.ts"
-import { Authority, isShardUid, targetShard } from "./shards.ts"
 
 /** Extra checkouts each pool holds beyond its connections before refusing further work. */
 export const POOL_WAITERS = 64
@@ -182,96 +180,6 @@ export const boundedPool = Effect.fnUntraced(function* (options: PgClient.PgPool
   return yield* clientOver(options, Effect.succeed(yield* boundedSessions(options)))
 })
 
-/**
- * `options` with every session targeted at `shard` from its startup packet,
- * so no statement can reach the session before its target is set, and a
- * `RESET` or a failed `SET` cannot leave it untargeted. The URL's own
- * startup options are kept.
- */
-export const targetedAt = <C extends PgClient.PgClientConfig>({
-  options,
-  shard,
-}: {
-  readonly options: C
-  readonly shard: string
-}): C => {
-  if (!isShardUid(shard)) throw new Error(`Shard UID ${JSON.stringify(shard)} needs quoting`)
-
-  const fromUrl =
-    options.url === undefined
-      ? null
-      : new URL(Redacted.value(options.url)).searchParams.get("options")
-
-  return {
-    ...options,
-    startupOptions: [options.startupOptions ?? fromUrl, `-c __neki.shard=${shard}`]
-      .filter((part) => part !== null && part !== undefined && part !== "")
-      .join(" "),
-  }
-}
-
-/**
- * Lazily opened pools, one per shard, in `scope`. Each is opened once, on
- * the first checkout that names its shard, and lives until `scope` closes.
- */
-export const perShard = <A, E>({
-  scope,
-  open,
-}: {
-  readonly scope: Scope.Scope
-  readonly open: (shard: string) => Effect.Effect<A, E, Scope.Scope>
-}) => {
-  const opened = new Map<string, Effect.Effect<A, E>>()
-
-  return (shard: string): Effect.Effect<A, E> => {
-    const found = opened.get(shard)
-
-    if (found !== undefined) return found
-
-    const once = Effect.runSync(Effect.cached(Scope.provide(open(shard), scope)))
-    opened.set(shard, once)
-
-    return once
-  }
-}
-
-/**
- * The bounded client whose checkouts follow the caller's `ShardTarget`: a
- * fiber with no target uses the pool of `options`, which reaches the
- * authoritative group through the router, and a targeted fiber uses a pool of
- * the same size whose sessions target its shard. A transaction keeps the
- * session it began on. `authority` is a separate client over the untargeted
- * pool, with its own transactions, for authoritative statements made from a
- * targeted fiber.
- */
-export const routedPool = Effect.fnUntraced(function* (options: PgClient.PgPoolConfig) {
-  const scope = yield* Effect.scope
-  const authority = yield* boundedSessions(options)
-  const shard = perShard({
-    scope,
-    open: (target) => boundedSessions(targetedAt({ options, shard: target })),
-  })
-  const sessions = Effect.flatMap(targetShard, (target) =>
-    target === undefined ? Effect.succeed(authority) : Effect.orDie(shard(target)),
-  )
-
-  return {
-    sql: yield* clientOver(options, sessions),
-    authority: yield* clientOver(options, Effect.succeed(authority)),
-  }
-})
-
 /** Provides the bounded primary/off-turn client without changing its connection configuration. */
 export const boundedLayer = (options: PgClient.PgPoolConfig) =>
   PgClient.layerFrom(boundedPool(options))
-
-/** Provides the routed off-turn client as the default client and its authority sessions as `Authority`. */
-export const routedLayer = (options: PgClient.PgPoolConfig) =>
-  Layer.effectContext(
-    Effect.map(routedPool(options), ({ sql, authority }) =>
-      Context.make(PgClient.PgClient, sql).pipe(
-        Context.add(SqlClient.SqlClient, sql),
-        Context.add(Authority, authority),
-      ),
-    ),
-  ).pipe(Layer.provide(Reactivity.layer))

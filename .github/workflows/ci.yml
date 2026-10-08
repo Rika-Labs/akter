@@ -199,13 +199,12 @@ jobs:
               node-units node-units
           - name: shards-2
             shards: |
-              framework-postgres-4 postgres-without-replica --project=integration:migrations
               framework-postgres-6 postgres --project=postgres:simulation --project=postgres:workflows
               framework-postgres-9 postgres --project=postgres:relay
           - name: shards-3
             shards: |
               framework-postgres-5 postgres --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections
-              framework-postgres-7 postgres --project=!integration --project=!integration:migrations --project=!postgres:effect-control --project=!postgres:heap --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron --project=!postgres:replica --project=!postgres:properties --project=!postgres:subscriptions --project=!postgres:transports --project=!postgres:connections --project=!postgres:simulation --project=!postgres:workflows --project=!postgres:relay
+              framework-postgres-7 postgres --project=!integration --project=!postgres:effect-control --project=!postgres:heap --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron --project=!postgres:replica --project=!postgres:properties --project=!postgres:subscriptions --project=!postgres:transports --project=!postgres:connections --project=!postgres:simulation --project=!postgres:workflows --project=!postgres:relay
               framework-postgres-3 postgres --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
               framework-postgres-8 postgres --project=integration
           - name: shards-4
@@ -282,8 +281,6 @@ jobs:
                   bun run --cwd tooling/conformance test:pglite "${projects[@]}" ;;
               drills)
                 env -u TEST_REPLICA_DATABASE_URL bun run --cwd tooling/conformance test:integration:drills ;;
-              postgres-without-replica)
-                env -u TEST_REPLICA_DATABASE_URL bun run --cwd tooling/conformance test:integration:postgres "${projects[@]}" ;;
               postgres)
                 bun run --cwd tooling/conformance test:integration:postgres "${projects[@]}" ;;
               node)

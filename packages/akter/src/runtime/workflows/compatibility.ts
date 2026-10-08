@@ -1,7 +1,7 @@
 import { DateTime, Effect, Schema } from "effect"
 import { SqlClient } from "effect/sql"
 import { coordinated, registry } from "../database/coordination.ts"
-import { currentRanges, forEachRange, withinRange } from "../database/shards.ts"
+import { forEachRange, withinRange } from "../database/shards.ts"
 import { type AnyWorkflow, isWorkflow, type VersionRange } from "../../members/workflow.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { type Declared, manifestOf, toJson } from "./manifest.ts"
@@ -461,7 +461,6 @@ export const formatIncompatibility = (incompatibility: Incompatibility) =>
 export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor) {
   const sql = yield* SqlClient.SqlClient
   const manifests = yield* registry
-  const sharded = (yield* currentRanges).some((range) => range.shard !== undefined)
 
   if (actor.workflows.length === 0) {
     const [accepted] = yield* manifests<{ accepted: boolean }>`SELECT
@@ -484,7 +483,6 @@ export const acceptWorkflows = Effect.fnUntraced(function* (actor: DeclaredActor
 
   return yield* coordinated({
     resource: `akter/workflows/${actor.name}`,
-    writesData: !sharded,
     work: Effect.gen(function* () {
       const latest = yield* manifests<{ workflow: string; manifest_hash: string }>`
         SELECT DISTINCT ON (workflow) workflow, manifest_hash FROM actor_workflow_manifests

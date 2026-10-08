@@ -40,7 +40,7 @@ export interface Harness {
   readonly audit: Effect.Effect<ReadonlyArray<AuditRow>>
 }
 
-/** One `durable.operator_audit_v2` row. */
+/** One `durable.operator_audit` row. */
 export interface AuditRow {
   readonly operator: string
   readonly action: string

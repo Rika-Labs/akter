@@ -1,5 +1,7 @@
 # Effect 4.0.1 cohort verification
 
+This is historical dependency evidence. The [package split](framework-package.md) upgrades the cohort to 4.0.2; [ADR 0112](../decisions/0112-postgres-and-pglite-only.md) removes Neki rather than leaving its former gates pending. See [removal verification](neki-removal.md) for current Postgres/PGlite-only checks.
+
 Recorded on 2026-10-07 for `chore/664-effect-4-0-x`, stacked on the alpha.2 release preparation. The registry reports `4.0.1` as the newest jointly published 4.0.x patch for `effect`, `@effect/platform-bun`, `@effect/platform-node-shared`, `@effect/platform-node`, `@effect/sql-pg`, `@effect/sql-pglite` and `@effect/vitest`.
 
 Only those seven exact catalog pins and their lockfile records change. Runtime dependencies remain exact; the release-preparation change's published-peer caret ranges now have the new catalog floors. Drizzle, PGlite, TypeScript, Vitest and the separately versioned `@effect/tsgo` tool are not bumped. The cloud repository and submodule pointer are untouched; their catalog alignment requires a subsequent submodule update.
