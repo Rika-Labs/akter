@@ -22,7 +22,7 @@ The `akter` CLI in `apps/cli` runs an app locally (`akter dev`), checks a deploy
 
 Every runner must advertise a unique private address reachable directly by its peers. Separate-host networks and provider topologies require their own reachability and failover evidence; the OSS launch claim is multi-runner on one host. Use `Runner.mtls` on the peer listener and never expose it to public clients.
 
-The supported Postgres server version at launch is **18.6**, the version tested in CI. Other server versions are unverified; see the [support matrix](support-matrix.md).
+The supported Postgres server version at launch is **18.6**, the version local verification tests against. Other server versions are unverified; see the [support matrix](support-matrix.md).
 
 Intended deployment order: provision database and secrets; run framework and actor-table migrations; start compatible runners; verify readiness; route new traffic; drain old runners. Keep database URLs redacted and set auth explicitly—`Actors.serve` requires an auth policy.
 

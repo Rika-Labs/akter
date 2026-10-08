@@ -40,7 +40,9 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 
 ## Verification
 
-Use the repository commands in `package.json`. Prefer real Postgres for concurrency, fencing, ownership, and recovery tests. Do not claim Neki or provider behavior without provider-specific evidence.
+This repository runs no GitHub Actions for pull requests. Verification is local and signed off per head: `bun run verify:local <pr> --post --agent <name>` runs every check in `tooling/local-verify/manifest.json` on the exact head SHA in a throwaway worktree, behind the machine's heavy lock, and sets the required `verify` and `branch` commit statuses, writes the "Local verification" section of the PR body and posts the sign-off comment. A pull request is not mergeable until both statuses are green on its current head; a push invalidates them. Never tick a verification box, edit the generated section, post a status by hand or merge on a stale head. A failing run posts failure and no sign-off. Fork and bot pull requests run in a Docker sandbox; never run untrusted code on the host, and read [local verification](docs/verification/local-verification.md) before changing `tooling/local-verify`.
+
+Use the repository commands in `package.json`. Prefer real Postgres for concurrency, fencing, ownership, and recovery tests. Run focused checks for what you changed; full runs belong to `verify:local`. Do not claim Neki or provider behavior without provider-specific evidence.
 
 - Prefer a small set of integration/E2E scenarios through the real public API and storage. Exercise rollback, interruption, retry, restart, stale ownership and denied access where relevant; assert the resulting state and obligations, not just successful execution.
 - Before adding a test, name the plausible wrong implementation it must reject. Derive expected values independently; use asymmetric inputs and both sides of important boundaries.

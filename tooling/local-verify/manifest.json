@@ -1,0 +1,398 @@
+{
+  "repository": "Rika-Labs/akter",
+  "trustedAuthors": ["dallenpyrah"],
+  "setup": {
+    "name": "Install dependencies",
+    "timeoutMinutes": 30,
+    "run": "bun --version && node --version && bun -e 'process.exit(`bun@${Bun.version}` === require(\"./package.json\").packageManager ? 0 : 1)' && bun install --frozen-lockfile --ignore-scripts && bun run prepare"
+  },
+  "checks": [
+    {
+      "id": "self-host",
+      "description": "Build and boot both self-host runtime images (bun and node) through the Compose recipe",
+      "timeoutMinutes": 30,
+      "needsDocker": true,
+      "steps": [
+        {
+          "name": "Build and boot both self-host runtime images",
+          "run": "for runtime in bun node; do SELFHOST_RUNTIME=\"$runtime\" bash apps/self-host/verify.sh; done"
+        }
+      ]
+    },
+    {
+      "id": "static",
+      "description": "Directive, structure, format and type checks, the verify-runner, release-version and release-gate tests, then lint and typecheck of every workspace",
+      "timeoutMinutes": 60,
+      "env": {
+        "GOMAXPROCS": "1"
+      },
+      "steps": [
+        {
+          "name": "Static checks",
+          "run": "bun run check:static"
+        },
+        {
+          "name": "Lint and typecheck every workspace",
+          "run": "bun run turbo run lint lint:root typecheck --concurrency=\"$VERIFY_CONCURRENCY\""
+        }
+      ]
+    },
+    {
+      "id": "pack",
+      "description": "Tarball pack check and the clean-consumer smoke on Node and Bun",
+      "timeoutMinutes": 40,
+      "steps": [
+        {
+          "name": "Pack check and tarball smoke on Node and Bun",
+          "run": "bun run check:pack"
+        }
+      ]
+    },
+    {
+      "id": "workspaces",
+      "description": "Build, unit and Postgres integration tests of the public clients, CLI, cloud API contract and tooling, with a streaming replica",
+      "timeoutMinutes": 60,
+      "env": {
+        "GOMAXPROCS": "1",
+        "TEST_DATABASE_URL": "{{postgres.url}}",
+        "TEST_REPLICA_DATABASE_URL": "{{replica.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"],
+        "replica": true
+      },
+      "steps": [
+        {
+          "name": "Build and test public clients, CLI and tooling",
+          "run": "bun run turbo run build test test:integration --filter='!@rikalabs/akter' --concurrency=\"$VERIFY_CONCURRENCY\""
+        }
+      ]
+    },
+    {
+      "id": "framework-unit",
+      "description": "The framework's unit tests, PGlite conformance excluded",
+      "timeoutMinutes": 40,
+      "steps": [
+        {
+          "name": "Framework unit tests, PGlite conformance excluded",
+          "run": "bun run --cwd packages/akter test --exclude '**/conformance/pglite/backend.test.ts'"
+        }
+      ]
+    },
+    {
+      "id": "framework-pglite",
+      "description": "PGlite conformance in three project groups; the last group is every project the first two do not name",
+      "timeoutMinutes": 60,
+      "steps": [
+        {
+          "name": "PGlite conformance, pglite-1",
+          "run": "bun run --cwd packages/akter test:pglite --project=pglite:conformance --project=pglite:workflows --project=pglite:cron"
+        },
+        {
+          "name": "PGlite conformance, pglite-2",
+          "run": "bun run --cwd packages/akter test:pglite --project=pglite:properties --project=pglite:capacity --project=pglite:transports"
+        },
+        {
+          "name": "PGlite conformance, pglite-3",
+          "run": "bun run --cwd packages/akter test:pglite --project='!pglite:conformance' --project='!pglite:workflows' --project='!pglite:cron' --project='!pglite:properties' --project='!pglite:capacity' --project='!pglite:transports'"
+        }
+      ]
+    },
+    {
+      "id": "framework-postgres",
+      "description": "Postgres conformance shards on Bun against a real Postgres server 18.6 with a streaming replica; the last group is every project no earlier group names",
+      "timeoutMinutes": 150,
+      "env": {
+        "TEST_DATABASE_URL": "{{postgres.url}}",
+        "TEST_REPLICA_DATABASE_URL": "{{replica.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"],
+        "replica": true,
+        "scope": "step"
+      },
+      "steps": [
+        {
+          "name": "Postgres conformance on Bun, postgres-1",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=postgres:effect-control --project=postgres:heap"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-2",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=postgres:conformance --project=postgres:capacity"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-3",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-8",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=integration"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-9",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=postgres:relay"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-5",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-6",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=postgres:simulation --project=postgres:workflows"
+        },
+        {
+          "name": "Postgres conformance on Bun, postgres-7",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project='!integration' --project='!integration:migrations' --project='!postgres:effect-control' --project='!postgres:heap' --project='!postgres:conformance' --project='!postgres:capacity' --project='!postgres:fleet' --project='!postgres:multi-runner' --project='!postgres:drain' --project='!postgres:cron' --project='!postgres:replica' --project='!postgres:properties' --project='!postgres:subscriptions' --project='!postgres:transports' --project='!postgres:connections' --project='!postgres:simulation' --project='!postgres:workflows' --project='!postgres:relay'"
+        }
+      ]
+    },
+    {
+      "id": "framework-migrations",
+      "description": "Neki migration crash file (SIGKILL at every durable boundary) against a Postgres server 18.6 with no replica",
+      "timeoutMinutes": 60,
+      "env": {
+        "TEST_DATABASE_URL": "{{postgres.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"]
+      },
+      "steps": [
+        {
+          "name": "Postgres conformance on Bun, postgres-4",
+          "run": "bun run --cwd packages/akter test:integration:postgres --project=integration:migrations"
+        }
+      ]
+    },
+    {
+      "id": "framework-drills",
+      "description": "Docker failover and online-restore drills, which own their containers and ports",
+      "timeoutMinutes": 60,
+      "needsDocker": true,
+      "env": {
+        "TEST_DATABASE_URL": "{{postgres.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"]
+      },
+      "steps": [
+        {
+          "name": "Docker drills",
+          "run": "bun run --cwd packages/akter test:integration:drills"
+        }
+      ]
+    },
+    {
+      "id": "node-postgres",
+      "description": "The same Postgres conformance shards on Node 26, plus the Node unit set, against their own Postgres server 18.6 and replica",
+      "timeoutMinutes": 120,
+      "env": {
+        "TEST_DATABASE_URL": "{{postgres.url}}",
+        "TEST_REPLICA_DATABASE_URL": "{{replica.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"],
+        "replica": true,
+        "scope": "step"
+      },
+      "steps": [
+        {
+          "name": "Postgres conformance on Node, conformance-1",
+          "run": "bun run test:node:conformance --project=postgres:effect-control --project=postgres:heap"
+        },
+        {
+          "name": "Postgres conformance on Node, conformance-2",
+          "run": "bun run test:node:conformance --project=postgres:conformance --project=postgres:capacity"
+        },
+        {
+          "name": "Postgres conformance on Node, conformance-3",
+          "run": "bun run test:node:conformance --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron"
+        },
+        {
+          "name": "Postgres conformance on Node, conformance-4",
+          "run": "bun run test:node:conformance --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections"
+        },
+        {
+          "name": "Postgres conformance on Node, conformance-5",
+          "run": "bun run test:node:conformance --project=postgres:simulation --project=postgres:workflows"
+        },
+        {
+          "name": "Postgres conformance on Node, conformance-6",
+          "run": "bun run test:node:conformance --project='!postgres:effect-control' --project='!postgres:heap' --project='!postgres:conformance' --project='!postgres:capacity' --project='!postgres:fleet' --project='!postgres:multi-runner' --project='!postgres:drain' --project='!postgres:cron' --project='!postgres:replica' --project='!postgres:properties' --project='!postgres:subscriptions' --project='!postgres:transports' --project='!postgres:connections' --project='!postgres:simulation' --project='!postgres:workflows' --project='!postgres:relay'"
+        },
+        {
+          "name": "Postgres conformance on Node, conformance-7",
+          "run": "bun run test:node:conformance --project=postgres:relay"
+        },
+        {
+          "name": "Node unit set",
+          "run": "bun run test:node:units"
+        }
+      ]
+    },
+    {
+      "id": "sandbox",
+      "description": "The untrusted-pull-request sandbox cannot read a canary file beside the host secrets, the SSH agent, the Docker socket or the gh token",
+      "timeoutMinutes": 15,
+      "runIn": "tool",
+      "steps": [
+        {
+          "name": "Sandbox isolation canary",
+          "run": "bun run --cwd tooling/local-verify test:isolation"
+        }
+      ]
+    },
+    {
+      "id": "branch",
+      "description": "Issue-linked branch name policy for a pull request targeting main (a stacked pull request fails until retargeted), the head contains the freshly fetched main tip and equals the verified commit; for a commit on main, that the commit is on main",
+      "timeoutMinutes": 5,
+      "runIn": "tool",
+      "steps": [
+        {
+          "name": "Trusted branch policy",
+          "when": "pull",
+          "run": "bun .github/src/check-branch.ts"
+        },
+        {
+          "name": "Head contains the current main tip",
+          "when": "pull",
+          "run": "git fetch -q origin +refs/heads/main:refs/remotes/origin/main && git merge-base --is-ancestor refs/remotes/origin/main \"$VERIFY_SHA\" || { echo \"Head $VERIFY_SHA does not contain origin/main $(git rev-parse refs/remotes/origin/main); merge main into the branch and verify again\"; exit 1; }"
+        },
+        {
+          "name": "Fetched head is the verified commit",
+          "when": "pull",
+          "run": "test \"$(git rev-parse \"refs/remotes/pr/$VERIFY_PR\")\" = \"$VERIFY_SHA\""
+        },
+        {
+          "name": "Commit is on main",
+          "when": "commit",
+          "run": "git fetch -q origin +refs/heads/main:refs/remotes/origin/main && git merge-base --is-ancestor \"$VERIFY_SHA\" refs/remotes/origin/main"
+        }
+      ]
+    }
+  ],
+  "statuses": [
+    {
+      "context": "verify",
+      "checks": [
+        "self-host",
+        "static",
+        "pack",
+        "workspaces",
+        "framework-unit",
+        "framework-pglite",
+        "framework-postgres",
+        "framework-migrations",
+        "framework-drills",
+        "node-postgres",
+        "sandbox"
+      ]
+    },
+    {
+      "context": "branch",
+      "checks": ["branch"]
+    }
+  ],
+  "suites": [
+    {
+      "id": "properties",
+      "cadence": "nightly on main (the former Nightly properties workflow ran at 04:17 UTC)",
+      "description": "Random-seed property runs: the framework unit and PGlite suites, then the Postgres suites",
+      "timeoutMinutes": 120,
+      "needsDocker": true,
+      "env": {
+        "PROPERTY_SEED": "random",
+        "TEST_DATABASE_URL": "{{postgres.url}}",
+        "TEST_REPLICA_DATABASE_URL": "{{replica.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"],
+        "replica": true
+      },
+      "steps": [
+        {
+          "name": "Random-seed unit and PGlite suites",
+          "run": "bun run --filter @rikalabs/akter test"
+        },
+        {
+          "name": "Random-seed Postgres suite",
+          "run": "bun run --filter @rikalabs/akter test:integration"
+        }
+      ]
+    },
+    {
+      "id": "simulation",
+      "cadence": "nightly on main (the former Nightly properties workflow ran it at 04:17 UTC)",
+      "description": "Deterministic simulation: 10,000 fresh seeds per run in four ranges of 2,500, derived from a counter that advances with every run",
+      "timeoutMinutes": 240,
+      "steps": [
+        {
+          "name": "Simulate",
+          "run": "export SIMULATION_SEEDS=2500; for shard in 0 1 2 3; do export SIMULATION_SEED_BASE=$(( VERIFY_RUN_NUMBER * 10000 + shard * 2500 )); echo \"Seeds from $SIMULATION_SEED_BASE\"; bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/testing/simulate.test.ts -t 'exactly once'; done"
+        }
+      ]
+    },
+    {
+      "id": "stress",
+      "cadence": "nightly on main (the former Stress workflow ran at 07:17 UTC with 10 runs); pass --runs <1-25>, default 10",
+      "description": "The framework suites repeated under CPU load, one busy worker per core, with failing cases reported by name",
+      "timeoutMinutes": 1200,
+      "needsDocker": true,
+      "env": {
+        "TEST_DATABASE_URL": "{{postgres.url}}",
+        "TEST_REPLICA_DATABASE_URL": "{{replica.url}}"
+      },
+      "postgres": {
+        "image": "postgres:18.6",
+        "env": {
+          "POSTGRES_USER": "project",
+          "POSTGRES_PASSWORD": "project",
+          "POSTGRES_DB": "postgres"
+        },
+        "args": ["-c", "wal_level=logical", "-c", "shared_preload_libraries=pg_stat_statements"],
+        "replica": true
+      },
+      "steps": [
+        {
+          "name": "Run the conformance suites under CPU load and report failing cases by name",
+          "run": "bash tooling/local-verify/suites/stress.sh"
+        }
+      ]
+    }
+  ]
+}

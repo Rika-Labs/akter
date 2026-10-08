@@ -1,0 +1,20 @@
+{
+  "name": "@akter/local-verify",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/manifest.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --threads 1 .",
+    "test": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/local-verify/src --exclude '**/sandbox.test.ts'",
+    "test:isolation": "bun --bun ../../node_modules/vitest/vitest.mjs run --root ../.. tooling/local-verify/src/sandbox.test.ts"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
+  }
+}

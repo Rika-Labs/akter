@@ -92,6 +92,20 @@
       }
     },
     {
+      "files": ["tooling/local-verify/src/*.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/global-console": "off",
+        "effecttsgo/global-date": "off",
+        "effecttsgo/global-timers": "off",
+        "effecttsgo/missing-pipeable-signature": "off",
+        "effecttsgo/node-builtin-import": "off",
+        "effecttsgo/process-env": "off",
+        "effecttsgo/schema-sync": "off",
+        "effecttsgo/strict-boolean-expressions": "off"
+      }
+    },
+    {
       "files": ["packages/react/src/*.ts"],
       "rules": {
         "effecttsgo/async-function": "off",

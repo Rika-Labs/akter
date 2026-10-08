@@ -9,7 +9,9 @@
     "src/pack.ts",
     "src/release/version.ts",
     "src/release/version.test.ts",
-    "src/evidence-gate.ts",
-    "src/github.ts"
+    "src/release/gate.ts",
+    "src/release/gate.test.ts",
+    "src/policy.ts",
+    "src/policy.test.ts"
   ]
 }

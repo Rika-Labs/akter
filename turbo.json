@@ -39,6 +39,30 @@
       "outputs": [],
       "env": ["CI"]
     },
+    "@akter/local-verify#test": {
+      "dependsOn": ["^build", "transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "!docs/**",
+        "$TURBO_ROOT$/vitest.config.ts",
+        "$TURBO_ROOT$/packages/akter/src/**"
+      ],
+      "outputs": [],
+      "env": ["CI"]
+    },
+    "@rikalabs/akter-cli#test": {
+      "dependsOn": ["^build", "transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!**/*.md",
+        "!docs/**",
+        "$TURBO_ROOT$/vitest.config.ts",
+        "$TURBO_ROOT$/packages/akter/src/testing/conformance/fleet.ts"
+      ],
+      "outputs": [],
+      "env": ["CI"]
+    },
     "test:integration": {
       "dependsOn": ["^build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
@@ -54,8 +78,7 @@
       "inputs": [
         "*.ts",
         ".github/src/verify*.ts",
-        ".github/src/evidence-gate.ts",
-        ".github/src/github.ts",
+        ".github/src/release/gate.ts",
         ".github/src/policy.ts",
         ".github/src/replica.ts",
         ".github/src/node-postgres.ts",

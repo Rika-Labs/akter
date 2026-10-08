@@ -11,7 +11,7 @@ Every row MUST assert durable rows, caller result, retry identity, activation st
 
 Startup pool exhaustion is exercised by `runtime/database/bounded.test.ts` (`retries checkout refusals while concurrently registering actor and query layers`): 80 actor layers and 80 query layers share a two-connection PostgreSQL pool, then every actor serves an asymmetric command result and a query with exactly one receipt. The existing excess-checkout cases still require an immediate refusal before any statement is sent.
 
-The **Evidence** column names the conformance cases that prove each row; they run in the `Verify` workflow on every pull request and on `main`. A row with no proving case says "Unverified" or "Unsupported" with its reason.
+The **Evidence** column names the conformance cases that prove each row; they run in `bun run verify:local` on every pull request head before it merges. A row with no proving case says "Unverified" or "Unsupported" with its reason.
 
 Unless a row exercises denial or expiry, external receipt replay assumes the original logical caller remains authorized and the command identity is unexpired. Trusted internal recovery retains its accepted-work authority; see [receipts](../contracts/04-receipts.md).
 

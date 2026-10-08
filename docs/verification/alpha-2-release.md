@@ -64,7 +64,7 @@ To repeat the initiation check, install the packed CLI in a temporary consumer a
 
 ## Release gate and static checks
 
-The unchanged `release.yml` has no dry-run dispatch input. Its exact read-only **Require a successful Verify run for the tagged commit** shell step was extracted and run with `GITHUB_REPOSITORY=Rika-Labs/akter` against commit `5289b7d1535179b57bdf902b49dfa59a40b317a7`, before it had any successful Verify run. It printed `No successful Verify run found for 5289b7d1535179b57bdf902b49dfa59a40b317a7` and exited `1`. No tag or publish step was run.
+At the time of this record, the unchanged `release.yml` had no dry-run dispatch input and still gated on a `Verify` workflow run, since replaced by the commit-status gate in [local verification](local-verification.md). Its exact read-only **Require a successful Verify run for the tagged commit** shell step was extracted and run with `GITHUB_REPOSITORY=Rika-Labs/akter` against commit `5289b7d1535179b57bdf902b49dfa59a40b317a7`, before it had any successful Verify run. It printed `No successful Verify run found for 5289b7d1535179b57bdf902b49dfa59a40b317a7` and exited `1`. No tag or publish step was run.
 
 Focused checks pass:
 
@@ -83,6 +83,6 @@ The packaging tests now assert compatible ranges only for the named shared-libra
 
 - Before tagging, replace the marked `akter logs` changelog entries with the shipped and verified behavior.
 - Update the exact workspace catalog to the published `4.0.1` family through the separately verified dependency change. This candidate's range-resolution evidence does not itself change that catalog.
-- CI must produce a successful Verify run for the exact final tagged commit. This document's local checks are not a replacement for that workflow gate.
+- The exact final tagged commit must carry green `verify` and `branch` commit statuses from `bun run verify:local main --commit <sha> --post`; the release workflow no longer reads a `Verify` run. This document's focused local checks are not a replacement for that gate.
 - npm trusted-publisher bootstrap for the first CLI publication remains a maintainer operation; no public publish or dist-tag movement was attempted here.
 - Alpha.1/alpha.2 runner overlap, a production backup/restore rehearsal, Neki/provider behavior and completed browser login are unverified. Follow the stopped-runner upgrade procedure and rehearse with the deployment's own schemas, payloads and permissions before promotion.

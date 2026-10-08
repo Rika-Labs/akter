@@ -19,8 +19,9 @@ packages/
 tooling/
   oxlint/                   @akter/oxlint    anti-slop rules, directives and runtime-import checks
   structure/                @akter/structure tree checker and its exemptions
+  local-verify/             @akter/local-verify the `verify:local` runner, its manifest and the fork sandbox
 docs/                       framework API, contracts, architecture, guides and verification
-.github/src/                public CI, release, policy and package verification helpers
+.github/src/                release, policy and package verification helpers
 ```
 
 Dependency direction is `apps → packages → nothing app-ward`. `packages/akter` imports no workspace package. `packages/cloud-api` is a public contract only; its hosted implementation and consumers live in Akter Cloud.
@@ -54,4 +55,4 @@ The oxlint rules in `tooling/oxlint` check names, runtime-import boundaries, dec
 
 ## Verification and release
 
-The workspace resolves the framework entries to TypeScript sources during development. `bun run --cwd packages/akter build` emits `dist/`, `publishConfig` points the tarball's exports and types there, `.github/src/pack.ts` stages and checks the tarball, and the release workflow publishes it on a `v<version>` tag. Public CI tests with a Postgres server 18.6 where the framework's integration suites require one.
+The workspace resolves the framework entries to TypeScript sources during development. `bun run --cwd packages/akter build` emits `dist/`, `publishConfig` points the tarball's exports and types there, `.github/src/pack.ts` stages and checks the tarball, and the release workflow publishes it on a `v<version>` tag. Local verification (`bun run verify:local`) tests with a Postgres server 18.6 where the framework's integration suites require one; the repository runs no GitHub Actions workflow other than `Release`.

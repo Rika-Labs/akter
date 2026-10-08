@@ -5,7 +5,6 @@
     "": {
       "name": "monorepo-project-template",
       "devDependencies": {
-        "@distilled.cloud/github": "catalog:",
         "@effect/platform-bun": "catalog:",
         "@effect/tsgo": "0.45.0",
         "@types/bun": "1.4.2",
@@ -142,6 +141,15 @@
         "react": "catalog:",
       },
     },
+    "tooling/local-verify": {
+      "name": "@akter/local-verify",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "vitest": "catalog:",
+      },
+    },
     "tooling/oxlint": {
       "name": "@akter/oxlint",
       "dependencies": {
@@ -166,7 +174,6 @@
     },
   },
   "catalog": {
-    "@distilled.cloud/github": "1.0.0-rc.13",
     "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
     "@effect/platform-node-shared": "4.0.1",
@@ -186,6 +193,8 @@
   "packages": {
     "@akter/cloud-api": ["@akter/cloud-api@workspace:packages/cloud-api"],
 
+    "@akter/local-verify": ["@akter/local-verify@workspace:tooling/local-verify"],
+
     "@akter/oxlint": ["@akter/oxlint@workspace:tooling/oxlint"],
 
     "@akter/python-client": ["@akter/python-client@workspace:packages/python-client"],
@@ -195,10 +204,6 @@
     "@akter/self-host": ["@akter/self-host@workspace:apps/self-host"],
 
     "@akter/structure": ["@akter/structure@workspace:tooling/structure"],
-
-    "@distilled.cloud/core": ["@distilled.cloud/core@1.0.0-rc.13", "", { "dependencies": { "graphql": "16.11.0" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-RYyrxW+F5zrTuu1UWV/JoycholBCIkXIusYJdDniDwCdmbjdKGl07KlkkeeY774uBawNGf+pt1ESNGeLVnNHsg=="],
-
-    "@distilled.cloud/github": ["@distilled.cloud/github@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-4c+Oiq8a//GTOJp0xThQcQbIHSI8zokevhz2FFTvBQBiKjDeAQKHXP/XOwdo1EVnZ9ox/Y7OHK/YoLrjmxiq1A=="],
 
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.12.1", "", {}, "sha512-yHwomvolVafvUXhy5TdiJVkuNCxXn+bKOs2aWiWEQh/5YaV97Oa/abJz3dmx7lxgIUsUlS1Jl4mEfvJPo3YsVw=="],
 
@@ -643,8 +648,6 @@
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
 
     "get-tsconfig": ["get-tsconfig@4.14.3", "", { "dependencies": { "resolve-pkg-maps": "^1.0.0" } }, "sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA=="],
-
-    "graphql": ["graphql@16.11.0", "", {}, "sha512-mS1lbMsxgQj6hge1XZ6p7GPhbrtFwUFYi3wRzXAC/FmYnyXMTvvI3td3rjmQ2u8ewXueaSvRPWaEcgVVOT9Jnw=="],
 
     "jiti": ["jiti@2.7.0", "", { "bin": { "jiti": "lib/jiti-cli.mjs" } }, "sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ=="],
 
