@@ -2,6 +2,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_run:
+    workflows: [Verify]
+    branches: [main]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -15,6 +19,13 @@ concurrency:
   cancel-in-progress: false
 jobs:
   publish:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+       github.event.workflow_run.head_sha == github.sha &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: npm
@@ -27,10 +38,11 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      CANARY: ${{ github.event_name == 'workflow_run' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: refs/tags/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ref: ${{ github.event.workflow_run.head_sha || format('refs/tags/{0}', github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
           fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -40,41 +52,40 @@ jobs:
         with:
           node-version: 26.7.0
           package-manager-cache: false
-      - name: Check npm supports trusted publishing
+      - name: Install npm with trusted publishing and dist-tag support
         run: |
           set -euo pipefail
+          npm install --global npm@12.2.0
           npm="$(npm --version)"
-          printf '%s\n%s\n' 11.5.1 "$npm" | sort -V -C || { echo "npm $npm is older than 11.5.1, which trusted publishing needs"; exit 1; }
+          test "$npm" = 12.2.0
           echo "node $(node --version), npm $npm"
       - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Check the tag names a released commit on main
+      - name: Select a verified main canary or tagged release
         id: release
         run: |
           set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$commit" origin/main || { echo "$commit is not on main"; exit 1; }
+          test "$commit" = "$GITHUB_SHA" || { echo "Checkout does not match the provenance SHA; dispatch on the matching tag ref"; exit 1; }
+          bun .github/src/release/version.ts > "$RUNNER_TEMP/release-channel"
+          if [ "$CANARY" = true ]; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+            echo "promote_latest=false" >> "$GITHUB_OUTPUT"
+            echo "Publishing a next canary from verified commit $commit"
+            exit 0
+          fi
           [[ "$RELEASE_TAG" =~ ^v[0-9] ]] || { echo "$RELEASE_TAG is not a v<version> tag"; exit 1; }
           git show-ref --verify --quiet "refs/tags/$RELEASE_TAG" || { echo "Tag $RELEASE_TAG does not exist"; exit 1; }
-          commit="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-          test "$(git rev-parse HEAD)" = "$commit" || { echo "Checkout is not $RELEASE_TAG"; exit 1; }
+          test "$commit" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" || { echo "Checkout is not $RELEASE_TAG"; exit 1; }
           version="$(jq -r .version packages/akter/package.json)"
-          bun .github/src/release/version.ts
           test "$RELEASE_TAG" = "v$version" || { echo "Tag $RELEASE_TAG does not match version $version"; exit 1; }
-          git merge-base --is-ancestor "$commit" origin/main || { echo "$commit is not on main"; exit 1; }
           core="${version%%+*}"
-          if [[ "$core" == *-* ]]; then tag="${core#*-}"; tag="${tag%%.*}"; else tag=latest; fi
-          [[ "$tag" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Prerelease id of $version is not a dist-tag name"; exit 1; }
-          name="$(jq -r .name packages/akter/package.json)"
-          if [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
-            echo "$name@$version is already on npm (a hand-published bootstrap or a rerun); publishing is skipped"
-            echo "published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Publishing $version from $commit to dist-tag $tag"
-            echo "published=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/release-channel" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           if [[ "$core" == *-* ]]; then prerelease=true; else prerelease=false; fi
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
       - name: Require a successful Verify run for the tagged commit
+        if: env.CANARY != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -90,32 +101,55 @@ jobs:
           fi
           echo "Successful Verify run(s) for $commit: ${runs//$'\n'/, }"
       - name: Build, stage and check the tarball
+        env:
+          DIST_TAG: ${{ steps.release.outputs.tag }}
         run: |
+          set -euo pipefail
           bun --bun node_modules/vitest/vitest.mjs run .github/src/release/notes.test.ts .github/src/release/version.test.ts
-          bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
+          canary=()
+          if [ "$CANARY" = true ]; then
+            commit="$(git rev-parse HEAD)"
+            canary=(--canary "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT.g${commit:0:12}")
+          else
+            bun .github/src/release/notes.ts "$(jq -r .version packages/akter/package.json)" > "$RUNNER_TEMP/release-notes.md"
+          fi
           bun run prepare
-          bun .github/src/pack.ts --out "$RUNNER_TEMP/package" --cli-out "$RUNNER_TEMP/package-cli"
-          npm publish "$RUNNER_TEMP/package-cli" --dry-run --ignore-scripts --access public --tag "${{ steps.release.outputs.tag }}"
+          bun .github/src/pack.ts --out "$RUNNER_TEMP/package" --cli-out "$RUNNER_TEMP/package-cli" "${canary[@]}"
+          npm publish "$RUNNER_TEMP/package-cli" --dry-run --ignore-scripts --access public --tag "$DIST_TAG"
       - name: Install the tarballs into a clean project and run them on Node and Bun
         run: |
           SMOKE_RUNTIME=node bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package" --cli-package "$RUNNER_TEMP/package-cli"
           SMOKE_RUNTIME=bun bun .github/src/release/smoke.ts --package "$RUNNER_TEMP/package" --cli-package "$RUNNER_TEMP/package-cli"
       - name: Publish through npm trusted publishing
-        if: steps.release.outputs.published == 'false'
-        env:
-          DIST_TAG: ${{ steps.release.outputs.tag }}
-        run: npm publish "$RUNNER_TEMP/package" --provenance --access public --tag "$DIST_TAG"
-      - name: Publish the CLI through npm trusted publishing
         env:
           DIST_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          name="$(jq -r .name "$RUNNER_TEMP/package-cli/package.json")"
-          version="$(jq -r .version "$RUNNER_TEMP/package-cli/package.json")"
-          if [ "$(npm view "$name@$version" version 2>/dev/null || true)" != "$version" ]; then
-            npm publish "$RUNNER_TEMP/package-cli" --provenance --access public --tag "$DIST_TAG"
-          fi
+          for package in "$RUNNER_TEMP/package" "$RUNNER_TEMP/package-cli"; do
+            name="$(jq -r .name "$package/package.json")"
+            version="$(jq -r .version "$package/package.json")"
+            if [ "$(npm view "$name@$version" version 2>/dev/null || true)" != "$version" ]; then
+              npm publish "$package" --provenance --access public --tag "$DIST_TAG"
+            else
+              echo "$name@$version is already on npm; skipping the immutable publish"
+            fi
+          done
+      - name: Promote pre-1.0 releases to latest
+        if: steps.release.outputs.promote_latest == 'true'
+        run: |
+          set -euo pipefail
+          for package in "$RUNNER_TEMP/package" "$RUNNER_TEMP/package-cli"; do
+            name="$(jq -r .name "$package/package.json")"
+            version="$(jq -r .version "$package/package.json")"
+            current="$(npm view "$name" dist-tags --json | jq -r '.latest // empty')"
+            if [ -z "$current" ] || bun -e 'process.exit(Bun.semver.order(Bun.argv[1], Bun.argv[2]) < 0 ? 1 : 0)' "$version" "$current"; then
+              npm dist-tag add "$name@$version" latest
+            else
+              echo "$name latest is already newer ($current); leaving it unchanged"
+            fi
+          done
       - name: Upload the validated release notes
+        if: env.CANARY != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-notes-${{ github.run_id }}
@@ -125,6 +159,7 @@ jobs:
           retention-days: 14
   github-release:
     needs: publish
+    if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

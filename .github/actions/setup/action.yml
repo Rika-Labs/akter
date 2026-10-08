@@ -1,11 +1,11 @@
 name: Set up the workspace
-description: Install the pinned Bun and Node toolchains and the frozen dependencies, then patch the compiler the way `bun run prepare` does. On Namespace runners the Bun package cache and the local Turborepo cache live on the runner's cache volume; on GitHub-hosted runners, which only fork pull requests use, the Bun package cache is restored from the GitHub cache.
+description: Install the pinned Bun and Node toolchains and frozen dependencies, restore the Bun package cache on GitHub-hosted runners, then patch the compiler the way `bun run prepare` does.
 inputs:
   save-cache:
     description: On GitHub-hosted runners, save the Bun package cache when the exact key missed. One job per workflow saves it; the others only restore.
     default: "false"
   typecheck-cache:
-    description: On GitHub-hosted runners, restore and save the incremental typecheck state. Namespace runners keep it in the Turborepo cache.
+    description: Restore and save incremental typecheck state for the exact commit.
     default: "false"
 runs:
   using: composite
@@ -18,32 +18,22 @@ runs:
       with:
         node-version: 26.7.0
         package-manager-cache: false
-    - name: Keep the Turborepo cache on the cache volume
-      if: runner.environment != 'github-hosted'
-      shell: bash
-      run: echo "TURBO_CACHE_DIR=$HOME/.cache/turbo" >> "$GITHUB_ENV"
-    - name: Attach the Bun package and Turborepo caches
-      if: runner.environment != 'github-hosted'
-      uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9
-      with:
-        cache: bun
-        path: ~/.cache/turbo
     - name: Restore Bun package cache
-      if: runner.environment == 'github-hosted' && inputs.save-cache != 'true'
+      if: inputs.save-cache != 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ~/.bun/install/cache
         key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
         restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
     - name: Restore and save Bun package cache
-      if: runner.environment == 'github-hosted' && inputs.save-cache == 'true'
+      if: inputs.save-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ~/.bun/install/cache
         key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
         restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
     - name: Restore incremental typecheck state
-      if: runner.environment == 'github-hosted' && inputs.typecheck-cache == 'true'
+      if: inputs.typecheck-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: |

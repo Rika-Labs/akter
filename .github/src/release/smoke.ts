@@ -57,8 +57,26 @@ const consumerTsconfig = {
     skipLibCheck: true,
     types: ["bun"],
   },
-  include: ["main.ts"],
+  include: ["main.ts", "cloud-api.ts"],
 }
+
+const cloudApiMain = `import assert from "node:assert/strict"
+import { CloudApi, ProjectId, Role, LogLimit } from "@rikalabs/akter-cli/cloud-api"
+import { Schema } from "effect"
+
+const project: ProjectId = Schema.decodeUnknownSync(ProjectId)("project-smoke")
+assert.equal(project, "project-smoke")
+assert.equal(CloudApi.groups.projects.endpoints.get.path, "/api/projects/:projectId")
+assert.equal(Schema.decodeUnknownSync(Role)("viewer"), "viewer")
+assert.throws(() => Schema.decodeUnknownSync(Role)("operator"))
+assert.equal(Schema.decodeUnknownSync(LogLimit)(200), 200)
+assert.throws(() => Schema.decodeUnknownSync(LogLimit)(201))
+
+// @ts-expect-error Role is a finite union, not an arbitrary string.
+const invalidRole: Role = "operator"
+void invalidRole
+console.log("cloud-api contract passed")
+`
 
 const consumerMain = (
   engine: "bun" | "node",
@@ -359,6 +377,7 @@ const program = Effect.gen(function* () {
   )
   yield* fs.writeFileString(path.join(consumer, "main.ts"), main)
   yield* fs.writeFileString(path.join(consumer, "app.ts"), cliMain)
+  yield* fs.writeFileString(path.join(consumer, "cloud-api.ts"), cloudApiMain)
 
   yield* run(["bun", "install", "--ignore-scripts"], consumer)
 
@@ -368,6 +387,10 @@ const program = Effect.gen(function* () {
     return yield* Effect.die(new Error(`${staged.name} installed a second copy of effect`))
 
   yield* run(["bunx", "--bun", "tsc", "-p", "tsconfig.json"], consumer)
+
+  const contract = (yield* run([engine, "cloud-api.ts"], consumer)).trim()
+  if (contract !== "cloud-api contract passed")
+    return yield* Effect.die(new Error(`Cloud API contract import failed: ${contract}`))
 
   const output = (yield* run([engine, "main.ts"], consumer)).trim()
 
@@ -426,7 +449,7 @@ console.log("quickstart retry and rollback passed")
   )
 
   yield* Console.log(
-    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and runs on ${engine}: memory ${output}, quickstart restart ${first} -> ${restarted}; ${cliStaged.name}@${cliStaged.version}: help, offline login help, dev readiness, counter [7,9], inspector asset, and old-route refusal pass`,
+    `${staged.name}@${staged.version}: ${tarball} installs into a clean project, typechecks, and runs on ${engine}: memory ${output}, quickstart restart ${first} -> ${restarted}; ${cliStaged.name}@${cliStaged.version}: cloud-api types, import, endpoint and schema checks, help, offline login help, dev readiness, counter [7,9], inspector asset, and old-route refusal pass`,
   )
 }).pipe(Effect.scoped)
 

@@ -17,18 +17,15 @@ defaults:
   run:
     shell: bash
 jobs:
-  # Pull requests from forks run on GitHub-hosted runners, so untrusted code never
-  # reaches the Namespace account or its cache volumes; everything else runs on Namespace.
   changes:
     name: changes
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'namespace-profile-akter' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
       pull-requests: read
     outputs:
-      runner: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'namespace-profile-akter' }}
       suites: ${{ steps.plan.outputs.suites }}
     steps:
       # The test suites are skipped only when a pull request changes nothing but
@@ -76,7 +73,7 @@ jobs:
     name: self-host-recipe
     needs: [changes, static]
     if: needs.changes.outputs.suites == 'true'
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -100,7 +97,7 @@ jobs:
   static:
     name: static
     needs: changes
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
       postgres:
@@ -186,7 +183,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: changes
     if: needs.changes.outputs.suites == 'true'
-    runs-on: ${{ needs.changes.outputs.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -317,7 +314,7 @@ jobs:
       - static
       - suites
     if: always()
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'namespace-profile-akter' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
