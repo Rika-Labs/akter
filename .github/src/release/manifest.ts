@@ -30,7 +30,8 @@ export type FrameworkManifest = typeof FrameworkManifest.Type
 const REQUIRED_FILES = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE"]
 
 /** Sources, tests, build caches and the spawned crash fixtures stay in the repository. */
-const FORBIDDEN_FILE = /(^|\/)src\/|\.test\.|(^|\/)crash\/|\.tsbuildinfo$|(?<!\.d)\.ts$/
+const FORBIDDEN_FILE =
+  /(^|\/)src\/|\.test\.|(^|\/)crash\/|\.tsbuildinfo$|(?<!\.d)\.ts$|(^|\/)testing\/(?:conformance(?:\/|\.)|foundation\.|cluster\.|simulate(?:-cluster)?\.)/
 
 const resolveSpecifiers = (
   specifiers: Readonly<Record<string, string>>,

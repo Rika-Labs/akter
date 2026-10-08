@@ -143,7 +143,7 @@ These are the recommended answers. Dallen decides them when accepting this recor
 
 ## Evidence
 
-- Conformance ([`conformance/rls.ts`](../../packages/akter/src/testing/conformance/rls.ts)) runs seven cases: six on PGlite and Postgres, and one on Postgres alone because it needs independent connections:
+- Conformance ([`conformance/rls.ts`](../../tooling/conformance/src/conformance/rls.ts)) runs seven cases: six on PGlite and Postgres, and one on Postgres alone because it needs independent connections:
   - three runners on one database serve two tenants' turns, timers, effect routes, owned rows, and reads, each seeing only its own, with actors owned by more than one runner;
   - every table with a `tenant_id` carries the policy;
   - two tenants run turns, timers, effects with routes, queries, and owned rows, and each sees only its own;

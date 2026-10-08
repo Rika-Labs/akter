@@ -7,6 +7,8 @@
 
 Each milestone owns a vertical slice with explicit non-goals, acceptance tests, evidence, and exit criteria. No later feature is allowed to hide an unproven earlier invariant.
 
+Historical milestone spellings such as `ActorTest.cluster` and `ActorTest.simulate` describe the API at that delivery point. [ADR 0111](../decisions/0111-framework-verification-workspace.md) moved those framework-maintainer harnesses to private `@akter/conformance` tooling; current app tests use the smaller `@rikalabs/akter/testing` entry.
+
 M0, M1, M2, and M4 are complete or closed with the open evidence gates listed in their exit status sections. M3's core served APIs have shipped, but its original example/browser acceptance tests were removed and its historical benchmark gate does not establish current launch support; M3, M5, and M6 remain open. The launch claim is multi-runner on one host, verified with three Bun processes; provider and separate-host gates remain explicit. Grouping a gate under M5 does not allow support to be claimed before it passes.
 
 - [M0](M0-foundation.md): framework package skeleton, Postgres runtime, fenced command turns, receipts, `ActorTest`, and database conformance.

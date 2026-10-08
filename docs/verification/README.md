@@ -9,7 +9,7 @@ The cross-database coordination regression suite is `packages/akter/src/runtime/
 **Owner role:** verification/reliability.  
 **Change policy:** new guarantees require a test or an explicit unsupported result.
 
-The v4 evidence surface is `ActorTest` from `@rikalabs/akter/testing`, with `describeConformance` running the same guarantees against PGlite, a real Postgres database, and Neki. Fast tests MAY use PGlite; database locks, pooling, runner movement, and Neki behavior require their real targets.
+The v4 app-testing surface is `ActorTest` from `@rikalabs/akter/testing`. The unpublished `@akter/conformance` workspace in `tooling/conformance` runs `describeConformance` against PGlite, a real Postgres database, and Neki; it also owns cluster/simulation harnesses and crash fixtures. Fast tests MAY use PGlite; database locks, pooling, runner movement, and Neki behavior require their real targets. [Package evidence](framework-package.md) records the boundary and dependency upgrade checks.
 
 Single-table inspection views ([ADR 0095](../decisions/0095-single-table-inspection-views.md)) are checked by `testing/conformance/inspection-views.ts`, which runs every case once per view set on PGlite and Postgres (rows, tenant isolation, no write by any owner, catalog, schema-only reader), by `runtime/database/pglite.test.ts` (no joined view where a topology routes the actor tables, both sets elsewhere), and by the inspector and operator suites, which read only the `_v2` views. Provider-specific routed layouts and multi-shard evidence remain outside the OSS launch claim.
 

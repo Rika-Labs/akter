@@ -11,7 +11,7 @@ import {
   ISSUER,
   REGION,
   signAssertion,
-} from "../../testing/conformance/assertions.ts"
+} from "../../../../../tooling/conformance/src/conformance/assertions.ts"
 import { type AssertionKey, assertion } from "./verify.ts"
 import { Credential } from "../auth.ts"
 
