@@ -3,7 +3,7 @@
 **Responsibility:** define the public framework repository's layout and package ownership boundaries.
 **Authority:** design. **Owner role:** runtime architecture.
 
-The hosted Akter Cloud implementation is maintained separately in a private repository. This tree contains the framework, public clients, CLI, public cloud API contract and shared tooling. Framework rules for the private repository are maintained there; cloud-only decisions are private.
+The hosted Akter Cloud implementation is maintained separately in a private repository. That repository consumes the published npm packages (`@rikalabs/akter`, `@rikalabs/akter-cli` and the cloud API contract); it does not mount this repository as a submodule. This tree contains the framework, public clients, CLI, public cloud API contract and shared tooling. Framework rules for the private repository are maintained there; cloud-only decisions are private.
 
 ## Tree
 
