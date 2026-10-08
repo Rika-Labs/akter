@@ -21,7 +21,7 @@ try {
       const path = yield* Config.String("GITHUB_EVENT_PATH")
       const { pull_request: pr } = yield* Schema.decodeEffect(Pull)(yield* fs.readFileString(path))
       branchPolicy({ base: pr.base.ref, branch: pr.head.ref, author: pr.user.login })
-      yield* Console.log("Main-only issue-linked branch policy passed")
+      yield* Console.log("Main-only branch policy passed")
     }),
   )
 } finally {

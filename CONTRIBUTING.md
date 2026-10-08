@@ -39,7 +39,7 @@ TEST_DATABASE_URL=postgres://project:project@127.0.0.1:5432/project bun run test
 
 ## Branches and pull requests
 
-Name branches `type/<issue>-slug`, where `type` is one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test` or `ci`, and `<issue>` is the issue number, for example `fix/42-login`. CI enforces this in [`.github/src/policy.ts`](.github/src/policy.ts).
+Name branches `type/slug`, where `type` is one of `feat`, `fix`, `chore`, `docs`, `refactor`, `test` or `ci`, for example `fix/login`. An issue number is optional: `fix/42-login` is also valid. CI enforces this in [`.github/src/policy.ts`](.github/src/policy.ts).
 
 Pull requests target `main`.
 

@@ -11,8 +11,10 @@ export function branchPolicy({
 
   if (author === "dependabot[bot]" && branch.startsWith("dependabot/")) return
 
-  if (!/^(feat|fix|chore|docs|refactor|test|ci)\/[1-9]\d*-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(branch))
-    throw new Error("Branch must be type/issue-slug (e.g. fix/42-login)")
+  if (!/^(feat|fix|chore|docs|refactor|test|ci)\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(branch))
+    throw new Error(
+      "Branch must be type/slug, optionally type/issue-slug (e.g. fix/login or fix/42-login)",
+    )
 }
 
 export interface Evidence {
