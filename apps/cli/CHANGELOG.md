@@ -5,6 +5,7 @@
 The first CLI release, versioned with `@rikalabs/akter` on the `alpha` dist-tag.
 
 - Publishes as `@rikalabs/akter-cli` with the `akter` executable, compiled ESM and declarations for Node 24+ and Bun 1.4.2+. The inspector client is prebuilt; Node users do not need Bun. The private cloud API contract is bundled, not separately published.
+- Exposes the cloud API contract as `@rikalabs/akter-cli/cloud-api`, with compiled JavaScript and declarations for npm consumers; importing it does not execute the CLI. Tagged pre-1.0 releases also advance `latest`, while verified main canaries publish only to `next`.
 - Includes local `akter dev`, cloud login/logout/whoami, source deployment and `akter env list`, `set`, `unset` and `import`.
 - **Breaking:** operator commands read `AKTER_OPERATOR_TOKEN`, not `DURABLE_OPERATOR_TOKEN`. There is no implicit alias; set the new variable or use `--token-env`.
 - **Breaking:** the local inspector page and API use `/_akter/inspector`, not `/_durable/inspector`. Update bookmarks and requests.

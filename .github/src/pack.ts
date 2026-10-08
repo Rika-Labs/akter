@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun"
 import { Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
 import { Manifest } from "./catalogs.ts"
-import { releaseVersion } from "./release/version.ts"
+import { canaryVersion, releaseVersion } from "./release/version.ts"
 import {
   FrameworkManifest,
   publishManifest,
@@ -12,6 +12,7 @@ import {
 const args = process.argv.slice(2)
 const outIndex = args.indexOf("--out")
 const cliOutIndex = args.indexOf("--cli-out")
+const canaryIndex = args.indexOf("--canary")
 
 const PackResult = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) })),
@@ -35,6 +36,7 @@ const stagePackage = Effect.fn("stagePackage")(function* ({
   stage,
   catalog,
   versions,
+  version,
 }: {
   readonly fs: FileSystem.FileSystem
   readonly path: Path.Path
@@ -43,6 +45,7 @@ const stagePackage = Effect.fn("stagePackage")(function* ({
   readonly stage: string
   readonly catalog: Readonly<Record<string, string>>
   readonly versions: Readonly<Record<string, string>>
+  readonly version: string
 }) {
   yield* fs.remove(path.join(source, "dist"), { recursive: true, force: true })
   yield* run(["bun", "run", "build"], source)
@@ -50,7 +53,11 @@ const stagePackage = Effect.fn("stagePackage")(function* ({
   const manifest = yield* Schema.decodeEffect(Schema.fromJsonString(FrameworkManifest))(
     yield* fs.readFileString(path.join(source, "package.json")),
   )
-  const packed = publishManifest({ manifest, catalog, workspaceVersions: versions })
+  const packed = publishManifest({
+    manifest: { ...manifest, version },
+    catalog,
+    workspaceVersions: versions,
+  })
 
   yield* fs.remove(stage, { recursive: true, force: true })
   yield* fs.makeDirectory(stage, { recursive: true })
@@ -98,11 +105,14 @@ const program = Effect.gen(function* () {
   const work = yield* fs.makeTempDirectoryScoped({ prefix: "akter-pack-" })
   const out = args[outIndex + 1]
   const cliOut = args[cliOutIndex + 1]
+  const canary = args[canaryIndex + 1]
 
   if (outIndex !== -1 && (out === undefined || out === "" || out.startsWith("--")))
     return yield* Effect.die(new Error("--out needs a directory"))
   if (cliOutIndex !== -1 && (cliOut === undefined || cliOut === "" || cliOut.startsWith("--")))
     return yield* Effect.die(new Error("--cli-out needs a directory"))
+  if (canaryIndex !== -1 && (canary === undefined || canary === "" || canary.startsWith("--")))
+    return yield* Effect.die(new Error("--canary needs a build identity"))
 
   const frameworkStage =
     out === undefined || outIndex === -1 ? path.join(work, "framework") : path.resolve(out)
@@ -146,7 +156,12 @@ const program = Effect.gen(function* () {
     yield* fs.readFileString(path.join(framework, "package.json")),
   )
   const cliManifest = yield* decode(yield* fs.readFileString(path.join(cli, "package.json")))
-  const version = releaseVersion({ framework: frameworkManifest.version, cli: cliManifest.version })
+  const released = releaseVersion({
+    framework: frameworkManifest.version,
+    cli: cliManifest.version,
+  })
+  const version =
+    canaryIndex === -1 ? released : canaryVersion({ version: released, build: canary ?? "" })
   const versions = { [frameworkManifest.name]: version }
   const catalog = workspace.workspaces?.catalog ?? {}
 
@@ -158,8 +173,9 @@ const program = Effect.gen(function* () {
     stage: frameworkStage,
     catalog,
     versions,
+    version,
   })
-  yield* stagePackage({ fs, path, root, source: cli, stage: cliStage, catalog, versions })
+  yield* stagePackage({ fs, path, root, source: cli, stage: cliStage, catalog, versions, version })
 }).pipe(Effect.scoped)
 
 const runtime = ManagedRuntime.make(BunServices.layer)
