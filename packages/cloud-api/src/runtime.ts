@@ -375,7 +375,7 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
 ) {}
 
 /**
- * The organization's Free period quota cannot take the command's units;
+ * The organization reached one of its plan's hard caps, named by `cap`;
  * answered 429. It carries the framework's `QuotaExceeded` payload, including
  * when the period resets as `retryAfterMs`.
  */

@@ -64,10 +64,9 @@ describe("actorErrorOf", () => {
         const quota = QuotaExceeded.make({
           organizationId: "org",
           period: "2026-10",
-          limitUnits: 5_000_000,
-          usedUnits: 4_999_998,
-          requestedUnits: 5,
-          unitsPerCommand: 5,
+          cap: "compute",
+          limit: 750,
+          used: 750,
           retryAfterMs: 75_123,
         })
         const spend = SpendLimitExceeded.make({

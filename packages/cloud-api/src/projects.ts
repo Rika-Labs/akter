@@ -41,14 +41,20 @@ export const UpdateProject = Schema.Struct({
 })
 export type UpdateProject = typeof UpdateProject.Type
 
+/**
+ * `database` says only whose database the environment runs on and its state:
+ * Akter's `managed` one, which can be provisioning, ready, read-only or
+ * failed, or the `customer`'s own, which is always ready once set. It carries
+ * no URL or URL-derived field.
+ */
 export const Environment = Schema.Struct({
   name: EnvironmentName,
   projectId: ProjectId,
   currentDeploymentId: Schema.NullOr(DeploymentId),
   database: Schema.optionalKey(
     Schema.Struct({
-      configured: Schema.Boolean,
-      engine: Schema.Literals(["postgres", "neki"]),
+      source: Schema.Literals(["managed", "customer"]),
+      state: Schema.Literals(["provisioning", "ready", "read-only", "failed"]),
     }),
   ),
 })
