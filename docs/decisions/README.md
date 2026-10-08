@@ -1,6 +1,6 @@
 # Architecture decisions
 
-- [ADR 0067: Due-work scans use the data shard map](0067-due-work-shard-ranges.md) (implementation decision, 2026-10-03) makes relay claims, capped-job discovery, subscription probes, and holder liveness use one data bucket range at a time; isolates optional Neki shard targeting on dedicated sessions; preserves the ordinary database's one-statement, one-flight claim; and records the catalog-backed routing-key uniqueness audit. Neki topology and plan evidence remain unverified.
+- [ADR 0067: Due-work scans use the data shard map](0067-due-work-shard-ranges.md) preserves bucket-range scheduling, one-statement default claims and the routing-key uniqueness audit. Its provider-targeting clauses are superseded by [ADR 0112](0112-postgres-and-pglite-only.md).
 
 **Responsibility:** index the architecture decisions and their recorded rationale.  
 **Authority:** historical decision record.  
@@ -11,8 +11,10 @@ Use an ADR when a choice changes an interface, invariant, data model, deployment
 
 Decisions do not override newer accepted requirements. When a decision is superseded, preserve it and link the replacement.
 
+**Superseded backend decisions:** ADRs 0057, 0070, 0091–0097 and 0110 are superseded by [ADR 0112](0112-postgres-and-pglite-only.md). Their descriptions below record historical decisions, not current backend support or configuration. Provider-specific clauses in the earlier generic ADRs, including 0066 and 0067, are also superseded; their engine-independent ownership, scheduling and coordination mechanisms remain.
+
 - [ADR 0069: Node and Bun runtime portability](0069-node-runtime.md) adds Node 24+ platform layers while preserving routing keys, zstd state and file-backed PGlite kernel locks.
-- [ADR 0066: Authoritative coordination, independent of actor-data placement](0066-authoritative-coordination.md) (implementation decision, 2026-10-03) replaces per-type advisory locks with transaction-owned authoritative rows plus local data fences, makes capped job claims lock their actor's generation row, and adds an optional coordination pool for Cluster and fleet ownership. Neki provider evidence remains pending #66.
+- [ADR 0066: Authoritative coordination, independent of actor-data placement](0066-authoritative-coordination.md) replaces per-type advisory locks with transaction-owned authoritative rows plus local data fences, makes capped job claims lock their actor's generation row, and adds an optional coordination pool for Cluster and fleet ownership. Its Neki clauses are superseded by ADR 0112.
 
 - [ADR 0001: Repository structure](0001-repository-structure.md) defines the one-package framework and role-folder layout.
 - [ADR 0002: Clarify the adopted v4 contracts](0002-v4-contract-clarifications.md) reconciles the final API, transaction, and capability decisions without claiming runtime implementation.
@@ -104,3 +106,4 @@ Cloud-only decision records live in the private Akter Cloud repository.
 - [ADR 0098: Akter Cloud lives in a private proprietary repository](0098-proprietary-cloud-repository.md) (accepted 2026-10-06) supersedes ADR 0074 item 1 and ADR 0029's apps licensing clause, separates the hosted implementation into a private proprietary repository and retains the Apache-2.0 framework, public CLI and cloud API contract.
 
 - [ADR 0111: Framework verification stays outside the published package](0111-framework-verification-workspace.md) (accepted 2026-10-08) moves conformance, foundation fixtures and cluster/simulation harnesses into private `@akter/conformance` tooling while preserving the app-facing testing API and runtime evidence.
+- [ADR 0112: Postgres and PGlite are the framework's only backends](0112-postgres-and-pglite-only.md) (accepted 2026-10-08) removes Neki runtime paths, provider fixtures and CI gates; retains generic routing keys, logical authority placement and coordination; and retires single-table inspection variants through a new transactional migration.

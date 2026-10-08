@@ -11,12 +11,6 @@ export interface Exemption {
 /** Every deviation from the structure rules, each with the reason it exists. */
 export const exemptions: ReadonlyArray<Exemption> = [
   {
-    path: "packages/akter/src/runtime/database/routing.test.ts",
-    rule: "tests-beside-sources",
-    reason:
-      "Exercises turns, relays, jobs, cron, retention and holder liveness together on shard-targeted sessions, checking each committed write's session against the shard that holds its row, rather than one source module.",
-  },
-  {
     path: "tooling/oxlint/anti-slop",
     rule: "tests-beside-sources",
     reason:

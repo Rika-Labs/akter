@@ -10,7 +10,7 @@ description: "Back up and restore a deployment without creating dual writable au
 **Owner role:** operations/reliability.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
-The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, messages, events, workflows, jobs, dead letters, database-backed `actor_blobs` chunks, and the Neki outbox when applicable. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
+The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, events, workflows, jobs, dead letters, database-backed `actor_blobs` chunks, and `actor_outbox`. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
 
 ## Backups on a Postgres database
 
@@ -89,7 +89,7 @@ What the drill showed:
 
 Timings from three full runs of the drill file on a heavily loaded Mac (load average 20 to 60 in the first two), which include starting each recovery server and replaying the archive: the four cases took 1.5 to 2.9 s each on `pg_dump` and `pg_restore`, and 6 to 27 s each on point-in-time recovery, with `recovers to a named restore point...` taking 11, 29 and 64 s because it starts three recovery servers. These are not an RTO for a production database; measure yours.
 
-Not rehearsed: recovery to a `recovery_target_time` or LSN (only named restore points), a base backup taken while runners were committing (the drill's base backup precedes its data, and the online-dump case covers committing turns), a provider's volume snapshots, Neki, and a restore to a snapshot taken before a tenant move.
+Not rehearsed: recovery to a `recovery_target_time` or LSN (only named restore points), a base backup taken while runners were committing (the drill's base backup precedes its data, and the online-dump case covers committing turns), a provider's volume snapshots, and a restore to a snapshot taken before a tenant move.
 
 ## Limits
 

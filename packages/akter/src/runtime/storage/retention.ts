@@ -3,8 +3,8 @@ import { SqlClient, type SqlError } from "effect/sql"
 import { databaseTime } from "../turn/admission.ts"
 import { CleanupHooks } from "../turn/hooks.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
-import { coordinated, registry } from "../database/coordination.ts"
-import { type BucketRange, currentRanges, forEachRange, withinRange } from "../database/shards.ts"
+import { type BucketRange, forEachRange, withinRange } from "../database/shards.ts"
+import { coordinated } from "../database/coordination.ts"
 
 /** One actor type's retention horizons, in milliseconds on the framework clock, and whether it has workflows to sweep. */
 interface RetentionPolicy {
@@ -223,35 +223,12 @@ export const sweep = Effect.fnUntraced(function* (
         AND m.accepted_at_ms < (SELECT max(l.accepted_at_ms) FROM actor_workflow_manifests l
           WHERE l.actor_type = m.actor_type AND l.workflow = m.workflow)`
 
-      if (!(yield* currentRanges).some((range) => range.shard !== undefined))
-        yield* batch(sql`
+      yield* batch(sql`
           DELETE FROM actor_workflow_manifests m
           WHERE ${superseded}
             AND NOT EXISTS (SELECT 1 FROM actor_workflow_executions x
               WHERE x.actor_type = m.actor_type AND x.workflow = m.workflow
                 AND x.manifest_hash = m.manifest_hash AND x.status <> 'finished')`)
-      else {
-        const open = (yield* forEachRange(
-          (range) => sql<{ workflow: string; manifest_hash: string }>`
-          SELECT DISTINCT workflow, manifest_hash FROM actor_workflow_executions
-          WHERE actor_type = ${policy.actorType} AND status <> 'finished'
-            ${withinRange({ sql, range, column: "routing_key" })}`,
-        )).flat()
-
-        yield* coordinated({
-          resource: `akter/retention/${policy.actorType}`,
-          writesData: false,
-          work: Effect.flatMap(
-            registry,
-            (manifests) => manifests`
-            DELETE FROM actor_workflow_manifests m
-            WHERE ${superseded}
-              AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(${JSON.stringify(open)}::jsonb)
-                AS x (workflow text, manifest_hash text)
-                WHERE x.workflow = m.workflow AND x.manifest_hash = m.manifest_hash)`,
-          ),
-        })
-      }
     }
   }
 

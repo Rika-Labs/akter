@@ -1,6 +1,6 @@
 # ADR 0096: What a Neki database does once it has more than one shard
 
-**Status:** accepted (2026-10-05). Observed on a temporary three-shard Neki cluster; no Akter database has been split.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Multi-shard Neki behavior is no longer a framework target; the record below preserves historical observations.
 
 **Amended by:** [ADR 0097](0097-authority-placed-control-plane-actors.md), which replaces decision item 4 for `UsageActor`, `BillingActor`, `DeploymentLifecycle`, `TenantHome` and `CloudRunners` with authority placement, and keeps bucket -128 on the authoritative shard in every split topology.
 

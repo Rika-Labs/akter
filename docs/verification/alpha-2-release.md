@@ -2,6 +2,8 @@
 
 Recorded on 2026-10-07 for `chore/664-alpha-2`. This is candidate verification, not a publication or a production upgrade rehearsal. No npm public-registry publish, tags, dist-tag changes or production deployment were performed.
 
+This record predates [ADR 0112](../decisions/0112-postgres-and-pglite-only.md): Neki is removed, not a pending release gate. [Removal verification](neki-removal.md) records the current Postgres/PGlite-only checks.
+
 ## Environment and commands
 
 - macOS arm64; Node `24.18.0`, npm from that Node distribution, Bun `1.4.2`.

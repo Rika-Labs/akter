@@ -47,8 +47,6 @@ import { type ActorRef, type Caller, System } from "../identity/caller.ts"
 import type { AccessRequest } from "../policies/access.ts"
 import { deriveMintId } from "../identity/mint.ts"
 import { migrate } from "./database/migrations.ts"
-import { NekiRouting, NekiTurnSessions } from "./database/neki/session.ts"
-import type { NekiTopologyAccessDenied } from "../errors/database.ts"
 import { schemaChange } from "./database/schema.ts"
 import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
@@ -108,9 +106,7 @@ import { ContentHooks } from "./turn/hooks.ts"
 import { bindTables, rowsDatabase } from "./turn/rows.ts"
 import type { AnyOwnedTable } from "../tables/owned.ts"
 import { admissionLimit, isOverloaded, overloaded } from "./admission.ts"
-import { isPoolRefusal, routedLayer } from "./database/bounded.ts"
-import { nekiDirectory } from "./database/neki/topology.ts"
-import { onShard, untargeted } from "./database/shards.ts"
+import { boundedLayer, isPoolRefusal } from "./database/bounded.ts"
 import { RuntimeControl, runtimeControl, turnGate } from "./drain.ts"
 import { eventFeeds } from "./feeds.ts"
 import { committedReads } from "./queries.ts"
@@ -956,7 +952,6 @@ export const layer = (options: Options = {}) => {
           )
         },
         Effect.provideContext(services),
-        untargeted,
         Effect.catchIf(SqlError.isSqlError, (cause) =>
           Effect.fail(ActorError.make({ reason: ActorUnavailable.make({ cause }) })),
         ),
@@ -1440,11 +1435,11 @@ export const layer = (options: Options = {}) => {
           const sql = yield* SqlClient.SqlClient
           const key = routingKey({ ref, placement: registration.placement })
 
-          const [found] = yield* onShard(key)(sql<{ hash: string; size: number }>`
+          const [found] = yield* sql<{ hash: string; size: number }>`
             SELECT hash, size::float8 AS size FROM actor_content_refs
             WHERE routing_key = ${key}
               AND tenant_id = ${ref.tenant} AND actor_type = ${ref.actor} AND actor_id = ${ref.id}
-              AND blob = ${blob} AND name = ${name}`)
+              AND blob = ${blob} AND name = ${name}`
 
           const timeoutMs =
             "policy" in registration ? registration.policy.executionMs : registration.timeoutMs
@@ -1634,7 +1629,6 @@ export const layer = (options: Options = {}) => {
 type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
   readonly offTurnConnections?: number
   readonly queryConnections?: number
-  readonly neki?: boolean | { readonly routing: "none" }
   readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
   /** An unsharded primary shared by every runner; owns coordination rows and Cluster and fleet locks. */
   readonly coordination?: Omit<PgClient.PgPoolConfig, "types"> | undefined
@@ -1662,32 +1656,14 @@ type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
  * (`maxConnections` default 10) opens connections only as queries need them.
  * Every pool requests server TCP keepalives at 5 seconds idle, 2 seconds
  * between probes, and 3 probes. `startupParameters` overrides these defaults
- * independently on the primary and replica configurations. A Neki router
- * reports no commit version for a replica to wait for, so `neki` refuses a
- * `replica`.
- *
- * On a Neki database whose topology routes tables, the runtime reads the
- * bucket ranges from the router, and the off-turn, query and turn pools
- * each open one more pool of the same size per data shard, whose sessions
- * are targeted at that shard. Count them against `max_connections`.
- * `neki: { routing: "none" }` declares that this database routes no table:
- * it never reads topology and keeps one untargeted range, while retaining
- * all Neki transaction and DDL rules. The platform must keep that guarantee
- * for the database's lifetime; an unreadable topology never opts in for it.
+ * independently on the primary and replica configurations.
  *
  * Registers a `regclass` codec because the pinned driver lacks one and the
  * migrator needs it on restart; remove once Effect #8309 lands.
  */
 function postgres(
-  options: Omit<PostgresOptions, "neki"> & { readonly neki?: false | undefined },
-): Layer.Layer<PgClient.PgClient | SqlClient.SqlClient | TurnConnections, SqlError.SqlError>
-function postgres(
   options: PostgresOptions,
-): Layer.Layer<
-  PgClient.PgClient | SqlClient.SqlClient | TurnConnections,
-  SqlError.SqlError | NekiTopologyAccessDenied
->
-function postgres(options: PostgresOptions) {
+): Layer.Layer<PgClient.PgClient | SqlClient.SqlClient | TurnConnections, SqlError.SqlError> {
   const types = PgTypes.makeRegistry()
   types.register(2205, {
     encode: (value: number) => PgTypes.encode(value, PgTypes.OID.oid),
@@ -1699,51 +1675,27 @@ function postgres(options: PostgresOptions) {
         : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
   })
 
-  const { offTurnConnections, queryConnections, replica, neki, coordination, ...configured } =
-    options
-  const isNeki = neki !== undefined && neki !== false
-  const routing = neki === undefined || neki === false || neki === true ? "live" : neki.routing
-  if (isNeki && replica !== undefined)
-    throw new Error("A Neki database has no commit version for a replica to wait for")
+  const { offTurnConnections, queryConnections, replica, coordination, ...configured } = options
   const pool = withKeepalives(configured)
 
-  const database = Layer.mergeAll(
-    routedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
-    isNeki
-      ? turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types })
-      : turnGroups.pipe(
-          Layer.provideMerge(
-            turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
-          ),
-        ),
+  return Layer.mergeAll(
+    boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+    turnGroups.pipe(
+      Layer.provideMerge(
+        turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+      ),
+    ),
     queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
     replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
     coordinationLayer(
       coordination === undefined ? undefined : { ...withKeepalives(coordination), types },
     ),
   )
-  const located = isNeki ? nekiDirectory.pipe(Layer.provideMerge(database)) : database
-  return neki === undefined
-    ? located
-    : located.pipe(
-        Layer.provideMerge(
-          Layer.mergeAll(
-            Layer.succeed(NekiTurnSessions, isNeki),
-            Layer.succeed(NekiRouting, routing),
-          ),
-        ),
-      )
 }
 
 /** Database layers for `Actors.layer`: `postgres` for real deployments, `pglite` for embedded and test use. */
 export const Database = {
   postgres,
   pglite,
-  /**
-   * Whether the database is Neki (default `false`). `postgres({ neki })`
-   * provides it; a process that opens its own Postgres client and runs no
-   * actors provides it itself so `schemaChange` follows Neki's DDL rules.
-   */
-  Neki: NekiTurnSessions,
   schemaChange,
 }

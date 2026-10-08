@@ -58,7 +58,7 @@ There is one package, `@rikalabs/akter`, with four entries:
 
 ## Testing
 
-`ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. In-memory PGlite is its fast default; a real Postgres server must prove locking and multi-connection behavior, and the same conformance suite gates Neki support. The harness includes callers, virtual time, crashes, pauses, stale generations, jobs, workflows, seeded old state, and inspection without inventing a fake handler runtime; the conformance suites record the evidence for each.
+`ActorTest` exercises the real turn, storage, serialization, receipts, and fault boundaries. In-memory PGlite is its fast default; a real Postgres server must prove locking and multi-connection behavior. These are the framework's only backends. The harness includes callers, virtual time, crashes, pauses, stale generations, jobs, workflows, seeded old state, and inspection without inventing a fake handler runtime; the unpublished conformance workspace records the evidence for each.
 
 The same contract also derives an MCP endpoint and a generated Python client ([generating clients](../api/05-generated-clients.md)). This does not make the framework AI-specific: MCP is a transport. A durable agent runtime is outside this repository and can be built on the published package using ordinary actors ([ADR 0017](../decisions/0017-m1-record-corrections.md)).
 

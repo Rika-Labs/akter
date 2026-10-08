@@ -1,5 +1,7 @@
 # Explicit unrouted Neki verification
 
+**Retired:** historical evidence for the backend removed by [ADR 0112](../decisions/0112-postgres-and-pglite-only.md). The tests and options named below no longer exist. Do not use this record as configuration guidance or a current support claim; see [removal verification](neki-removal.md).
+
 **Responsibility:** distinguish local runtime evidence from Neki provider evidence for [ADR 0110](../decisions/0110-explicit-unrouted-neki.md).
 
 **Authority:** evidence. **Owner role:** runtime and platform verification. **Change policy:** new guarantees require independently checked boundary evidence.

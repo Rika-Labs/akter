@@ -1,6 +1,6 @@
 # ADR 0067: Due-work scans use the data shard map
 
-**Status:** implementation decision (2026-10-03). [ADR 0094](0094-neki-shard-targeted-sessions.md) amends where the map comes from (the Neki topology) and how a range's sessions are targeted (a pool per shard targeted from its startup packet).
+**Status:** implementation decision (2026-10-03), amended by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Neki targeting and provider gates are superseded; static bucket ranges, shared claim capacity and ownership-key audits remain.
 
 **Responsibility:** implement the per-data-shard claims required by ADR 0021, including connection-holder liveness, and audit framework uniqueness for shard-local enforcement (#484 and #486).
 

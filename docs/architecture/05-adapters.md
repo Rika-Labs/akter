@@ -7,7 +7,7 @@
 
 The public distribution is one package, `@rikalabs/akter`, with four entries: `.`, `@rikalabs/akter/runtime`, `@rikalabs/akter/client`, and `@rikalabs/akter/testing`. Provider mechanics stay behind the runtime entry; browser contracts and clients never import SQL or Cluster internals.
 
-The primary database adapter is Postgres database. It must preserve transaction scope, `SELECT ... FOR UPDATE` fencing, tenant scoping, pooling behavior, migrations, receipts, and restore semantics. Neki is a hosted-deployment adapter with an explicit outbox relay and conformance gates; wire compatibility alone is not support.
+The database adapters are Postgres and embedded PGlite, within the [support matrix](../operations/support-matrix.md). They must preserve transaction scope, `SELECT ... FOR UPDATE` fencing, tenant scoping, pooling behavior, migrations, receipts, and restore semantics. Wire compatibility alone is not backend support.
 
 Supported data-access adapters automatically derive tenant, actor ownership, phase, and transaction binding from the runtime context. An application chooses the integration at composition time and supplies only business fields and filters during ordinary actor-row access. The framework owns the scoping rule; adapter-specific builders translate it without requiring application ownership predicates or permitting caller overrides.
 
@@ -17,13 +17,13 @@ Drizzle on a Postgres database is the first target, not an exclusive long-term i
 
 The published operation matrix for Drizzle is in [Drizzle integration](../api/04-drizzle.md). Its support by backend:
 
-| Operation on owned tables                                             | Drizzle + Postgres database | Drizzle + PGlite | Neki       |
-| --------------------------------------------------------------------- | --------------------------- | ---------------- | ---------- |
-| scoped `one`, `all`, `count` in turns and queries                     | supported                   | supported        | unverified |
-| scoped `insert`, `update().where`, `delete().where`                   | supported                   | supported        | unverified |
-| scoped `upsert` on the ownership-prefixed primary key                 | supported                   | supported        | unverified |
-| `group` select with inner/left joins                                  | supported                   | supported        | unverified |
-| raw SQL, `db.query`, `returning`, joins in writes, CTEs, foreign keys | rejected                    | rejected         | rejected   |
+| Operation on owned tables                                             | Drizzle + Postgres | Drizzle + PGlite |
+| --------------------------------------------------------------------- | ------------------ | ---------------- |
+| scoped `one`, `all`, `count` in turns and queries                     | supported          | supported        |
+| scoped `insert`, `update().where`, `delete().where`                   | supported          | supported        |
+| scoped `upsert` on the ownership-prefixed primary key                 | supported          | supported        |
+| `group` select with inner/left joins                                  | supported          | supported        |
+| raw SQL, `db.query`, `returning`, joins in writes, CTEs, foreign keys | rejected           | rejected         |
 
 "Supported" means the automatic adapter scoping cases pass on that backend; contention and independent-connection cases run on a Postgres database only.
 
@@ -31,4 +31,4 @@ The published operation matrix for Drizzle is in [Drizzle integration](../api/04
 
 External calls are declared jobs executed after commit under their retry and dead-letter policies. Framework blobs are database-backed chunks, not an external object-storage adapter. Runtime clocks use Effect `Clock` so tests can control time. Application provider integrations may narrow capabilities, but must report unsupported guarantees rather than silently weakening them.
 
-The repository's unpublished `@akter/conformance` workspace is the executable evidence for a Postgres database, PGlite, and Neki behavior. Application tests use `ActorTest` from `@rikalabs/akter/testing`. See [support matrix](../operations/support-matrix.md).
+The repository's unpublished `@akter/conformance` workspace is the executable evidence for Postgres and PGlite behavior. Application tests use `ActorTest` from `@rikalabs/akter/testing`. See [support matrix](../operations/support-matrix.md).

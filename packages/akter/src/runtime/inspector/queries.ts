@@ -70,19 +70,19 @@ export const overview = ({ tenant }: { readonly tenant: string }) =>
 
     const [counts] = yield* sql<Inspection.Overview["counts"]>`
       SELECT
-        (SELECT count(*)::int FROM durable.actors_v2 WHERE tenant_id = ${tenant}) AS actors,
-        (SELECT count(*)::int FROM durable.receipts_v2 WHERE tenant_id = ${tenant}) AS receipts,
-        (SELECT count(*)::int FROM durable.events_v2 WHERE tenant_id = ${tenant}) AS events,
-        (SELECT count(*)::int FROM durable.outbox_v2 WHERE tenant_id = ${tenant}) AS outbox,
-        (SELECT count(*)::int FROM durable.timers_v2 WHERE tenant_id = ${tenant}) AS timers,
-        (SELECT count(*)::int FROM durable.jobs_v2 WHERE tenant_id = ${tenant}) AS jobs,
-        (SELECT count(*)::int FROM durable.dead_letters_v2 WHERE tenant_id = ${tenant}) AS "deadLetters",
-        (SELECT count(*)::int FROM durable.workflows_v2 WHERE tenant_id = ${tenant}) AS workflows,
-        (SELECT count(*)::int FROM durable.workflows_v2
+        (SELECT count(*)::int FROM durable.actors WHERE tenant_id = ${tenant}) AS actors,
+        (SELECT count(*)::int FROM durable.receipts WHERE tenant_id = ${tenant}) AS receipts,
+        (SELECT count(*)::int FROM durable.events WHERE tenant_id = ${tenant}) AS events,
+        (SELECT count(*)::int FROM durable.outbox WHERE tenant_id = ${tenant}) AS outbox,
+        (SELECT count(*)::int FROM durable.timers WHERE tenant_id = ${tenant}) AS timers,
+        (SELECT count(*)::int FROM durable.jobs WHERE tenant_id = ${tenant}) AS jobs,
+        (SELECT count(*)::int FROM durable.dead_letters WHERE tenant_id = ${tenant}) AS "deadLetters",
+        (SELECT count(*)::int FROM durable.workflows WHERE tenant_id = ${tenant}) AS workflows,
+        (SELECT count(*)::int FROM durable.workflows
           WHERE tenant_id = ${tenant} AND status <> 'finished') AS "openWorkflows"`
 
     const [timer] = yield* sql<{ dueAtMs: number | null }>`
-      SELECT min(due_at_ms)::float8 AS "dueAtMs" FROM durable.timers_v2 WHERE tenant_id = ${tenant}`
+      SELECT min(due_at_ms)::float8 AS "dueAtMs" FROM durable.timers WHERE tenant_id = ${tenant}`
 
     return {
       tenant,
@@ -104,22 +104,6 @@ interface ActorsPage extends Page {
   /** Keyset cursor: the last actor of the previous page. */
   readonly after?: ActorIdentity | undefined
 }
-
-/**
- * The placement each recorded actor type was registered with, read from its own view and
- * joined to actor rows here: a router serves a view that reads one table, so no view carries
- * both. An unrecorded type has none.
- */
-const placements = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-
-  const rows = yield* sql<{
-    readonly actorType: string
-    readonly placement: string
-  }>`SELECT actor_type AS "actorType", placement FROM durable.placements_v2`
-
-  return new Map(rows.map((row) => [row.actorType, row.placement]))
-})
 
 /**
  * The receipts an actor's last command is looked for among: its greatest
@@ -157,19 +141,19 @@ export const actors = (page: ActorsPage) =>
         : sql`(a.actor_type COLLATE "C", a.actor_id COLLATE "C") > (${page.after.actorType}, ${page.after.actorId})`
 
     const rows = yield* sql<
-      Omit<Inspection.ActorRow, "placement"> & {
+      Inspection.ActorRow & {
         readonly lastCommand: string | null
         readonly lastCommittedAtMs: number | null
       }
     >`
       SELECT a.actor_type AS "actorType", a.actor_id AS "actorId",
-        a.generation::float8 AS generation, a.created,
+        a.generation::float8 AS generation, a.created, a.placement,
         a.last_event_sequence::float8 AS "lastEventSequence",
         l.command AS "lastCommand", l.committed_at_ms::float8 AS "lastCommittedAtMs"
-      FROM durable.actors_v2 a
+      FROM durable.actors a
       LEFT JOIN LATERAL (
         SELECT n.command, n.committed_at_ms FROM (
-          SELECT r.command, r.command_id, r.committed_at_ms FROM durable.receipts_v2 r
+          SELECT r.command, r.command_id, r.committed_at_ms FROM durable.receipts r
           WHERE r.routing_key = a.routing_key AND r.tenant_id = a.tenant_id
             AND r.actor_type = a.actor_type AND r.actor_id = a.actor_id
           ORDER BY r.command_id DESC
@@ -184,12 +168,10 @@ export const actors = (page: ActorsPage) =>
     const more = rows.length > page.limit
     const items = more ? rows.slice(0, page.limit) : rows
     const last = items.at(-1)
-    const recorded = yield* placements
 
     return {
       actors: items.map(({ lastCommand, lastCommittedAtMs, ...actor }) => ({
         ...actor,
-        placement: recorded.get(actor.actorType) ?? null,
         lastCommand:
           lastCommand === null || lastCommittedAtMs === null
             ? null
@@ -204,16 +186,14 @@ const findActor = ({ tenant, actorType, actorId }: ActorPage) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
 
-    const [row] = yield* sql<Omit<StoredActor, "placement">>`
+    const [row] = yield* sql<StoredActor>`
       SELECT actor_type AS "actorType", actor_id AS "actorId", routing_key::text AS "routingKey",
-        generation::float8 AS generation, created,
+        generation::float8 AS generation, created, placement,
         last_event_sequence::float8 AS "lastEventSequence"
-      FROM durable.actors_v2
+      FROM durable.actors
       WHERE tenant_id = ${tenant} AND actor_type = ${actorType} AND actor_id = ${actorId}`
 
-    if (row === undefined) return Option.none()
-
-    return Option.some({ ...row, placement: (yield* placements).get(row.actorType) ?? null })
+    return Option.fromUndefinedOr(row)
   })
 
 type ReceiptRow = Omit<Inspection.ReceiptRow, "callerKey" | "outcome" | "events"> & {
@@ -339,18 +319,18 @@ export const actor = (page: ActorPage) =>
       AND actor_type = ${page.actorType} AND actor_id = ${page.actorId}`
 
     const state = yield* sql<{ key: string; value: Uint8Array; bytes: number }>`
-      SELECT key, value, value_bytes::int AS bytes FROM durable.state_v2
+      SELECT key, value, value_bytes::int AS bytes FROM durable.state
       WHERE ${owned} ORDER BY key COLLATE "C"`
 
     const receipts = yield* sql<ReceiptRow>`
       SELECT r.command_id AS "commandId", r.command, r.caller_key AS "callerKey",
         r.outcome_tag AS "outcomeTag", r.outcome, r.expires_at_ms::float8 AS "expiresAtMs",
         r.started_at_ms::float8 AS "startedAtMs", r.committed_at_ms::float8 AS "committedAtMs",
-        (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events_v2 e
+        (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events e
           WHERE e.routing_key = r.routing_key AND e.tenant_id = r.tenant_id
             AND e.actor_type = r.actor_type AND e.actor_id = r.actor_id
             AND e.command_id = r.command_id) AS events
-      FROM durable.receipts_v2 r
+      FROM durable.receipts r
       WHERE ${owned}
       ORDER BY r.expires_at_ms DESC, r.command_id COLLATE "C"
       LIMIT ${page.limit}`
@@ -358,41 +338,41 @@ export const actor = (page: ActorPage) =>
     const events = yield* sql<EventRow>`
       SELECT sequence::float8 AS sequence, event, command_id AS "commandId", value,
         value_bytes::int AS bytes, emitted_at_ms::float8 AS "emittedAtMs"
-      FROM durable.events_v2
+      FROM durable.events
       WHERE ${owned} ORDER BY sequence DESC LIMIT ${page.limit}`
 
     const outbox = yield* sql.unsafe<OutboxRow>(
-      `SELECT ${OUTBOX_COLUMNS} FROM durable.outbox_v2
+      `SELECT ${OUTBOX_COLUMNS} FROM durable.outbox
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
         ORDER BY due_at_ms, intent_id COLLATE "C" LIMIT $5`,
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
     const jobs = yield* sql.unsafe<JobRow>(
-      `SELECT ${JOB_COLUMNS} FROM durable.jobs_v2
+      `SELECT ${JOB_COLUMNS} FROM durable.jobs
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
         ORDER BY due_at_ms, job_id COLLATE "C" LIMIT $5`,
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
     const deadLetters = yield* sql.unsafe<DeadLetterRow>(
-      `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters_v2
+      `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
         ORDER BY dead_at_ms DESC, job_id COLLATE "C" LIMIT $5`,
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
     const workflows = yield* sql.unsafe<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows_v2
+      `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
         ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5`,
       [routingKey, page.tenant, page.actorType, page.actorId, page.limit],
     )
 
     const steps = yield* sql.unsafe<StepRow>(
-      `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps_v2
+      `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
         WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
-          AND execution_id IN (SELECT execution_id FROM durable.workflows_v2
+          AND execution_id IN (SELECT execution_id FROM durable.workflows
             WHERE routing_key = $1::int8 AND tenant_id = $2 AND actor_type = $3 AND actor_id = $4
             ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5)
         ORDER BY started_at_ms, step COLLATE "C", attempt`,
@@ -401,12 +381,12 @@ export const actor = (page: ActorPage) =>
 
     const [totals] = yield* sql<Inspection.ActorDetail["totals"]>`
       SELECT
-        (SELECT count(*)::int FROM durable.receipts_v2 WHERE ${owned}) AS receipts,
-        (SELECT count(*)::int FROM durable.events_v2 WHERE ${owned}) AS events,
-        (SELECT count(*)::int FROM durable.outbox_v2 WHERE ${owned}) AS outbox,
-        (SELECT count(*)::int FROM durable.jobs_v2 WHERE ${owned}) AS jobs,
-        (SELECT count(*)::int FROM durable.dead_letters_v2 WHERE ${owned}) AS "deadLetters",
-        (SELECT count(*)::int FROM durable.workflows_v2 WHERE ${owned}) AS workflows`
+        (SELECT count(*)::int FROM durable.receipts WHERE ${owned}) AS receipts,
+        (SELECT count(*)::int FROM durable.events WHERE ${owned}) AS events,
+        (SELECT count(*)::int FROM durable.outbox WHERE ${owned}) AS outbox,
+        (SELECT count(*)::int FROM durable.jobs WHERE ${owned}) AS jobs,
+        (SELECT count(*)::int FROM durable.dead_letters WHERE ${owned}) AS "deadLetters",
+        (SELECT count(*)::int FROM durable.workflows WHERE ${owned}) AS workflows`
 
     return Option.some({
       actor: row,
@@ -427,7 +407,7 @@ export const outbox = ({ tenant, limit }: Page) =>
     const sql = yield* SqlClient.SqlClient
 
     const rows = yield* sql.unsafe<OutboxRow>(
-      `SELECT ${OUTBOX_COLUMNS} FROM durable.outbox_v2 WHERE tenant_id = $1
+      `SELECT ${OUTBOX_COLUMNS} FROM durable.outbox WHERE tenant_id = $1
         ORDER BY due_at_ms, intent_id COLLATE "C" LIMIT $2`,
       [tenant, limit],
     )
@@ -441,7 +421,7 @@ export const jobs = ({ tenant, limit }: Page) =>
     const sql = yield* SqlClient.SqlClient
 
     const rows = yield* sql.unsafe<JobRow>(
-      `SELECT ${JOB_COLUMNS} FROM durable.jobs_v2 WHERE tenant_id = $1
+      `SELECT ${JOB_COLUMNS} FROM durable.jobs WHERE tenant_id = $1
         ORDER BY due_at_ms, job_id COLLATE "C" LIMIT $2`,
       [tenant, limit],
     )
@@ -461,7 +441,7 @@ export const deadLetters = ({ tenant, limit, after }: DeadLettersPage) =>
     const sql = yield* SqlClient.SqlClient
 
     const rows = yield* sql.unsafe<DeadLetterRow>(
-      `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters_v2 WHERE tenant_id = $1
+      `SELECT ${DEAD_LETTER_COLUMNS} FROM durable.dead_letters WHERE tenant_id = $1
         AND ($2::int8 IS NULL OR dead_at_ms < $2::int8
           OR (dead_at_ms = $2::int8 AND job_id COLLATE "C" > $3))
         ORDER BY dead_at_ms DESC, job_id COLLATE "C" LIMIT $4`,
@@ -523,7 +503,7 @@ export const workflows = ({ tenant, limit, status, after }: WorkflowsPage) =>
 
     const read = (from: WorkflowsPage["after"], size: number) =>
       sql.unsafe<WorkflowRow>(
-        `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows_v2 WHERE ${page}
+        `SELECT ${WORKFLOW_COLUMNS} FROM durable.workflows WHERE ${page}
           ORDER BY started_at_ms DESC, execution_id COLLATE "C" LIMIT $5`,
         [tenant, stored, from?.startedAtMs ?? null, from?.executionId ?? "", size],
       )
@@ -552,7 +532,7 @@ export const workflows = ({ tenant, limit, status, after }: WorkflowsPage) =>
       items.length === 0
         ? []
         : yield* sql.unsafe<StepRow>(
-            `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps_v2
+            `SELECT ${STEP_COLUMNS} FROM durable.workflow_steps
               WHERE tenant_id = $1 AND execution_id IN (${items.map((_, index) => `$${String(index + 2)}`).join(", ")})
               ORDER BY started_at_ms, step COLLATE "C", attempt`,
             [tenant, ...items.map((row) => row.executionId)],
@@ -584,7 +564,7 @@ export const actorTypes = ({ tenant, limit, name, prefix, after }: NamesPage) =>
 
     const rows = yield* sql<Inspection.ActorTypeRow>`
       SELECT actor_type AS "actorType", count(*)::int AS actors
-      FROM durable.actors_v2
+      FROM durable.actors
       WHERE tenant_id = ${tenant}
         AND ${name === undefined ? sql`TRUE` : sql`actor_type = ${name}`}
         AND ${prefix === undefined ? sql`TRUE` : sql`starts_with(actor_type, ${prefix})`}
@@ -615,9 +595,9 @@ export const jobTypes = ({ tenant, limit, after }: NamesPage) =>
       FROM (
         SELECT job, count(*) FILTER (WHERE attempts = 0) AS queued,
           count(*) FILTER (WHERE attempts > 0) AS retrying, 0 AS dead
-        FROM durable.jobs_v2 WHERE tenant_id = ${tenant} GROUP BY job
+        FROM durable.jobs WHERE tenant_id = ${tenant} GROUP BY job
         UNION ALL
-        SELECT job, 0, 0, count(*) FROM durable.dead_letters_v2 WHERE tenant_id = ${tenant} GROUP BY job
+        SELECT job, 0, 0, count(*) FROM durable.dead_letters WHERE tenant_id = ${tenant} GROUP BY job
       ) named
       WHERE ${after === undefined ? sql`TRUE` : sql`job COLLATE "C" > ${after}`}
       GROUP BY job
@@ -680,11 +660,11 @@ export const receipts = (page: ReceiptsPage) =>
         r.command_id AS "commandId", r.command, r.caller_key AS "callerKey",
         r.outcome_tag AS "outcomeTag", r.outcome, r.expires_at_ms::float8 AS "expiresAtMs",
         r.started_at_ms::float8 AS "startedAtMs", r.committed_at_ms::float8 AS "committedAtMs",
-        (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events_v2 e
+        (SELECT string_agg(e.sequence::text, ',' ORDER BY e.sequence) FROM durable.events e
           WHERE e.routing_key = r.routing_key AND e.tenant_id = r.tenant_id
             AND e.actor_type = r.actor_type AND e.actor_id = r.actor_id
             AND e.command_id = r.command_id) AS events
-      FROM durable.receipts_v2 r
+      FROM durable.receipts r
       WHERE r.tenant_id = ${page.tenant} AND ${scope} AND ${after}
         AND ${page.outcomeTag === undefined ? sql`TRUE` : sql`r.outcome_tag = ${page.outcomeTag}`}
       ORDER BY r.expires_at_ms DESC, r.actor_type COLLATE "C", r.actor_id COLLATE "C",
@@ -730,7 +710,7 @@ export const latestEvents = (page: LatestEventsPage) =>
       SELECT event, sequence, "emittedAtMs" FROM (
         SELECT DISTINCT ON (event) event, sequence::float8 AS sequence,
           emitted_at_ms::float8 AS "emittedAtMs"
-        FROM durable.events_v2
+        FROM durable.events
         WHERE routing_key = ${found.value.routingKey}::int8 AND tenant_id = ${page.tenant}
           AND actor_type = ${page.actorType} AND actor_id = ${page.actorId}
           AND ${page.after === undefined ? sql`TRUE` : sql`event COLLATE "C" > ${page.after}`}
@@ -788,16 +768,16 @@ export const timeline = (page: TimelinePage) =>
         SELECT 'event' AS kind, 1 AS rank, e.sequence::float8 AS sequence, e.event AS name,
           e.command_id AS "commandId", r.caller_key AS "callerKey",
           e.emitted_at_ms::float8 AS "atMs"
-        FROM durable.events_v2 e
-        LEFT JOIN durable.receipts_v2 r ON r.routing_key = e.routing_key
+        FROM durable.events e
+        LEFT JOIN durable.receipts r ON r.routing_key = e.routing_key
           AND r.tenant_id = e.tenant_id AND r.actor_type = e.actor_type
           AND r.actor_id = e.actor_id AND r.command_id = e.command_id
         WHERE ${owned("e")}
         UNION ALL
         SELECT 'command', 0, min(e.sequence)::float8, r.command, r.command_id, r.caller_key,
           min(e.emitted_at_ms)::float8
-        FROM durable.receipts_v2 r
-        JOIN durable.events_v2 e ON e.routing_key = r.routing_key
+        FROM durable.receipts r
+        JOIN durable.events e ON e.routing_key = r.routing_key
           AND e.tenant_id = r.tenant_id AND e.actor_type = r.actor_type
           AND e.actor_id = r.actor_id AND e.command_id = r.command_id
         WHERE ${owned("r")}
@@ -849,7 +829,7 @@ export const schedules = ({
       const sql = yield* SqlClient.SqlClient
 
       const [timers] = yield* sql<{ pending: number; dueAtMs: number | null }>`
-        SELECT count(*)::int AS pending, min(due_at_ms)::float8 AS "dueAtMs" FROM durable.timers_v2
+        SELECT count(*)::int AS pending, min(due_at_ms)::float8 AS "dueAtMs" FROM durable.timers
         WHERE tenant_id = ${tenant} AND actor_type = ${entry.actorType}
           AND timer_key = ${entry.key}`
 
@@ -863,7 +843,7 @@ export const schedules = ({
           duration_ms::float8 AS "durationMs", outcome_tag AS "outcomeTag"
         FROM (
           SELECT command_id, command, caller_key, committed_at_ms, duration_ms, outcome_tag
-          FROM durable.receipts_v2
+          FROM durable.receipts
           WHERE tenant_id = ${tenant} AND actor_type = ${entry.actorType}
           ORDER BY expires_at_ms DESC
           LIMIT ${SCHEDULE_RECEIPTS}) r

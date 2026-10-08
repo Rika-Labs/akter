@@ -10,6 +10,8 @@
 
 Define each part of your app once: its data, the commands it accepts, the work it schedules, and the clients it updates. The framework keeps all of it consistent, retries what fails, and picks up where it left off.
 
+The database backends are **Postgres** and **PGlite** (embedded, one process within its documented limits). Neki support has been removed. See the [support matrix](docs/operations/support-matrix.md) for server versions and verification boundaries.
+
 ## What you build with it
 
 - **Realtime apps.** Chat rooms, shared documents, and live dashboards that store their history, push every change to connected clients, and keep sockets open while idle parts of the app sleep.

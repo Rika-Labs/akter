@@ -16,7 +16,6 @@ import {
   TurnHooks,
   type TurnPoint,
 } from "../../../packages/akter/src/runtime/turn/hooks.ts"
-import { NekiTurnSessions } from "../../../packages/akter/src/runtime/database/neki/session.ts"
 import type { ContentStore } from "../../../packages/akter/src/handles/content.ts"
 import type { Options } from "../../../packages/akter/src/runtime/layer.ts"
 import { ActorTest } from "../../../packages/akter/src/testing/actor-test.ts"
@@ -220,13 +219,6 @@ export interface ConformanceBackend {
   readonly independentConnections: boolean
   /** True when `open` returns a streaming replica of the primary. */
   readonly hasReplica?: boolean
-  /**
-   * True when the database is a Neki router. Turn sessions then run in
-   * single transaction mode and single fanout, and the cases flagged
-   * `requiresNeki` run; every other backend reports them through
-   * `registrar.skip`.
-   */
-  readonly neki?: boolean
   /** True when the server runs `wal_level=logical`, which fleet views need. */
   readonly logicalDecoding?: boolean
   /**
@@ -318,8 +310,6 @@ export interface ConformanceCase<F = undefined> {
   readonly requiresReplica?: boolean
   /** Requires `backend.edge`; backends without one register the case through `registrar.skip`. */
   readonly requiresEdge?: boolean
-  /** Requires `backend.neki`; every other backend registers the case through `registrar.skip`. */
-  readonly requiresNeki?: boolean
   /** Requires a server with `wal_level=logical`; backends without one skip the case. */
   readonly requiresLogicalDecoding?: boolean
   /**
@@ -346,13 +336,6 @@ const group = <F>(
   suite,
   cases: requires === undefined ? cases : cases.map((each) => ({ ...each, ...requires })),
 })
-
-/**
- * How long the first runtime build may take on a Neki router. Every framework
- * migration statement there autocommits and waits for the router fleet to
- * apply it, so a fresh database takes minutes, not seconds, to migrate.
- */
-const NEKI_FIRST_BOOT_MS = 900_000
 
 /** Every case of the group opens a fresh database or a snapshot. */
 const freshDatabases = { requiresFreshDatabase: true } as const
@@ -464,7 +447,6 @@ export type ConformanceRequirement =
   | "independentConnections"
   | "replica"
   | "edge"
-  | "neki"
   | "logicalDecoding"
   | "freshDatabase"
 
@@ -477,7 +459,6 @@ export const requirementsOf = (
     : []),
   ...(conformanceCase.requiresReplica === true ? (["replica"] as const) : []),
   ...(conformanceCase.requiresEdge === true ? (["edge"] as const) : []),
-  ...(conformanceCase.requiresNeki === true ? (["neki"] as const) : []),
   ...(conformanceCase.requiresLogicalDecoding === true ? (["logicalDecoding"] as const) : []),
   ...(conformanceCase.requiresFreshDatabase === true ? (["freshDatabase"] as const) : []),
 ]
@@ -486,14 +467,13 @@ export const requirementsOf = (
 export const capabilitiesOf = (
   backend: Pick<
     ConformanceBackend,
-    "independentConnections" | "hasReplica" | "edge" | "neki" | "logicalDecoding" | "freshDatabases"
+    "independentConnections" | "hasReplica" | "edge" | "logicalDecoding" | "freshDatabases"
   >,
 ): ReadonlySet<ConformanceRequirement> =>
   new Set<ConformanceRequirement>([
     ...(backend.independentConnections ? (["independentConnections"] as const) : []),
     ...(backend.hasReplica === true ? (["replica"] as const) : []),
     ...(backend.edge === undefined ? [] : (["edge"] as const)),
-    ...(backend.neki === true ? (["neki"] as const) : []),
     ...(backend.logicalDecoding === true ? (["logicalDecoding"] as const) : []),
     ...(backend.freshDatabases ? (["freshDatabase"] as const) : []),
   ])
@@ -631,7 +611,6 @@ export const registerConformance = (options: {
                     at: (point) =>
                       Effect.forEach(contentHooks, (hook) => hook(point), { discard: true }),
                   }),
-                  Layer.succeed(NekiTurnSessions, backend.neki === true),
                   overrides?.observe === undefined
                     ? Layer.empty
                     : Layer.succeed(Statement.CurrentTransformer, (statement, _sql, _fiber, span) =>
@@ -732,7 +711,7 @@ export const registerConformance = (options: {
             yield* environment.restart
           }),
         ),
-      backend.neki === true ? NEKI_FIRST_BOOT_MS : 30_000,
+      30_000,
     )
 
     registrar.afterAll(() =>

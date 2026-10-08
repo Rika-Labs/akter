@@ -1,6 +1,6 @@
 # ADR 0095: A second set of inspection views reads one table each, so a routed Neki group can serve them
 
-**Status:** accepted (2026-10-06). Demonstrated on the live `akter-preview` cluster (one shard) with the 18 per-actor tables routed; a split onto separate data shards is not demonstrated.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Migration `0033_joined_inspection` retires these variants without rewriting applied migrations; the record below is historical.
 
 **Responsibility:** decide which inspection views a database that routes the per-actor tables by `routing_key` can serve, how tools read an actor's placement without the join, and whether the framework creates the views a routed layout cannot serve.
 

@@ -44,7 +44,6 @@ import { decodeExecutionId, encodeExecutionId } from "../../identity/execution.t
 import { bucketOf, OutboxRuntime, writeOutbox } from "../turn/outbox.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { registry } from "../database/coordination.ts"
-import { onShard } from "../database/shards.ts"
 import { TurnHooks } from "../turn/hooks.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { type ActivationCache, actorRow, fence } from "../storage/generation.ts"
@@ -1296,7 +1295,7 @@ export const activationEngine = (options: {
               )
             }),
           ).pipe(Effect.ignoreCause)
-      }).pipe(Effect.provideContext(services), onShard(routingKey))
+      }).pipe(Effect.provideContext(services))
 
     return { kick, live: () => live.size }
   })

@@ -1,12 +1,6 @@
 import { DateTime, Effect, Match, Result, Schema } from "effect"
 import { SqlClient, SqlError, type Statement } from "effect/sql"
-import {
-  type BucketRange,
-  forEachRange,
-  onShard,
-  untargeted,
-  withinRange,
-} from "../database/shards.ts"
+import { type BucketRange, forEachRange, withinRange } from "../database/shards.ts"
 import { SubscriptionFailure } from "../../errors/subscription.ts"
 import type { ActorError } from "../../errors/actor.ts"
 import { Outcome, Request, type SubscriptionEnvelope } from "../request.ts"
@@ -18,7 +12,6 @@ import { TurnHooks, type TurnPoint } from "../turn/hooks.ts"
 import { ControlPayload, StringsJson, textArray } from "../turn/outbox.ts"
 import { candidates, outboxClock, outboxNow } from "../turn/relay.ts"
 import { changeRows, rowColumns } from "./storage.ts"
-import { NekiTurnSessions } from "../database/neki/session.ts"
 import { deliveryCommandId } from "./identity.ts"
 import { count, Metrics } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
@@ -246,7 +239,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
   const clock = yield* FrameworkClock
   const { settings } = options
   const now = () => outboxNow({ sql, offsetMillis: clock.offsetMillis() })
-  const statementClock = outboxClock({ sql, neki: yield* NekiTurnSessions })
+  const statementClock = outboxClock({ sql })
 
   const sourceWhere = (alias: string, key: bigint, source: ActorRef) =>
     sql`${sql(alias)}.routing_key = ${key} AND ${sql(alias)}.tenant_id = ${source.tenant}
@@ -557,7 +550,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
       delivery: envelope,
     })
 
-    return yield* options.deliver(request).pipe(untargeted, Effect.result)
+    return yield* options.deliver(request).pipe(Effect.result)
   })
 
   const failure = (outcome: Result.Result<Outcome, ActorError>): string | undefined => {
@@ -587,81 +580,79 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
     const target = sql`${pk} AND s.subscriber_type = ${subscriber.actor}
       AND s.subscription = ${row.command} AND s.subscriber_id = ${subscriber.id}`
 
-    const rejected = yield* onShard(key)(
-      sql.withTransaction(
-        Effect.gen(function* () {
-          yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
-          VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}) ON CONFLICT DO NOTHING`
+    const rejected = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id)
+        VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}) ON CONFLICT DO NOTHING`
 
-          const [generation] = yield* sql<{ head: string }>`
-          SELECT event_sequence::text AS head FROM actor_generations g
-          WHERE ${eventsOf("g", key, source)} FOR SHARE`
+        const [generation] = yield* sql<{ head: string }>`
+        SELECT event_sequence::text AS head FROM actor_generations g
+        WHERE ${eventsOf("g", key, source)} FOR SHARE`
 
-          const head = BigInt(generation!.head)
+        const head = BigInt(generation!.head)
 
-          const [existing] = yield* sql<{ epoch: string; active: boolean }>`
-          SELECT s.epoch::text AS epoch, s.active FROM actor_subscriptions s
-          WHERE ${target} FOR UPDATE`
+        const [existing] = yield* sql<{ epoch: string; active: boolean }>`
+        SELECT s.epoch::text AS epoch, s.active FROM actor_subscriptions s
+        WHERE ${target} FOR UPDATE`
 
-          const refused =
-            change.op === "subscribe" &&
-            change.start !== "now" &&
-            change.start !== "start" &&
-            BigInt(change.start) > head
+        const refused =
+          change.op === "subscribe" &&
+          change.start !== "now" &&
+          change.start !== "start" &&
+          BigInt(change.start) > head
 
-          if (existing !== undefined && BigInt(existing.epoch) >= epoch)
-            return refused && BigInt(existing.epoch) === epoch && !existing.active
+        if (existing !== undefined && BigInt(existing.epoch) >= epoch)
+          return refused && BigInt(existing.epoch) === epoch && !existing.active
 
-          const old = sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
-          WHERE ${target} FOR UPDATE`
+        const old = sql`SELECT ${rowColumns({ sql, alias: "s" })} FROM actor_subscriptions s
+        WHERE ${target} FOR UPDATE`
 
-          if (change.op === "remove" || refused) {
-            yield* changeRows(
-              old,
-              sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
-                subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
-              VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
-                ${row.command}, ${subscriber.id}, ${textArray({ sql, values: change.events })}, ${epoch}, false,
-                ${head}, ${Number(key >> 56n)})
-              ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
-              DO UPDATE SET epoch = EXCLUDED.epoch, active = false, due_at_ms = NULL, attempts = 0,
-                last_error = NULL, gap_at_ms = NULL, gap_through = NULL
-              RETURNING ${rowColumns({ sql, alias: "s" })}`,
-            )
-
-            return refused
-          }
-
-          const delivered = Match.value(change.start).pipe(
-            Match.when("now", () => head),
-            Match.when("start", () => 0n),
-            Match.orElse((cursor) => BigInt(cursor)),
-          )
-
+        if (change.op === "remove" || refused) {
           yield* changeRows(
             old,
             sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
-              subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket,
-              due_at_ms)
-            SELECT ${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
-              ${row.command}, ${subscriber.id}, x.events, ${epoch}, true, ${delivered},
-              ${Number(key >> 56n)},
-              CASE WHEN EXISTS (SELECT 1 FROM actor_events e
-                  WHERE ${eventsOf("e", key, source)}
-                    AND e.sequence > ${delivered} AND e.sequence <= ${head} AND e.event = ANY(x.events))
-                THEN ${now()} END
-            FROM (SELECT ${textArray({ sql, values: change.events })} AS events) AS x
+              subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket)
+            VALUES (${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
+              ${row.command}, ${subscriber.id}, ${textArray({ sql, values: change.events })}, ${epoch}, false,
+              ${head}, ${Number(key >> 56n)})
             ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
-            DO UPDATE SET events = EXCLUDED.events, epoch = EXCLUDED.epoch, active = true,
-              delivered = EXCLUDED.delivered, marked = 0, due_at_ms = EXCLUDED.due_at_ms, attempts = 0,
+            DO UPDATE SET epoch = EXCLUDED.epoch, active = false, due_at_ms = NULL, attempts = 0,
               last_error = NULL, gap_at_ms = NULL, gap_through = NULL
             RETURNING ${rowColumns({ sql, alias: "s" })}`,
-            statementClock,
           )
 
-          return false
-        }),
-      ),
+          return refused
+        }
+
+        const delivered = Match.value(change.start).pipe(
+          Match.when("now", () => head),
+          Match.when("start", () => 0n),
+          Match.orElse((cursor) => BigInt(cursor)),
+        )
+
+        yield* changeRows(
+          old,
+          sql`INSERT INTO actor_subscriptions AS s (routing_key, tenant_id, source_type, source_id,
+            subscriber_type, subscription, subscriber_id, events, epoch, active, delivered, bucket,
+            due_at_ms)
+          SELECT ${key}, ${source.tenant}, ${source.actor}, ${source.id}, ${subscriber.actor},
+            ${row.command}, ${subscriber.id}, x.events, ${epoch}, true, ${delivered},
+            ${Number(key >> 56n)},
+            CASE WHEN EXISTS (SELECT 1 FROM actor_events e
+                WHERE ${eventsOf("e", key, source)}
+                  AND e.sequence > ${delivered} AND e.sequence <= ${head} AND e.event = ANY(x.events))
+              THEN ${now()} END
+          FROM (SELECT ${textArray({ sql, values: change.events })} AS events) AS x
+          ON CONFLICT (routing_key, tenant_id, source_type, source_id, subscriber_type, subscription, subscriber_id)
+          DO UPDATE SET events = EXCLUDED.events, epoch = EXCLUDED.epoch, active = true,
+            delivered = EXCLUDED.delivered, marked = 0, due_at_ms = EXCLUDED.due_at_ms, attempts = 0,
+            last_error = NULL, gap_at_ms = NULL, gap_through = NULL
+          RETURNING ${rowColumns({ sql, alias: "s" })}`,
+          statementClock,
+        )
+
+        return false
+      }),
     )
 
     const claim = sql`routing_key = ${BigInt(row.routing_key)} AND intent_id = ${row.intent_id}
@@ -1118,10 +1109,7 @@ export const subscriptionRelay = Effect.fnUntraced(function* (options: {
             Match.orElse(() => register(work)),
           )
 
-    return running.pipe(
-      Effect.onInterrupt(() => release(work, claim)),
-      onShard(BigInt(work.routing_key)),
-    )
+    return running.pipe(Effect.onInterrupt(() => release(work, claim)))
   }
 
   return { claim, decode, run, widen, cleanupRemoved }

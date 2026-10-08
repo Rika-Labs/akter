@@ -1,6 +1,6 @@
 # ADR 0091: The hosted control plane opts into Neki, and application schema changes follow Neki's DDL rules
 
-**Status:** accepted (2026-10-05). Startup schema setup is demonstrated on one live single-shard Neki database; Neki is not a supported runtime database.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). The framework Neki option and DDL mode are removed; transactional `Database.schemaChange` remains. The record below is historical.
 
 **Responsibility:** let a production process declare that its database is Neki, and make every schema change the API and edge make at startup visible on Neki.
 

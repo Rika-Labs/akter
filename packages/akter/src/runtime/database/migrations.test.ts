@@ -14,7 +14,7 @@ import {
 import { Migrator, SqlClient } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
-import { Database } from "../layer.ts"
+import { Actors, Database } from "../index.ts"
 import { migrations, migrator } from "./migrations.ts"
 import { disposableDatabase } from "../../testing/database.ts"
 import { AUTHORITY_MOVED_TABLES } from "../storage/placements.ts"
@@ -53,9 +53,168 @@ const schemaKeys = (sql: SqlClient.SqlClient) => sql<{
     AND (t.relname LIKE 'actor\\_%' ESCAPE '\\' OR t.relname LIKE 'tenant\\_%' ESCAPE '\\')
   GROUP BY t.relname, i.relname ORDER BY t.relname, i.relname`
 
+const expectedIds = [
+  1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 29,
+  30, 31, 32, 33,
+]
+
 describe("migrations with Postgres", () => {
   const runtime = ManagedRuntime.make(BunCrypto.layer)
   afterAll(() => runtime.dispose())
+
+  it("starts six Actors.layer runners together on a completely fresh database", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const url = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+        yield* Effect.forEach(
+          Array.from({ length: 6 }),
+          () =>
+            Effect.scoped(
+              Layer.build(
+                Actors.layer().pipe(
+                  Layer.provide(
+                    Database.postgres({ url, offTurnConnections: 2, maxConnections: 1 }),
+                  ),
+                ),
+              ),
+            ),
+          { concurrency: "unbounded", discard: true },
+        )
+        const client = yield* Layer.build(Database.postgres({ url }))
+        const sql = yield* Effect.provideContext(SqlClient.SqlClient, client)
+        expect(
+          (yield* sql<{
+            id: number
+          }>`SELECT migration_id::int AS id FROM actor_migrations ORDER BY migration_id`).map(
+            ({ id }) => id,
+          ),
+        ).toEqual(expectedIds)
+        expect(yield* sql`SELECT to_regclass('actor_migration_steps')::text AS journal`).toEqual([
+          { journal: null },
+        ])
+      }).pipe(Effect.scoped),
+    ))
+
+  it("serializes six fresh processes with an independent coordination database", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const server = yield* Config.Redacted("TEST_DATABASE_URL")
+        const url = yield* disposableDatabase({ url: server })
+        const coordination = yield* disposableDatabase({ url: server })
+        const layerUrl = new URL("../index.ts", import.meta.url).href
+        const code = `
+          import { BunCrypto } from "@effect/platform-bun";
+          import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
+          import { Actors, Database } from "${layerUrl}";
+          const runtime = ManagedRuntime.make(Actors.layer().pipe(
+            Layer.provide(Database.postgres({
+              url: Redacted.make(process.env.START_DATA), maxConnections: 1, offTurnConnections: 2,
+              coordination: { url: Redacted.make(process.env.START_AUTHORITY), maxConnections: 2 }
+            })), Layer.provide(BunCrypto.layer)));
+          try { await runtime.runPromise(Effect.void); } finally { await runtime.dispose(); }
+        `
+        yield* Effect.forEach(
+          Array.from({ length: 6 }),
+          () =>
+            Effect.gen(function* () {
+              const child = yield* Effect.acquireRelease(
+                Effect.sync(() =>
+                  Bun.spawn([process.execPath, "-e", code], {
+                    env: {
+                      ...process.env,
+                      START_DATA: Redacted.value(url),
+                      START_AUTHORITY: Redacted.value(coordination),
+                    },
+                    stdout: "ignore",
+                    stderr: "pipe",
+                  }),
+                ),
+                (child) => Effect.sync(() => child.kill()),
+              )
+              const [exitCode, stderr] = yield* Effect.promise(() =>
+                Promise.all([child.exited, new Response(child.stderr).text()]),
+              )
+              expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" })
+            }),
+          { concurrency: "unbounded", discard: true },
+        )
+        const data = yield* Layer.build(Database.postgres({ url }))
+        const control = yield* Layer.build(Database.postgres({ url: coordination }))
+        const sql = yield* Effect.provideContext(SqlClient.SqlClient, data)
+        const authority = yield* Effect.provideContext(SqlClient.SqlClient, control)
+        expect(
+          (yield* sql<{
+            id: number
+          }>`SELECT migration_id::int AS id FROM actor_migrations ORDER BY migration_id`).map(
+            ({ id }) => id,
+          ),
+        ).toEqual(expectedIds)
+        expect(
+          yield* authority`SELECT migration_id::int, name FROM actor_coordination_migrations`,
+        ).toEqual([{ migration_id: 1, name: "coordination" }])
+        expect(
+          yield* authority`SELECT to_regclass('cluster_runners')::text AS runners, to_regclass('actor_migrations')::text AS data`,
+        ).toEqual([{ runners: "cluster_runners", data: null }])
+        expect(
+          yield* sql`SELECT to_regclass('cluster_runners')::text AS runners, to_regclass('actor_coordination_migrations')::text AS control`,
+        ).toEqual([{ runners: null, control: null }])
+      }).pipe(Effect.scoped),
+    ))
+
+  it("rolls back a blocked inspection-view retirement, then upgrades and restarts without losing actor rows", () =>
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const url = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+        yield* Layer.build(Database.postgres({ url })).pipe(
+          Effect.flatMap((client) =>
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* migrator(
+                Object.fromEntries(Object.entries(migrations).filter(([id]) => id < "0033")),
+              )
+              yield* sql`INSERT INTO actor_generations (routing_key, tenant_id, actor_type, actor_id, generation)
+            VALUES (-9123, 'upgrade-tenant', 'Ledger', 'kept', 17)`
+              yield* sql`CREATE VIEW inspection_dependency AS SELECT * FROM durable.actors_v2`
+              const before = yield* sql`SELECT * FROM durable.views ORDER BY view_name`
+              expect(Exit.isFailure(yield* migrator(migrations).pipe(Effect.exit))).toBe(true)
+              expect(yield* sql`SELECT * FROM durable.views ORDER BY view_name`).toEqual(before)
+              expect(
+                yield* sql`SELECT migration_id::int FROM actor_migrations WHERE migration_id = 33`,
+              ).toEqual([])
+              expect(
+                yield* sql`SELECT count(*)::int AS views FROM pg_views WHERE schemaname = 'durable' AND viewname LIKE '%\_v2' ESCAPE '\'`,
+              ).toEqual([{ views: 15 }])
+              yield* sql`DROP VIEW inspection_dependency`
+              yield* migrator(migrations)
+              yield* migrator(migrations)
+              expect(
+                yield* sql`SELECT count(*)::int AS views FROM pg_views WHERE schemaname = 'durable' AND viewname LIKE '%\_v2' ESCAPE '\'`,
+              ).toEqual([{ views: 0 }])
+              expect(
+                yield* sql`SELECT actor_id, generation::int FROM durable.actors WHERE tenant_id = 'upgrade-tenant'`,
+              ).toEqual([{ actor_id: "kept", generation: 17 }])
+              expect(
+                yield* sql`SELECT migration_id::int, name FROM actor_migrations WHERE migration_id = 33`,
+              ).toEqual([{ migration_id: 33, name: "joined_inspection" }])
+              expect(yield* sql`SELECT count(*)::int AS views FROM durable.views`).toEqual([
+                { views: 14 },
+              ])
+            }).pipe(Effect.provideContext(client)),
+          ),
+          Effect.scoped,
+        )
+        const restarted = yield* Layer.build(
+          Actors.layer().pipe(Layer.provideMerge(Database.postgres({ url }))),
+        )
+        const sql = yield* Effect.provideContext(SqlClient.SqlClient, restarted)
+        expect(
+          yield* sql`SELECT actor_id, generation::int FROM durable.actors WHERE tenant_id = 'upgrade-tenant'`,
+        ).toEqual([{ actor_id: "kept", generation: 17 }])
+        expect(yield* sql`SELECT count(*)::int AS views FROM durable.views`).toEqual([
+          { views: 14 },
+        ])
+      }).pipe(Effect.scoped),
+    ))
 
   it("enumerates every framework primary and unique key, requires routing_key outside deployment registries, and finds no trigger or outside reference on per-actor tables", () =>
     runtime.runPromise(

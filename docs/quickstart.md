@@ -12,6 +12,8 @@ description: "Go from an empty directory to a running, tested actor app on an em
 
 You need [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. No Docker and no database server: the app stores its data with [PGlite](https://pglite.dev), an embedded Postgres database, in `./.data`. File-backed PGlite requires Linux or macOS on a local filesystem with either runtime.
 
+PGlite and ordinary Postgres are the only framework backends. To share a database across runner processes, use `Database.postgres`; embedded PGlite stays one process per directory. See the [support matrix](operations/support-matrix.md).
+
 ## 1. Install
 
 ```sh

@@ -1,6 +1,6 @@
 # ADR 0097: Control-plane actors are authority-placed, so a split control plane runs their turns on the authoritative shard
 
-**Status:** accepted (2026-10-06). Demonstrated on a temporary three-shard Neki cluster with the 18 per-actor tables routed across two data shards; no Akter database has been split.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Authority-placement encoding and transactional row conversion remain; physical-shard guarantees do not. The record below is historical.
 
 **Responsibility:** decide how each control-plane actor whose turns read or write authoritative tables keeps working once the control-plane Neki database has data shards, without any turn, trigger or foreign key reaching a control table from a data shard and without depending on a multi-shard commit.
 
