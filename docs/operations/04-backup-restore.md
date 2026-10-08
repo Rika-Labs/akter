@@ -67,7 +67,7 @@ Do not delete receipts or outbox rows to make a restore start.
 
 ## Evidence
 
-[`conformance/restore.ts`](../../packages/akter/src/testing/conformance/restore.ts) rehearses this procedure on PGlite and Postgres. The backup is a copy of the whole stopped database (a Postgres template copy; a copy of a PGlite data directory), and the restored runtime starts on the copy with no runtime left running:
+[`conformance/restore.ts`](../../tooling/conformance/src/conformance/restore.ts) rehearses this procedure on PGlite and Postgres. The backup is a copy of the whole stopped database (a Postgres template copy; a copy of a PGlite data directory), and the restored runtime starts on the copy with no runtime left running:
 
 - `restores a backup without reopening expired command ids or dropping pending intents`
 - `replays a receipt the backup holds and runs an unexpired command the backup lost once`
@@ -77,7 +77,7 @@ On a Postgres database, `keeps receipt replay, expiry, and pending intents acros
 
 ### Online `pg_dump` and point-in-time recovery
 
-[`crash/drills/online-restore.test.ts`](../../packages/akter/src/testing/conformance/crash/drills/online-restore.test.ts) runs the same restore cases on the two other kinds of backup, on Postgres 18.6 in a Docker container that archives its WAL ([`online-restore.ts`](../../packages/akter/src/testing/conformance/crash/drills/online-restore.ts)). It runs in `test:integration` and needs Docker.
+[`crash/drills/online-restore.test.ts`](../../tooling/conformance/src/conformance/crash/drills/online-restore.test.ts) runs the same restore cases on the two other kinds of backup, on Postgres 18.6 in a Docker container that archives its WAL ([`online-restore.ts`](../../tooling/conformance/src/conformance/crash/drills/online-restore.ts)). It runs in `test:integration` and needs Docker.
 
 - **Online `pg_dump`, restored with `pg_restore`.** `pg_dump --format=custom` of the database, then `createdb` and `pg_restore --no-owner --exit-on-error` into a new database the restored runtime starts on. The three restore cases above pass on it, plus `restores one consistent snapshot of a database whose turns keep committing during the backup`: six vaults keep committing deposits, each with a pending transfer, while the dump is taken. The restored database holds, for every vault, a state equal to its receipts (no receipt without its state, and no state without its receipt), so it is one snapshot; every command acknowledged before the dump began replays its original reply without running its handler; the deposits acknowledged after the dump finished are absent; and each pending transfer is delivered once.
 - **Point-in-time recovery.** A `pg_basebackup` taken before the drill's database existed, plus the archived WAL, recovered with `recovery_target_name` to a restore point (`pg_create_restore_point`) taken while the runtime is stopped, then promoted. The same four cases pass on it. `recovers to a named restore point holding exactly the commits before it` writes three vaults in three phases with restore points between them, and recovers to each point in a server of its own: the first holds only the first phase, with the transfer staged in that phase still pending and delivered once after the restore; the second holds the first two phases; each vault's state and receipt count match, and the next deposit after each recovery lands on the recovered total.
@@ -102,7 +102,7 @@ Retained receipt and job horizons bound what a restore can deduplicate; see [ret
 
 ## Embedded PGlite
 
-Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)) and verified by `restores a stopped copy and refuses expired command ids after restore` in [`conformance/crash/pglite-production.test.ts`](../../packages/akter/src/testing/conformance/crash/pglite-production.test.ts). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and job reconciliation above still apply, and there is no point-in-time recovery.
+Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)) and verified by `restores a stopped copy and refuses expired command ids after restore` in [`conformance/crash/pglite-production.test.ts`](../../tooling/conformance/src/conformance/crash/pglite-production.test.ts). The only supported backup is a stopped copy: stop the process, which releases the `dataDir` lock, copy the directory, and start again. Restore copies it back while the process is stopped. A copy taken while the process runs is not a backup. An in-process `pg_dump` waits for a `pgDump` build compatible with the pinned PGlite. The command-expiry check and job reconciliation above still apply, and there is no point-in-time recovery.
 
 ## Cold tier
 

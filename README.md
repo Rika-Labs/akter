@@ -141,7 +141,7 @@ The OSS launch claim is multi-runner on one host. Configure `Runner.socket` and 
 - **Work that outlives the request.** Jobs with retries and dead letters, timers, cron schedules, and workflows that sleep and wait for events.
 - **Realtime.** Event feeds that resume from a cursor, WebSocket connections that stay open while an idle actor sleeps, and live streams for output such as tokens.
 - **One definition, every interface.** Typed Effect handles, a browser-safe Promise client with optimistic updates, and, through `Actors.serve`, HTTP, WebSocket, and SSE endpoints, an OpenAPI document, and an MCP endpoint.
-- **Tests that crash it.** `ActorTest` runs the real transaction path with virtual time, injected crashes, and deterministic simulation.
+- **Tests that crash it.** `ActorTest` runs the real transaction path with virtual time, injected crashes, and committed-state inspection. The framework's conformance and deterministic simulations stay in the repository's unpublished verification workspace.
 
 ## How it works
 
@@ -170,7 +170,7 @@ The [comparison](docs/guides/comparison.md) covers each in detail and says when 
 bun add @rikalabs/akter@alpha effect @effect/sql-pg @effect/sql-pglite
 ```
 
-The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. The [quickstart](docs/quickstart.md) includes both runtimes; use `@effect/platform-node` layers on Node instead of `@effect/platform-bun`. Effect, its SQL drivers, and Drizzle are peer dependencies with compatible caret ranges (`^4.0.1` for the Effect packages), so your app and the framework share one copy of each. The framework is tested against the Effect cohort that its CI runs, not a fixed version you must install; if you pin `effect@4.0.1`, pin `@effect/sql-pg` and `@effect/sql-pglite` at `4.0.1` too, or let all three resolve to the latest 4.0.x.
+The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nodejs.org) 24 or later. The [quickstart](docs/quickstart.md) includes both runtimes; use `@effect/platform-node` layers on Node instead of `@effect/platform-bun`. Effect, its SQL drivers, and Drizzle are peer dependencies with compatible caret ranges (`^4.0.2` for the Effect packages), so your app and the framework share one copy of each. The framework is tested against the Effect cohort that its CI runs, not a fixed version you must install; if you pin `effect@4.0.2`, pin `@effect/sql-pg` and `@effect/sql-pglite` at `4.0.2` too, or let all three resolve to the latest 4.0.x.
 
 | Import                    | What it holds                                                                                  |
 | ------------------------- | ---------------------------------------------------------------------------------------------- |

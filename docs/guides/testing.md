@@ -95,7 +95,7 @@ State that must survive a restart is tested by building the production wiring tw
 
 PGlite runs every turn through the same SQL as Postgres and is right for handler logic, receipts, rollbacks, and state migrations. It has one connection, so it cannot show lock contention, independent connections, multi-runner behavior, or recovery after a process kill. Test those on Postgres. The framework's own conformance cases that need a second connection report themselves skipped on PGlite rather than passing.
 
-`ActorTest.cluster({ database, runners, ... })` runs several runners in one process against one Postgres database, with `kill`, `restart`, and `pauseHeartbeat` per runner, for tests of ownership moving between runners. It refuses PGlite.
+The framework's own multi-runner and deterministic simulation harnesses are maintained in the unpublished [`tooling/conformance` workspace](../../tooling/conformance/README.md), not `@rikalabs/akter/testing`. Application tests keep `ActorTest.layer`, inspection, virtual time, fault controls, `checkBatchLaw`, cleanup/content sweeps, and database fixtures. For process-level application recovery tests, start the same production layers against a dedicated Postgres database.
 
 ## Further reading
 

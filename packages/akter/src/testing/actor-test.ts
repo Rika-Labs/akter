@@ -46,16 +46,9 @@ import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/t
 import { type ProgressClosed, type ProgressMessage, ProgressTap } from "../runtime/jobs/progress.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
-import { ActorCluster, type ClusterOptions, clusterLayer } from "./cluster.ts"
-import { type Simulation, type SimulationOptions, simulate } from "./simulate.ts"
-import {
-  type ClusterSimulation,
-  type ClusterSimulationOptions,
-  simulateCluster,
-} from "./simulate-cluster.ts"
 
 /**
- * Present while `ActorTest.cluster` builds one of its runners: the runner
+ * Present while the framework's cluster harness builds one of its runners: the runner
  * shares the cluster's tenant and opens its database connections through
  * `connect`, so killing it can cut them.
  */
@@ -312,41 +305,6 @@ export class ActorTest extends Context.Service<
     ) => Effect.Effect<void>
   }
 >()("@rikalabs/akter/testing/actor-test/ActorTest") {
-  /**
-   * Runs `runners` runtimes in this process against one Postgres database,
-   * each a distinct Cluster runner with its own address, connection pool, and
-   * expiring shard locks. Provides `ActorCluster`; see its controls.
-   */
-  static readonly cluster = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>) =>
-    clusterLayer(options)
-
-  /**
-   * Runs `program` on the current test runtime under a fault schedule drawn
-   * from `seed`, then checks exactly-once receipts and outbox delivery; a
-   * failure dies with the seed that reproduces it.
-   */
-  static readonly simulate = <E, R>(
-    options: SimulationOptions,
-    program: (simulation: Simulation) => Effect.Effect<void, E, R>,
-  ) =>
-    Effect.gen(function* () {
-      return yield* simulate(yield* ActorTest)(options, program)
-    })
-
-  /**
-   * Runs `program` on the current `ActorTest.cluster` under a fault schedule
-   * drawn from `seed`, with runner kills, lost heartbeats, and primary
-   * failovers as well as crashes, then checks exactly-once receipts and
-   * outbox delivery; a failure dies with the seed that reproduces it.
-   */
-  static readonly simulateCluster = <E, R>(
-    options: ClusterSimulationOptions,
-    program: (simulation: ClusterSimulation) => Effect.Effect<void, E, R>,
-  ) =>
-    Effect.gen(function* () {
-      return yield* simulateCluster(yield* ActorCluster)(options, program)
-    })
-
   static readonly layer = (options: TestOptions = {}) =>
     Layer.unwrap(
       Effect.gen(function* () {

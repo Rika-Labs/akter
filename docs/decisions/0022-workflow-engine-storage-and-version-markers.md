@@ -348,7 +348,7 @@ const again = yield * Order.run(Ship, executionId) // reattach from a stored id
 
 ### 10. The shared engine suite
 
-`packages/akter/src/testing/conformance/workflows.ts` exports `describeWorkflowEngine(name, { layer, executionId })`. It registers plain Effect workflows with the engine and drives `WorkflowEngine` directly (not `Workflow.execute`), so its bodies use Effect's primitives; the step-registry rule of decision 7 belongs to `Actor.workflow` and is tested separately. It drives the engine with ids from the `executionId` factory: `w1.` ids for ours, any string for Cluster's. It runs once with our engine on PGlite and Postgres, and once with `ClusterWorkflowEngine.layer` over Cluster's in-memory message storage and test runner. These cases must match on both:
+`tooling/conformance/src/conformance/workflows.ts` exports `describeWorkflowEngine(name, { layer, executionId })`. It registers plain Effect workflows with the engine and drives `WorkflowEngine` directly (not `Workflow.execute`), so its bodies use Effect's primitives; the step-registry rule of decision 7 belongs to `Actor.workflow` and is tested separately. It drives the engine with ids from the `executionId` factory: `w1.` ids for ours, any string for Cluster's. It runs once with our engine on PGlite and Postgres, and once with `ClusterWorkflowEngine.layer` over Cluster's in-memory message storage and test runner. These cases must match on both:
 
 | Case                                            | Asserts                                                                                             |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------- |

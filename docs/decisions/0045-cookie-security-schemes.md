@@ -44,7 +44,7 @@ const sessions = Actor.auth.make({
 
 ## Evidence
 
-- `documents a cookie provider's cookie as an apiKey scheme and authenticates by it` in [`conformance/http.ts`](../../packages/akter/src/testing/conformance/http.ts), on PGlite and Postgres: the cookie-only, cookie-or-bearer, and bearer-only documents; a cookie-only provider authenticating from the cookie and refusing a bearer token with `missing_credentials`; and a bearer provider never seeing cookies.
+- `documents a cookie provider's cookie as an apiKey scheme and authenticates by it` in [`conformance/http.ts`](../../tooling/conformance/src/conformance/http.ts), on PGlite and Postgres: the cookie-only, cookie-or-bearer, and bearer-only documents; a cookie-only provider authenticating from the cookie and refusing a bearer token with `missing_credentials`; and a bearer provider never seeing cookies.
 - [`serve/auth.test.ts`](../../packages/akter/src/serve/auth.test.ts): the credentials each form of `Actor.auth.make` produces, and the cookie-name check.
 
 ## Revisit when

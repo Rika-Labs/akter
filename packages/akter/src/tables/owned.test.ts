@@ -13,8 +13,8 @@ import { Cause, Effect, Exit } from "effect"
 import { describe, expect, expectTypeOf, it } from "vitest"
 import { Actor, type Insert, type Row } from "../index.ts"
 import type { TurnRows } from "./owned.ts"
-import { labels, notes, tablesDdl } from "../testing/conformance/tables.ts"
-import { watchDdl, watchRows } from "../testing/conformance/watch.ts"
+import { labels, notes, tablesDdl } from "../../../../tooling/conformance/src/conformance/tables.ts"
+import { watchDdl, watchRows } from "../../../../tooling/conformance/src/conformance/watch.ts"
 
 const migration = (schema: Parameters<typeof generateDrizzleJson>[0]) =>
   Effect.gen(function* () {
