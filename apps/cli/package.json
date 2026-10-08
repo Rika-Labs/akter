@@ -32,7 +32,8 @@
   "type": "module",
   "types": "./dist/main.d.ts",
   "exports": {
-    ".": "./dist/main.js"
+    ".": "./dist/main.js",
+    "./cloud-api": "./dist/cloud-api/index.js"
   },
   "publishConfig": {
     "types": "./dist/main.d.ts",
@@ -40,13 +41,17 @@
       ".": {
         "types": "./dist/main.d.ts",
         "default": "./dist/main.js"
+      },
+      "./cloud-api": {
+        "types": "./dist/cloud-api/index.d.ts",
+        "default": "./dist/cloud-api/index.js"
       }
     },
     "access": "public"
   },
   "scripts": {
     "build:inspector": "bun build src/commands/dev/inspector/client.ts --target browser --minify --outfile .cache/inspector-client.js",
-    "build": "tsc -p tsconfig.build.json && bun build src/main.ts --target node --format esm --external '@effect/*' --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/main.js && bun run build:inspector && cp .cache/inspector-client.js dist/inspector-client.js && cp .cache/declarations/apps/cli/src/main.d.ts dist/main.d.ts",
+    "build": "tsc -p tsconfig.build.json && bun build src/main.ts --target node --format esm --external '@effect/*' --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/main.js && bun build ../../packages/cloud-api/src/index.ts --target node --format esm --external effect --external '@rikalabs/akter' --external '@rikalabs/akter/*' --outfile dist/cloud-api/index.js && cp -R .cache/declarations/packages/cloud-api/src/. dist/cloud-api/ && bun run build:inspector && cp .cache/inspector-client.js dist/inspector-client.js && cp .cache/declarations/apps/cli/src/main.d.ts dist/main.d.ts",
     "prepublishOnly": "echo 'Publish through the release workflow: push a v<version> tag.' && exit 1",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile .cache/typecheck.tsbuildinfo -p tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --threads 1 .",

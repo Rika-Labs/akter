@@ -10,6 +10,8 @@
 
 **Change policy:** supersede through a new ADR.
 
+The 2026-10-08 launch amendment in [ADR 0029](0029-licence-package-name-and-release-policy.md) adds verified-main `next` canaries in the same workflow and automated pre-1.0 `latest` promotion. npm 12.2.0 supports OIDC dist-tag changes; both trusted publishers must permit `npm publish` and `npm dist-tag`. The authentication, hosted-runner and manual-bootstrap decisions below are unchanged.
+
 ## Context
 
 ADR 0029 left the publish workflow and the first publish to CR.1b (#99). The first workflow draft authenticated with an `NPM_TOKEN` repository secret. A long-lived publish token can be copied out of the environment and used anywhere. npm trusted publishing instead trusts one GitHub repository, workflow file and environment, and exchanges the job's OIDC identity for a short-lived credential, but it can only be configured on a package that already exists on npm.
