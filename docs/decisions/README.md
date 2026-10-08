@@ -102,3 +102,5 @@ Cloud-only decision records live in the private Akter Cloud repository.
 - [ADR 0110: Explicitly unrouted Neki databases](0110-explicit-unrouted-neki.md) (accepted 2026-10-07) adds `neki: { routing: "none" }` for a platform-guaranteed unrouted database, preserves Neki transaction and DDL rules without topology reads, and keeps default topology privilege failures typed and fail-closed.
 
 - [ADR 0098: Akter Cloud lives in a private proprietary repository](0098-proprietary-cloud-repository.md) (accepted 2026-10-06) supersedes ADR 0074 item 1 and ADR 0029's apps licensing clause, separates the hosted implementation into a private proprietary repository and retains the Apache-2.0 framework, public CLI and cloud API contract.
+
+- [ADR 0111: Framework verification stays outside the published package](0111-framework-verification-workspace.md) (accepted 2026-10-08) moves conformance, foundation fixtures and cluster/simulation harnesses into private `@akter/conformance` tooling while preserving the app-facing testing API and runtime evidence.

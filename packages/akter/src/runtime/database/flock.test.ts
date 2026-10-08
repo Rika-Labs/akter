@@ -3,7 +3,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { afterAll, describe, expect, it } from "vitest"
 import { flockExclusive } from "./flock.ts"
 
-const holder = new URL("../../testing/conformance/crash/flock-holder.ts", import.meta.url).pathname
+const holder = new URL(
+  "../../../../../tooling/conformance/src/conformance/crash/flock-holder.ts",
+  import.meta.url,
+).pathname
 
 const services =
   process.versions.bun === undefined

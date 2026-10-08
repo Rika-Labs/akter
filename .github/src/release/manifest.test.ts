@@ -152,6 +152,24 @@ it("names bare imports that are neither builtins nor declared dependencies or pe
   ).toEqual(["@effect/platform-bun", "pg"])
 })
 
+it("keeps the app testing entry but rejects compiled framework verification harnesses", () => {
+  const packed = publishManifest({ manifest, catalog: { effect: "4.0.2" } })
+  const publicTesting = ["dist/testing/index.js", "dist/testing/actor-test.d.ts"]
+  const harnesses = [
+    "dist/testing/conformance.js",
+    "dist/testing/conformance/counter.d.ts",
+    "dist/testing/foundation.js",
+    "dist/testing/cluster.d.ts",
+    "dist/testing/simulate.js",
+    "dist/testing/simulate-cluster.d.ts",
+  ]
+
+  expect(tarballProblems({ files: [...complete, ...publicTesting], manifest: packed })).toEqual([])
+  expect(
+    tarballProblems({ files: [...complete, ...publicTesting, ...harnesses], manifest: packed }),
+  ).toEqual(harnesses.map((file) => `must not publish ${file}`))
+})
+
 it("accepts valid SemVer build metadata", () => {
   const packed = publishManifest({
     manifest: { ...manifest, version: "1.2.3-alpha.1+build.5" },

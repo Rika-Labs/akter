@@ -10,9 +10,9 @@ These documents define the settled v4 guarantees. The public distribution is `@r
 - `@rikalabs/akter` — `Actor.make`, contracts, policies, errors, identity, `Actors`, serving, and auth;
 - `@rikalabs/akter/runtime` — `Actors.layer`, topology, database, and migrations;
 - `@rikalabs/akter/client` — browser-safe Promise client;
-- `@rikalabs/akter/testing` — `ActorTest` and conformance support.
+- `@rikalabs/akter/testing` — `ActorTest`, database fixtures, cleanup, batch-law checks, and fault controls.
 
-The runtime supports embedded, served, and hosted modes. Repository placement is defined by [repository structure](../architecture/repository-structure.md).
+The runtime supports embedded, served, and hosted modes. Framework conformance and cluster/simulation harnesses are repository-only tools in `tooling/conformance`, not public package APIs ([ADR 0111](../decisions/0111-framework-verification-workspace.md)). Repository placement is defined by [repository structure](../architecture/repository-structure.md).
 
 - [Actor identity and authority](01-actor-authority.md)
 - [Command turns](02-command-turns.md)

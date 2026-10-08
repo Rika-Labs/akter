@@ -72,8 +72,8 @@
     },
     {
       "files": [
-        "packages/akter/src/testing/conformance/*/harness.ts",
-        "packages/akter/src/testing/conformance/transports/wire.ts"
+        "tooling/conformance/src/conformance/*/harness.ts",
+        "tooling/conformance/src/conformance/transports/wire.ts"
       ],
       "rules": {
         "effecttsgo/missing-pipeable-signature": "off"

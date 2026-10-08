@@ -159,7 +159,7 @@ jobs:
           fi
           {
             bun run turbo run build --filter='!@rikalabs/akter' --concurrency=100% --summarize "${affected[@]}"
-            bun run turbo run test test:integration --filter='!@rikalabs/akter' \
+            bun run turbo run test test:integration --filter='!@rikalabs/akter' --filter='!@akter/conformance' \
               --only --force --concurrency=100% --summarize "${affected[@]}"
           } 2>&1 | tee evidence/workspaces/check.log
       - name: Collect Turbo run summaries
@@ -271,16 +271,18 @@ jobs:
             case "$kind" in
               unit)
                 env -u TEST_DATABASE_URL -u TEST_REPLICA_DATABASE_URL \
-                  bun run --cwd packages/akter test --exclude '**/conformance/pglite/backend.test.ts' ;;
+                  bun run --cwd packages/akter test &&
+                env -u TEST_DATABASE_URL -u TEST_REPLICA_DATABASE_URL \
+                  bun run --cwd tooling/conformance test --exclude '**/conformance/pglite/backend.test.ts' ;;
               pglite)
                 env -u TEST_DATABASE_URL -u TEST_REPLICA_DATABASE_URL \
-                  bun run --cwd packages/akter test:pglite "${projects[@]}" ;;
+                  bun run --cwd tooling/conformance test:pglite "${projects[@]}" ;;
               drills)
-                env -u TEST_REPLICA_DATABASE_URL bun run --cwd packages/akter test:integration:drills ;;
+                env -u TEST_REPLICA_DATABASE_URL bun run --cwd tooling/conformance test:integration:drills ;;
               postgres-without-replica)
-                env -u TEST_REPLICA_DATABASE_URL bun run --cwd packages/akter test:integration:postgres "${projects[@]}" ;;
+                env -u TEST_REPLICA_DATABASE_URL bun run --cwd tooling/conformance test:integration:postgres "${projects[@]}" ;;
               postgres)
-                bun run --cwd packages/akter test:integration:postgres "${projects[@]}" ;;
+                bun run --cwd tooling/conformance test:integration:postgres "${projects[@]}" ;;
               node)
                 bun run test:node:conformance "${projects[@]}" ;;
               node-units)

@@ -81,7 +81,7 @@ jobs:
         timeout-minutes: 75
         env:
           RUN: ${{ matrix.run }}
-        working-directory: packages/akter
+        working-directory: tooling/conformance
         run: |
           set -u
           mkdir -p ../../stress
@@ -91,22 +91,23 @@ jobs:
           # Each suite is one Vitest command, so the reporter flags reach the run they name.
           # The migration crash file walks hundreds of sequential kill points, so it runs
           # as a suite of its own, as Verify gives it a job no other file competes with.
-          while read -r suite script projects; do
+          while read -r suite workspace script projects; do
             name="$suite-$RUN"
             status=0
             # A hung run is cut off and reported instead of eating the budget.
             # Vitest resolves the report path from the repository root.
-            timeout --kill-after=30s 35m bun run "$script" $projects --reporter=default --reporter=json \
+            timeout --kill-after=30s 35m bun run --cwd "$workspace" "$script" $projects --reporter=default --reporter=json \
               --outputFile.json="stress/$name.json" \
               > "../../stress/$name.log" 2>&1 || status=$?
             echo "$status" > "../../stress/$name.status"
             echo "run $RUN $suite exited $status"
             if [ "$status" -ne 0 ]; then failed=1; fi
           done <<'SUITES'
-          test test
-          test-integration-postgres test:integration:postgres --project=!integration:migrations
-          test-integration-migrations test:integration:postgres --project=integration:migrations
-          test-integration-drills test:integration:drills
+          test-framework ../../packages/akter test
+          test . test
+          test-integration-postgres . test:integration:postgres --project=!integration:migrations
+          test-integration-migrations . test:integration:postgres --project=integration:migrations
+          test-integration-drills . test:integration:drills
           SUITES
           exit "$failed"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

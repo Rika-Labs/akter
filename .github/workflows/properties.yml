@@ -74,7 +74,7 @@ jobs:
         run: |
           export SIMULATION_SEED_BASE=$(( GITHUB_RUN_NUMBER * 10000 + MATRIX_SHARD * 2500 ))
           echo "Seeds from $SIMULATION_SEED_BASE"
-          bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/testing/simulate.test.ts -t "exactly once"
+          bun --bun node_modules/vitest/vitest.mjs run tooling/conformance/src/simulate.test.ts -t "exactly once"
         env:
           MATRIX_SHARD: ${{ matrix.shard }}
           SIMULATION_SEEDS: "2500"

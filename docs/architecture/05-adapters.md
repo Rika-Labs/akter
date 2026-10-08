@@ -31,4 +31,4 @@ The published operation matrix for Drizzle is in [Drizzle integration](../api/04
 
 External calls are declared jobs executed after commit under their retry and dead-letter policies. Framework blobs are database-backed chunks, not an external object-storage adapter. Runtime clocks use Effect `Clock` so tests can control time. Application provider integrations may narrow capabilities, but must report unsupported guarantees rather than silently weakening them.
 
-The conformance suite in `@rikalabs/akter/testing` is the authority for a Postgres database, PGlite, and Neki behavior. See [support matrix](../operations/support-matrix.md).
+The repository's unpublished `@akter/conformance` workspace is the executable evidence for a Postgres database, PGlite, and Neki behavior. Application tests use `ActorTest` from `@rikalabs/akter/testing`. See [support matrix](../operations/support-matrix.md).

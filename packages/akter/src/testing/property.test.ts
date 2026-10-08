@@ -2,8 +2,8 @@ import { Effect, Exit, Result, Schema } from "effect"
 import { Arbitrary } from "effect"
 import { describe, expect, it } from "@effect/vitest"
 import { Actor } from "../index.ts"
-import { Bump, Fragile } from "./conformance/batches.ts"
-import { Tick as MultiRunnerTick } from "./conformance/multi-runner.ts"
+import { Bump, Fragile } from "../../../../tooling/conformance/src/conformance/batches.ts"
+import { Tick as MultiRunnerTick } from "../../../../tooling/conformance/src/conformance/multi-runner.ts"
 import { checkBatchLaw } from "./property.ts"
 
 const Counted = Actor.state({
