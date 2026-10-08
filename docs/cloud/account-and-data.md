@@ -9,15 +9,19 @@ Export any records you want to keep **before** requesting deletion. Organization
 
 In **Settings → Account → Profile**, choose **Export my data**. The console downloads a JSON file containing the records Akter stores about the signed-in user, including retained billing and audit records. It excludes passwords, session tokens, OAuth credential values and verification secrets.
 
-This is a personal-data export, not a backup of your actors or customer database. Store the downloaded file securely: it contains personal information.
+This is a personal-data export, not a backup of your actors or any database. Store the downloaded file securely: it contains personal information.
 
 ## Delete an organization
 
 Only an unsuspended owner can request organization deletion. In **Settings → Organization**, choose **Delete organization**, type the organization's name and confirm.
 
-Acceptance immediately fences new mutations and deployments and revokes API keys and serving routes. Cleanup then runs in the background: billing cancellation, runner retirement and final organization-record removal, in that order. Akter removes its stored variables and platform records but never deletes or erases your customer-owned database. The organization remains listed while cleanup is pending. A failure retains the obligation for retry rather than declaring deletion complete. A suspended organization cannot accept a deletion request; contact support instead.
+Acceptance immediately fences new mutations and deployments and revokes API keys and serving routes. Cleanup then runs in the background: billing cancellation, runner retirement and final organization-record removal, in that order. Akter deletes the managed database of each of the organization's environments, and removes its stored variables and platform records. It never deletes a bring-your-own database. The organization remains listed while cleanup is pending. A failure retains the obligation for retry rather than declaring deletion complete. A suspended organization cannot accept a deletion request; contact support instead.
 
-Existing subscriptions are cancelled immediately without automatic proration, with a final invoice for outstanding metered usage. Existing invoices and accounting obligations remain authoritative. Export what you need before confirming; there is no documented undo or customer restore path.
+Existing subscriptions are cancelled immediately without automatic proration, with a final invoice for outstanding metered usage. Existing invoices and accounting obligations remain authoritative. Export what you need before confirming; deleting a managed database removes its data, and there is no documented undo or customer restore path.
+
+## Delete an environment or project
+
+Deleting an environment or project deletes its managed databases and Akter's stored variables and platform records. A [bring-your-own database](/cloud/bring-your-database) is never deleted. See [your database](/cloud/database).
 
 ## Delete your account
 

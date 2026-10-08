@@ -33,22 +33,18 @@ Use one `NAME=value` per line, optionally prefixed with `export`. Blank lines an
 
 - Names begin with a letter or `_`, followed by letters, digits or `_`, with at most 256 characters.
 - A value cannot contain a NUL character. The CLI accepts at most 64 KiB of UTF-8 input for one value and 1 MiB for a dotenv import.
-- You cannot set or remove platform-managed names such as `DEPLOYMENT_ID` and `FLY_API_TOKEN`, or names beginning with `AKTER_`, `ASSERTION_` or `RUNNER_`. `AKTER_DATABASE_ENGINE` is the customer-settable exception to the `AKTER_` prefix rule.
+- You cannot set or remove platform-managed names such as `DEPLOYMENT_ID` and `FLY_API_TOKEN`, or names beginning with `AKTER_`, `ASSERTION_` or `RUNNER_`. `DATABASE_URL` is platform-managed unless you are on Team or Enterprise and bring your own Postgres.
 
 ## Database connection
 
-You set `DATABASE_URL` for your own database. It must use `postgres://` or `postgresql://`, include a host and omit fragments, whitespace, control characters and shell syntax, including their percent-encoded forms. The API rejects invalid input without echoing the URL.
+Akter Cloud creates a [database](/cloud/database) for each environment and provides its `DATABASE_URL` for you. `akter env list` shows it with `managed` provenance. Like every value, it cannot be read back, and on Free and Pro you cannot set or unset it.
+
+On Team and Enterprise, setting `DATABASE_URL` yourself switches that environment to your own Postgres database. The URL must use `postgres://` or `postgresql://`, include a host, omit fragments and raw whitespace or control characters, and contain exactly one `sslmode` of `require`, `verify-ca` or `verify-full`. See [Bring your own Postgres](/cloud/bring-your-database) for every requirement. The API rejects an invalid URL without echoing it.
 
 ```sh
 bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../database-url.txt
 ```
 
-Store only the URL in that secure file, without quotes or a trailing newline, and keep it outside the deployment directory. Values remain file/stdin input, not positional command arguments. Database connection reads expose only `database: { configured, engine }`, never any URL-derived host, username, password or database name.
+Store only the URL in that secure file, without quotes or a trailing newline, and keep it outside the deployment directory. Values remain file/stdin input, not positional command arguments.
 
-`AKTER_DATABASE_ENGINE` accepts `postgres` or `neki`; it defaults to `postgres` when absent. For a Neki database:
-
-```sh
-printf %s neki | bunx akter env set AKTER_DATABASE_ENGINE --project PROJECT_ID --env production
-```
-
-Unsetting `DATABASE_URL` leaves the external database untouched but makes subsequent deploy admissions fail until you configure a connection again. See [Bring your database](/cloud/bring-your-database). After changing variables, [deploy again](/cloud/deploy).
+Unsetting your own `DATABASE_URL` never touches your database. After changing variables, [deploy again](/cloud/deploy).

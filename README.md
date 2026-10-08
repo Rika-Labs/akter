@@ -183,7 +183,7 @@ The runtime needs [Bun](https://bun.sh) 1.4.2 or later, or [Node.js](https://nod
 
 ## Akter Cloud
 
-[Akter Cloud](https://app.akter.dev) hosts your app on managed runners connected to your own Postgres database or Neki database; PlanetScale is recommended. Install the CLI with `bun add -d @rikalabs/akter-cli@alpha`, sign in with `bunx akter login`, [bring your database](docs/cloud/bring-your-database.md), then deploy with `bunx akter deploy --project <project-id>` (Node: `npm install --save-dev @rikalabs/akter-cli@alpha` and `npx akter`). The first registry publication is pending. See the [Cloud guide](docs/cloud/get-started.md) for signup, configuration, confirmed pricing and account cleanup.
+[Akter Cloud](https://app.akter.dev) hosts your app on managed runners and creates a Postgres database for each project environment; Team and Enterprise can [bring their own Postgres](docs/cloud/bring-your-database.md). Install the CLI with `bun add -d @rikalabs/akter-cli@alpha`, sign in with `bunx akter login`, then deploy with `bunx akter deploy --project <project-id>` (Node: `npm install --save-dev @rikalabs/akter-cli@alpha` and `npx akter`). The first registry publication is pending. See the [Cloud guide](docs/cloud/get-started.md) for signup, configuration, confirmed pricing and account cleanup.
 
 ## Documentation
 
