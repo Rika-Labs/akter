@@ -33,45 +33,24 @@ Everything a view shows is committed. A turn that rolls back (a defect, a crash 
 | `durable.views`          | this catalog                                                                                                    |
 | `durable.operator_audit` | one per operator action, and per operator refusal by scope (`0023_operator_audit`); never pruned by the runtime |
 
-Adding a column at the end keeps a view's version. Any other change adds a new view, such as `durable.receipts_v2`, and a catalog row.
+Adding a column at the end keeps a view's version. Any other change adds a new view and a catalog row.
 
-## Single-table views (`_v2`)
+## Retired single-table variants
 
-A Neki router serves a view on a group routed by `routing_key` only when it projects or filters one table: it refuses a view that joins `actor_placements` to an actor table, and a view that reads two tables of one group. Migration `0031_routable_views` ([ADR 0095](../decisions/0095-single-table-inspection-views.md)) therefore adds a second set, each view over exactly one table, and moves `placement` to a view of its own. Every column keeps its name, meaning and type, except that no view but `placements_v2` carries `placement`. Join it by `actor_type` in the tool:
+Migration `0033_joined_inspection` removes all 15 `_v2` variants introduced by `0031_routable_views` for the retired Neki backend, including `placements_v2` and `content_sweeps_v2`. Applied migration `0031` is unchanged. The original joined views remain, with their existing columns and versions, and the runtime inspector reads only those views.
 
-| Single-table view           | Replaces                               | Source table                |
-| --------------------------- | -------------------------------------- | --------------------------- |
-| `durable.actors_v2`         | `actors`                               | `actor_generations`         |
-| `durable.state_v2`          | `state`                                | `actor_state`               |
-| `durable.receipts_v2`       | `receipts`                             | `actor_receipts`            |
-| `durable.events_v2`         | `events`                               | `actor_events`              |
-| `durable.outbox_v2`         | `outbox`                               | `actor_outbox`              |
-| `durable.timers_v2`         | `timers`                               | `actor_outbox`              |
-| `durable.jobs_v2`           | `jobs`                                 | `actor_outbox`              |
-| `durable.dead_letters_v2`   | `dead_letters`                         | `actor_dead_letters`        |
-| `durable.workflows_v2`      | `workflows`                            | `actor_workflow_executions` |
-| `durable.workflow_steps_v2` | `workflow_steps`                       | `actor_workflow_step`       |
-| `durable.contents_v2`       | `contents`                             | `tenant_contents`           |
-| `durable.content_sweeps_v2` | `contents` (`swept_at_ms`, `swept_at`) | `tenant_content_sweeps`     |
-| `durable.content_refs_v2`   | `content_refs`                         | `actor_content_refs`        |
-| `durable.operator_audit_v2` | `operator_audit`                       | `actor_operator_audit`      |
-| `durable.placements_v2`     | the `placement` column                 | `actor_placements`          |
-
-`placements_v2` has `actor_type`, `placement` (`'tenant'` or `'actor'`) and `parent_type` (`text`, null unless the type is parent-placed). Each `_v2` name is listed in `durable.views` at version 1; the suffix is the set, and a later column added at the end of one still keeps its version.
+Before upgrading, stop every previous alpha runner and update SQL tooling to the original names. Read `placement` directly from the actor view, without a separate placement join:
 
 ```sql
-SELECT a.actor_id, p.placement
-FROM durable.actors_v2 a LEFT JOIN durable.placements_v2 p ON p.actor_type = a.actor_type
-WHERE a.tenant_id = 'acme' AND a.actor_type = 'Order';
+SELECT actor_id, placement FROM durable.actors
+WHERE tenant_id = 'acme' AND actor_type = 'Order';
 ```
 
-- **Where each set exists.** The first set is created wherever a database can serve it: Postgres database, PGlite and a Neki database that routes none of the tables a view reads. On a Neki database that routes the actor tables, migrations `0013` to `0030` create none of it, and `durable.views` lists only the views that exist. The `_v2` set exists everywhere.
-- **Routing tables later.** A topology rewrite leaves existing joined views in place, and the router then refuses every read of them. Before or with routing the actor tables, run `DROP VIEW durable.actors, durable.state, durable.receipts, durable.events, durable.outbox, durable.timers, durable.jobs, durable.dead_letters, durable.workflows, durable.workflow_steps, durable.contents, durable.content_refs, durable.operator_audit` and rewrite `durable.views` without them. Tools move to the `_v2` names first.
-- **Read-only.** A view over one table can be updated through, so the migration revokes `INSERT`, `UPDATE`, `DELETE` and `TRUNCATE` on each `_v2` view from its owner, and no role is granted them. A write fails with `permission denied` for every role that is not a superuser; a router refuses it as well on a routed group. Handing the views to a view-owner role keeps the revocation. Rerun the `GRANT SELECT` after the migration.
+An external view depending on a retired variant blocks migration; retirement does not cascade or delete your SQL tooling. Update that dependency and retry startup. Failure rolls back the view removals and migration ledger together. `durable.views` lists 14 entries after retirement. Existing joined-view ownership and grants remain; follow the [alpha upgrade notes](alpha-upgrades.md) when upgrading with RLS.
 
 ## Columns
 
-Every view except `durable.views` starts with the actor's ownership columns: `tenant_id`, `actor_type`, `actor_id`, `routing_key` (`bigint`, an opaque shard key that every runtime index leads with), and `placement` (`'tenant'` or `'actor'`, the actor type's placement). Each `*_ms` column is milliseconds since the Unix epoch and has a `timestamptz` twin without the suffix.
+Actor views start with the ownership columns `tenant_id`, `actor_type`, `actor_id`, `routing_key` (`bigint`, an opaque ownership/grouping key), and `placement` (the actor type's recorded tenant, actor, parent or authority grouping). Tenant content views have tenant ownership instead; `durable.views` is the catalog. Each `*_ms` column is milliseconds since the Unix epoch and has a `timestamptz` twin without the suffix.
 
 | View             | Further columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -173,7 +152,7 @@ Compressed values (state, event values, workflow payloads, results, and step exi
 The inspector adds no access of its own:
 
 - **Tenant.** The tenant comes only from the authenticated principal, never from the request, and every statement filters on it. A tenant named in the query string is ignored. Inside that tenant the inspector reads every actor, so `auth` must authenticate operators, not the end users `Actors.serve` authenticates.
-- **Read-only.** It reads only the single-table `durable.*_v2` views and `durable.views`, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and the Postgres backend refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
+- **Read-only.** It reads only the joined `durable` views and `durable.views`, inside a `REPEATABLE READ, READ ONLY` transaction per request, so one response is one snapshot and the Postgres backend refuses any write. Every statement it runs also succeeds under a role granted only the `durable` schema (see [Privileges](#privileges)). Each transaction also sets `durable.tenant` to the principal's tenant, so with row-level security on the database enforces the tenant too.
 - **Step history.** Steps are shown while an execution is open; the engine deletes a finished execution's steps, so a finished execution shows its result and no steps.
 
 Connections are not shown: no inspection view covers `actor_connections` yet. `akter export Room/r1 --output r1.seed` writes an actor's current state and pending intents and jobs as a seed that `test.actor(Room, "r1", { seed })` starts from; it needs the `export` capability, is audited, and carries no history ([M6.4](../milestones/M6.md)). Retrying or discarding a dead letter is an operator repair: `akter dead-letters retry|discard` through `Operators.serve` ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)).

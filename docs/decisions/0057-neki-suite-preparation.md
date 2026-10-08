@@ -1,6 +1,6 @@
 # ADR 0057: The Neki suite is prepared, selected by environment, and never counted as run
 
-**Status:** proposed (2026-09-30). It amends [ADR 0020](0020-two-round-trip-turn-pipeline.md)'s admission group for Neki and completes the M5.1 half of [ADR 0006](0006-scale-rules-placement-and-query-tiers.md)'s CI check and [ADR 0033](0033-parent-actor-placement.md)'s Neki check for families.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). The Neki suite and session modes are removed; the record below is historical.
 
 **Responsibility:** decide how the conformance suite reaches Neki without a Neki run, where a turn connection sets Neki's session modes, and what the single-shard statement check proves before and after a Neki run.
 

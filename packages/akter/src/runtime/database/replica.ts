@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import type { SqlClient } from "effect/sql"
-import { boundedPool, routedPool } from "./bounded.ts"
+import { boundedPool } from "./bounded.ts"
 
 /**
  * The primary's WAL insert position as a decimal string, and the database
@@ -15,16 +15,6 @@ import { boundedPool, routedPool } from "./bounded.ts"
  * recheck before its reply costs no round trip of its own.
  */
 export const COMMIT_VERSION = `SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version,
-  floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
-
-/**
- * `COMMIT_VERSION` on a Neki router, which has no WAL position to report: its
- * evaluation engine refuses `pg_current_wal_insert_lsn()`, and a Neki
- * database has no streaming replica for a version to gate, so every commit
- * reports version 0. The clock is still the shard's, read after the
- * transaction ended.
- */
-export const NEKI_COMMIT_VERSION = `SELECT '0' AS version,
   floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now`
 
 /**
@@ -62,14 +52,10 @@ export const QueryPool = Context.Reference<SqlClient.SqlClient | undefined>(
 
 /**
  * Provides `QueryPool` as a bounded, first-come, first-served pool for
- * `options`, whose checkouts follow the caller's shard target like the
- * off-turn client's.
+ * `options`, independent of the off-turn client's checkouts.
  */
 export const queryPoolLayer = (options: PgClient.PgPoolConfig) =>
-  Layer.effect(
-    QueryPool,
-    Effect.map(routedPool(options), ({ sql }) => sql),
-  ).pipe(Layer.provide(Reactivity.layer))
+  Layer.effect(QueryPool, boundedPool(options)).pipe(Layer.provide(Reactivity.layer))
 
 /**
  * Whether the replica has replayed WAL through `version`. A server not in

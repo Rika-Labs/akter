@@ -32,7 +32,6 @@ import {
   type TurnPoint,
 } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
-import { NekiTurnSessions } from "../../../../packages/akter/src/runtime/database/neki/session.ts"
 import { TurnPoolSettings } from "../../../../packages/akter/src/runtime/turn/pipeline.ts"
 import { ActorTest, ClusterMember } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
@@ -328,58 +327,53 @@ const withProbe = <A, E>(
     relay: Relay,
   ) => Effect.Effect<A, E, Actors | ActorTest | SqlClient.SqlClient | Scope.Scope>,
 ) =>
-  environment
-    .run(Effect.all([Effect.service(Crypto.Crypto), Effect.service(NekiTurnSessions)]))
-    .then(([crypto, neki]) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          yield* Effect.acquireRelease(environment.stop, () => environment.restart)
-          const database = yield* environment.freshDatabase
+  environment.run(Effect.service(Crypto.Crypto)).then((crypto) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.acquireRelease(environment.stop, () => environment.restart)
+        const database = yield* environment.freshDatabase
 
-          if (!Redacted.isRedacted(database))
-            return yield* Effect.die(new Error("The pipeline cases need a Postgres database"))
+        if (!Redacted.isRedacted(database))
+          return yield* Effect.die(new Error("The pipeline cases need a Postgres database"))
 
-          const probe: Probe = { flights: 0, statements: 0, sent: [], handled: 0 }
-          const relayed = yield* relay(new URL(Redacted.value(database)), probe)
-          const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
+        const probe: Probe = { flights: 0, statements: 0, sent: [], handled: 0 }
+        const relayed = yield* relay(new URL(Redacted.value(database)), probe)
+        const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
 
-          const context = yield* Layer.build(
-            actorsLive(probe).pipe(
-              Layer.provideMerge(
-                ActorTest.layer({
-                  database,
-                }).pipe(
-                  Layer.provide(
-                    Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void }),
-                  ),
-                ),
-              ),
-              Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
-              Layer.provide(
-                Layer.mergeAll(
-                  Layer.succeed(
-                    TurnPoolSettings,
-                    options.turnSessions === undefined
-                      ? { stream, prepare: options.prepare !== false }
-                      : {
-                          stream,
-                          prepare: options.prepare !== false,
-                          maxConnections: options.turnSessions,
-                        },
-                  ),
-                  Layer.succeed(NekiTurnSessions, neki),
-                  options.everyPool === true
-                    ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
-                    : Layer.empty,
-                ),
+        const context = yield* Layer.build(
+          actorsLive(probe).pipe(
+            Layer.provideMerge(
+              ActorTest.layer({
+                database,
+              }).pipe(
+                Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
               ),
             ),
-          )
+            Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(
+                  TurnPoolSettings,
+                  options.turnSessions === undefined
+                    ? { stream, prepare: options.prepare !== false }
+                    : {
+                        stream,
+                        prepare: options.prepare !== false,
+                        maxConnections: options.turnSessions,
+                      },
+                ),
+                options.everyPool === true
+                  ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
+                  : Layer.empty,
+              ),
+            ),
+          ),
+        )
 
-          return yield* body(probe, database, relayed).pipe(Effect.provideContext(context))
-        }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
-      ),
-    )
+        return yield* body(probe, database, relayed).pipe(Effect.provideContext(context))
+      }).pipe(Effect.scoped, Effect.provideService(Crypto.Crypto, crypto)),
+    ),
+  )
 
 /** Flights `effect` sends through the relay once warm connections are open. */
 const flightsOf = <A, E, R>(probe: Probe, effect: Effect.Effect<A, E, R>) =>

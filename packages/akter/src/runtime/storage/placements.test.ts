@@ -19,7 +19,6 @@ import type { ActorRef } from "../../identity/caller.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import { disposableDatabase } from "../../testing/database.ts"
 import { migrate } from "../database/migrations.ts"
-import { ShardMap } from "../database/shards.ts"
 import { Database } from "../layer.ts"
 import { AUTHORITY_BUCKET, authorityKey, routingKey } from "./codec.ts"
 import { AUTHORITY_MOVED_TABLES, checkPlacement } from "./placements.ts"
@@ -329,22 +328,12 @@ describe("authority placement with Postgres", () => {
       }),
     ))
 
-  it("moves once when two starts race, and refuses to move once the map names a data shard", () =>
+  it("moves once when two starts race", () =>
     database(
       Effect.gen(function* () {
         yield* serve(Tenanted, seed)
         const before = yield* ledgerRowKeys
         const move = checkPlacement({ name: "Ledger", placement: "authority" })
-
-        const routed = yield* move.pipe(
-          Effect.provideService(ShardMap, [{ first: -128, last: 127, shard: "sh2" }]),
-          Effect.exit,
-        )
-        expect(Cause.pretty((routed as Exit.Failure<unknown, unknown>).cause)).toContain(
-          "deploy it before the database routes any table",
-        )
-        expect(yield* placementOf).toEqual([{ placement: "tenant" }])
-        expect(yield* ledgerRowKeys).toEqual(before)
 
         const raced = yield* Effect.all([move, move], { concurrency: 2 }).pipe(Effect.exit)
         expect(Exit.isSuccess(raced)).toBe(true)

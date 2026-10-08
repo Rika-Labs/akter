@@ -1,6 +1,6 @@
 # ADR 0094: Every statement on a routed table runs in a session targeted at its data shard
 
-**Status:** implementation decision (2026-10-05). Demonstrated on `akter-preview` with the framework's 18 per-actor tables routed on its one shard, and on a lab cluster with two data shards. Routing the control plane's tables and splitting its database are later steps.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Topology discovery, targeted sessions and per-shard pools are removed; the record below is historical.
 
 **Amended by:** [ADR 0097](0097-authority-placed-control-plane-actors.md), which makes the five control-plane actors of "Authoritative writes inside turns" authority-placed: their bucket stays on the authoritative shard, and their turns and queries die when the map puts it elsewhere.
 

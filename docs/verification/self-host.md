@@ -39,6 +39,6 @@ The test-only `COMMAND_DELAY_MS=3000` keeps a real transaction open long enough 
 
 ## Limits
 
-This is one host, two runner processes and one Postgres server. It establishes the container recipe and the tested graceful completion/replay path, not a performance SLO, database failover, a SIGKILL crash drill, Neki support, cross-host routing, managed certificate rotation or secure public ingress. Deadline-expired rollback and commit-unknown recovery remain covered by the existing framework drain and recovery suites, not claimed as a new result of this recipe. The generated bearer provider identifies one logical caller in one tenant.
+This is one host, two runner processes and one Postgres server. It establishes the container recipe and the tested graceful completion/replay path, not a performance SLO, database failover, a SIGKILL crash drill, cross-host routing, managed certificate rotation or secure public ingress. Postgres and PGlite are the only framework backends. Deadline-expired rollback and commit-unknown recovery remain covered by the existing framework drain and recovery suites, not claimed as a new result of this recipe. The generated bearer provider identifies one logical caller in one tenant.
 
 The source-built images include the installed monorepo dependency tree; size minimization is not verified. Published npm versions lag main until alpha.2, so these results do not apply to the currently published alpha.1 package.

@@ -31,8 +31,7 @@ import { count as tally, Metrics } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
-import { type BucketRange, onRange, onShard, shardRanges } from "../database/shards.ts"
-import { NekiTurnSessions } from "../database/neki/session.ts"
+import { type BucketRange, shardRanges } from "../database/shards.ts"
 import type {
   Handoff,
   SubscriptionError,
@@ -487,28 +486,9 @@ const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "job") => {
  * The `outbox_clock` CTE: the outbox clock of one statement, read once so
  * every place the statement compares or sets a due time sees one value. Every
  * statement that reads `outboxNow` lists it first in its `WITH`.
- *
- * Postgres reads the statement's start time. A Neki router evaluates
- * `statement_timestamp()` and the other transaction-time functions itself,
- * with its own clock, and must then plan the whole statement with a planner
- * that refuses data-modifying CTEs, subqueries in `UPDATE`, and expressions in
- * `LIMIT`; a session targeted at one shard refuses those functions outright.
- * Neki therefore reads `clock_timestamp()`, which the shard that holds the
- * rows evaluates, so the router forwards the statement unchanged and due
- * times are compared on the clock turns write them with. That clock is read
- * when the statement first needs it, never before the statement starts, so a
- * row committed before the claim was sent is still due.
  */
-export const outboxClock = ({
-  sql,
-  neki,
-}: {
-  readonly sql: SqlClient.SqlClient
-  readonly neki: boolean
-}) =>
-  sql`outbox_clock AS MATERIALIZED (SELECT floor(extract(epoch FROM ${sql.literal(
-    neki ? "clock_timestamp()" : "statement_timestamp()",
-  )}) * 1000)::bigint AS ms)`
+export const outboxClock = ({ sql }: { readonly sql: SqlClient.SqlClient }) =>
+  sql`outbox_clock AS MATERIALIZED (SELECT floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint AS ms)`
 
 /** The outbox clock inside a statement that lists `outboxClock`, plus the test offset. */
 export const outboxNow = ({
@@ -656,7 +636,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   schedules: () => ReadonlyMap<string, CronSchedule> = () => new Map(),
 ) {
   const sql = yield* SqlClient.SqlClient
-  const statementClock = outboxClock({ sql, neki: yield* NekiTurnSessions })
+  const statementClock = outboxClock({ sql })
   let firstShard = 0
   const services = yield* Effect.context<SqlClient.SqlClient>()
   const lock = Semaphore.makeUnsafe(1)
@@ -733,7 +713,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
   const deliverIntent = Effect.fnUntraced(function* (row: ClaimedRow) {
     const routingKey = BigInt(row.routing_key)
-    const onRow = onShard(routingKey)
 
     const claim = sql`routing_key = ${routingKey} AND intent_id = ${row.intent_id}
       AND kind = 'intent' AND due_at_ms = ${BigInt(row.claimed_until)}`
@@ -750,18 +729,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
             reason,
           }),
         )
-        yield* onRow(
-          sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
-            WHERE ${claim}`,
-        )
+        yield* sql`UPDATE actor_outbox SET due_at_ms = ${(yield* databaseTime) + backoffMs(row.attempts)}
+          WHERE ${claim}`
         yield* tally(Metrics.relayRetried, { kind: "intent" }, 1)
       })
 
     return yield* Effect.gen(function* () {
       const tick = ticks.isTick(row)
-      const route = tick
-        ? yield* onRow(ticks.settleUnfired(row, claim, backoffMs(row.attempts)))
-        : row
+      const route = tick ? yield* ticks.settleUnfired(row, claim, backoffMs(row.attempts)) : row
 
       if (route === undefined) return
 
@@ -782,8 +757,8 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
       yield* hooks.at("beforeOutboxDelete", request)
 
-      if (tick) yield* onRow(ticks.settleFired(row, claim))
-      else yield* onRow(sql`DELETE FROM actor_outbox WHERE ${claim}`)
+      if (tick) yield* ticks.settleFired(row, claim)
+      else yield* sql`DELETE FROM actor_outbox WHERE ${claim}`
 
       yield* tally(Metrics.relayDelivered, { kind: "intent" }, 1)
     }).pipe(
@@ -805,9 +780,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
       ),
       Effect.onInterrupt(() =>
         databaseTime.pipe(
-          Effect.flatMap((at) =>
-            onRow(sql`UPDATE actor_outbox SET due_at_ms = ${at} WHERE ${claim}`),
-          ),
+          Effect.flatMap((at) => sql`UPDATE actor_outbox SET due_at_ms = ${at} WHERE ${claim}`),
           Effect.ignore,
         ),
       ),
@@ -872,16 +845,14 @@ export const outboxRelay = Effect.fnUntraced(function* (
                   break
                 }
 
-                const groups = yield* onRange(range)(
-                  cappedGroups({
-                    sql,
-                    range,
-                    clock: statementClock,
-                    now,
-                    executors: capped,
-                    limit: remaining,
-                  }),
-                )
+                const groups = yield* cappedGroups({
+                  sql,
+                  range,
+                  clock: statementClock,
+                  now,
+                  executors: capped,
+                  limit: remaining,
+                })
                 backlog ||= groups.length === remaining || (groups[0]?.due_rows ?? 0) >= remaining
 
                 for (const group of groups) {
@@ -894,18 +865,16 @@ export const outboxRelay = Effect.fnUntraced(function* (
                   )!
 
                   claimed.push(
-                    ...(yield* onRange(range)(
-                      claimCapped({
-                        sql,
-                        clock: statementClock,
-                        now,
-                        group,
-                        cap: registered.perActor!,
-                        maxAttempts: registered.attempts,
-                        permits: left,
-                        leaseMs: settings.executorLeaseMs,
-                      }),
-                    )),
+                    ...(yield* claimCapped({
+                      sql,
+                      clock: statementClock,
+                      now,
+                      group,
+                      cap: registered.perActor!,
+                      maxAttempts: registered.attempts,
+                      permits: left,
+                      leaseMs: settings.executorLeaseMs,
+                    })),
                   )
                 }
               }
@@ -932,37 +901,35 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const found = { intent: 0, job: 0 }
 
           for (const range of ordered) {
-            const claimed = yield* onRange(range)(
-              claimDue({
-                sql,
-                range,
-                clock: statementClock,
-                now,
-                intents:
-                  intentSlots > 0
-                    ? {
-                        limit: intentSlots,
-                        leaseMs: settings.claimLeaseMs(),
-                        maxBackoffMs: settings.maxBackoffMs,
-                        probe: lanes.intents.probe(intentSlots),
-                        cronActors: [...schedules().keys()],
-                      }
-                    : undefined,
-                jobs:
-                  jobSlots > 0 && uncapped.length > 0
-                    ? {
-                        permits: jobSlots,
-                        leaseMs: settings.executorLeaseMs,
-                        executors: uncapped,
-                        probe: lanes.jobs.probe(jobSlots),
-                      }
-                    : undefined,
-                subscriptions:
-                  remainingWork === undefined
-                    ? undefined
-                    : subscriptions!.claim(remainingWork, range),
-              }),
-            )
+            const claimed = yield* claimDue({
+              sql,
+              range,
+              clock: statementClock,
+              now,
+              intents:
+                intentSlots > 0
+                  ? {
+                      limit: intentSlots,
+                      leaseMs: settings.claimLeaseMs(),
+                      maxBackoffMs: settings.maxBackoffMs,
+                      probe: lanes.intents.probe(intentSlots),
+                      cronActors: [...schedules().keys()],
+                    }
+                  : undefined,
+              jobs:
+                jobSlots > 0 && uncapped.length > 0
+                  ? {
+                      permits: jobSlots,
+                      leaseMs: settings.executorLeaseMs,
+                      executors: uncapped,
+                      probe: lanes.jobs.probe(jobSlots),
+                    }
+                  : undefined,
+              subscriptions:
+                remainingWork === undefined
+                  ? undefined
+                  : subscriptions!.claim(remainingWork, range),
+            })
 
             for (const kind of ["intent", "job"] as const) {
               found[kind] +=
@@ -1098,7 +1065,6 @@ export const outboxRelay = Effect.fnUntraced(function* (
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
               AND kind = 'job' AND attempts = ${current}`.pipe(
-              onShard(routingKey),
               Effect.tap(
                 Effect.sync(() => {
                   lease.until += millis

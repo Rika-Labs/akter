@@ -18,7 +18,7 @@ description: "Inspect runner metrics, traces, durable work, and defects."
 
 **Defects.** Each runner keeps its last `observability.defects` (1,000) defect turn spans in memory. `Operators.serve` serves them at `GET /operator/defects` under the `defects.read` capability ([ADR 0050](../decisions/0050-operator-authority-and-audited-repair.md)). `akter defects list --url <runner> … [--tenant T] [--actor T] [--since 1h]` reads them from every runner named, with the operator token from `AKTER_OPERATOR_TOKEN`, and prints each with its trace id; older history is in the exporter's backend.
 
-Monitor command latency, mailbox depth and age, receipt replay rate, generation-fence failures, lock timeouts, redelivery, transaction retries, actor restarts, singleton ownership, cron lateness, workflow age, job retries and dead letters, parked connections, database saturation, and restore progress. On hosted Neki also monitor relay lag, duplicate suppression, and stranded `actor_outbox` rows.
+Monitor command latency, mailbox depth and age, receipt replay rate, generation-fence failures, lock timeouts, redelivery, transaction retries, actor restarts, singleton ownership, cron lateness, workflow age, job retries and dead letters, parked connections, database saturation, restore progress, relay lag and stranded `actor_outbox` rows on both backends.
 
 Bound actor-id and tenant cardinality in metrics; use traces and logs for individual identities. Alert on degraded recovery paths, not only failed requests: relay backlog, old dead letters, repeated deterministic defects, and a singleton without an owner are operational failures.
 

@@ -1,6 +1,5 @@
-import { Cause, Context, Duration, Effect, PrimaryKey } from "effect"
+import { Context, Duration, Effect, PrimaryKey } from "effect"
 import {
-  ClusterError,
   type RunnerAddress,
   type RunnerStorage,
   ShardId,
@@ -8,82 +7,43 @@ import {
   SqlRunnerStorage,
 } from "effect/cluster"
 import { SqlClient } from "effect/sql"
-import { Coordination } from "../database/coordination.ts"
-import { prepareRunnerStorage } from "../database/neki/migrations.ts"
-import { NekiTurnSessions } from "../database/neki/session.ts"
+import { Coordination, withMigrationCoordination } from "../database/coordination.ts"
 
-/**
- * Builds Cluster registrations and lock storage on the deployment's
- * authority, never on a runner's data shard. On a Neki router, table locks
- * are acquired by `nekiTableAcquire`.
- */
-export const coordinatedRunnerStorage = Effect.gen(function* () {
-  const sql = (yield* Coordination) ?? (yield* SqlClient.SqlClient)
+/** Creating Cluster's default tables under startup coordination prevents concurrent CREATE races. */
+const prepareRunnerStorage = Effect.gen(function* () {
   const config = yield* ShardingConfig.ShardingConfig
-  const storage = yield* prepareRunnerStorage.pipe(
-    Effect.andThen(SqlRunnerStorage.make({})),
-    Effect.provideService(SqlClient.SqlClient, sql),
+  yield* withMigrationCoordination(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      yield* sql`CREATE TABLE IF NOT EXISTS cluster_runners (
+        machine_id SERIAL PRIMARY KEY,
+        address VARCHAR(255) NOT NULL,
+        runner TEXT NOT NULL,
+        healthy BOOLEAN NOT NULL DEFAULT TRUE,
+        last_heartbeat TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(address)
+      )`
+      if (config.shardLockDisableAdvisory)
+        yield* sql`CREATE TABLE IF NOT EXISTS cluster_locks (
+          shard_id VARCHAR(50) PRIMARY KEY,
+          address VARCHAR(255) NOT NULL,
+          acquired_at TIMESTAMP NOT NULL
+        )`
+    }),
   )
-
-  return (yield* NekiTurnSessions) && config.shardLockDisableAdvisory
-    ? { ...storage, acquire: nekiTableAcquire({ sql, config }) }
-    : storage
 })
 
 /**
- * Cluster's table-lock acquire, in a form a Neki router runs. Cluster inserts
- * its rows through `INSERT ... SELECT ... ON CONFLICT DO UPDATE` stamped with
- * `NOW()`, which the router evaluates itself and then refuses to plan. This
- * statement inserts the same rows as a `VALUES` list in the byte order of
- * their shard ids, the order Cluster's `ORDER BY shard_id COLLATE "C"` takes
- * them in, so concurrent acquires, refreshes and releases still lock rows in
- * one order. It takes over a row only when this runner holds it or its last
- * acquire is older than the lock expiration, then reads back the shards this
- * runner holds, as Cluster does, and fails as Cluster does when either
- * statement fails or the pair outlasts Cluster's lock-operation interval.
+ * Builds Cluster registrations and lock storage on the deployment's
+ * coordination database, or the data database when none is designated.
  */
-const nekiTableAcquire = ({
-  sql,
-  config,
-}: {
-  readonly sql: SqlClient.SqlClient
-  readonly config: ShardingConfig.ShardingConfig["Service"]
-}): RunnerStorage.RunnerStorage["Service"]["acquire"] => {
-  const expires = sql.literal(
-    `NOW() - INTERVAL '${Math.ceil(Duration.toSeconds(Duration.fromInputUnsafe(config.shardLockExpiration)))} seconds'`,
+export const coordinatedRunnerStorage = Effect.gen(function* () {
+  const sql = (yield* Coordination) ?? (yield* SqlClient.SqlClient)
+  return yield* prepareRunnerStorage.pipe(
+    Effect.andThen(SqlRunnerStorage.make({})),
+    Effect.provideService(SqlClient.SqlClient, sql),
   )
-  const interval = Duration.min(
-    Duration.fromInputUnsafe(config.shardLockRefreshInterval),
-    Duration.divideUnsafe(Duration.fromInputUnsafe(config.shardLockExpiration), 3),
-  )
-
-  return (address, shardIds) =>
-    Effect.gen(function* () {
-      const requested = Array.from(shardIds, ShardId.toString).sort((a, b) =>
-        Buffer.compare(Buffer.from(a), Buffer.from(b)),
-      )
-
-      if (requested.length === 0) return []
-
-      const holder = PrimaryKey.value(address)
-
-      yield* sql`INSERT INTO cluster_locks (shard_id, address, acquired_at)
-        VALUES ${sql.csv(requested.map((shardId) => sql`(${shardId}, ${holder}, NOW())`))}
-        ON CONFLICT (shard_id) DO UPDATE SET address = ${holder}, acquired_at = NOW()
-        WHERE cluster_locks.address = ${holder} OR cluster_locks.acquired_at < ${expires}`
-
-      const held = yield* sql<{ readonly shard_id: string }>`SELECT shard_id FROM cluster_locks
-        WHERE address = ${holder} AND acquired_at >= ${expires}
-          AND shard_id IN ${sql.in(requested)}`
-
-      return held.map(({ shard_id }) => ShardId.fromString(shard_id))
-    }).pipe(
-      Effect.timeout(interval),
-      Effect.catchCause((cause) =>
-        Effect.fail(ClusterError.PersistenceError.make({ cause: Cause.squash(cause) })),
-      ),
-    )
-}
+})
 
 /**
  * Whether this runner still holds a shard's lock, read from the database. A

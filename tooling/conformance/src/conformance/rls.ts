@@ -172,7 +172,7 @@ const FIRST_VIEWS = [
   "workflow_steps",
 ] as const
 
-const VIEWS = [...FIRST_VIEWS, ...FIRST_VIEWS.map((view) => `${view}_v2`)]
+const VIEWS = FIRST_VIEWS
 
 /** Hands every inspection view to `owner`, as the guide's script does. */
 const viewsTo = (owner: string) => `DO $$
@@ -729,8 +729,8 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               }
 
               const [counted] = yield* sql<{ actors: number; events: number }>`
-                SELECT (SELECT count(*)::int FROM durable.actors_v2) AS actors,
-                  (SELECT count(*)::int FROM durable.events_v2) AS events`
+                SELECT (SELECT count(*)::int FROM durable.actors) AS actors,
+                  (SELECT count(*)::int FROM durable.events) AS events`
 
               return { seen, counted: counted! }
             })
@@ -790,7 +790,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
             target,
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient
-              yield* sql`ALTER VIEW durable.receipts_v2 OWNER TO CURRENT_USER`
+              yield* sql`ALTER VIEW durable.receipts OWNER TO CURRENT_USER`
             }),
           )
 
@@ -826,7 +826,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
           )
 
           expect(absent).toContain(`role ${missing.role} does not exist`)
-          expect(unowned).toContain("durable.receipts_v2 belongs to")
+          expect(unowned).toContain("durable.receipts belongs to")
           expect(unowned).toContain("which the policies exempt")
           expect(actable).toContain(`which ${shared.role} can act as`)
           expect(owning).toContain(`role ${owner.role} owns public.conformance_notes`)

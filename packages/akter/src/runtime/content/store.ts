@@ -4,7 +4,7 @@ import { SqlClient } from "effect/sql"
 import { ContentTooLarge } from "../../errors/content.ts"
 import type { ContentRef } from "../../identity/content.ts"
 import { tenantRoutingKey } from "../storage/codec.ts"
-import { forEachRange, onShard, withinRange } from "../database/shards.ts"
+import { forEachRange, withinRange } from "../database/shards.ts"
 import type { ContentPoint } from "../turn/hooks.ts"
 import { textArray } from "../turn/outbox.ts"
 import { GRANT_LIFETIME_MS, type Grants } from "./grant.ts"
@@ -140,7 +140,6 @@ export const tenantContent = (settings: ContentSettings) => {
   /** Stores bytes already in memory: hashed first, so existing content writes no bytes. */
   const uploadBytes = Effect.fnUntraced(function* (tenant: string, bytes: Uint8Array) {
     const sql = yield* SqlClient.SqlClient
-    const onTenant = onShard(tenantRoutingKey(tenant))
 
     if (bytes.byteLength > MAX_CONTENT_BYTES)
       return yield* ContentTooLarge.make({ maxBytes: MAX_CONTENT_BYTES })
@@ -148,23 +147,21 @@ export const tenantContent = (settings: ContentSettings) => {
     const hash = hex(sha256Bytes(bytes))
     const size = bytes.byteLength
 
-    const stored = yield* onTenant(
-      sql.withTransaction(
-        Effect.gen(function* () {
-          const row = yield* upsert(tenant, hash, size)
+    const stored = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const row = yield* upsert(tenant, hash, size)
 
-          if (row.inserted)
-            for (let chunk = 0; chunk === 0 || chunk * CHUNK_BYTES < size; chunk += 1)
-              yield* writeChunk(
-                tenant,
-                hash,
-                chunk,
-                bytes.subarray(chunk * CHUNK_BYTES, (chunk + 1) * CHUNK_BYTES),
-              )
+        if (row.inserted)
+          for (let chunk = 0; chunk === 0 || chunk * CHUNK_BYTES < size; chunk += 1)
+            yield* writeChunk(
+              tenant,
+              hash,
+              chunk,
+              bytes.subarray(chunk * CHUNK_BYTES, (chunk + 1) * CHUNK_BYTES),
+            )
 
-          return row
-        }),
-      ),
+        return row
+      }),
     )
 
     return yield* refOf(tenant, hash, size, stored.expiresAt)
@@ -199,63 +196,61 @@ export const tenantContent = (settings: ContentSettings) => {
       const pending = `pending:${yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)}`
       const hasher = sha256Hasher()
 
-      const stored = yield* onShard(tenantRoutingKey(tenant))(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            let size = 0
-            let chunk = 0
-            let buffer = new Uint8Array(CHUNK_BYTES)
-            let filled = 0
+      const stored = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          let size = 0
+          let chunk = 0
+          let buffer = new Uint8Array(CHUNK_BYTES)
+          let filled = 0
 
-            const flush = Effect.suspend(() => {
-              const bytes = buffer.slice(0, filled)
-              const index = chunk
-              chunk += 1
-              filled = 0
+          const flush = Effect.suspend(() => {
+            const bytes = buffer.slice(0, filled)
+            const index = chunk
+            chunk += 1
+            filled = 0
 
-              return writeChunk(tenant, pending, index, bytes)
-            })
+            return writeChunk(tenant, pending, index, bytes)
+          })
 
-            yield* body.pipe(
-              Stream.runForEach((part) =>
-                Effect.gen(function* () {
-                  size += part.byteLength
+          yield* body.pipe(
+            Stream.runForEach((part) =>
+              Effect.gen(function* () {
+                size += part.byteLength
 
-                  if (size > limit) return yield* ContentTooLarge.make({ maxBytes: limit })
+                if (size > limit) return yield* ContentTooLarge.make({ maxBytes: limit })
 
-                  hasher.update(part)
-                  let read = 0
+                hasher.update(part)
+                let read = 0
 
-                  while (read < part.byteLength) {
-                    const taken = Math.min(CHUNK_BYTES - filled, part.byteLength - read)
-                    buffer.set(part.subarray(read, read + taken), filled)
-                    filled += taken
-                    read += taken
+                while (read < part.byteLength) {
+                  const taken = Math.min(CHUNK_BYTES - filled, part.byteLength - read)
+                  buffer.set(part.subarray(read, read + taken), filled)
+                  filled += taken
+                  read += taken
 
-                    if (filled === CHUNK_BYTES) {
-                      yield* flush
-                      buffer = new Uint8Array(CHUNK_BYTES)
-                    }
+                  if (filled === CHUNK_BYTES) {
+                    yield* flush
+                    buffer = new Uint8Array(CHUNK_BYTES)
                   }
-                }),
-              ),
-            )
+                }
+              }),
+            ),
+          )
 
-            if (filled > 0 || chunk === 0) yield* flush
+          if (filled > 0 || chunk === 0) yield* flush
 
-            const hash = hex(hasher.digest())
-            const row = yield* upsert(tenant, hash, size)
-            const key = tenantRoutingKey(tenant)
+          const hash = hex(hasher.digest())
+          const row = yield* upsert(tenant, hash, size)
+          const key = tenantRoutingKey(tenant)
 
-            yield* row.inserted
-              ? sql`UPDATE tenant_content_chunks SET hash = ${hash}
-                WHERE routing_key = ${key} AND tenant_id = ${tenant} AND hash = ${pending}`
-              : sql`DELETE FROM tenant_content_chunks
-                WHERE routing_key = ${key} AND tenant_id = ${tenant} AND hash = ${pending}`
+          yield* row.inserted
+            ? sql`UPDATE tenant_content_chunks SET hash = ${hash}
+              WHERE routing_key = ${key} AND tenant_id = ${tenant} AND hash = ${pending}`
+            : sql`DELETE FROM tenant_content_chunks
+              WHERE routing_key = ${key} AND tenant_id = ${tenant} AND hash = ${pending}`
 
-            return { hash, size, expiresAt: row.expiresAt }
-          }),
-        ),
+          return { hash, size, expiresAt: row.expiresAt }
+        }),
       )
 
       return yield* refOf(tenant, stored.hash, stored.size, stored.expiresAt)
@@ -275,7 +270,7 @@ export const tenantContent = (settings: ContentSettings) => {
       SET granted_until_ms = greatest(granted_until_ms, ${clock(sql)} + ${GRANT_LIFETIME_MS})
       WHERE routing_key = ${tenantRoutingKey(tenant)} AND tenant_id = ${tenant}
         AND hash = ${hash} AND size = ${size}
-      RETURNING granted_until_ms::text AS granted_until_ms`.pipe(onShard(tenantRoutingKey(tenant)))
+      RETURNING granted_until_ms::text AS granted_until_ms`
 
     if (row === undefined) return Option.none<ContentRef>()
 
@@ -292,7 +287,7 @@ export const tenantContent = (settings: ContentSettings) => {
 
     const rows = yield* sql<{ chunk: number; bytes: Uint8Array }>`
       SELECT chunk, bytes FROM tenant_content_chunks WHERE ${chunksOf(sql, tenant, hash)}
-      ORDER BY chunk`.pipe(onShard(tenantRoutingKey(tenant)))
+      ORDER BY chunk`
 
     return complete(rows, size)
   })
@@ -363,7 +358,7 @@ export const tenantContent = (settings: ContentSettings) => {
             ),
           ),
         )
-      }).pipe(onShard(tenantRoutingKey(tenant)), Effect.orDie),
+      }).pipe(Effect.orDie),
     ).pipe(
       Stream.interruptWhen(
         Effect.sleep(timeoutMs).pipe(
@@ -419,7 +414,7 @@ export const tenantContent = (settings: ContentSettings) => {
           WHERE routing_key = ${key} AND tenant_id = ${tenant}
             AND granted_until_ms < ${candidateBefore}
             AND (granted_until_ms, hash) > (${after.granted}, ${after.hash})
-          ORDER BY granted_until_ms, hash LIMIT ${SWEEP_BATCH}`.pipe(onShard(key))
+          ORDER BY granted_until_ms, hash LIMIT ${SWEEP_BATCH}`
 
         if (candidates.length === 0) break
 
@@ -455,7 +450,7 @@ export const tenantContent = (settings: ContentSettings) => {
           chunks AS (
             DELETE FROM tenant_content_chunks c USING gone
             WHERE c.routing_key = ${key} AND c.tenant_id = ${tenant} AND c.hash = gone.hash)
-          SELECT count(*)::int AS deleted FROM gone`.pipe(onShard(key))
+          SELECT count(*)::int AS deleted FROM gone`
 
         deleted += gone!.deleted
       }

@@ -1,40 +1,17 @@
 import { PgClient } from "@effect/sql-pg"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, type Scope } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { Migrator, SqlClient } from "effect/sql"
 import { boundedPool } from "./bounded.ts"
-import { Authority, currentRanges } from "./shards.ts"
-import { NekiTurnSessions } from "./neki/session.ts"
-import {
-  MigrationBarrier,
-  MigrationBoundary,
-  withMigrationCoordination,
-} from "./neki/migrations.ts"
 
-/** The deployment's unsharded authority, shared by every runner regardless of its data shard. */
+/** The deployment's coordination database, shared by every runner. */
 export const Coordination = Context.Reference<SqlClient.SqlClient | undefined>(
   "@rikalabs/akter/runtime/database/coordination/Coordination",
   { defaultValue: () => undefined },
 )
 
-/**
- * The client for the data database's deployment registries and other tables
- * outside the routed group: its authority sessions while the map names data
- * shards, else the default client, which reaches the one database already.
- * With data shards it is a client of its own even for an untargeted fiber, so
- * a transaction on it never swallows the statements a fiber sends to a shard,
- * and a statement made inside a turn's transaction never reaches the shard's
- * copy of the table.
- */
-export const registry = Effect.gen(function* () {
-  if ((yield* currentRanges).some((range) => range.shard !== undefined)) {
-    const sessions = yield* Authority
-
-    if (sessions !== undefined) return sessions
-  }
-
-  return yield* SqlClient.SqlClient
-})
+/** Deployment registries belong to the data database. */
+export const registry = SqlClient.SqlClient
 
 /** The client deployment-wide locks are taken on: the designated coordination pool, else `registry`. */
 export const authority = Coordination.pipe(
@@ -52,29 +29,30 @@ const prepareCoordination = Effect.gen(function* () {
   )`
 })
 
-/** Fixed, existence-guarded bootstrap steps can be replayed after any interrupted propagation. */
-const prepareNekiCoordination = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-  const connection = yield* sql.reserve
-  const barrier = yield* MigrationBarrier
-  const boundary = yield* MigrationBoundary
-  for (const [name, ddl] of [
-    [
-      "history",
-      "CREATE TABLE IF NOT EXISTS actor_coordination_migrations (migration_id integer PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now(), name text NOT NULL)",
-    ],
-    ["resources", "CREATE TABLE IF NOT EXISTS actor_coordination (resource text PRIMARY KEY)"],
-  ] as const) {
-    yield* barrier(connection)
-    yield* sql.unsafe(ddl)
-    yield* boundary(`coordination:${name}:ddl`)
-    yield* barrier(connection)
-    yield* boundary(`coordination:${name}:propagated`)
-  }
-  yield* sql`INSERT INTO actor_coordination_migrations (migration_id, name)
-    VALUES (1, 'coordination') ON CONFLICT (migration_id) DO NOTHING`
-  yield* boundary("coordination:recorded")
-})
+/** Holds startup coordination before even the history table is created, on one leased session. */
+export const withMigrationCoordination = <A, E>(
+  effect: Effect.Effect<A, E, SqlClient.SqlClient | Scope.Scope>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const source = yield* SqlClient.SqlClient
+      const connection = yield* source.reserve
+      yield* Effect.acquireRelease(
+        connection.execute("SELECT pg_advisory_lock(1935764837, 487)", [], undefined),
+        () =>
+          connection
+            .execute("SELECT pg_advisory_unlock(1935764837, 487)", [], undefined)
+            .pipe(Effect.orDie),
+      )
+      const reactivity = yield* Reactivity.make
+      const client = yield* SqlClient.make({
+        acquirer: Effect.succeed(connection),
+        compiler: PgClient.makeCompiler(),
+        spanAttributes: [],
+      }).pipe(Effect.provideService(Reactivity.Reactivity, reactivity))
+      return yield* Effect.provideService(effect, SqlClient.SqlClient, client)
+    }),
+  )
 
 /** Supplies an independent client so coordination transactions never borrow a data transaction's connection. */
 export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
@@ -83,14 +61,11 @@ export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Effect.gen(function* () {
       if (options === undefined) return undefined
       const sql = yield* boundedPool(options)
-      const neki = yield* NekiTurnSessions
       yield* withMigrationCoordination(
-        neki
-          ? prepareNekiCoordination
-          : Migrator.make({})({
-              table: "actor_coordination_migrations",
-              loader: Migrator.fromRecord({ "0001_coordination": prepareCoordination }),
-            }),
+        Migrator.make({})({
+          table: "actor_coordination_migrations",
+          loader: Migrator.fromRecord({ "0001_coordination": prepareCoordination }),
+        }),
       ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
       return sql
     }),
@@ -103,9 +78,8 @@ export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
  * Row identities are retained so deleting an idle resource cannot split its lock.
  * The local fence has its own namespace because independent clients may point
  * to the same database and must not wait on their own authority transaction.
- * Work that writes no actor data, such as reading every data shard to accept
- * a deployment, passes `writesData: false` and holds no data transaction, so
- * its reads reach each shard instead of the one session a fence would pin.
+ * Work that writes no actor data, such as accepting a deployment, passes
+ * `writesData: false` and holds no data transaction.
  */
 export const coordinated = <A, E, R>({
   resource,

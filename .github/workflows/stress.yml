@@ -105,8 +105,7 @@ jobs:
           done <<'SUITES'
           test-framework ../../packages/akter test
           test . test
-          test-integration-postgres . test:integration:postgres --project=!integration:migrations
-          test-integration-migrations . test:integration:postgres --project=integration:migrations
+          test-integration-postgres . test:integration:postgres
           test-integration-drills . test:integration:drills
           SUITES
           exit "$failed"
@@ -138,7 +137,7 @@ jobs:
         env:
           STRESS_DIR: stress
           STRESS_RUNS: ${{ needs.plan.outputs.runs }}
-          STRESS_SUITES: test test-integration-postgres test-integration-migrations test-integration-drills
+          STRESS_SUITES: test test-integration-postgres test-integration-drills
         run: bun .github/src/stress-summary.ts
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()

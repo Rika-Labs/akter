@@ -15,6 +15,7 @@ description: "Take an app from the quickstart to a production process on a Postg
 
 Akter is alpha. Before you deploy, know the limits the [support matrix](../operations/support-matrix.md) records:
 
+- **Only Postgres and PGlite backends.** There is no provider-specific physical data-shard routing or nontransactional DDL mode.
 - **Postgres server 18.6.** This is the server version CI tests and the launch-supported server range; other server versions are unverified. File-backed PGlite also supports one-process production within the limits of [embedded deployment](../operations/01-deployment.md#embedded-pglite-in-production), without multi-runner or power-loss guarantees.
 - **Single runner or a TCP runner cluster.** `Runner.socket` is the public Postgres configuration for separate processes. Runners authenticate each other with mutual TLS (`Runner.mtls`). Three-process command, relay, singleton, schedule, SIGKILL, and rolling-drain drills run on one host; separate-host networks and hosting providers still require their own evidence.
 - **Embedded or served.** `Actors.serve` serves commands, reducers, and queries over HTTP, connections over WebSocket, and feeds, streams, and watches over SSE. Core transport conformance runs on Bun's and Node's HTTP servers on loopback; no proxy, load balancer, or hosting provider has been verified by those cases. The three-process crash-drill claim is Bun-specific.

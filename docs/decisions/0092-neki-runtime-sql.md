@@ -1,6 +1,6 @@
 # ADR 0092: Runtime SQL that a Neki router forwards
 
-**Status:** accepted (2026-10-05). The actor runtime's statements run on one live single-shard Neki database; Neki is still not a supported runtime database.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Provider-specific runtime variants are removed; the record below is historical evidence.
 
 **Responsibility:** record which SQL a Neki router refuses, and how the framework's relay, turn, Cluster and control-plane statements avoid it without changing what they lock, read or write.
 

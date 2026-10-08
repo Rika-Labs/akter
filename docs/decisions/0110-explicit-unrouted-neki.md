@@ -1,6 +1,6 @@
 # ADR 0110: Explicitly unrouted Neki databases
 
-**Status:** accepted (2026-10-07).
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Both Neki modes and `NekiTopologyAccessDenied` are removed; the record below is historical.
 
 **Responsibility:** declare Neki semantics without routing metadata for a database whose platform guarantees that no table is routed.
 

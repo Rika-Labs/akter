@@ -6,7 +6,7 @@ import { ActorRef, System } from "../../identity/caller.ts"
 import * as Queries from "../inspector/queries.ts"
 import { TenantScope, withTenant } from "../database/tenancy.ts"
 import { type Placement, routingKey } from "../storage/codec.ts"
-import { forEachRange, onShard, withinRange } from "../database/shards.ts"
+import { forEachRange, withinRange } from "../database/shards.ts"
 import { recordedPlacement } from "../storage/placements.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { OutboxRuntime, outboxStatements } from "../turn/outbox.ts"
@@ -232,7 +232,7 @@ export const operatorRuntime = (deps: {
         sql.withTransaction(
           Effect.tap(repair(key), ({ outcome }) => writeAudit({ entry: audit, key, outcome })),
         ),
-      ).pipe(onShard(key))
+      )
 
       return result
     })
@@ -283,10 +283,10 @@ export const operatorRuntime = (deps: {
           outcome: string
           expires_at_ms: number
         }>`SELECT command, outcome_tag, outcome, expires_at_ms::float8 AS expires_at_ms
-          FROM durable.receipts_v2
+          FROM durable.receipts
           WHERE routing_key = ${key} AND tenant_id = ${target.tenant}
             AND actor_type = ${target.actorType} AND actor_id = ${target.actorId}
-            AND command_id = ${commandId}`).pipe(onShard(key))
+            AND command_id = ${commandId}`)
 
         return Option.map(Option.fromUndefinedOr(row), (found) => ({
           commandId,
@@ -301,7 +301,7 @@ export const operatorRuntime = (deps: {
       ),
     exportSeed: (target) =>
       keyOf(target).pipe(
-        Effect.flatMap((key) => exportActor(target).pipe(onShard(key))),
+        Effect.andThen(exportActor(target)),
         Effect.catchTag("OperatorNotFound", () => Effect.succeedNone),
         Effect.catchIf(SqlError.isSqlError, Effect.die),
         provided,
@@ -488,7 +488,7 @@ export const operatorRuntime = (deps: {
 
         const key = auditRoutingKey({ entry, placement: Option.getOrUndefined(found) })
 
-        yield* writeAudit({ entry, key, outcome }).pipe(onShard(key))
+        yield* writeAudit({ entry, key, outcome })
       }).pipe(provided, Effect.orDie),
   })
 }

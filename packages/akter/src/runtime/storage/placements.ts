@@ -1,6 +1,5 @@
 import { Effect } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
-import { currentRanges } from "../database/shards.ts"
 import {
   AUTHORITY_BUCKET,
   authorityKey,
@@ -55,18 +54,10 @@ const LOW_56 = (1n << 56n) - 1n
  *
  * A runner that still computes the old keys would recreate an actor under
  * them, so this runs only at the start of a release that replaced every
- * runner of the previous one, and only on a database whose topology routes
- * nothing: a split database would have to move the rows between shards.
+ * runner of the previous one.
  */
 const moveToAuthority = Effect.fnUntraced(function* (name: string) {
   const sql = yield* SqlClient.SqlClient
-
-  if ((yield* currentRanges).some((range) => range.shard !== undefined))
-    return yield* Effect.die(
-      new Error(
-        `Actor ${name} moves to authority placement, which rewrites its routing keys; deploy it before the database routes any table`,
-      ),
-    )
 
   const high = authorityKey(0n)
   const moved = sql`(routing_key & ${LOW_56}) | ${high}`

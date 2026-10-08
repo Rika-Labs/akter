@@ -87,7 +87,7 @@ docker compose -f apps/self-host/compose.yml stop
 
 Compose sends SIGTERM. The entry point keeps its runtime scope alive while `RuntimeControl.drain({ deadline: "15 seconds" })` makes readiness red, refuses new turns and stops claims. An admitted turn gets time to commit; after the deadline an interrupted turn rolls back or resolves through its durable receipt on retry. The scope then closes to release shards. Compose allows 30 seconds before SIGKILL. Stop ingress first and preserve client command IDs; the two stopping runners are not a destination for new traffic.
 
-The named `data` volume survives `stop` and `down`. Never use `down --volumes` on production data. Back up and restore using the [backup procedure](/operations/04-backup-restore). This single Postgres server is not high availability, and this recipe has no public TLS ingress, automated certificate renewal, backup scheduler or Neki support claim.
+The named `data` volume survives `stop` and `down`. Never use `down --volumes` on production data. Back up and restore using the [backup procedure](/operations/04-backup-restore). This single Postgres server is not high availability, and this recipe has no public TLS ingress, automated certificate renewal or backup scheduler.
 
 ## Reproduce the evidence
 

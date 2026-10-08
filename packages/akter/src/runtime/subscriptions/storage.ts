@@ -80,10 +80,7 @@ export const summarize = ({
  * its rows would then count as new. Locking reads the latest committed
  * version of each row, so a concurrent change that committed first is never
  * counted twice. A summary count the change lowered to 0 is deleted in the
- * same transaction, so no committed summary row counts 0. That delete joins on
- * the columns of a subquery over the emptied keys rather than on expressions
- * over `json_array_elements` itself, a join shape the Neki router drops the
- * connection on when the table is sharded. Returns how many
+ * same transaction, so no committed summary row counts 0. Returns how many
  * rows `change` wrote. A `change` that reads the outbox clock passes its
  * `clock` CTE, which leads the statement's `WITH`.
  */

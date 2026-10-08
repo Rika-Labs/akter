@@ -28,9 +28,9 @@ If documents conflict, stop and create an ADR before coding. Do not resolve a co
 
 The framework is one `@rikalabs/akter` distribution with root, `/runtime`, `/client`, and `/testing` entries. `Actor.make` is the only actor constructor, `Actors.layer` constructs the runtime, `Actors.serve` exposes HTTP, WebSocket, SSE, and OpenAPI, and `ActorTest` exercises the real turn path.
 
-Actors run embedded, served, or hosted. One database serves each deployment region; tenants are rows and placement is selected by shard group. See [Public APIs](api/README.md), [Repository structure](architecture/repository-structure.md), and the [Glossary](GLOSSARY.md).
+Actors run embedded, served, or hosted. One database serves each deployment region; tenants are rows and placement defines logical ownership/grouping keys, not physical data shards. See [Public APIs](api/README.md), [Repository structure](architecture/repository-structure.md), and the [Glossary](GLOSSARY.md).
 
-The [support matrix](operations/support-matrix.md) records the executable evidence and its limits. Neki transaction and locking behavior, provider advertise addresses, backend compatibility, multi-runner recovery, workflow isolation, connection parking, and singleton uniqueness must not be claimed from design alone. The OSS launch claim is multi-runner on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes; separate-host and hosting-provider behavior still need their own evidence.
+Postgres and PGlite are the only framework database backends, within the [support matrix](operations/support-matrix.md)'s executable evidence and limits. Neki runtime support has been removed ([ADR 0112](decisions/0112-postgres-and-pglite-only.md)). Provider advertise addresses, multi-runner recovery, workflow isolation, connection parking, and singleton uniqueness must not be claimed from design alone. The OSS launch claim is multi-runner on one host through `Runner.socket` and `Runner.mtls`, verified with three Bun processes; separate-host and hosting-provider behavior still need their own evidence.
 
 ## Document responsibility
 

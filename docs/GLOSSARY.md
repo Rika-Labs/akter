@@ -42,5 +42,5 @@
 - **Principal:** authenticated application subject, available as an option inside actor contexts.
 - **ActorError:** the single framework error whose `reason` identifies availability, capacity, timeout, conflict, creation, authorization, input, or transport failure.
 - **Hibernation:** removal of activation-local resources while identity and gateway state remain durable.
-- **Shard group:** placement choice for compute and data; it is not a tenant database.
-- **Conformance harness:** shared behavioral suite run against PGlite, Postgres, and supported Neki configurations.
+- **Shard group:** compute placement choice; it does not route database rows and is not a tenant database.
+- **Conformance harness:** unpublished framework-maintainer behavioral suite run against PGlite and Postgres.

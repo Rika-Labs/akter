@@ -1,6 +1,6 @@
 # ADR 0070: Neki startup migrations use autocommit DDL and durable statement progress
 
-**Status:** accepted (2026-10-03); Neki execution remains unverified pending #66.
+**Status:** superseded by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Autocommit DDL and statement progress are removed; generic startup serialization is retained. The record below is historical.
 
 **Responsibility:** run framework migrations under Neki's nontransactional, eventually propagated DDL semantics, and serialize first boot before the migration history table exists.
 

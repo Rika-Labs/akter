@@ -1,6 +1,6 @@
 # ADR 0066: Authoritative coordination, independent of actor-data placement
 
-**Status:** implementation decision (2026-10-03); Neki verification remains pending #66.
+**Status:** implementation decision (2026-10-03), amended by [ADR 0112](0112-postgres-and-pglite-only.md) (2026-10-08). Neki clauses and provider gates are superseded; independent coordination and local data fences remain.
 
 **Responsibility:** separate deployment-wide ownership from shard-local transactions for #482 and #483.
 
