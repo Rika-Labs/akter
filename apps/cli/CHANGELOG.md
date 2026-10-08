@@ -1,16 +1,19 @@
 # Changelog
 
-## 0.1.0-alpha.2 (2026-10-07)
+## 0.1.0-alpha.3 (2026-10-08)
 
-The first CLI release, versioned with `@rikalabs/akter` on the `alpha` dist-tag.
+The first CLI release, versioned with `@rikalabs/akter` on the `alpha` and `latest` dist-tags. This includes the unpublished alpha.2 draft and the final launch contract.
 
 - Publishes as `@rikalabs/akter-cli` with the `akter` executable, compiled ESM and declarations for Node 24+ and Bun 1.4.2+. The inspector client is prebuilt; Node users do not need Bun. The private cloud API contract is bundled, not separately published.
 - Exposes the cloud API contract as `@rikalabs/akter-cli/cloud-api`, with compiled JavaScript and declarations for npm consumers; importing it does not execute the CLI. Tagged pre-1.0 releases also advance `latest`, while verified main canaries publish only to `next`.
 - Includes local `akter dev`, cloud login/logout/whoami, source deployment and `akter env list`, `set`, `unset` and `import`.
+- Uses the matching alpha.3 framework and Effect/platform/SQL 4.0.2 cohort. Postgres and PGlite are the only framework backends; Neki is removed.
+- **Breaking cloud contract:** environment databases report `{ source, state }`, without engine or Neki mode fields. Billing schemas remove command/read allowances and meters and deprecated compatibility fields, using compute unit-hours and pooled managed database storage. Hosted quota refusals use `QuotaExceeded.cap`; the separate spend, connection and storage quota errors are removed, and only a connections-cap refusal is retryable. Update applications importing `/cloud-api` to the new schema.
 - **Breaking:** operator commands read `AKTER_OPERATOR_TOKEN`, not `DURABLE_OPERATOR_TOKEN`. There is no implicit alias; set the new variable or use `--token-env`.
 - **Breaking:** the local inspector page and API use `/_akter/inspector`, not `/_durable/inspector`. Update bookmarks and requests.
 - **Breaking:** hosted source deploys load `src/app.ts` with a generated Dockerfile; the API refuses `source.dockerfile`.
 - Login defaults to `https://api.akter.dev`; select a preview or local API explicitly with `--api-url` or `AKTER_API_URL`.
 - Adds `akter logs` to read customer runner output for a project (`--project`, default `AKTER_PROJECT`) and an environment (`--env`, default `production`) or one `--deployment`. `--since` takes 1 to 3600 seconds (default 300), and the server clamps the requested time into the last hour. `--limit` takes 1 to 200 lines per page (default 100), not a total. Without `--follow` it reads every page in the window and exits; `--follow` drains available pages at once, then long-polls for up to 20 seconds. Follow resumes from the last successful cursor after transport failures and typed `Unavailable` (503) responses, with capped exponential delays, and stops after six failed requests in a row. Authentication, authorization, missing-resource and unsupported-operation refusals are not retried. Ctrl-C cancels the request and exits with code 130. Control characters, Unicode line separators and bidirectional-formatting characters are replaced, and a trailing `…` marks a line clipped at 4096 UTF-8 bytes. Fly merges stdout and stderr, so its lines show stream `unknown`. Output is recent only and expired provider output cannot be recovered; build output is not included. See the [logs API contract](https://github.com/Rika-Labs/akter/blob/main/docs/api/07-cloud-logs.md).
+- The initial CLI tarball still needs a one-time maintainer publish and trusted-publisher setup; subsequent releases use the OIDC-only `release.yml` workflow. Bumping the version does not publish it.
 
 See the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md) and [alpha upgrade notes](https://docs.akter.dev/operations/alpha-upgrades) for runtime changes and the required stopped-runner database upgrade.
