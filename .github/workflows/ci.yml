@@ -49,7 +49,7 @@ jobs:
           case "$EVENT" in
             pull_request)
               files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PULL/files?per_page=100" --jq '.[].filename')"
-              if docs_only "$files"; then suites=false; reason="only documentation changed"; fi
+              if [ "$(grep -c . <<<"$files")" -lt 3000 ] && docs_only "$files"; then suites=false; reason="only documentation changed"; fi
               ;;
             push)
               pull="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls" \
@@ -64,7 +64,7 @@ jobs:
                 fi
               fi
               if [ "$suites" = true ] && [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
-                files="$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$HEAD_SHA" --jq '.files[].filename' || true)"
+                files="$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$HEAD_SHA" --jq 'if (.files | length) < 300 then .files[].filename else empty end' || true)"
                 if docs_only "$files"; then suites=false; reason="only documentation changed"; fi
               fi
               ;;
@@ -261,7 +261,12 @@ jobs:
             read -r -a projects <<<"$rest"
             mkdir -p "evidence/$name"
             if [[ "$kind" =~ ^(postgres|node|node-units)$ ]] && [ -z "${TEST_REPLICA_DATABASE_URL:-}" ]; then
-              TEST_REPLICA_DATABASE_URL="$(bun .github/src/replica.ts)" || { failed+=("$name"); continue; }
+              if ! TEST_REPLICA_DATABASE_URL="$(bun .github/src/replica.ts 2>"evidence/$name/check.log")"; then
+                cat "evidence/$name/check.log"
+                echo "$name did not start: the streaming replica failed" | tee -a "evidence/$name/check.log" "$GITHUB_STEP_SUMMARY"
+                failed+=("$name")
+                continue
+              fi
               export TEST_REPLICA_DATABASE_URL
             fi
             echo "::group::$name"
