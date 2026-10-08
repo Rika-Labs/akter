@@ -5,7 +5,7 @@ description: "Team and Enterprise can connect a Postgres database they own inste
 
 Bring-your-own Postgres is optional and available on **Team and Enterprise** only. Every other environment already has a [managed database](/cloud/database) that Akter Cloud creates and deletes for you, so you do not need this page unless you want to own the database. On Free and Pro, setting `DATABASE_URL` is refused.
 
-You pay your database provider separately for a database you bring. Akter Cloud still bills your plan and [compute](/cloud/pricing-and-limits).
+You pay your database provider separately for a database you bring. Akter never bills or caps its size, and it does not count toward your plan's pooled database allowance. Akter Cloud still bills your plan and [compute](/cloud/pricing-and-limits).
 
 ## Requirements
 
@@ -41,6 +41,12 @@ Invalid values are rejected without echoing the input. See [environment variable
 <Warning>
 Setting your own `DATABASE_URL` does not copy data. Akter retires the environment's managed database when you switch, so export anything you need from it first.
 </Warning>
+
+## Switch back or change plan
+
+Unsetting your own `DATABASE_URL` returns the environment to a fresh, empty managed database. No data is copied from your database, which Akter leaves untouched.
+
+If your organization downgrades below Team, environments already using their own database keep running. New deployments of those environments are refused until the organization upgrades or you unset `DATABASE_URL`.
 
 ## What you own
 

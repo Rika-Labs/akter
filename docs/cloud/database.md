@@ -15,7 +15,9 @@ Like every environment value, the managed `DATABASE_URL` cannot be read back thr
 
 ## Size and plan limits
 
-Included database size depends on your plan: 0.5 GB on Free, 10 GB on Pro, 50 GB on Team and a custom size on Enterprise. Free's 0.5 GB is a hard cap. Pro and Team are billed $0.50 per GB-month beyond their included size. Team can add a dedicated database. See [pricing and limits](/cloud/pricing-and-limits) for the full table.
+Included database size depends on your plan: 0.5 GB on Free, 10 GB on Pro, 50 GB on Team and a custom size on Enterprise. It is pooled per organization across all of its managed environment databases, not per environment. Pro and Team are billed $0.50 per GB-month beyond it. Team can add a dedicated database.
+
+Free's 0.5 GB is a hard cap. When the organization's managed databases reach it, they become read-only: writes fail and reads still work, until usage drops below the cap or the organization upgrades. See [pricing and limits](/cloud/pricing-and-limits) for the full table.
 
 ## Deployments and data
 
@@ -27,7 +29,7 @@ Rollback does not undo database changes. Keep migrations compatible with the pre
 
 Deleting an environment, project or organization deletes the managed database of every environment it contains, along with Akter's stored variables and platform records. Deletion removes the data and there is no documented undo, so export what you need first. See [account deletion and personal export](/cloud/account-and-data).
 
-A [bring-your-own database](/cloud/bring-your-database) is never deleted, erased or administered by Akter. If you want it removed, do that with its provider.
+A [bring-your-own database](/cloud/bring-your-database) is never deleted, erased, administered, billed or size-capped by Akter. If you want it removed, do that with its provider.
 
 ## Backups
 

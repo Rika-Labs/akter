@@ -3,7 +3,7 @@ title: "Pricing, limits and billing"
 description: "Plans, compute unit-hours, database size and spend caps."
 ---
 
-Akter Cloud bills a base price, compute unit-hours and database size. There are no per-command or per-read charges. Akter creates and runs a [database](/cloud/database) for each environment, included up to your plan's database size. Prices below are in USD; compute allowances apply once per organization across its projects and environments, not once per project. Seats are unlimited on every plan, and egress is not billed at launch.
+Akter Cloud bills a base price, compute unit-hours and database size. There are no per-command or per-read charges. Akter creates and runs a [database](/cloud/database) for each environment, included up to your plan's database size. Prices below are in USD; compute and database allowances apply once per organization across its projects and environments, not once per project. Seats are unlimited on every plan, and egress is not billed at launch.
 
 ## Plans
 
@@ -41,9 +41,9 @@ Compute beyond a paid allowance is billed at **$0.015 per unit-hour** at the lis
 
 ## Database size
 
-Akter measures the size of the managed databases it runs for your environments. Pro and Team are billed **$0.50 per GB-month** beyond the included size. Free's 0.5 GB is a hard cap with no overage, and Enterprise databases are sized to your agreement. Team can add a dedicated database.
+Included database size is pooled across all of your organization's managed environment databases, like compute hours, not allotted per environment. Akter measures their combined size. Pro and Team are billed **$0.50 per GB-month** beyond the included size. Free's 0.5 GB is a hard cap with no overage, and Enterprise databases are sized to your agreement. Team can add a dedicated database.
 
-On Team and Enterprise you can [bring your own Postgres](/cloud/bring-your-database) instead. You pay your own database provider for it separately.
+On Team and Enterprise you can [bring your own Postgres](/cloud/bring-your-database) instead. Akter never bills or caps the size of a database you bring; you pay your own database provider for it separately, and it does not count toward the pooled allowance.
 
 ## Connections
 
@@ -53,12 +53,12 @@ Periods are UTC calendar months. Use organization settings **Usage** to review y
 
 ## When Free reaches a cap
 
-Free's **750 compute unit-hour allowance is a hard cap**. At that cap, the runner stops and new commands are refused until the next billing period. Free's 0.5 GB database size is also a hard cap rather than a billed overage. Upgrade your plan if you need usage beyond the Free allowances.
+Free's **750 compute unit-hour allowance is a hard cap**. At that cap, the runner stops and new commands are refused until the next billing period. Free's 0.5 GB database allowance is also a hard cap rather than a billed overage. When your organization's managed databases reach it, they become read-only: writes fail and reads still work, until usage drops below the cap or you upgrade. Upgrade your plan if you need usage beyond the Free allowances.
 
 ## Billing and spend caps
 
 Use organization settings **Billing** to select a paid plan, open Stripe's billing portal, manage payment details and view invoices. Billing mutations require an owner or admin, not a project-restricted API key. A plan change invoices immediately and can remain pending while payment confirmation is incomplete.
 
-Set a spend limit in Billing to refuse new admissions whose projected period cost would exceed it. The projection includes the subscribed plan's base charge and accrued compute and database usage. Removing the limit permits admissions without that spend ceiling.
+Set a spend limit in Billing to refuse new admissions whose projected period cost would exceed it. The projection includes the subscribed plan's base charge and accrued compute and database-size overage. Removing the limit permits admissions without that spend ceiling.
 
 A spend limit is an admission control, **not a guarantee that the final invoice cannot exceed it**. It does not clip accrued charges or cancel work already admitted. Free's compute hard stop is a separate rule. A new organization awaiting billing initialization has no bound plan yet and cannot admit metered traffic; it is not silently treated as Free.

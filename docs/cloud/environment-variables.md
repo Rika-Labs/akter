@@ -47,4 +47,4 @@ bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../
 
 Store only the URL in that secure file, without quotes or a trailing newline, and keep it outside the deployment directory. Values remain file/stdin input, not positional command arguments.
 
-Unsetting your own `DATABASE_URL` never touches your database. After changing variables, [deploy again](/cloud/deploy).
+Unsetting your own `DATABASE_URL` never touches your database; the environment returns to a fresh, empty managed database and no data is copied. If your organization downgrades below Team, a deployment of an environment that still uses its own `DATABASE_URL` is refused until you upgrade or unset it. After changing variables, [deploy again](/cloud/deploy).
