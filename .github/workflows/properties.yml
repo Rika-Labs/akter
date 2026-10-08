@@ -14,7 +14,7 @@ defaults:
 jobs:
   properties:
     name: Random-seed ${{ matrix.name }}
-    runs-on: namespace-profile-akter
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -55,7 +55,7 @@ jobs:
       - run: bun run --filter @rikalabs/akter ${{ matrix.script }}
   simulation:
     name: Deterministic simulation, 2,500 seeds, shard ${{ matrix.shard }} of 4
-    runs-on: namespace-profile-akter
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false

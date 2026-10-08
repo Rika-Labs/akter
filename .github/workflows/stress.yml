@@ -17,7 +17,7 @@ defaults:
     shell: bash
 jobs:
   plan:
-    runs-on: namespace-profile-akter
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       runs: ${{ steps.plan.outputs.runs }}
@@ -43,7 +43,7 @@ jobs:
   stress:
     name: Stress run ${{ matrix.run }}
     needs: plan
-    runs-on: namespace-profile-akter
+    runs-on: ubuntu-latest
     timeout-minutes: 80
     strategy:
       fail-fast: false
@@ -121,7 +121,7 @@ jobs:
     name: Report failing cases by name
     needs: [plan, stress]
     if: always() && needs.plan.result == 'success'
-    runs-on: namespace-profile-akter
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

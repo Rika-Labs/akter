@@ -74,7 +74,7 @@ jobs:
 
   self-host:
     name: self-host-recipe
-    needs: changes
+    needs: [changes, static]
     if: needs.changes.outputs.suites == 'true'
     runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 10
@@ -192,42 +192,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: postgres-a
+          - name: shards-1
             shards: |
-              framework-postgres-1 postgres --project=postgres:effect-control --project=postgres:heap
               framework-postgres-2 postgres --project=postgres:conformance --project=postgres:capacity
-              framework-postgres-3 postgres --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
-          - name: postgres-b
-            shards: |
-              framework-postgres-5 postgres --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections
-              framework-postgres-6 postgres --project=postgres:simulation --project=postgres:workflows
-              framework-postgres-7 postgres --project=!integration --project=!integration:migrations --project=!postgres:effect-control --project=!postgres:heap --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron --project=!postgres:replica --project=!postgres:properties --project=!postgres:subscriptions --project=!postgres:transports --project=!postgres:connections --project=!postgres:simulation --project=!postgres:workflows --project=!postgres:relay
-          - name: postgres-c
+              framework-postgres-1 postgres --project=postgres:effect-control --project=postgres:heap
+              node-units node-units
+          - name: shards-2
             shards: |
               framework-postgres-4 postgres-without-replica --project=integration:migrations
-              framework-postgres-8 postgres --project=integration
+              framework-postgres-6 postgres --project=postgres:simulation --project=postgres:workflows
               framework-postgres-9 postgres --project=postgres:relay
-          - name: node-a
+          - name: shards-3
             shards: |
-              node-conformance-1 node --project=postgres:effect-control --project=postgres:heap
+              framework-postgres-5 postgres --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections
+              framework-postgres-7 postgres --project=!integration --project=!integration:migrations --project=!postgres:effect-control --project=!postgres:heap --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron --project=!postgres:replica --project=!postgres:properties --project=!postgres:subscriptions --project=!postgres:transports --project=!postgres:connections --project=!postgres:simulation --project=!postgres:workflows --project=!postgres:relay
+              framework-postgres-3 postgres --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
+              framework-postgres-8 postgres --project=integration
+          - name: shards-4
+            shards: |
               node-conformance-2 node --project=postgres:conformance --project=postgres:capacity
-              node-conformance-3 node --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
-          - name: node-b
-            shards: |
               node-conformance-4 node --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections
+              node-conformance-1 node --project=postgres:effect-control --project=postgres:heap
+          - name: shards-5
+            shards: |
               node-conformance-5 node --project=postgres:simulation --project=postgres:workflows
               node-conformance-6 node --project=!postgres:effect-control --project=!postgres:heap --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron --project=!postgres:replica --project=!postgres:properties --project=!postgres:subscriptions --project=!postgres:transports --project=!postgres:connections --project=!postgres:simulation --project=!postgres:workflows --project=!postgres:relay
-          - name: node-c
-            shards: |
-              framework-unit unit
               node-conformance-7 node --project=postgres:relay
-              node-units node-units
-          - name: pglite-drills
+          - name: shards-6
             shards: |
               framework-pglite-1 pglite --project=pglite:conformance --project=pglite:workflows --project=pglite:cron
-              framework-pglite-2 pglite --project=pglite:properties --project=pglite:capacity --project=pglite:transports
               framework-pglite-3 pglite --project=!pglite:conformance --project=!pglite:workflows --project=!pglite:cron --project=!pglite:properties --project=!pglite:capacity --project=!pglite:transports
+              framework-pglite-2 pglite --project=pglite:properties --project=pglite:capacity --project=pglite:transports
+          - name: shards-7
+            shards: |
               framework-drills drills
+              framework-unit unit
+              node-conformance-3 node --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
     services:
       postgres:
         image: postgres:18.6
