@@ -48,74 +48,79 @@ const wire =
       ),
     )
 
-const computePlan = {
+const proPlan = {
   id: "pro",
   name: "Pro",
-  basePriceCents: 2900,
+  basePriceCents: 2500,
   currency: "usd",
   allowances: {
-    commands: 5_000_000,
-    commandCap: null,
-    computeUnitHours: 1460,
+    computeUnitHours: 1500,
     computeUnitHourCap: null,
-    concurrentConnections: 1000,
+    storageGb: 10,
+    storageGbCap: null,
+    concurrentConnections: 5000,
   },
-  overage: { commandCentsPerMillion: 40, computeCentsPerUnitHour: 0.3 },
-  features: ["command-overage", "compute-overage", "checkout"],
-  provisional: true,
+  overage: { computeCentsPerUnitHour: 1.5, storageCentsPerGbMonth: 50 },
+  features: ["compute-overage", "storage-overage", "checkout"],
+  provisional: false,
 }
 
-const storagePlan = {
+const freePlan = {
   id: "free",
   name: "Free",
   basePriceCents: 0,
   currency: "usd",
   allowances: {
-    commands: 1_000_000,
-    commandCap: 1_000_000,
-    storageGb: 1,
-    concurrentConnections: 50,
+    computeUnitHours: 750,
+    computeUnitHourCap: 750,
+    storageGb: 0.5,
+    storageGbCap: 0.5,
+    concurrentConnections: 100,
   },
-  overage: { commandCentsPerMillion: 0, storageCentsPerGbMonth: 25 },
-  features: ["command-cap", "storage-overage", "storage-cap"],
+  overage: { computeCentsPerUnitHour: 0, storageCentsPerGbMonth: 0 },
+  features: ["compute-cap", "storage-cap"],
   provisional: false,
 }
 
-const catalog = (plans: ReadonlyArray<Schema.Json>) => ({
-  plans,
-  readCommandWeight: 0.1,
-  provisional: true,
-})
+const teamPlan = {
+  ...proPlan,
+  id: "team",
+  name: "Team",
+  basePriceCents: 24_900,
+  allowances: { ...proPlan.allowances, computeUnitHours: 16_000, storageGb: 50 },
+  features: [...proPlan.features, "byo-database", "dedicated-database"],
+}
 
 const computeSizes: Schema.JsonArray = [
-  { cpuKind: "shared", cpus: 1, memoryMb: 512, unitsPerHour: 1.5 },
-  { cpuKind: "performance", cpus: 2, memoryMb: 4096, unitsPerHour: 7 },
+  { cpuKind: "shared", cpus: 1, memoryMb: 512, unitsPerHour: 1 },
+  { cpuKind: "performance", cpus: 2, memoryMb: 4096, unitsPerHour: 18 },
 ]
+
+const catalog = (plans: ReadonlyArray<Schema.Json>, extra: Record<string, Schema.Json> = {}) => ({
+  plans,
+  computeSizes,
+  provisional: false,
+  ...extra,
+})
+
+const strictPlan = Schema.decodeUnknownExit(CatalogPlan, { onExcessProperty: "error" })
 
 describe("plan catalog", () => {
   const validCatalog = wire(PlanCatalog)
   const validPlan = wire(CatalogPlan)
 
-  it("decodes compute allowances, a nullable compute cap and a compute overage rate with no storage fields", () => {
-    const capped = {
-      ...computePlan,
-      allowances: { ...computePlan.allowances, computeUnitHourCap: 730 },
-      features: ["command-cap", "compute-cap"],
-    }
-    expect(validCatalog({ ...catalog([computePlan, capped]), computeSizes })).toBe(true)
+  it("decodes a hard-capped Free plan, a Pro plan billing both overages and a Team plan with its database features", () => {
+    expect(validCatalog(catalog([freePlan, proPlan, teamPlan]))).toBe(true)
   })
 
   it("decodes per-size compute unit weights taken from the pricing configuration", () => {
-    expect(validCatalog({ ...catalog([computePlan]), computeSizes })).toBe(true)
-    expect(validCatalog({ ...catalog([computePlan]), computeSizes: [] })).toBe(true)
+    expect(validCatalog(catalog([proPlan], { computeSizes: [] }))).toBe(true)
   })
 
   it("refuses a size whose weight is not positive or whose machine has no whole CPU or memory", () => {
     const size = { cpuKind: "shared", cpus: 1, memoryMb: 512, unitsPerHour: 1.5 }
-    const withSize = (patch: Record<string, Schema.Json>) => ({
-      ...catalog([computePlan]),
-      computeSizes: [{ ...size, ...patch }],
-    })
+    const withSize = (patch: Record<string, Schema.Json>) =>
+      catalog([proPlan], { computeSizes: [{ ...size, ...patch }] })
     expect(validCatalog(withSize({}))).toBe(true)
     expect(validCatalog(withSize({ unitsPerHour: 0 }))).toBe(false)
     expect(validCatalog(withSize({ unitsPerHour: -1.5 }))).toBe(false)
@@ -126,24 +131,63 @@ describe("plan catalog", () => {
     expect(validCatalog(withSize({ cpuKind: "dedicated" }))).toBe(false)
   })
 
-  it("still decodes a storage-era plan that carries no compute fields", () => {
-    expect(validCatalog(catalog([storagePlan]))).toBe(true)
+  it("requires the compute sizes, every allowance and both overage rates", () => {
+    const { computeSizes: _sizes, ...withoutSizes } = catalog([proPlan])
+    expect(validCatalog(withoutSizes)).toBe(false)
+    for (const field of [
+      "computeUnitHours",
+      "computeUnitHourCap",
+      "storageGb",
+      "storageGbCap",
+      "concurrentConnections",
+    ] as const) {
+      const { [field]: _omitted, ...allowances } = proPlan.allowances
+      expect(validPlan({ ...proPlan, allowances })).toBe(false)
+    }
+    for (const field of ["computeCentsPerUnitHour", "storageCentsPerGbMonth"] as const) {
+      const { [field]: _omitted, ...overage } = proPlan.overage
+      expect(validPlan({ ...proPlan, overage })).toBe(false)
+    }
   })
 
-  it("refuses negative compute allowances, caps and rates, and an unknown feature", () => {
+  it("refuses the command and legacy fields and features that no longer exist", () => {
+    for (const feature of ["command-cap", "command-overage", "database-cap"]) {
+      expect(validPlan({ ...proPlan, features: [feature] })).toBe(false)
+    }
+    expect(
+      Exit.isFailure(
+        strictPlan({ ...proPlan, allowances: { ...proPlan.allowances, commands: 1 } }),
+      ),
+    ).toBe(true)
+    expect(
+      Exit.isFailure(
+        strictPlan({ ...proPlan, allowances: { ...proPlan.allowances, commandCap: null } }),
+      ),
+    ).toBe(true)
+    expect(
+      Exit.isFailure(
+        strictPlan({ ...proPlan, overage: { ...proPlan.overage, commandCentsPerMillion: 1 } }),
+      ),
+    ).toBe(true)
+    expect(Exit.isSuccess(strictPlan(proPlan))).toBe(true)
+  })
+
+  it("refuses negative compute and storage allowances, caps and rates, and an unknown feature", () => {
     const allowances = (patch: Record<string, Schema.Json>) => ({
-      ...computePlan,
-      allowances: { ...computePlan.allowances, ...patch },
+      ...proPlan,
+      allowances: { ...proPlan.allowances, ...patch },
+    })
+    const overage = (patch: Record<string, Schema.Json>) => ({
+      ...proPlan,
+      overage: { ...proPlan.overage, ...patch },
     })
     expect(validPlan(allowances({ computeUnitHours: -1 }))).toBe(false)
     expect(validPlan(allowances({ computeUnitHourCap: -0.5 }))).toBe(false)
-    expect(
-      validPlan({
-        ...computePlan,
-        overage: { ...computePlan.overage, computeCentsPerUnitHour: -0.3 },
-      }),
-    ).toBe(false)
-    expect(validPlan({ ...computePlan, features: ["compute-limit"] })).toBe(false)
+    expect(validPlan(allowances({ storageGb: -1 }))).toBe(false)
+    expect(validPlan(allowances({ storageGbCap: -0.5 }))).toBe(false)
+    expect(validPlan(overage({ computeCentsPerUnitHour: -0.3 }))).toBe(false)
+    expect(validPlan(overage({ storageCentsPerGbMonth: -50 }))).toBe(false)
+    expect(validPlan({ ...proPlan, features: ["compute-limit"] })).toBe(false)
   })
 })
 
@@ -188,91 +232,114 @@ describe("compute usage dimensions", () => {
   })
 })
 
-const computeCaps: Schema.JsonArray = [
-  { cap: "compute", limit: 1460, used: 64, atCap: false, refusing: false },
-  { cap: "commands", limit: 1000, used: 120, atCap: false, refusing: false, unitsPerCommand: 10 },
+const usageCaps: Schema.JsonArray = [
+  { cap: "compute", limit: 750, used: 64, atCap: false, refusing: false },
+  { cap: "storage", limit: 0.5, used: 0.5, atCap: true, refusing: true },
 ]
 
 const meteredProject = {
   projectId: "prj_1",
   name: "Storefront",
-  commands: 120,
   computeUnitHours: 64,
   compute: [sharedRecord, performanceRecord],
+  storageGbMonths: 0.12,
   estimatedCostCents: 0,
 }
 
-const computeProjects: Schema.JsonArray = [
-  meteredProject,
-  { projectId: "prj_2", name: "Unmetered", commands: 0, estimatedCostCents: 0 },
-]
-
-const computeUsage = {
-  period: "2026-10",
-  meters: [
-    { meter: "commands", used: 120, included: 1000, overage: 0, overageCostCents: 0 },
-    { meter: "runnerHours", used: 64, included: 1460, overage: 0, overageCostCents: 0 },
-    { meter: "egressGb", used: 2.5, included: 100, overage: 0, overageCostCents: 0 },
-  ],
-  caps: computeCaps,
-  commandsPerDay: [{ day: "2026-10-07", commands: 120 }],
-  byProject: computeProjects,
-  pricing: { freeCommands: 1000, readCommandWeight: 0.1, computeCentsPerUnitHour: 0.3 },
+const unmeteredProject = {
+  projectId: "prj_2",
+  name: "Bring your own",
+  computeUnitHours: 0,
+  compute: [],
+  storageGbMonths: 0,
+  estimatedCostCents: 0,
 }
 
-const storageUsage = {
-  period: "2026-09",
+const sample = { bytes: 500_000_000, sampledAt: "2026-10-07T23:00:00.000Z" }
+
+const usage = {
+  period: "2026-10",
   meters: [
-    { meter: "commands", used: 900, included: 1000, overage: 0, overageCostCents: 0 },
-    { meter: "storageGb", used: 1.2, included: 1, overage: 0.2, overageCostCents: 5 },
+    { meter: "runnerHours", used: 64, included: 750, overage: 0, overageCostCents: 0 },
+    { meter: "storageGb", used: 0.5, included: 0.5, overage: 0, overageCostCents: 0 },
   ],
-  latestStorageSample: { bytes: 1_200_000_000, sampledAt: "2026-09-30T23:00:00.000Z" },
-  caps: [
-    { cap: "storage", limit: 1_000_000_000, used: 1_200_000_000, atCap: true, refusing: true },
-  ],
-  commandsPerDay: [{ day: "2026-09-30", commands: 900 }],
-  byProject: [
-    {
-      projectId: "prj_1",
-      name: "Storefront",
-      commands: 900,
-      storageGbMonths: 1.2,
-      estimatedCostCents: 5,
-    },
-  ],
-  pricing: { freeCommands: 1000, readCommandWeight: 0.1, storagePerGbCents: 25 },
+  latestStorageSample: sample,
+  caps: usageCaps,
+  byProject: [meteredProject, unmeteredProject],
+  pricing: { computeCentsPerUnitHour: 0, storageCentsPerGbMonth: 0 },
 }
 
 describe("usage report", () => {
   const validUsage = wire(Usage)
 
-  it("decodes compute caps, project compute unit-hours and per-machine-size records with no storage fields", () => {
-    expect(validUsage(computeUsage)).toBe(true)
+  it("decodes compute and storage caps, per-project compute and storage and per-machine-size records", () => {
+    expect(validUsage(usage)).toBe(true)
   })
 
-  it("still decodes a storage-era report that carries no compute fields", () => {
-    expect(validUsage(storageUsage)).toBe(true)
+  it("decodes a Pro report billing overage on compute unit-hours and storage, and one with no storage sample yet", () => {
+    const billed = {
+      ...usage,
+      meters: [
+        { meter: "runnerHours", used: 1600, included: 1500, overage: 100, overageCostCents: 150 },
+        { meter: "storageGb", used: 12, included: 10, overage: 2, overageCostCents: 100 },
+      ],
+      caps: [],
+      pricing: { computeCentsPerUnitHour: 1.5, storageCentsPerGbMonth: 50 },
+    }
+    expect(validUsage(billed)).toBe(true)
+    expect(validUsage({ ...billed, latestStorageSample: null })).toBe(true)
   })
 
-  it("refuses a negative compute rate, negative project compute and a negative compute cap", () => {
+  it("refuses the command and outbound-traffic meters and the command caps that no longer exist", () => {
+    const meter = { used: 120, included: 1000, overage: 0, overageCostCents: 0 }
+    for (const name of ["commands", "reads", "egressGb"]) {
+      expect(validUsage({ ...usage, meters: [{ meter: name, ...meter }] })).toBe(false)
+    }
+    const commands = {
+      cap: "commands",
+      limit: 1000,
+      used: 1,
+      atCap: false,
+      refusing: false,
+      unitsPerCommand: 1,
+    }
+    expect(validUsage({ ...usage, caps: [commands] })).toBe(false)
+  })
+
+  it("requires the storage sample, the caps, each project's compute and storage, and both prices", () => {
+    const { latestStorageSample: _sample, ...noSample } = usage
+    const { caps: _caps, ...noCaps } = usage
+    expect(validUsage(noSample)).toBe(false)
+    expect(validUsage(noCaps)).toBe(false)
+    for (const field of ["computeUnitHours", "compute", "storageGbMonths"] as const) {
+      const { [field]: _omitted, ...project } = meteredProject
+      expect(validUsage({ ...usage, byProject: [project] })).toBe(false)
+    }
+    expect(validUsage({ ...usage, pricing: { computeCentsPerUnitHour: 1.5 } })).toBe(false)
+    expect(validUsage({ ...usage, pricing: { storageCentsPerGbMonth: 50 } })).toBe(false)
+  })
+
+  it("refuses a negative rate, negative project compute or storage, a negative storage sample and a negative cap", () => {
     const withProject = (patch: Record<string, Schema.Json>) => ({
-      ...computeUsage,
+      ...usage,
       byProject: [{ ...meteredProject, ...patch }],
     })
     expect(
-      validUsage({
-        ...computeUsage,
-        pricing: { ...computeUsage.pricing, computeCentsPerUnitHour: -1 },
-      }),
+      validUsage({ ...usage, pricing: { ...usage.pricing, computeCentsPerUnitHour: -1 } }),
+    ).toBe(false)
+    expect(
+      validUsage({ ...usage, pricing: { ...usage.pricing, storageCentsPerGbMonth: -1 } }),
     ).toBe(false)
     expect(validUsage(withProject({ computeUnitHours: -64 }))).toBe(false)
+    expect(validUsage(withProject({ storageGbMonths: -0.1 }))).toBe(false)
     expect(validUsage(withProject({ compute: [{ ...sharedRecord, computeUnitHours: -10 }] }))).toBe(
       false,
     )
+    expect(validUsage({ ...usage, latestStorageSample: { ...sample, bytes: -1 } })).toBe(false)
     expect(
       validUsage({
-        ...computeUsage,
-        caps: [{ cap: "compute", limit: -1, used: 64, atCap: false, refusing: false }],
+        ...usage,
+        caps: [{ cap: "storage", limit: -1, used: 0, atCap: false, refusing: false }],
       }),
     ).toBe(false)
   })

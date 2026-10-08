@@ -76,7 +76,7 @@ Akter Cloud client:
 
 `production`, `staging`, and `dev` are customer project environment names accepted by the public Cloud API. They describe where a customer's deployment runs, not the infrastructure stages used to provision Akter Cloud itself.
 
-Environment responses may include `database: { configured: boolean, engine: "postgres" | "neki" }`. This status reports only whether a database connection is configured and its engine; it never includes a URL, host, username, password or database name. Environment variable values remain write-only.
+Environment responses may include `database: { source: "managed" | "customer", state: "provisioning" | "ready" | "read-only" | "failed" }`. `managed` is the database Akter Cloud runs for the environment; `customer` is a Postgres database the customer brought, always `ready` once set. The status never includes a URL, host, username, password, database name or engine, because Akter Cloud runs Postgres only. Environment variable values remain write-only.
 
 ## Commands
 
