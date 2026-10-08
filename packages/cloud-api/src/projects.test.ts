@@ -7,6 +7,7 @@ import {
   EnvVariableName,
   Environment,
   Hostname,
+  ProjectRegion,
   SetEnvVariable,
 } from "./projects.ts"
 
@@ -26,11 +27,17 @@ const accepts = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   rejects(schema, input) === false
 
 describe("project models", () => {
-  it("exposes only database presence and engine, rejecting URL-derived metadata", () => {
+  it("exposes only the database's source and state, rejecting URL-derived metadata", () => {
     const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
     expect(decode(Environment, environment).database).toBeUndefined()
-    for (const engine of ["postgres", "neki"]) {
-      const database = { configured: engine === "neki", engine }
+    const databases = [
+      { source: "managed", state: "provisioning" },
+      { source: "managed", state: "ready" },
+      { source: "managed", state: "read-only" },
+      { source: "managed", state: "failed" },
+      { source: "customer", state: "ready" },
+    ]
+    for (const database of databases) {
       expect(decode(Environment, { ...environment, database }).database).toEqual(database)
       for (const field of ["url", "host", "user", "password", "databaseName"]) {
         const input = { ...environment, database: { ...database, [field]: "private" } }
@@ -44,9 +51,46 @@ describe("project models", () => {
         ).toBe(true)
       }
     }
-    expect(
-      rejects(Environment, { ...environment, database: { configured: true, engine: "mysql" } }),
-    ).toBe(true)
+  })
+
+  it("refuses the removed engine status and any unknown source or state", () => {
+    const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
+    const database = { source: "managed", state: "ready" }
+    for (const bad of [
+      { configured: true, engine: "postgres" },
+      { configured: false, engine: "neki" },
+      { ...database, engine: "postgres" },
+      { source: "byo", state: "ready" },
+      { source: "managed", state: "migrating" },
+      { source: "managed" },
+      { state: "ready" },
+    ]) {
+      const strict = Schema.decodeUnknownEffect(Environment, { onExcessProperty: "error" })
+      expect(Exit.isFailure(Effect.runSyncExit(strict({ ...environment, database: bad })))).toBe(
+        true,
+      )
+    }
+  })
+
+  it("reports a region's Postgres version and size, with no engine, shard group or backup status", () => {
+    const region = {
+      region: { id: "us-east-1", city: "Ashburn" },
+      home: true,
+      tenantCount: 2,
+      database: { version: "18.6", sizeBytes: 1_000 },
+      storage: { usedBytes: 1_000, limitBytes: 500_000_000 },
+      cpuPercent: 3,
+      connections: { used: 1, limit: 100 },
+      runners: 1,
+      largestTables: [],
+    }
+    expect(accepts(ProjectRegion, region)).toBe(true)
+    const strict = Schema.decodeUnknownEffect(ProjectRegion, { onExcessProperty: "error" })
+    const refused = (patch: Record<string, Schema.Json>) =>
+      Exit.isFailure(Effect.runSyncExit(strict({ ...region, ...patch })))
+    expect(refused({ shardGroup: "default" })).toBe(true)
+    expect(refused({ backups: { pointInTimeRecovery: true, latestBackupAt: null } })).toBe(true)
+    expect(refused({ database: { ...region.database, engine: "postgres" } })).toBe(true)
   })
 
   it("drops a value or masked tail if a server leaks one into an environment variable read", () => {

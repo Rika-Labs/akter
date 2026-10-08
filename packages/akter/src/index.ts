@@ -156,9 +156,6 @@ export {
   MailboxFull,
   RunnerAtCapacity,
   QuotaExceeded,
-  SpendLimitExceeded,
-  ConnectionLimitExceeded,
-  StorageQuotaExceeded,
   SessionEnded,
 } from "./errors/actor.ts"
 

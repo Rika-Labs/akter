@@ -375,37 +375,13 @@ export class CommandFailed extends Schema.TaggedError<CommandFailed>()(
 ) {}
 
 /**
- * The organization's Free period quota cannot take the command's units;
+ * The organization reached one of its plan's hard caps, named by `cap`;
  * answered 429. It carries the framework's `QuotaExceeded` payload, including
  * when the period resets as `retryAfterMs`.
  */
 export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()(
   "QuotaExceeded",
   Struct.omit(Framework.QuotaExceeded.fields, ["_tag"]),
-  { httpApiStatus: 429 },
-) {}
-
-/** The organization's estimated period cost would pass its spend limit; answered 402. */
-export class SpendLimitExceeded extends Schema.TaggedError<SpendLimitExceeded>()(
-  "SpendLimitExceeded",
-  Struct.omit(Framework.SpendLimitExceeded.fields, ["_tag"]),
-  { httpApiStatus: 402 },
-) {}
-
-/** The organization already holds every concurrent connection its plan allows; answered 429. */
-export class ConnectionLimitExceeded extends Schema.TaggedError<ConnectionLimitExceeded>()(
-  "ConnectionLimitExceeded",
-  Struct.omit(Framework.ConnectionLimitExceeded.fields, ["_tag"]),
-  { httpApiStatus: 429 },
-) {}
-
-/**
- * A Free tenant's latest storage sample is at or over its cap, so it takes no
- * new command until a lower sample arrives; answered 429.
- */
-export class StorageQuotaExceeded extends Schema.TaggedError<StorageQuotaExceeded>()(
-  "StorageQuotaExceeded",
-  Struct.omit(Framework.StorageQuotaExceeded.fields, ["_tag"]),
   { httpApiStatus: 429 },
 ) {}
 
@@ -428,16 +404,10 @@ export class QuotaUnbound extends Schema.TaggedError<QuotaUnbound>()(
 ) {}
 
 /**
- * The edge's usage refusals of a new command: the framework's four, each with
- * its tag and payload, and the edge's own `QuotaUnbound`.
+ * The edge's usage refusals of a new command: the framework's `QuotaExceeded`,
+ * which names the cap, and the edge's own `QuotaUnbound`.
  */
-export const QuotaErrors = [
-  QuotaExceeded,
-  SpendLimitExceeded,
-  ConnectionLimitExceeded,
-  StorageQuotaExceeded,
-  QuotaUnbound,
-] as const
+export const QuotaErrors = [QuotaExceeded, QuotaUnbound] as const
 
 /**
  * One job name: `retried` counts its pending jobs that have failed at least

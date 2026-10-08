@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- `QuotaExceeded` now names the hard cap a hosted organization reached: `{ organizationId, period, cap, limit, used, retryAfterMs }`, where `cap` is `compute`, `storage`, `connections` or `spend`, and `limit` and `used` are in that cap's units (compute unit-hours, decimal gigabytes of pooled managed database storage, open connections, or cents). It no longer carries `limitUnits`, `usedUnits`, `requestedUnits` or `unitsPerCommand`, because commands and reads are no longer metered. Update decoders that read those fields. It is still answered 429 and closes a WebSocket with 1008.
+- `SpendLimitExceeded`, `ConnectionLimitExceeded` and `StorageQuotaExceeded` are removed from `ActorError.reason` and from the exports of `@rikalabs/akter` and `@rikalabs/akter/client`; they existed only for the hosted edge. Match `QuotaExceeded` and its `cap` instead. A `connections` refusal is the only retryable one: `isRetryable` is true and the client retries it after `retryAfterMs` with the same command id, as it did for `ConnectionLimitExceeded`. A `spend` refusal is no longer answered 402 but 429.
+
 ## 0.1.0-alpha.2 (2026-10-07)
 
 The framework and CLI release together on the `alpha` npm dist-tag. Alpha APIs and stored formats can change. Read the [upgrade notes](https://docs.akter.dev/operations/alpha-upgrades), back up the database, and stop all alpha.1 runners before starting alpha.2; mixed-alpha rolling upgrades are not established as safe.
