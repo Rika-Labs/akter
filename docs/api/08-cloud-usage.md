@@ -38,8 +38,12 @@ Each `CatalogPlan` carries, all required:
 
 ## Quota refusals
 
-A request refused at a hard cap fails with `QuotaExceeded`, carrying `organizationId`, `period`, `cap` (`compute`, `storage`, `connections` or `spend`), `limit` and `used` in that cap's units, and `retryAfterMs`, the time until the billing period resets. It is answered 429. A `storage` refusal is not lifted by the period resetting; it lifts when the pooled storage drops below the cap or the organization upgrades.
+A request refused at a hard cap fails with `QuotaExceeded`, carrying `organizationId`, `period`, `cap` (`compute`, `storage`, `connections` or `spend`), `limit` and `used` in that cap's units, and `retryAfterMs`. It is answered 429 for every cap, and a WebSocket it ends closes with 1008. It replaces the separate `SpendLimitExceeded`, `ConnectionLimitExceeded` and `StorageQuotaExceeded` errors.
+
+`retryAfterMs` is the time until the billing period resets for `compute` and `spend`, and a short back-off for `connections`. A `connections` refusal clears as connections close, so it is the only retryable cap: the client retries it with the same command id after `retryAfterMs`. A `storage` refusal is not lifted by the period resetting; it lifts when the pooled storage drops below the cap or the organization upgrades, so `retryAfterMs` there is only a hint.
 
 ## Removed fields
 
-Every command and read field is gone: the command allowance, cap and overage, the read weight, the `commands` and `reads` meters and the `commands` cap, `commandsPerDay`, per-project `commands` and `reads`, `freeCommands`, and the `unitsPerCommand`, `limitUnits`, `usedUnits` and `requestedUnits` of `QuotaExceeded`. The `egressGb` meter is gone too. No compatibility field is kept, so a client decoding an older response fails rather than silently reading zero.
+Every command and read field is gone: the command allowance, cap and overage, the read weight, the `commands` and `reads` meters and the `commands` cap, `commandsPerDay`, per-project `commands` and `reads`, `freeCommands`, and the `unitsPerCommand`, `limitUnits`, `usedUnits` and `requestedUnits` of `QuotaExceeded`, and the `SpendLimitExceeded`, `ConnectionLimitExceeded` and `StorageQuotaExceeded` errors. The `egressGb` meter is gone too. No compatibility field is kept, so a client decoding an older response fails rather than silently reading zero.
+
+`ProjectRegion` no longer reports a database `engine`, a `shardGroup` or `backups`: Akter Cloud runs Postgres only, has no shards, and promises no backups or point-in-time recovery for a managed database.

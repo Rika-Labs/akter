@@ -1,13 +1,6 @@
 import { Effect, Option, Schema } from "effect"
 import { describe, expect, it } from "vitest"
-import {
-  ActorError,
-  ConnectionLimitExceeded,
-  QuotaExceeded,
-  SpendLimitExceeded,
-  StorageQuotaExceeded,
-  Unauthorized,
-} from "../errors/actor.ts"
+import { ActorError, QuotaExceeded, Unauthorized } from "../errors/actor.ts"
 import corpus from "./exchanges.json" with { type: "json" }
 import { actorErrorBody, actorErrorOf, closeCodeOf, isDefectBody, statusOf } from "./wire.ts"
 
@@ -61,38 +54,20 @@ describe("actorErrorOf", () => {
   it("round trips hosted quota fields, their statuses, close codes and retry policy", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const quota = QuotaExceeded.make({
-          organizationId: "org",
-          period: "2026-10",
-          cap: "compute",
-          limit: 750,
-          used: 750,
-          retryAfterMs: 75_123,
-        })
-        const spend = SpendLimitExceeded.make({
-          organizationId: "org",
-          period: "2026-10",
-          limitCents: 3000,
-          projectedCents: 3001,
-        })
-        const connections = ConnectionLimitExceeded.make({
-          organizationId: "org",
-          kind: "sse",
-          limit: 100,
-          open: 100,
-        })
-        const storage = StorageQuotaExceeded.make({
-          organizationId: "org",
-          deployment: "dep",
-          tenant: "acme",
-          limitBytes: 500_000_000,
-          usedBytes: 600_000_001,
-        })
+        const quota = (cap: "compute" | "storage" | "connections" | "spend") =>
+          QuotaExceeded.make({
+            organizationId: "org",
+            period: "2026-10",
+            cap,
+            limit: 750,
+            used: 751,
+            retryAfterMs: 75_123,
+          })
         const cases = [
-          { reason: quota, status: 429, retryable: false },
-          { reason: spend, status: 402, retryable: false },
-          { reason: connections, status: 429, retryable: true },
-          { reason: storage, status: 429, retryable: false },
+          { reason: quota("compute"), retryable: false },
+          { reason: quota("storage"), retryable: false },
+          { reason: quota("spend"), retryable: false },
+          { reason: quota("connections"), retryable: true },
         ]
 
         for (const entry of cases) {
@@ -105,13 +80,10 @@ describe("actorErrorOf", () => {
 
           expect(decoded.value.reason).toEqual(entry.reason)
           expect(decoded.value.isRetryable).toBe(entry.retryable)
-          expect(statusOf(decoded.value.reason)).toBe(entry.status)
+          expect(Option.getOrUndefined(decoded.value.retryAfter)).toBe(75_123)
+          expect(statusOf(decoded.value.reason)).toBe(429)
           expect(closeCodeOf(decoded.value.reason)).toBe(1008)
         }
-
-        expect(Option.getOrUndefined(ActorError.make({ reason: quota }).retryAfter)).toBe(75_123)
-        expect(Option.isNone(ActorError.make({ reason: spend }).retryAfter)).toBe(true)
-        expect(Option.isNone(ActorError.make({ reason: storage }).retryAfter)).toBe(true)
       }),
     ))
 

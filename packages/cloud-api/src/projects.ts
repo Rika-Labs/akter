@@ -140,20 +140,11 @@ export const ProjectRegion = Schema.Struct({
   region: Region,
   home: Schema.Boolean,
   tenantCount: NonNegativeInt,
-  database: Schema.Struct({
-    engine: Schema.String,
-    version: Schema.String,
-    sizeBytes: NonNegativeInt,
-  }),
+  database: Schema.Struct({ version: Schema.String, sizeBytes: NonNegativeInt }),
   storage: Schema.Struct({ usedBytes: NonNegativeInt, limitBytes: NonNegativeInt }),
   cpuPercent: NonNegative,
   connections: Schema.Struct({ used: NonNegativeInt, limit: NonNegativeInt }),
   runners: NonNegativeInt,
-  shardGroup: Schema.String,
-  backups: Schema.Struct({
-    pointInTimeRecovery: Schema.Boolean,
-    latestBackupAt: Schema.NullOr(Timestamp),
-  }),
   largestTables: Schema.Array(OwnedTable),
 })
 export type ProjectRegion = typeof ProjectRegion.Type

@@ -3,6 +3,7 @@ import { DatabaseClock, monotonic } from "../../client/clock.ts"
 import {
   ActorError,
   InvalidCommandId,
+  QuotaExceeded,
   RunnerAtCapacity,
   withRetryAfter,
 } from "../../errors/actor.ts"
@@ -467,6 +468,79 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           expect(new Set(keys).size).toBe(1)
           expect(elapsed >= 300).toBe(true)
           expect(yield* receipts(tenant, "HttpRoom", "retry")).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "client retries a connections quota refusal with the same id and surfaces every other cap without retrying",
+    run: ({ expect, environment }) =>
+      environment.run(
+        Effect.gen(function* () {
+          const server = yield* serveHttp()
+          const tenant = yield* tenantOf
+
+          const refusal = (cap: "connections" | "compute" | "storage" | "spend") =>
+            actorErrorBody(
+              ActorError.make({
+                reason: QuotaExceeded.make({
+                  organizationId: "org",
+                  period: "2026-10",
+                  cap,
+                  limit: 100,
+                  used: 100,
+                  retryAfterMs: 200,
+                }),
+              }),
+            )
+
+          const full = yield* refusal("connections")
+          let connectionPosts = 0
+
+          const retrying = recording((sent) => {
+            if (!sent.path.endsWith("/Post")) return undefined
+            connectionPosts += 1
+
+            return connectionPosts === 1 ? json(429, full) : undefined
+          })
+
+          const started = performance.now()
+
+          const retried = yield* settle(() =>
+            HttpRoom.client({
+              baseUrl: server.url,
+              headers: { authorization: `Bearer ${tenant}:alice` },
+              fetch: retrying.fetch,
+            })
+              .get("quota-retry")
+              .Post({ text: "a" }),
+          )
+
+          expect(retried).toEqual({ ok: true, value: 1 })
+          const keys = keysOf(retrying.commands("Post"))
+          expect(keys.length).toBe(2)
+          expect(new Set(keys).size).toBe(1)
+          expect(performance.now() - started >= 200).toBe(true)
+
+          for (const cap of ["compute", "storage", "spend"] as const) {
+            const body = yield* refusal(cap)
+
+            const refused = recording((sent) =>
+              sent.path.endsWith("/Post") ? json(429, body) : undefined,
+            )
+
+            const result = yield* settle(() =>
+              HttpRoom.client({
+                baseUrl: server.url,
+                headers: { authorization: `Bearer ${tenant}:alice` },
+                fetch: refused.fetch,
+              })
+                .get(`quota-${cap}`)
+                .Post({ text: "a" }),
+            )
+
+            expect(reasonOf(result)).toMatchObject({ tag: "QuotaExceeded", cap })
+            expect(refused.commands("Post").length).toBe(1)
+          }
         }),
       ),
   },

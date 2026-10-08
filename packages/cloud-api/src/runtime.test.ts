@@ -13,12 +13,9 @@ import {
   CommandLogEntry,
   CommandRefused,
   CommandSent,
-  ConnectionLimitExceeded,
   OwnedTableRows,
   QuotaExceeded,
   QuotaUnbound,
-  SpendLimitExceeded,
-  StorageQuotaExceeded,
   SendCommand,
   TurnLatency,
   Workflow,
@@ -262,40 +259,6 @@ describe("runtime models", () => {
         limit: 0.5,
         used: 0.5,
         retryAfterMs: 1_000,
-      }),
-      429,
-    )
-    declared(
-      SpendLimitExceeded,
-      Framework.SpendLimitExceeded,
-      Framework.SpendLimitExceeded.make({
-        organizationId: "org_1",
-        period: "2026-10",
-        limitCents: 5_000,
-        projectedCents: 5_001,
-      }),
-      402,
-    )
-    declared(
-      ConnectionLimitExceeded,
-      Framework.ConnectionLimitExceeded,
-      Framework.ConnectionLimitExceeded.make({
-        organizationId: "org_1",
-        kind: "socket",
-        limit: 100,
-        open: 100,
-      }),
-      429,
-    )
-    declared(
-      StorageQuotaExceeded,
-      Framework.StorageQuotaExceeded,
-      Framework.StorageQuotaExceeded.make({
-        organizationId: "org_1",
-        deployment: "dep_1",
-        tenant: "acme",
-        limitBytes: 500_000_000,
-        usedBytes: 500_000_000,
       }),
       429,
     )
