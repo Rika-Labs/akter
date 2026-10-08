@@ -22,7 +22,7 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - This public repository contains the framework, derived React and Python clients, the CLI, the public cloud API contract, tooling and framework documentation.
 - The CLI belongs in `apps/cli`; cloud client commands (`login`, `logout`, `whoami`, `deploy`) remain public. Cloud operator commands and integration tests live with the private platform.
 - The CLI (`apps/cli`) is built with Effect's `effect/cli` module. Every command, including hosted ones such as `login` and `deploy`, uses it; do not add another argument parser or CLI framework.
-- Hosted infrastructure, the API, edge, console, marketing site and cloud-only packages belong in the private Akter Cloud repository, which consumes this repository through an `akter/` submodule.
+- Hosted infrastructure, the API, edge, console, marketing site and cloud-only packages belong in the private Akter Cloud repository, which consumes the published npm packages (`@rikalabs/akter`, `@rikalabs/akter-cli` and the cloud API contract) and does not mount this repository as a submodule.
 - Tooling belongs in `tooling/*`.
 - Effect is the runtime foundation; do not create a separate Effect package.
 - The ordinary TypeScript SDK is `@rikalabs/akter/client`, a derived surface, not a second runtime.
@@ -37,6 +37,10 @@ This is a Bun/Turbo monorepo based on `rika-labs/monorepo-project-template`.
 - Update the contract, ADR, API docs, and verification when behavior changes.
 - No inline `//` or `/* */` comments in code. A reason the code cannot show goes in the JSDoc of the enclosing declaration; only functional directives (lint, TypeScript, coverage, bundler) and license headers are exempt. `akter/no-inline-comments` enforces this.
 - JSDoc states the reason in place and never cites an ADR, decision, research pick, or ledger entry; decision records link to code, not the reverse. `akter/no-decision-references` enforces this.
+
+## Pull requests
+
+Keep the description short, about 15 lines: what changed, why, the risk, and how it was verified. The template in `.github/pull_request_template.md` has these four headings. Link evidence instead of pasting it, and put long reasoning in the code, a contract or a decision record.
 
 ## Verification
 

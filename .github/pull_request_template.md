@@ -1,19 +1,15 @@
-Closes #
+## What
 
-## Outcome
+<!-- One or two sentences. Keep the whole description to about 15 lines. -->
 
-Describe the behavior change. Keep the PR title plain and specific.
+## Why
 
-## Flow
-
-Add a small diagram or code excerpt if the behavior spans components.
-
-## Evidence
-
-Link current-SHA CI artifacts and name the executed commands/results.
-For UI changes include inspected screenshots; for timing behavior include a clip.
-Prose claims, screenshots alone, and stale artifacts do not pass the gate.
+<!-- The problem or issue this solves. Closes # -->
 
 ## Risk
 
-Name migrations, compatibility changes, rollout limitations, and rollback.
+<!-- Migrations, compatibility, rollout and rollback. Write "none" if there are none. -->
+
+## Verification
+
+<!-- The commands you ran and the link to the green CI run. -->

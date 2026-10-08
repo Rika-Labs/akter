@@ -8,6 +8,8 @@
 
 **Owner role:** repository architecture.
 
+**Amended (2026-10-09):** the private repository consumes the published npm packages instead of mounting this repository as a submodule. Item 3, the submodule-update workflow in item 7 and the submodule bump in the consequences no longer apply: there is no pinned public commit or shared catalog, and a change that spans both repositories publishes the public package first, then raises its version in the private repository.
+
 **Supersedes:** ADR 0074 item 1 and ADR 0029's `apps/*` licensing clause. The framework, public CLI and public cloud API contract remain Apache-2.0.
 
 ## Context

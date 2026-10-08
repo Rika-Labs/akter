@@ -190,6 +190,10 @@ Akter is alpha software. The launch-supported Postgres server version is **18.6*
 - [Fit and non-fit](docs/product/fit-and-non-fit.md): when Akter is the right tool, and when it isn't.
 - [Runtime contracts](docs/contracts/README.md): exactly what each guarantee covers and where it stops.
 
+## Akter Cloud
+
+Akter Cloud, the hosted service, lives in a private repository. It consumes the published npm packages (`@rikalabs/akter` and `@rikalabs/akter-cli`) like any other application; it does not mount this repository as a submodule.
+
 ## License
 
 [Apache-2.0](LICENSE), copyright Rika Labs.
