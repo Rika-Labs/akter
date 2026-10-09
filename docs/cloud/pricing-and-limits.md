@@ -22,7 +22,7 @@ Free does not require a paid subscription, and its runner sleeps when idle. Curr
 
 One compute unit-hour is one running hour of the default runner: **shared 1 vCPU / 512 MB**. At launch this is the only size provisioned. Multiple runners' running time adds together: two default runners running for an hour use two unit-hours. A sleeping runner does not accrue running hours.
 
-Compute beyond a paid allowance is billed at **$0.015 per unit-hour**. For example, a Pro organization using 1,620 unit-hours owes its $25 base plus 120 overage unit-hours at $0.015: **$26.80 for Akter**, before taxes and excluding its separate database-provider bill.
+Compute beyond a paid allowance is billed at **\$0.015 per unit-hour**. For example, a Pro organization using 1,620 unit-hours owes its \$25 base plus 120 overage unit-hours at \$0.015: **\$26.80 for Akter**, before taxes and excluding its separate database-provider bill.
 
 Larger runner sizes are coming, not available at launch. Their unit weights are:
 
