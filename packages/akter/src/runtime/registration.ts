@@ -1,4 +1,5 @@
-import { Context, Crypto, Effect } from "effect"
+import { PgliteClient } from "@effect/sql-pglite"
+import { Context, Crypto, Effect, Option } from "effect"
 import { Sharding } from "effect/cluster"
 import { SqlClient, SqlError } from "effect/sql"
 import type { ActorError } from "../errors/actor.ts"
@@ -114,6 +115,8 @@ export const actorRegistration = ({
     readonly name: string
     readonly stateVersion: number
   }) {
+    if (Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))) return
+
     const sql = yield* SqlClient.SqlClient
     yield* sql.withTransaction(
       Effect.gen(function* () {

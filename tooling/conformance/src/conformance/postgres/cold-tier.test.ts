@@ -6,12 +6,18 @@ import {
   Effect,
   Exit,
   Fiber,
+  Layer,
   ManagedRuntime,
   Option,
+  Schema,
   Stream,
 } from "effect"
+import { HttpRouter } from "effect/http"
 import { afterAll, describe, expect, it } from "vitest"
 import { Actor } from "../../../../../packages/akter/src/index.ts"
+import { OperatorAuth } from "../../../../../packages/akter/src/runtime/operators/auth.ts"
+import { Operators } from "../../../../../packages/akter/src/runtime/operators/routes.ts"
+import { Seed } from "../../../../../packages/akter/src/runtime/operators/seed.ts"
 import {
   ColdStorage,
   ColdStorageError,
@@ -34,15 +40,18 @@ describe("cold tier with real Postgres", () => {
       Effect.gen(function* () {
         const base = ColdStorage.memory()
         let reads = 0
+        let unavailable = false
         const store = {
           ...base,
           get: (key: string) =>
             Effect.suspend(() => {
               reads++
+              if (unavailable)
+                return Effect.fail(new ColdStorageError({ cause: new Error("export outage") }))
               return base.get(key)
             }),
         }
-        const { cold, pointer, test, sql, tier } = yield* openCold(yield* database, store)
+        const { cold, pointer, test, sql, tier, context } = yield* openCold(yield* database, store)
         const actor = yield* cold("complete")
         const before = yield* pointer("complete")
         expect(before.cold_ref).toEqual(expect.any(String))
@@ -59,6 +68,53 @@ describe("cold tier with real Postgres", () => {
         ).toEqual([{ kind: "intent", command: "Ping", payload: '{"value":null}', source: "timer" }])
         expect(yield* actor.Read()).toEqual(snapshot)
         expect(yield* pointer("complete")).toEqual(before)
+        const web = HttpRouter.toWebHandler(
+          Operators.serve({
+            auth: OperatorAuth.make(() =>
+              Effect.succeed({
+                operator: "cold-exporter",
+                capabilities: [
+                  {
+                    action: "export",
+                    tenant: test.tenant,
+                    actorType: "ColdLedger",
+                    actorId: "complete",
+                  },
+                ],
+              }),
+            ),
+          }).pipe(Layer.provide(Layer.succeedContext(context))),
+          { disableLogger: true },
+        )
+        yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
+        const exportRequest = () =>
+          Effect.promise(() =>
+            web.handler(
+              new Request(
+                `http://runner/operator/actors/ColdLedger/complete/export?tenant=${encodeURIComponent(test.tenant)}`,
+              ),
+            ),
+          )
+        const exported = yield* exportRequest()
+        expect(exported.status).toBe(200)
+        expect(
+          yield* Effect.promise(() => exported.text()).pipe(
+            Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(Seed))),
+          ),
+        ).toMatchObject({
+          state: { total: 17, untouched: 43 },
+          stateVersion: 0,
+          intents: [{ command: "Ping", key: "ordinary" }],
+          jobs: [],
+          omitted: { receipts: 1, events: 1, blobs: 2, tableRows: 0 },
+        })
+        expect(yield* pointer("complete")).toEqual(before)
+        unavailable = true
+        const refusedExport = yield* exportRequest()
+        expect(refusedExport.status).toBe(500)
+        expect(yield* Effect.promise(() => refusedExport.text())).not.toContain('"state"')
+        expect(yield* pointer("complete")).toEqual(before)
+        unavailable = false
         expect(Exit.isFailure(yield* actor.Refuse().pipe(Effect.exit))).toBe(true)
         expect((yield* pointer("complete")).cold_ref).toBe(before.cold_ref)
         expect(yield* test.inspect(actor.ref)).toMatchObject({
