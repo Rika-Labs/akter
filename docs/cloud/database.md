@@ -1,36 +1,70 @@
 ---
-title: "Your database"
-description: "Akter Cloud creates a Postgres database for each project environment. Team and Enterprise can bring their own."
+title: "Connect your Postgres"
+description: "Every environment on every plan needs your own Postgres database and DATABASE_URL."
 ---
 
-Akter Cloud provides your database. When you create a project environment, the platform creates a Postgres database for it on a shared Postgres server that Akter runs. You do nothing: there is no provider account to open and no connection string to copy. Deploy your app and it runs against that database.
+Akter Cloud hosts compute, not databases. **Every environment on every plan, including Free, requires your own Postgres connection in `DATABASE_URL` before you deploy.** Akter does not provision a database or charge for its storage. You pay your database provider separately from Akter's [compute bill](/cloud/pricing-and-limits).
 
-Team and Enterprise can instead connect a Postgres database they own. See [Bring your own Postgres](/cloud/bring-your-database).
+If you do not have a database yet, start with [Choose a Postgres](/cloud/choose-postgres). Use a separate database and role for each environment that must have isolated data: creating `production`, `staging` or `dev` in Akter does not create or isolate a database for you.
 
-## One database per environment
+## Connection requirements
 
-Each environment of each project gets its own database and its own login. `production`, `staging` and `dev` never share data, and neither do two projects. A new project's three environments have their databases within seconds. The platform stores the connection as the environment's encrypted `DATABASE_URL`, and every deployment uses it automatically. [`akter env list`](/cloud/environment-variables) shows `DATABASE_URL` and the `AKTER_DATABASE_ID` that identifies the database, each marked `managed`.
+Your `DATABASE_URL` must meet these rules:
 
-Like every environment value, the managed `DATABASE_URL` cannot be read back through the console, API or CLI. You cannot unset it. Free and Pro cannot replace it; on Team and Enterprise, setting your own `DATABASE_URL` switches that environment to [your own database](/cloud/bring-your-database).
+- Use `postgres://` or `postgresql://` with a host, no fragment, and no raw whitespace or control characters. Percent-encode special characters in the username and password.
+- Use a **direct, non-pooled connection** to the writable database. Transaction-pooler URLs are refused: the runtime requires session semantics, including state that must remain on the same Postgres session. Do not use Neon's `-pooler` endpoint, Supabase's transaction pooler or PlanetScale's PgBouncer port.
+- Include **exactly one** `sslmode` query parameter, set to `require`, `verify-ca` or `verify-full`. Missing, repeated or other values, including `disable`, `prefer` and `no-verify`, are refused.
+- The server certificate must chain to a public certificate authority and match the URL's host name. Akter checks both for all three accepted `sslmode` values; use `verify-full`. A custom root certificate in the URL (`sslrootcert`) is not used. An endpoint requiring a private or provider-specific CA needs additional trust support; see the [RDS caveat](/cloud/choose-postgres#provider-options).
+- The login must be able to create and alter the app's tables. Migrations use the same connection; insufficient permissions fail the deployment at its `migrate` step.
 
-## Size and plan limits
+Postgres is the only Cloud database engine. The framework's [support matrix](/operations/support-matrix) defines verified server versions and provider evidence; a successful connection probe is not a durability or recovery certification.
 
-Included database size depends on your plan: 0.5 GB on Free, 10 GB on Pro, 50 GB on Team and a custom size on Enterprise. It is pooled per organization across all of its managed environment databases, not per environment. Pro and Team are billed $0.50 per GB-month beyond it.
+## Set the connection and deploy
 
-Free's 0.5 GB is a hard cap. Akter measures each managed database about every 10 minutes. When the organization's pooled total reaches 0.5 GB, all of its managed databases become read-only together shortly after: writes fail and reads still work, until usage drops below the cap or the organization upgrades. See [pricing and limits](/cloud/pricing-and-limits) for the full table.
+1. Create a database and an app role with migration permissions, then copy its direct connection URL.
+2. Save only the URL in a secure local file outside your deployment directory, for example `../database-url.txt`. Do not include quotes or a trailing newline, commit the file, or put the secret in a command argument. The URL looks like this, with your own values:
 
-## Deployments and data
+```text
+postgresql://APP_ROLE:PASSWORD@HOST:5432/DATABASE?sslmode=verify-full
+```
 
-The platform runs your app's migrations against the environment's database during each deployment, before new runners start serving. Your app's tenant authorization still matters; a database does not replace authorization inside your app.
+3. From your app directory, replace `PROJECT_ID` with your project's ID and set the variable for the environment you will deploy:
 
-Rollback does not undo database changes. Keep migrations compatible with the previous release so a rollback can run against the migrated schema. Use a separate environment for data that must stay isolated.
+```sh
+bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../database-url.txt
+bunx akter deploy --project PROJECT_ID --env production
+```
 
-## Deletion removes the managed database
+With Node, use `npx akter` instead of `bunx akter`. Invalid values are refused without echoing the URL. See [environment variables](/cloud/environment-variables) for file/stdin input and naming rules.
 
-Deleting an environment, project or organization deletes the managed database of every environment it contains, along with Akter's stored variables and platform records. The database is dropped after the environment's runners have drained. Deletion removes the data and there is no documented undo, so export what you need first. See [account deletion and personal export](/cloud/account-and-data).
+## Deploy-time checks
 
-A [bring-your-own database](/cloud/bring-your-database) is never deleted, erased, administered, billed or size-capped by Akter. If you want it removed, do that with its provider.
+At deploy, Akter probes your database from the **runner region, Fly `iad` in Northern Virginia**, near AWS `us-east-1`. Choose a database in `us-east-1` to keep the network path short. If the measured **p50 latency is above 5 ms**, Akter warns but still deploys; latency alone is not a refusal. A missing or unreachable database, invalid URL or transaction-pooler connection must be corrected before deployment can proceed.
 
-## Backups
+The probe also budgets database connections. The database-derived runner cap is:
 
-Akter Cloud does not promise backups, point-in-time recovery or a customer restore workflow for a managed database, and a failed rollout or rollback is not a restore. Keep your own export of data you cannot lose. If you need your own backup and recovery tooling, bring your own Postgres database on Team or Enterprise.
+```text
+runner cap = floor((max_connections - in_use - 10) / 9)
+```
+
+`max_connections` is the server's connection limit and `in_use` is its current usage. Akter reserves 10 connections and budgets 9 per runner. For example, a limit of 100 with 17 connections in use leaves a cap of 8 runners. A cap of zero leaves no room for a runner; reduce competing connections or increase your database's capacity.
+
+This is a connection ceiling, not a throughput guarantee. Akter handles runner orchestration, but your Postgres capacity and latency still bound the app's scale.
+
+## Change or remove the connection
+
+The URL is encrypted at rest and write-only. A deployment captures its environment variables, including `DATABASE_URL`; changing the URL affects the next deployment, not one already running. Akter does not copy data to the replacement database. Rollback uses the selected deployment's captured connection and does not undo schema or data changes, so keep migrations compatible with both releases.
+
+You can remove `DATABASE_URL` on every plan:
+
+```sh
+bunx akter env unset DATABASE_URL --project PROJECT_ID --env production
+```
+
+Removal does not change a running deployment or touch your database. The **next deploy is refused until you set `DATABASE_URL` again**. Akter does not create a fallback database, and changing plans does not remove the requirement.
+
+## What you own
+
+You own database credentials, permissions, capacity, backups, recovery and the provider bill. Keep a secure copy of the URL and configure your provider's backup and restore tooling before relying on production data. Migrations and runtime use the supplied login; keep its permissions as narrow as migrations allow. A database connection does not replace tenant authorization inside your app.
+
+**Akter never deletes your database.** Deleting an environment, project, organization or account removes Akter's stored configuration and platform records, not the database or its data. If you want to delete the database, do that with its provider after exporting or backing up anything you need. See [account deletion and personal export](/cloud/account-and-data).

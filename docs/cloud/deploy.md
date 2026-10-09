@@ -3,7 +3,7 @@ title: "Deploy to Akter Cloud"
 description: "Upload an Akter app and follow its managed build and rollout."
 ---
 
-First [sign in with the CLI](/cloud/get-started). Akter Cloud creates a [database](/cloud/database) for each environment, so there is nothing to configure before your first deploy. Team and Enterprise can optionally [bring their own Postgres](/cloud/bring-your-database). The examples use `bunx akter`; with Node, use `npx akter` instead.
+First [sign in with the CLI](/cloud/get-started) and [connect your Postgres](/cloud/database). Every environment on every plan needs its own customer-supplied `DATABASE_URL` before deployment; Akter Cloud provides hosted compute, not a database. The examples use `bunx akter`; with Node, use `npx akter` instead.
 
 ## Prepare your app
 
@@ -34,15 +34,18 @@ An ignored `src/app.ts` makes deployment fail. The compressed source archive mus
 
 ## Deploy
 
-Replace `PROJECT_ID` with your project's ID. From your app directory:
+Replace `PROJECT_ID` with your project's ID. Save your direct Postgres URL in a secure file outside the upload directory, without quotes or a trailing newline. From your app directory, set it for the selected environment before the first deploy:
 
 ```sh
+bunx akter env set DATABASE_URL --project PROJECT_ID --env production --file ../database-url.txt
 bunx akter deploy --project PROJECT_ID --env production
 ```
 
-Akter Cloud creates each environment's database when the environment is created and gives migrations and runners its connection as the platform-managed `DATABASE_URL`. You do not set it. Only set `DATABASE_URL` yourself if you are on Team or Enterprise and want to [bring your own Postgres](/cloud/bring-your-database).
+Once `DATABASE_URL` is set, subsequent deploys capture it without setting it again. Migrations and runners use that connection. See [Connect your Postgres](/cloud/database#connection-requirements) for URL, TLS and migration permissions.
 
-If you deploy before an environment's database is ready, which is rare because it takes seconds, the deploy is refused as temporarily unavailable and the CLI prints `The control plane is temporarily unavailable. Try again shortly.` Deploy again a moment later.
+At deploy, Akter probes the database from Fly `iad` in Northern Virginia, near AWS `us-east-1`. A **p50 above 5 ms warns but still deploys**; latency is not a rejection threshold. Transaction-pooler URLs are refused because the runtime requires session semantics. A missing or unreachable database also prevents deployment. The probe [budgets runner capacity](/cloud/database#deploy-time-checks) from available Postgres connections, so a larger compute allowance cannot bypass your database's connection ceiling.
+
+You may unset `DATABASE_URL`, but the next deploy is refused until it is set again. Akter does not provision a replacement database or delete the one you supplied.
 
 The current directory is the upload context. To upload another directory:
 

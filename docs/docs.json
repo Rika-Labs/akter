@@ -70,11 +70,11 @@
             "group": "Akter Cloud",
             "pages": [
               "cloud/get-started",
-              "cloud/bring-your-database",
+              "cloud/choose-postgres",
+              "cloud/database",
               "cloud/deploy",
               "cloud/environment-variables",
               "cloud/logs",
-              "cloud/database",
               "cloud/pricing-and-limits",
               "cloud/account-and-data"
             ]
@@ -140,6 +140,10 @@
     }
   },
   "redirects": [
+    {
+      "source": "/cloud/bring-your-database",
+      "destination": "/cloud/database"
+    },
     {
       "source": "/contracts/:slug*",
       "destination": "https://github.com/Rika-Labs/akter/blob/main/docs/contracts/:slug*.md"

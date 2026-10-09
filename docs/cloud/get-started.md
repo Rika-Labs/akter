@@ -1,9 +1,9 @@
 ---
 title: "Get started with Akter Cloud"
-description: "Create an account, organization and project, then connect the CLI."
+description: "Create an account, connect the CLI and your own Postgres, then deploy."
 ---
 
-Akter Cloud hosts your Akter app on managed runners and creates a Postgres database for each project environment, so there is nothing to provision. You upload source with the CLI; the platform builds it, applies migrations and rolls out runners. You can also [self-host Akter](/guides/deploy).
+Akter Cloud hosts your Akter app on managed runners. **You supply Postgres for every environment on every plan**; Akter does not provision or bill for databases. You upload source with the CLI, and the platform builds it, applies migrations to your database and rolls out runners. You can also [self-host Akter](/guides/deploy).
 
 ## Sign up
 
@@ -19,10 +19,6 @@ Start with the available home region. Adding a second region is not part of the 
 The package is `@rikalabs/akter-cli`; its executable is `akter`. It supports Bun 1.4.2+ or Node 24+.
 
 Use the `alpha` dist-tag for both packages: `@rikalabs/akter-cli@alpha` for the CLI and `@rikalabs/akter@alpha` for your app, as in the [quickstart](/quickstart). The framework's `latest` tag may still point to an older alpha.
-
-<Warning>
-The first registry publication is pending. These registry install commands become available after that publication.
-</Warning>
 
 <Tabs>
   <Tab title="Bun">
@@ -55,7 +51,11 @@ bunx akter whoami
 
 `whoami` prints your email, organization slugs, roles and organization IDs. Credentials are stored in the platform's configuration directory; `AKTER_CONFIG_DIR` overrides that location. On macOS the default is `~/Library/Application Support/akter`. Do not commit this directory.
 
-Next, [deploy your app](/cloud/deploy) and review the [pricing and limits](/cloud/pricing-and-limits). Each environment's [database](/cloud/database) is created for you; Team and Enterprise can [bring their own Postgres](/cloud/bring-your-database) instead. See [environment variables](/cloud/environment-variables) for your other configuration.
+## Connect Postgres before deploying
+
+[Choose a Postgres](/cloud/choose-postgres) near the runners in Fly `iad` / AWS `us-east-1`, then [set its direct connection URL as `DATABASE_URL`](/cloud/database) in each environment you will deploy. This is required on Free, Pro, Team and Enterprise. Transaction-pooler URLs are refused; a deploy-time p50 latency above 5 ms warns but does not block deployment.
+
+Next, [deploy your app](/cloud/deploy) and review [compute-only pricing and limits](/cloud/pricing-and-limits). You own the database's capacity, backups and provider bill, and Akter never deletes it. See [environment variables](/cloud/environment-variables) for your other configuration.
 
 ## Sign out
 
