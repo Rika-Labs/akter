@@ -1063,17 +1063,17 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         )
 
       if (receipts.length > 0) {
+        const receipt = receipts[0]!
         writes.push(
           Effect.asVoid(
-            sql`INSERT INTO actor_receipts ${sql.insert(
-              optimistic === undefined
-                ? receipts
-                : receipts.map((receipt) => ({
-                    ...receipt,
-                    payload_hash: sql`encode(sha256(convert_to(${batch[0]!.request.payload}::jsonb::text, 'UTF8')), 'hex')`,
-                    started_at_ms: sql`current_setting('durable.admitted_at_ms')::bigint`,
-                  })),
-            )}`,
+            optimistic === undefined
+              ? sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`
+              : sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id,
+                  command_id, command, payload_hash, caller_key, outcome, expires_at_ms, started_at_ms)
+                VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${receipt.command_id},
+                  ${receipt.command}, encode(sha256(convert_to(${batch[0]!.request.payload}::jsonb::text, 'UTF8')), 'hex'),
+                  ${receipt.caller_key}, ${receipt.outcome}, ${receipt.expires_at_ms},
+                  current_setting('durable.admitted_at_ms')::bigint)`,
           ),
         )
 
@@ -1559,21 +1559,29 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     ? Effect.succeed(false)
                     : Effect.fail(error)
                 }),
-                Effect.flatMap((accepted) => {
-                  if (!accepted) {
-                    forget(cache)
-                    return ordinary()
-                  }
+                Effect.flatMap(
+                  (
+                    accepted,
+                  ): Effect.Effect<
+                    Ended<W, Admitting>,
+                    SqlError.SqlError,
+                    Effect.Services<ReturnType<typeof alone>>
+                  > => {
+                    if (!accepted) {
+                      forget(cache)
+                      return ordinary()
+                    }
 
-                  if (tag !== "COMMIT")
-                    return Effect.die(RetryTurn.make({ message: "Warm turn commit rolled back" }))
+                    if (tag !== "COMMIT")
+                      return Effect.die(RetryTurn.make({ message: "Warm turn commit rolled back" }))
 
-                  return Effect.as(release, {
-                    plan: { ...plan, startedAtMs },
-                    version,
-                    endedAtMs,
-                  } satisfies Ended<W, Admitting>)
-                }),
+                    return Effect.as(release, {
+                      plan: { ...plan, startedAtMs },
+                      version,
+                      endedAtMs,
+                    } satisfies Ended<W, Admitting>)
+                  },
+                ),
               )
             }),
             inTurn,

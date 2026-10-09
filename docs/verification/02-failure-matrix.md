@@ -15,6 +15,15 @@ The **Evidence** column names the conformance cases that prove each row; they ru
 
 Unless a row exercises denial or expiry, external receipt replay assumes the original logical caller remains authorized and the command identity is unexpired. Trusted internal recovery retains its accepted-work authority; see [receipts](../contracts/04-receipts.md).
 
+The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
+
+- stale guard: the sent state/event/receipt writes all roll back, then ordinary admission reloads committed state before reevaluation;
+- retained duplicate/conflict: the stored result or conflict is returned without another handler; canonical hashing remains PostgreSQL JSONB normalization;
+- lost COMMIT reply: same-id redelivery resolves one committed receipt with no second handler evaluation;
+- pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and database-dependent queries never mix cached state with live rows.
+
+These tests do not claim exactly-once handler evaluation: only committed consequences and receipt identity are exactly-once. Guard or receipt misses discard speculation before ordinary admission ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)).
+
 The expiry-after-admission case `rechecks expiry before the reply against a clock read after the commit, not the admission clock` pauses a handler until its id expires, then proves the receipt commits but the caller receives `CommandExpired`. The pipeline statement-order case independently requires the fresh clock read to follow `COMMIT` in its flight. These reject admission-clock reuse and a clock read inside the transaction, respectively ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).
 
 The real-Postgres case `rejects first admission that expires while waiting for the generation fence without running its handler` holds that row from an independent transaction, waits for the command's database lock wait, and releases it only after expiry. The command must return `CommandExpired` with no handler run or new receipt. This rejects a target-list admission clock evaluated before `FOR UPDATE` acquires the fence.

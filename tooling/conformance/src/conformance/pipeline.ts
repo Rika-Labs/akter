@@ -24,6 +24,7 @@ import {
   ActorUnavailable,
   Actors,
   Intent,
+  User,
 } from "../../../../packages/akter/src/index.ts"
 import { Database } from "../../../../packages/akter/src/runtime/layer.ts"
 import {
@@ -32,6 +33,7 @@ import {
   type TurnPoint,
 } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
+import { commandTimes } from "../../../../packages/akter/src/identity/command.ts"
 import { TurnPoolSettings } from "../../../../packages/akter/src/runtime/turn/pipeline.ts"
 import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
 import { ActorTest, ClusterMember } from "../../../../packages/akter/src/testing/actor-test.ts"
@@ -77,7 +79,7 @@ const CancelPing = Actor.command("CancelPing", {})
 
 class WarmRejected extends Schema.TaggedError<WarmRejected>()("WarmRejected", {}) {}
 
-class Changed extends Actor.Event<Changed>()("Changed", { count: Schema.Finite }) {}
+const Changed = Actor.event("Changed", { count: Schema.Finite })
 
 const Change = Actor.command("Change", {
   payload: Schema.Struct({ amount: Schema.Finite, fail: Schema.Boolean, defect: Schema.Boolean }),
@@ -212,7 +214,7 @@ const actorsLive = (probe: Probe) =>
             return { count: read.state.count, version: read.version ?? "", cursor: read.cursor }
           }),
           History: Effect.fnUntraced(function* () {
-            const events = yield* (yield* Plain.Read).events(Changed)
+            const events = yield* (yield* Plain.Read).events(Changed).pipe(Effect.orDie)
             return events.map(({ event }) => event.count)
           }),
         }),
@@ -356,6 +358,7 @@ const withProbe = <A, E>(
     readonly everyPool?: boolean
     /** Ordinary pipeline cases remain independent of the speculative path. */
     readonly warm?: boolean
+    readonly retryWindowMs?: number
     /** Turn hooks the runner sees at every point no queued fault takes. */
     readonly hooks?: TestHooks
     /** The runner's tracer, so a case can read the spans turns open. */
@@ -387,6 +390,7 @@ const withProbe = <A, E>(
             Layer.provideMerge(
               ActorTest.layer({
                 database,
+                retryWindowMs: options.retryWindowMs,
               }).pipe(
                 Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
               ),
@@ -530,17 +534,29 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const read = yield* flightsOf(probe, plain.Snapshot())
           expect(read.flights).toBe(0)
           expect(read.value.count).toBe(10)
-          expect(read.value.version).toMatch(/^[1-9][0-9]*$/)
+          expect(BigInt(read.value.version) > 0n).toBe(true)
           expect(yield* plain.Add(7).pipe(Actor.commandId(id))).toBe(10)
           const conflict = yield* plain.Add(13).pipe(Actor.commandId(id), Effect.result)
           expect(conflict._tag).toBe("Failure")
           if (conflict._tag === "Failure")
             expect(conflict.failure.reason._tag).toBe("CommandConflict")
+          const hostile = yield* Plain.get("fast").pipe(Actor.as(User.make({ subject: "other" })))
+          const denied = yield* hostile.Add(7).pipe(Actor.commandId(id), Effect.result)
+          expect(denied._tag).toBe("Failure")
+          if (denied._tag === "Failure") expect(denied.failure.reason._tag).toBe("Unauthorized")
           expect(probe.handled - before).toBe(1)
           expect(yield* test.inspect(plain.ref)).toMatchObject({
             state: { count: 10 },
             receipts: 2,
           })
+          const other = yield* Meter.get("newer-version")
+          yield* other.Add(1)
+          const minimumMiss = yield* flightsOf(probe, plain.Snapshot())
+          expect(minimumMiss.flights > 0).toBe(true)
+          expect(minimumMiss.value).toMatchObject({ count: 10, version: "" })
+          const clockDependent = yield* flightsOf(probe, plain.PingLater(60_000))
+          expect(clockDependent.flights).toBe(2)
+          expect((yield* test.inspect(plain.ref)).jobs).toBe(1)
         }),
       ),
   },
@@ -578,6 +594,135 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* plain.History()).toEqual([7])
           expect(yield* test.inspect(plain.ref)).toMatchObject({ state: { count: 7 }, receipts: 2 })
         }),
+      ),
+  },
+  {
+    name: "warm fast path: a receipt committed during the guard snapshot wait aborts all writes and replays",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, database) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast-receipt-race")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* (yield* Actors).mintCommandId
+          const context = yield* rival(database)
+          const entered = yield* Deferred.make<void>()
+          const waiting = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const other = yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT generation FROM actor_generations
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id} FOR UPDATE`
+                yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id,
+                command_id, command, payload_hash, caller_key, outcome, expires_at_ms, started_at_ms)
+                SELECT routing_key, tenant_id, actor_type, actor_id, ${id}, command,
+                  encode(sha256(convert_to('{"value":7}'::jsonb::text, 'UTF8')), 'hex'),
+                  caller_key, outcome, ${commandTimes(id).expiresAt}, started_at_ms
+                FROM actor_receipts WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+                yield* Deferred.succeed(entered, undefined)
+                yield* blockedBehind(sql).pipe(
+                  Effect.filterOrFail(
+                    (rows) => rows[0]!.waiting,
+                    () => "waiting",
+                  ),
+                  Effect.retry(Schedule.spaced("10 millis")),
+                  Effect.orDie,
+                )
+                yield* Deferred.succeed(waiting, undefined)
+                yield* Deferred.await(release)
+              }),
+            )
+          }).pipe(Effect.provideContext(context), Effect.orDie, Effect.forkChild)
+          yield* Deferred.await(entered)
+          const handled = probe.handled
+          const pending = yield* flightsOf(
+            probe,
+            plain.Add(7).pipe(Actor.commandId(id), Effect.orDie),
+          ).pipe(Effect.forkChild)
+          yield* Deferred.await(waiting)
+          expect((yield* plain.Snapshot()).count).toBe(3)
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(other)
+          expect(yield* Fiber.join(pending)).toMatchObject({ value: 3, flights: 3 })
+          expect(probe.handled - handled).toBe(1)
+          expect(yield* test.inspect(plain.ref)).toMatchObject({ state: { count: 3 }, receipts: 2 })
+          expect((yield* plain.Snapshot()).count).toBe(3)
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: expiry is checked after the fence wait and a non-null cold_ref cannot commit speculatively",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(
+        environment,
+        { warm: true, prepare: false, retryWindowMs: 1_500 },
+        (probe, database) =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            const test = yield* ActorTest
+            const plain = yield* Plain.get("fast-expiry")
+            expect(yield* plain.Add(3)).toBe(3)
+            const id = yield* (yield* Actors).mintCommandId
+            const context = yield* rival(database)
+            const locked = yield* Deferred.make<void>()
+            const waited = yield* Deferred.make<void>()
+            const other = yield* Effect.gen(function* () {
+              const rivalSql = yield* SqlClient.SqlClient
+              yield* rivalSql.withTransaction(
+                Effect.gen(function* () {
+                  yield* rivalSql`SELECT generation FROM actor_generations
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id} FOR UPDATE`
+                  yield* Deferred.succeed(locked, undefined)
+                  yield* blockedBehind(rivalSql).pipe(
+                    Effect.filterOrFail(
+                      (rows) => rows[0]!.waiting,
+                      () => "waiting",
+                    ),
+                    Effect.retry(Schedule.spaced("10 millis")),
+                    Effect.orDie,
+                  )
+                  yield* Deferred.succeed(waited, undefined)
+                  yield* Effect.sleep("1500 millis")
+                }),
+              )
+            }).pipe(Effect.provideContext(context), Effect.orDie, Effect.forkChild)
+            yield* Deferred.await(locked)
+            const handled = probe.handled
+            const pending = yield* plain
+              .Change({ amount: 7, fail: false, defect: false })
+              .pipe(Actor.commandId(id), Effect.result, Effect.forkChild)
+            yield* Deferred.await(waited)
+            yield* Fiber.join(other)
+            const expired = yield* Fiber.join(pending)
+            expect(expired._tag).toBe("Failure")
+            if (expired._tag === "Failure")
+              expect(expired.failure.reason._tag).toBe("CommandExpired")
+            expect(probe.handled - handled).toBe(1)
+            expect(yield* test.inspect(plain.ref)).toMatchObject({
+              state: { count: 3 },
+              receipts: 1,
+              events: 0,
+            })
+            expect(yield* plain.Add(2)).toBe(5)
+            yield* sql`ALTER TABLE actor_generations ADD COLUMN cold_ref text`
+            yield* sql`UPDATE actor_generations SET cold_ref = 'cold-material'
+            WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+            const coldId = yield* (yield* Actors).mintCommandId
+            const coldHandled = probe.handled
+            const cold = yield* flightsOf(probe, plain.Add(11).pipe(Actor.commandId(coldId)))
+            expect(cold).toMatchObject({ value: 16, flights: 3 })
+            expect(probe.handled - coldHandled).toBe(2)
+            expect(yield* test.inspect(plain.ref)).toMatchObject({
+              state: { count: 16 },
+              receipts: 3,
+            })
+          }),
       ),
   },
   {
