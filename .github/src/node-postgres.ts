@@ -46,7 +46,7 @@ const program = Effect.gen(function* () {
     "POSTGRES_DB=postgres",
     "-p",
     `127.0.0.1:${port}:5432`,
-    "postgres:18.6-bookworm",
+    "mirror.gcr.io/library/postgres:18.6-bookworm",
     "postgres",
     "-c",
     "wal_level=logical",
