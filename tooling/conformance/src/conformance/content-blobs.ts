@@ -1,5 +1,6 @@
 import {
   Crypto,
+  DateTime,
   Deferred,
   Effect,
   Exit,
@@ -585,27 +586,36 @@ export const contentConformance: ReadonlyArray<ConformanceCase<ContentFixture>> 
   },
   {
     name: "collects unattached uploads after grant plus grace and never before",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
-      environment.run(
+      Effect.runPromise(
         Effect.gen(function* () {
-          const test = yield* ActorTest
-          const internal = yield* InternalActors
-          const ref = yield* upload(yield* fresh("orphan"))
+          const database = yield* environment.freshDatabase
 
-          yield* test.advance("1 hour")
-          yield* test.advance("24 hours")
-          yield* test.advance("88 seconds")
-          yield* internal.sweepContent
-          expect(yield* stored(ref.hash)).toEqual({ contents: 1, chunks: 1 })
+          yield* onRuntime(
+            environment,
+            { database, clockMillis: DateTime.toEpochMillis(yield* DateTime.now) },
+            Effect.gen(function* () {
+              const test = yield* ActorTest
+              const internal = yield* InternalActors
+              const ref = yield* upload(yield* fresh("orphan"))
 
-          yield* test.advance("4 seconds")
-          expect((yield* internal.sweepContent) >= 1).toBe(true)
-          expect(yield* stored(ref.hash)).toEqual({ contents: 0, chunks: 0 })
+              yield* test.advance("1 hour")
+              yield* test.advance("24 hours")
+              yield* test.advance("88 seconds")
+              yield* internal.sweepContent
+              expect(yield* stored(ref.hash)).toEqual({ contents: 1, chunks: 1 })
 
-          const again = yield* upload(yield* fresh("orphan-again"))
-          yield* test.advance(COLLECTED_AFTER)
-          expect((yield* test.cleanup).contents >= 1).toBe(true)
-          expect(yield* stored(again.hash)).toEqual({ contents: 0, chunks: 0 })
+              yield* test.advance("4 seconds")
+              expect((yield* internal.sweepContent) >= 1).toBe(true)
+              expect(yield* stored(ref.hash)).toEqual({ contents: 0, chunks: 0 })
+
+              const again = yield* upload(yield* fresh("orphan-again"))
+              yield* test.advance(COLLECTED_AFTER)
+              expect((yield* test.cleanup).contents >= 1).toBe(true)
+              expect(yield* stored(again.hash)).toEqual({ contents: 0, chunks: 0 })
+            }),
+          )
         }),
       ),
   },
@@ -640,22 +650,31 @@ export const contentConformance: ReadonlyArray<ConformanceCase<ContentFixture>> 
   },
   {
     name: "refuses an attach whose grant has less than the skew margin S left",
+    requiresFreshDatabase: true,
     run: ({ expect, environment }) =>
-      environment.run(
+      Effect.runPromise(
         Effect.gen(function* () {
-          const test = yield* ActorTest
-          const doc = yield* Document.get("skew")
-          const early = yield* upload(yield* fresh("skew-early"))
-          const late = yield* upload(yield* fresh("skew-late"))
+          const database = yield* environment.freshDatabase
 
-          yield* test.advance("58 minutes")
-          yield* test.advance("55 seconds")
-          yield* doc.Attach({ name: "early", ref: early })
+          yield* onRuntime(
+            environment,
+            { database, clockMillis: DateTime.toEpochMillis(yield* DateTime.now) },
+            Effect.gen(function* () {
+              const test = yield* ActorTest
+              const doc = yield* Document.get("skew")
+              const early = yield* upload(yield* fresh("skew-early"))
+              const late = yield* upload(yield* fresh("skew-late"))
 
-          yield* test.advance("10 seconds")
-          const refused = yield* doc.Attach({ name: "late", ref: late }).pipe(Effect.flip)
-          expect(refused).toEqual(InvalidContentRef.make({ reason: "expired" }))
-          expect((yield* doc.Listed()).map((entry) => entry.name)).toEqual(["early"])
+              yield* test.advance("58 minutes")
+              yield* test.advance("55 seconds")
+              yield* doc.Attach({ name: "early", ref: early })
+
+              yield* test.advance("10 seconds")
+              const refused = yield* doc.Attach({ name: "late", ref: late }).pipe(Effect.flip)
+              expect(refused).toEqual(InvalidContentRef.make({ reason: "expired" }))
+              expect((yield* doc.Listed()).map((entry) => entry.name)).toEqual(["early"])
+            }),
+          )
         }),
       ),
   },

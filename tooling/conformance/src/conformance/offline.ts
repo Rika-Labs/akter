@@ -131,7 +131,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             fetch: network.fetch,
             offline: store,
             identity: () => `${tenant}/alice`,
-            timeoutInMs: 300,
           })
 
           const queue = queueOf(rooms)
@@ -145,7 +144,9 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
           const firstPost = posted.length
           const ran = runs.count
           const room = rooms.get("queued")
-          const calls = ["one", "two", "three"].map((text) => room.Post({ text }))
+          const calls = ["one", "two", "three"].map((text) =>
+            room.Post({ text }, { timeoutInMs: 300 }),
+          )
           const settled = yield* Effect.promise(() => Promise.allSettled(calls))
 
           expect(settled.map((call) => call.status)).toEqual(["rejected", "rejected", "rejected"])
@@ -194,7 +195,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             fetch: network.fetch,
             offline: store,
             identity: () => `${tenant}/alice`,
-            timeoutInMs: 300,
           })
 
           const first = queueOf(before)
@@ -205,7 +205,9 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
 
           network.loseNextCommand = true
 
-          const lost = yield* settle(before.get("reload").Post({ text: "once" }))
+          const lost = yield* settle(
+            before.get("reload").Post({ text: "once" }, { timeoutInMs: 300 }),
+          )
           const id = idsOf(first)[0]!
 
           expect(reasonOf(lost)).toMatchObject({ tag: "Timeout", commandId: id })
@@ -319,7 +321,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             fetch: network.fetch,
             offline: store,
             identity: () => `${tenant}/alice`,
-            timeoutInMs: 300,
           })
 
           const queue = queueOf(rooms)
@@ -336,8 +337,8 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
 
           const both = yield* Effect.promise(() =>
             Promise.allSettled([
-              room.Post({ text: "a" }, { commandId: id }),
-              room.Post({ text: "a" }, { commandId: id }),
+              room.Post({ text: "a" }, { commandId: id, timeoutInMs: 300 }),
+              room.Post({ text: "a" }, { commandId: id, timeoutInMs: 300 }),
             ]),
           )
 
@@ -384,7 +385,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             fetch: network.fetch,
             offline: store,
             identity: () => `${tenant}/alice`,
-            timeoutInMs: 200,
           })
 
           const queue = queueOf(rooms)
@@ -398,14 +398,23 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
           const start = posted.length
 
           const calls = [
-            rooms.get("blocked").Post({ text: "blocked-1" }),
+            rooms.get("blocked").Post({ text: "blocked-1" }, { timeoutInMs: 200 }),
             rooms.get("open").Post({ text: "open-1" }),
-            rooms.get("blocked").Post({ text: "blocked-2" }),
+            rooms.get("blocked").Post({ text: "blocked-2" }, { timeoutInMs: 200 }),
             rooms.get("open").Post({ text: "open-2" }),
           ]
 
-          yield* Effect.promise(() => Promise.allSettled(calls))
-          yield* until(() => posted.slice(start).length === 2)
+          const settled = yield* Effect.promise(() => Promise.allSettled(calls))
+
+          expect(settled).toMatchObject([
+            { status: "rejected" },
+            { status: "fulfilled", value: 1 },
+            { status: "rejected" },
+            { status: "fulfilled", value: 2 },
+          ])
+          yield* until(() =>
+            queue.pending.every((pending) => pending.target !== "/actors/HttpRoom/open"),
+          )
 
           expect(posted.slice(start)).toEqual(["open-1", "open-2"])
           expect(queue.pending.map((pending) => pending.target)).toEqual([
@@ -440,7 +449,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             identity: () => `${tenant}/alice`,
           }
 
-          const rooms = HttpRoom.client({ ...options, timeoutInMs: 200 })
+          const rooms = HttpRoom.client(options)
           const queue = queueOf(rooms)
 
           yield* Effect.addFinalizer(() => Effect.sync(() => queue.close()))
@@ -449,7 +458,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
 
           network.down = true
 
-          const call = rooms.get("rejected").Post({ text: "full" })
+          const call = rooms.get("rejected").Post({ text: "full" }, { timeoutInMs: 200 })
           const timedOut = yield* settle(call)
 
           expect(reasonOf(timedOut)).toMatchObject({ tag: "Timeout" })
@@ -494,7 +503,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             fetch: network.fetch,
             offline: store,
             identity: () => `${tenant}/alice`,
-            timeoutInMs: 300,
           })
 
           const queue = queueOf(rooms)
@@ -506,7 +514,9 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
           token = "malformed"
 
           const ran = runs.count
-          const call = yield* settle(rooms.get("signed-out").Post({ text: "held" }))
+          const call = yield* settle(
+            rooms.get("signed-out").Post({ text: "held" }, { timeoutInMs: 300 }),
+          )
           const id = idsOf(queue)[0]!
 
           expect(reasonOf(call)).toMatchObject({ tag: "Timeout", commandId: id })
@@ -541,7 +551,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
                 identity: () => `${tenant}/${subject}`,
                 fetch: network.fetch,
                 offline: store,
-                timeoutInMs: 300,
               })
 
               const queue = queueOf(client)
@@ -558,7 +567,9 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
           network.down = true
 
           const ran = runs.count
-          const queued = yield* settle(alice.client.get("shared").Post({ text: "from alice" }))
+          const queued = yield* settle(
+            alice.client.get("shared").Post({ text: "from alice" }, { timeoutInMs: 300 }),
+          )
           const aliceId = idsOf(alice.queue)[0]!
 
           expect(reasonOf(queued)).toMatchObject({ tag: "Timeout", commandId: aliceId })
@@ -651,7 +662,6 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
             fetch: network.fetch,
             offline: store,
             identity: () => `${tenant}/alice`,
-            timeoutInMs: 200,
           })
 
           const queue = queueOf(tallies)
@@ -664,7 +674,7 @@ export const offlineConformance: ReadonlyArray<ConformanceCase> = [
           tally.state.reconcile({ count: 0 })
           network.down = true
 
-          const calls = [tally.Bump(), tally.Bump()]
+          const calls = [tally.Bump({ timeoutInMs: 200 }), tally.Bump({ timeoutInMs: 200 })]
 
           yield* Effect.promise(() => Promise.allSettled(calls))
 

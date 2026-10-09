@@ -171,6 +171,8 @@ export interface ConformanceEnvironment {
     /** Queries read this streaming replica of `database` once it has caught up. */
     readonly replica?: Redacted.Redacted<string> | undefined
     readonly content?: Options["content"]
+    /** Fixed database time for boundary cases; `ActorTest.advance` still adds its offset. */
+    readonly clockMillis?: number
     /**
      * Sees every statement the runtime compiles, from any fiber. It replaces
      * the current statement transformer of every fiber the runtime starts, so
@@ -611,13 +613,25 @@ export const registerConformance = (options: {
                     at: (point) =>
                       Effect.forEach(contentHooks, (hook) => hook(point), { discard: true }),
                   }),
-                  overrides?.observe === undefined
+                  overrides?.observe === undefined && overrides?.clockMillis === undefined
                     ? Layer.empty
-                    : Layer.succeed(Statement.CurrentTransformer, (statement, _sql, _fiber, span) =>
+                    : Layer.succeed(Statement.CurrentTransformer, (statement, sql, _fiber, span) =>
                         Effect.sync(() => {
-                          overrides.observe!(statement, span)
+                          overrides?.observe?.(statement, span)
 
-                          return statement
+                          if (overrides?.clockMillis === undefined) return statement
+
+                          const [query, parameters] = statement.compile()
+
+                          if (!query.includes("clock_timestamp()")) return statement
+
+                          return sql.unsafe(
+                            query.replaceAll(
+                              "clock_timestamp()",
+                              `to_timestamp(${overrides.clockMillis} / 1000.0)`,
+                            ),
+                            parameters,
+                          )
                         }),
                       ),
                 ),
