@@ -547,7 +547,16 @@ describe("low-connection Postgres preset", () => {
       ),
   )
 
-  it("releases a turn while a capped job claim holds the spare off-turn session waiting for that turn's generation lock", () =>
+  it.each([
+    {
+      warm: false,
+      name: "releases a turn while a capped job claim holds the spare off-turn session waiting for that turn's generation lock",
+    },
+    {
+      warm: true,
+      name: "runs a capped job during paused warm speculation and falls back from a stale fence within four sessions",
+    },
+  ])("$name", ({ warm }) =>
     runtime.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -556,6 +565,7 @@ describe("low-connection Postgres preset", () => {
           })
           const held = yield* Deferred.make<void>()
           const release = yield* Deferred.make<void>()
+          const jobRan = yield* Deferred.make<void>()
           const Start = Actor.command("Start")
           const Hold = Actor.command("Hold")
           const Done = Actor.command("Done", { payload: Schema.Int })
@@ -596,7 +606,15 @@ describe("low-connection Postgres preset", () => {
                   }),
                 }),
               ),
-              Probe.toJobLayer(Effect.succeed({ CappedPoolJob: () => Effect.succeed(29) })),
+              Probe.toJobLayer(
+                Effect.succeed({
+                  CappedPoolJob: () =>
+                    Deferred.await(held).pipe(
+                      Effect.andThen(Deferred.succeed(jobRan, undefined)),
+                      Effect.as(29),
+                    ),
+                }),
+              ),
             ).pipe(
               Layer.provideMerge(Actors.layer({ relay: { poll: "50 millis" } })),
               Layer.provideMerge(
@@ -613,25 +631,83 @@ describe("low-connection Postgres preset", () => {
             (pool) => Effect.promise(() => pool.end()),
           )
           const probe = yield* Effect.provide(Probe.get("source"), context)
+          expect(yield* Effect.provide(probe.Value(), context)).toBe(0)
+          const ordinaryId = yield* Effect.provide(
+            Effect.flatMap(ActorClient, (actors) => actors.mintCommandId),
+            context,
+          )
           yield* Effect.provide(probe.Start(), context)
-          const turn = yield* Effect.provide(probe.Hold(), context).pipe(Effect.forkScoped)
+          const lockScope = warm ? yield* Scope.fork(yield* Effect.scope) : undefined
+
+          if (lockScope !== undefined) {
+            const locker = yield* Effect.acquireRelease(
+              Effect.promise(() => observer.connect()),
+              (client) =>
+                Effect.promise(() => client.query("ROLLBACK")).pipe(
+                  Effect.ensuring(Effect.sync(() => client.release())),
+                ),
+            ).pipe(Scope.provide(lockScope))
+            yield* Effect.promise(() => locker.query("BEGIN"))
+            yield* Effect.promise(() =>
+              locker.query(
+                "SELECT generation FROM actor_generations WHERE actor_type = $1 AND actor_id = $2 AND tenant_id = $3 FOR UPDATE",
+                [probe.ref.actor, probe.ref.id, probe.ref.tenant],
+              ),
+            )
+            yield* Effect.sleep("2 millis")
+          }
+
+          const holdId = warm
+            ? yield* Effect.provide(
+                Effect.flatMap(ActorClient, (actors) => actors.mintCommandId),
+                context,
+              )
+            : ordinaryId
+          const turn = yield* Effect.provide(
+            probe.Hold().pipe(Actor.commandId(holdId)),
+            context,
+          ).pipe(Effect.forkScoped)
           yield* Deferred.await(held)
           yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
-          yield* Effect.promise(() =>
-            observer.query(
-              "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'low-connection-capped' AND wait_event_type = 'Lock'",
-            ),
-          ).pipe(
-            Effect.flatMap((rows) =>
-              rows.rowCount === 1 ? Effect.void : Effect.fail("not blocked"),
-            ),
-            Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
-          )
+
+          if (lockScope !== undefined) {
+            yield* Scope.close(lockScope, Exit.void)
+            yield* Deferred.await(jobRan)
+            yield* Effect.promise(() =>
+              observer.query(
+                "UPDATE actor_generations SET generation = generation + 1 WHERE actor_type = $1 AND actor_id = $2 AND tenant_id = $3",
+                [probe.ref.actor, probe.ref.id, probe.ref.tenant],
+              ),
+            )
+          } else
+            yield* Effect.promise(() =>
+              observer.query(
+                "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'low-connection-capped' AND wait_event_type = 'Lock'",
+              ),
+            ).pipe(
+              Effect.flatMap((rows) =>
+                rows.rowCount === 1 ? Effect.void : Effect.fail("not blocked"),
+              ),
+              Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+            )
+
           expect(yield* Effect.provide(probe.Value(), context)).toBe(0)
+          expect(
+            (yield* Effect.promise(() =>
+              observer.query(
+                "SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'low-connection-capped'",
+              ),
+            )).rows,
+          ).toEqual([{ count: 4 }])
           const sql = Context.get(context, SqlClient.SqlClient)
           const queued = yield* sql`SELECT 17 AS value`.pipe(Effect.forkScoped)
-          yield* Effect.sleep("50 millis")
-          expect(queued.pollUnsafe()).toBeUndefined()
+
+          if (warm) expect(yield* Fiber.join(queued)).toEqual([{ value: 17 }])
+          else {
+            yield* Effect.sleep("50 millis")
+            expect(queued.pollUnsafe()).toBeUndefined()
+          }
+
           yield* Deferred.succeed(release, undefined)
           yield* Fiber.join(turn)
           expect(yield* Fiber.join(queued)).toEqual([{ value: 17 }])
@@ -647,9 +723,15 @@ describe("low-connection Postgres preset", () => {
             { command: "Start", count: 1 },
           ])
           expect(yield* sql`SELECT * FROM actor_outbox`).toEqual([])
+
+          if (warm)
+            expect(yield* sql`SELECT generation::text FROM actor_generations`).toEqual([
+              { generation: "3" },
+            ])
         }).pipe(Effect.timeout("10 seconds")),
       ),
-    ))
+    ),
+  )
 
   it("serves reads and inspector snapshots while jobs, relay deliveries and workflow activities wait on the only turn session", () =>
     runtime.runPromise(
