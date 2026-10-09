@@ -10,7 +10,7 @@ description: "Back up and restore a deployment without creating dual writable au
 **Owner role:** operations/reliability.
 **Change policy:** a change requires operator review when a procedure or limit changes.
 
-The backup unit is the deployment's relational database. It includes every tenant, framework tables, actor-owned tables, receipts, events, workflows, jobs, dead letters, database-backed `actor_blobs` chunks, and `actor_outbox`. Framework blobs are `bytea` data inside this boundary, not externally stored objects. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
+The backup unit is the deployment's relational database and, when cold storage is enabled, its private cold object namespace. The database includes every tenant, framework tables, actor-owned tables, receipts, events, workflows, jobs, dead letters, warm `actor_blobs` chunks, and `actor_outbox`; cold state and actor-blob chunks live in immutable objects named by the snapshot's generation pointers. If an application separately uses an external provider, it owns that provider's backup/reconciliation obligations. Back up control-plane Postgres separately.
 
 ## Backups on a Postgres database
 
@@ -106,4 +106,10 @@ Built by M4.14 ([ADR 0035](../decisions/0035-pglite-embedded-production-backend.
 
 ## Cold tier
 
-Target, built by L.2 ([ADR 0036](../decisions/0036-cold-tier.md)). The object store is inside the backup boundary: it must be versioned or replicated with at least the database's durability, objects are kept past the backup retention, and a restore checks that every `cold_ref` in the snapshot exists.
+The opt-in Postgres tier implements [ADR 0036](../decisions/0036-cold-tier.md) as amended by [ADR 0114](../decisions/0114-cold-tier-admission-and-garbage.md). Configure object replication/versioning at least as durable as the database and server-side encryption with a deployment key. Set `coldStorage.backupRetention` to the oldest snapshot or PITR point you support; `grace` is additional retention (default 24 hours). Never apply a bucket lifecycle deletion shorter than this policy, and never delete currently referenced objects by age.
+
+Before step 2, stop **every runner and its maintenance pools**, including offload and garbage collection. A live sweep must not race replacement of the database. Preserve the restored `actor_deployment.deployment_id` and the same object namespace. Before step 6, with runners still stopped, an operator with database backup privileges reads every non-null `cold_ref` with its `cold_digest` and `cold_state_version` from the restored `actor_generations`. GET each object through the configured store, verify SHA-256 over its compressed bytes against the recorded digest, decode its envelope and verify its identity/version. The first missing or corrupt object blocks restart: restore it from object versions/replicas, or restore a consistent older database-and-object backup. Do not clear a pointer to make startup pass. Ordinary SQL inspection uses `durable.actors.cold`; private pointer reads here are a backup-integrity procedure, not a public application interface.
+
+Both collectors honor the latest recorded unreference plus backup retention and grace, check that no current pointer names the key and no cold timer/claim/retry exists, and retain candidates after failed or unknown deletion. This keeps objects a supported older snapshot may need. Increasing retention cannot recover an object already deleted under an older policy; keep policy changes within the backups still available.
+
+The [cold compatibility test](../../tooling/conformance/src/conformance/postgres/cold-compatibility.test.ts) restores a whole stopped Postgres template snapshot holding an old pointer after the live database rehydrated and advanced. It proves readable original chunks, receipt replay, lost-post-snapshot work rerunning once, and a higher generation. Online cold-object PITR, provider replication and hosted disaster recovery remain unverified.

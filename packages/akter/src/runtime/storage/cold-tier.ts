@@ -1,5 +1,16 @@
 import { PgClient } from "@effect/sql-pg"
-import { Context, Crypto, Data, Duration, Effect, Fiber, Schema, Stream } from "effect"
+import {
+  Clock,
+  Context,
+  Crypto,
+  Data,
+  Duration,
+  Effect,
+  Fiber,
+  Option,
+  Schema,
+  Stream,
+} from "effect"
 import { Reactivity } from "effect/reactivity"
 import { SqlClient } from "effect/sql"
 import type { ActorRef } from "../../identity/caller.ts"
@@ -8,9 +19,11 @@ import { sha256Bytes } from "../../identity/digest.ts"
 import { VERSION_KEY } from "../../state/migration.ts"
 import { databaseTime, FrameworkClock } from "../turn/admission.ts"
 import { CallerJson, bucketOf } from "../turn/outbox.ts"
-import { compress, decompress } from "./codec.ts"
+import { count, Metrics } from "../telemetry/metrics.ts"
+import { compress, decompress, routingKey } from "./codec.ts"
 import { ColdStorageError, type ColdObject, type ColdStorage } from "./cold-storage.ts"
 import { actorRow, type OwnedActor } from "./generation.ts"
+import { recordedPlacement } from "./placements.ts"
 
 /** Cold-state lifecycle and the configured database backup horizon. */
 export interface ColdStorageOptions {
@@ -160,7 +173,7 @@ export const coldTier = Effect.fnUntraced(function* (
     )
 
   const fetch = Effect.fnUntraced(function* (actor: OwnedActor, pointer: ColdPointer) {
-    if ((yield* Effect.serviceOption(sql.transactionService))._tag === "Some")
+    if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
       return yield* Effect.die(new Error("Cold object fetch cannot hold a transaction"))
 
     const bytes = yield* objectIO(store.get(pointer.ref))
@@ -174,7 +187,6 @@ export const coldTier = Effect.fnUntraced(function* (
       envelope.tenant !== actor.ref.tenant ||
       envelope.actor !== actor.ref.actor ||
       envelope.id !== actor.ref.id ||
-      envelope.routingKey !== String(actor.key) ||
       envelope.version !== pointer.version ||
       objectKey(deployment, envelope, pointer.digest) !== pointer.ref
     )
@@ -252,7 +264,10 @@ export const coldTier = Effect.fnUntraced(function* (
         command = EXCLUDED.command, payload = EXCLUDED.payload, caller = EXCLUDED.caller`
   })
 
-  const offload = Effect.fnUntraced(function* (row: ColdClaim) {
+  const offload = Effect.fnUntraced(function* (
+    row: ColdClaim,
+    lease = { until: Number(row.claimed_until) },
+  ) {
     const actor: OwnedActor = {
       key: BigInt(row.routing_key),
       ref: {
@@ -262,7 +277,6 @@ export const coldTier = Effect.fnUntraced(function* (
       },
     }
     const where = actorRow({ sql, actor })
-    const lease = { until: Number(row.claimed_until) }
     const claimed = () => sql`routing_key = ${actor.key} AND intent_id = ${row.intent_id}
       AND kind = 'cold' AND attempts = ${row.attempts} AND due_at_ms = ${lease.until}`
     const renew = Effect.gen(function* () {
@@ -348,7 +362,9 @@ export const coldTier = Effect.fnUntraced(function* (
         state,
         blobs,
       })
-      const bytes = compress(JSON.stringify(envelope))
+      const bytes = compress(
+        yield* Schema.encodeEffect(Schema.fromJsonString(Envelope))(envelope).pipe(Effect.orDie),
+      )
       const digest = digestOf(bytes)
       const key = objectKey(deployment, envelope, digest)
 
@@ -363,15 +379,20 @@ export const coldTier = Effect.fnUntraced(function* (
 
       yield* hooks.at("afterUpload", actor.ref)
 
-      yield* sql.withTransaction(
+      const flipped = yield* sql.withTransaction(
         Effect.gen(function* () {
           const [current] = yield* sql<{ generation: string; cold_ref: string | null }>`
           SELECT generation::text, cold_ref FROM actor_generations WHERE ${where} FOR UPDATE`
           const claim = yield* sql`SELECT 1 FROM actor_outbox WHERE ${claimed()} FOR UPDATE`
 
-          if (claim.length === 0) return
+          if (claim.length === 0) {
+            if (current?.cold_ref !== key) yield* garbage(actor, key)
 
-          if (current?.generation === held.generation && current.cold_ref === null) {
+            return false
+          }
+
+          const flip = current?.generation === held.generation && current.cold_ref === null
+          if (flip) {
             yield* sql`UPDATE actor_generations SET cold_ref = ${key}, cold_digest = ${digest},
             cold_state_version = ${envelope.version} WHERE ${where}`
             yield* sql`DELETE FROM actor_state WHERE ${where}`
@@ -379,9 +400,15 @@ export const coldTier = Effect.fnUntraced(function* (
           } else if (current?.cold_ref !== key) yield* garbage(actor, key)
 
           yield* sql`DELETE FROM actor_outbox WHERE ${claimed()}`
+          return flip
         }),
       )
 
+      yield* count(
+        Metrics.coldOffloads,
+        { actor_type: actor.ref.actor, outcome: flipped ? "cold" : "aborted" },
+        1,
+      )
       yield* hooks.at("afterFlip", actor.ref)
     })
 
@@ -403,8 +430,9 @@ export const coldTier = Effect.fnUntraced(function* (
             (
               now,
             ) => sql`UPDATE actor_outbox SET due_at_ms = ${now + Math.min(1000 * 2 ** Math.min(row.attempts - 1, 31), maxBackoffMs)},
-          last_error = ${String(cause)} WHERE ${claimed()}`,
+          last_error = ${String(cause)} WHERE ${claimed()} RETURNING intent_id`,
           ),
+          Effect.tap((rows) => count(Metrics.relayRetried, { kind: "cold" }, rows.length)),
           Effect.ignore,
         ),
       ),
@@ -428,11 +456,19 @@ export const coldTier = Effect.fnUntraced(function* (
         WHERE routing_key = ${actor.key} AND object_key = ${object.key}) AS unreferenced`
 
     if (!guard!.safe) return 0
+    if (guard!.unreferenced === null) {
+      const recorded = yield* client`INSERT INTO actor_cold_garbage
+        (routing_key, tenant_id, actor_type, actor_id, object_key, unreferenced_at_ms)
+        VALUES (${actor.key}, ${actor.ref.tenant}, ${actor.ref.actor}, ${actor.ref.id}, ${object.key}, ${object.createdAtMs})
+        ON CONFLICT DO NOTHING RETURNING object_key`
+      if (recorded.length === 0) return 0
+    }
     yield* hooks.at("beforeDelete", actor.ref)
     yield* objectIO(store.delete(object.key))
     yield* hooks.at("afterDelete", actor.ref)
     yield* client`DELETE FROM actor_cold_garbage WHERE routing_key = ${actor.key}
-      AND object_key = ${object.key} AND unreferenced_at_ms = ${guard!.unreferenced}`
+      AND object_key = ${object.key} AND unreferenced_at_ms = ${guard!.unreferenced ?? object.createdAtMs}`
+    yield* count(Metrics.coldCollected, {}, 1)
 
     return 1
   })
@@ -484,18 +520,14 @@ export const coldTier = Effect.fnUntraced(function* (
             if (objectKey(deployment, envelope, digestOf(bytes)) !== object.key)
               return yield* Effect.die(new Error(`Invalid cold object key: ${object.key}`))
 
-            deleted += yield* collect(
-              {
-                key: BigInt(envelope.routingKey),
-                ref: {
-                  tenant: envelope.tenant,
-                  actor: envelope.actor,
-                  id: envelope.id,
-                },
-              },
-              object,
-              client,
+            const ref = { tenant: envelope.tenant, actor: envelope.actor, id: envelope.id }
+            const placement = yield* recordedPlacement(envelope.actor).pipe(
+              Effect.provideService(SqlClient.SqlClient, client),
             )
+            if (placement === undefined)
+              return yield* Effect.die(new Error(`Unknown cold actor placement: ${envelope.actor}`))
+
+            deleted += yield* collect({ key: routingKey({ ref, placement }), ref }, object, client)
           }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Cold reconciliation candidate retained", cause),
@@ -538,7 +570,7 @@ export const coldTier = Effect.fnUntraced(function* (
 
     while (true) {
       yield* Effect.sleep("1 minute")
-      const now = Date.now()
+      const now = yield* Clock.currentTimeMillis
       const reconcile = now - reconciledAt >= 86_400_000
       yield* sweep(reconcile).pipe(
         Effect.catchCause((cause) => Effect.logWarning("Cold garbage sweep failed", cause)),

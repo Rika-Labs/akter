@@ -721,6 +721,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
     string,
     {
       readonly routingKey: bigint
+      readonly kind: "job" | "cold"
       readonly attempt: number
       readonly lease: { until: number }
     }
@@ -1032,8 +1033,23 @@ export const outboxRelay = Effect.fnUntraced(function* (
               deliverIntent(row).pipe(logFailure("Outbox relay crashed settling a row")),
             )
 
-          for (const row of coldRows)
-            yield* lanes.cold.start(tier!.offload(row).pipe(logFailure("Cold offload failed")))
+          for (const row of coldRows) {
+            const lease = { until: Number(row.claimed_until) }
+            running.set(row.intent_id, {
+              routingKey: BigInt(row.routing_key),
+              kind: "cold",
+              attempt: row.attempts,
+              lease,
+            })
+            yield* lanes.cold.start(
+              tier!
+                .offload(row, lease)
+                .pipe(
+                  Effect.ensuring(Effect.sync(() => running.delete(row.intent_id))),
+                  logFailure("Cold offload failed"),
+                ),
+            )
+          }
 
           for (const row of jobs) {
             const registered = local.find(
@@ -1044,6 +1060,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
             running.set(row.intent_id, {
               routingKey: BigInt(row.routing_key),
+              kind: "job",
               attempt: row.attempts,
               lease,
             })
@@ -1109,10 +1126,10 @@ export const outboxRelay = Effect.fnUntraced(function* (
       .withPermit(
         Effect.forEach(
           [...running],
-          ([intentId, { routingKey, attempt: current, lease }]) =>
+          ([intentId, { routingKey, kind, attempt: current, lease }]) =>
             sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
-              AND kind = 'job' AND attempts = ${current}`.pipe(
+              AND kind = ${kind} AND attempts = ${current}`.pipe(
               Effect.tap(
                 Effect.sync(() => {
                   lease.until += millis

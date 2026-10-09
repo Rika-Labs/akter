@@ -1,6 +1,3 @@
-import { link, mkdir, opendir, readFile, stat, unlink, writeFile } from "node:fs/promises"
-import { dirname, join, relative, resolve, sep } from "node:path"
-import { randomUUID } from "node:crypto"
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -9,7 +6,7 @@ import {
   S3Client,
   type S3ClientConfig,
 } from "@aws-sdk/client-s3"
-import { Data, Effect, Predicate, Stream } from "effect"
+import { Clock, Data, Effect, FileSystem, Option, Path, Predicate, Stream } from "effect"
 
 /** A failed object operation, including an unknown upload or deletion outcome. */
 export class ColdStorageError extends Data.TaggedError("ColdStorageError")<{
@@ -36,8 +33,6 @@ export interface ColdStorage {
 }
 
 const storageError = (cause: unknown) => new ColdStorageError({ cause })
-const codeIs = (cause: unknown, code: string) =>
-  Predicate.hasProperty(cause, "code") && cause.code === code
 
 /** A deterministic create-only store for local tests; copies bytes at both boundaries. */
 const memory = (): ColdStorage => {
@@ -52,13 +47,13 @@ const memory = (): ColdStorage => {
           ? Effect.fail(storageError(new Error(`Missing cold object ${key}`)))
           : Effect.succeed(Uint8Array.from(object.bytes))
       }),
-    put: (key, bytes) =>
-      Effect.sync(() => {
-        if (objects.has(key)) return false
-        objects.set(key, { bytes: Uint8Array.from(bytes), createdAtMs: Date.now() })
+    put: Effect.fnUntraced(function* (key, bytes) {
+      const createdAtMs = yield* Clock.currentTimeMillis
+      if (objects.has(key)) return false
+      objects.set(key, { bytes: Uint8Array.from(bytes), createdAtMs })
 
-        return true
-      }),
+      return true
+    }),
     delete: (key) => Effect.sync(() => void objects.delete(key)),
     list: (prefix) =>
       Stream.suspend(() =>
@@ -77,79 +72,85 @@ const memory = (): ColdStorage => {
  * The directory is private to the runtime; never let untrusted users place
  * symlinks in it. This adapter does not replace a replicated object store.
  */
-const filesystem = (directory: string): ColdStorage => {
-  const root = resolve(directory)
-  const path = (key: string) => {
-    const target = resolve(root, key)
+const filesystem = Effect.fnUntraced(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem
+  const paths = yield* Path.Path
+  const root = paths.resolve(directory)
+  const path = (key: string) =>
+    Effect.try({
+      try: () => {
+        const target = paths.resolve(root, key)
 
-    if (target === root || !target.startsWith(`${root}${sep}`))
-      throw new Error("Cold object key escapes its storage directory")
+        if (target === root || !target.startsWith(`${root}${paths.sep}`))
+          throw new Error("Cold object key escapes its storage directory")
 
-    return target
-  }
-
-  const walk = async function* (directory: string): AsyncGenerator<ColdObject> {
-    const entries = await opendir(directory).catch((cause: unknown) => {
-      if (codeIs(cause, "ENOENT")) return undefined
-      throw cause
+        return target
+      },
+      catch: storageError,
     })
 
-    if (entries === undefined) return
-
-    for await (const entry of entries) {
-      if (entry.name.startsWith(".tmp-")) continue
-      const file = join(directory, entry.name)
-
-      if (entry.isDirectory()) yield* walk(file)
-      else if (entry.isFile())
-        yield {
-          key: relative(root, file).split(sep).join("/"),
-          createdAtMs: (await stat(file)).mtimeMs,
-        }
-    }
-  }
+  const walk = (directory: string): Stream.Stream<ColdObject, ColdStorageError> =>
+    Stream.fromEffect(
+      fs.readDirectory(directory).pipe(
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
+        Effect.mapError(storageError),
+      ),
+    ).pipe(
+      Stream.flatMap(Stream.fromIterable),
+      Stream.filter((entry) => !entry.startsWith(".tmp-")),
+      Stream.flatMap((entry) => {
+        const file = paths.join(directory, entry)
+        return Stream.fromEffect(fs.stat(file).pipe(Effect.mapError(storageError))).pipe(
+          Stream.flatMap((info) => {
+            if (info.type === "Directory") return walk(file)
+            if (info.type === "File")
+              return Stream.succeed({
+                key: paths.relative(root, file).split(paths.sep).join("/"),
+                createdAtMs: Option.getOrThrow(info.mtime).getTime(),
+              })
+            return Stream.empty
+          }),
+        )
+      }),
+    )
 
   return {
-    get: (key) => Effect.tryPromise({ try: () => readFile(path(key)), catch: storageError }),
-    put: (key, bytes) =>
-      Effect.tryPromise({
-        try: async () => {
-          const target = path(key)
-          await mkdir(dirname(target), { recursive: true })
-          const temporary = join(dirname(target), `.tmp-${randomUUID()}`)
-
-          try {
-            await writeFile(temporary, bytes, { flag: "wx" })
-            try {
-              await link(temporary, target)
-
-              return true
-            } catch (cause) {
-              if (codeIs(cause, "EEXIST")) return false
-              throw cause
-            }
-          } finally {
-            await unlink(temporary).catch((cause: unknown) => {
-              if (!codeIs(cause, "ENOENT")) throw cause
-            })
-          }
-        },
-        catch: storageError,
-      }),
-    delete: (key) =>
-      Effect.tryPromise({
-        try: () =>
-          unlink(path(key)).catch((cause: unknown) => {
-            if (!codeIs(cause, "ENOENT")) throw cause
-          }),
-        catch: storageError,
-      }),
-    list: (prefix) =>
-      Stream.fromAsyncIterable(walk(root), storageError).pipe(
-        Stream.filter(({ key }) => key.startsWith(prefix)),
+    get: (key) =>
+      path(key).pipe(
+        Effect.flatMap((file) => fs.readFile(file).pipe(Effect.mapError(storageError))),
       ),
-  }
-}
+    put: (key, bytes) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const target = yield* path(key)
+          yield* fs.makeDirectory(paths.dirname(target), { recursive: true })
+          const temporary = paths.join(
+            yield* fs.makeTempDirectoryScoped({
+              directory: paths.dirname(target),
+              prefix: ".tmp-",
+            }),
+            "object",
+          )
+          yield* fs.writeFile(temporary, bytes, { flag: "wx" })
+          return yield* fs.link(temporary, target).pipe(
+            Effect.as(true),
+            Effect.catchReason("PlatformError", "AlreadyExists", () => Effect.succeed(false)),
+          )
+        }),
+      ).pipe(
+        Effect.mapError((error) =>
+          error instanceof ColdStorageError ? error : storageError(error),
+        ),
+      ),
+    delete: (key) =>
+      path(key).pipe(
+        Effect.flatMap((file) =>
+          fs.remove(file, { force: true }).pipe(Effect.mapError(storageError)),
+        ),
+      ),
+    list: (prefix) => walk(root).pipe(Stream.filter(({ key }) => key.startsWith(prefix))),
+  } satisfies ColdStorage
+})
 
 /** S3-compatible credentials, endpoint, bucket, and deployment encryption settings. */
 export interface S3ColdStorageOptions extends S3ClientConfig {
@@ -165,84 +166,103 @@ export interface S3ColdStorageOptions extends S3ClientConfig {
  * The caller owns the bucket's replication, encryption, and prefix-scoped
  * credentials; neither a public URL nor client credentials are exposed.
  */
-const s3 = ({
+const s3 = Effect.fnUntraced(function* ({
   bucket,
   encryption,
   encryptionKey,
   ...config
-}: S3ColdStorageOptions): ColdStorage => {
-  const client = new S3Client({ maxAttempts: 1, ...config })
-  const objects = async function* (prefix: string): AsyncGenerator<ColdObject> {
-    let continuation: string | undefined
-
-    do {
-      const page = await client.send(
-        new ListObjectsV2Command({
-          Bucket: bucket,
-          Prefix: prefix,
-          ContinuationToken: continuation,
-        }),
-      )
-
-      for (const object of page.Contents ?? [])
-        if (object.Key !== undefined && object.LastModified !== undefined)
-          yield { key: object.Key, createdAtMs: object.LastModified.getTime() }
-
-      continuation = page.IsTruncated ? page.NextContinuationToken : undefined
-
-      if (page.IsTruncated && continuation === undefined)
-        throw new Error("Truncated cold object listing has no continuation token")
-    } while (continuation !== undefined)
-  }
+}: S3ColdStorageOptions) {
+  const client = yield* Effect.acquireRelease(
+    Effect.sync(() => new S3Client({ maxAttempts: 1, ...config })),
+    (client) => Effect.sync(() => client.destroy()),
+  )
 
   return {
     get: (key) =>
-      Effect.tryPromise({
-        try: async (abortSignal) => {
-          const object = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), {
-            abortSignal,
+      Effect.scoped(
+        Effect.gen(function* () {
+          const controller = yield* Effect.acquireRelease(
+            Effect.sync(() => new AbortController()),
+            (controller) => Effect.sync(() => controller.abort()),
+          )
+          const object = yield* Effect.tryPromise({
+            try: () =>
+              client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), {
+                abortSignal: controller.signal,
+              }),
+            catch: storageError,
           })
-
-          if (object.Body === undefined) throw new Error(`Missing body for cold object ${key}`)
-
-          return object.Body.transformToByteArray()
-        },
-        catch: storageError,
-      }),
+          const body = object.Body
+          if (body === undefined)
+            return yield* storageError(new Error(`Missing body for cold object ${key}`))
+          return yield* Effect.tryPromise({
+            try: () => body.transformToByteArray(),
+            catch: storageError,
+          })
+        }),
+      ),
     put: (key, bytes) =>
       Effect.tryPromise({
-        try: async (abortSignal) => {
-          try {
-            await client.send(
-              new PutObjectCommand({
-                Bucket: bucket,
-                Key: key,
-                Body: bytes,
-                IfNoneMatch: "*",
-                ServerSideEncryption: encryption,
-                SSEKMSKeyId: encryptionKey,
-              }),
-              { abortSignal },
-            )
-
-            return true
-          } catch (cause) {
-            if (Predicate.hasProperty(cause, "name") && cause.name === "PreconditionFailed")
-              return false
-            throw cause
-          }
-        },
+        try: (abortSignal) =>
+          client.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: key,
+              Body: bytes,
+              IfNoneMatch: "*",
+              ServerSideEncryption: encryption,
+              SSEKMSKeyId: encryptionKey,
+            }),
+            { abortSignal },
+          ),
         catch: storageError,
-      }),
+      }).pipe(
+        Effect.as(true),
+        Effect.catchIf(
+          (error) =>
+            Predicate.hasProperty(error.cause, "name") && error.cause.name === "PreconditionFailed",
+          () => Effect.succeed(false),
+        ),
+      ),
     delete: (key) =>
       Effect.tryPromise({
         try: (abortSignal) =>
           client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }), { abortSignal }),
         catch: storageError,
       }).pipe(Effect.asVoid),
-    list: (prefix) => Stream.fromAsyncIterable(objects(prefix), storageError),
-  }
-}
+    list: (prefix) =>
+      Stream.paginate(
+        undefined as string | undefined,
+        Effect.fnUntraced(function* (continuation) {
+          const page = yield* Effect.tryPromise({
+            try: (abortSignal) =>
+              client.send(
+                new ListObjectsV2Command({
+                  Bucket: bucket,
+                  Prefix: prefix,
+                  ContinuationToken: continuation,
+                }),
+                { abortSignal },
+              ),
+            catch: storageError,
+          })
+          if (page.IsTruncated === true && page.NextContinuationToken === undefined)
+            return yield* storageError(
+              new Error("Truncated cold object listing has no continuation token"),
+            )
+          const objects = (page.Contents ?? []).flatMap((object) =>
+            object.Key !== undefined && object.LastModified !== undefined
+              ? [{ key: object.Key, createdAtMs: object.LastModified.getTime() }]
+              : [],
+          )
+          return [
+            objects,
+            page.IsTruncated === true ? Option.some(page.NextContinuationToken) : Option.none(),
+          ] as const
+        }),
+      ),
+  } satisfies ColdStorage
+})
 
 /** Object-storage adapters for runtime-only cold state, never tenant content. */
 export const ColdStorage = { memory, filesystem, s3 }

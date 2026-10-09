@@ -55,7 +55,7 @@ const schemaKeys = (sql: SqlClient.SqlClient) => sql<{
 
 const expectedIds = [
   1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 29,
-  30, 31, 32, 33,
+  30, 31, 32, 33, 34,
 ]
 
 describe("migrations with Postgres", () => {
@@ -242,8 +242,8 @@ describe("migrations with Postgres", () => {
                   .map((key) => key.table_name),
               ),
             ]).toEqual(registries)
-            expect(new Set(actorKeys.map((key) => key.table_name)).size).toBe(18)
-            expect(actorKeys).toHaveLength(19)
+            expect(new Set(actorKeys.map((key) => key.table_name)).size).toBe(19)
+            expect(actorKeys).toHaveLength(20)
             expect(violations(keys)).toEqual([])
             expect(
               actorKeys.find((key) => key.index_name === "actor_outbox_timer")?.columns,

@@ -35,6 +35,8 @@ Everything a view shows is committed. A turn that rolls back (a defect, a crash 
 
 Adding a column at the end keeps a view's version. Any other change adds a new view and a catalog row.
 
+Migration `0034_cold_tier` appends `cold boolean` to `durable.actors`, retaining version 1. A cold actor has no `durable.state` rows: that is offloaded material, not empty/default state. Queries read the private object through without activation; the next successful turn restores all state/blob rows. Receipts, history and ordinary timers remain visible. `$cold` maintenance rows are not delivered intents and remain private rather than appearing in `durable.outbox` or `durable.timers`.
+
 ## Retired single-table variants
 
 Migration `0033_joined_inspection` removes all 15 `_v2` variants introduced by `0031_routable_views` for the retired Neki backend, including `placements_v2` and `content_sweeps_v2`. Applied migration `0031` is unchanged. The original joined views remain, with their existing columns and versions, and the runtime inspector reads only those views.

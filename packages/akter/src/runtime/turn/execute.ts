@@ -34,7 +34,7 @@ import { COMMIT_VERSION } from "../database/replica.ts"
 import { isPoolRefusal } from "../database/bounded.ts"
 import { compress, decompress } from "../storage/codec.ts"
 import { ColdTier, FetchCold } from "../storage/cold-tier.ts"
-import { Metrics, record } from "../telemetry/metrics.ts"
+import { count, Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
 import type { UsageAccountingService } from "../telemetry/usage.ts"
@@ -510,6 +510,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const warmTurns = yield* WarmTurnFastPath
   const { ref } = run.first[0]!.request
   const { tenant, actor, id } = ref
+  let coldStartedAtMs: number | undefined
 
   const role =
     scope.role ?? (scope.adoption?.enforced.has(actor) === true ? scope.adoption.role : undefined)
@@ -875,6 +876,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           continue
         }
 
+        if (first.cold_ref !== null) coldStartedAtMs ??= Number(first.now)
+
         if (
           first.cold_ref !== null &&
           (cache.cold?.ref !== first.cold_ref ||
@@ -1204,7 +1207,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       if (plan.writes !== undefined) {
         cache.generation = plan.generation
         cache.state = plan.state
-        if (plan.restored) cache.cold = undefined
+        if (plan.restored === true) cache.cold = undefined
 
         if (plan.state !== undefined) {
           const previous = cache.committed
@@ -1238,30 +1241,52 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         } else cache.committed = undefined
       }
 
+      const coldStarted = coldStartedAtMs
+      coldStartedAtMs = undefined
       answering = true
 
-      return run.committed(batch, {
-        settled: plan.settled,
-        broadcasts: plan.broadcasts,
-        head: plan.head,
-        committed: plan.committed.map((entry, index): CommittedEvents => ({
-          ...entry,
-          emittedAtMs: plan.emitted[index]!.emittedAtMs,
-        })),
-        cancelledJobs: plan.outbox.flatMap((replies) => replies.cancelledIds),
-        generation: plan.generation,
-        replays: plan.replays,
-        written: plan.writes === undefined ? nothingWritten : plan.written,
-        version,
-        endedAtMs,
-        startedAtMs: plan.startedAtMs,
-        wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
-        wake:
-          plan.wake ||
-          plan.outbox.some((replies) => replies.wake) ||
-          plan.emitted.some((stamp) => stamp.fed),
-        cancelled: plan.outbox.some((replies) => replies.cancelled),
-      })
+      return run
+        .committed(batch, {
+          settled: plan.settled,
+          broadcasts: plan.broadcasts,
+          head: plan.head,
+          committed: plan.committed.map((entry, index): CommittedEvents => ({
+            ...entry,
+            emittedAtMs: plan.emitted[index]!.emittedAtMs,
+          })),
+          cancelledJobs: plan.outbox.flatMap((replies) => replies.cancelledIds),
+          generation: plan.generation,
+          replays: plan.replays,
+          written: plan.writes === undefined ? nothingWritten : plan.written,
+          version,
+          endedAtMs,
+          startedAtMs: plan.startedAtMs,
+          wrote: plan.writes === undefined ? nothingWrote : plan.wrote,
+          wake:
+            plan.wake ||
+            plan.outbox.some((replies) => replies.wake) ||
+            plan.emitted.some((stamp) => stamp.fed),
+          cancelled: plan.outbox.some((replies) => replies.cancelled),
+        })
+        .pipe(
+          Effect.tap(() =>
+            Effect.all(
+              [
+                plan.restored === true
+                  ? count(Metrics.coldRestorations, { actor_type: actor }, 1)
+                  : Effect.void,
+                coldStarted === undefined
+                  ? Effect.void
+                  : record(
+                      Metrics.coldWakeDuration,
+                      { actor_type: actor },
+                      endedAtMs - coldStarted,
+                    ),
+              ],
+              { discard: true },
+            ),
+          ),
+        )
     }).pipe(
       Effect.andThen(
         Effect.sync(() => {

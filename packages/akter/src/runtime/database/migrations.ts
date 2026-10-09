@@ -1324,10 +1324,6 @@ export const migrations = {
         g.cold_ref IS NOT NULL AS cold
       FROM actor_generations g
       LEFT JOIN actor_placements p ON p.actor_type = g.actor_type`
-    yield* sql.unsafe(`CREATE OR REPLACE VIEW durable.views AS
-      SELECT view_name, version FROM (VALUES
-        ${[...FIRST_VIEWS.map(([view, version]) => [view, view === "actors" ? 2 : version]), ["views", 1]].map(([view, version]) => `('${view}', ${version})`).join(", ")}
-      ) AS v(view_name, version)`)
   }),
 }
 

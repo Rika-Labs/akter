@@ -159,10 +159,8 @@ export const committedReads = ({
                           },
                         )
                         .pipe(
-                          Effect.catch((cause) =>
-                            Effect.fail(
-                              ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
-                            ),
+                          Effect.mapError((cause) =>
+                            ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
                           ),
                         ),
                 )
