@@ -74,7 +74,25 @@ export const Metrics = {
     incremental: true,
   }),
   relayRetried: Metric.counter("akter.relay.retried", {
-    description: "Deliveries this runner backed off to retry, by kind (intent, job, subscription).",
+    description:
+      "Deliveries this runner backed off to retry, by kind (intent, job, subscription, cold).",
+    incremental: true,
+  }),
+  coldOffloads: Metric.counter("akter.cold.offloads", {
+    description: "Offloads settled on this runner, by actor_type and outcome (cold, aborted).",
+    incremental: true,
+  }),
+  coldRestorations: Metric.counter("akter.cold.restorations", {
+    description: "Complete cold write-backs confirmed committed on this runner, by actor_type.",
+    incremental: true,
+  }),
+  coldWakeDuration: Metric.histogram("akter.cold.wake_ms", {
+    description:
+      "Cold handler batches from their first fenced admission through ending reply, including rollback, GET and renewed admission, by actor_type.",
+    boundaries: milliseconds,
+  }),
+  coldCollected: Metric.counter("akter.cold.collected", {
+    description: "Objects whose deletion this runner confirmed after durable safety checks.",
     incremental: true,
   }),
   deadLetters: Metric.counter("akter.job.dead_letters", {
@@ -87,14 +105,15 @@ export const Metrics = {
     incremental: true,
   }),
   outboxRows: Metric.gauge("akter.outbox.rows", {
-    description: "Outbox rows waiting, by kind (intent, job, feed, control).",
+    description: "Outbox rows waiting, by kind (intent, job, feed, control, cold).",
   }),
   relayLag: Metric.gauge("akter.relay.lag_ms", {
     description:
-      "How long the oldest due, unclaimed row has been due, by kind (intent, job, subscription); 0 when none is due.",
+      "How long the oldest due, unclaimed row has been due, by kind (intent, job, feed, control, subscription, cold); 0 when none is due.",
   }),
   stuckRows: Metric.gauge("akter.relay.stuck_rows", {
-    description: "Rows claimed at least 8 times and still pending, by kind (intent, subscription).",
+    description:
+      "Rows claimed at least 8 times and still pending, by kind (intent, subscription, cold).",
   }),
   subscriptionLagEvents: Metric.gauge("akter.subscription.lag_events", {
     description:

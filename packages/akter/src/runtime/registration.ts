@@ -1,4 +1,5 @@
-import { Context, Crypto, Effect } from "effect"
+import { PgliteClient } from "@effect/sql-pglite"
+import { Context, Crypto, Effect, Option } from "effect"
 import { Sharding } from "effect/cluster"
 import { SqlClient, SqlError } from "effect/sql"
 import type { ActorError } from "../errors/actor.ts"
@@ -110,6 +111,41 @@ export const actorRegistration = ({
     retryPoolRefusal(effect).pipe(Effect.orDie)
 
   /**
+   * A shortened migration history cannot reinterpret older cold objects.
+   * PGlite cannot offload, so it needs no transaction that would eagerly start
+   * its singleton actors during registration.
+   */
+  const checkColdState = Effect.fnUntraced(function* (registration: {
+    readonly name: string
+    readonly stateVersion: number
+  }) {
+    if (Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))) return
+
+    const sql = yield* SqlClient.SqlClient
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const [record] = yield* sql<{
+          state_version: number
+        }>`SELECT state_version FROM actor_placements
+        WHERE actor_type = ${registration.name} FOR UPDATE`
+        const previous = record!.state_version
+        const unreadable = yield* sql`SELECT 1 FROM actor_generations
+        WHERE actor_type = ${registration.name} AND cold_ref IS NOT NULL
+          AND (cold_state_version > ${registration.stateVersion}
+            OR (${registration.stateVersion} < ${previous} AND cold_state_version < ${previous})) LIMIT 1`
+        if (unreadable.length > 0)
+          return yield* Effect.die(
+            new Error(
+              `Actor ${registration.name} state chain is shortened while cold actors need it; deploy refused`,
+            ),
+          )
+        yield* sql`UPDATE actor_placements SET state_version = ${registration.stateVersion}
+        WHERE actor_type = ${registration.name}`
+      }),
+    )
+  })
+
+  /**
    * Refuses a layer that can't read every payload version the database
    * may hold, as a placement or workflow mismatch is refused. `writes`
    * names the actor type whose turns the layer runs, for the removed-class check.
@@ -211,6 +247,7 @@ export const actorRegistration = ({
       if (registrations.has(registration.name))
         return yield* Effect.die(new Error(`Duplicate actor: ${registration.name}`))
       yield* checkPlacement(registration).pipe(Effect.provideContext(services), startupSql)
+      yield* checkColdState(registration).pipe(Effect.provideContext(services), startupSql)
 
       if (declaresContent(registration)) {
         yield* requireContent(registration.name)
@@ -326,6 +363,7 @@ export const actorRegistration = ({
       if (queryRegistrations.has(registration.name))
         return yield* Effect.die(new Error(`Duplicate query layer: ${registration.name}`))
       yield* checkPlacement(registration).pipe(Effect.provideContext(services), startupSql)
+      yield* checkColdState(registration).pipe(Effect.provideContext(services), startupSql)
 
       if (declaresContent(registration)) yield* requireContent(registration.name)
 

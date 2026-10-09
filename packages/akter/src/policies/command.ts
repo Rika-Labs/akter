@@ -19,6 +19,8 @@ const horizon = (duration: Duration.Input) =>
 export interface Policy {
   /** Idle time before the activation sleeps. Default 60 seconds. */
   readonly hibernateAfter?: Duration.Input
+  /** Continuous sleep before state and actor blobs may be offloaded. Default 30 days; never opts out. */
+  readonly coldAfter?: Duration.Input | "never"
   /**
    * Deadline for one command turn's transaction and one query's execution.
    * It does not bound a workflow or a live session. Default 30 seconds.
@@ -107,6 +109,7 @@ export interface TurnPolicy {
   readonly deliveryMs: number
   readonly stateMaxBytes: number
   readonly idleMs: number
+  readonly coldMs: number | undefined
   readonly mailboxCapacity: number | "unbounded"
   readonly createdBy: string | undefined
   readonly keepReceiptsMs: number
@@ -149,6 +152,7 @@ export const resolvePolicy = (policy: {
     deliveryMs: milliseconds(declared?.deliveryTimeout ?? "30 seconds"),
     stateMaxBytes: Positive.make(declared?.maxStateBytes ?? 65_536),
     idleMs: milliseconds(declared?.hibernateAfter ?? "60 seconds"),
+    coldMs: declared?.coldAfter === "never" ? undefined : horizon(declared?.coldAfter ?? "30 days"),
     mailboxCapacity:
       declared?.mailboxCapacity === undefined
         ? "unbounded"

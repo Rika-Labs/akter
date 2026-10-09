@@ -46,6 +46,7 @@ import { CleanupHooks, RetryTurn, TurnHooks, type TurnPoint } from "../runtime/t
 import { type ProgressClosed, type ProgressMessage, ProgressTap } from "../runtime/jobs/progress.ts"
 import { databaseTime, FrameworkClock } from "../runtime/turn/admission.ts"
 import type { Swept } from "../runtime/storage/retention.ts"
+import { ColdHooks } from "../runtime/storage/cold-tier.ts"
 
 /**
  * Present while the framework's cluster harness builds one of its runners: the runner
@@ -83,6 +84,7 @@ export interface TestOptions {
   readonly admission?: Options["admission"]
   readonly relay?: Options["relay"]
   readonly executors?: Options["executors"]
+  readonly coldStorage?: Options["coldStorage"]
   readonly observability?: Options["observability"]
   readonly rowLevelSecurity?: Options["rowLevelSecurity"]
   readonly adoption?: Options["adoption"]
@@ -318,6 +320,7 @@ export class ActorTest extends Context.Service<
         >()
 
         const outer = yield* TurnHooks
+        const coldHooks = yield* ColdHooks
 
         let clockOffset = 0
         const progress: Array<ProgressRecord> = []
@@ -360,6 +363,7 @@ export class ActorTest extends Context.Service<
             afterBatch: Effect.void,
             periodic: false,
           }),
+          Layer.succeed(ColdHooks, { ...coldHooks, periodic: false }),
         )
 
         const addFault = (
@@ -700,6 +704,7 @@ export class ActorTest extends Context.Service<
           admission: options.admission,
           relay: options.relay,
           executors: options.executors,
+          coldStorage: options.coldStorage,
           observability: options.observability,
           rowLevelSecurity: options.rowLevelSecurity,
           adoption: options.adoption,

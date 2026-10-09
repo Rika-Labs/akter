@@ -1,6 +1,6 @@
 # ADR 0114: Cold-tier admission and referenced-object garbage
 
-**Status:** proposed (2026-10-09). Amends ADR 0036 sections 3–5; implementation remains blocked on acceptance.
+**Status:** accepted (2026-10-09). Amends ADR 0036 sections 3–5.
 
 **Responsibility:** reconcile cold rehydration with owner-side admission and make immutable-key reuse safe for both garbage-collection paths.
 
@@ -20,7 +20,7 @@ Finally, reconciliation's object-creation-age test cannot substitute for the bac
 
 The [real-Postgres model](../verification/cold-tier-amendment.md) reproduces these interleavings and distinguishes age-only deletion from reference-, in-flight-, and backup-window-gated deletion. It is design evidence, not cold-tier runtime conformance: no cold-tier implementation or migration exists yet.
 
-## Proposed decision
+## Decision
 
 ### 1. Detect under the fence, fetch with no transaction, then re-enter
 

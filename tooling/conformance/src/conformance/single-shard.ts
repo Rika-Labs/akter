@@ -150,7 +150,11 @@ export const singleShardConformance: ReadonlyArray<ConformanceCase> = [
               )
               .map(({ sql }) => sql),
           ).toEqual([])
-          expect(statements.filter(({ sql }) => /\bactor_outbox\b/.test(sql))).toEqual([])
+          expect(
+            statements.filter(
+              ({ sql }) => /\bactor_outbox\b/.test(sql) && !sql.includes("timer_key = '$cold'"),
+            ),
+          ).toEqual([])
         }),
       ),
   },

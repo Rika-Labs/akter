@@ -4,7 +4,7 @@ import { forEachRange, withinRange } from "../database/shards.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { Metrics, record } from "./metrics.ts"
 
-/** Claims at or above this count mark a row as stuck, for intents and subscriptions alike. */
+/** Claims at or above this count mark a row as stuck, including cold maintenance. */
 const STUCK_ATTEMPTS = 8
 
 /** An actor type's event-retention settings, in milliseconds, as the sampler reads them. */
@@ -60,7 +60,7 @@ export const databaseSampler = () => {
       FROM actor_outbox ${withinRange({ sql, range, column: "routing_key", keyword: "WHERE" })} GROUP BY kind`,
     )).flat()
 
-    for (const kind of ["intent", "job", "feed", "control"]) {
+    for (const kind of ["intent", "job", "feed", "control", "cold"]) {
       const rows = outbox.filter((found) => found.kind === kind)
 
       set(
@@ -71,11 +71,12 @@ export const databaseSampler = () => {
       set(Metrics.relayLag, { kind }, Math.max(0, ...rows.map((row) => Number(row.lag))))
     }
 
-    set(
-      Metrics.stuckRows,
-      { kind: "intent" },
-      outbox.filter((row) => row.kind === "intent").reduce((sum, row) => sum + row.stuck, 0),
-    )
+    for (const kind of ["intent", "cold"])
+      set(
+        Metrics.stuckRows,
+        { kind },
+        outbox.filter((row) => row.kind === kind).reduce((sum, row) => sum + row.stuck, 0),
+      )
 
     const perShard = (yield* forEachRange(
       (range) => sql<{

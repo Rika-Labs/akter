@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { SqlClient } from "effect/sql"
 import type { ActorRef } from "../../identity/caller.ts"
+import type { ColdMaterial } from "./cold-tier.ts"
 
 /**
  * What one activation remembers of its authority between writes. `generation`
@@ -13,6 +14,8 @@ import type { ActorRef } from "../../identity/caller.ts"
 export interface ActivationCache {
   generation: string | undefined
   state: ReadonlyMap<string, string> | undefined
+  /** Object material is not a committed database snapshot. */
+  cold?: ColdMaterial | undefined
   /** Published only after a command's transaction and post-commit version read succeeded. */
   committed?: {
     readonly generation: string
@@ -44,6 +47,7 @@ export const forget = (cache: ActivationCache) => {
   cache.generation = undefined
   cache.state = undefined
   cache.committed = undefined
+  cache.cold = undefined
 }
 
 /** One actor's stored identity: the routing key its rows live under and its address. */

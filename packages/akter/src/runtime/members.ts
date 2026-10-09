@@ -333,6 +333,7 @@ export interface RegisteredQuery {
 /** What an actor type's query layer registers with the runtime. */
 export interface QueryRegistration {
   readonly name: string
+  readonly stateVersion: number
   readonly placement: Placement
   /** `commandTimeout`: a query's reads are cancelled on the server past it. */
   readonly timeoutMs: number
@@ -348,6 +349,7 @@ export interface QueryRegistration {
 /** What an actor type's command layer registers with the runtime. */
 export interface Registration {
   readonly name: string
+  readonly stateVersion: number
   readonly singleton: boolean
   /** Unkeyed with `policy.createdBy`: its UUIDv8 ids come only from `turn.mint`. */
   readonly mintable: boolean

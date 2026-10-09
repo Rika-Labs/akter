@@ -53,6 +53,13 @@ Do not leave a drained runner running, and do not restart it because it answers 
 
 Never delete receipts, generation rows, messages, outbox rows, or dead letters as a first-line fix. Escalate with trace ids, command ids, SQL evidence, deployed versions, and the exact recovery test.
 
+## Cold tier
+
+- **Cold wake returns `ActorUnavailable`, or cold rows are stuck.** Check private object-store reachability, credentials, endpoint and encryption permissions; inspect `akter_relay_stuck_rows{kind="cold"}`, cold retry/lag metrics and retained-retry warnings. Restore access and retry commands with their original ids. Receipt-only replay must still work. Do not delete a cold outbox row to end a retry loop: it protects a potentially uploaded object and has no attempt limit.
+- **Digest/envelope defect or missing referenced object.** Preserve the pointer and object bytes, stop affected ingress, and recover the exact immutable object from its replicas/versions. Missing state is not default state. Recovery proof is a readable verified pointer followed by a complete successful turn and receipt replay, with unchanged untouched keys/chunks.
+- **Garbage/reconciliation warnings.** A failed durable check or unknown deletion keeps the candidate. Fix the database or storage fault and allow the next sweep; do not delete candidates or objects by creation age. Check that current pointers and cold work stay protected, and that collection begins only after the latest-unreference backup window.
+- **Restore with cold actors.** Stop every runner **and maintenance pool** before restoring the whole database, verify every restored pointer and digest while stopped, preserve deployment namespace and state chains, then restart. Follow [cold backup checks](04-backup-restore.md#cold-tier); a live collector may never race restore.
+
 ## Fleet views
 
 - **A view is `stale` with `last_error`.** A recompute failed deterministically, for example a `sum` past the `bigint` range. Its other groups stopped advancing and every other view continues. Fix the data or the definition, then run `akter fleet rebuild <View> --database-url <url>`: the view goes back to `building` and the maintainer rebuilds it from its source while writes continue.

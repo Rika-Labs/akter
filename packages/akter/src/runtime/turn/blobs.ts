@@ -1,4 +1,4 @@
-import { Cause, Effect, Option, Predicate, Result, Schema, Stream } from "effect"
+import { Cause, Context, Effect, Option, Predicate, Result, Schema, Stream } from "effect"
 import { SqlClient } from "effect/sql"
 import { inTenant, TenantScope } from "../database/tenancy.ts"
 import { InvalidContentRef } from "../../errors/content.ts"
@@ -14,6 +14,12 @@ import type {
 } from "../../state/blob.ts"
 import type { ContentStoreImpl } from "../content/store.ts"
 import { routingKey as routingKeyOf } from "../storage/codec.ts"
+import type { ColdMaterial } from "../storage/cold-tier.ts"
+
+/** Committed cold snapshot for off-turn reads only; never supplies write authority. */
+export const ColdRead = Context.Reference<ColdMaterial | undefined>("akter/ColdRead", {
+  defaultValue: () => undefined,
+})
 
 /** UTF-8 bytes of an entry name; the name shares a btree key with the ownership columns. */
 const MAX_NAME_BYTES = 512
@@ -63,6 +69,7 @@ export const bindBlobs = Effect.fnUntraced(function* (
   const sql = yield* SqlClient.SqlClient
   const connection = yield* Effect.serviceOption(sql.transactionService)
   const { role } = yield* TenantScope
+  const cold = yield* ColdRead
 
   if (write && Option.isNone(connection))
     return yield* Effect.die(new Error("Blob writes need the turn transaction"))
@@ -256,13 +263,29 @@ export const bindBlobs = Effect.fnUntraced(function* (
     const read: BlobRead = {
       get: (name) =>
         atEntry(blob, name, (where) =>
-          Effect.map(
-            sql<{ bytes: Uint8Array | null }>`
+          !write &&
+          cold?.envelope.tenant === ref.tenant &&
+          cold.envelope.actor === ref.actor &&
+          cold.envelope.id === ref.id
+            ? Effect.sync(() => {
+                const chunks = cold.envelope.blobs
+                  .filter((chunk) => chunk.blob === blob.name && chunk.name === name)
+                  .sort((a, b) => a.chunk - b.chunk)
+                return chunks.length === 0
+                  ? Option.none<Uint8Array>()
+                  : Option.some(
+                      Uint8Array.from(
+                        Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.bytes, "base64"))),
+                      ),
+                    )
+              })
+            : Effect.map(
+                sql<{ bytes: Uint8Array | null }>`
               SELECT string_agg(bytes, ''::bytea ORDER BY chunk) AS bytes
               FROM actor_blobs WHERE ${where}`,
-            ([found]) =>
-              Option.map(Option.fromNullishOr(found?.bytes), (bytes) => Uint8Array.from(bytes)),
-          ),
+                ([found]) =>
+                  Option.map(Option.fromNullishOr(found?.bytes), (bytes) => Uint8Array.from(bytes)),
+              ),
         ),
     }
 

@@ -15,6 +15,8 @@ A creating intent's relay delivery MUST carry the committed outbox row's sender 
 
 Request/reply inside a turn is forbidden. Messaging does not create a distributed transaction and MUST NOT be presented as a synchronous remote call from the sender's transaction.
 
+`$cold` is a reserved maintenance timer; application timer keys and command tags starting with `$` MUST be refused. Hibernation with configured cold storage stages one keyed row of kind `cold`, due after `policy.coldAfter`; a wake deletes it with generation admission. Its target is its own actor, command and key are `$cold`, payload is JSON `null`, and caller is System with source `cold`. Only configured runners with free offload capacity MAY claim it. The relay MUST NOT deliver it as a command or route intent, activate its actor, or dead-letter it. It renews its lease during upload, backs off failures indefinitely and settles only its matching claim; a newer timer MUST survive an obsolete attempt ([ADR 0036](../decisions/0036-cold-tier.md)).
+
 Due-work claims MUST probe one inclusive scheduling bucket range at a time, independently of actor compute ownership. All claim families MUST share the runner's free capacity across ranges; no range may claim rows that cannot start immediately. The default covers all 256 buckets in one range on the same database and MUST add no statement or network flight to a claim. A failed claim or settle MUST preserve the existing lease and retry identity rules ([ADR 0067](../decisions/0067-due-work-shard-ranges.md), amended by [ADR 0112](../decisions/0112-postgres-and-pglite-only.md)).
 
 Every statement that compares or sets a due time MUST read the outbox clock once, using the statement's start time on Postgres and PGlite.

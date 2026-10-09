@@ -5,6 +5,7 @@ import { JOB_KEY_PREFIX } from "../../handles/intents.ts"
 import { decodeBytes, decodeText } from "../inspector/queries.ts"
 import { inReadOnlySnapshot } from "../database/snapshot.ts"
 import { TenantScope, tenantSettings } from "../database/tenancy.ts"
+import { ColdTier } from "../storage/cold-tier.ts"
 import { databaseTime } from "../turn/admission.ts"
 import { SEED_FORMAT, type Seed } from "./seed.ts"
 
@@ -67,7 +68,9 @@ const tenantSnapshot =
  * them in `omitted`. Subscription cursors and connections are neither carried
  * nor counted. A job whose attempt has been cancelled or has finally failed
  * is not pending and is left out. It reads the runtime tables, not the
- * inspection views, because the views do not show a cancelled job. `None`
+ * inspection views, because the views do not show a cancelled job. A cold
+ * pointer is captured in that snapshot; its immutable material is fetched
+ * only after the transaction ends, without activation or write-back. `None`
  * when the tenant has no such actor.
  */
 export const exportActor = (page: {
@@ -79,14 +82,21 @@ export const exportActor = (page: {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
 
-      const [found] = yield* sql<{ routingKey: string; created: boolean }>`
-        SELECT routing_key::text AS "routingKey", created FROM actor_generations
+      const [found] = yield* sql<{
+        routingKey: string
+        created: boolean
+        cold_ref: string | null
+        cold_digest: string | null
+        cold_state_version: number | null
+      }>`
+        SELECT routing_key::text AS "routingKey", created, cold_ref, cold_digest, cold_state_version
+        FROM actor_generations
         WHERE tenant_id = ${page.tenant} AND actor_type = ${page.actorType}
           AND actor_id = ${page.actorId}`
 
-      if (found === undefined) return Option.none<Seed>()
+      if (found === undefined) return undefined
 
-      const { routingKey, created } = found
+      const { routingKey } = found
 
       const owned = sql`routing_key = ${routingKey}::int8 AND tenant_id = ${page.tenant}
         AND actor_type = ${page.actorType} AND actor_id = ${page.actorId}`
@@ -140,57 +150,95 @@ export const exportActor = (page: {
         tableRows += rows!.count
       }
 
-      const state: Record<string, Schema.Json> = {}
-      let stateVersion = 0
-
-      for (const row of stored) {
-        const decoded = decodeBytes(row.value)
-
-        if (decoded === null || "undecodable" in decoded)
-          return yield* ExportRefused.make({ reason: "undecodable", detail: `state ${row.key}` })
-
-        if (row.key !== VERSION_KEY) state[row.key] = decoded.json
-        else stateVersion = Option.getOrElse(decodeVersion(decoded.json), () => 0)
-      }
-
-      const payloadOf = Effect.fnUntraced(function* (text: string, detail: string) {
-        const decoded = decodeText(text)
-
-        if (decoded === null || "undecodable" in decoded)
-          return yield* ExportRefused.make({ reason: "undecodable", detail })
-
-        return decoded.json
-      })
-
-      const dueIn = (dueAtMs: number) => Math.max(0, Math.round(dueAtMs - exportedAtMs))
-
-      const seed: Seed = {
-        format: SEED_FORMAT,
-        actor: { type: page.actorType, id: page.actorId },
-        created,
-        stateVersion,
-        state,
-        intents: yield* Effect.forEach(intents, (row) =>
-          Effect.map(payloadOf(row.payload, `intent ${row.command}`), (payload) => ({
-            target: { actor: row.targetType, id: row.targetId },
-            command: row.command,
-            payload,
-            key: row.timerKey ?? undefined,
-            dueInMs: dueIn(row.dueAtMs),
-          })),
-        ),
-        jobs: yield* Effect.forEach(jobs, (row) =>
-          Effect.map(payloadOf(row.payload, `job ${row.job}`), (payload) => ({
-            job: row.job,
-            payload,
-            payloadVersion: row.payloadVersion,
-            key: row.timerKey?.replace(JOB_KEY_PREFIX, "") ?? undefined,
-            dueInMs: dueIn(row.dueAtMs),
-          })),
-        ),
-        omitted: { ...counted!, tableRows },
-      }
-
-      return Option.some(seed)
+      return { found, stored, intents, jobs, counted: counted!, tableRows, exportedAtMs }
     }),
+  ).pipe(
+    Effect.flatMap((snapshot) =>
+      Effect.gen(function* () {
+        if (snapshot === undefined) return Option.none<Seed>()
+        const { found, stored, intents, jobs, counted, tableRows, exportedAtMs } = snapshot
+        const { routingKey, created } = found
+        const material =
+          found.cold_ref === null
+            ? undefined
+            : yield* Effect.flatMap(ColdTier, (tier) =>
+                tier === undefined
+                  ? Effect.die(new Error("Cold export needs coldStorage"))
+                  : tier
+                      .fetch(
+                        {
+                          key: BigInt(routingKey),
+                          ref: { tenant: page.tenant, actor: page.actorType, id: page.actorId },
+                        },
+                        {
+                          ref: found.cold_ref!,
+                          digest: found.cold_digest!,
+                          version: found.cold_state_version!,
+                        },
+                      )
+                      .pipe(Effect.orDie),
+              )
+        const entries =
+          material === undefined
+            ? stored.map(({ key, value }) => [key, decodeBytes(value)] as const)
+            : material.envelope.state.map(([key, value]) => [key, decodeText(value)] as const)
+
+        const state: Record<string, Schema.Json> = {}
+        let stateVersion = 0
+
+        for (const [key, decoded] of entries) {
+          if (decoded === null || "undecodable" in decoded)
+            return yield* ExportRefused.make({ reason: "undecodable", detail: `state ${key}` })
+
+          if (key !== VERSION_KEY) state[key] = decoded.json
+          else stateVersion = Option.getOrElse(decodeVersion(decoded.json), () => 0)
+        }
+
+        const payloadOf = Effect.fnUntraced(function* (text: string, detail: string) {
+          const decoded = decodeText(text)
+
+          if (decoded === null || "undecodable" in decoded)
+            return yield* ExportRefused.make({ reason: "undecodable", detail })
+
+          return decoded.json
+        })
+
+        const dueIn = (dueAtMs: number) => Math.max(0, Math.round(dueAtMs - exportedAtMs))
+
+        const seed: Seed = {
+          format: SEED_FORMAT,
+          actor: { type: page.actorType, id: page.actorId },
+          created,
+          stateVersion,
+          state,
+          intents: yield* Effect.forEach(intents, (row) =>
+            Effect.map(payloadOf(row.payload, `intent ${row.command}`), (payload) => ({
+              target: { actor: row.targetType, id: row.targetId },
+              command: row.command,
+              payload,
+              key: row.timerKey ?? undefined,
+              dueInMs: dueIn(row.dueAtMs),
+            })),
+          ),
+          jobs: yield* Effect.forEach(jobs, (row) =>
+            Effect.map(payloadOf(row.payload, `job ${row.job}`), (payload) => ({
+              job: row.job,
+              payload,
+              payloadVersion: row.payloadVersion,
+              key: row.timerKey?.replace(JOB_KEY_PREFIX, "") ?? undefined,
+              dueInMs: dueIn(row.dueAtMs),
+            })),
+          ),
+          omitted: {
+            ...counted,
+            tableRows,
+            blobs:
+              counted.blobs +
+              (material?.envelope.blobs.filter(({ chunk }) => chunk === 0).length ?? 0),
+          },
+        }
+
+        return Option.some(seed)
+      }),
+    ),
   )

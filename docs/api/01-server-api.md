@@ -360,11 +360,35 @@ Built by M4.13 ([ADR 0034](../decisions/0034-tenant-scoped-content-addressed-blo
 
 ## Accepted M4 targets
 
-Designs from the M4 ADRs, accepted 2026-09-28. Hosted ingress and embedded PGlite are built (see `Auth.assertion` below and `Database.pglite` above); the cold tier is not.
+Designs from the M4 ADRs, accepted 2026-09-28. Hosted ingress, embedded PGlite and the opt-in Postgres cold tier are built. Hosted cold-wake performance remains unverified; see [cold evidence](../verification/cold-tier.md).
 
 - **Hosted ingress (M4.8, [ADR 0031](../decisions/0031-hosted-ingress-tenant-directory-and-regions.md)).** `Auth.assertion({ issuer, audience, region, keys })`, where `keys` is a key-set URL or static keys, is the only provider a hosted runner uses. Hosted deployments configure hosted API keys and JWT settings whose tenant is `{ claim: "org_id" }` or `{ fixed: "default" }`; custom `Auth.make` code does not run at the edge. `akter tenants create <tenant> --region <region>` accepts only the primary region until L.1 adds `move`.
 - **Embedded PGlite (M4.14, [ADR 0035](../decisions/0035-pglite-embedded-production-backend.md)).** `Database.pglite({ dataDir })` takes an exclusive `flock` on `<dataDir>/.akter.lock` and fails with `DataDirLocked` while another process holds it, or `DataDirVersion` for a `dataDir` from another Postgres major; it refuses `relaxedDurability` with a `dataDir`.
 - **Cold tier (L.2, [ADR 0036](../decisions/0036-cold-tier.md)).** `policy.coldAfter` (default 30 days, or `"never"`) and `Actors.layer({ coldStorage })` with an S3-compatible adapter; nothing goes cold without `coldStorage`.
+
+### Cold object storage
+
+`ColdStorage` and its types are runtime-only exports. `ColdStorage.memory()` returns a create-only in-memory store. `ColdStorage.filesystem(directory)` is an Effect requiring platform `FileSystem` and `Path`; it atomically publishes complete local files and is for tests/local use, not replicated durability. `ColdStorage.s3({ bucket, ...S3ClientConfig, encryption?, encryptionKey? })` is a scoped Effect that releases its SDK client with the application scope. Configure `endpoint` and `forcePathStyle` for compatible stores. Credentials use the SDK's normal provider chain; `encryption` is `"AES256"` or `"aws:kms"`, and omission uses bucket encryption. Restrict access to the private deployment prefix.
+
+```ts
+import { Actors, ColdStorage, Database } from "@rikalabs/akter/runtime"
+import { Effect, Layer, Redacted } from "effect"
+
+const Runtime = Layer.unwrap(
+  Effect.gen(function* () {
+    const store = yield* ColdStorage.s3({ bucket: "private-actor-state", region: "us-east-1" })
+    return Actors.layer({
+      coldStorage: { store, backupRetention: "7 days", grace: "24 hours" },
+    }).pipe(Layer.provide(Database.postgres({ url: Redacted.make(databaseUrl) })))
+  }),
+)
+```
+
+Supply the platform Crypto layer as for any runtime, and obtain `databaseUrl` from application configuration. `coldStorage` requires `store` and `backupRetention` (the oldest database snapshot the deployment may restore). Defaults: `grace` 24 hours, object-operation `timeout` 30 seconds, offload `concurrency` 4, renewable `lease` 60 seconds (minimum 3 seconds). Retention and timeout durations must be finite whole milliseconds. PGlite refuses the option. Every runner that may serve an already-cold actor needs the same object namespace and store.
+
+`policy.coldAfter` starts at hibernation, not the last command: default 30 days, or `"never"` to opt out. State and actor blobs move together; other rows remain in Postgres. A query reads through without activation or write-back. A command's retained receipt needs no GET; otherwise the owner releases admission before GET and re-admits the same identity. Object failure/timeout is retryable `ActorUnavailable`; corruption is a deterministic defect. A successful turn commits complete restoration, while a declared failure retains the cold pointer. Warm and ordinary wake flights do not gain a preflight read. See [restore](../operations/04-backup-restore.md#cold-tier) before enabling object deletion.
+
+Operator exports also read through: the tenant-bound SQL snapshot captures the immutable cold pointer, then GET runs outside that transaction. Exports retain the stored state/version and omitted blob count without waking or restoring the actor; a storage failure answers an operational 500, never an empty seed.
 
 ## Layers
 

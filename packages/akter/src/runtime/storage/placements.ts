@@ -33,6 +33,7 @@ const KEYED: ReadonlyArray<{
   { table: "actor_subscriptions", type: "source_type", bucket: true },
   { table: "actor_subscription_tags", type: "source_type" },
   { table: "actor_operator_audit", type: "actor_type" },
+  { table: "actor_cold_garbage", type: "actor_type" },
 ]
 
 /** The per-actor tables `moveToAuthority` rewrites, for the catalog check that none is missed. */

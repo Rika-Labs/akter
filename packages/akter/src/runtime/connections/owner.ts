@@ -33,6 +33,8 @@ import { type ActorRef, Caller, type Principal, principal } from "../../identity
 import type { ConnectionCommands } from "../../identity/connection.ts"
 import { replayEvents } from "../events/replay.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { ColdTier } from "../storage/cold-tier.ts"
+import { ColdRead } from "../turn/blobs.ts"
 import { FrameworkClock } from "../turn/admission.ts"
 import {
   type ActivationCache,
@@ -411,8 +413,24 @@ export const activationOwner = ({
           if (activation.presence > 0) return
           activations.delete(entityId)
           yield* seal(activation)
+          yield* scheduleCold(activation)
         }),
     )
+
+  const scheduleCold = (activation: Activation) =>
+    Effect.gen(function* () {
+      const tier = yield* ColdTier
+      const generation = activation.cache.generation
+      const delay = registration.policy.coldMs
+      if (tier === undefined || generation === undefined || delay === undefined) return
+      yield* tier
+        .hibernate(activation, generation, delay)
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Cold timer could not be scheduled", cause),
+          ),
+        )
+    })
 
   const channelOf = (activation: Activation, holder: string, epoch: string) => {
     const name = `${holder}|${epoch}`
@@ -506,14 +524,22 @@ export const activationOwner = ({
   }
 
   /** Fences this activation's generation and loads committed state, as a command turn would. */
-  const acquire = (activation: Activation) =>
-    activation.cache.generation !== undefined && activation.cache.state !== undefined
+  const acquire = (
+    activation: Activation,
+    fetch = true,
+  ): Effect.Effect<void, ActorError | SqlError.SqlError, SqlClient.SqlClient> =>
+    activation.cache.generation !== undefined &&
+    (activation.cache.state !== undefined || activation.cache.cold !== undefined)
       ? Effect.void
-      : activation.acquiring.withPermit(acquireOnce(activation))
+      : activation.acquiring.withPermit(acquireOnce(activation, fetch))
 
-  const acquireOnce = (activation: Activation) =>
+  const acquireOnce = (activation: Activation, fetch: boolean) =>
     Effect.gen(function* () {
-      if (activation.cache.generation !== undefined && activation.cache.state !== undefined) return
+      if (
+        activation.cache.generation !== undefined &&
+        (activation.cache.state !== undefined || activation.cache.cold !== undefined)
+      )
+        return
       const sql = yield* SqlClient.SqlClient
       const actor = actorRow({ sql, actor: activation })
       const { ref, key } = activation
@@ -525,12 +551,24 @@ export const activationOwner = ({
 
           const [row] =
             activation.cache.generation === undefined
-              ? yield* sql<{ generation: string; head: string }>`
+              ? yield* sql<{
+                  generation: string
+                  head: string
+                  cold_ref: string | null
+                  cold_digest: string | null
+                  cold_state_version: number | null
+                }>`
                   UPDATE actor_generations SET generation = generation + 1 WHERE ${actor}
-                  RETURNING generation::text AS generation, event_sequence::text AS head`
-              : yield* sql<{ generation: string; head: string }>`
-                  SELECT generation::text AS generation, event_sequence::text AS head
-                  FROM actor_generations WHERE ${actor}`
+                  RETURNING generation::text AS generation, event_sequence::text AS head, cold_ref, cold_digest, cold_state_version`
+              : yield* sql<{
+                  generation: string
+                  head: string
+                  cold_ref: string | null
+                  cold_digest: string | null
+                  cold_state_version: number | null
+                }>`
+                  SELECT generation::text AS generation, event_sequence::text AS head, cold_ref, cold_digest, cold_state_version
+                  FROM actor_generations WHERE ${actor} FOR UPDATE`
 
           if (
             activation.cache.generation !== undefined &&
@@ -543,15 +581,38 @@ export const activationOwner = ({
 
           const state = yield* sql<{ key: string; value: Uint8Array }>`
             SELECT key, value FROM actor_state WHERE ${actor}`
+          yield* sql`DELETE FROM actor_outbox WHERE ${actor} AND timer_key = '$cold'`
 
           return { row: row!, state }
         }),
       )
 
       activation.cache.generation = acquired.row.generation
-      activation.cache.state = new Map(
-        acquired.state.map(({ key, value }) => [key, decompress(value)]),
-      )
+      if (acquired.row.cold_ref === null) {
+        activation.cache.state = new Map(
+          acquired.state.map(({ key, value }) => [key, decompress(value)]),
+        )
+        activation.cache.cold = undefined
+      } else if (fetch) {
+        const tier = yield* ColdTier
+        if (tier === undefined) return yield* unavailable("Cold actor needs coldStorage")
+        const material = yield* tier
+          .fetch(activation, {
+            ref: acquired.row.cold_ref,
+            digest: acquired.row.cold_digest!,
+            version: acquired.row.cold_state_version!,
+          })
+          .pipe(Effect.catch(() => unavailable("Cold object unavailable")))
+        const matching = yield* sql`SELECT 1 FROM actor_generations WHERE ${actor}
+          AND generation = ${acquired.row.generation} AND cold_ref = ${material.ref}
+          AND cold_digest = ${material.digest} AND cold_state_version = ${material.version}`
+        if (matching.length === 0) {
+          forget(activation)
+          return yield* unavailable("Cold read lost its generation")
+        }
+        activation.cache.cold = material
+        activation.cache.state = undefined
+      }
       advance(activation, acquired.row.head)
       activation.through = acquired.row.head
     })
@@ -614,7 +675,7 @@ export const activationOwner = ({
   /** Readies an activation that is about to run a turn: fenced, with its connection rows. */
   const prepare = (activation: Activation) =>
     hasConnections
-      ? Effect.andThen(acquire(activation), load(activation)).pipe(Effect.orDie)
+      ? Effect.andThen(acquire(activation, false), load(activation)).pipe(Effect.orDie)
       : Effect.void
 
   const list = (activation: Activation) => (member: string) =>
@@ -783,22 +844,27 @@ export const activationOwner = ({
       const connection = registration.connections.get(row.member)!
       const sql = yield* SqlClient.SqlClient
 
-      return yield* connection.run(
-        {
-          ref: activation.ref,
-          connectionId: row.connectionId,
-          member: row.member,
-          caller: row.caller,
-          resumed: !ConnectionPhase.guards.Open(phase) && !activation.opened.has(row.connectionId),
-          cursor: activation.through,
-          state: [...(activation.cache.state ?? new Map<string, string>())],
-          session: row.session,
-          connections: list(activation),
-          events: events(activation, sql),
-          commands,
-        },
-        phase,
-      )
+      return yield* connection
+        .run(
+          {
+            ref: activation.ref,
+            connectionId: row.connectionId,
+            member: row.member,
+            caller: row.caller,
+            resumed:
+              !ConnectionPhase.guards.Open(phase) && !activation.opened.has(row.connectionId),
+            cursor: activation.through,
+            state: activation.cache.cold?.envelope.state ?? [
+              ...(activation.cache.state ?? new Map<string, string>()),
+            ],
+            session: row.session,
+            connections: list(activation),
+            events: events(activation, sql),
+            commands,
+          },
+          phase,
+        )
+        .pipe(Effect.provideService(ColdRead, activation.cache.cold))
     })
 
   const checkSession = (result: ConnectionResult) =>
@@ -1230,7 +1296,9 @@ export const activationOwner = ({
       return {
         ref: activation.ref,
         cursor: activation.head,
-        state: [...(activation.cache.state ?? new Map<string, string>())],
+        state: activation.cache.cold?.envelope.state ?? [
+          ...(activation.cache.state ?? new Map<string, string>()),
+        ],
         events: events(activation, sql),
         follow: follow(activation, sql),
         progress: (tag: string, jobId: string | undefined) => progressFeed(activation, tag, jobId),
@@ -1502,6 +1570,7 @@ export const activationOwner = ({
       if (activation === undefined) return
       yield* streams.end(activation)
       yield* seal(activation)
+      yield* scheduleCold(activation)
       forget(activation)
       activation.opened.clear()
       activation.progress.clear()

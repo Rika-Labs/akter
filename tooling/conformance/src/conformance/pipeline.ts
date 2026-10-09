@@ -38,9 +38,14 @@ import {
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
 import { commandTimes } from "../../../../packages/akter/src/identity/command.ts"
 import { compress } from "../../../../packages/akter/src/runtime/storage/codec.ts"
+import { ColdStorage } from "../../../../packages/akter/src/runtime/storage/cold-storage.ts"
 import { TurnPoolSettings } from "../../../../packages/akter/src/runtime/turn/pipeline.ts"
 import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
-import { ActorTest, ClusterMember } from "../../../../packages/akter/src/testing/actor-test.ts"
+import {
+  ActorTest,
+  ClusterMember,
+  type TestOptions,
+} from "../../../../packages/akter/src/testing/actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
 import { SERVED_COMMAND, wireStatements } from "./statements.ts"
@@ -111,6 +116,7 @@ const Plain = Actor.make("Plain", {
   jobs: { Ping: { job: Ping } },
   api: { Add, Defer, PingLater, CancelPing, Change, Snapshot, History, ResilientHistory },
   internal: { Remind },
+  policy: { coldAfter: 1 },
 })
 
 const AddPayload = Schema.fromJsonString(Schema.Struct({ value: Schema.Finite }))
@@ -442,6 +448,7 @@ const withProbe = <A, E>(
     /** Ordinary pipeline cases remain independent of the speculative path. */
     readonly warm?: boolean
     readonly retryWindowMs?: number
+    readonly coldStorage?: TestOptions["coldStorage"]
     /** Turn hooks the runner sees at every point no queued fault takes. */
     readonly hooks?: TestHooks
     /** The runner's tracer, so a case can read the spans turns open. */
@@ -474,6 +481,7 @@ const withProbe = <A, E>(
               ActorTest.layer({
                 database,
                 retryWindowMs: options.retryWindowMs,
+                coldStorage: options.coldStorage,
               }).pipe(
                 Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
               ),
@@ -790,7 +798,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
-    name: "warm fast path: expiry is checked after the fence wait and a non-null cold_ref cannot commit speculatively",
+    name: "warm fast path: expiry is checked after the fence wait",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
     run: ({ expect, environment }) =>
@@ -799,7 +807,6 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
         { warm: true, prepare: false, retryWindowMs: 1_500 },
         (probe, database) =>
           Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient
             const test = yield* ActorTest
             const plain = yield* Plain.get("fast-expiry")
             expect(yield* plain.Add(3)).toBe(3)
@@ -847,20 +854,90 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
               events: 0,
             })
             expect(yield* plain.Add(2)).toBe(5)
-            yield* sql`ALTER TABLE actor_generations ADD COLUMN cold_ref text`
-            yield* sql`UPDATE actor_generations SET cold_ref = 'cold-material'
-            WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
-            const coldId = yield* (yield* Actors).mintCommandId
-            const coldHandled = probe.handled
-            const cold = yield* flightsOf(probe, plain.Add(11).pipe(Actor.commandId(coldId)))
-            expect(cold).toMatchObject({ value: 16, flights: 3 })
-            expect(probe.handled - coldHandled).toBe(2)
-            expect(yield* test.inspect(plain.ref)).toMatchObject({
-              state: { count: 16 },
-              receipts: 3,
-            })
           }),
       ),
+  },
+  {
+    name: "warm fast path: offloaded state and unwritten cold material always use ordinary cold admission",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) => {
+      const base = ColdStorage.memory()
+      let reads = 0
+      const store = {
+        ...base,
+        get: (key: string) =>
+          Effect.suspend(() => {
+            reads++
+            return base.get(key)
+          }),
+      }
+      return withProbe(
+        environment,
+        {
+          warm: true,
+          prepare: false,
+          coldStorage: { store, backupRetention: "1 hour", grace: "1 hour" },
+        },
+        (probe) =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            const test = yield* ActorTest
+            const actors = yield* Actors
+            const plain = yield* Plain.get("warm-then-cold")
+            expect(yield* plain.Add(3)).toBe(3)
+            const warmId = yield* actors.mintCommandId
+            expect(
+              yield* flightsOf(probe, plain.Add(7).pipe(Actor.commandId(warmId))),
+            ).toMatchObject({ value: 10, flights: 1 })
+            yield* test.hibernate(plain.ref)
+            yield* test.advance(2)
+            const [before] = yield* sql<{ cold_ref: string | null }>`SELECT cold_ref
+              FROM actor_generations WHERE tenant_id = ${test.tenant}
+                AND actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+            expect(before!.cold_ref).not.toEqual(null)
+            expect((yield* test.inspect(plain.ref)).state).toEqual({})
+            const handled = probe.handled
+            const refused = yield* flightsOf(
+              probe,
+              plain.Change({ amount: 101, fail: true, defect: false }).pipe(Effect.result),
+            )
+            expect(Result.isFailure(refused.value)).toBe(true)
+            expect(refused.flights > 2).toBe(true)
+            expect(refused.sent.some((flight) => wire(flight).includes("ROLLBACK"))).toBe(true)
+            expect(
+              refused.sent.some((flight) => wire(flight).includes("durable.admitted_at_ms")),
+            ).toBe(false)
+            expect(reads).toBe(1)
+            expect(
+              yield* sql`SELECT cold_ref FROM actor_generations
+              WHERE tenant_id = ${test.tenant} AND actor_type = 'Plain' AND actor_id = ${plain.ref.id}`,
+            ).toEqual([before!])
+            expect(yield* test.inspect(plain.ref)).toMatchObject({ state: {}, receipts: 3 })
+            const restored = yield* flightsOf(probe, plain.Add(11))
+            expect(restored.value).toBe(21)
+            expect(restored.flights > 1).toBe(true)
+            expect(
+              restored.sent.some((flight) => wire(flight).includes("durable.admitted_at_ms")),
+            ).toBe(false)
+            expect(reads).toBe(1)
+            expect(probe.handled - handled).toBe(2)
+            expect(
+              yield* sql`SELECT cold_ref FROM actor_generations
+              WHERE tenant_id = ${test.tenant} AND actor_type = 'Plain' AND actor_id = ${plain.ref.id}`,
+            ).toEqual([{ cold_ref: null }])
+            expect(yield* test.inspect(plain.ref)).toMatchObject({
+              state: { count: 21 },
+              receipts: 4,
+              events: 0,
+            })
+            const restoredId = yield* actors.mintCommandId
+            expect(
+              yield* flightsOf(probe, plain.Add(13).pipe(Actor.commandId(restoredId))),
+            ).toMatchObject({ value: 34, flights: 1 })
+          }),
+      )
+    },
   },
   {
     name: "warm fast path: a lost COMMIT reply retries once through its stored receipt, never reevaluating",

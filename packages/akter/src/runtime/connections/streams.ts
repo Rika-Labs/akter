@@ -6,6 +6,7 @@ import type { Registration, StreamInput } from "../members.ts"
 import type { Activation } from "./owner.ts"
 import { StreamFailed, StreamItem } from "./protocol.ts"
 import type { Transport } from "./transport.ts"
+import { ColdRead } from "../turn/blobs.ts"
 
 /** Open stream subscriptions one actor may have. */
 const MAX_ACTOR_STREAMS = 256
@@ -155,6 +156,7 @@ export const streamSubscriptions = ({
           })
 
         producer = yield* stream.run(request.input, { ...input, caller: request.caller }).pipe(
+          Stream.provideService(ColdRead, activation.cache.cold),
           Stream.runForEach((value) => offer(StreamItem.cases.Element.make({ value }))),
           Effect.andThen(offer(StreamItem.cases.Done.make({}))),
           Effect.andThen(Queue.end(queue)),

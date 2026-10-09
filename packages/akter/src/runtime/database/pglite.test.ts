@@ -154,6 +154,7 @@ describe("PGlite migrations", () => {
             { migration_id: 31 },
             { migration_id: 32 },
             { migration_id: 33 },
+            { migration_id: 34 },
           ])
           expect(
             yield* sql`SELECT count(*)::int AS views FROM pg_views WHERE schemaname = 'durable' AND viewname LIKE '%\_v2' ESCAPE '\'`,

@@ -19,6 +19,8 @@ import { caughtUp, QueryPool } from "./database/replica.ts"
 import { withTenant } from "./database/tenancy.ts"
 import { replayEvents } from "./events/replay.ts"
 import { decompress, routingKey } from "./storage/codec.ts"
+import { ColdTier } from "./storage/cold-tier.ts"
+import { ColdRead } from "./turn/blobs.ts"
 import { accountsUsage, UsageAccounting } from "./telemetry/usage.ts"
 import { decodeResult } from "./workflows/engine.ts"
 
@@ -112,16 +114,22 @@ export const committedReads = ({
             head: string | null
             key: string | null
             value: Uint8Array | null
+            cold_ref: string | null
+            cold_digest: string | null
+            cold_state_version: number | null
           }>`
-              SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value
+              SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value,
+                cold_ref, cold_digest, cold_state_version
               FROM actor_generations
               WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
                 AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
               UNION ALL
-              SELECT NULL, key, value
+              SELECT NULL, key, value, NULL, NULL, NULL
               FROM actor_state
               WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`.pipe(
+            withTenant(request.ref.tenant),
+          )
 
           let head: string | undefined
           const state: Array<readonly [string, string]> = []
@@ -133,25 +141,50 @@ export const committedReads = ({
           if (head === undefined) state.length = 0
 
           const cursor = head ?? "0"
+          const pointer = rows.find((row) => row.head !== null)
+          const tier = Context.get(services, ColdTier)
+          const material =
+            pointer?.cold_ref == null
+              ? undefined
+              : yield* Effect.suspend(() =>
+                  tier === undefined
+                    ? Effect.die(new Error("Cold query needs coldStorage"))
+                    : tier
+                        .fetch(
+                          { key, ref: request.ref },
+                          {
+                            ref: pointer.cold_ref!,
+                            digest: pointer.cold_digest!,
+                            version: pointer.cold_state_version!,
+                          },
+                        )
+                        .pipe(
+                          Effect.mapError((cause) =>
+                            ActorError.make({ reason: ActorUnavailable.make({ cause }) }),
+                          ),
+                        ),
+                )
 
-          const outcome = yield* query.run(
-            request,
-            state,
-            cursor,
-            (tag, after, limit) =>
-              replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
-                Effect.catchIf(SqlError.isSqlError, Effect.die),
-                Effect.provideService(SqlClient.SqlClient, client),
-                Effect.provideContext(services),
-              ),
-            reads,
-          )
+          const outcome = yield* query
+            .run(
+              request,
+              material?.envelope.state ?? state,
+              cursor,
+              (tag, after, limit) =>
+                replayEvents(request.ref, key, [tag], after, BigInt(cursor), limit).pipe(
+                  Effect.catchIf(SqlError.isSqlError, Effect.die),
+                  Effect.provideService(SqlClient.SqlClient, client),
+                  Effect.provideContext(services),
+                ),
+              reads,
+            )
+            .pipe(Effect.provideService(ColdRead, material), withTenant(request.ref.tenant))
 
           if (Outcome.guards.Defect(outcome) && SqlError.isSqlError(outcome.cause))
             return yield* outcome.cause
 
           return outcome
-        }).pipe(withTenant(request.ref.tenant), Effect.provideService(SqlClient.SqlClient, client))
+        }).pipe(Effect.provideService(SqlClient.SqlClient, client))
 
       const owned = registration.tables.length > 0 || registration.blobs.length > 0
       const local = owned ? primary : (queryPool ?? primary)

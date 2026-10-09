@@ -1,6 +1,10 @@
 # ADR 0036: The cold tier
 
-**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28). Design only: nothing is built until hosted usage asks for it (slice L.2).
+**Status:** accepted (2026-09-28, Dallen, with every recommended default; proposed 2026-09-28).
+
+**Amendment:** [ADR 0114](0114-cold-tier-admission-and-garbage.md), accepted 2026-10-09, supersedes the pre-delivery `readAdmission` fetch protocol in section 4 and the orphan/deletion rules in sections 3 and 5. Fenced owner admission rolls back and releases before fetching; both collectors check current references, cold work, and the latest-unreference backup window.
+
+**Implementation:** opt-in Postgres framework tier, migration `0034_cold_tier`, runtime races, SIGKILL and S3-compatible local evidence in [cold verification](../verification/cold-tier.md). Hosted wake-latency and object durability remain separate unverified L.2 gates.
 
 **Responsibility:** decide how the state and blobs of long-idle actors move to object storage and come back, crash-safely, without adding cost to warm turns.
 
