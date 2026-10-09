@@ -14,10 +14,20 @@ Your `DATABASE_URL` must meet these rules:
 - Use `postgres://` or `postgresql://` with a host, no fragment, and no raw whitespace or control characters. Percent-encode special characters in the username and password.
 - Use a **direct, non-pooled connection** to the writable database. Transaction-pooler URLs are refused: the runtime requires session semantics, including state that must remain on the same Postgres session. Do not use Neon's `-pooler` endpoint, Supabase's transaction pooler or PlanetScale's PgBouncer port.
 - Include **exactly one** `sslmode` query parameter, set to `require`, `verify-ca` or `verify-full`. Missing, repeated or other values, including `disable`, `prefer` and `no-verify`, are refused.
-- The server certificate must chain to a public certificate authority and match the URL's host name. Akter checks both for all three accepted `sslmode` values; use `verify-full`. A custom root certificate in the URL (`sslrootcert`) is not used. An endpoint requiring a private or provider-specific CA needs additional trust support; see the [RDS caveat](/cloud/choose-postgres#provider-options).
+- The server certificate must chain to a public certificate authority, or AWS's official RDS CA for a native RDS endpoint, and match the URL's host name. Akter validates the full chain and host name for all three accepted `sslmode` values; use `verify-full`. A custom root certificate in the URL (`sslrootcert`) is not used, and other private CAs remain unsupported.
 - The login must be able to create and alter the app's tables. Migrations use the same connection; insufficient permissions fail the deployment at its `migrate` step.
 
 Postgres is the only Cloud database engine. The framework's [support matrix](/operations/support-matrix) defines verified server versions and provider evidence; a successful connection probe is not a durability or recovery certification.
+
+## Amazon RDS and Aurora PostgreSQL
+
+Akter Cloud includes AWS's official RDS global CA bundle for **RDS PostgreSQL and Aurora PostgreSQL in commercial AWS regions**. You do not need to upload a CA certificate or add `sslrootcert` to the URL. Full certificate-chain and host-name verification stay enabled.
+
+- Choose **US East (N. Virginia), `us-east-1`**, beside Akter's launch runners in Fly `iad`. Other regions can add database latency.
+- Copy the **writable RDS instance endpoint** or **Aurora writer cluster endpoint** on port **5432**, using its AWS-issued host name ending in `.rds.amazonaws.com`. The additional RDS roots apply only to those native host names, not a custom DNS alias or IP address. GovCloud and China use separate CA bundles and are not covered by this support.
+- Include **`sslmode=verify-full`**. Akter also accepts `require` and `verify-ca`, but still checks the full chain and host name for both. Never disable certificate verification to work around a connection error.
+- Use the **direct database endpoint**, rather than RDS Proxy or a transaction-pooling gateway. Akter needs session semantics; transaction-pooling mode is not supported. The RDS CA bundle does not establish proxy compatibility.
+- Make sure the endpoint is reachable from the runners. A private VPC-only endpoint is not reachable merely because its CA is trusted; configure an appropriate network path and security-group access.
 
 ## Set the connection and deploy
 
