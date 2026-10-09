@@ -1,4 +1,4 @@
-import { Effect, Layer, Predicate, Redacted } from "effect"
+import { Effect, Layer, Match, Predicate, Redacted, Schema } from "effect"
 import { HttpRouter, HttpServer } from "effect/http"
 import { HttpApi, HttpApiBuilder } from "effect/http-api"
 import { afterAll, describe, expect, it } from "vitest"
@@ -12,7 +12,7 @@ import {
   secureSessionCookieName,
   sessionCookieName,
 } from "./auth.ts"
-import { NotImplemented, Unauthorized } from "./errors.ts"
+import { NotImplemented, Unauthorized, Unavailable } from "./errors.ts"
 import { AccountGroup } from "./groups/account.ts"
 import { DeploymentsGroup } from "./groups/deployments.ts"
 import { ApiKeyId, Email, OrganizationId, UserId } from "./primitives.ts"
@@ -65,8 +65,14 @@ const AuthenticationLive = Layer.succeed(
           )
         : reject("missing_credentials"),
     bearer: (httpEffect, { credential }) =>
-      Redacted.value(credential) === "device-token"
-        ? Effect.provideService(
+      Match.value(Redacted.value(credential)).pipe(
+        Match.when("store-down", () =>
+          Effect.fail(
+            Unavailable.make({ message: "Session store unavailable", retryAfterSeconds: 1 }),
+          ),
+        ),
+        Match.when("device-token", () =>
+          Effect.provideService(
             httpEffect,
             CurrentIdentity,
             SessionIdentity.make({
@@ -74,8 +80,10 @@ const AuthenticationLive = Layer.succeed(
               sessionId: "ses_3",
               activeOrganizationId: null,
             }),
-          )
-        : reject("invalid_credentials"),
+          ),
+        ),
+        Match.orElse(() => reject("invalid_credentials")),
+      ),
   }),
 )
 
@@ -164,6 +172,18 @@ describe("Authentication over HTTP", () => {
         const response = yield* send("/api/me")
         expect(response.status).toBe(401)
         expect(response.body).toHaveProperty("_tag", "Unauthorized")
+      }),
+    ))
+
+  it("answers 503 with a typed Unavailable on an endpoint that declares no outage of its own", () =>
+    run(
+      Effect.gen(function* () {
+        const response = yield* send("/api/me", { authorization: "Bearer store-down" })
+        const outage = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(Unavailable))(
+          response.body,
+        ).pipe(Effect.orDie)
+        expect(response.status).toBe(503)
+        expect(outage.retryAfterSeconds).toBe(1)
       }),
     ))
 

@@ -10,7 +10,7 @@ import { Command, Flag } from "effect/cli"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { fail } from "../../failure.ts"
 import { ContextInvalid, packContext } from "./archive.ts"
-import { reportFailures, signedIn } from "./client.ts"
+import { reportFailures, retryTransient, signedIn } from "./client.ts"
 
 /** The rollout ended `failed`; `step` is the step that failed and `detail` why. */
 export class DeploymentFailed extends Schema.TaggedError<DeploymentFailed>()("DeploymentFailed", {
@@ -107,7 +107,8 @@ const seconds = (durationMs: number | null) =>
  * new lines on every poll, asking from the index after the last line it
  * printed, and when the build succeeds it prints the rest before the step's
  * end, until the log says it is complete. A failed build prints the build's
- * last lines.
+ * last lines. Every read retries transient failures, so a brief control-plane
+ * outage delays following instead of abandoning a rollout that goes on.
  */
 const follow = Effect.fnUntraced(function* (input: {
   readonly client: Effect.Success<typeof signedIn>["client"]
@@ -122,9 +123,12 @@ const follow = Effect.fnUntraced(function* (input: {
   let cursor = 0
   let following = false
   let logComplete = false
+  const read = retryTransient("The control plane is unavailable; still following the deployment.")
 
   const printLog = Effect.gen(function* () {
-    const log = yield* input.client.deployments.getBuildLog({ params, query: { after: cursor } })
+    const log = yield* read(
+      input.client.deployments.getBuildLog({ params, query: { after: cursor } }),
+    )
     const last = log.lines.at(-1)
 
     for (const line of log.lines) yield* Console.log(`    ${line.text}`)
@@ -159,7 +163,7 @@ const follow = Effect.fnUntraced(function* (input: {
       const failed = detail.steps.find((step) => step.status === "failed")
 
       if (failed?.name === "build") {
-        const log = yield* input.client.deployments.getBuildLog({ params, query: {} })
+        const log = yield* read(input.client.deployments.getBuildLog({ params, query: {} }))
 
         for (const line of log.lines.slice(-20)) yield* Console.error(`    ${line.text}`)
       }
@@ -178,7 +182,7 @@ const follow = Effect.fnUntraced(function* (input: {
       })
 
     yield* Effect.sleep(Duration.seconds(1))
-    detail = yield* input.client.deployments.get({ params })
+    detail = yield* read(input.client.deployments.get({ params }))
   }
 })
 

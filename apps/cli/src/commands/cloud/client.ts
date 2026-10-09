@@ -1,5 +1,5 @@
 import * as Cloud from "@akter/cloud-api"
-import { type Config, Effect, Match, type PlatformError, Schema } from "effect"
+import { type Config, Console, Duration, Effect, Match, type PlatformError, Schema } from "effect"
 import { HttpClient, type HttpClientError, HttpClientRequest } from "effect/http"
 import { HttpApiClient } from "effect/http-api"
 import { CommandFailed, fail } from "../../failure.ts"
@@ -27,6 +27,69 @@ export const signedIn = Effect.gen(function* () {
 
   return { credentials, client: yield* cloudClient(credentials) }
 })
+
+/** How many failed control-plane reads in a row a follower retries before it gives up. */
+export const MAX_READ_RETRIES = 5
+
+/** The wait before a follower's `attempt`th retry in a row: 1, 2 and 4 seconds, then 8. */
+export const readRetryDelay = (attempt: number) => Duration.seconds(Math.min(2 ** (attempt - 1), 8))
+
+/**
+ * Whether a failed read may succeed when repeated: an `Unavailable` outage
+ * (not one naming a known condition such as `unknownPlan`), a request that got
+ * no answer, or a 5xx answer the client could not read as a declared error,
+ * such as a proxy's 502 page. Refusals and unreadable answers with any other
+ * status fail the same way again.
+ */
+export const isTransient = (error: HostedFailure) =>
+  Match.value(error).pipe(
+    Match.tag("Unavailable", (unavailable) => unavailable.reason === undefined),
+    Match.tag("HttpClientError", ({ reason }) =>
+      Match.value(reason).pipe(
+        Match.tag("TransportError", () => true),
+        Match.tag(
+          "StatusCodeError",
+          "DecodeError",
+          "EmptyBodyError",
+          ({ response }) => response.status >= 500,
+        ),
+        Match.orElse(() => false),
+      ),
+    ),
+    Match.orElse(() => false),
+  )
+
+/**
+ * Retries the reads made through it after transient failures, printing
+ * `notice` and waiting `readRetryDelay` before each retry. One count spans
+ * every read made through it and resets after any success, so a follower
+ * gives up after `MAX_READ_RETRIES` failures in a row rather than per read.
+ */
+export const retryTransient = (notice: string) => {
+  let failures = 0
+  const read = <A, E extends HostedFailure, R>(
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    effect.pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          failures = 0
+        }),
+      ),
+      Effect.catchIf(
+        (error) => failures < MAX_READ_RETRIES && isTransient(error),
+        () =>
+          Effect.gen(function* () {
+            failures += 1
+            yield* Console.error(notice)
+            yield* Effect.sleep(readRetryDelay(failures))
+            return yield* read(effect)
+          }),
+      ),
+    )
+
+  return read
+}
 
 /** Every failure the hosted commands share. */
 export type HostedFailure =
