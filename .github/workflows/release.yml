@@ -141,7 +141,7 @@ jobs:
           for package in "$RUNNER_TEMP/package" "$RUNNER_TEMP/package-cli"; do
             name="$(jq -r .name "$package/package.json")"
             version="$(jq -r .version "$package/package.json")"
-            current="$(npm view "$name" dist-tags --json | jq -r '.latest // empty')"
+            current="$(npm view "$name" dist-tags --json | jq -r 'if type == "array" then .[0] else . end | .latest // empty')"
             if [ -z "$current" ] || bun -e 'process.exit(Bun.semver.order(Bun.argv[1], Bun.argv[2]) < 0 ? 1 : 0)' "$version" "$current"; then
               npm dist-tag add "$name@$version" latest
             else
