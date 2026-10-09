@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `akter deploy` keeps following a rollout through a brief control-plane outage. Transport failures, typed `Unavailable` (503) answers without a known `reason` and unreadable 5xx answers such as a proxy's 502 are retried with the delays `logs --follow` uses (1, 2, 4, then 8 seconds), and six consecutive failed reads stop it as before. Refusals, including an ended session, are never retried.
+- The cloud API contract's `Authentication` middleware declares `Unavailable` (503) alongside `Unauthorized` and `Forbidden`, so every endpoint, including `/api/me`, decodes a session-store outage as a typed `Unavailable`. `akter whoami` then reports a temporary outage (exit 1) instead of an unreachable control plane (exit 2), and never asks you to log in again. This is additive for `/cloud-api` consumers; a server may now fail authentication with `Unavailable`.
+
 ## 0.1.0-alpha.3 (2026-10-08)
 
 The first CLI release, versioned with `@rikalabs/akter` on the `alpha` and `latest` dist-tags. This includes the unpublished alpha.2 draft and the final launch contract.

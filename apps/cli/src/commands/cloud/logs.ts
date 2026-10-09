@@ -12,7 +12,7 @@ import { Config, Console, DateTime, Effect, Option, Schema } from "effect"
 import type { HttpClientError } from "effect/http"
 import { Command, Flag } from "effect/cli"
 
-import { reportFailures, signedIn } from "./client.ts"
+import { MAX_READ_RETRIES, readRetryDelay, reportFailures, signedIn } from "./client.ts"
 
 const colourSequence = new RegExp(`${String.fromCodePoint(0x1b)}\\[[0-?]*[ -/]*[@-~]`, "gu")
 
@@ -60,10 +60,10 @@ export const logsCommand = Command.make(
       let failures = 0
       const retryRead = (error: HttpClientError.HttpClientError | Unavailable) =>
         Effect.gen(function* () {
-          if (!options.follow || failures >= 5) return yield* error
+          if (!options.follow || failures >= MAX_READ_RETRIES) return yield* error
           failures += 1
           yield* Console.error("Log read unavailable; reconnecting from the last cursor.")
-          yield* Effect.sleep(`${Math.min(2 ** (failures - 1), 8)} seconds`)
+          yield* Effect.sleep(readRetryDelay(failures))
           return undefined
         })
       while (true) {

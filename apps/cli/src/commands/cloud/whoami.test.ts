@@ -18,6 +18,9 @@ const answers = Effect.all({
       message: "A verified session is required",
     }),
   ),
+  unavailable: Schema.encodeEffect(Schema.toCodecJson(Cloud.Unavailable))(
+    Cloud.Unavailable.make({ message: "Session store unavailable", retryAfterSeconds: 1 }),
+  ),
   me: Schema.encodeEffect(Schema.toCodecJson(Cloud.Me))({
     user: {
       id: Cloud.UserId.make("usr_ada"),
@@ -87,6 +90,19 @@ layer(BunServices.layer)("akter whoami", (it) => {
 
       expect(run).toMatchObject({ exitCode: 1, reason: "Unauthorized" })
       expect(run.stderr).toContain("expired or was revoked. Run `akter login`")
+    }),
+  )
+
+  it.effect("tells a control-plane outage apart from an ended session, with exit 1", () =>
+    Effect.gen(function* () {
+      const { unavailable } = yield* answers
+      const run = yield* whoami(
+        scriptedFetch(() => Response.json(unavailable, { status: 503 })).fetch,
+      )
+
+      expect(run).toMatchObject({ exitCode: 1, reason: "Unavailable" })
+      expect(run.stderr).toContain("temporarily unavailable")
+      expect(run.stderr).not.toContain("akter login")
     }),
   )
 

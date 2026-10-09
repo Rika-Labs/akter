@@ -1,7 +1,7 @@
 import { Context, Schema } from "effect"
 import { HttpApiMiddleware, HttpApiSecurity } from "effect/http-api"
 
-import { Forbidden, Unauthorized } from "./errors.ts"
+import { Forbidden, Unauthorized, Unavailable } from "./errors.ts"
 import { ApiKeyId, OrganizationId, UserId } from "./primitives.ts"
 
 /** The cookie that carries the Better Auth session token over plain HTTP. */
@@ -41,7 +41,10 @@ export class CurrentIdentity extends Context.Service<CurrentIdentity, Identity>(
  * invalid; the first scheme that succeeds provides `CurrentIdentity`. A cookie
  * browser client sends credentials automatically, so no client implementation
  * is required. `bearer` carries the session token a CLI receives from Better
- * Auth's device authorization grant.
+ * Auth's device authorization grant. A credential the server cannot check
+ * because its session store is down fails `Unavailable`, never
+ * `Unauthorized`, so every endpoint's client can tell an outage from a
+ * session that ended.
  *
  * @effect-expect-leaking HttpServerRequest | ParsedSearchParams | RouteContext
  */
@@ -55,5 +58,5 @@ export class Authentication extends HttpApiMiddleware.Service<
     apiKey: HttpApiSecurity.apiKey({ key: apiKeyHeaderName, in: "header" }),
     bearer: HttpApiSecurity.bearer,
   },
-  error: [Unauthorized, Forbidden],
+  error: [Unauthorized, Forbidden, Unavailable],
 }) {}

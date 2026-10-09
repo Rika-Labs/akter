@@ -1,7 +1,7 @@
 import * as Cloud from "@akter/cloud-api"
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { Effect, FileSystem, Schema } from "effect"
+import { Effect, FileSystem, Predicate, Schema } from "effect"
 import { configDirectory, runCliWith, scriptedFetch } from "../../testing.ts"
 
 const API = "https://cloud.test"
@@ -24,7 +24,15 @@ const refusals = Effect.all({
   notFound: Schema.encodeEffect(Schema.toCodecJson(Cloud.NotFound))(
     Cloud.NotFound.make({ resource: "project", id: "prj_other" }),
   ),
+  unavailable: Schema.encodeEffect(Schema.toCodecJson(Cloud.Unavailable))(
+    Cloud.Unavailable.make({ message: "Session store unavailable", retryAfterSeconds: 1 }),
+  ),
+  deploymentGone: Schema.encodeEffect(Schema.toCodecJson(Cloud.NotFound))(
+    Cloud.NotFound.make({ resource: "deployment", id: "dep_42" }),
+  ),
 }).pipe(Effect.orDie)
+
+type Refusals = Effect.Success<typeof refusals>
 
 type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped"
 
@@ -73,15 +81,17 @@ const endedLog = {
 
 /**
  * The control plane: stores the upload, creates `dep_42`, then answers each
- * poll with the next of `polls`. A build log read is answered with the lines
- * of `log` at or after its `after` cursor, `log` being the next of `logs`
- * once the earlier ones are spent.
+ * poll with the next of `polls`, a deployment detail or, given a function, the
+ * response it makes from the encoded refusals. A build log read is answered
+ * with the lines of `log` at or after its `after` cursor, `log` being the next
+ * of `logs` once the earlier ones are spent.
  */
 const controlPlane = (
-  polls: ReadonlyArray<ReturnType<typeof detail>>,
+  polls: ReadonlyArray<ReturnType<typeof detail> | ((refused: Refusals) => Response)>,
   logs: ReadonlyArray<typeof endedLog> = [endedLog],
 ) =>
-  Effect.map(refusals, ({ unauthorized, notFound }) => {
+  Effect.map(refusals, (refused) => {
+    const { unauthorized, notFound } = refused
     const answers = [...polls]
     const logAnswers = [...logs]
 
@@ -105,8 +115,11 @@ const controlPlane = (
           complete: log.complete,
         })
       }
-      if (path === "/api/projects/prj_1/deployments/dep_42")
-        return Response.json(answers.shift() ?? building())
+      if (path === "/api/projects/prj_1/deployments/dep_42") {
+        const answer = answers.shift() ?? building()
+
+        return Predicate.isFunction(answer) ? answer(refused) : Response.json(answer)
+      }
 
       return Response.json(notFound, { status: 404 })
     })
@@ -261,6 +274,42 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
         expect(run).toMatchObject({ exitCode: 1, reason: "DeploymentTimedOut" })
         expect(run.stderr).toContain("still rolling out after 0s")
       }),
+  )
+
+  it.effect(
+    "keeps following through a control-plane outage, retrying a typed Unavailable and a proxy's 502",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* controlPlane([
+          ({ unavailable }) => Response.json(unavailable, { status: 503 }),
+          () => new Response("<html>502 Bad Gateway</html>", { status: 502 }),
+          detail("live", ["succeeded", "succeeded", "succeeded", "skipped"]),
+        ])
+        const run = yield* deploy(server)
+
+        expect(run).toMatchObject({ exitCode: 0, reason: "" })
+        expect(run.stdout).toContain("Deployment dep_42 is live in staging")
+        expect(run.stderr.match(/still following the deployment/gu)).toHaveLength(2)
+        expect(
+          routes(server).filter((route) => route === "GET /api/projects/prj_1/deployments/dep_42"),
+        ).toHaveLength(3)
+      }),
+  )
+
+  it.effect("stops following at a refusal during the rollout without retrying it", () =>
+    Effect.gen(function* () {
+      const server = yield* controlPlane([
+        ({ deploymentGone }) => Response.json(deploymentGone, { status: 404 }),
+      ])
+      const run = yield* deploy(server)
+
+      expect(run).toMatchObject({ exitCode: 1, reason: "NotFound" })
+      expect(run.stderr).not.toContain("still following")
+      expect(routes(server).at(-1)).toBe("GET /api/projects/prj_1/deployments/dep_42")
+      expect(
+        routes(server).filter((route) => route === "GET /api/projects/prj_1/deployments/dep_42"),
+      ).toHaveLength(1)
+    }),
   )
 
   it.effect("tells an expired session to log in again before anything is uploaded", () =>
