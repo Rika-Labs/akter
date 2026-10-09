@@ -54,10 +54,10 @@ At deploy, Akter probes your database from the **runner region, Fly `iad` in Nor
 The probe also budgets database connections. The database-derived runner cap is:
 
 ```text
-runner cap = floor((max_connections - in_use - 10) / 9)
+runner cap = floor((max_connections - in_use - 10) / 4)
 ```
 
-`max_connections` is the server's connection limit and `in_use` is its current usage. Akter reserves 10 connections and budgets 9 per runner. For example, a limit of 100 with 17 connections in use leaves a cap of 8 runners. A cap of zero leaves no room for a runner; reduce competing connections or increase your database's capacity.
+`max_connections` is the server's connection limit and `in_use` is its current usage. Akter reserves 10 connections and budgets 4 per runner (1 turn, 2 off-turn and 1 query session). For example, a limit of 100 with 17 connections in use leaves a cap of 18 runners. A cap of zero leaves no room for a runner; reduce competing connections or increase your database's capacity.
 
 This is a connection ceiling, not a throughput guarantee. Akter handles runner orchestration, but your Postgres capacity and latency still bound the app's scale.
 
