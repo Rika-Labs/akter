@@ -161,24 +161,23 @@ export const exportActor = (page: {
         const material =
           found.cold_ref === null
             ? undefined
-            : yield* Effect.gen(function* () {
-                const tier = yield* ColdTier
-                if (tier === undefined)
-                  return yield* Effect.die(new Error("Cold export needs coldStorage"))
-                return yield* tier
-                  .fetch(
-                    {
-                      key: BigInt(routingKey),
-                      ref: { tenant: page.tenant, actor: page.actorType, id: page.actorId },
-                    },
-                    {
-                      ref: found.cold_ref!,
-                      digest: found.cold_digest!,
-                      version: found.cold_state_version!,
-                    },
-                  )
-                  .pipe(Effect.orDie)
-              })
+            : yield* Effect.flatMap(ColdTier, (tier) =>
+                tier === undefined
+                  ? Effect.die(new Error("Cold export needs coldStorage"))
+                  : tier
+                      .fetch(
+                        {
+                          key: BigInt(routingKey),
+                          ref: { tenant: page.tenant, actor: page.actorType, id: page.actorId },
+                        },
+                        {
+                          ref: found.cold_ref!,
+                          digest: found.cold_digest!,
+                          version: found.cold_state_version!,
+                        },
+                      )
+                      .pipe(Effect.orDie),
+              )
         const entries =
           material === undefined
             ? stored.map(({ key, value }) => [key, decodeBytes(value)] as const)

@@ -110,7 +110,11 @@ export const actorRegistration = ({
   const startupSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     retryPoolRefusal(effect).pipe(Effect.orDie)
 
-  /** A shortened migration history cannot reinterpret cold objects written before a later schema was deployed. */
+  /**
+   * A shortened migration history cannot reinterpret older cold objects.
+   * PGlite cannot offload, so it needs no transaction that would eagerly start
+   * its singleton actors during registration.
+   */
   const checkColdState = Effect.fnUntraced(function* (registration: {
     readonly name: string
     readonly stateVersion: number

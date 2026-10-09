@@ -388,6 +388,8 @@ Supply the platform Crypto layer as for any runtime, and obtain `databaseUrl` fr
 
 `policy.coldAfter` starts at hibernation, not the last command: default 30 days, or `"never"` to opt out. State and actor blobs move together; other rows remain in Postgres. A query reads through without activation or write-back. A command's retained receipt needs no GET; otherwise the owner releases admission before GET and re-admits the same identity. Object failure/timeout is retryable `ActorUnavailable`; corruption is a deterministic defect. A successful turn commits complete restoration, while a declared failure retains the cold pointer. Warm and ordinary wake flights do not gain a preflight read. See [restore](../operations/04-backup-restore.md#cold-tier) before enabling object deletion.
 
+Operator exports also read through: the tenant-bound SQL snapshot captures the immutable cold pointer, then GET runs outside that transaction. Exports retain the stored state/version and omitted blob count without waking or restoring the actor; a storage failure answers an operational 500, never an empty seed.
+
 ## Layers
 
 ```ts
