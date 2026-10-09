@@ -33,6 +33,8 @@ The guard raises a SQL error on a miss, aborting the transaction before any cons
 
 A guard miss or receipt insertion race discards speculation and the cached view, then uses ordinary fenced admission. A stale generation reloads committed state and reevaluates safely. An existing receipt resolves the original caller, command and canonical payload, then returns the stored success/failure or access/conflict error, without evaluating another handler. Other SQL errors, defects, cancellation, lock/execution timeouts and ambiguous commits use existing defect/retry recovery, not an optimistic retry loop. Commit-unknown discards the cache; redelivery uses the same id and ordinary admission. If the receipt committed, recovery evaluates no handler. If the transaction rolled back, recovery may evaluate again.
 
+An external identity that is future or expired at the post-lock database clock cannot commit. A speculative handler may already have been evaluated, including when expiry passes during the fence wait; its work is discarded, and ordinary admission returns `InvalidCommandId(future)` or `CommandExpired` without further evaluation. Format and retry-window checks still occur before external delivery. This amends the old no-handler-on-expiry wording only for discarded speculation, not identity rejection, receipt retention or pruning safety.
+
 ### Eligibility and replay knowledge
 
 The fast path requires a confirmed committed state, generation, creation marker, event head and post-commit version. Eligibility is conservative:
