@@ -2,6 +2,8 @@
 
 [Backend removal](neki-removal.md) records the Postgres/PGlite-only runtime, transactional inspection-view retirement and retained generic ownership mechanisms. [Explicit unrouted Neki](neki-unrouted.md) is historical evidence for a removed backend, not a current test or support claim.
 
+[Bucket-range sharding](bucket-range-sharding.md) defines the independent-primary, cross-database delivery, fencing/move, protocol, feature and recovery evidence required by proposed ADR 0116. It is an unexecuted evidence plan; physical sharding and online moves remain unsupported.
+
 The cross-database coordination regression suite is `packages/akter/src/runtime/database/coordination.test.ts`, included in the Postgres integration project. It creates two actor-data databases and one shared authority, proves retention/workflow contention and rollback/release, terminates the authority backend to test the local data fence, and exercises Cluster session/table locks, singleton lease reads, fleet lock release, and actor-scoped capped-job locking ([ADR 0066](../decisions/0066-authoritative-coordination.md)). It does not certify a hosted provider or database failover topology.
 
 **Responsibility:** index the verification documents and their evidence requirements.  
