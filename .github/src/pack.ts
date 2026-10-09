@@ -14,8 +14,14 @@ const outIndex = args.indexOf("--out")
 const cliOutIndex = args.indexOf("--cli-out")
 const canaryIndex = args.indexOf("--canary")
 
+const PackedPackage = Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) })
+
+/**
+ * `npm pack --json` prints an array of packed packages through npm 11 and an object keyed by
+ * package name from npm 12, which the release workflow installs; both shapes are accepted.
+ */
 const PackResult = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) })),
+  Schema.Union([Schema.Array(PackedPackage), Schema.Record(Schema.String, PackedPackage)]),
 )
 
 const run = Effect.fn("run")(function* (command: ReadonlyArray<string>, cwd: string) {
@@ -72,9 +78,13 @@ const stagePackage = Effect.fn("stagePackage")(function* ({
   const json = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(packed)
   yield* fs.writeFileString(path.join(stage, "package.json"), `${json}\n`)
 
-  const [result] = yield* Schema.decodeEffect(PackResult)(
+  const packResult = yield* Schema.decodeEffect(PackResult)(
     yield* run(["npm", "pack", "--dry-run", "--json", "--ignore-scripts", stage], root),
   )
+  const packedPackages: ReadonlyArray<typeof PackedPackage.Type> = Array.isArray(packResult)
+    ? packResult
+    : Object.values(packResult)
+  const [result] = packedPackages
   const files = (result?.files ?? []).map((file) => file.path)
   const sources = yield* Effect.forEach(
     files.filter((file) => file.endsWith(".js")),
