@@ -37,7 +37,7 @@ Use one `NAME=value` per line, optionally prefixed with `export`. Blank lines an
 
 ## Database connection
 
-Akter Cloud creates a [database](/cloud/database) for each environment and provides its `DATABASE_URL` for you. `akter env list` shows it with `managed` provenance. Like every value, it cannot be read back, and on Free and Pro you cannot set or unset it.
+Akter Cloud creates a [database](/cloud/database) for each environment and provides its `DATABASE_URL` for you. `akter env list` shows it, and the `AKTER_DATABASE_ID` that identifies the database, each with a trailing `managed` column. Like every value, `DATABASE_URL` cannot be read back. You cannot unset the managed one (`akter env unset DATABASE_URL` answers `Refused: The variable is platform-managed`), and Free and Pro cannot replace it with their own.
 
 On Team and Enterprise, setting `DATABASE_URL` yourself switches that environment to your own Postgres database. The URL must use `postgres://` or `postgresql://`, include a host, omit fragments and raw whitespace or control characters, and contain exactly one `sslmode` of `require`, `verify-ca` or `verify-full`. See [Bring your own Postgres](/cloud/bring-your-database) for every requirement. The API rejects an invalid URL without echoing it.
 

@@ -7,12 +7,12 @@ Akter Cloud bills a base price, compute unit-hours and database size. There are 
 
 ## Plans
 
-| Plan       | Monthly base | Included compute unit-hours | Included database size  | Concurrent realtime connections | Bring your own Postgres |
-| ---------- | ------------ | --------------------------- | ----------------------- | ------------------------------- | ----------------------- |
-| Free       | $0           | 750, hard cap               | 0.5 GB, hard cap        | 100                             | No                      |
-| Pro        | $25          | 1,500                       | 10 GB                   | 5,000                           | No                      |
-| Team       | $249         | 16,000                      | 50 GB; dedicated add-on | 50,000                          | Yes                     |
-| Enterprise | From $2,500  | 160,000                     | Custom                  | 100,000                         | Yes                     |
+| Plan       | Monthly base | Included compute unit-hours | Included database size | Concurrent realtime connections | Bring your own Postgres |
+| ---------- | ------------ | --------------------------- | ---------------------- | ------------------------------- | ----------------------- |
+| Free       | $0           | 750, hard cap               | 0.5 GB, hard cap       | 100                             | No                      |
+| Pro        | $25          | 1,500                       | 10 GB                  | 5,000                           | No                      |
+| Team       | $249         | 16,000                      | 50 GB                  | 50,000                          | Yes                     |
+| Enterprise | From $2,500  | 160,000                     | Custom                 | 100,000                         | Yes                     |
 
 | Plan       | Compute overage / unit-hour         | Database overage / GB-month |
 | ---------- | ----------------------------------- | --------------------------- |
@@ -41,7 +41,7 @@ Compute beyond a paid allowance is billed at **$0.015 per unit-hour** at the lis
 
 ## Database size
 
-Included database size is pooled across all of your organization's managed environment databases, like compute hours, not allotted per environment. Akter measures their combined size. Pro and Team are billed **$0.50 per GB-month** beyond the included size. Free's 0.5 GB is a hard cap with no overage, and Enterprise databases are sized to your agreement. Team can add a dedicated database.
+Included database size is pooled across all of your organization's managed environment databases, like compute hours, not allotted per environment. Akter measures their combined size. Pro and Team are billed **$0.50 per GB-month** beyond the included size. Free's 0.5 GB is a hard cap with no overage, and Enterprise databases are sized to your agreement.
 
 On Team and Enterprise you can [bring your own Postgres](/cloud/bring-your-database) instead. Akter never bills or caps the size of a database you bring; you pay your own database provider for it separately, and it does not count toward the pooled allowance.
 
@@ -53,7 +53,7 @@ Periods are UTC calendar months. Use organization settings **Usage** to review y
 
 ## When Free reaches a cap
 
-Free's **750 compute unit-hour allowance is a hard cap**. At that cap, the runner stops and new commands are refused until the next billing period. Free's 0.5 GB database allowance is also a hard cap rather than a billed overage. When your organization's managed databases reach it, they become read-only: writes fail and reads still work, until usage drops below the cap or you upgrade. Upgrade your plan if you need usage beyond the Free allowances.
+Free's **750 compute unit-hour allowance is a hard cap**. At that cap, the runner stops and new commands are refused until the next billing period. Free's 0.5 GB database allowance is also a hard cap rather than a billed overage. Akter measures managed database size about every 10 minutes. When your organization's pooled managed databases reach 0.5 GB, they become read-only together shortly after: writes fail and reads still work, until usage drops below the cap or you upgrade. Upgrade your plan if you need usage beyond the Free allowances.
 
 ## Billing and spend caps
 

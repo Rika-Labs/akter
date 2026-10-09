@@ -40,7 +40,9 @@ Replace `PROJECT_ID` with your project's ID. From your app directory:
 bunx akter deploy --project PROJECT_ID --env production
 ```
 
-Akter Cloud creates each environment's database automatically and gives migrations and runners its connection as the platform-managed `DATABASE_URL`. You do not set it. Only set `DATABASE_URL` yourself if you are on Team or Enterprise and want to [bring your own Postgres](/cloud/bring-your-database).
+Akter Cloud creates each environment's database when the environment is created and gives migrations and runners its connection as the platform-managed `DATABASE_URL`. You do not set it. Only set `DATABASE_URL` yourself if you are on Team or Enterprise and want to [bring your own Postgres](/cloud/bring-your-database).
+
+If you deploy before an environment's database is ready, which is rare because it takes seconds, the deploy is refused as temporarily unavailable and the CLI prints `The control plane is temporarily unavailable. Try again shortly.` Deploy again a moment later.
 
 The current directory is the upload context. To upload another directory:
 
@@ -58,6 +60,6 @@ The deployment label uses the context's Git HEAD and commit subject, marking an 
 
 The CLI follows the rollout for 900 seconds by default. `--timeout` changes how long it waits, not how long the platform runs the deployment. A timeout exits with status 1 and leaves the rollout running; inspect that deployment in the console before retrying.
 
-On a build failure, the CLI prints the last build-log lines and the recorded failure. Check the deployment in the console, correct the source or configuration, then deploy again. A rejected or expired login also exits with status 1; usage errors and an unreachable API exit with status 2. See the [CLI reference](/api/06-cli) for the complete command surface.
+On a build failure, the CLI prints the last build-log lines and the recorded failure. A failed migration ends with `Deployment … failed at migrate: Image migration failed. The previous deployment, if any, is still serving.` The deployment's `migrate` step records only that the migration failed. Check the deployment in the console, correct the source or configuration, then deploy again. A rejected or expired login also exits with status 1; usage errors and an unreachable API exit with status 2. See the [CLI reference](/api/06-cli) for the complete command surface.
 
 Each deployment captures its environment variables. Changing a variable affects the next deployment, not the running one. Rollback uses the selected deployment's captured values; it does not undo database changes, so keep schema changes compatible with both releases.

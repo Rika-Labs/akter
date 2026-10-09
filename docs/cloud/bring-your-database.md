@@ -3,7 +3,7 @@ title: "Bring your own Postgres"
 description: "Team and Enterprise can connect a Postgres database they own instead of the one Akter Cloud creates."
 ---
 
-Bring-your-own Postgres is optional and available on **Team and Enterprise** only. Every other environment already has a [managed database](/cloud/database) that Akter Cloud creates and deletes for you, so you do not need this page unless you want to own the database. On Free and Pro, setting `DATABASE_URL` is refused.
+Bring-your-own Postgres is optional and available on **Team and Enterprise** only. Every other environment already has a [managed database](/cloud/database) that Akter Cloud creates and deletes for you, so you do not need this page unless you want to own the database. On Free and Pro, setting `DATABASE_URL` is refused with `Refused: A custom DATABASE_URL requires the Team or Enterprise plan; this environment uses its managed Postgres database`.
 
 You pay your database provider separately for a database you bring. Akter never bills or caps its size, and it does not count toward your plan's pooled database allowance. Akter Cloud still bills your plan and [compute](/cloud/pricing-and-limits).
 
@@ -13,8 +13,8 @@ Your `DATABASE_URL` must meet all of these rules:
 
 - It uses `postgres://` or `postgresql://` and includes a host.
 - It has no fragment, and no raw whitespace or control characters. Percent-encode special characters in the username and password.
-- It contains **exactly one** `sslmode` query parameter, set to `require`, `verify-ca` or `verify-full`. A missing, repeated or any other value is refused. `verify-full` is recommended because it verifies both the certificate chain and the host name.
-- The server certificate chains to a public certificate authority. Providers such as PlanetScale and Neon work. Amazon RDS, Google Cloud SQL and self-signed or private-CA endpoints are not supported yet.
+- It contains **exactly one** `sslmode` query parameter, set to `require`, `verify-ca` or `verify-full`. A missing, repeated or any other value, including `disable`, `prefer` and `no-verify`, is refused.
+- The server certificate chains to a public certificate authority, and its host name matches the URL. Akter checks both for all three accepted `sslmode` values, so they behave the same; `verify-full` is the recommended value. A custom root certificate in the URL (`sslrootcert`) is not used. Providers such as PlanetScale and Neon work. Amazon RDS, Google Cloud SQL and self-signed or private-CA endpoints are not supported yet.
 - The login can create and alter tables. Migrations run with the same URL, so a role without those permissions fails the deployment at its `migrate` step.
 
 Postgres is the only engine Akter Cloud supports. Neki is not offered on Cloud.
@@ -44,7 +44,7 @@ Setting your own `DATABASE_URL` does not copy data. Akter retires the environmen
 
 ## Switch back or change plan
 
-Unsetting your own `DATABASE_URL` returns the environment to a fresh, empty managed database. No data is copied from your database, which Akter leaves untouched.
+Unsetting your own `DATABASE_URL` returns the environment to a fresh, empty managed database. No data is copied from your database, which Akter leaves untouched. A release deployed before you switched between the managed database and your own does not start again after the switch, so you cannot roll back across it; deploy again instead.
 
 If your organization downgrades below Team, environments already using their own database keep running. New deployments of those environments are refused until the organization upgrades or you unset `DATABASE_URL`.
 
