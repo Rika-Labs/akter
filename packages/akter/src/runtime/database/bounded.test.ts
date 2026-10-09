@@ -18,7 +18,7 @@ import {
   Schema,
   Stream,
 } from "effect"
-import { HttpRouter } from "effect/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
 import { SqlClient, SqlError } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -785,23 +785,25 @@ describe("low-connection Postgres preset", () => {
               Deferred.succeed(releaseWorkflow, undefined),
             ]),
           )
-          const send = (path: string, init?: RequestInit) =>
-            Effect.promise(async () => {
-              const response = await fetch(new URL(path, server.url), init)
-              return { status: response.status, body: (await response.json()) as unknown }
+          const client = Context.get(
+            yield* Layer.build(FetchHttpClient.layer),
+            HttpClient.HttpClient,
+          )
+          const send = (request: HttpClientRequest.HttpClientRequest) =>
+            Effect.gen(function* () {
+              const response = yield* client.execute(request)
+              return { status: response.status, body: yield* response.json }
             })
           const probe = yield* Effect.provide(Probe.get("source"), context)
           const id = yield* Effect.provide(
             Effect.flatMap(ActorClient, (actors) => actors.mintCommandId),
             context,
           )
-          const request = {
-            method: "POST",
-            headers: { "content-type": "application/json", "idempotency-key": id },
-            body: "3",
-          }
-          const path = "/actors/LowConnectionProbe/source/Add"
-          expect(yield* send(path, request)).toEqual({ status: 200, body: 3 })
+          const request = HttpClientRequest.post(
+            new URL("/actors/LowConnectionProbe/source/Add", server.url).href,
+            { headers: { "idempotency-key": id } },
+          ).pipe(HttpClientRequest.bodyText("3", "application/json"))
+          expect(yield* send(request)).toEqual({ status: 200, body: 3 })
           const run = yield* Effect.provide(probe.Work({ amount: 23 }), context)
           yield* Deferred.await(workflowStarted)
           yield* Effect.provide(probe.Stage(), context)
@@ -814,9 +816,15 @@ describe("low-connection Postgres preset", () => {
 
           expect(hold.pollUnsafe()).toBeUndefined()
           expect(
-            yield* send("/actors/LowConnectionProbe/source/Value", { method: "POST" }),
+            yield* send(
+              HttpClientRequest.post(
+                new URL("/actors/LowConnectionProbe/source/Value", server.url).href,
+              ),
+            ),
           ).toEqual({ status: 200, body: 3 })
-          expect(yield* send("/inspector/overview")).toMatchObject({
+          expect(
+            yield* send(HttpClientRequest.get(new URL("/inspector/overview", server.url).href)),
+          ).toMatchObject({
             status: 200,
             body: { counts: { jobs: 1, openWorkflows: 1 } },
           })
@@ -845,7 +853,7 @@ describe("low-connection Postgres preset", () => {
               context,
             ),
           ).toBe(7)
-          expect(yield* send(path, request)).toEqual({ status: 200, body: 3 })
+          expect(yield* send(request)).toEqual({ status: 200, body: 3 })
           expect(yield* Effect.provide(probe.Value(), context)).toBe(115)
 
           const interrupted = yield* Effect.provide(probe.Work({ amount: -1 }), context)
@@ -853,7 +861,9 @@ describe("low-connection Postgres preset", () => {
           yield* Effect.provide(interrupted.interrupt, context)
           const exit = yield* Effect.provide(interrupted.result, context).pipe(Effect.exit)
           expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
-          expect(yield* send("/ready")).toMatchObject({ status: 200, body: { ready: true } })
+          expect(
+            yield* send(HttpClientRequest.get(new URL("/ready", server.url).href)),
+          ).toMatchObject({ status: 200, body: { ready: true } })
           expect(yield* Effect.provide(probe.Add(17), context)).toBe(132)
 
           const sleeping = yield* Effect.provide(probe.Work({ amount: 31 }), context)
