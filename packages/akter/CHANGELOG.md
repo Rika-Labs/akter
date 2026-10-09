@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.5 (2026-10-09)
+
+The framework and CLI release together on the `alpha` and `latest` npm dist-tags. Stored formats and the default Postgres pool sizes are unchanged from alpha.4.
+
+- Adds the supported opt-in `Database.postgres({ url, preset: "low-connection" })` preset: one turn, two off-turn and one query session, for four primary Postgres sessions per runner without read replicas. Explicit pool options override the preset. This uses direct Postgres connections; it does not establish transaction-pooler support.
+- Real-Postgres evidence covers a held single turn session, progressing off-turn work, migration serialization, command deduplication and process recovery. See the [low-connection verification](https://docs.akter.dev/verification/low-connection-postgres) and [deployment guidance](https://docs.akter.dev/guides/deploy).
+- Includes the compute-only Akter Cloud guides and deterministic offline/content conformance timing fixes; the CLI and bundled cloud API contract are unchanged from alpha.4.
+
 ## 0.1.0-alpha.4 (2026-10-09)
 
 The framework and CLI release together on the `alpha` and `latest` npm dist-tags. The framework runtime and stored formats are unchanged from alpha.3; the hosted quota and cloud API contracts change during alpha.

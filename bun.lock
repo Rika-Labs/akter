@@ -21,7 +21,7 @@
     },
     "apps/cli": {
       "name": "@rikalabs/akter-cli",
-      "version": "0.1.0-alpha.4",
+      "version": "0.1.0-alpha.5",
       "bin": {
         "akter": "dist/main.js",
       },
@@ -68,7 +68,7 @@
     },
     "packages/akter": {
       "name": "@rikalabs/akter",
-      "version": "0.1.0-alpha.4",
+      "version": "0.1.0-alpha.5",
       "dependencies": {
         "@effect/platform-node-shared": "catalog:",
         "@electric-sql/pglite": "0.5.8",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.5 (2026-10-09)
+
+- Releases with the matching alpha.5 framework, which adds the supported four-session `Database.postgres({ url, preset: "low-connection" })` preset. CLI behavior and the bundled `@rikalabs/akter-cli/cloud-api` contract are unchanged from alpha.4.
+
 ## 0.1.0-alpha.4 (2026-10-09)
 
 - **Breaking cloud contract:** every environment uses customer Postgres through `DATABASE_URL`. `Environment.database`, when reported, is `{ source: "customer", state: "missing" | "reachable" | "unreachable", latency, latencyWarning, runnerCap }`. Latency is nullable p50 milliseconds; runner cap is a nullable integer. The managed source and provisioning, ready, read-only and failed states are removed.
