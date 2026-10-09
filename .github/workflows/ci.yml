@@ -80,6 +80,11 @@ jobs:
         with:
           ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
+      - name: Pull Docker Hub images through mirror.gcr.io
+        run: |
+          echo '{"registry-mirrors":["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format '{{.RegistryConfig.Mirrors}}'
       - name: Build and boot both self-host runtime images
         run: |
           mkdir -p evidence/self-host
@@ -101,7 +106,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:18.6
+        image: mirror.gcr.io/library/postgres:18.6
         env:
           POSTGRES_USER: project
           POSTGRES_PASSWORD: project
@@ -226,7 +231,7 @@ jobs:
               node-conformance-3 node --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
     services:
       postgres:
-        image: postgres:18.6
+        image: mirror.gcr.io/library/postgres:18.6
         env:
           POSTGRES_USER: project
           POSTGRES_PASSWORD: project
