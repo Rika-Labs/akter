@@ -130,15 +130,14 @@ export class RunnerAtCapacity extends Schema.TaggedError<RunnerAtCapacity>()(
  * The hosted organization reached one of its plan's hard caps. `cap` names it,
  * and `limit` and `used` are in that cap's units: cents for `spend`, open
  * connections for `connections`, compute unit-hours this period for
- * `compute`, and decimal gigabytes of pooled managed database storage for
- * `storage`. A `connections` refusal clears as connections close, so it is
+ * `compute`. A `connections` refusal clears as connections close, so it is
  * retryable with the same command id after `retryAfterMs`; the others hold
  * until usage drops, the period resets or the plan changes.
  */
 export class QuotaExceeded extends Schema.TaggedError<QuotaExceeded>()("QuotaExceeded", {
   organizationId: Schema.String,
   period: Schema.String,
-  cap: Schema.Literals(["compute", "storage", "connections", "spend"]),
+  cap: Schema.Literals(["compute", "connections", "spend"]),
   limit: Schema.Finite,
   used: Schema.Finite,
   retryAfterMs: Schema.Finite,

@@ -1,0 +1,33 @@
+# Customer Postgres cloud contract verification
+
+Recorded on 2026-10-09 for [ADR 0113](../decisions/0113-customer-postgres-cloud-contract.md), on `feat/customer-postgres-contract` based on `origin/main` after [#711](https://github.com/Rika-Labs/akter/pull/711). This records the public contract, CLI and candidate tarballs, not hosted database probes or billing enforcement.
+
+## Environment and executed checks
+
+macOS arm64; Bun upgraded from 1.4.0 to the repository-pinned 1.4.2, Node 26.7.0 and npm 11.19.0. Dependencies were installed with the frozen lockfile and the repository compiler/linter patch. The trusted-publishing workflow separately pins npm 12.2.0.
+
+| Command                                                                                                                                                                            | Result                                                                                                                                       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun run --cwd packages/cloud-api test`                                                                                                                                            | 89 tests passed across 10 files.                                                                                                             |
+| `bun run --cwd apps/cli test`                                                                                                                                                      | 81 tests passed across 22 files; one existing backend-gated test skipped.                                                                    |
+| `bun --bun node_modules/vitest/vitest.mjs run packages/akter/src/protocol/wire.test.ts`                                                                                            | Five tests passed, including refusal of the removed storage quota.                                                                           |
+| `env -u TEST_DATABASE_URL -u TEST_REPLICA_DATABASE_URL bun run --cwd tooling/conformance test:pglite --project=pglite:conformance -t 'client retries a connections quota refusal'` | The selected client quota scenario passed; the other 345 cases were excluded by the test-name filter.                                        |
+| `bun run typecheck`                                                                                                                                                                | CI sources and all nine workspace tasks passed.                                                                                              |
+| `bun run lint`                                                                                                                                                                     | All ten tasks, directives and structure checks passed.                                                                                       |
+| `bun run check:static`                                                                                                                                                             | Formatting, directives, structure, CI typecheck and 33 GitHub tooling tests passed.                                                          |
+| `bun run check:pack`                                                                                                                                                               | Both alpha.4 tarballs passed inspection and clean-consumer typechecking and execution on Node and Bun: 403 framework files and 25 CLI files. |
+| `git diff --check`                                                                                                                                                                 | Passed.                                                                                                                                      |
+
+## Regression evidence
+
+- Environment schemas accept only customer Postgres with `missing`, `reachable` or `unreachable` state. All five report fields are required when `database` is present. Nullable measurements, zero latency, zero and negative integer caps survive decoding; incomplete reports, managed source, legacy states, negative latency and fractional caps fail. Existing strict metadata checks still refuse URL-derived fields.
+- Catalog and usage schemas no longer require or expose storage allowances, caps, overage prices, samples or per-project storage. Removed storage meters, quota names and managed database features fail decoding; strict decoding refuses the removed fields. Compute dimensions, prices and connection/spend caps retain their existing checks.
+- Public CLI process tests show that a measured 7.25 ms warning does not change successful deployment exit status and prints runner cap 13. A 5 ms report has no warning; cap zero is printed, while null measurements and an absent report are not fabricated as zero. Environment listing omits `managed` even for a variable with platform provenance. The existing #711 outage and refusal scenarios still pass.
+- The shared quota wire contract round-trips the remaining caps and rejects storage. The selected PGlite HTTP client scenario retries a connections refusal with the same command ID and surfaces compute and spend refusals without retrying.
+- Clean installed `@rikalabs/akter-cli/cloud-api` consumers typecheck and decode the customer report, reject managed source and the storage meter, and reject a storage price under strict decoding on both engines. Framework memory/persistence/restart checks and existing CLI help, local dev and inspector smokes also pass.
+
+## Scope and remaining evidence
+
+The private platform owns the runner-region probe, the p50 above 5 ms warning calculation, `floor((max_connections - in_use - 10) / 9)` capacity calculation, database access and compute billing. These local checks prove schemas and presentation, not those hosted implementations. The CLI consumes the server report without duplicating its calculations. No new durable transition or provider support claim is introduced here.
+
+Release publication requires green CI for the merged commit, the immutable `v0.1.0-alpha.4` tag and the existing trusted-publishing workflow. The candidate checks above do not themselves prove registry publication. Cloud documentation and `docs/api/08-cloud-usage.md` remain owned by PR #682.

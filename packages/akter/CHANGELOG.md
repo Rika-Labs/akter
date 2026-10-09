@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-alpha.4 (2026-10-09)
+
+The framework and CLI release together on the `alpha` and `latest` npm dist-tags. The framework runtime and stored formats are unchanged from alpha.3; the hosted quota and cloud API contracts change during alpha.
+
+- **Breaking:** `QuotaExceeded.cap` is now `compute`, `connections` or `spend`; `storage` is removed because Akter Cloud no longer supplies or bills managed databases. Only the connections cap remains retryable. HTTP 429 and WebSocket 1008 mappings are unchanged.
+- **Breaking cloud API:** every environment uses customer Postgres through `DATABASE_URL`. The optional `Environment.database` report has source `customer`, state `missing`, `reachable` or `unreachable`, nullable p50 `latency` in milliseconds, boolean `latencyWarning`, and nullable integer `runnerCap`. A deploy probes from the runner region: p50 above 5 ms warns without refusing, and runner cap is `floor((max_connections - in_use - 10) / 9)`.
+- **Breaking billing API:** base subscription plus compute unit-hours only. Removes every storage allowance, hard cap, price, meter, sample and per-project storage figure, plus storage and dedicated managed database plan features. The contract continues to ship at `@rikalabs/akter-cli/cloud-api`, not as a separate package.
+- `akter env list` no longer marks variables `managed`. `akter deploy` prints the completed database probe's latency warning and non-null runner cap, preserving zero and unknown measurements.
+- Includes [#711](https://github.com/Rika-Labs/akter/pull/711): deploy following retries transient transport failures, typed `Unavailable` outages and unreadable 5xx responses with bounded exponential delays; refusals are never retried. Authentication declares `Unavailable`, so `whoami` reports a session-store outage without asking for another login.
+
 ## 0.1.0-alpha.3 (2026-10-08)
 
 The framework and CLI release together on the `alpha` and `latest` npm dist-tags; verified-main canaries use only `next`. This launch release includes the unpublished alpha.2 draft and subsequent changes. Alpha APIs and stored formats can change. Read the [upgrade notes](https://docs.akter.dev/operations/alpha-upgrades), back up the database, and stop every earlier alpha runner before starting alpha.3; mixed-alpha rolling upgrades are not established as safe.

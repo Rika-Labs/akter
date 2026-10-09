@@ -242,6 +242,22 @@ export const deployCommand = Command.make("deploy", flags, (options) =>
       timeoutSeconds: options.timeout,
     })
 
+    const { database } = yield* retryTransient(
+      "The control plane is unavailable; retrying the database report.",
+    )(
+      client.projects.getEnvironment({
+        params: { projectId: options.project, environment: options.environment },
+      }),
+    )
+    if (database !== undefined) {
+      if (database.latencyWarning)
+        yield* Console.error(
+          `Warning: database p50 latency${database.latency === null ? "" : ` (${database.latency} ms)`} exceeds 5 ms from the runner region; deployment is not refused.`,
+        )
+      if (database.runnerCap !== null)
+        yield* Console.log(`Database runner cap: ${database.runnerCap}`)
+    }
+
     yield* Console.log(`Deployment ${live.id} is live in ${options.environment}`)
   }).pipe(
     Effect.catchTags({

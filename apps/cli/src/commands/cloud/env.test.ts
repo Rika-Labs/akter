@@ -39,7 +39,7 @@ layer(BunServices.layer)("akter env commands", (it) => {
             return Response.json({ created: ["EXTRA"], updated: ["TOKEN"] })
           const row = {
             name: "TOKEN",
-            usedBy: [],
+            usedBy: ["platform"],
             updatedAt: "2026-10-06T12:01:02.000Z",
             updatedBy: null,
           }

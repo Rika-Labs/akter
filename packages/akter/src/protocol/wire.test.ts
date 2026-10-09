@@ -54,7 +54,7 @@ describe("actorErrorOf", () => {
   it("round trips hosted quota fields, their statuses, close codes and retry policy", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const quota = (cap: "compute" | "storage" | "connections" | "spend") =>
+        const quota = (cap: QuotaExceeded["cap"]) =>
           QuotaExceeded.make({
             organizationId: "org",
             period: "2026-10",
@@ -65,7 +65,6 @@ describe("actorErrorOf", () => {
           })
         const cases = [
           { reason: quota("compute"), retryable: false },
-          { reason: quota("storage"), retryable: false },
           { reason: quota("spend"), retryable: false },
           { reason: quota("connections"), retryable: true },
         ]
@@ -84,6 +83,20 @@ describe("actorErrorOf", () => {
           expect(statusOf(decoded.value.reason)).toBe(429)
           expect(closeCodeOf(decoded.value.reason)).toBe(1008)
         }
+        const body = yield* actorErrorBody(ActorError.make({ reason: quota("compute") }))
+        expect(
+          Option.isNone(
+            actorErrorOf({
+              body: {
+                ...body,
+                reason: json(
+                  '{"_tag":"QuotaExceeded","organizationId":"org","period":"2026-10","cap":"storage","limit":750,"used":751,"retryAfterMs":75123}',
+                ),
+              },
+              headerRetryAfterMs: undefined,
+            }),
+          ),
+        ).toBe(true)
       }),
     ))
 
