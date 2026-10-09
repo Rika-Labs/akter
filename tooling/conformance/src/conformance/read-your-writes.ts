@@ -2,6 +2,7 @@ import { Effect, Redacted, Schedule, type Scope } from "effect"
 import { dual } from "effect/Function"
 import { ActorError, InvalidInput } from "../../../../packages/akter/src/errors/actor.ts"
 import { actorErrorBody } from "../../../../packages/akter/src/protocol/wire.ts"
+import { ActorTest } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { HttpRoom, serveHttp, tenantOf, type Server, httpSuite } from "./http.ts"
 import type {
   ConformanceCase,
@@ -183,6 +184,7 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           yield* pauseReplay(control)
 
           const other = (yield* post(server, token, "lag")).headers.get("durable-version")!
+          yield* (yield* ActorTest).hibernate((yield* HttpRoom.get("lag")).ref)
 
           expect(yield* count(server, token, "lag", own)).toMatchObject({ status: 200, body: 1 })
           expect(yield* count(server, token, "lag")).toMatchObject({ status: 200, body: 1 })
@@ -262,6 +264,7 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           yield* pauseReplay(control)
           yield* Effect.promise(() => room.Post({ text: "b" }))
           const latest = issued.at(-1)!
+          yield* (yield* ActorTest).hibernate((yield* HttpRoom.get("client")).ref)
 
           expect(yield* count(server, `${tenant}:alice`, "client")).toMatchObject({ body: 1 })
           expect(yield* Effect.promise(() => room.Count())).toBe(2)

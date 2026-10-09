@@ -592,7 +592,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
       ),
   },
   {
-    name: "rejects a stale generation before rerunning the handler under new authority",
+    name: "rejects a stale generation's writes before rerunning the handler under new authority",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
@@ -602,7 +602,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
           yield* test.invalidate(counter.ref)
           const before = fixture.executions
           expect(yield* counter.Increment(8)).toBe(13)
-          expect(fixture.executions - before).toBe(1)
+          expect(fixture.executions - before).toBe(environment.connect === undefined ? 1 : 2)
           expect(yield* test.inspect(counter.ref)).toEqual({
             generation: "3",
             state: { count: 13 },
@@ -892,7 +892,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
       ),
   },
   {
-    name: "retries a real generation lock timeout without entering the handler",
+    name: "retries a real generation lock timeout without committing speculative work",
     requiresIndependentConnections: true,
     timeoutMs: 15_000,
     run: ({ expect, environment, fixture }) =>
@@ -954,14 +954,14 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             )
 
             expect(retry).not.toEqual(first)
-            expect(fixture.executions).toBe(before)
+            expect(fixture.executions - before).toBe(1)
             expect(yield* test.inspect(counter.ref)).toMatchObject({
               state: { count: 2 },
               receipts: 1,
             })
             yield* lock.query("COMMIT")
             expect(yield* Fiber.join(waiter)).toBe(61)
-            expect(fixture.executions - before).toBe(1)
+            expect(fixture.executions - before).toBe(2)
             expect(yield* test.inspect(counter.ref)).toMatchObject({
               state: { count: 61 },
               receipts: 2,

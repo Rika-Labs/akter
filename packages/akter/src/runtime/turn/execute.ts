@@ -1521,7 +1521,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
           return admitting.admission.resume().pipe(
             Effect.catchDefect((defect) =>
-              Schema.is(RetryTurn)(defect) ? Effect.die(defect) : Effect.succeed(undefined),
+              Schema.is(RetryTurn)(defect) || SqlError.isSqlError(defect)
+                ? Effect.die(defect)
+                : Effect.void,
             ),
             Effect.flatMap((plan) => {
               if (plan === undefined || plan.writes === undefined || plan.needsAdmissionClock)

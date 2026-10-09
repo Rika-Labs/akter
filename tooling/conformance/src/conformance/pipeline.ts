@@ -616,7 +616,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const minimumMiss = yield* flightsOf(probe, plain.Snapshot())
           expect(minimumMiss.flights > 0).toBe(true)
           expect(minimumMiss.value).toMatchObject({ count: 10, version: "" })
-          const clockDependent = yield* flightsOf(probe, plain.PingLater(60_000))
+          const clockId = yield* actors.mintCommandId
+          const clockDependent = yield* flightsOf(
+            probe,
+            plain.PingLater(0).pipe(Actor.commandId(clockId)),
+          )
           expect(clockDependent.flights).toBe(2)
           expect((yield* test.inspect(plain.ref)).jobs).toBe(1)
         }),

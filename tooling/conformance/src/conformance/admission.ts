@@ -193,8 +193,12 @@ export const admissionConformance: ReadonlyArray<ConformanceCase> = [
           expect(yield* Fiber.join(changed.call).pipe(Effect.flip)).toMatchObject({
             reason: CommandConflict.make({ commandId: changed.id }),
           })
-          expect(executions.count).toBe(before)
-          expect(yield* test.inspect(adder.ref)).toMatchObject({ generation: "1", receipts: 3 })
+          expect(executions.count - before).toBe(environment.connect === undefined ? 0 : 1)
+          expect(yield* test.inspect(adder.ref)).toMatchObject({
+            generation: environment.connect === undefined ? "1" : "2",
+            state: {},
+            receipts: 3,
+          })
         }),
       ),
   },
