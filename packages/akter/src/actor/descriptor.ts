@@ -426,6 +426,10 @@ export const compile = ({
   const commands = members.filter((member): member is AnyCommand => member.kind === "command")
   const queries = members.filter((member) => member.kind === "query")
 
+  for (const member of members)
+    if ((member.kind === "command" || member.kind === "reducer") && member.tag.startsWith("$"))
+      throw new Error(`Command tag ${member.tag} uses the reserved $ prefix`)
+
   const connections = members.filter(
     (member): member is AnyConnection => member.kind === "connection",
   )

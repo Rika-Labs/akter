@@ -1279,6 +1279,56 @@ export const migrations = {
         ${[...FIRST_VIEWS, ["views", 1] as const].map(([view, version]) => `('${view}', ${version})`).join(", ")}
       ) AS v(view_name, version)`)
   }),
+  /** Cold pointers replace state and blob rows atomically; garbage rows never authorize deletion by themselves. */
+  "0034_cold_tier": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* briefLocks(
+      Effect.gen(function* () {
+        yield* sql`ALTER TABLE actor_generations
+        ADD COLUMN cold_ref text,
+        ADD COLUMN cold_digest text,
+        ADD COLUMN cold_state_version integer,
+        ADD CONSTRAINT actor_generations_cold_check CHECK (
+          (cold_ref IS NULL AND cold_digest IS NULL AND cold_state_version IS NULL)
+          OR (cold_ref IS NOT NULL AND cold_digest IS NOT NULL AND cold_state_version IS NOT NULL
+            AND cold_digest ~ '^[0-9a-f]{64}$' AND cold_state_version >= 0))`
+        yield* sql`ALTER TABLE actor_outbox DROP CONSTRAINT actor_outbox_kind_check,
+        ADD CONSTRAINT actor_outbox_kind_check CHECK (kind IN ('intent', 'job', 'feed', 'control', 'cold')),
+        ADD CONSTRAINT actor_outbox_cold_check CHECK (
+          (kind = 'cold') = (command = '$cold') AND
+          (kind <> 'cold' OR (timer_key = '$cold' AND target_type = actor_type
+            AND target_id = actor_id AND payload = 'null' AND caller::jsonb->>'source' = 'cold'
+            AND caller::jsonb->>'_tag' = 'System') IS TRUE))`
+        yield* sql`ALTER TABLE actor_placements ADD COLUMN state_version integer NOT NULL DEFAULT 0`
+      }),
+    )
+    yield* sql`CREATE INDEX actor_generations_cold_version
+      ON actor_generations (actor_type, cold_state_version) WHERE cold_ref IS NOT NULL`
+    yield* sql`CREATE TABLE actor_cold_garbage (
+      routing_key bigint NOT NULL,
+      tenant_id text NOT NULL,
+      actor_type text NOT NULL,
+      actor_id text NOT NULL,
+      object_key text NOT NULL,
+      unreferenced_at_ms bigint NOT NULL,
+      PRIMARY KEY (routing_key, object_key)
+    )`
+    yield* sql`CREATE INDEX actor_cold_garbage_due ON actor_cold_garbage (unreferenced_at_ms)`
+    yield* sql`ALTER TABLE actor_cold_garbage ENABLE ROW LEVEL SECURITY`
+    yield* sql`CREATE POLICY durable_tenant ON actor_cold_garbage
+      USING (tenant_id = current_setting('durable.tenant', true))
+      WITH CHECK (tenant_id = current_setting('durable.tenant', true))`
+    yield* sql`CREATE OR REPLACE VIEW durable.actors AS
+      SELECT g.tenant_id, g.actor_type, g.actor_id, g.routing_key, p.placement,
+        g.generation, g.created, g.event_sequence AS last_event_sequence,
+        g.cold_ref IS NOT NULL AS cold
+      FROM actor_generations g
+      LEFT JOIN actor_placements p ON p.actor_type = g.actor_type`
+    yield* sql.unsafe(`CREATE OR REPLACE VIEW durable.views AS
+      SELECT view_name, version FROM (VALUES
+        ${[...FIRST_VIEWS.map(([view, version]) => [view, view === "actors" ? 2 : version]), ["views", 1]].map(([view, version]) => `('${view}', ${version})`).join(", ")}
+      ) AS v(view_name, version)`)
+  }),
 }
 
 /**

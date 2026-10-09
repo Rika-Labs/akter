@@ -63,6 +63,7 @@ import type { Owner } from "./connections/owner.ts"
 import { FEED_MEMBER, isWatchMember, watchedQuery } from "./connections/protocol.ts"
 import { checkIdentity, databaseTime, FrameworkClock } from "./turn/admission.ts"
 import { routingKey } from "./storage/codec.ts"
+import { ColdTier, coldTier, type ColdStorageOptions } from "./storage/cold-tier.ts"
 import { recordedPlacement } from "./storage/placements.ts"
 import { TurnHooks } from "./turn/hooks.ts"
 import { requestAttributes, SpanNames } from "./telemetry/spans.ts"
@@ -130,6 +131,8 @@ import { type FleetSubscribe, fleetSubscriptions } from "./fleet/subscribe.ts"
 
 /** Configuration for `Actors.layer`: authorization, actor and effect layers, timing, retention, and row-level security. */
 export interface Options {
+  /** Opt-in cold state and actor blobs. Postgres only; backup retention is required. */
+  readonly coldStorage?: ColdStorageOptions
   /**
    * The global authorization hook, asked about every external request beside
    * the actor's own `access` policy; when both exist both must allow. With
@@ -488,9 +491,30 @@ export const layer = (options: Options = {}) => {
       const writerDeclarations: Array<PayloadDeclaration> = []
       let refreshedAt: number | undefined
 
-      const services = yield* Effect.context<
+      let services = yield* Effect.context<
         SqlClient.SqlClient | Crypto.Crypto | Sharding.Sharding
       >()
+
+      if (
+        options.coldStorage !== undefined &&
+        Option.isSome(yield* Effect.serviceOption(PgliteClient.PgliteClient))
+      )
+        return yield* Effect.die(new Error("coldStorage requires Postgres, not PGlite"))
+      const tier =
+        options.coldStorage === undefined
+          ? undefined
+          : yield* coldTier(
+              options.coldStorage,
+              (yield* (yield* SqlClient.SqlClient)<{
+                deployment_id: string
+              }>`SELECT deployment_id FROM actor_deployment`)[0]!.deployment_id,
+              relaySettings.maxBackoffMs,
+            )
+      services = Context.add(services, ColdTier, tier)
+      const coldSweep =
+        tier?.periodic === true
+          ? yield* tier.run.pipe(Effect.provideContext(services), Effect.forkIn(scope))
+          : undefined
 
       const defectLog = boundedDefectLog(defectCapacity)
       let recorder: LiveRecorder | undefined
@@ -1109,7 +1133,10 @@ export const layer = (options: Options = {}) => {
               { entries: cron, skipMs: policy.cronSkipMs },
             ]),
           ),
-      ).pipe(Effect.provideService(ProgressSink, progressSink))
+      ).pipe(
+        Effect.provideService(ProgressSink, progressSink),
+        Effect.provideService(ColdTier, tier),
+      )
 
       yield* relay.run.pipe(Effect.forkIn(scope))
 
@@ -1398,7 +1425,11 @@ export const layer = (options: Options = {}) => {
         stopClaims: relay.stop,
         attemptsIdle: relay.attemptsIdle,
         interruptAttempts: relay.interruptAttempts,
-        stopBackground: sweeping === undefined ? Effect.void : Fiber.interrupt(sweeping),
+        stopBackground: Effect.forEach(
+          [sweeping, coldSweep].filter((fiber) => fiber !== undefined),
+          Fiber.interrupt,
+          { discard: true },
+        ),
         serving,
         scope,
       })
@@ -1491,6 +1522,7 @@ export const layer = (options: Options = {}) => {
       })
 
       return Context.make(Actors, publicActors).pipe(
+        Context.add(ColdTier, tier),
         Context.add(ContentStore, contentStore),
         Context.add(InternalActors, internalActors),
         Context.add(RuntimeControl, control),

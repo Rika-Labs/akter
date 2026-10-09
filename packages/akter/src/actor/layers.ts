@@ -44,6 +44,7 @@ const erased = <H extends object>(entries: H) => entries as Entries
 
 const registrationOf = (descriptor: Descriptor, tenant: string) => ({
   name: descriptor.name,
+  stateVersion: descriptor.state.version,
   singleton: descriptor.singleton,
   mintable: descriptor.mintable,
   watches: descriptor.watches,
@@ -274,6 +275,7 @@ export const queryLayer = <H extends object, E, RB, RS>({
 
       yield* actors.registerQueries({
         name: descriptor.name,
+        stateVersion: descriptor.state.version,
         access: descriptor.access,
         placement: descriptor.placement,
         timeoutMs: descriptor.policy.executionMs,

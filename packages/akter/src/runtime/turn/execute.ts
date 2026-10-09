@@ -33,6 +33,7 @@ import { eventsStatement, notifyEvents } from "../events/append.ts"
 import { COMMIT_VERSION } from "../database/replica.ts"
 import { isPoolRefusal } from "../database/bounded.ts"
 import { compress, decompress } from "../storage/codec.ts"
+import { ColdTier, FetchCold } from "../storage/cold-tier.ts"
 import { Metrics, record } from "../telemetry/metrics.ts"
 import { SpanNames } from "../telemetry/spans.ts"
 import { receiptMarginMs } from "../storage/retention.ts"
@@ -75,6 +76,9 @@ interface Admission {
   readonly now: string
   readonly generation: string
   readonly created: boolean
+  readonly cold_ref: string | null
+  readonly cold_digest: string | null
+  readonly cold_state_version: number | null
   readonly canonical: string
   readonly caller_key: string | null
   readonly command: string | null
@@ -225,6 +229,7 @@ export type Settled = Result.Result<Outcome, ActorError>
 interface Plan {
   /** The commit group without `COMMIT`; undefined when the batch only rolls back. */
   readonly writes: ReadonlyArray<Statement> | undefined
+  readonly restored?: boolean
   readonly settled: ReadonlyArray<Settled>
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
@@ -500,6 +505,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const sql = yield* SqlClient.SqlClient
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
+  const tier = yield* ColdTier
   const scope = yield* TenantScope
   const warmTurns = yield* WarmTurnFastPath
   const { ref } = run.first[0]!.request
@@ -601,7 +607,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         sql<Admission>`
           WITH locked AS MATERIALIZED (
             SELECT g.routing_key, g.tenant_id, g.actor_type, g.actor_id,
-              g.generation, g.created, g.event_sequence
+              g.generation, g.created, g.event_sequence,
+              g.cold_ref, g.cold_digest, g.cold_state_version
             FROM actor_generations g
             WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
             FOR UPDATE OF g ${grouped ? sql.literal("SKIP LOCKED") : sql.literal("")}
@@ -609,7 +616,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS now,
             g.generation::text AS generation, g.created,
             c.payload::jsonb::text AS canonical,
-            r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
+            r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head,
+            g.cold_ref, g.cold_digest, g.cold_state_version
             ${
               warmTurns && Option.isSome(turns) && !grouped
                 ? sql`, set_config('durable.turn_xid', pg_current_xact_id()::text, false) AS turn_xid`
@@ -636,6 +644,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 bumped = rows[0]?.generation
               },
             ),
+            Effect.asVoid(sql`DELETE FROM actor_outbox WHERE ${actorRow} AND timer_key = '$cold'`),
           ]
         : []),
       ...(readsState
@@ -665,6 +674,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
       const current = cold ? bumped! : first.generation
       const now = Number(first.now) + clock.offsetMillis()
+      if (first.cold_ref === null) cache.cold = undefined
+      let restored = false
       const { retryWindowMs } = yield* OutboxRuntime
 
       const expiryMarginMs = receiptMarginMs({
@@ -864,6 +875,22 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           continue
         }
 
+        if (
+          first.cold_ref !== null &&
+          (cache.cold?.ref !== first.cold_ref ||
+            cache.cold.digest !== first.cold_digest ||
+            cache.cold.version !== first.cold_state_version)
+        )
+          return yield* Effect.die(
+            new FetchCold({
+              pointer: {
+                ref: first.cold_ref,
+                digest: first.cold_digest!,
+                version: first.cold_state_version!,
+              },
+            }),
+          )
+
         const start = index
         const members = [{ index, request, hash }]
         index += 1
@@ -882,7 +909,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
 
         next ??= readsState
-          ? new Map(stored.map(({ key, value }) => [key, decompress(value)] as const))
+          ? new Map(
+              first.cold_ref === null
+                ? stored.map(({ key, value }) => [key, decompress(value)] as const)
+                : cache.cold!.envelope.state,
+            )
           : new Map(view.state!)
 
         const given = next
@@ -890,7 +921,17 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
         const savepoint = `SAVEPOINT ${HANDLER_SAVEPOINT}`
 
-        if (statements && start > 0) yield* session.defer(savepoint)
+        const restoring = first.cold_ref !== null && !restored
+        const savepoints = statements || restoring
+
+        if (savepoints && (start > 0 || !statements)) yield* session.defer(savepoint)
+
+        if (restoring) {
+          if (tier === undefined)
+            return yield* Effect.die(new Error("Cold actor needs coldStorage"))
+          yield* tier.restore({ key: routingKey, ref }, cache.cold!)
+          yield* hooks.at("afterColdWriteBack", request)
+        }
 
         const business = yield* hooks.at("beforeHandler", request).pipe(
           Effect.andThen(() =>
@@ -909,12 +950,14 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           ? business.success
           : business.failure
 
-        if (statements && (start === 0 || !session.withdraw(savepoint)))
+        if (savepoints && ((statements && start === 0) || !session.withdraw(savepoint)))
           yield* session.defer(
             Result.isSuccess(business)
               ? `RELEASE SAVEPOINT ${HANDLER_SAVEPOINT}`
               : `ROLLBACK TO SAVEPOINT ${HANDLER_SAVEPOINT}`,
           )
+
+        if (restoring && Result.isSuccess(business)) restored = true
 
         const written = new Map(result.state)
 
@@ -1097,9 +1140,10 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
 
       return {
         writes,
+        restored,
         settled,
         generation: current,
-        state: next,
+        state: first.cold_ref !== null && !restored ? undefined : next,
         created,
         needsAdmissionClock,
         wake,
@@ -1160,6 +1204,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       if (plan.writes !== undefined) {
         cache.generation = plan.generation
         cache.state = plan.state
+        if (plan.restored) cache.cold = undefined
 
         if (plan.state !== undefined) {
           const previous = cache.committed
@@ -1190,7 +1235,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             replayBefore,
             receipts,
           }
-        }
+        } else cache.committed = undefined
       }
 
       answering = true
@@ -1479,7 +1524,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           batch: ReadonlyArray<W>,
           { admission, admitted }: Admitting,
           taken?: ReadonlyArray<W>,
-        ) =>
+        ): Effect.Effect<
+          Ended<W, Admitting>,
+          SqlError.SqlError,
+          RN | Crypto.Crypto | SqlClient.SqlClient
+        > =>
           awaitReplies(admitted).pipe(
             Effect.andThen(() => admission.resume()),
             Effect.flatMap((plan) =>
@@ -1494,6 +1543,33 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               () => Effect.die(RetryTurn.make({ message: "Turn commit rolled back" })),
             ),
             Effect.tap((stepped) => (stepped.chained === undefined ? release : Effect.void)),
+            Effect.catchCause((cause) => {
+              const fetching = Cause.squash(cause)
+              if (!(fetching instanceof FetchCold)) return Effect.failCause(cause)
+
+              return Effect.gen(function* () {
+                deferred.length = 0
+                const rollback = yield* control("ROLLBACK")
+                if (rollback.command !== "ROLLBACK")
+                  return yield* Effect.die(
+                    RetryTurn.make({ message: "Cold admission rollback unconfirmed" }),
+                  )
+                open = false
+                yield* release
+                yield* hooks.at("afterColdRollback", batch[0]!.request)
+                if (tier === undefined)
+                  return yield* Effect.die(new Error("Cold actor needs coldStorage"))
+                cache.state = undefined
+                cache.committed = undefined
+                cache.cold = yield* tier
+                  .fetch({ key: routingKey, ref }, fetching.pointer)
+                  .pipe(
+                    Effect.catch((error) => Effect.die(RetryTurn.make({ message: error.message }))),
+                  )
+                yield* hooks.at("afterColdFetch", batch[0]!.request)
+                return yield* alone(batch, yield* openAlone(batch), taken)
+              })
+            }),
           )
 
         const openAlone = (batch: ReadonlyArray<W>) =>
@@ -1810,6 +1886,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           const fast =
             warmTurns &&
             batch.length === 1 &&
+            cache.cold === undefined &&
             snapshot !== undefined &&
             snapshot.generation === cache.generation &&
             snapshot.state === cache.state &&
@@ -1826,7 +1903,10 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             (policy.createdBy === undefined || snapshot.created)
 
           const joining =
-            first && view().generation !== undefined && view().state !== undefined
+            first &&
+            cache.cold === undefined &&
+            view().generation !== undefined &&
+            view().state !== undefined
               ? groups
               : undefined
           first = false
@@ -1838,6 +1918,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   now: String(snapshot.now),
                   generation: snapshot.generation,
                   created: snapshot.created,
+                  cold_ref: null,
+                  cold_digest: null,
+                  cold_state_version: null,
                   canonical: request.payload,
                   caller_key: null,
                   command: null,

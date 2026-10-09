@@ -32,6 +32,7 @@ import { SpanNames } from "../telemetry/spans.ts"
 import { databaseTime, FrameworkClock } from "./admission.ts"
 import { BUCKETS, CallerJson } from "./outbox.ts"
 import { type BucketRange, shardRanges } from "../database/shards.ts"
+import { ColdTier } from "../storage/cold-tier.ts"
 import type {
   Handoff,
   SubscriptionError,
@@ -113,7 +114,14 @@ const CLAIMED_COLUMNS = [
  * subscription work in `work`.
  */
 interface ClaimedRow extends ClaimedJob {
-  readonly kind: "intent" | "job" | "skipped-intent" | "skipped-job" | "work"
+  readonly kind:
+    | "intent"
+    | "job"
+    | "cold"
+    | "skipped-intent"
+    | "skipped-job"
+    | "skipped-cold"
+    | "work"
   readonly target_type: string
   readonly target_id: string
   readonly timer_key: string | null
@@ -151,7 +159,7 @@ export const candidates = ({
   range = BUCKETS,
 }: {
   readonly sql: SqlClient.SqlClient
-  readonly kind: "intent" | "job" | "feed" | "control"
+  readonly kind: "intent" | "job" | "feed" | "control" | "cold"
   readonly now: Statement.Fragment
   readonly limit: number
   readonly only?: Statement.Fragment
@@ -210,6 +218,7 @@ const claimDue = ({
   now,
   intents,
   jobs,
+  cold,
   subscriptions,
   range,
 }: {
@@ -219,6 +228,9 @@ const claimDue = ({
   readonly now: Statement.Fragment
   readonly intents?: IntentClaim | undefined
   readonly jobs?: JobClaim | undefined
+  readonly cold?:
+    | { readonly permits: number; readonly leaseMs: number; readonly probe: number }
+    | undefined
   readonly subscriptions?: SubscriptionClaim | undefined
   readonly range?: BucketRange | undefined
 }) => {
@@ -293,6 +305,24 @@ const claimDue = ({
         ${claimJobs(sql, now, leaseMs, sql`job_locked`, sql`(SELECT count(*) FROM job_candidates)::int`)}
       )`)
     results.push(sql`SELECT *, NULL::text AS work FROM job_claimed`, skipped(sql, "job"))
+  }
+
+  if (cold !== undefined) {
+    parts.push(sql`cold_candidates AS (
+        ${candidates({ sql, range, kind: "cold", now, limit: cold.probe })}
+        ORDER BY o.due_at_ms LIMIT ${cold.probe}
+      ), cold_locked AS (
+        SELECT o.routing_key, o.intent_id FROM actor_outbox o
+        JOIN cold_candidates USING (routing_key, intent_id)
+        WHERE o.kind = 'cold' AND o.due_at_ms <= ${now}
+        ORDER BY o.due_at_ms LIMIT ${cold.permits} FOR UPDATE OF o SKIP LOCKED
+      ), cold_claimed AS (
+        UPDATE actor_outbox o SET attempts = o.attempts + 1, due_at_ms = ${now} + ${cold.leaseMs}::bigint
+        FROM cold_locked c WHERE o.routing_key = c.routing_key AND o.intent_id = c.intent_id
+        RETURNING ${claimedColumns(sql)}, (SELECT count(*) FROM cold_candidates)::int AS candidates,
+          false AS exhausted
+      )`)
+    results.push(sql`SELECT *, NULL::text AS work FROM cold_claimed`, skipped(sql, "cold"))
   }
 
   if (subscriptions !== undefined) {
@@ -473,7 +503,7 @@ export const claimCapped = ({
   )
 
 /** One row reporting `kind`'s candidates when its claim took none of them. */
-const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "job") => {
+const skipped = (sql: SqlClient.SqlClient, kind: "intent" | "job" | "cold") => {
   const claimed = sql.literal(`${kind}_claimed`)
   const found = sql.literal(`${kind}_candidates`)
 
@@ -636,6 +666,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   schedules: () => ReadonlyMap<string, CronSchedule> = () => new Map(),
 ) {
   const sql = yield* SqlClient.SqlClient
+  const tier = yield* ColdTier
   const statementClock = outboxClock({ sql })
   let firstShard = 0
   const services = yield* Effect.context<SqlClient.SqlClient>()
@@ -647,6 +678,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const lanes = {
     intents: yield* lane(settings.deliveryConcurrency, wakeRelay),
     jobs: yield* lane(settings.executorConcurrency, wakeRelay),
+    cold: yield* lane(tier?.concurrency ?? 0, wakeRelay),
     feed: yield* lane(workConcurrency, wakeRelay),
     control: yield* lane(workConcurrency, wakeRelay),
     subscription: yield* lane(workConcurrency, wakeRelay),
@@ -813,6 +845,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const uncapped = local.filter(({ registered }) => registered.perActor === undefined)
           const capped = local.filter(({ registered }) => registered.perActor !== undefined)
           const permits = yield* lanes.jobs.free
+          const coldPermits = yield* lanes.cold.free
           const claimedAt = yield* Clock.currentTimeNanos
           const claimSignal = cancelChecks
           const clock = yield* FrameworkClock
@@ -897,8 +930,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const work: Array<SubscriptionWork> = []
           let intentSlots = slots
           let jobSlots = uncappedPermits
+          let coldSlots = coldPermits
           const remainingWork = workSlots === undefined ? undefined : { ...workSlots }
-          const found = { intent: 0, job: 0 }
+          const found = { intent: 0, job: 0, cold: 0 }
 
           for (const range of ordered) {
             const claimed = yield* claimDue({
@@ -925,13 +959,21 @@ export const outboxRelay = Effect.fnUntraced(function* (
                       probe: lanes.jobs.probe(jobSlots),
                     }
                   : undefined,
+              cold:
+                tier !== undefined && coldSlots > 0
+                  ? {
+                      permits: coldSlots,
+                      leaseMs: tier.leaseMs,
+                      probe: lanes.cold.probe(coldSlots),
+                    }
+                  : undefined,
               subscriptions:
                 remainingWork === undefined
                   ? undefined
                   : subscriptions!.claim(remainingWork, range),
             })
 
-            for (const kind of ["intent", "job"] as const) {
+            for (const kind of ["intent", "job", "cold"] as const) {
               found[kind] +=
                 claimed.find((row) => row.kind === kind || row.kind === `skipped-${kind}`)
                   ?.candidates ?? 0
@@ -939,6 +981,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
             intentSlots -= claimed.filter((row) => row.kind === "intent").length
             jobSlots -= claimed.filter((row) => row.kind === "job").length
+            coldSlots -= claimed.filter((row) => row.kind === "cold").length
             rows.push(...claimed)
 
             if (subscriptions !== undefined && remainingWork !== undefined) {
@@ -952,6 +995,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
 
           const intents = rows.filter((row) => row.kind === "intent")
           const uncappedRows = rows.filter((row) => row.kind === "job")
+          const coldRows = rows.filter((row) => row.kind === "cold")
 
           const late =
             !cappedFirst && capped.length > 0 && uncappedPermits - uncappedRows.length > 0
@@ -961,6 +1005,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           const jobs = [...early.claimed, ...uncappedRows, ...late.claimed]
 
           if (slots > 0) lanes.intents.claimed(slots, intents.length, found.intent)
+          if (coldPermits > 0) lanes.cold.claimed(coldPermits, coldRows.length, found.cold)
 
           if (permits > 0 && local.length > 0) {
             lanes.jobs.claimed(uncappedPermits, uncappedRows.length, found.job)
@@ -986,6 +1031,9 @@ export const outboxRelay = Effect.fnUntraced(function* (
             yield* lanes.intents.start(
               deliverIntent(row).pipe(logFailure("Outbox relay crashed settling a row")),
             )
+
+          for (const row of coldRows)
+            yield* lanes.cold.start(tier!.offload(row).pipe(logFailure("Cold offload failed")))
 
           for (const row of jobs) {
             const registered = local.find(
@@ -1014,7 +1062,7 @@ export const outboxRelay = Effect.fnUntraced(function* (
           }
 
           return {
-            claimed: intents.length + jobs.length + claimedWork,
+            claimed: intents.length + jobs.length + coldRows.length + claimedWork,
             backlog: all.some((family) => family.more),
             quiet,
           }
