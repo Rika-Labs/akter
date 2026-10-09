@@ -24,8 +24,11 @@ The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 - lost COMMIT reply: same-id redelivery resolves one committed receipt with no second handler evaluation;
 - successor commit between COMMIT and the version read: the older cached state cannot answer a query carrying the successor's version, even if the older activation reads an equal or higher global LSN;
 - pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and database-dependent queries never mix cached state with live rows.
+- caught read error: event/group capability access forces the entire query onto the database even if its handler catches the cached-read bailout.
 
 These tests do not claim exactly-once handler evaluation: only committed consequences and receipt identity are exactly-once. Guard or receipt misses discard speculation before ordinary admission ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)).
+
+The two capped-job cases in `runtime/database/bounded.test.ts` retain the ordinary generation-lock wait and queued off-turn checkout assertions, and exercise a job running while warm speculation is paused without that lock. An injected stale generation then forces rollback and ordinary fallback. Both cases require four runtime sessions, the asymmetric final state 42, one receipt each for Start/Hold/Done, and an empty outbox; the warm case also requires the renewed generation.
 
 The expiry-after-admission case `rechecks expiry before the reply against a clock read after the commit, not the admission clock` pauses a handler until its id expires, then proves the receipt commits but the caller receives `CommandExpired`. The pipeline statement-order case independently requires the fresh clock read to follow `COMMIT` in its flight. These reject admission-clock reuse and a clock read inside the transaction, respectively ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).
 

@@ -169,6 +169,7 @@ export const queriesOf = ({
         run: Effect.fnUntraced(function* (request, rows, cursor, readEvents, reads, version) {
           const { state } = yield* descriptor.state.decodeStored(rows)
           let open = true
+          let requiresDatabase = false
           const query = Symbol()
           const owner = Fiber.getCurrent()
 
@@ -216,10 +217,17 @@ export const queriesOf = ({
             state: Object.freeze(state),
             version,
             cursor,
-            events: eventsWith({ descriptor, readEvents }) as AnyQueryContext["events"],
+            get events() {
+              requiresDatabase ||= version !== undefined
+
+              return eventsWith({ descriptor, readEvents }) as AnyQueryContext["events"]
+            },
             rows: access.rows as AnyQueryContext["rows"],
             get group() {
-              if (version !== undefined) throw new ReadRequiresDatabase()
+              if (version !== undefined) {
+                requiresDatabase = true
+                throw new ReadRequiresDatabase()
+              }
 
               return access.group
             },
@@ -245,6 +253,11 @@ export const queriesOf = ({
               }),
             ),
             Effect.catchDefect((cause) => Effect.succeed(Outcome.cases.Defect.make({ cause }))),
+            Effect.map((outcome) =>
+              requiresDatabase
+                ? Outcome.cases.Defect.make({ cause: new ReadRequiresDatabase() })
+                : outcome,
+            ),
             Effect.ensuring(
               Effect.sync(() => {
                 open = false

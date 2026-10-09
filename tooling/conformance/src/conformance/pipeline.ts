@@ -97,6 +97,11 @@ const Snapshot = Actor.query("Snapshot", {
 
 const History = Actor.query("History", { success: Schema.Array(Schema.Finite) })
 
+const ResilientHistory = Actor.query("ResilientHistory", {
+  payload: Schema.Literals(["events", "group"]),
+  success: Schema.Array(Schema.Finite),
+})
+
 const Plain = Actor.make("Plain", {
   key: Schema.String,
   state: Actor.state({
@@ -104,7 +109,7 @@ const Plain = Actor.make("Plain", {
   }),
   events: [Changed],
   jobs: { Ping: { job: Ping } },
-  api: { Add, Defer, PingLater, CancelPing, Change, Snapshot, History },
+  api: { Add, Defer, PingLater, CancelPing, Change, Snapshot, History, ResilientHistory },
   internal: { Remind },
 })
 
@@ -219,6 +224,21 @@ const actorsLive = (probe: Probe) =>
           }),
           History: Effect.fnUntraced(function* () {
             const events = yield* (yield* Plain.Read).events(Changed).pipe(Effect.orDie)
+            return events.map(({ event }) => event.count)
+          }),
+          ResilientHistory: Effect.fnUntraced(function* (capability) {
+            const read = yield* Plain.Read
+
+            if (capability === "group")
+              return yield* Effect.try(() => read.group).pipe(
+                Effect.as([read.state.count]),
+                Effect.orElseSucceed(() => []),
+              )
+
+            const events = yield* read.events(Changed).pipe(
+              Effect.catchDefect(() => Effect.succeed([])),
+              Effect.orDie,
+            )
             return events.map(({ event }) => event.count)
           }),
         }),
@@ -867,6 +887,12 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             state: { count: 10 },
             receipts: 2,
           })
+          const sql = yield* SqlClient.SqlClient
+          expect(
+            yield* sql`SELECT generation::text FROM actor_generations
+            WHERE actor_type = ${plain.ref.actor} AND actor_id = ${plain.ref.id}
+              AND tenant_id = ${plain.ref.tenant}`,
+          ).toEqual([{ generation: "2" }])
         }),
       ),
   },
@@ -896,6 +922,8 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(committed.count).toBe(10)
           expect(BigInt(committed.version) > BigInt(during.value.version)).toBe(true)
           expect(committed.cursor).toBe("1")
+          expect(yield* plain.ResilientHistory("events")).toEqual([10])
+          expect(yield* plain.ResilientHistory("group")).toEqual([10])
           const failedId = yield* actors.mintCommandId
           expect(
             (yield* plain
