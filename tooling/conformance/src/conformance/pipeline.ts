@@ -11,6 +11,7 @@ import {
   Layer,
   Option,
   Redacted,
+  Result,
   Schedule,
   Schema,
   Tracer,
@@ -23,6 +24,7 @@ import {
   ActorError,
   ActorUnavailable,
   Actors,
+  CommandExpired,
   Intent,
   User,
 } from "../../../../packages/akter/src/index.ts"
@@ -599,13 +601,13 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           expect(BigInt(read.value.version) > 0n).toBe(true)
           expect(yield* plain.Add(7).pipe(Actor.commandId(id))).toBe(10)
           const conflict = yield* plain.Add(13).pipe(Actor.commandId(id), Effect.result)
-          expect(conflict._tag).toBe("Failure")
-          if (conflict._tag === "Failure")
+          expect(Result.isFailure(conflict)).toBe(true)
+          if (Result.isFailure(conflict))
             expect(conflict.failure.reason._tag).toBe("CommandConflict")
           const hostile = yield* Plain.get("fast").pipe(Actor.as(User.make({ subject: "other" })))
           const denied = yield* hostile.Add(7).pipe(Actor.commandId(id), Effect.result)
-          expect(denied._tag).toBe("Failure")
-          if (denied._tag === "Failure") expect(denied.failure.reason._tag).toBe("Unauthorized")
+          expect(Result.isFailure(denied)).toBe(true)
+          if (Result.isFailure(denied)) expect(denied.failure.reason._tag).toBe("Unauthorized")
           expect(probe.handled - before).toBe(1)
           expect(yield* test.inspect(plain.ref)).toMatchObject({
             state: { count: 10 },
@@ -813,10 +815,11 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             yield* Deferred.await(waited)
             yield* Fiber.join(other)
             const expired = yield* Fiber.join(pending)
-            expect(expired).toMatchObject({
-              _tag: "Failure",
-              failure: { reason: { _tag: "CommandExpired" } },
-            })
+            expect(Result.isFailure(expired)).toBe(true)
+            if (Result.isFailure(expired))
+              expect(expired.failure).toMatchObject({
+                reason: CommandExpired.make({ commandId: id }),
+              })
             expect(probe.handled - handled).toBe(1)
             expect(yield* test.inspect(plain.ref)).toMatchObject({
               state: { count: 3 },

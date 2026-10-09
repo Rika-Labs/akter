@@ -25,7 +25,7 @@ An eligible Postgres activation evaluates one command on a private copy of its c
 One pipelined extended-protocol flight then sends, in order:
 
 1. `BEGIN` and transaction-local timeout/tenant settings;
-2. a guard that locks the generation row and checks the expected generation, creation marker, event head, absence of the command receipt, and external identity time bounds against the database clock **after the lock wait**;
+2. a guard that locks the generation row and checks the expected generation, creation marker, event head, null `cold_ref`, absence of the command receipt, and external identity time bounds against the database clock **after the lock wait**;
 3. every staged state, event, outbox, job, creation and receipt write;
 4. `COMMIT`, followed on the same session by the fresh WAL insert position and database clock from [ADR 0052](0052-read-your-writes-commit-versions.md), then a read-only snapshot-provenance probe.
 
@@ -35,13 +35,18 @@ A guard miss or receipt insertion race discards speculation and the cached view,
 
 ### Eligibility and replay knowledge
 
-The fast path requires a confirmed committed state, generation, creation marker, event head and post-commit version. It is skipped for:
+The fast path requires a confirmed committed state, generation, creation marker, event head and post-commit version. Eligibility is conservative:
 
-- first activation, wake, missing/invalidated state, fetched-but-unwritten cold material or a remaining `cold_ref`;
-- actors declaring owned tables or blobs, handlers that can issue `turn.rows` SQL, workflows needing SQL, subscription deliveries/cursor checks, connection-dependent handlers and workflow routes;
-- plans staging new jobs, intents or subscriptions: these identities require the authoritative admission clock, so speculation is discarded before any SQL and the handler evaluates under ordinary admission;
-- batches of more than one command, chained admissions and members already in a cross-actor turn group;
-- redelivery after an uncertain result, a remembered completed id, or an id issued at or before the activation's replay watermark.
+| Condition                                                                                           | Path and reason                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One command; resident confirmed state and matching generation/state pointer; unused recent identity | Speculate, then one guarded commit flight. Memory is never commit authority.                                                                                            |
+| First activation, wake, missing or invalidated state                                                | Ordinary admission reloads and fences before evaluation.                                                                                                                |
+| Fetched-but-unwritten cold material or non-null `cold_ref`                                          | Ordinary cold admission only. Material is not committed cache state; the fast SQL guard also rejects the pointer ([ADR 0114](0114-cold-tier-admission-and-garbage.md)). |
+| Owned tables/blobs or a handler that can use `turn.rows`                                            | Ordinary admission. A database read cannot complete before its reply; SQL writes also need declared-failure savepoints.                                                 |
+| SQL-dependent workflows, workflow routes, subscription deliveries/cursor checks, connections        | Ordinary admission retains the existing lock/cursor/connection protocol.                                                                                                |
+| Newly staged jobs, intents or subscriptions                                                         | Discard speculation before SQL and use ordinary admission's authoritative clock for identity and due-time derivation.                                                   |
+| Multiple-command batches, chained admission or an existing shared-turn member                       | Keep the ordinary two-group batching and shared-turn mechanism.                                                                                                         |
+| Commit-unknown redelivery, remembered completed id, identity at or before the replay watermark      | Ordinary receipt resolution; stored outcome/access/conflict checks precede any further handler evaluation.                                                              |
 
 The activation remembers at most 1,024 completed ids. Its watermark begins at its first fenced admission clock and advances past evicted identities. Thus eviction never makes an old duplicate eligible again. Memory is a **skip hint**, not receipt authority: replay, conflicts, caller access, expiry and pruning safety still resolve in ordinary database admission. Concurrent copies queued behind an original see its completed-id hint before they can speculate.
 

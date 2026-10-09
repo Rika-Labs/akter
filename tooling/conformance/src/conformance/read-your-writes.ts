@@ -2,6 +2,7 @@ import { Effect, Redacted, Schedule, type Scope } from "effect"
 import { dual } from "effect/Function"
 import { ActorError, InvalidInput } from "../../../../packages/akter/src/errors/actor.ts"
 import { actorErrorBody } from "../../../../packages/akter/src/protocol/wire.ts"
+import { ActorRef } from "../../../../packages/akter/src/identity/caller.ts"
 import { ActorTest } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { HttpRoom, serveHttp, tenantOf, type Server, httpSuite } from "./http.ts"
 import type {
@@ -177,14 +178,17 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const control = yield* replica.connect
           const server = yield* serveHttp()
-          const token = `${yield* tenantOf}:alice`
+          const tenant = yield* tenantOf
+          const token = `${tenant}:alice`
 
           const own = (yield* post(server, token, "lag")).headers.get("durable-version")!
           yield* replayedThrough(control, own)
           yield* pauseReplay(control)
 
           const other = (yield* post(server, token, "lag")).headers.get("durable-version")!
-          yield* (yield* ActorTest).hibernate((yield* HttpRoom.get("lag")).ref)
+          yield* (yield* ActorTest).hibernate(
+            ActorRef.make({ tenant, actor: "HttpRoom", id: "lag" }),
+          )
 
           expect(yield* count(server, token, "lag", own)).toMatchObject({ status: 200, body: 1 })
           expect(yield* count(server, token, "lag")).toMatchObject({ status: 200, body: 1 })
@@ -264,7 +268,9 @@ export const readYourWritesConformance: ReadonlyArray<ConformanceCase> = [
           yield* pauseReplay(control)
           yield* Effect.promise(() => room.Post({ text: "b" }))
           const latest = issued.at(-1)!
-          yield* (yield* ActorTest).hibernate((yield* HttpRoom.get("client")).ref)
+          yield* (yield* ActorTest).hibernate(
+            ActorRef.make({ tenant, actor: "HttpRoom", id: "client" }),
+          )
 
           expect(yield* count(server, `${tenant}:alice`, "client")).toMatchObject({ body: 1 })
           expect(yield* Effect.promise(() => room.Count())).toBe(2)

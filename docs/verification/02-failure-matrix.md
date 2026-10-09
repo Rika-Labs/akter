@@ -19,7 +19,10 @@ The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 
 - stale guard: the sent state/event/receipt writes all roll back, then ordinary admission reloads committed state before reevaluation;
 - retained duplicate/conflict: the stored result or conflict is returned without another handler; canonical hashing remains PostgreSQL JSONB normalization;
+- receipt committed after the guard's snapshot began waiting: the unique receipt constraint rolls back every speculative consequence and ordinary admission replays the asymmetric stored outcome;
+- expiry during the generation-lock wait or a non-null cold pointer: no speculative state/event/receipt commits; expiry uses the post-lock database clock and cold material stays on ordinary admission;
 - lost COMMIT reply: same-id redelivery resolves one committed receipt with no second handler evaluation;
+- successor commit between COMMIT and the version read: the older cached state cannot answer a query carrying the successor's version, even if the older activation reads an equal or higher global LSN;
 - pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and database-dependent queries never mix cached state with live rows.
 
 These tests do not claim exactly-once handler evaluation: only committed consequences and receipt identity are exactly-once. Guard or receipt misses discard speculation before ordinary admission ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)).

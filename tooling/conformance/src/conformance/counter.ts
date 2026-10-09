@@ -892,7 +892,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
       ),
   },
   {
-    name: "retries a real generation lock timeout without committing speculative work",
+    name: "ordinary admission retries a real generation lock timeout without entering the handler",
     requiresIndependentConnections: true,
     timeoutMs: 15_000,
     run: ({ expect, environment, fixture }) =>
@@ -900,6 +900,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
         Effect.gen(function* () {
           const counter = yield* Counter.get("locked")
           const test = yield* ActorTest
+          const id = yield* (yield* Actors).mintCommandId
           yield* counter.Increment(2)
 
           const connect = environment.connect
@@ -916,7 +917,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
 
           yield* Effect.gen(function* () {
             const before = fixture.executions
-            const waiter = yield* counter.Increment(59).pipe(Effect.forkChild)
+            const waiter = yield* counter.Increment(59).pipe(Actor.commandId(id), Effect.forkChild)
 
             const waitingAttempt = lock.query("SELECT pg_stat_clear_snapshot()").pipe(
               Effect.andThen(
@@ -954,14 +955,14 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
             )
 
             expect(retry).not.toEqual(first)
-            expect(fixture.executions - before).toBe(1)
+            expect(fixture.executions).toBe(before)
             expect(yield* test.inspect(counter.ref)).toMatchObject({
               state: { count: 2 },
               receipts: 1,
             })
             yield* lock.query("COMMIT")
             expect(yield* Fiber.join(waiter)).toBe(61)
-            expect(fixture.executions - before).toBe(2)
+            expect(fixture.executions - before).toBe(1)
             expect(yield* test.inspect(counter.ref)).toMatchObject({
               state: { count: 61 },
               receipts: 2,
