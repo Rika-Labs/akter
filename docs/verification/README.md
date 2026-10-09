@@ -16,6 +16,7 @@ Joined inspection views are checked by `tooling/conformance/src/conformance/insp
 Startup migration evidence lives in `runtime/database/migrations.test.ts`: six concurrent `Actors.layer` builds and six independent processes on fresh Postgres data/coordination databases, migration history and Cluster-table creation, and a 0032-to-0033 upgrade with rollback and restart. Existing transaction/schema and subprocess recovery suites cover interruption and rollback without a provider DDL journal. The public socket startup drill in `tooling/conformance/src/conformance/crash/drills/production.test.ts` uses local Postgres and real subprocesses; its nine scenarios passed in the [removal verification](neki-removal.md). Docker-based failover drills remain separate evidence.
 
 - [Failure matrix](02-failure-matrix.md)
+- [Low-connection Postgres: four-session floor and wait-cycle evidence](low-connection-postgres.md)
 - [Performance and capacity](../../BENCHMARKS.md)
 - [Named invariants](invariants.md)
 - Served-command flight accounting: the Postgres pipeline case counts every pool and independently derives seven statements/two flights for a warm dirty-state command and five statements/two flights for a warm replay. Admission cases reject a caller-supplied redelivery flag and an expired result whose receipt committed while its handler was paused; the same result-expiry check runs on PGlite ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).

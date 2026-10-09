@@ -156,7 +156,9 @@ const runtime = Layer.unwrap(
           relay: { poll: "200 millis", claimLease: "5 seconds" },
         }).pipe(Layer.provide(Layer.mergeAll(hooks, wiring))),
       ),
-      Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
+      Layer.provideMerge(
+        Database.postgres({ url: Redacted.make(database), preset: "low-connection" }),
+      ),
     )
   }),
 ).pipe(Layer.provideMerge(BunCrypto.layer), Layer.provide(BunFileSystem.layer))

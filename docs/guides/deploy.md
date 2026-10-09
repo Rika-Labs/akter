@@ -119,6 +119,25 @@ Each runner owns its pools. Keep `processes × (maxConnections + offTurnConnecti
 - **Connections.** Each command holds one Postgres connection until its transaction ends; a pipelined chain keeps its session until the chain ends. `Database.postgres({ maxConnections })` defaults to 50, `offTurnConnections` and `queryConnections` to 10 each; count every pool targeting the server, plus migrations, backups, and operator sessions, under its `max_connections`. A pooler in front of a Postgres server is unverified.
 - **Memory.** A resident actor holds about 20 KiB of JavaScript heap on the measured runner, so the default `maxResidentActors` of 10,000 is about 200 MiB. A command that needs a new activation past the limit fails `RunnerAtCapacity`, and its handle retries until an idle actor hibernates.
 
+### Small connection budgets
+
+For a small database, opt into the supported low-connection preset:
+
+```ts
+Database.postgres({
+  url: Redacted.make(databaseUrl),
+  preset: "low-connection",
+})
+```
+
+It caps the three primary pools at **four sessions per runtime**: one turn, two off-turn, and one query. Explicit `maxConnections`, `offTurnConnections`, and `queryConnections` take precedence; the existing 50/10/10 defaults are unchanged when no preset is selected. Optional replica and coordination pools are additional and retain their own defaults.
+
+One of the two off-turn sessions is reserved by Effect Cluster for the runtime's entire lifetime, including public runners' table leases. The other handles startup, admission, receipt reads, relay claims/settles, workflow persistence, and inspector snapshots. Setting it to one without a separate coordination pool stalls Cluster startup: it reserves that session, then needs another for its table creation and registration. Startup migrations temporarily reserve a session but release it before Cluster starts; they do not require a fifth runtime session.
+
+Four is a liveness floor with the current pool split, **not a throughput target**. Turns serialize at this size; slow transactions can queue off-turn work that waits for their row locks. Queries of actors with owned tables or blobs also use the off-turn pool. Keep handlers short, measure latency, and increase the explicit sizes when the workload needs it. Fleet maintenance, `PgClient.listen`, and application-created reservations need extra capacity: fleet needs at least three off-turn sessions without separate coordination (Cluster, maintainer, ordinary work), so it is outside the four-session envelope.
+
+Budget replacement runners as well as steady-state runners. For example, a 100-connection server with 20 connections reserved for operators and other tools leaves room for 20 four-session runtimes **including replacements**, not 20 steady-state runtimes plus rolling-deploy surge. Separate migration tools, application pools, coordination, and replicas targeting that same server add their own sessions. The [verification record](../verification/low-connection-postgres.md) names the tested wait cycles, peak-session check and recovery cases; this is direct Postgres evidence, not certification of a hosting provider or pooler. Transaction-mode PgBouncer remains unverified; [ADR 0117](../decisions/0117-pooler-safe-locking.md) proposes the required locking changes without implementing them.
+
 See [deployment](../operations/01-deployment.md#postgres-connections-across-runners) for the arithmetic.
 
 ## Serving over HTTP
@@ -149,7 +168,7 @@ See [migrations](../operations/02-migrations.md) and [backup and restore](../ope
 - Owned-table migrations applied before start.
 - `authorize` allows only the callers and tenants you expect, and `Actors.serve` has a real auth provider.
 - TLS in front of the HTTP server, and `origins` set for browser clients.
-- `maxConnections × processes` within the server's `max_connections`.
+- All pools across steady-state and replacement runtimes, plus operator/tooling headroom, within the server's `max_connections`.
 - One process per runner address, matching shard count and expiration across the database.
 - A private peer network, direct advertisement, readiness gating, and drain before closing old runners.
 - Logs collected: deterministic defects, dead-lettered jobs, and outbox retries are logged as warnings and errors. See [observability](../operations/03-observability.md).

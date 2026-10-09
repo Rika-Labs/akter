@@ -41,7 +41,9 @@ const live = Layer.unwrap(
 
     return CounterLive.pipe(
       Layer.provideMerge(Actors.layer().pipe(Layer.provide(hooks))),
-      Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
+      Layer.provideMerge(
+        Database.postgres({ url: Redacted.make(database), preset: "low-connection" }),
+      ),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer))
