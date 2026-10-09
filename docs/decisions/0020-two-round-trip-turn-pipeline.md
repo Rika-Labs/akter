@@ -1,5 +1,7 @@
 # ADR 0020: The two-round-trip turn pipeline
 
+**Amended by [ADR 0115](0115-warm-actor-fast-path.md):** eligible warm Postgres commands may compute speculatively and use one guarded commit flight; local warm state-only queries may use a committed, version-qualified snapshot without SQL. The two-group pipeline remains the cold, SQL-capable, batch, replay and recovery path. The rejection of optimistic execution below is historical; durable fencing and receipt guarantees remain unchanged.
+
 **Status:** accepted (2026-09-26, Dallen, on [#54](https://github.com/Rika-Labs/akter/issues/54)). Dallen set the target on 2026-09-25: two SQL round trips per turn, and no one-round-trip fast path. On acceptance, he also approved the connection split (`maxConnections` 50 plus `offTurnConnections` 10) and the narrower batch allowance. Implementation (P4) and its evidence remain pending.
 
 **Responsibility:** decide how the runtime issues a command turn in two database round trips, as [ADR 0005](0005-turn-latency-batching-and-regional-placement.md) requires, and what the implementation must prove.

@@ -894,6 +894,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
                 yield* pauseReplay(control)
                 yield* sql.unsafe(`GRANT SELECT ON actor_state TO ${role}`)
                 yield* ledger.Put("second")
+                yield* internal.hibernate(ledger.ref)
 
                 expect(yield* entries).toEqual(["first", "second"])
               }),
@@ -905,6 +906,7 @@ export const rlsConformance: ReadonlyArray<ConformanceCase> = [
               Effect.gen(function* () {
                 yield* pauseReplay(control)
                 yield* ledger.Put("third")
+                yield* internal.hibernate(ledger.ref)
 
                 expect(yield* entries).toEqual(["first", "second"])
               }),

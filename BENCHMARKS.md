@@ -1,5 +1,29 @@
 # Akter benchmarks
 
+## Warm actor fast path (#719, 2026-10-09)
+
+The primary evidence is protocol flights: an eligible warm command uses **1 instead of 2**, and a local state-only, version-qualified query uses **0 instead of 1**. The real-Postgres `warm fast path:` cases in `tooling/conformance/src/conformance/pipeline.ts` require these exact counts, alongside durable state/receipt assertions and stale-fence, receipt-race, expiry, lost-COMMIT-reply and unpublished-state failures. Removing one flight removes one configured 10 ms round-trip delay; it is not a promise about wall-clock tails on a saturated host.
+
+The latency run used Bun 1.4.2, Effect 4.0.2 and Postgres 18.6-bookworm in a dedicated Docker container on a shared Apple M5 Max Mac. `synchronous_commit` remained on and WAL was logical. A TCP relay imposed 5 ms in each direction and counted client write flights after server replies. Two runtimes in the same process used fresh databases and the same candidate source, including the retryable-defect fix in [a6d8ecb5](https://github.com/Rika-Labs/akter/commit/a6d8ecb5c132d4731cc9de6d8fe9e12f62e7b28a). A disabled the internal `WarmTurnFastPath` test reference, retaining ordinary admission and database reads for the caller's minimum version; B enabled it. This isolates the optimization rather than comparing different revisions or pool presets. It measures public handle calls, not HTTP, forwarding, custom authorization SQL, rows, batching or multi-runner throughput.
+
+After 30 warm-up commands per runtime, command ids were minted outside the timed window. Each of 300 command pairs ran A then B, followed by 300 read pairs in the same ABAB order. Every result was independently checked against the expected count; both final counts were 331. Host load was sampled every ten pairs. The run spanned 20:08:27–20:09:02 UTC: one-minute load was 67.63 at startup and 43.67 at the end; sampled one-minute load p50/p90 was 43.67/53.60. Neither host scheduling nor Docker storage was isolated.
+
+| Measurement                     |      Ordinary A |          Warm B |
+| ------------------------------- | --------------: | --------------: |
+| Command flights, minimum / mode |           2 / 2 |           1 / 1 |
+| Command p50 / p99 ms            | 28.099 / 88.371 | 16.129 / 66.239 |
+| Read flights, minimum / mode    |           1 / 1 |           0 / 0 |
+| Read p50 / p99 ms               | 12.299 / 14.841 |   0.173 / 0.505 |
+
+| Paired B − A, ms |     p10 |     p50 |     p90 |     p99 |
+| ---------------- | ------: | ------: | ------: | ------: |
+| Command          | −16.259 | −11.771 |  −8.740 | +24.404 |
+| Read             | −12.525 | −12.124 | −11.595 | −11.012 |
+
+All-pool flight counting also includes background traffic: observed maxima were 5/3 for A/B commands and 4/0 for reads. The isolated conformance counts, not these maxima, establish the foreground protocol reduction. Pair differences are per adjacent A/B call, not differences between marginal percentiles. The positive command p99 difference means some warm calls were slower than their paired controls despite the lower marginal p99. The measured median saving is consistent with removing a delayed flight; this single, noisy run establishes neither a production p99 improvement nor an SLO.
+
+An earlier non-interleaved 300-sample attempt on the same saturated Mac illustrates why before/after runs alone are misleading: command p50/p99 was 45.161/367.844 ms before and 53.280/1,871.617 ms after, while read p50/p99 was 13.853/116.075 ms before and 0.065/1.693 ms after. Its command latency worsened, so it is not evidence of a latency win. Raw observations, paired samples and the focused checks are retained as this worktree's review artifacts under `.amp/in/artifacts/`; the temporary benchmark harness was removed. No Neki or provider-specific result is claimed.
+
 ## Runner mutual TLS on the forwarding path (#541, 2026-10-04)
 
 This run measured what `Runner.mtls` costs on the forwarding path. It used the two-runner cohort of the run below, unchanged: one Daytona sandbox with 4 CPUs, 4 GiB and 5 GiB of disk, AMD EPYC 9354P, x86-64. Two Bun runners shared a three-CPU app container with Postgres, and a one-CPU driver ran 64 closed-loop callers over 10,000 keys, alternating between the two HTTP ports. Each runner held 384 of the 768 shards, so about half the commands were forwarded to the other runner over `Runner.socket`. Both sides ran commit `273322ad3`. They differed only in transport: the platform plaintext layers, or `Runner.mtls` with a development authority. Each repeat got a fresh Postgres container and database. The order was plaintext, mTLS; mTLS, plaintext; plaintext, mTLS. Before each mTLS repeat, a plaintext NDJSON probe to a runner's peer port got a TLS alert (`15 03 01 00 02 02 46`, handshake failure); before each plaintext repeat, the same probe got `{"_tag":"Pong"}`.

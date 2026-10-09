@@ -11,6 +11,7 @@ import {
   Layer,
   Option,
   Redacted,
+  Result,
   Schedule,
   Schema,
   Tracer,
@@ -23,16 +24,22 @@ import {
   ActorError,
   ActorUnavailable,
   Actors,
+  CommandExpired,
   Intent,
+  User,
 } from "../../../../packages/akter/src/index.ts"
 import { Database } from "../../../../packages/akter/src/runtime/layer.ts"
+import { InternalActors } from "../../../../packages/akter/src/runtime/actors.ts"
 import {
   RetryTurn,
   TurnHooks,
   type TurnPoint,
 } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
+import { commandTimes } from "../../../../packages/akter/src/identity/command.ts"
+import { compress } from "../../../../packages/akter/src/runtime/storage/codec.ts"
 import { TurnPoolSettings } from "../../../../packages/akter/src/runtime/turn/pipeline.ts"
+import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
 import { ActorTest, ClusterMember } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -74,13 +81,35 @@ const PingLater = Actor.command("PingLater", { payload: Schema.Finite })
 
 const CancelPing = Actor.command("CancelPing", {})
 
+class WarmRejected extends Schema.TaggedError<WarmRejected>()("WarmRejected", {}) {}
+
+const Changed = Actor.event("Changed", { count: Schema.Finite })
+
+const Change = Actor.command("Change", {
+  payload: Schema.Struct({ amount: Schema.Finite, fail: Schema.Boolean, defect: Schema.Boolean }),
+  success: Schema.Finite,
+  error: WarmRejected,
+})
+
+const Snapshot = Actor.query("Snapshot", {
+  success: Schema.Struct({ count: Schema.Finite, version: Schema.String, cursor: Schema.String }),
+})
+
+const History = Actor.query("History", { success: Schema.Array(Schema.Finite) })
+
+const ResilientHistory = Actor.query("ResilientHistory", {
+  payload: Schema.Literals(["events", "group"]),
+  success: Schema.Array(Schema.Finite),
+})
+
 const Plain = Actor.make("Plain", {
   key: Schema.String,
   state: Actor.state({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
+  events: [Changed],
   jobs: { Ping: { job: Ping } },
-  api: { Add, Defer, PingLater, CancelPing },
+  api: { Add, Defer, PingLater, CancelPing, Change, Snapshot, History, ResilientHistory },
   internal: { Remind },
 })
 
@@ -152,6 +181,18 @@ const actorsLive = (probe: Probe) =>
 
               return turn.state.count
             }),
+            Change: Effect.fnUntraced(function* ({ amount, fail, defect }) {
+              probe.handled += 1
+              const turn = yield* Plain.Turn
+              yield* turn.state.set({ count: turn.state.count + amount })
+              yield* turn.emit(Changed.make({ count: turn.state.count }))
+
+              if (fail) return yield* WarmRejected.make({})
+
+              if (defect) return yield* Effect.die(new Error("speculative defect"))
+
+              return turn.state.count
+            }),
             Defer: Effect.fnUntraced(function* (pauseMs: number) {
               probe.handled += 1
               yield* Effect.sleep(pauseMs)
@@ -176,6 +217,31 @@ const actorsLive = (probe: Probe) =>
             }),
           }),
         ),
+        Plain.toQueryLayer({
+          Snapshot: Effect.fnUntraced(function* () {
+            const read = yield* Plain.Read
+            return { count: read.state.count, version: read.version ?? "", cursor: read.cursor }
+          }),
+          History: Effect.fnUntraced(function* () {
+            const events = yield* (yield* Plain.Read).events(Changed).pipe(Effect.orDie)
+            return events.map(({ event }) => event.count)
+          }),
+          ResilientHistory: Effect.fnUntraced(function* (capability) {
+            const read = yield* Plain.Read
+
+            if (capability === "group")
+              return yield* Effect.try(() => read.group).pipe(
+                Effect.as([read.state.count]),
+                Effect.orElseSucceed(() => []),
+              )
+
+            const events = yield* read.events(Changed).pipe(
+              Effect.catchDefect(() => Effect.succeed([])),
+              Effect.orDie,
+            )
+            return events.map(({ event }) => event.count)
+          }),
+        }),
         Plain.toJobLayer(Effect.succeed({ Ping: () => Effect.succeed("pong") })),
       )
     }).pipe(Effect.orDie),
@@ -196,6 +262,10 @@ interface Relay {
   readonly loseCommitReply: () => void
   /** Connections dropped by `loseCommitReply` after their commit. */
   readonly lostCommits: () => number
+  /** Holds the next post-COMMIT version statement, but passes COMMIT itself through. */
+  readonly holdVersionRead: () => void
+  readonly versionHeld: () => boolean
+  readonly releaseVersionRead: () => void
 }
 
 /** A `CommandComplete` message whose tag is `COMMIT`. */
@@ -217,6 +287,11 @@ const relay = (url: URL, probe: Probe) =>
       let refusing = false
       let armed = false
       let lost = 0
+      let holdVersion = false
+      let heldCommit = false
+      let heldUpstream: Socket | undefined
+      let heldBytes = Buffer.alloc(0)
+      let resumeVersion: (() => void) | undefined
 
       const server = createServer((client) => {
         if (refusing) return void client.destroy()
@@ -229,6 +304,7 @@ const relay = (url: URL, probe: Probe) =>
         let answered = true
         let losing = false
         let replies = Buffer.alloc(0)
+        let buffered = Buffer.alloc(0)
         const statementsOf = wireStatements()
 
         sockets.add(client)
@@ -249,12 +325,55 @@ const relay = (url: URL, probe: Probe) =>
           }
 
           answered = false
+          if (heldUpstream === upstream) {
+            heldBytes = Buffer.concat([heldBytes, chunk])
+            return
+          }
+
+          if (holdVersion) {
+            buffered = Buffer.concat([buffered, chunk])
+            let offset = 0
+            while (buffered.length - offset >= 5) {
+              const length = buffered.readUInt32BE(offset + 1) + 1
+              if (buffered.length - offset < length) break
+              const kind = buffered[offset]
+              const start = kind === 0x50 ? buffered.indexOf(0, offset + 5) + 1 : offset + 5
+              const statement =
+                kind === 0x50 || kind === 0x51
+                  ? buffered.toString("utf8", start, buffered.indexOf(0, start))
+                  : ""
+              if (statement.startsWith("SELECT (pg_current_wal_insert_lsn()")) {
+                upstream.write(buffered.subarray(0, offset))
+                heldBytes = buffered.subarray(offset)
+                heldUpstream = upstream
+                buffered = Buffer.alloc(0)
+                holdVersion = false
+                resumeVersion = () => {
+                  heldUpstream = undefined
+                  upstream.write(heldBytes)
+                  heldBytes = Buffer.alloc(0)
+                  resumeVersion = undefined
+                }
+                return
+              }
+              offset += length
+            }
+            upstream.write(buffered.subarray(0, offset))
+            buffered = buffered.subarray(offset)
+            return
+          }
           upstream.write(chunk)
         })
         upstream.on("data", (chunk: Buffer) => {
           answered = true
 
-          if (!losing) return void client.write(chunk)
+          if (!losing) {
+            if (heldUpstream === upstream) {
+              replies = Buffer.concat([replies, chunk])
+              if (replies.includes(COMMIT_COMPLETE)) heldCommit = true
+            }
+            return void client.write(chunk)
+          }
 
           replies = Buffer.concat([replies, chunk])
 
@@ -297,6 +416,12 @@ const relay = (url: URL, probe: Probe) =>
               armed = true
             },
             lostCommits: () => lost,
+            holdVersionRead: () => {
+              holdVersion = true
+              heldCommit = false
+            },
+            versionHeld: () => heldCommit,
+            releaseVersionRead: () => resumeVersion?.(),
           }),
         )
       })
@@ -314,6 +439,9 @@ const withProbe = <A, E>(
   options: {
     readonly prepare?: boolean
     readonly everyPool?: boolean
+    /** Ordinary pipeline cases remain independent of the speculative path. */
+    readonly warm?: boolean
+    readonly retryWindowMs?: number
     /** Turn hooks the runner sees at every point no queued fault takes. */
     readonly hooks?: TestHooks
     /** The runner's tracer, so a case can read the spans turns open. */
@@ -345,6 +473,7 @@ const withProbe = <A, E>(
             Layer.provideMerge(
               ActorTest.layer({
                 database,
+                retryWindowMs: options.retryWindowMs,
               }).pipe(
                 Layer.provide(Layer.succeed(TurnHooks, options.hooks ?? { at: () => Effect.void })),
               ),
@@ -362,6 +491,7 @@ const withProbe = <A, E>(
                         maxConnections: options.turnSessions,
                       },
                 ),
+                Layer.succeed(WarmTurnFastPath, options.warm === true),
                 options.everyPool === true
                   ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
                   : Layer.empty,
@@ -469,6 +599,366 @@ const gathered = Effect.fnUntraced(function* (keys: ReadonlyArray<string>) {
 
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "warm fast path: one commit flight, zero-flight versioned reads, and duplicate/conflict replay without another handler",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, everyPool: true }, (probe) =>
+        Effect.gen(function* () {
+          const actors = yield* Actors
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast")
+          expect(yield* plain.Add(3)).toBe(3)
+          yield* plain.Snapshot()
+          const id = yield* actors.mintCommandId
+          const before = probe.handled
+          const warm = yield* flightsOf(probe, plain.Add(7).pipe(Actor.commandId(id)))
+          expect(warm).toMatchObject({ value: 10, flights: 1 })
+          const read = yield* flightsOf(probe, plain.Snapshot())
+          expect(read.flights).toBe(0)
+          expect(read.value.count).toBe(10)
+          expect(BigInt(read.value.version) > 0n).toBe(true)
+          expect(yield* plain.Add(7).pipe(Actor.commandId(id))).toBe(10)
+          const conflict = yield* plain.Add(13).pipe(Actor.commandId(id), Effect.result)
+          expect(Result.isFailure(conflict)).toBe(true)
+          if (Result.isFailure(conflict))
+            expect(conflict.failure.reason._tag).toBe("CommandConflict")
+          const hostile = yield* Plain.get("fast").pipe(Actor.as(User.make({ subject: "other" })))
+          const denied = yield* hostile.Add(7).pipe(Actor.commandId(id), Effect.result)
+          expect(Result.isFailure(denied)).toBe(true)
+          if (Result.isFailure(denied)) expect(denied.failure.reason._tag).toBe("Unauthorized")
+          expect(probe.handled - before).toBe(1)
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 10 },
+            receipts: 2,
+          })
+          const other = yield* Meter.get("newer-version")
+          yield* other.Add(1)
+          const minimumMiss = yield* flightsOf(probe, plain.Snapshot())
+          expect(minimumMiss.flights > 0).toBe(true)
+          expect(minimumMiss.value).toMatchObject({ count: 10, version: "" })
+          const clockId = yield* actors.mintCommandId
+          const clockDependent = yield* flightsOf(
+            probe,
+            plain.PingLater(0).pipe(Actor.commandId(clockId)),
+          )
+          expect(clockDependent.flights).toBe(2)
+          expect((yield* test.inspect(plain.ref)).jobs).toBe(1)
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: stale fence rolls back all pipelined state/events/receipt and reevaluates from committed state",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, database) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast-stale")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* (yield* Actors).mintCommandId
+          const context = yield* rival(database)
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE actor_generations SET generation = generation + 1
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+                yield* sql`DELETE FROM actor_state WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+              }),
+            )
+          }).pipe(Effect.provideContext(context), Effect.orDie)
+          const handled = probe.handled
+          const result = yield* flightsOf(
+            probe,
+            plain.Change({ amount: 7, fail: false, defect: false }).pipe(Actor.commandId(id)),
+          )
+          expect(result.value).toBe(7)
+          expect(result.flights).toBe(3)
+          expect(probe.handled - handled).toBe(2)
+          expect(wire(result.sent[0]!)).toContain("COMMIT")
+          expect(wire(result.sent[0]!)).toContain("INSERT INTO actor_receipts")
+          expect(yield* plain.History()).toEqual([7])
+          expect(yield* test.inspect(plain.ref)).toMatchObject({ state: { count: 7 }, receipts: 2 })
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: a receipt committed during the guard snapshot wait aborts all writes and replays",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, database) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast-receipt-race")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* (yield* Actors).mintCommandId
+          const context = yield* rival(database)
+          const entered = yield* Deferred.make<void>()
+          const waiting = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const other = yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT generation FROM actor_generations
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id} FOR UPDATE`
+                yield* sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id,
+                command_id, command, payload_hash, caller_key, outcome, expires_at_ms, started_at_ms)
+                SELECT routing_key, tenant_id, actor_type, actor_id, ${id}, command,
+                  encode(sha256(convert_to('{"value":7}'::jsonb::text, 'UTF8')), 'hex'),
+                  caller_key, outcome, ${commandTimes(id).expiresAt}, started_at_ms
+                FROM actor_receipts WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+                yield* Deferred.succeed(entered, undefined)
+                yield* blockedBehind(sql).pipe(
+                  Effect.filterOrFail(
+                    (rows) => rows[0]!.waiting,
+                    () => "waiting",
+                  ),
+                  Effect.retry(Schedule.spaced("10 millis")),
+                  Effect.orDie,
+                )
+                yield* Deferred.succeed(waiting, undefined)
+                yield* Deferred.await(release)
+              }),
+            )
+          }).pipe(Effect.provideContext(context), Effect.orDie, Effect.forkChild)
+          yield* Deferred.await(entered)
+          const handled = probe.handled
+          const pending = yield* flightsOf(
+            probe,
+            plain.Add(7).pipe(Actor.commandId(id), Effect.orDie),
+          ).pipe(Effect.forkChild)
+          yield* Deferred.await(waiting)
+          expect((yield* plain.Snapshot()).count).toBe(3)
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(other)
+          expect(yield* Fiber.join(pending)).toMatchObject({ value: 3, flights: 3 })
+          expect(probe.handled - handled).toBe(1)
+          expect(yield* test.inspect(plain.ref)).toMatchObject({ state: { count: 3 }, receipts: 2 })
+          expect((yield* plain.Snapshot()).count).toBe(3)
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: a successor commit before the version read cannot certify an older snapshot for read-your-writes",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(
+        environment,
+        { warm: true, prepare: false, everyPool: true },
+        (probe, database, relayed) =>
+          Effect.gen(function* () {
+            const plain = yield* Plain.get("post-commit-takeover")
+            expect(yield* plain.Add(3)).toBe(3)
+            const id = yield* (yield* Actors).mintCommandId
+            relayed.holdVersionRead()
+            const pending = yield* plain
+              .Add(7)
+              .pipe(Actor.commandId(id), Effect.orDie, Effect.forkChild)
+            yield* Effect.sync(relayed.versionHeld).pipe(
+              Effect.repeat({ until: (held) => held, schedule: Schedule.spaced("10 millis") }),
+            )
+            const context = yield* rival(database)
+            const successor = yield* Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`UPDATE actor_generations SET generation = generation + 1
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+                  yield* sql`UPDATE actor_state SET value = ${compress("23")}
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id} AND key = 'count'`
+                }),
+              )
+              return (yield* sql<{
+                version: string
+              }>`SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version`)[0]!.version
+            }).pipe(Effect.provideContext(context), Effect.orDie)
+            relayed.releaseVersionRead()
+            expect(yield* Fiber.join(pending)).toBe(10)
+            const runtime = yield* Effect.serviceOption(InternalActors)
+            if (Option.isNone(runtime)) return yield* Effect.die(new Error("Missing runtime"))
+            expect(BigInt(runtime.value.observedVersion()!) >= BigInt(successor)).toBe(true)
+            const read = yield* flightsOf(probe, plain.Snapshot())
+            expect(read.flights > 0).toBe(true)
+            expect(read.value).toMatchObject({ count: 23, version: "" })
+          }),
+      ),
+  },
+  {
+    name: "warm fast path: expiry is checked after the fence wait and a non-null cold_ref cannot commit speculatively",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(
+        environment,
+        { warm: true, prepare: false, retryWindowMs: 1_500 },
+        (probe, database) =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            const test = yield* ActorTest
+            const plain = yield* Plain.get("fast-expiry")
+            expect(yield* plain.Add(3)).toBe(3)
+            const id = yield* (yield* Actors).mintCommandId
+            const context = yield* rival(database)
+            const locked = yield* Deferred.make<void>()
+            const waited = yield* Deferred.make<void>()
+            const other = yield* Effect.gen(function* () {
+              const rivalSql = yield* SqlClient.SqlClient
+              yield* rivalSql.withTransaction(
+                Effect.gen(function* () {
+                  yield* rivalSql`SELECT generation FROM actor_generations
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id} FOR UPDATE`
+                  yield* Deferred.succeed(locked, undefined)
+                  yield* blockedBehind(rivalSql).pipe(
+                    Effect.filterOrFail(
+                      (rows) => rows[0]!.waiting,
+                      () => "waiting",
+                    ),
+                    Effect.retry(Schedule.spaced("10 millis")),
+                    Effect.orDie,
+                  )
+                  yield* Deferred.succeed(waited, undefined)
+                  yield* Effect.sleep("1500 millis")
+                }),
+              )
+            }).pipe(Effect.provideContext(context), Effect.orDie, Effect.forkChild)
+            yield* Deferred.await(locked)
+            const handled = probe.handled
+            const pending = yield* plain
+              .Change({ amount: 7, fail: false, defect: false })
+              .pipe(Actor.commandId(id), Effect.result, Effect.forkChild)
+            yield* Deferred.await(waited)
+            yield* Fiber.join(other)
+            const expired = yield* Fiber.join(pending)
+            expect(Result.isFailure(expired)).toBe(true)
+            if (Result.isFailure(expired))
+              expect(expired.failure).toMatchObject({
+                reason: CommandExpired.make({ commandId: id }),
+              })
+            expect(probe.handled - handled).toBe(1)
+            expect(yield* test.inspect(plain.ref)).toMatchObject({
+              state: { count: 3 },
+              receipts: 1,
+              events: 0,
+            })
+            expect(yield* plain.Add(2)).toBe(5)
+            yield* sql`ALTER TABLE actor_generations ADD COLUMN cold_ref text`
+            yield* sql`UPDATE actor_generations SET cold_ref = 'cold-material'
+            WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+            const coldId = yield* (yield* Actors).mintCommandId
+            const coldHandled = probe.handled
+            const cold = yield* flightsOf(probe, plain.Add(11).pipe(Actor.commandId(coldId)))
+            expect(cold).toMatchObject({ value: 16, flights: 3 })
+            expect(probe.handled - coldHandled).toBe(2)
+            expect(yield* test.inspect(plain.ref)).toMatchObject({
+              state: { count: 16 },
+              receipts: 3,
+            })
+          }),
+      ),
+  },
+  {
+    name: "warm fast path: a lost COMMIT reply retries once through its stored receipt, never reevaluating",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast-unknown")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* (yield* Actors).mintCommandId
+          const handled = probe.handled
+          relayed.loseCommitReply()
+          expect(
+            yield* plain
+              .Change({ amount: 7, fail: false, defect: false })
+              .pipe(Actor.commandId(id)),
+          ).toBe(10)
+          expect(relayed.lostCommits()).toBe(1)
+          expect(probe.handled - handled).toBe(1)
+          expect(yield* plain.History()).toEqual([10])
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 10 },
+            receipts: 2,
+          })
+          const sql = yield* SqlClient.SqlClient
+          expect(
+            yield* sql`SELECT generation::text FROM actor_generations
+            WHERE actor_type = ${plain.ref.actor} AND actor_id = ${plain.ref.id}
+              AND tenant_id = ${plain.ref.tenant}`,
+          ).toEqual([{ generation: "2" }])
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: reads exclude staged state, declared failures and SQL-aborted commits; event reads fall through",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true }, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const actors = yield* Actors
+          const plain = yield* Plain.get("fast-reads")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* actors.mintCommandId
+          const paused = yield* test.pauseNext("beforeCommit", { commandId: id })
+          const pending = yield* plain
+            .Change({ amount: 7, fail: false, defect: false })
+            .pipe(Actor.commandId(id), Effect.forkChild)
+          yield* paused.reached
+          const during = yield* flightsOf(probe, plain.Snapshot())
+          expect(during).toMatchObject({ flights: 0, value: { count: 3, cursor: "0" } })
+          yield* paused.release
+          expect(yield* Fiber.join(pending)).toBe(10)
+          const committed = yield* plain.Snapshot()
+          expect(committed.count).toBe(10)
+          expect(BigInt(committed.version) > BigInt(during.value.version)).toBe(true)
+          expect(committed.cursor).toBe("1")
+          expect(yield* plain.ResilientHistory("events")).toEqual([10])
+          expect(yield* plain.ResilientHistory("group")).toEqual([10])
+          const failedId = yield* actors.mintCommandId
+          expect(
+            (yield* plain
+              .Change({ amount: 13, fail: true, defect: false })
+              .pipe(Actor.commandId(failedId), Effect.result))._tag,
+          ).toBe("Failure")
+          expect((yield* plain.Snapshot()).count).toBe(10)
+          const handled = probe.handled
+          expect(
+            (yield* plain
+              .Change({ amount: 13, fail: true, defect: false })
+              .pipe(Actor.commandId(failedId), Effect.result))._tag,
+          ).toBe("Failure")
+          expect(probe.handled).toBe(handled)
+          expect(
+            (yield* plain.Change({ amount: 17, fail: false, defect: true }).pipe(Effect.exit))._tag,
+          ).toBe("Failure")
+          expect((yield* plain.Snapshot()).count).toBe(10)
+          yield* sql.unsafe(`CREATE FUNCTION warm_poison() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'receipt rejected'; END $$`)
+          yield* sql.unsafe(`CREATE TRIGGER warm_poison BEFORE INSERT ON actor_receipts
+            FOR EACH ROW EXECUTE FUNCTION warm_poison()`)
+          expect(
+            (yield* plain.Change({ amount: 19, fail: false, defect: false }).pipe(Effect.exit))
+              ._tag,
+          ).toBe("Failure")
+          expect((yield* plain.Snapshot()).count).toBe(10)
+          expect(yield* plain.History()).toEqual([10])
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 10 },
+            receipts: 3,
+          })
+        }),
+      ),
+  },
   {
     name: "pipeline: a warm turn and a wake each take two round trips, and a replay writes nothing",
     requiresIndependentConnections: true,

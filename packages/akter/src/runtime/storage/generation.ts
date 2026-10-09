@@ -13,6 +13,20 @@ import type { ActorRef } from "../../identity/caller.ts"
 export interface ActivationCache {
   generation: string | undefined
   state: ReadonlyMap<string, string> | undefined
+  /** Published only after a command's transaction and post-commit version read succeeded. */
+  committed?: {
+    readonly generation: string
+    readonly state: ReadonlyMap<string, string>
+    readonly created: boolean
+    readonly head: string
+    readonly version: string
+    /** No missing actor commit has a token at or below this snapshot's version. */
+    readonly certified: boolean
+    readonly now: number
+    /** Older identities take receipt-aware admission, including after hint eviction. */
+    replayBefore: number
+    readonly receipts: Set<string>
+  }
 }
 
 /** A fresh activation has acquired no generation and read no state. */
@@ -29,6 +43,7 @@ export const emptyActivationCache = (): ActivationCache => ({
 export const forget = (cache: ActivationCache) => {
   cache.generation = undefined
   cache.state = undefined
+  cache.committed = undefined
 }
 
 /** One actor's stored identity: the routing key its rows live under and its address. */

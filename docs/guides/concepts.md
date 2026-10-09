@@ -36,11 +36,11 @@ Tenants are rows, not databases. Every framework row and every owned-table row c
 
 ## Turns
 
-A command runs as a **turn**: one database transaction that, in order, checks that this runner still owns the actor (the generation fence), records or finds the command's receipt, decodes the actor's state, runs the handler, writes what the handler changed, and commits once. The handler reads and writes through `yield* X.Turn`, a service that exists only inside that transaction.
+A command runs as a **turn**: one database transaction that commits the handler's consequences and receipt together. Ordinary admission checks that this runner still owns the actor (the generation fence), finds the command's receipt, decodes state, then runs the handler. Eligible warm commands can compute first on cached committed state and send their fence, receipt check and writes in one flight; a failed check discards that computation and uses ordinary admission. The handler reads and stages writes through `yield* X.Turn`, a service that exists only for that turn.
 
 Everything the handler changes commits together or not at all: state, owned rows, events, blobs, the receipt, and the intents and jobs it staged. A declared failure rolls all of it back and commits only the failure in the receipt, so a retry replays the same failure. See [command turns](../contracts/02-command-turns.md) and [Effect all the way into the commit](effect-into-the-commit.md).
 
-Turns are short. A turn holds a database connection and the actor's lock for its whole duration, and `policy.executionTimeout` (30 seconds by default) bounds it. Anything slow or external belongs in a job or a workflow.
+Turns are short. Ordinary turns hold the actor's database lock while their handler runs; warm speculation takes it only for the commit flight. `policy.executionTimeout` (30 seconds by default) bounds execution. **A handler can be evaluated more than once after rollback, a failed batch/group or stale warm speculation. It must not perform external effects: stage a job and let its executor perform them after commit.** Activation-local closure changes are not rolled back or exactly-once. Anything slow belongs in a job or a workflow.
 
 ## Receipts and command ids
 
@@ -57,7 +57,7 @@ Commands are direct: the caller's handle sends the command to the actor's owner 
 
 ## Queries and reducers
 
-A **query** reads committed state and owned rows through `yield* X.Read`. It never activates the actor, takes its lock, or writes a receipt. A **reducer** is a pure `reduce(state, payload)` transition that runs as an ordinary turn on the server, and optimistically in the [Promise client](../api/03-typescript-sdk.md).
+A **query** reads committed state and owned rows through `yield* X.Read`. It never activates the actor, takes its lock, or writes a receipt. A state-only query can use an already resident committed snapshot without a database round trip; `read.version` identifies it, and a newer minimum-version requirement falls through to the database. Cached reads are committed and read-your-writes, not globally latest. A **reducer** is a pure `reduce(state, payload)` transition that runs as a receipted turn on the server, and optimistically in the [Promise client](../api/03-typescript-sdk.md).
 
 ## Work after the turn
 

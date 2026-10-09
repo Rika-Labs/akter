@@ -23,6 +23,7 @@ import {
 } from "../../../../packages/akter/src/runtime/layer.ts"
 import { SpanNames } from "../../../../packages/akter/src/runtime/telemetry/spans.ts"
 import { TurnHooks } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
+import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
 import { claimIntents } from "../../../../packages/akter/src/runtime/turn/relay.ts"
 import { ActorTest } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { clusterLayer, ActorCluster, type RunnerServices } from "../cluster.ts"
@@ -285,6 +286,8 @@ const SHORT_LEASE = { lease: "3 seconds" } as const
 interface ClusterSettings {
   readonly relay?: RuntimeOptions["relay"]
   readonly executors?: RuntimeOptions["executors"]
+  /** Group eviction needs ordinary admission rather than a speculative turn of its own. */
+  readonly warm?: boolean
   /** Runners built without the relay executors. */
   readonly withoutExecutors?: ReadonlyArray<number>
   /** Receives every span the runners start, in start order. */
@@ -348,6 +351,7 @@ const withCluster = <A, E>(
               return fixture.hook(point, request)
             }),
         }),
+        Effect.provideService(WarmTurnFastPath, settings.warm ?? true),
       )
 
       return yield* body.pipe(Effect.provideContext(context))
@@ -1171,7 +1175,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
         environment,
         fixture,
         1,
-        {},
+        { warm: false },
         Effect.gen(function* () {
           const quick = "evicted-quick"
           const late = "evicted-late"

@@ -1,6 +1,7 @@
 import {
   Cause,
   Clock,
+  Context,
   Crypto,
   Effect,
   Exit,
@@ -56,6 +57,11 @@ import { MERGE_CAP, merges } from "../entity/mailbox.ts"
 import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
 
 const isSystem = Schema.is(System)
+
+/** Tests can exercise the ordinary admission pipeline independently of warm speculation. */
+export const WarmTurnFastPath = Context.Reference<boolean>("akter/WarmTurnFastPath", {
+  defaultValue: () => true,
+})
 
 /** The events a turn committed: sequences `after + 1` onward, stamped `emittedAtMs`. */
 export interface CommittedEvents {
@@ -222,6 +228,9 @@ interface Plan {
   readonly settled: ReadonlyArray<Settled>
   readonly generation: string
   readonly state: ReadonlyMap<string, string> | undefined
+  readonly created: boolean
+  /** New outbox identities need an authoritative admission clock before they are staged. */
+  readonly needsAdmissionClock: boolean
   /** A workflow waits on an emitted class, so the relay should wake after commit. */
   readonly wake: boolean
   /** Broadcasts the batch's committed successes publish to the actor's connections. */
@@ -319,6 +328,7 @@ interface Ended<W extends Delivery, P> {
   readonly plan: Plan
   readonly version: string
   readonly endedAtMs: number
+  readonly certified?: boolean
   readonly following?: ReadonlyArray<W> | undefined
   readonly chained?: P | undefined
 }
@@ -491,6 +501,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const hooks = yield* TurnHooks
   const clock = yield* FrameworkClock
   const scope = yield* TenantScope
+  const warmTurns = yield* WarmTurnFastPath
   const { ref } = run.first[0]!.request
   const { tenant, actor, id } = ref
 
@@ -538,11 +549,12 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     session: Session,
     begin: ReadonlyArray<Statement>,
     grouped = false,
+    optimistic?: Admission,
   ) => {
     const cold = view.generation === undefined
 
     const readsState = cold || view.state === undefined
-    let admissions: ReadonlyArray<Admission> = []
+    let admissions: ReadonlyArray<Admission> = optimistic === undefined ? [] : [optimistic]
     let bumped: string | undefined
     let stored: ReadonlyArray<{ key: string; value: Uint8Array }> = []
 
@@ -598,6 +610,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             g.generation::text AS generation, g.created,
             c.payload::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
+            ${
+              warmTurns && Option.isSome(turns) && !grouped
+                ? sql`, set_config('durable.turn_xid', pg_current_xact_id()::text, false) AS turn_xid`
+                : sql.literal("")
+            }
             ${cursorColumns}
           FROM locked g
           CROSS JOIN ${values}
@@ -669,6 +686,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       let creates = false
       let replayed = false
       let wake = false
+      let needsAdmissionClock = false
       const broadcasts: Array<Broadcast> = []
       let events = 0
       let intents = 0
@@ -805,6 +823,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
       }
 
       const admitOne = (index: number) => {
+        if (optimistic !== undefined) return admitHashed(index, "")
+
         const request = batch[index]!.request
         const identityNow =
           Number(admissions[index]!.now) + (request.clockOffset ?? clock.offsetMillis())
@@ -932,6 +952,10 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         for (const blob of result.writes?.blobs ?? []) blobs.add(blob)
         intents += result.outbox.intents.length
         jobs += result.outbox.jobs.length
+        needsAdmissionClock ||=
+          result.outbox.intents.length > 0 ||
+          result.outbox.jobs.length > 0 ||
+          result.outbox.subscriptions.length > 0
 
         if (Outcome.guards.Success(result.outcome)) broadcasts.push(...(result.broadcasts ?? []))
 
@@ -999,6 +1023,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           settled,
           generation: current,
           state: view.state,
+          created,
+          needsAdmissionClock,
           wake: false,
           broadcasts: [],
           head: first.head,
@@ -1043,7 +1069,19 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         )
 
       if (receipts.length > 0) {
-        writes.push(Effect.asVoid(sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`))
+        const receipt = receipts[0]!
+        writes.push(
+          Effect.asVoid(
+            optimistic === undefined
+              ? sql`INSERT INTO actor_receipts ${sql.insert(receipts)}`
+              : sql`INSERT INTO actor_receipts (routing_key, tenant_id, actor_type, actor_id,
+                  command_id, command, payload_hash, caller_key, outcome, expires_at_ms, started_at_ms)
+                VALUES (${routingKey}, ${tenant}, ${actor}, ${id}, ${receipt.command_id},
+                  ${receipt.command}, encode(sha256(convert_to(${batch[0]!.request.payload}::jsonb::text, 'UTF8')), 'hex'),
+                  ${receipt.caller_key}, ${receipt.outcome}, ${receipt.expires_at_ms},
+                  current_setting('durable.admitted_at_ms')::bigint)`,
+          ),
+        )
 
         if (accounting !== undefined)
           writes.push(
@@ -1062,6 +1100,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         settled,
         generation: current,
         state: next,
+        created,
+        needsAdmissionClock,
         wake,
         broadcasts,
         head: String(BigInt(first.head) + BigInt(events)),
@@ -1109,11 +1149,48 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
    * Remembers what a commit proved and hands the ended batch to the
    * activation, which publishes it. Only a commit replaces the cache.
    */
-  const finish = (batch: ReadonlyArray<W>, plan: Plan, version: string, endedAtMs: number) =>
+  const finish = (
+    batch: ReadonlyArray<W>,
+    plan: Plan,
+    version: string,
+    endedAtMs: number,
+    certified = false,
+  ) =>
     Effect.suspend(() => {
       if (plan.writes !== undefined) {
         cache.generation = plan.generation
         cache.state = plan.state
+
+        if (plan.state !== undefined) {
+          const previous = cache.committed
+          const receipts =
+            previous?.generation === plan.generation ? previous.receipts : new Set<string>()
+          let replayBefore =
+            previous?.generation === plan.generation
+              ? previous.replayBefore
+              : plan.startedAtMs + clock.offsetMillis()
+
+          for (const [index, settled] of plan.settled.entries())
+            if (Result.isSuccess(settled)) receipts.add(batch[index]!.request.commandId)
+
+          while (receipts.size > 1_024) {
+            const oldest = receipts.values().next().value!
+            replayBefore = Math.max(replayBefore, commandTimes(oldest).issuedAt)
+            receipts.delete(oldest)
+          }
+
+          cache.committed = {
+            generation: plan.generation,
+            state: plan.state,
+            created: plan.created,
+            head: plan.head,
+            version,
+            certified,
+            now: endedAtMs,
+            replayBefore,
+            receipts,
+          }
+        }
       }
 
       answering = true
@@ -1173,7 +1250,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         Effect.andThen(() => (pending === undefined ? open(admitting) : Effect.succeed(pending))),
         Effect.flatMap((admitted) =>
           transact(admitting, admitted).pipe(
-            Effect.tap((ended) => finish(admitting, ended.plan, ended.version, ended.endedAtMs)),
+            Effect.tap((ended) =>
+              finish(admitting, ended.plan, ended.version, ended.endedAtMs, ended.certified),
+            ),
             run.observe(admitting),
           ),
         ),
@@ -1286,6 +1365,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         interface Admitting {
           readonly admission: ReturnType<typeof admit>
           readonly admitted: Effect.Success<ReturnType<typeof queueStatements>>
+          readonly optimistic?: NonNullable<ActivationCache["committed"]>
           /** The batch's place in a turn group, whose session carries its admission. */
           readonly member?: Member
         }
@@ -1299,6 +1379,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               (flight) => ({ admission, flight }),
             )
           })
+
+        /**
+         * A post-COMMIT LSN is not an applied WAL prefix for a memory snapshot.
+         * After reading it, a read-only probe must exclude a foreign writer,
+         * including one whose commit record is inserted but not yet visible.
+         * Such a writer changes the generation row's xmax before its commit;
+         * a plain snapshot-only metadata check would miss that interval.
+         */
+        const certify = (plan: Plan) => sql<{ certified: boolean }>`SELECT EXISTS (
+          SELECT 1 FROM actor_generations g
+          WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
+            AND g.generation = ${plan.generation} AND g.created = ${plan.created}
+            AND g.event_sequence = ${plan.head} AND to_jsonb(g)->>'cold_ref' IS NULL
+            AND g.xmax::text IN ('0', (current_setting('durable.turn_xid')::bigint % 4294967296)::text)
+        ) AS certified`
 
         /**
          * Queues a batch's commit group, and the next batch's admission behind
@@ -1323,6 +1418,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           let tag: string | undefined
           let version = ""
           let endedAtMs = 0
+          let certified = false
 
           const commit: ReadonlyArray<Statement> = [
             ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
@@ -1336,6 +1432,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               version = ended.version
               endedAtMs = Number(ended.now)
             }),
+            ...(warmTurns && plan.writes !== undefined && plan.state !== undefined
+              ? [
+                  Effect.map(certify(plan), (rows) => {
+                    certified = rows[0]!.certified
+                  }),
+                ]
+              : []),
           ]
 
           locate(batch, following)
@@ -1359,6 +1462,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 plan,
                 version,
                 endedAtMs,
+                certified,
                 ending,
                 tag,
                 following,
@@ -1397,6 +1501,140 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             Effect.andThen(queue(batch, view(), []).pipe(inTurn)),
             Effect.map(({ admission, flight }): Admitting => ({ admission, admitted: flight })),
           )
+
+        /**
+         * A speculative plan uses only an already committed snapshot. The
+         * guard's deliberate division by zero aborts every pipelined write on
+         * a miss; the receipt's unique constraint also catches a commit that
+         * became visible after the guard's statement snapshot. Recovery then
+         * uses ordinary admission, never trusting an unconfirmed outcome.
+         */
+        const optimistic = (
+          batch: ReadonlyArray<W>,
+          admitting: Admitting,
+          committed: NonNullable<ActivationCache["committed"]>,
+        ) => {
+          const { request } = batch[0]!
+          const { issuedAt, expiresAt } = commandTimes(request.commandId)
+          const identityOffset = request.clockOffset ?? clock.offsetMillis()
+          const ordinary = () => Effect.flatMap(openAlone(batch), (opened) => alone(batch, opened))
+
+          return admitting.admission.resume().pipe(
+            Effect.catchDefect((defect) =>
+              Schema.is(RetryTurn)(defect) || SqlError.isSqlError(defect)
+                ? Effect.die(defect)
+                : Effect.void,
+            ),
+            Effect.flatMap((plan) => {
+              if (plan === undefined || plan.writes === undefined || plan.needsAdmissionClock)
+                return ordinary()
+
+              let missed = false
+              let tag = ""
+              let version = ""
+              let endedAtMs = 0
+              let startedAtMs = 0
+              let certified = false
+
+              const guard = sql<{ now: string }>`
+                WITH locked AS MATERIALIZED (
+                  SELECT g.generation, g.created, g.event_sequence,
+                    to_jsonb(g)->>'cold_ref' AS cold_ref
+                  FROM actor_generations g
+                  WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
+                  FOR UPDATE OF g
+                ), checked AS MATERIALIZED (
+                  SELECT *, floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now
+                  FROM locked
+                )
+                SELECT 1 / CASE WHEN EXISTS (
+                  SELECT 1 FROM checked g
+                  WHERE g.generation = ${committed.generation} AND g.created = ${committed.created}
+                    AND g.event_sequence = ${committed.head}
+                    AND g.cold_ref IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM actor_receipts WHERE ${actorRow}
+                      AND command_id = ${request.commandId})
+                    AND (${request.external !== true} OR
+                      (g.now + ${identityOffset} >= ${issuedAt} AND g.now + ${identityOffset} < ${expiresAt}))
+                ) THEN 1 ELSE 0 END AS accepted,
+                (SELECT set_config('durable.admitted_at_ms', now::text, true) FROM checked) AS now,
+                set_config('durable.turn_xid', pg_current_xact_id()::text, false) AS turn_xid`
+
+              const flight = [
+                begin,
+                Effect.asVoid(sql`SELECT ${timeouts}`),
+                Effect.map(guard, (rows) => {
+                  startedAtMs = Number(rows[0]!.now)
+                  if (request.external === true) batch[0]!.admitted = true
+                }).pipe(
+                  Effect.tapError((error) =>
+                    Effect.sync(() => {
+                      missed = Schema.is(Schema.Struct({ code: Schema.Literal("22012") }))(
+                        error.reason.cause,
+                      )
+                    }),
+                  ),
+                ),
+                ...plan.writes,
+                Effect.map(control("COMMIT"), (result) => {
+                  tag = result.command
+                  open = false
+                }),
+                Effect.map(session().query(COMMIT_VERSION, [], true), (result) => {
+                  const ended = result.rows[0] as { version: string; now: string }
+                  version = ended.version
+                  endedAtMs = Number(ended.now)
+                }),
+                Effect.map(certify(plan), (rows) => {
+                  certified = rows[0]!.certified
+                }),
+              ]
+
+              return sendPipelined(flight).pipe(
+                Effect.withSpan(SpanNames.commit),
+                Effect.as(true),
+                Effect.catch((error) => {
+                  const duplicate = Schema.is(
+                    Schema.Struct({
+                      code: Schema.Literal("23505"),
+                      constraint: Schema.Literal("actor_receipts_pkey"),
+                    }),
+                  )(error.reason.cause)
+
+                  return (missed || duplicate) && tag === "ROLLBACK"
+                    ? Effect.succeed(false)
+                    : Effect.fail(error)
+                }),
+                Effect.flatMap(
+                  (
+                    accepted,
+                  ): Effect.Effect<
+                    Ended<W, Admitting>,
+                    SqlError.SqlError,
+                    Effect.Services<ReturnType<typeof alone>>
+                  > => {
+                    if (!accepted) {
+                      forget(cache)
+                      return ordinary()
+                    }
+
+                    if (tag !== "COMMIT")
+                      return Effect.die(RetryTurn.make({ message: "Warm turn commit rolled back" }))
+
+                    return Effect.as(release, {
+                      plan: { ...plan, startedAtMs },
+                      version,
+                      endedAtMs,
+                      certified,
+                    } satisfies Ended<W, Admitting>)
+                  },
+                ),
+              )
+            }),
+            inTurn,
+            bounded,
+          )
+        }
 
         const onMember =
           (member: Member) =>
@@ -1544,32 +1782,73 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         }
 
         const transact = (batch: ReadonlyArray<W>, admitting: Admitting) =>
-          admitting.member === undefined
-            ? alone(batch, admitting)
-            : Effect.flatMap(
-                grouped(batch, admitting.admission, admitting.member),
-                (
-                  outcome,
-                ): Effect.Effect<
-                  Ended<W, Admitting>,
-                  SqlError.SqlError,
-                  Effect.Services<ReturnType<typeof alone>>
-                > =>
-                  outcome.ended !== undefined
-                    ? Effect.succeed(outcome.ended)
-                    : Effect.flatMap(openAlone(batch), (opened) =>
-                        alone(batch, opened, outcome.following),
-                      ),
-              )
+          admitting.optimistic !== undefined
+            ? optimistic(batch, admitting, admitting.optimistic)
+            : admitting.member === undefined
+              ? alone(batch, admitting)
+              : Effect.flatMap(
+                  grouped(batch, admitting.admission, admitting.member),
+                  (
+                    outcome,
+                  ): Effect.Effect<
+                    Ended<W, Admitting>,
+                    SqlError.SqlError,
+                    Effect.Services<ReturnType<typeof alone>>
+                  > =>
+                    outcome.ended !== undefined
+                      ? Effect.succeed(outcome.ended)
+                      : Effect.flatMap(openAlone(batch), (opened) =>
+                          alone(batch, opened, outcome.following),
+                        ),
+                )
 
         let first = true
 
         return yield* drive((batch) => {
+          const snapshot = cache.committed
+          const { request, command } = batch[0]!
+          const fast =
+            warmTurns &&
+            batch.length === 1 &&
+            snapshot !== undefined &&
+            snapshot.generation === cache.generation &&
+            snapshot.state === cache.state &&
+            !statements &&
+            waited.size === 0 &&
+            connections === undefined &&
+            !run.publishesUnderLock(batch) &&
+            !command.handler &&
+            (!command.internal || isSystem(request.caller)) &&
+            request.delivery === undefined &&
+            request.redelivered !== true &&
+            commandTimes(request.commandId).issuedAt > snapshot.replayBefore &&
+            !snapshot.receipts.has(request.commandId) &&
+            (policy.createdBy === undefined || snapshot.created)
+
           const joining =
             first && view().generation !== undefined && view().state !== undefined
               ? groups
               : undefined
           first = false
+
+          if (fast)
+            return leased.pipe(
+              Effect.map((): Admitting => ({
+                admission: admit(batch, [], view(), pipeline, [], false, {
+                  now: String(snapshot.now),
+                  generation: snapshot.generation,
+                  created: snapshot.created,
+                  canonical: request.payload,
+                  caller_key: null,
+                  command: null,
+                  payload_hash: null,
+                  outcome: null,
+                  head: snapshot.head,
+                }),
+                admitted: [],
+                optimistic: snapshot,
+              })),
+            )
 
           return joining === undefined ? openAlone(batch) : openGrouped(batch, joining)
         }, transact).pipe(
@@ -1638,6 +1917,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           plan,
           version: ended!.version,
           endedAtMs: Number(ended!.now),
+          certified: true,
         }
       }),
   )
@@ -1653,6 +1933,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     Effect.onError(() =>
       Effect.sync(() => {
         cache.state = undefined
+        cache.committed = undefined
       }),
     ),
     Effect.exit,

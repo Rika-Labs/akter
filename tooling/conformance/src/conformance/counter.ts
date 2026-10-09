@@ -592,7 +592,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
       ),
   },
   {
-    name: "rejects a stale generation before rerunning the handler under new authority",
+    name: "rejects a stale generation's writes before rerunning the handler under new authority",
     run: ({ expect, environment, fixture }) =>
       environment.run(
         Effect.gen(function* () {
@@ -602,7 +602,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
           yield* test.invalidate(counter.ref)
           const before = fixture.executions
           expect(yield* counter.Increment(8)).toBe(13)
-          expect(fixture.executions - before).toBe(1)
+          expect(fixture.executions - before).toBe(environment.connect === undefined ? 1 : 2)
           expect(yield* test.inspect(counter.ref)).toEqual({
             generation: "3",
             state: { count: 13 },
@@ -892,7 +892,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
       ),
   },
   {
-    name: "retries a real generation lock timeout without entering the handler",
+    name: "ordinary admission retries a real generation lock timeout without entering the handler",
     requiresIndependentConnections: true,
     timeoutMs: 15_000,
     run: ({ expect, environment, fixture }) =>
@@ -900,6 +900,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
         Effect.gen(function* () {
           const counter = yield* Counter.get("locked")
           const test = yield* ActorTest
+          const id = yield* (yield* Actors).mintCommandId
           yield* counter.Increment(2)
 
           const connect = environment.connect
@@ -916,7 +917,7 @@ export const counterConformance: ReadonlyArray<ConformanceCase<CounterFixture>> 
 
           yield* Effect.gen(function* () {
             const before = fixture.executions
-            const waiter = yield* counter.Increment(59).pipe(Effect.forkChild)
+            const waiter = yield* counter.Increment(59).pipe(Actor.commandId(id), Effect.forkChild)
 
             const waitingAttempt = lock.query("SELECT pg_stat_clear_snapshot()").pipe(
               Effect.andThen(

@@ -13,7 +13,7 @@ Concurrent actor, query, and job layer registration MUST retry a pre-statement p
 
 Authorization precedes delivery. The first external delivery MAY validate command expiry and resolve a replay in the turn's fenced admission read instead of an off-turn receipt read. That admission clock MUST be read after any wait to acquire the generation fence. The expiry recheck before result delivery MAY use a database clock read on the turn's session after `COMMIT` or `ROLLBACK`, in the same flight; it MUST NOT use the admission clock ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).
 
-Every admitted command attempt MUST execute within one framework-owned transaction, in this order:
+Every admitted command attempt MUST commit within one framework-owned transaction. The ordinary admission path executes in this order:
 
 1. lock and validate the generation fence;
 2. insert or resolve the receipt for the caller-minted command id;
@@ -22,7 +22,9 @@ Every admitted command attempt MUST execute within one framework-owned transacti
 5. on success, persist business consequences and the receipt result; on an unhandled declared failure, roll back business work and persist only the failure outcome in the receipt;
 6. commit once.
 
-This order is the order in which the database executes the statements inside the transaction. The runtime MAY pipeline statements, sending a group without waiting for each reply, when the server preserves their order. The handler MUST NOT run before the fence and receipt replies have been validated. A runtime that pipelines MUST cancel and close the connection of a turn interrupted with a pipeline in flight, and MUST NOT reuse it. If `COMMIT` was already sent, the outcome is commit-unknown and resolves through the receipt (F4). See [ADR 0020](../decisions/0020-two-round-trip-turn-pipeline.md).
+This order is the order in which the database executes the statements inside the transaction. The runtime MAY pipeline statements, sending a group without waiting for each reply, when the server preserves their order. On ordinary admission the handler MUST NOT run before the fence and receipt replies have been validated. A runtime that pipelines MUST cancel and close the connection of a turn interrupted with a pipeline in flight, and MUST NOT reuse it. If `COMMIT` was already sent, the outcome is commit-unknown and resolves through the receipt (F4). See [ADR 0020](../decisions/0020-two-round-trip-turn-pipeline.md).
+
+An eligible warm Postgres command MAY evaluate its handler speculatively on a private copy of confirmed committed state before admission, under [ADR 0115](../decisions/0115-warm-actor-fast-path.md). Its one commit flight MUST lock and validate the generation and cached metadata, check the database clock and receipt, and abort every staged write on a miss. No speculative state, reply, broadcast or obligation MAY become visible before a proven commit. A miss MUST discard speculation and use ordinary admission; an existing receipt resolves access, conflict and stored outcome without another handler evaluation. Historical/remembered ids, commit-unknown redelivery, cold/unwritten material, SQL-capable handlers, subscription deliveries, workflows needing SQL, batches and chained/group members MUST use ordinary admission. Handler evaluation is not exactly-once: stale speculative work, aborted groups and defective batches can be evaluated again. **Handlers MUST NOT perform external effects; they MUST stage jobs whose executors perform those effects after commit.** Activation-local mutation is neither durable nor automatically rolled back.
 
 Commands already waiting for the same actor MAY share one transaction as a turn batch under [ADR 0005](../decisions/0005-turn-latency-batching-and-regional-placement.md). Each command in a batch MUST keep its own receipt, success value, and declared-failure isolation; a defect MUST abort the batch, and its commands MUST then execute one per transaction until the failing command is processed. The next batch MAY send its admission statements while the previous batch commits, but its handlers MUST NOT run until its own fence and receipts are validated ([ADR 0020](../decisions/0020-two-round-trip-turn-pipeline.md)), and no reply, broadcast, or intent from a batch MAY become visible before that batch commits. If the previous batch fails to commit, the next batch's transaction MUST roll back without running a handler, and the callers of both retry. The runtime MUST NOT delay a lone command to form a batch.
 
@@ -30,7 +32,7 @@ On Postgres, warm turns of different actors whose handlers issue no SQL MAY shar
 
 A reducer call is a command turn whose handler step is the declared pure `reduce(state, payload)`; it has the same admission, receipt, conflict, replay, and declared-failure rules as a command. A throwing `reduce` or a returned state the schema rejects is a deterministic defect.
 
-Resolving a retained receipt skips state migration and handler execution. External receipt delivery still requires current receipt-access authorization; a denied caller MUST NOT fall through to a new execution.
+Resolving a retained receipt skips state migration and handler execution. An unexpected receipt found after warm speculation discards that evaluation; receipt resolution MUST NOT depend on it or evaluate another handler. External receipt delivery still requires current receipt-access authorization; a denied caller MUST NOT fall through to a new execution.
 
 The foundation labels retain their meaning from the agreed design:
 
