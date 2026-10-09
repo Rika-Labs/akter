@@ -209,6 +209,7 @@ export const queriesOf = ({
             false,
           )
 
+          const events = eventsWith({ descriptor, readEvents }) as AnyQueryContext["events"]
           const context: AnyQueryContext = {
             id: request.ref.id,
             ref: request.ref,
@@ -220,7 +221,7 @@ export const queriesOf = ({
             get events() {
               requiresDatabase ||= version !== undefined
 
-              return eventsWith({ descriptor, readEvents }) as AnyQueryContext["events"]
+              return events
             },
             rows: access.rows as AnyQueryContext["rows"],
             get group() {
