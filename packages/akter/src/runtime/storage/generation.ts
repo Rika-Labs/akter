@@ -20,6 +20,8 @@ export interface ActivationCache {
     readonly created: boolean
     readonly head: string
     readonly version: string
+    /** No missing actor commit has a token at or below this snapshot's version. */
+    readonly certified: boolean
     readonly now: number
     /** Older identities take receipt-aware admission, including after hint eviction. */
     replayBefore: number

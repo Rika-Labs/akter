@@ -27,6 +27,7 @@ import {
   User,
 } from "../../../../packages/akter/src/index.ts"
 import { Database } from "../../../../packages/akter/src/runtime/layer.ts"
+import { InternalActors } from "../../../../packages/akter/src/runtime/actors.ts"
 import {
   RetryTurn,
   TurnHooks,
@@ -34,6 +35,7 @@ import {
 } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
 import { commandTimes } from "../../../../packages/akter/src/identity/command.ts"
+import { compress } from "../../../../packages/akter/src/runtime/storage/codec.ts"
 import { TurnPoolSettings } from "../../../../packages/akter/src/runtime/turn/pipeline.ts"
 import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
 import { ActorTest, ClusterMember } from "../../../../packages/akter/src/testing/actor-test.ts"
@@ -238,6 +240,10 @@ interface Relay {
   readonly loseCommitReply: () => void
   /** Connections dropped by `loseCommitReply` after their commit. */
   readonly lostCommits: () => number
+  /** Holds the next post-COMMIT version statement, but passes COMMIT itself through. */
+  readonly holdVersionRead: () => void
+  readonly versionHeld: () => boolean
+  readonly releaseVersionRead: () => void
 }
 
 /** A `CommandComplete` message whose tag is `COMMIT`. */
@@ -259,6 +265,11 @@ const relay = (url: URL, probe: Probe) =>
       let refusing = false
       let armed = false
       let lost = 0
+      let holdVersion = false
+      let heldCommit = false
+      let heldUpstream: Socket | undefined
+      let heldBytes = Buffer.alloc(0)
+      let resumeVersion: (() => void) | undefined
 
       const server = createServer((client) => {
         if (refusing) return void client.destroy()
@@ -271,6 +282,7 @@ const relay = (url: URL, probe: Probe) =>
         let answered = true
         let losing = false
         let replies = Buffer.alloc(0)
+        let buffered = Buffer.alloc(0)
         const statementsOf = wireStatements()
 
         sockets.add(client)
@@ -291,12 +303,55 @@ const relay = (url: URL, probe: Probe) =>
           }
 
           answered = false
+          if (heldUpstream === upstream) {
+            heldBytes = Buffer.concat([heldBytes, chunk])
+            return
+          }
+
+          if (holdVersion) {
+            buffered = Buffer.concat([buffered, chunk])
+            let offset = 0
+            while (buffered.length - offset >= 5) {
+              const length = buffered.readUInt32BE(offset + 1) + 1
+              if (buffered.length - offset < length) break
+              const kind = buffered[offset]
+              const start = kind === 0x50 ? buffered.indexOf(0, offset + 5) + 1 : offset + 5
+              const statement =
+                kind === 0x50 || kind === 0x51
+                  ? buffered.toString("utf8", start, buffered.indexOf(0, start))
+                  : ""
+              if (statement.startsWith("SELECT (pg_current_wal_insert_lsn()")) {
+                upstream.write(buffered.subarray(0, offset))
+                heldBytes = buffered.subarray(offset)
+                heldUpstream = upstream
+                buffered = Buffer.alloc(0)
+                holdVersion = false
+                resumeVersion = () => {
+                  heldUpstream = undefined
+                  upstream.write(heldBytes)
+                  heldBytes = Buffer.alloc(0)
+                  resumeVersion = undefined
+                }
+                return
+              }
+              offset += length
+            }
+            upstream.write(buffered.subarray(0, offset))
+            buffered = buffered.subarray(offset)
+            return
+          }
           upstream.write(chunk)
         })
         upstream.on("data", (chunk: Buffer) => {
           answered = true
 
-          if (!losing) return void client.write(chunk)
+          if (!losing) {
+            if (heldUpstream === upstream) {
+              replies = Buffer.concat([replies, chunk])
+              if (replies.includes(COMMIT_COMPLETE)) heldCommit = true
+            }
+            return void client.write(chunk)
+          }
 
           replies = Buffer.concat([replies, chunk])
 
@@ -339,6 +394,12 @@ const relay = (url: URL, probe: Probe) =>
               armed = true
             },
             lostCommits: () => lost,
+            holdVersionRead: () => {
+              holdVersion = true
+              heldCommit = false
+            },
+            versionHeld: () => heldCommit,
+            releaseVersionRead: () => resumeVersion?.(),
           }),
         )
       })
@@ -519,6 +580,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "warm fast path: one commit flight, zero-flight versioned reads, and duplicate/conflict replay without another handler",
     requiresIndependentConnections: true,
+    timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       withProbe(environment, { warm: true, everyPool: true }, (probe) =>
         Effect.gen(function* () {
@@ -563,6 +625,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
     name: "warm fast path: stale fence rolls back all pipelined state/events/receipt and reevaluates from committed state",
     requiresIndependentConnections: true,
+    timeoutMs: 60_000,
     run: ({ expect, environment }) =>
       withProbe(environment, { warm: true, prepare: false }, (probe, database) =>
         Effect.gen(function* () {
@@ -655,6 +718,52 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
       ),
   },
   {
+    name: "warm fast path: a successor commit before the version read cannot certify an older snapshot for read-your-writes",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(
+        environment,
+        { warm: true, prepare: false, everyPool: true },
+        (probe, database, relayed) =>
+          Effect.gen(function* () {
+            const plain = yield* Plain.get("post-commit-takeover")
+            expect(yield* plain.Add(3)).toBe(3)
+            const id = yield* (yield* Actors).mintCommandId
+            relayed.holdVersionRead()
+            const pending = yield* plain
+              .Add(7)
+              .pipe(Actor.commandId(id), Effect.orDie, Effect.forkChild)
+            yield* Effect.sync(relayed.versionHeld).pipe(
+              Effect.repeat({ until: (held) => held, schedule: Schedule.spaced("10 millis") }),
+            )
+            const context = yield* rival(database)
+            const successor = yield* Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`UPDATE actor_generations SET generation = generation + 1
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+                  yield* sql`UPDATE actor_state SET value = ${compress("23")}
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id} AND key = 'count'`
+                }),
+              )
+              return (yield* sql<{
+                version: string
+              }>`SELECT (pg_current_wal_insert_lsn() - '0/0')::text AS version`)[0]!.version
+            }).pipe(Effect.provideContext(context), Effect.orDie)
+            relayed.releaseVersionRead()
+            expect(yield* Fiber.join(pending)).toBe(10)
+            const runtime = yield* Effect.serviceOption(InternalActors)
+            if (Option.isNone(runtime)) return yield* Effect.die(new Error("Missing runtime"))
+            expect(BigInt(runtime.value.observedVersion()!) >= BigInt(successor)).toBe(true)
+            const read = yield* flightsOf(probe, plain.Snapshot())
+            expect(read.flights > 0).toBe(true)
+            expect(read.value).toMatchObject({ count: 23, version: "" })
+          }),
+      ),
+  },
+  {
     name: "warm fast path: expiry is checked after the fence wait and a non-null cold_ref cannot commit speculatively",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -700,9 +809,10 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
             yield* Deferred.await(waited)
             yield* Fiber.join(other)
             const expired = yield* Fiber.join(pending)
-            expect(expired._tag).toBe("Failure")
-            if (expired._tag === "Failure")
-              expect(expired.failure.reason._tag).toBe("CommandExpired")
+            expect(expired).toMatchObject({
+              _tag: "Failure",
+              failure: { reason: { _tag: "CommandExpired" } },
+            })
             expect(probe.handled - handled).toBe(1)
             expect(yield* test.inspect(plain.ref)).toMatchObject({
               state: { count: 3 },

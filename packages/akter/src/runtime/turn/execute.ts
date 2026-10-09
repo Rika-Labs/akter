@@ -328,6 +328,7 @@ interface Ended<W extends Delivery, P> {
   readonly plan: Plan
   readonly version: string
   readonly endedAtMs: number
+  readonly certified?: boolean
   readonly following?: ReadonlyArray<W> | undefined
   readonly chained?: P | undefined
 }
@@ -609,6 +610,11 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             g.generation::text AS generation, g.created,
             c.payload::jsonb::text AS canonical,
             r.caller_key, r.command, r.payload_hash, r.outcome, g.event_sequence::text AS head
+            ${
+              warmTurns && Option.isSome(turns) && !grouped
+                ? sql`, set_config('durable.turn_xid', pg_current_xact_id()::text, false) AS turn_xid`
+                : sql.literal("")
+            }
             ${cursorColumns}
           FROM locked g
           CROSS JOIN ${values}
@@ -1143,7 +1149,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
    * Remembers what a commit proved and hands the ended batch to the
    * activation, which publishes it. Only a commit replaces the cache.
    */
-  const finish = (batch: ReadonlyArray<W>, plan: Plan, version: string, endedAtMs: number) =>
+  const finish = (
+    batch: ReadonlyArray<W>,
+    plan: Plan,
+    version: string,
+    endedAtMs: number,
+    certified = false,
+  ) =>
     Effect.suspend(() => {
       if (plan.writes !== undefined) {
         cache.generation = plan.generation
@@ -1173,6 +1185,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             created: plan.created,
             head: plan.head,
             version,
+            certified,
             now: endedAtMs,
             replayBefore,
             receipts,
@@ -1237,7 +1250,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         Effect.andThen(() => (pending === undefined ? open(admitting) : Effect.succeed(pending))),
         Effect.flatMap((admitted) =>
           transact(admitting, admitted).pipe(
-            Effect.tap((ended) => finish(admitting, ended.plan, ended.version, ended.endedAtMs)),
+            Effect.tap((ended) =>
+              finish(admitting, ended.plan, ended.version, ended.endedAtMs, ended.certified),
+            ),
             run.observe(admitting),
           ),
         ),
@@ -1366,6 +1381,21 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           })
 
         /**
+         * A post-COMMIT LSN is not an applied WAL prefix for a memory snapshot.
+         * After reading it, a read-only probe must exclude a foreign writer,
+         * including one whose commit record is inserted but not yet visible.
+         * Such a writer changes the generation row's xmax before its commit;
+         * a plain snapshot-only metadata check would miss that interval.
+         */
+        const certify = (plan: Plan) => sql<{ certified: boolean }>`SELECT EXISTS (
+          SELECT 1 FROM actor_generations g
+          WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
+            AND g.generation = ${plan.generation} AND g.created = ${plan.created}
+            AND g.event_sequence = ${plan.head} AND to_jsonb(g)->>'cold_ref' IS NULL
+            AND g.xmax::text IN ('0', (current_setting('durable.turn_xid')::bigint % 4294967296)::text)
+        ) AS certified`
+
+        /**
          * Queues a batch's commit group, and the next batch's admission behind
          * it when the cache stays warm, then waits for the commit replies.
          */
@@ -1388,6 +1418,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           let tag: string | undefined
           let version = ""
           let endedAtMs = 0
+          let certified = false
 
           const commit: ReadonlyArray<Statement> = [
             ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
@@ -1401,6 +1432,13 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               version = ended.version
               endedAtMs = Number(ended.now)
             }),
+            ...(warmTurns && plan.writes !== undefined && plan.state !== undefined
+              ? [
+                  Effect.map(certify(plan), (rows) => {
+                    certified = rows[0]!.certified
+                  }),
+                ]
+              : []),
           ]
 
           locate(batch, following)
@@ -1424,6 +1462,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 plan,
                 version,
                 endedAtMs,
+                certified,
                 ending,
                 tag,
                 following,
@@ -1493,6 +1532,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               let version = ""
               let endedAtMs = 0
               let startedAtMs = 0
+              let certified = false
 
               const guard = sql<{ now: string }>`
                 WITH locked AS MATERIALIZED (
@@ -1515,7 +1555,8 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                     AND (${request.external !== true} OR
                       (g.now + ${identityOffset} >= ${issuedAt} AND g.now + ${identityOffset} < ${expiresAt}))
                 ) THEN 1 ELSE 0 END AS accepted,
-                (SELECT set_config('durable.admitted_at_ms', now::text, true) FROM checked) AS now`
+                (SELECT set_config('durable.admitted_at_ms', now::text, true) FROM checked) AS now,
+                set_config('durable.turn_xid', pg_current_xact_id()::text, false) AS turn_xid`
 
               const flight = [
                 begin,
@@ -1541,6 +1582,9 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                   const ended = result.rows[0] as { version: string; now: string }
                   version = ended.version
                   endedAtMs = Number(ended.now)
+                }),
+                Effect.map(certify(plan), (rows) => {
+                  certified = rows[0]!.certified
                 }),
               ]
 
@@ -1579,6 +1623,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                       plan: { ...plan, startedAtMs },
                       version,
                       endedAtMs,
+                      certified,
                     } satisfies Ended<W, Admitting>)
                   },
                 ),
@@ -1870,6 +1915,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           plan,
           version: ended!.version,
           endedAtMs: Number(ended!.now),
+          certified: true,
         }
       }),
   )

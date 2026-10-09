@@ -164,7 +164,8 @@ export const committedReads = ({
           snapshot !== undefined &&
           snapshot.generation === cache!.generation &&
           snapshot.state === cache!.state &&
-          (minVersion === undefined || BigInt(snapshot.version) >= BigInt(minVersion))
+          (minVersion === undefined ||
+            (snapshot.certified && BigInt(snapshot.version) >= BigInt(minVersion)))
         ) {
           const answer = yield* query.run(
             request,
