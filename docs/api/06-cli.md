@@ -76,7 +76,7 @@ Akter Cloud client:
 
 `production`, `staging`, and `dev` are customer project environment names accepted by the public Cloud API. They describe where a customer's deployment runs, not the infrastructure stages used to provision Akter Cloud itself.
 
-Every environment uses the customer's own Postgres through the write-only `DATABASE_URL`; Akter Cloud does not provide managed databases. Environment responses may include the following database report; all five fields are required when the report is present:
+Every environment uses the customer's own Postgres through the write-only `DATABASE_URL`; see [Connect your Postgres](../cloud/database.md). Environment responses may include the following database report; all five fields are required when the report is present:
 
 ```ts
 type DatabaseReport = {
@@ -88,7 +88,7 @@ type DatabaseReport = {
 }
 ```
 
-`missing` means no `DATABASE_URL` is configured; `reachable` and `unreachable` describe the deploy probe from the runner region. `latency` is its p50 in milliseconds, a finite non-negative number or `null` when unmeasured. A p50 above 5 ms sets `latencyWarning`, which warns without refusing deployment. `runnerCap` is an integer, `floor((max_connections - in_use - 10) / 9)`, or `null` when unknown; zero or a negative result means no runner fits the available connection budget. The report never includes a URL, host, username, password, database name or engine. Environment variable values remain write-only. Hosted billing is base subscription plus compute unit-hours only, with no database storage allowance, cap, meter or price.
+`missing` means no `DATABASE_URL` is configured; `reachable` and `unreachable` describe the deploy probe from the runner region. `latency` is its p50 in milliseconds, a finite non-negative number or `null` when unmeasured. A p50 above 5 ms sets `latencyWarning`, which warns without refusing deployment. `runnerCap` is an integer, `floor((max_connections - in_use - 10) / 9)`, or `null` when unknown; zero or a negative result means no runner fits the available connection budget. The report never includes a URL, host, username, password, database name or engine. Environment variable values remain write-only. Hosted billing is base subscription plus compute unit-hours only.
 
 ## Commands
 
@@ -149,7 +149,7 @@ FLAGS
 
 It packs the app directory with `.akterignore`, or `.gitignore` when there is none, read with Git's root `.gitignore` rules: a pattern with a `/` before its end is anchored at the directory, any other matches at every depth, a trailing `/` matches only directories, and nothing inside a left-out directory comes back. `.git` is always left out. Symbolic links are sent as links and never followed, files keep their permission bits, and owners and times are zeroed so the same files give the same digest. No Dockerfile is sent: the platform builds the app from its `src/app.ts`, whose default export is an `App.make` value ([hosted apps](01-server-api.md#composition)), and a directory whose ignore file leaves out or lacks `src/app.ts` is refused with exit 2 before anything is uploaded. It uploads the archive to `POST /api/projects/:projectId/sources`, creates the deployment with `source: { digest }`, and prints each rollout step as it starts and ends. While the build runs it prints the build log's new lines on every poll, reading `GET .../build-log?after=<next index>` so each line is printed once, and when the build succeeds it prints the rest before the step's end. While following, transport failures, typed 503 `Unavailable` outages and unreadable 5xx answers such as a proxy's 502 are retried with the same capped exponential delays as `logs --follow`; six consecutive failed reads stop it with the last failure, and refusals are never retried, so an outage does not abandon a rollout that continues on the control plane. It exits 0 once the deployment is `live`, and 1 when it fails, naming the failed step and, for a failed build, printing the build's last 20 lines to stderr. Outside a git repository the deployment is labeled with the archive digest's first 40 hex digits; a dirty working tree marks the message `(with uncommitted changes)`. A control plane without a builder refuses the upload with `NotImplemented`, and one past 64 MiB is refused with `PayloadTooLarge`.
 
-After the rollout reaches `live`, the CLI reads `GET /api/projects/:projectId/environments/:environment` for the completed database probe, using the same transient-read retries. If `latencyWarning` is true, it prints a warning to stderr, including the p50 milliseconds when measured; this warning does not change the successful exit status. A non-null `runnerCap` prints `Database runner cap: <integer>` on stdout, including zero. Unknown measurements and an absent database report are not printed as zero.
+After the rollout reaches `live`, the CLI prints its success confirmation and reads `GET /api/projects/:projectId/environments/:environment` for the completed database probe, using the same transient-read retries. A failed report read or one whose `currentDeploymentId` differs from the completed rollout prints a diagnostic warning without changing the successful exit status; measurements from another rollout are not printed. For a matching report, if `latencyWarning` is true, it prints a warning to stderr, including the p50 milliseconds when measured; this warning does not change the successful exit status. A non-null `runnerCap` prints `Database runner cap: <integer>` on stdout, including zero. Unknown measurements and an absent database report are not printed as zero.
 
 ### `akter logs`
 
@@ -523,7 +523,7 @@ FLAGS
 
 These commands use the stored Akter Cloud session. All take `--project <id>` (default `AKTER_PROJECT`) and `--env <production|staging|dev>` (default `production`).
 
-- `akter env list` prints each variable's name and UTC update time, separated by a tab. There is no `managed` marker. Values cannot be read back.
+- `akter env list` prints each variable's name and UTC update time, separated by a tab. Values cannot be read back.
 - `akter env set <name> --file <path>` reads the exact UTF-8 file contents, including a final newline, and writes the value without printing it. Omit `--file` to read piped stdin; interactive terminal input is refused so a secret is never echoed. Input is limited to 65,536 bytes. Use `printf %s "$TOKEN" | akter env set TOKEN` rather than placing the value in arguments or shell history.
 - `akter env unset <name>` removes a customer variable. Repeating the deletion is safe.
 - `akter env import [file]` imports a dotenv file atomically. `-` or no file reads piped stdin; the document is limited to 1 MiB. The result reports created and updated counts, not values.

@@ -189,7 +189,9 @@ const follow = Effect.fnUntraced(function* (input: {
 /**
  * `akter deploy`: uploads the app directory to the control plane's
  * builder, creates a deployment from it, and follows the rollout until it is
- * live or failed.
+ * live or failed. Optional diagnostics cannot change a completed rollout's
+ * success, and an environment report for another rollout must not be
+ * attributed to this one.
  */
 export const deployCommand = Command.make("deploy", flags, (options) =>
   Effect.gen(function* () {
@@ -242,13 +244,28 @@ export const deployCommand = Command.make("deploy", flags, (options) =>
       timeoutSeconds: options.timeout,
     })
 
-    const { database } = yield* retryTransient(
+    yield* Console.log(`Deployment ${live.id} is live in ${options.environment}`)
+
+    const report = yield* retryTransient(
       "The control plane is unavailable; retrying the database report.",
     )(
       client.projects.getEnvironment({
         params: { projectId: options.project, environment: options.environment },
       }),
+    ).pipe(
+      Effect.catch(() =>
+        Console.error(
+          "Warning: could not read the database report; the deployment is already live.",
+        ).pipe(Effect.as(undefined)),
+      ),
     )
+    if (report === undefined) return
+    if (report.currentDeploymentId !== live.id)
+      return yield* Console.error(
+        "Warning: the database report is not for this deployment; skipping its diagnostics.",
+      )
+
+    const { database } = report
     if (database !== undefined) {
       if (database.latencyWarning)
         yield* Console.error(
@@ -257,8 +274,6 @@ export const deployCommand = Command.make("deploy", flags, (options) =>
       if (database.runnerCap !== null)
         yield* Console.log(`Database runner cap: ${database.runnerCap}`)
     }
-
-    yield* Console.log(`Deployment ${live.id} is live in ${options.environment}`)
   }).pipe(
     Effect.catchTags({
       ContextInvalid: (error) => fail({ reason: "ContextInvalid", message: error.message }),

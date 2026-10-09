@@ -92,12 +92,13 @@ const database: NonNullable<Cloud.Environment["database"]> = {
  * poll with the next of `polls`, a deployment detail or, given a function, the
  * response it makes from the encoded refusals. A build log read is answered
  * with the lines of `log` at or after its `after` cursor, `log` being the next
- * of `logs` once the earlier ones are spent.
+ * of `logs` once the earlier ones are spent. The environment read reports
+ * `probe`, or answers with the response its function makes.
  */
 const controlPlane = (
   polls: ReadonlyArray<ReturnType<typeof detail> | ((refused: Refusals) => Response)>,
   logs: ReadonlyArray<typeof endedLog> = [endedLog],
-  probe?: Cloud.Environment["database"],
+  probe?: Cloud.Environment["database"] | ((refused: Refusals) => Response),
 ) =>
   Effect.map(refusals, (refused) => {
     const { unauthorized, notFound } = refused
@@ -129,13 +130,16 @@ const controlPlane = (
 
         return Predicate.isFunction(answer) ? answer(refused) : Response.json(answer)
       }
-      if (path === "/api/projects/prj_1/environments/staging")
+      if (path === "/api/projects/prj_1/environments/staging") {
+        if (Predicate.isFunction(probe)) return probe(refused)
+
         return Response.json({
           name: "staging",
           projectId: "prj_1",
           currentDeploymentId: "dep_42",
           database: probe,
         })
+      }
 
       return Response.json(notFound, { status: 404 })
     })
@@ -258,6 +262,35 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
           else expect(run.stdout).not.toContain("Database runner cap:")
         }
       }),
+  )
+
+  it.effect("keeps live confirmation when the report fails or belongs to another rollout", () =>
+    Effect.gen(function* () {
+      for (const failed of [true, false]) {
+        const server = yield* controlPlane(
+          [detail("live", ["succeeded", "succeeded", "succeeded", "skipped"])],
+          [endedLog],
+          ({ notFound }) =>
+            failed
+              ? Response.json(notFound, { status: 404 })
+              : Response.json({
+                  name: "staging",
+                  projectId: "prj_1",
+                  currentDeploymentId: "dep_other",
+                  database,
+                }),
+        )
+        const run = yield* deploy(server)
+
+        expect(run).toMatchObject({ exitCode: 0, reason: "" })
+        expect(run.stdout).toContain("Deployment dep_42 is live in staging")
+        expect(run.stdout).not.toContain("Database runner cap:")
+        expect(run.stderr).not.toContain("Warning: database p50 latency")
+        expect(run.stderr).toContain(
+          failed ? "could not read the database report" : "is not for this deployment",
+        )
+      }
+    }),
   )
 
   it.effect("fails with exit 1 at the failed build, printing the build's last lines and why", () =>
