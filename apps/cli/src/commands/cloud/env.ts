@@ -65,9 +65,7 @@ const list = Command.make("list", scope, ({ project, environment }) =>
       params: { projectId: project, environment },
     })
     for (const variable of variables)
-      yield* Console.log(
-        `${variable.name}\t${DateTime.formatIso(variable.updatedAt)}${variable.usedBy.includes("platform") ? "\tmanaged" : ""}`,
-      )
+      yield* Console.log(`${variable.name}\t${DateTime.formatIso(variable.updatedAt)}`)
   }).pipe(reportFailures),
 ).pipe(Command.withDescription("List variable names and update times; values cannot be read back"))
 
@@ -100,7 +98,7 @@ const unset = Command.make("unset", { ...scope, name }, ({ project, environment,
       `Unset ${name} in ${environment}. The change takes effect on the next deployment.`,
     )
   }).pipe(reportFailures),
-).pipe(Command.withDescription("Remove a customer-managed variable"))
+).pipe(Command.withDescription("Remove an environment variable"))
 
 const importVariables = Command.make(
   "import",

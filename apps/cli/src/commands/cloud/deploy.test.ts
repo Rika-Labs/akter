@@ -79,16 +79,26 @@ const endedLog = {
   complete: true,
 }
 
+const database: NonNullable<Cloud.Environment["database"]> = {
+  source: "customer",
+  state: "reachable",
+  latency: 7.25,
+  latencyWarning: true,
+  runnerCap: 13,
+}
+
 /**
  * The control plane: stores the upload, creates `dep_42`, then answers each
  * poll with the next of `polls`, a deployment detail or, given a function, the
  * response it makes from the encoded refusals. A build log read is answered
  * with the lines of `log` at or after its `after` cursor, `log` being the next
- * of `logs` once the earlier ones are spent.
+ * of `logs` once the earlier ones are spent. The environment read reports
+ * `probe`, or answers with the response its function makes.
  */
 const controlPlane = (
   polls: ReadonlyArray<ReturnType<typeof detail> | ((refused: Refusals) => Response)>,
   logs: ReadonlyArray<typeof endedLog> = [endedLog],
+  probe?: Cloud.Environment["database"] | ((refused: Refusals) => Response),
 ) =>
   Effect.map(refusals, (refused) => {
     const { unauthorized, notFound } = refused
@@ -119,6 +129,16 @@ const controlPlane = (
         const answer = answers.shift() ?? building()
 
         return Predicate.isFunction(answer) ? answer(refused) : Response.json(answer)
+      }
+      if (path === "/api/projects/prj_1/environments/staging") {
+        if (Predicate.isFunction(probe)) return probe(refused)
+
+        return Response.json({
+          name: "staging",
+          projectId: "prj_1",
+          currentDeploymentId: "dep_42",
+          database: probe,
+        })
       }
 
       return Response.json(notFound, { status: 404 })
@@ -178,10 +198,14 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
     "uploads the context, creates the deployment from its digest, and follows each step until it is live",
     () =>
       Effect.gen(function* () {
-        const server = yield* controlPlane([
-          detail("in-progress", ["succeeded", "running", "pending", "pending"]),
-          detail("live", ["succeeded", "succeeded", "succeeded", "skipped"]),
-        ])
+        const server = yield* controlPlane(
+          [
+            detail("in-progress", ["succeeded", "running", "pending", "pending"]),
+            detail("live", ["succeeded", "succeeded", "succeeded", "skipped"]),
+          ],
+          [endedLog],
+          database,
+        )
         const run = yield* deploy(server)
 
         expect(run).toMatchObject({ exitCode: 0, reason: "" })
@@ -191,6 +215,7 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
           "GET /api/projects/prj_1/deployments/dep_42/build-log",
           "GET /api/projects/prj_1/deployments/dep_42",
           "GET /api/projects/prj_1/deployments/dep_42",
+          "GET /api/projects/prj_1/environments/staging",
         ])
 
         const [upload, create] = server.requests
@@ -210,8 +235,62 @@ layer(BunServices.layer, { excludeTestServices: true })("akter deploy", (it) => 
         expect(run.stdout).toContain(
           "  start-runners succeeded in 1.3s\n  drain-previous skipped\n",
         )
+        expect(run.stderr).toContain("Warning: database p50 latency (7.25 ms) exceeds 5 ms")
+        expect(run.stdout).toContain("Database runner cap: 13")
         expect(run.stdout).toContain("Deployment dep_42 is live in staging")
       }),
+  )
+
+  it.effect(
+    "prints a zero runner cap without a latency warning and leaves unknown probes unprinted",
+    () =>
+      Effect.gen(function* () {
+        for (const probe of [
+          { ...database, latency: 5, latencyWarning: false, runnerCap: 0 },
+          { ...database, latency: null, latencyWarning: false, runnerCap: null },
+          undefined,
+        ]) {
+          const server = yield* controlPlane(
+            [detail("live", ["succeeded", "succeeded", "succeeded", "skipped"])],
+            [endedLog],
+            probe,
+          )
+          const run = yield* deploy(server)
+          expect(run.exitCode).toBe(0)
+          expect(run.stderr).not.toContain("latency")
+          if (probe?.runnerCap === 0) expect(run.stdout).toContain("Database runner cap: 0")
+          else expect(run.stdout).not.toContain("Database runner cap:")
+        }
+      }),
+  )
+
+  it.effect("keeps live confirmation when the report fails or belongs to another rollout", () =>
+    Effect.gen(function* () {
+      for (const failed of [true, false]) {
+        const server = yield* controlPlane(
+          [detail("live", ["succeeded", "succeeded", "succeeded", "skipped"])],
+          [endedLog],
+          ({ notFound }) =>
+            failed
+              ? Response.json(notFound, { status: 404 })
+              : Response.json({
+                  name: "staging",
+                  projectId: "prj_1",
+                  currentDeploymentId: "dep_other",
+                  database,
+                }),
+        )
+        const run = yield* deploy(server)
+
+        expect(run).toMatchObject({ exitCode: 0, reason: "" })
+        expect(run.stdout).toContain("Deployment dep_42 is live in staging")
+        expect(run.stdout).not.toContain("Database runner cap:")
+        expect(run.stderr).not.toContain("Warning: database p50 latency")
+        expect(run.stderr).toContain(
+          failed ? "could not read the database report" : "is not for this deployment",
+        )
+      }
+    }),
   )
 
   it.effect("fails with exit 1 at the failed build, printing the build's last lines and why", () =>

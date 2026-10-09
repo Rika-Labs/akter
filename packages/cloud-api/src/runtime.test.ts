@@ -255,9 +255,9 @@ describe("runtime models", () => {
       Framework.QuotaExceeded.make({
         organizationId: "org_1",
         period: "2026-10",
-        cap: "storage",
-        limit: 0.5,
-        used: 0.5,
+        cap: "compute",
+        limit: 750,
+        used: 751,
         retryAfterMs: 1_000,
       }),
       429,

@@ -479,7 +479,7 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const server = yield* serveHttp()
           const tenant = yield* tenantOf
 
-          const refusal = (cap: "connections" | "compute" | "storage" | "spend") =>
+          const refusal = (cap: QuotaExceeded["cap"]) =>
             actorErrorBody(
               ActorError.make({
                 reason: QuotaExceeded.make({
@@ -521,7 +521,7 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           expect(new Set(keys).size).toBe(1)
           expect(performance.now() - started >= 200).toBe(true)
 
-          for (const cap of ["compute", "storage", "spend"] as const) {
+          for (const cap of ["compute", "spend"] as const) {
             const body = yield* refusal(cap)
 
             const refused = recording((sent) =>

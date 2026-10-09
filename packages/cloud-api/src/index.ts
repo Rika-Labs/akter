@@ -194,7 +194,6 @@ export {
   ComputeUsage,
   PlanCatalog,
   PlanFeature,
-  StorageSample,
   HostedSession,
   Invoice,
   LinkPaymentMethod,

@@ -27,15 +27,33 @@ const accepts = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   rejects(schema, input) === false
 
 describe("project models", () => {
-  it("exposes only the database's source and state, rejecting URL-derived metadata", () => {
+  it("reports customer database reachability, nullable probe measurements and no URL-derived metadata", () => {
     const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
     expect(decode(Environment, environment).database).toBeUndefined()
     const databases = [
-      { source: "managed", state: "provisioning" },
-      { source: "managed", state: "ready" },
-      { source: "managed", state: "read-only" },
-      { source: "managed", state: "failed" },
-      { source: "customer", state: "ready" },
+      {
+        source: "customer",
+        state: "missing",
+        latency: null,
+        latencyWarning: false,
+        runnerCap: null,
+      },
+      {
+        source: "customer",
+        state: "reachable",
+        latency: 7.25,
+        latencyWarning: true,
+        runnerCap: 13,
+      },
+      { source: "customer", state: "reachable", latency: 5, latencyWarning: false, runnerCap: 0 },
+      { source: "customer", state: "reachable", latency: 0, latencyWarning: false, runnerCap: -1 },
+      {
+        source: "customer",
+        state: "unreachable",
+        latency: null,
+        latencyWarning: false,
+        runnerCap: null,
+      },
     ]
     for (const database of databases) {
       expect(decode(Environment, { ...environment, database }).database).toEqual(database)
@@ -53,22 +71,38 @@ describe("project models", () => {
     }
   })
 
-  it("refuses the removed engine status and any unknown source or state", () => {
+  it("refuses managed and legacy states, incomplete probes and invalid measurements", () => {
     const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
-    const database = { source: "managed", state: "ready" }
+    const database = {
+      source: "customer",
+      state: "reachable",
+      latency: 4.5,
+      latencyWarning: false,
+      runnerCap: 12,
+    }
     for (const bad of [
       { configured: true, engine: "postgres" },
       { configured: false, engine: "neki" },
       { ...database, engine: "postgres" },
-      { source: "byo", state: "ready" },
-      { source: "managed", state: "migrating" },
-      { source: "managed" },
-      { state: "ready" },
+      { ...database, source: "managed" },
+      { ...database, source: "byo" },
+      ...["provisioning", "ready", "read-only", "failed", "migrating"].map((state) => ({
+        ...database,
+        state,
+      })),
+      { ...database, latency: -0.1 },
+      { ...database, latencyWarning: "false" },
+      { ...database, runnerCap: 1.5 },
+      { source: "customer", state: "reachable" },
     ]) {
       const strict = Schema.decodeUnknownEffect(Environment, { onExcessProperty: "error" })
       expect(Exit.isFailure(Effect.runSyncExit(strict({ ...environment, database: bad })))).toBe(
         true,
       )
+    }
+    for (const field of ["source", "state", "latency", "latencyWarning", "runnerCap"] as const) {
+      const { [field]: _omitted, ...incomplete } = database
+      expect(rejects(Environment, { ...environment, database: incomplete })).toBe(true)
     }
   })
 

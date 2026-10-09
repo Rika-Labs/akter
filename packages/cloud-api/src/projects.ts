@@ -42,10 +42,12 @@ export const UpdateProject = Schema.Struct({
 export type UpdateProject = typeof UpdateProject.Type
 
 /**
- * `database` says only whose database the environment runs on and its state:
- * Akter's `managed` one, which can be provisioning, ready, read-only or
- * failed, or the `customer`'s own, which is always ready once set. It carries
- * no URL or URL-derived field.
+ * Every environment uses the customer's Postgres through `DATABASE_URL`.
+ * `latency` is the deploy probe's p50 in milliseconds from the runner region,
+ * null when unmeasured. Above 5 ms, `latencyWarning` warns without refusing.
+ * `runnerCap` is floor((max_connections - in_use - 10) / 9), null when unknown;
+ * a non-positive cap means no runner fits the available connection budget.
+ * The status carries no URL or URL-derived field.
  */
 export const Environment = Schema.Struct({
   name: EnvironmentName,
@@ -53,8 +55,11 @@ export const Environment = Schema.Struct({
   currentDeploymentId: Schema.NullOr(DeploymentId),
   database: Schema.optionalKey(
     Schema.Struct({
-      source: Schema.Literals(["managed", "customer"]),
-      state: Schema.Literals(["provisioning", "ready", "read-only", "failed"]),
+      source: Schema.Literal("customer"),
+      state: Schema.Literals(["missing", "reachable", "unreachable"]),
+      latency: Schema.NullOr(NonNegative),
+      latencyWarning: Schema.Boolean,
+      runnerCap: Schema.NullOr(Schema.Int),
     }),
   ),
 })

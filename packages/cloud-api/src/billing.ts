@@ -70,19 +70,16 @@ const capFields = {
  * reported, discriminated by `cap`. `limit` is null when the cap does not
  * apply. `atCap` means usage has reached the limit; `refusing` means the edge
  * would refuse the next new command, or for `connections` the next new
- * connection, or for `storage` that the organization's managed databases are
- * read-only: writes fail and reads still work. `reason` is `unbound` when the
+ * connection. `reason` is `unbound` when the
  * edge refuses everything because the organization has no billing account;
  * such caps have no limit.
  *
  * `limit` and `used` are cents for `spend`, open connections for
  * `connections`, compute unit-hours used in the current billing period for
- * `compute`, and decimal gigabytes for `storage`: the organization's pooled
- * managed database storage, where `used` is the latest pooled sample. A
- * database the customer brings never counts toward it.
+ * `compute`. Customer database storage is not metered, capped or billed.
  */
 export const CapState = Schema.Struct({
-  cap: Schema.Literals(["spend", "connections", "compute", "storage"]),
+  cap: Schema.Literals(["spend", "connections", "compute"]),
   ...capFields,
 })
 export type CapState = typeof CapState.Type
@@ -139,17 +136,13 @@ const machineSizeFields = {
 
 /**
  * What a plan offers, derived from the pricing configuration: billed compute
- * overage, a hard compute cap, billed storage overage, a hard storage cap, a
- * database the customer brings, a dedicated database, and a paid subscription
- * bought through checkout.
+ * overage, a hard compute cap, customer Postgres on every plan, and a paid
+ * subscription bought through checkout.
  */
 export const PlanFeature = Schema.Literals([
   "compute-overage",
   "compute-cap",
-  "storage-overage",
-  "storage-cap",
   "byo-database",
-  "dedicated-database",
   "checkout",
 ])
 export type PlanFeature = typeof PlanFeature.Type
@@ -161,12 +154,7 @@ export type PlanFeature = typeof PlanFeature.Type
  * `overage.computeCentsPerUnitHour`). A machine size's hour bills the compute
  * unit-hours `PlanCatalog.computeSizes` gives it.
  *
- * `allowances.storageGb` is the managed database storage included in the
- * plan, in decimal gigabytes, pooled across the organization's managed
- * environment databases. `allowances.storageGbCap` is its hard stop, past
- * which those databases are read-only, and is null when overage is billed
- * instead at `overage.storageCentsPerGbMonth`. A provisional tier's prices
- * are not yet published.
+ * A provisional tier's prices are not yet published.
  */
 export const CatalogPlan = Schema.Struct({
   id: PlanId,
@@ -176,13 +164,10 @@ export const CatalogPlan = Schema.Struct({
   allowances: Schema.Struct({
     computeUnitHours: NonNegative,
     computeUnitHourCap: Schema.NullOr(NonNegative),
-    storageGb: NonNegative,
-    storageGbCap: Schema.NullOr(NonNegative),
     concurrentConnections: NonNegativeInt,
   }),
   overage: Schema.Struct({
     computeCentsPerUnitHour: NonNegative,
-    storageCentsPerGbMonth: NonNegative,
   }),
   features: Schema.Array(PlanFeature),
   provisional: Schema.Boolean,
@@ -215,10 +200,9 @@ export type PlanCatalog = typeof PlanCatalog.Type
 /**
  * `runnerHours` is measured in compute unit-hours (see `ComputeUsage`), not
  * machine hours; raw machine hours are reported per machine size in
- * `ComputeUsage.machineHours`. `storageGb` is the average pooled managed
- * database storage over the period in decimal gigabytes, billed per GB-month.
+ * `ComputeUsage.machineHours`.
  */
-export const UsageMeterName = Schema.Literals(["runnerHours", "storageGb"])
+export const UsageMeterName = Schema.Literal("runnerHours")
 export type UsageMeterName = typeof UsageMeterName.Type
 
 export const UsageMeter = Schema.Struct({
@@ -233,12 +217,10 @@ export type UsageMeter = typeof UsageMeter.Type
 /**
  * The published rules usage is priced by, sent with every usage report.
  * `computeCentsPerUnitHour` prices compute unit-hours beyond the plan's
- * allowance and `storageCentsPerGbMonth` prices managed database storage
- * beyond it; each is 0 where the plan bills no overage.
+ * allowance and is 0 where the plan bills no overage.
  */
 export const UsagePricing = Schema.Struct({
   computeCentsPerUnitHour: NonNegative,
-  storageCentsPerGbMonth: NonNegative,
   provisional: Schema.optionalKey(Schema.Boolean),
 })
 export type UsagePricing = typeof UsagePricing.Type
@@ -257,23 +239,13 @@ export const ComputeUsage = Schema.Struct({
 export type ComputeUsage = typeof ComputeUsage.Type
 
 /**
- * The organization's latest pooled managed database storage: the sum of the
- * sampled bytes of its managed environment databases, and when it was
- * sampled. A database the customer brings is excluded.
- */
-export const StorageSample = Schema.Struct({ bytes: NonNegative, sampledAt: Timestamp })
-export type StorageSample = typeof StorageSample.Type
-
-/**
  * `caps` describe now whatever `period` is reported. A project's
  * `computeUnitHours` is its compute for the period and `compute` breaks it
- * down by environment and machine size; its `storageGbMonths` is its managed
- * databases' storage for the period.
+ * down by environment and machine size.
  */
 export const Usage = Schema.Struct({
   period: BillingPeriod,
   meters: Schema.Array(UsageMeter),
-  latestStorageSample: Schema.NullOr(StorageSample),
   caps: Schema.Array(CapState),
   byProject: Schema.Array(
     Schema.Struct({
@@ -281,7 +253,6 @@ export const Usage = Schema.Struct({
       name: Schema.String,
       computeUnitHours: NonNegative,
       compute: Schema.Array(ComputeUsage),
-      storageGbMonths: NonNegative,
       estimatedCostCents: NonNegative,
     }),
   ),

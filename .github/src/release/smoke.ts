@@ -61,7 +61,7 @@ const consumerTsconfig = {
 }
 
 const cloudApiMain = `import assert from "node:assert/strict"
-import { CloudApi, ProjectId, Role, LogLimit } from "@rikalabs/akter-cli/cloud-api"
+import { CloudApi, Environment, ProjectId, Role, LogLimit, UsageMeterName, UsagePricing } from "@rikalabs/akter-cli/cloud-api"
 import { Schema } from "effect"
 
 const project: ProjectId = Schema.decodeUnknownSync(ProjectId)("project-smoke")
@@ -71,6 +71,15 @@ assert.equal(Schema.decodeUnknownSync(Role)("viewer"), "viewer")
 assert.throws(() => Schema.decodeUnknownSync(Role)("operator"))
 assert.equal(Schema.decodeUnknownSync(LogLimit)(200), 200)
 assert.throws(() => Schema.decodeUnknownSync(LogLimit)(201))
+
+const database = { source: "customer", state: "reachable", latency: 7.25, latencyWarning: true, runnerCap: 13 }
+const environment: Environment = Schema.decodeUnknownSync(Environment)({ name: "staging", projectId: project, currentDeploymentId: null, database })
+assert.deepEqual(environment.database, database)
+assert.throws(() => Schema.decodeUnknownSync(Environment)({ ...environment, database: { ...database, source: "managed" } }))
+assert.equal(Schema.decodeUnknownSync(UsageMeterName)("runnerHours"), "runnerHours")
+assert.throws(() => Schema.decodeUnknownSync(UsageMeterName)("storageGb"))
+assert.deepEqual(Schema.decodeUnknownSync(UsagePricing)({ computeCentsPerUnitHour: 1.5 }), { computeCentsPerUnitHour: 1.5 })
+assert.throws(() => Schema.decodeUnknownSync(UsagePricing, { onExcessProperty: "error" })({ computeCentsPerUnitHour: 1.5, storageCentsPerGbMonth: 50 }))
 
 // @ts-expect-error Role is a finite union, not an arbitrary string.
 const invalidRole: Role = "operator"
