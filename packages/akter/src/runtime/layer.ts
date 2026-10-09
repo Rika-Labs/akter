@@ -1627,6 +1627,8 @@ export const layer = (options: Options = {}) => {
 }
 
 type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
+  /** Four primary sessions: one turn, two off-turn (one reserved by Cluster), and one query. Explicit pool sizes take precedence. */
+  readonly preset?: "low-connection"
   readonly offTurnConnections?: number
   readonly queryConnections?: number
   readonly replica?: Omit<PgClient.PgPoolConfig, "types"> | undefined
@@ -1649,6 +1651,13 @@ type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
  * connections plus a bounded waiter allowance, and hands its connections out
  * first come, first served. Keep the sum across runners below the server's
  * `max_connections`.
+ *
+ * `preset: "low-connection"` defaults these pools to 1/2/1 instead of
+ * 50/10/10. Cluster reserves one off-turn session for its entire lifetime,
+ * including with table leases, so the other must remain available for
+ * startup and ordinary work. Fleet maintenance and application reservations
+ * need additional off-turn capacity; optional pools add to the budget.
+ * Explicit pool sizes override the preset.
  *
  * `replica` is this runner's nearest streaming replica of the same primary.
  * Queries read there once it has replayed the commit version their caller
@@ -1675,17 +1684,31 @@ function postgres(
         : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
   })
 
-  const { offTurnConnections, queryConnections, replica, coordination, ...configured } = options
+  const { preset, offTurnConnections, queryConnections, replica, coordination, ...configured } =
+    options
   const pool = withKeepalives(configured)
+  const lowConnection = preset === "low-connection"
 
   return Layer.mergeAll(
-    boundedLayer({ ...pool, maxConnections: offTurnConnections ?? 10, types }),
+    boundedLayer({
+      ...pool,
+      maxConnections: offTurnConnections ?? (lowConnection ? 2 : 10),
+      types,
+    }),
     turnGroups.pipe(
       Layer.provideMerge(
-        turnConnections({ ...pool, maxConnections: pool.maxConnections ?? 50, types }),
+        turnConnections({
+          ...pool,
+          maxConnections: pool.maxConnections ?? (lowConnection ? 1 : 50),
+          types,
+        }),
       ),
     ),
-    queryPoolLayer({ ...pool, maxConnections: queryConnections ?? 10, types }),
+    queryPoolLayer({
+      ...pool,
+      maxConnections: queryConnections ?? (lowConnection ? 1 : 10),
+      types,
+    }),
     replicaLayer(replica === undefined ? undefined : { ...withKeepalives(replica), types }),
     coordinationLayer(
       coordination === undefined ? undefined : { ...withKeepalives(coordination), types },

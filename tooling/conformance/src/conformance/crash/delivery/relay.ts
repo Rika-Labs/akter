@@ -59,7 +59,9 @@ const runtime = Layer.unwrap(
 
     return live.pipe(
       Layer.provideMerge(Actors.layer().pipe(Layer.provide(Layer.mergeAll(hooks, clock)))),
-      Layer.provideMerge(Database.postgres({ url: Redacted.make(database) })),
+      Layer.provideMerge(
+        Database.postgres({ url: Redacted.make(database), preset: "low-connection" }),
+      ),
     )
   }),
 ).pipe(Layer.provide(BunCrypto.layer))

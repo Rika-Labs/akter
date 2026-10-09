@@ -18,6 +18,7 @@ import {
   Schema,
   Stream,
 } from "effect"
+import { HttpRouter } from "effect/http"
 import { SqlClient, SqlError } from "effect/sql"
 import { Pool } from "pg"
 import { afterAll, describe, expect, it } from "vitest"
@@ -27,7 +28,8 @@ import { TurnConnections, turnConnections } from "../turn/pipeline.ts"
 import { Coordination, coordinationLayer } from "./coordination.ts"
 import { QueryPool, ReadReplica } from "./replica.ts"
 import { Database } from "../layer.ts"
-import { Actor } from "../../index.ts"
+import { Actor, Actors as ActorClient, Intent, User } from "../../index.ts"
+import { Actors, Auth, Inspector } from "../index.ts"
 import { ActorTest } from "../../testing/actor-test.ts"
 import { disposableDatabase } from "../../testing/database.ts"
 
@@ -471,6 +473,411 @@ describe("bounded Postgres checkout queues", () => {
             ),
           ).toEqual([[29]])
         }),
+      ),
+    ))
+})
+
+describe("low-connection Postgres preset", () => {
+  const runtime = ManagedRuntime.make(BunCrypto.layer)
+  afterAll(() => runtime.dispose())
+
+  it.each([undefined, 2])(
+    "caps saturated sessions, preserves explicit turn sizing (%s), and releases interrupted waiters",
+    (maxConnections) =>
+      runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const url = yield* disposableDatabase({
+              url: yield* Config.Redacted("TEST_DATABASE_URL"),
+            })
+            const applicationName = "low-connection-budget"
+            const context = yield* Layer.build(
+              Actors.layer().pipe(
+                Layer.provideMerge(
+                  Database.postgres({
+                    url,
+                    preset: "low-connection",
+                    applicationName,
+                    maxConnections,
+                  }),
+                ),
+              ),
+            )
+            const observer = yield* Effect.acquireRelease(
+              Effect.sync(() => new Pool({ connectionString: Redacted.value(url), max: 1 })),
+              (pool) => Effect.promise(() => pool.end()),
+            )
+            const sql = Context.get(context, SqlClient.SqlClient)
+            const queries = Context.get(context, QueryPool)!
+            const turns = Context.get(context, TurnConnections)
+            const held = yield* Scope.fork(yield* Effect.scope)
+            yield* sql.reserve.pipe(Scope.provide(held))
+            yield* queries.reserve.pipe(Scope.provide(held))
+            for (let index = 0; index < (maxConnections ?? 1); index++)
+              yield* turns.lease.pipe(Scope.provide(held))
+
+            const sessions = yield* Effect.promise(() =>
+              observer.query(
+                "SELECT count(*)::int AS count FROM pg_stat_activity WHERE application_name = $1 AND datname = current_database()",
+                [applicationName],
+              ),
+            )
+            expect(sessions.rows).toEqual([{ count: 3 + (maxConnections ?? 1) }])
+
+            const waiting = yield* Effect.forEach(
+              [sql`SELECT 13 AS value`, queries`SELECT 31 AS value`, Effect.scoped(turns.lease)],
+              (work) => Effect.forkScoped(work),
+            )
+            yield* Effect.sleep("50 millis")
+            expect(waiting.every((fiber) => fiber.pollUnsafe() === undefined)).toBe(true)
+            for (const fiber of waiting) yield* Fiber.interrupt(fiber)
+            yield* Scope.close(held, Exit.void)
+
+            expect(
+              yield* sql.withTransaction(sql.withTransaction(sql`SELECT 13 AS value`)),
+            ).toEqual([{ value: 13 }])
+            expect(yield* queries`SELECT 31 AS value`).toEqual([{ value: 31 }])
+            expect(
+              yield* Effect.scoped(
+                Effect.flatMap(turns.lease, (connection) => connection.queryValues("SELECT 47")),
+              ),
+            ).toEqual([[47]])
+          }).pipe(Effect.timeout("10 seconds")),
+        ),
+      ),
+  )
+
+  it("releases a turn while a capped job claim holds the spare off-turn session waiting for that turn's generation lock", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const held = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const Start = Actor.command("Start")
+          const Hold = Actor.command("Hold")
+          const Done = Actor.command("Done", { payload: Schema.Int })
+          const Value = Actor.query("Value", { success: Schema.Int })
+          const Job = Actor.job("CappedPoolJob", { success: Schema.Int })
+          const Probe = Actor.make("CappedPoolProbe", {
+            key: Schema.String,
+            state: Actor.state({
+              total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+            }),
+            api: { Start, Hold, Value },
+            internal: { Done },
+            jobs: { CappedPoolJob: { job: Job, concurrency: { perActor: 1 }, onSuccess: Done } },
+          })
+          const context = yield* Layer.build(
+            Layer.mergeAll(
+              Probe.toLayer(
+                Effect.succeed({
+                  Start: Effect.fnUntraced(function* () {
+                    yield* (yield* Probe.Turn).enqueue(Job.make(), { after: "200 millis" })
+                  }),
+                  Hold: Effect.fnUntraced(function* () {
+                    const turn = yield* Probe.Turn
+                    yield* turn.state.set({ total: 13 })
+                    yield* Deferred.succeed(held, undefined)
+                    yield* Deferred.await(release)
+                  }),
+                  Done: Effect.fnUntraced(function* (value: number) {
+                    const turn = yield* Probe.Turn
+                    yield* turn.state.set({ total: turn.state.total + value })
+                  }),
+                }),
+              ),
+              Probe.toQueryLayer(
+                Effect.succeed({
+                  Value: Effect.fnUntraced(function* () {
+                    return (yield* Probe.Read).state.total
+                  }),
+                }),
+              ),
+              Probe.toJobLayer(Effect.succeed({ CappedPoolJob: () => Effect.succeed(29) })),
+            ).pipe(
+              Layer.provideMerge(Actors.layer({ relay: { poll: "50 millis" } })),
+              Layer.provideMerge(
+                Database.postgres({
+                  url,
+                  preset: "low-connection",
+                  applicationName: "low-connection-capped",
+                }),
+              ),
+            ),
+          )
+          const observer = yield* Effect.acquireRelease(
+            Effect.sync(() => new Pool({ connectionString: Redacted.value(url), max: 1 })),
+            (pool) => Effect.promise(() => pool.end()),
+          )
+          const probe = yield* Effect.provide(Probe.get("source"), context)
+          yield* Effect.provide(probe.Start(), context)
+          const turn = yield* Effect.provide(probe.Hold(), context).pipe(Effect.forkScoped)
+          yield* Deferred.await(held)
+          yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+          yield* Effect.promise(() =>
+            observer.query(
+              "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'low-connection-capped' AND wait_event_type = 'Lock'",
+            ),
+          ).pipe(
+            Effect.flatMap((rows) =>
+              rows.rowCount === 1 ? Effect.void : Effect.fail("not blocked"),
+            ),
+            Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+          )
+          expect(yield* Effect.provide(probe.Value(), context)).toBe(0)
+          const sql = Context.get(context, SqlClient.SqlClient)
+          const queued = yield* sql`SELECT 17 AS value`.pipe(Effect.forkScoped)
+          yield* Effect.sleep("50 millis")
+          expect(queued.pollUnsafe()).toBeUndefined()
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(turn)
+          expect(yield* Fiber.join(queued)).toEqual([{ value: 17 }])
+          yield* Effect.provide(probe.Value(), context).pipe(
+            Effect.flatMap((value) => (value === 42 ? Effect.void : Effect.fail("not settled"))),
+            Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+          )
+          expect(
+            yield* sql`SELECT command, count(*)::int AS count FROM actor_receipts GROUP BY command ORDER BY command`,
+          ).toEqual([
+            { command: "Done", count: 1 },
+            { command: "Hold", count: 1 },
+            { command: "Start", count: 1 },
+          ])
+          expect(yield* sql`SELECT * FROM actor_outbox`).toEqual([])
+        }).pipe(Effect.timeout("10 seconds")),
+      ),
+    ))
+
+  it("serves reads and inspector snapshots while jobs, relay deliveries and workflow activities wait on the only turn session", () =>
+    runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = yield* disposableDatabase({
+            url: yield* Config.Redacted("TEST_DATABASE_URL"),
+          })
+          const holdStarted = yield* Deferred.make<void>()
+          const releaseTurn = yield* Deferred.make<void>()
+          const jobStarted = yield* Deferred.make<void>()
+          const releaseJob = yield* Deferred.make<void>()
+          const workflowStarted = yield* Deferred.make<void>()
+          const releaseWorkflow = yield* Deferred.make<void>()
+          const interruptStarted = yield* Deferred.make<void>()
+          const Add = Actor.command("Add", { payload: Schema.Int, success: Schema.Int })
+          const Hold = Actor.command("Hold")
+          const Stage = Actor.command("Stage")
+          const Settle = Actor.command("Settle", { payload: Schema.Int })
+          const Value = Actor.query("Value", { success: Schema.Int })
+          const Job = Actor.job("PoolJob", { payload: { amount: Schema.Int }, success: Schema.Int })
+          const Work = Actor.workflow("Work", {
+            payload: { amount: Schema.Int },
+            success: Schema.Int,
+          })
+          const Call = Work.step("call", { payload: Schema.Int, success: Schema.Int })
+          const Nap = Work.sleep("nap")
+          const Probe = Actor.make("LowConnectionProbe", {
+            key: Schema.String,
+            state: Actor.state({
+              total: Schema.Int.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
+            }),
+            api: { Add, Hold, Stage, Value, Work },
+            internal: { Settle },
+            jobs: { PoolJob: { job: Job, onSuccess: Settle } },
+          })
+          const app = Layer.mergeAll(
+            Probe.toLayer(
+              Effect.succeed({
+                Add: Effect.fnUntraced(function* (amount: number) {
+                  const turn = yield* Probe.Turn
+                  yield* turn.state.set({ total: turn.state.total + amount })
+                  return turn.state.total
+                }),
+                Hold: Effect.fnUntraced(function* () {
+                  const turn = yield* Probe.Turn
+                  yield* turn.state.set({ total: turn.state.total + 101 })
+                  yield* Deferred.succeed(holdStarted, undefined)
+                  yield* Deferred.await(releaseTurn)
+                }),
+                Stage: Effect.fnUntraced(function* () {
+                  yield* (yield* Probe.Turn).enqueue(Job.make({ amount: 11 }))
+                  yield* (yield* Probe.intents("relay")).Add(7).pipe(Intent.after("1 second"))
+                }),
+                Settle: Effect.fnUntraced(function* (amount: number) {
+                  const turn = yield* Probe.Turn
+                  yield* turn.state.set({ total: turn.state.total + amount })
+                }),
+                Work: ({ amount }: { readonly amount: number }) =>
+                  Call.run(
+                    amount,
+                    Effect.fnUntraced(function* (value: number) {
+                      if (value < 0) {
+                        yield* Deferred.succeed(interruptStarted, undefined)
+                        return yield* Effect.never
+                      }
+                      yield* Deferred.succeed(workflowStarted, undefined)
+                      yield* Deferred.await(releaseWorkflow)
+                      return yield* (yield* Probe.get("workflow")).Add(value).pipe(Effect.orDie)
+                    }),
+                  ).pipe(Effect.tap(() => Nap("2 seconds"))),
+              }),
+            ),
+            Probe.toQueryLayer(
+              Effect.succeed({
+                Value: Effect.fnUntraced(function* () {
+                  return (yield* Probe.Read).state.total
+                }),
+              }),
+            ),
+            Probe.toJobLayer(
+              Effect.succeed({
+                PoolJob: Effect.fnUntraced(function* ({ amount }: { readonly amount: number }) {
+                  yield* Deferred.succeed(jobStarted, undefined)
+                  yield* Deferred.await(releaseJob)
+                  return yield* (yield* Probe.get("job")).Add(amount)
+                }),
+              }),
+            ),
+          ).pipe(
+            Layer.provideMerge(
+              Actors.layer({
+                authorize: () => Effect.succeed(true),
+                relay: { poll: "100 millis" },
+                executors: { lease: "3 seconds" },
+              }),
+            ),
+            Layer.provideMerge(
+              Database.postgres({
+                url,
+                preset: "low-connection",
+                applicationName: "low-connection-serving",
+              }),
+            ),
+          )
+          const appScope = yield* Scope.fork(yield* Effect.scope)
+          const context = yield* Layer.build(app).pipe(Scope.provide(appScope))
+          const sql = Context.get(context, SqlClient.SqlClient)
+          const auth = Auth.make(() =>
+            Effect.succeed({ tenant: "default", caller: User.make({ subject: "pool-test" }) }),
+          )
+          const web = HttpRouter.toWebHandler(
+            Layer.merge(Actors.serve({ actors: [Probe], auth }), Inspector.serve({ auth })).pipe(
+              Layer.provide(Layer.succeedContext(context)),
+            ),
+            { disableLogger: true },
+          )
+          yield* Effect.addFinalizer(() => Effect.promise(() => web.dispose()))
+          const server = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              Bun.serve({
+                hostname: "127.0.0.1",
+                port: 0,
+                fetch: (request) => web.handler(request),
+              }),
+            ),
+            (server) => Effect.promise(() => server.stop(true)),
+          )
+          yield* Effect.addFinalizer(() =>
+            Effect.all([
+              Deferred.succeed(releaseTurn, undefined),
+              Deferred.succeed(releaseJob, undefined),
+              Deferred.succeed(releaseWorkflow, undefined),
+            ]),
+          )
+          const send = (path: string, init?: RequestInit) =>
+            Effect.promise(async () => {
+              const response = await fetch(new URL(path, server.url), init)
+              return { status: response.status, body: (await response.json()) as unknown }
+            })
+          const probe = yield* Effect.provide(Probe.get("source"), context)
+          const id = yield* Effect.provide(
+            Effect.flatMap(ActorClient, (actors) => actors.mintCommandId),
+            context,
+          )
+          const request = {
+            method: "POST",
+            headers: { "content-type": "application/json", "idempotency-key": id },
+            body: "3",
+          }
+          const path = "/actors/LowConnectionProbe/source/Add"
+          expect(yield* send(path, request)).toEqual({ status: 200, body: 3 })
+          const run = yield* Effect.provide(probe.Work({ amount: 23 }), context)
+          yield* Deferred.await(workflowStarted)
+          yield* Effect.provide(probe.Stage(), context)
+          yield* Deferred.await(jobStarted)
+          const hold = yield* Effect.provide(probe.Hold(), context).pipe(Effect.forkScoped)
+          yield* Deferred.await(holdStarted)
+          yield* Deferred.succeed(releaseJob, undefined)
+          yield* Deferred.succeed(releaseWorkflow, undefined)
+          yield* Effect.sleep("1200 millis")
+
+          expect(hold.pollUnsafe()).toBeUndefined()
+          expect(
+            yield* send("/actors/LowConnectionProbe/source/Value", { method: "POST" }),
+          ).toEqual({ status: 200, body: 3 })
+          expect(yield* send("/inspector/overview")).toMatchObject({
+            status: 200,
+            body: { counts: { jobs: 1, openWorkflows: 1 } },
+          })
+          const [renewed] = yield* sql<{ attempts: number; remaining: number }>`SELECT attempts,
+            due_at_ms - floor(extract(epoch FROM clock_timestamp()) * 1000) AS remaining
+            FROM actor_outbox WHERE kind = 'job'`
+          expect(renewed?.attempts).toBe(1)
+          expect(Number(renewed?.remaining)).toBeGreaterThan(2000)
+          yield* Deferred.succeed(releaseTurn, undefined)
+          yield* Fiber.join(hold)
+          expect(yield* run.result.pipe(Effect.provide(context))).toBe(23)
+          yield* sql`SELECT 1 FROM actor_outbox`.pipe(
+            Effect.flatMap((rows) => (rows.length === 0 ? Effect.void : Effect.fail("pending"))),
+            Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+          )
+          expect(yield* Effect.provide(probe.Value(), context)).toBe(115)
+          expect(
+            yield* Effect.provide(
+              Effect.flatMap(Probe.get("job"), (actor) => actor.Value()),
+              context,
+            ),
+          ).toBe(11)
+          expect(
+            yield* Effect.provide(
+              Effect.flatMap(Probe.get("relay"), (actor) => actor.Value()),
+              context,
+            ),
+          ).toBe(7)
+          expect(yield* send(path, request)).toEqual({ status: 200, body: 3 })
+          expect(yield* Effect.provide(probe.Value(), context)).toBe(115)
+
+          const interrupted = yield* Effect.provide(probe.Work({ amount: -1 }), context)
+          yield* Deferred.await(interruptStarted)
+          yield* Effect.provide(interrupted.interrupt, context)
+          const exit = yield* Effect.provide(interrupted.result, context).pipe(Effect.exit)
+          expect(Exit.isFailure(exit) && Exit.hasInterrupts(exit)).toBe(true)
+          expect(yield* send("/ready")).toMatchObject({ status: 200, body: { ready: true } })
+          expect(yield* Effect.provide(probe.Add(17), context)).toBe(132)
+
+          const sleeping = yield* Effect.provide(probe.Work({ amount: 31 }), context)
+          yield* sql`SELECT 1 FROM actor_workflow_executions
+            WHERE execution_id = ${sleeping.executionId} AND status = 'suspended'`.pipe(
+            Effect.flatMap((rows) => (rows.length === 1 ? Effect.void : Effect.fail("not parked"))),
+            Effect.retry({ times: 200, schedule: Schedule.spaced("10 millis") }),
+          )
+          yield* Scope.close(appScope, Exit.void)
+          const recovered = yield* Layer.build(app)
+          const attached = yield* Effect.provide(Probe.run(Work, sleeping.executionId), recovered)
+          expect(yield* Effect.provide(attached.result, recovered)).toBe(54)
+          const recoveredSql = Context.get(recovered, SqlClient.SqlClient)
+          expect(
+            yield* recoveredSql`SELECT count(*)::int AS count FROM actor_receipts
+            WHERE actor_id = 'workflow' AND command = 'Add'`,
+          ).toEqual([{ count: 2 }])
+          expect(
+            yield* Effect.provide(
+              Effect.flatMap(Probe.get("workflow"), (actor) => actor.Value()),
+              recovered,
+            ),
+          ).toBe(54)
+        }).pipe(Effect.timeout("15 seconds")),
       ),
     ))
 })

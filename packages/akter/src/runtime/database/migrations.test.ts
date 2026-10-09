@@ -72,9 +72,7 @@ describe("migrations with Postgres", () => {
             Effect.scoped(
               Layer.build(
                 Actors.layer().pipe(
-                  Layer.provide(
-                    Database.postgres({ url, offTurnConnections: 2, maxConnections: 1 }),
-                  ),
+                  Layer.provide(Database.postgres({ url, preset: "low-connection" })),
                 ),
               ),
             ),
