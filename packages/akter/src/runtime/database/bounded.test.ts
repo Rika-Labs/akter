@@ -833,6 +833,9 @@ describe("low-connection Postgres preset", () => {
             FROM actor_outbox WHERE kind = 'job'`
           expect(renewed?.attempts).toBe(1)
           expect(Number(renewed?.remaining)).toBeGreaterThan(2000)
+          expect(
+            yield* sql`SELECT attempts FROM actor_outbox WHERE kind = 'intent' AND target_id = 'relay'`,
+          ).toEqual([{ attempts: 1 }])
           yield* Deferred.succeed(releaseTurn, undefined)
           yield* Fiber.join(hold)
           expect(yield* run.result.pipe(Effect.provide(context))).toBe(23)
