@@ -105,6 +105,8 @@ export interface QueryContext<
   readonly principal: Option.Option<Principal>
   /** The last committed state; never uncommitted writes of a running turn. */
   readonly state: Readonly<State>
+  /** The matching post-commit WAL version when this query uses a resident committed snapshot. */
+  readonly version?: string | undefined
   /**
    * The last event committed when `state` was read: resume `events` after it
    * to follow on from this state without missing or repeating an event.

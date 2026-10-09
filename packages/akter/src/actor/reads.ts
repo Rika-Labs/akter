@@ -19,6 +19,7 @@ import type {
   StoredEvent,
   StreamInput,
 } from "../runtime/members.ts"
+import { ReadRequiresDatabase } from "../runtime/members.ts"
 import { Outcome } from "../runtime/request.ts"
 import { ownership } from "../tables/owned.ts"
 import type { Decoded, Handler, StateValue, StreamHandler } from "./codecs.ts"
@@ -103,6 +104,7 @@ const recordingRead = (context: AnyQueryContext, reads: ReadSet): AnyQueryContex
 
     return context.state
   },
+  version: context.version,
   cursor: context.cursor,
   events: (event, options) => {
     reads.events.add(event.identifier)
@@ -164,7 +166,7 @@ export const queriesOf = ({
 
       registered.set(member.tag, {
         watch,
-        run: Effect.fnUntraced(function* (request, rows, cursor, readEvents, reads) {
+        run: Effect.fnUntraced(function* (request, rows, cursor, readEvents, reads, version) {
           const { state } = yield* descriptor.state.decodeStored(rows)
           let open = true
           const query = Symbol()
@@ -212,10 +214,15 @@ export const queriesOf = ({
             caller: request.caller,
             principal: principal(request.caller),
             state: Object.freeze(state),
+            version,
             cursor,
             events: eventsWith({ descriptor, readEvents }) as AnyQueryContext["events"],
             rows: access.rows as AnyQueryContext["rows"],
-            group: access.group,
+            get group() {
+              if (version !== undefined) throw new ReadRequiresDatabase()
+
+              return access.group
+            },
             blob: blob as AnyQueryContext["blob"],
             follow: () => Stream.die(new Error("read.follow is only available in stream handlers")),
             progress: () => Stream.die(new Error("Progress is only available in stream handlers")),

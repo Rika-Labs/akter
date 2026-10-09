@@ -33,6 +33,7 @@ import {
 } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
 import { TurnPoolSettings } from "../../../../packages/akter/src/runtime/turn/pipeline.ts"
+import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
 import { ActorTest, ClusterMember } from "../../../../packages/akter/src/testing/actor-test.ts"
 import { enqueue, holding } from "./batches.ts"
 import type { ConformanceCase, ConformanceEnvironment } from "../conformance.ts"
@@ -74,13 +75,30 @@ const PingLater = Actor.command("PingLater", { payload: Schema.Finite })
 
 const CancelPing = Actor.command("CancelPing", {})
 
+class WarmRejected extends Schema.TaggedError<WarmRejected>()("WarmRejected", {}) {}
+
+class Changed extends Actor.Event<Changed>()("Changed", { count: Schema.Finite }) {}
+
+const Change = Actor.command("Change", {
+  payload: Schema.Struct({ amount: Schema.Finite, fail: Schema.Boolean, defect: Schema.Boolean }),
+  success: Schema.Finite,
+  error: WarmRejected,
+})
+
+const Snapshot = Actor.query("Snapshot", {
+  success: Schema.Struct({ count: Schema.Finite, version: Schema.String, cursor: Schema.String }),
+})
+
+const History = Actor.query("History", { success: Schema.Array(Schema.Finite) })
+
 const Plain = Actor.make("Plain", {
   key: Schema.String,
   state: Actor.state({
     count: Schema.Finite.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   }),
+  events: [Changed],
   jobs: { Ping: { job: Ping } },
-  api: { Add, Defer, PingLater, CancelPing },
+  api: { Add, Defer, PingLater, CancelPing, Change, Snapshot, History },
   internal: { Remind },
 })
 
@@ -152,6 +170,18 @@ const actorsLive = (probe: Probe) =>
 
               return turn.state.count
             }),
+            Change: Effect.fnUntraced(function* ({ amount, fail, defect }) {
+              probe.handled += 1
+              const turn = yield* Plain.Turn
+              yield* turn.state.set({ count: turn.state.count + amount })
+              yield* turn.emit(Changed.make({ count: turn.state.count }))
+
+              if (fail) return yield* WarmRejected.make({})
+
+              if (defect) return yield* Effect.die(new Error("speculative defect"))
+
+              return turn.state.count
+            }),
             Defer: Effect.fnUntraced(function* (pauseMs: number) {
               probe.handled += 1
               yield* Effect.sleep(pauseMs)
@@ -176,6 +206,16 @@ const actorsLive = (probe: Probe) =>
             }),
           }),
         ),
+        Plain.toQueryLayer({
+          Snapshot: Effect.fnUntraced(function* () {
+            const read = yield* Plain.Read
+            return { count: read.state.count, version: read.version ?? "", cursor: read.cursor }
+          }),
+          History: Effect.fnUntraced(function* () {
+            const events = yield* (yield* Plain.Read).events(Changed)
+            return events.map(({ event }) => event.count)
+          }),
+        }),
         Plain.toJobLayer(Effect.succeed({ Ping: () => Effect.succeed("pong") })),
       )
     }).pipe(Effect.orDie),
@@ -314,6 +354,8 @@ const withProbe = <A, E>(
   options: {
     readonly prepare?: boolean
     readonly everyPool?: boolean
+    /** Ordinary pipeline cases remain independent of the speculative path. */
+    readonly warm?: boolean
     /** Turn hooks the runner sees at every point no queued fault takes. */
     readonly hooks?: TestHooks
     /** The runner's tracer, so a case can read the spans turns open. */
@@ -362,6 +404,7 @@ const withProbe = <A, E>(
                         maxConnections: options.turnSessions,
                       },
                 ),
+                Layer.succeed(WarmTurnFastPath, options.warm === true),
                 options.everyPool === true
                   ? Layer.succeed(ClusterMember, { tenant: "pipeline", connect: stream })
                   : Layer.empty,
@@ -469,6 +512,163 @@ const gathered = Effect.fnUntraced(function* (keys: ReadonlyArray<string>) {
 
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "warm fast path: one commit flight, zero-flight versioned reads, and duplicate/conflict replay without another handler",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, everyPool: true }, (probe) =>
+        Effect.gen(function* () {
+          const actors = yield* Actors
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast")
+          expect(yield* plain.Add(3)).toBe(3)
+          yield* plain.Snapshot()
+          const id = yield* actors.mintCommandId
+          const before = probe.handled
+          const warm = yield* flightsOf(probe, plain.Add(7).pipe(Actor.commandId(id)))
+          expect(warm).toMatchObject({ value: 10, flights: 1 })
+          const read = yield* flightsOf(probe, plain.Snapshot())
+          expect(read.flights).toBe(0)
+          expect(read.value.count).toBe(10)
+          expect(read.value.version).toMatch(/^[1-9][0-9]*$/)
+          expect(yield* plain.Add(7).pipe(Actor.commandId(id))).toBe(10)
+          const conflict = yield* plain.Add(13).pipe(Actor.commandId(id), Effect.result)
+          expect(conflict._tag).toBe("Failure")
+          if (conflict._tag === "Failure")
+            expect(conflict.failure.reason._tag).toBe("CommandConflict")
+          expect(probe.handled - before).toBe(1)
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 10 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: stale fence rolls back all pipelined state/events/receipt and reevaluates from committed state",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, database) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast-stale")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* (yield* Actors).mintCommandId
+          const context = yield* rival(database)
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE actor_generations SET generation = generation + 1
+                WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+                yield* sql`DELETE FROM actor_state WHERE actor_type = 'Plain' AND actor_id = ${plain.ref.id}`
+              }),
+            )
+          }).pipe(Effect.provideContext(context), Effect.orDie)
+          const handled = probe.handled
+          const result = yield* flightsOf(
+            probe,
+            plain.Change({ amount: 7, fail: false, defect: false }).pipe(Actor.commandId(id)),
+          )
+          expect(result.value).toBe(7)
+          expect(result.flights).toBe(3)
+          expect(probe.handled - handled).toBe(2)
+          expect(wire(result.sent[0]!)).toContain("COMMIT")
+          expect(wire(result.sent[0]!)).toContain("INSERT INTO actor_receipts")
+          expect(yield* plain.History()).toEqual([7])
+          expect(yield* test.inspect(plain.ref)).toMatchObject({ state: { count: 7 }, receipts: 2 })
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: a lost COMMIT reply retries once through its stored receipt, never reevaluating",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, prepare: false }, (probe, _database, relayed) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("fast-unknown")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* (yield* Actors).mintCommandId
+          const handled = probe.handled
+          relayed.loseCommitReply()
+          expect(
+            yield* plain
+              .Change({ amount: 7, fail: false, defect: false })
+              .pipe(Actor.commandId(id)),
+          ).toBe(10)
+          expect(relayed.lostCommits()).toBe(1)
+          expect(probe.handled - handled).toBe(1)
+          expect(yield* plain.History()).toEqual([10])
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 10 },
+            receipts: 2,
+          })
+        }),
+      ),
+  },
+  {
+    name: "warm fast path: reads exclude staged state, declared failures and SQL-aborted commits; event reads fall through",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true }, (probe) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const test = yield* ActorTest
+          const actors = yield* Actors
+          const plain = yield* Plain.get("fast-reads")
+          expect(yield* plain.Add(3)).toBe(3)
+          const id = yield* actors.mintCommandId
+          const paused = yield* test.pauseNext("beforeCommit", { commandId: id })
+          const pending = yield* plain
+            .Change({ amount: 7, fail: false, defect: false })
+            .pipe(Actor.commandId(id), Effect.forkChild)
+          yield* paused.reached
+          const during = yield* flightsOf(probe, plain.Snapshot())
+          expect(during).toMatchObject({ flights: 0, value: { count: 3, cursor: "0" } })
+          yield* paused.release
+          expect(yield* Fiber.join(pending)).toBe(10)
+          const committed = yield* plain.Snapshot()
+          expect(committed.count).toBe(10)
+          expect(BigInt(committed.version) > BigInt(during.value.version)).toBe(true)
+          expect(committed.cursor).toBe("1")
+          const failedId = yield* actors.mintCommandId
+          expect(
+            (yield* plain
+              .Change({ amount: 13, fail: true, defect: false })
+              .pipe(Actor.commandId(failedId), Effect.result))._tag,
+          ).toBe("Failure")
+          expect((yield* plain.Snapshot()).count).toBe(10)
+          const handled = probe.handled
+          expect(
+            (yield* plain
+              .Change({ amount: 13, fail: true, defect: false })
+              .pipe(Actor.commandId(failedId), Effect.result))._tag,
+          ).toBe("Failure")
+          expect(probe.handled).toBe(handled)
+          expect(
+            (yield* plain.Change({ amount: 17, fail: false, defect: true }).pipe(Effect.exit))._tag,
+          ).toBe("Failure")
+          expect((yield* plain.Snapshot()).count).toBe(10)
+          yield* sql.unsafe(`CREATE FUNCTION warm_poison() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'receipt rejected'; END $$`)
+          yield* sql.unsafe(`CREATE TRIGGER warm_poison BEFORE INSERT ON actor_receipts
+            FOR EACH ROW EXECUTE FUNCTION warm_poison()`)
+          expect(
+            (yield* plain.Change({ amount: 19, fail: false, defect: false }).pipe(Effect.exit))
+              ._tag,
+          ).toBe("Failure")
+          expect((yield* plain.Snapshot()).count).toBe(10)
+          expect(yield* plain.History()).toEqual([10])
+          expect(yield* test.inspect(plain.ref)).toMatchObject({
+            state: { count: 10 },
+            receipts: 3,
+          })
+        }),
+      ),
+  },
   {
     name: "pipeline: a warm turn and a wake each take two round trips, and a replay writes nothing",
     requiresIndependentConnections: true,

@@ -1313,6 +1313,8 @@ export const layer = (options: Options = {}) => {
           primary,
           replica,
           holder,
+          cached: (ref) =>
+            Effect.map(entityId(ref), (id) => owners.get(ref.actor)?.activations.get(id)?.cache),
         }),
         ...eventFeeds({
           registrations,

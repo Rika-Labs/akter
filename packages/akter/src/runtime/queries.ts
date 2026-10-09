@@ -4,10 +4,16 @@ import { SqlClient, SqlError } from "effect/sql"
 import { ActorError, ActorUnavailable, InvalidInput, NotCreated, Timeout } from "../errors/actor.ts"
 import { type InternalActors } from "./actors.ts"
 import { Outcome, type Request } from "./request.ts"
-import { type QueryRegistration, type Registration, type WorkflowStatus } from "./members.ts"
+import {
+  ReadRequiresDatabase,
+  type QueryRegistration,
+  type Registration,
+  type WorkflowStatus,
+} from "./members.ts"
 import type { ActorRef } from "../identity/caller.ts"
 import type { Holder } from "./connections/holder.ts"
 import type { ReadSet } from "./connections/reads.ts"
+import type { ActivationCache } from "./storage/generation.ts"
 import { watchStream } from "./connections/watch.ts"
 import { caughtUp, QueryPool } from "./database/replica.ts"
 import { withTenant } from "./database/tenancy.ts"
@@ -34,6 +40,7 @@ export const committedReads = ({
   primary,
   replica,
   holder,
+  cached,
 }: {
   readonly registrations: ReadonlyMap<string, Registration>
   readonly queryRegistrations: ReadonlyMap<string, QueryRegistration>
@@ -46,6 +53,7 @@ export const committedReads = ({
   readonly replica: SqlClient.SqlClient | undefined
   /** This runner's connection holder, where a watch parks. */
   readonly holder: Holder
+  readonly cached: (ref: ActorRef) => Effect.Effect<ActivationCache | undefined>
 }): Pick<InternalActors["Service"], "exists" | "query" | "watch" | "pollWorkflow"> => {
   const reruns = Semaphore.makeUnsafe(WATCH_RERUNS)
   const queryPool = Context.get(services, QueryPool)
@@ -149,6 +157,28 @@ export const committedReads = ({
       const local = owned ? primary : (queryPool ?? primary)
 
       const outcome = yield* Effect.gen(function* () {
+        const cache = owned || reads !== undefined ? undefined : yield* cached(request.ref)
+        const snapshot = cache?.committed
+
+        if (
+          snapshot !== undefined &&
+          snapshot.generation === cache!.generation &&
+          snapshot.state === cache!.state &&
+          (minVersion === undefined || BigInt(snapshot.version) >= BigInt(minVersion))
+        ) {
+          const answer = yield* query.run(
+            request,
+            [...snapshot.state],
+            snapshot.head,
+            () => Effect.die(new ReadRequiresDatabase()),
+            undefined,
+            snapshot.version,
+          )
+
+          if (!(Outcome.guards.Defect(answer) && answer.cause instanceof ReadRequiresDatabase))
+            return answer
+        }
+
         if (owned || replica === undefined) return yield* read(local)
 
         if (minVersion !== undefined) {
