@@ -4,7 +4,9 @@
   "name": "Akter",
   "description": "The framework for durable, stateful backends that power realtime apps, background work, and agents.",
   "colors": {
-    "primary": "#0b0d0b"
+    "primary": "#0b0d0b",
+    "light": "#ffc300",
+    "dark": "#0b0d0b"
   },
   "background": {
     "color": {

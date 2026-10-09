@@ -10,6 +10,18 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   display: none;
 }
 
+/*
+ * Logo, colours and type match the marketing site at akter.dev. PolySans is a commercial font, so
+ * it is loaded from akter.dev, which allows this origin, rather than committed to this public
+ * repository. Geist Mono is open source and ships here.
+ */
+@font-face {
+  font-family: "PolySans Var";
+  src: url("https://akter.dev/fonts/PolySans-variable.woff2") format("woff2");
+  font-weight: 300 800;
+  font-display: swap;
+}
+
 @font-face {
   font-family: "Akter Mono";
   src: url("/fonts/GeistMono-latin.woff2") format("woff2");
@@ -22,11 +34,13 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   --ak-page: #fafaf9;
   --ak-tile: #f1f0ed;
   --ak-raised: #ffffff;
+  --ak-accent: #ffc300;
   --ak-hair: rgba(55, 48, 31, 0.13);
   --ak-muted: rgba(11, 13, 11, 0.55);
-  --ak-body: rgba(11, 13, 11, 0.75);
-  --ak-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --ak-mono: "Akter Mono", "Geist Mono", ui-monospace, monospace;
+  --ak-nav: rgba(11, 13, 11, 0.62);
+  --ak-body: rgba(11, 13, 11, 0.82);
+  --ak-sans: "PolySans Var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ak-mono: "Akter Mono", "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --font-family-headings-custom: var(--ak-sans);
   --font-family-body-custom: var(--ak-sans);
   --gray-50: 250 250 249;
@@ -43,12 +57,12 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   --mint-foreground: #0b0d0b;
   --mint-background: #f1f0ed;
   --mint-token-constant: #0b0d0b;
-  --mint-token-string: #5b5a4f;
-  --mint-token-comment: rgba(11, 13, 11, 0.45);
+  --mint-token-string: #5b5a52;
+  --mint-token-comment: rgba(11, 13, 11, 0.4);
   --mint-token-keyword: #0b0d0b;
   --mint-token-parameter: #0b0d0b;
   --mint-token-function: #0b0d0b;
-  --mint-token-string-expression: #5b5a4f;
+  --mint-token-string-expression: #5b5a52;
   --mint-token-punctuation: rgba(11, 13, 11, 0.6);
   --mint-token-link: #0b0d0b;
 }
@@ -83,8 +97,16 @@ h5,
 h6 {
   font-family: var(--ak-sans);
   font-weight: 450;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.02em;
   color: var(--ak-ink);
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 #page-title {
@@ -103,6 +125,30 @@ h6 {
 #content-area p,
 #content-area li {
   color: var(--ak-body);
+}
+
+#content-area strong {
+  font-weight: 600;
+  color: var(--ak-ink);
+}
+
+#content-area a.link {
+  color: var(--ak-ink);
+  font-weight: 500;
+  border-bottom: 0;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--ak-accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.25rem;
+}
+
+#content-area a.link:hover {
+  text-decoration-style: solid;
+}
+
+.nav-logo {
+  height: 1.375rem;
 }
 
 .eyebrow,
@@ -188,8 +234,9 @@ kbd,
 }
 
 .navbar-link a {
+  font-size: 0.90625rem;
   font-weight: 400;
-  color: var(--ak-muted);
+  color: var(--ak-nav);
 }
 
 .navbar-link a:hover {
@@ -197,11 +244,22 @@ kbd,
 }
 
 .navbar-link a[href*="github.com"] {
+  gap: 0.4375rem;
   border: 1px solid var(--ak-hair);
-  background: var(--ak-raised);
+  background: var(--ak-page);
   padding: 0 0.875rem;
-  height: 2.25rem;
-  color: var(--ak-body);
+  height: 2.125rem;
+  font-size: 0.875rem;
+  color: var(--ak-ink);
+}
+
+.navbar-link a[href*="github.com"]:hover {
+  background: var(--ak-tile);
+}
+
+.navbar-link a[href*="github.com"] svg {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .navbar-link a[href*="github.com"] > span:last-child {
@@ -209,10 +267,10 @@ kbd,
 }
 
 #topbar-cta-button a {
-  height: 2.25rem;
-  padding: 0 1.125rem;
-  background: var(--ak-ink);
-  border: 1px solid var(--ak-ink);
+  height: 2.125rem;
+  padding: 0 0.875rem;
+  background: var(--ak-accent);
+  border: 1px solid var(--ak-accent);
 }
 
 #topbar-cta-button a > span.absolute {
@@ -226,14 +284,10 @@ kbd,
 #topbar-cta-button a span {
   font-family: var(--ak-mono);
   font-size: 0.75rem;
-  font-weight: 500;
-  letter-spacing: 0.07em;
+  font-weight: 400;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--ak-page);
-}
-
-#topbar-cta-button a:hover {
-  background: #242824;
+  color: var(--ak-ink);
 }
 
 html .sidebar-group-header {
