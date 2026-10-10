@@ -10,33 +10,30 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   display: none;
 }
 
-/*
- * Logo, colours and type match the marketing site at akter.dev. PolySans is a commercial font, so
- * it is loaded from akter.dev, which allows this origin, rather than committed to this public
- * repository. Geist Mono is open source and ships here.
- */
 @font-face {
   font-family: "PolySans Var";
   src: url("https://akter.dev/fonts/PolySans-variable.woff2") format("woff2");
   font-weight: 300 800;
-  font-display: swap;
+  font-display: optional;
 }
 
 @font-face {
   font-family: "Akter Mono";
   src: url("/fonts/GeistMono-latin.woff2") format("woff2");
   font-weight: 100 900;
-  font-display: swap;
+  font-display: optional;
 }
 
 :root {
+  color-scheme: light;
   --ak-ink: #0b0d0b;
   --ak-page: #fafaf9;
   --ak-tile: #f1f0ed;
   --ak-raised: #ffffff;
   --ak-accent: #ffc300;
   --ak-hair: rgba(55, 48, 31, 0.13);
-  --ak-muted: rgba(11, 13, 11, 0.55);
+  --ak-hair-hover: rgba(55, 48, 31, 0.28);
+  --ak-muted: rgba(11, 13, 11, 0.62);
   --ak-nav: rgba(11, 13, 11, 0.62);
   --ak-body: rgba(11, 13, 11, 0.82);
   --ak-sans: "PolySans Var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -54,22 +51,39 @@ body:has(#content > h1:first-child) #table-of-contents-content > li:first-child 
   --gray-800: 37 37 34;
   --gray-900: 23 23 21;
   --gray-950: 10 10 9;
-  --mint-foreground: #0b0d0b;
-  --mint-background: #f1f0ed;
-  --mint-token-constant: #0b0d0b;
+  --mint-foreground: var(--ak-ink);
+  --mint-background: var(--ak-tile);
+  --mint-token-constant: var(--ak-ink);
   --mint-token-string: #5b5a52;
-  --mint-token-comment: rgba(11, 13, 11, 0.4);
-  --mint-token-keyword: #0b0d0b;
-  --mint-token-parameter: #0b0d0b;
-  --mint-token-function: #0b0d0b;
+  --mint-token-comment: var(--ak-muted);
+  --mint-token-keyword: var(--ak-ink);
+  --mint-token-parameter: var(--ak-ink);
+  --mint-token-function: var(--ak-ink);
   --mint-token-string-expression: #5b5a52;
-  --mint-token-punctuation: rgba(11, 13, 11, 0.6);
-  --mint-token-link: #0b0d0b;
+  --mint-token-punctuation: var(--ak-nav);
+  --mint-token-link: var(--ak-ink);
+}
+
+.dark {
+  color-scheme: dark;
+  --ak-ink: #fafaf9;
+  --ak-page: #0b0d0b;
+  --ak-tile: #171915;
+  --ak-raised: #1d201b;
+  --ak-hair: rgba(250, 250, 249, 0.16);
+  --ak-hair-hover: rgba(250, 250, 249, 0.32);
+  --ak-muted: rgba(250, 250, 249, 0.65);
+  --ak-nav: rgba(250, 250, 249, 0.78);
+  --ak-body: rgba(250, 250, 249, 0.85);
+  --mint-token-string: #cbc8b6;
+  --mint-token-string-expression: #cbc8b6;
 }
 
 body {
   font-family: var(--ak-sans);
   -webkit-font-smoothing: antialiased;
+  background: var(--ak-page);
+  color: var(--ak-ink);
 }
 
 [class*="rounded"],
@@ -118,11 +132,13 @@ h6 {
 
 #content-area .prose,
 #content-area p,
+#content-area [data-as="p"],
 #content-area li {
   font-weight: 400;
 }
 
 #content-area p,
+#content-area [data-as="p"],
 #content-area li {
   color: var(--ak-body);
 }
@@ -221,7 +237,7 @@ kbd,
 }
 
 #search-bar-entry:hover {
-  border-color: rgba(55, 48, 31, 0.28);
+  border-color: var(--ak-hair-hover);
 }
 
 #search-bar-entry span {
@@ -287,7 +303,7 @@ kbd,
   font-weight: 400;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--ak-ink);
+  color: #0b0d0b;
 }
 
 html .sidebar-group-header {
