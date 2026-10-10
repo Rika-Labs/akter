@@ -3,7 +3,7 @@ import { BunServices } from "@effect/platform-bun"
 import { Effect, FileSystem, ManagedRuntime, Schema } from "effect"
 import { TurboReport } from "./turbo.ts"
 
-it("Turbo selects changed tasks, propagates dependency changes, and keeps integration uncached", () => {
+it("Turbo selects changed tasks, propagates dependency changes, and always executes tests", () => {
   const runtime = ManagedRuntime.make(BunServices.layer)
 
   return runtime
@@ -24,7 +24,7 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
         yield* fs.copyFile(`${source}turbo.json`, `${root}/turbo.json`)
         yield* fs.writeFileString(
           `${root}/package.json`,
-          '{"name":"graph-fixture","private":true,"packageManager":"bun@1.4.2","workspaces":["packages/*","apps/*","infra"]}',
+          '{"name":"graph-fixture","private":true,"packageManager":"bun@1.4.2","workspaces":["packages/*","apps/*","infra"],"scripts":{"format:check":"mkdir -p .cache && echo execution >> .cache/root-runs"}}',
         )
         yield* fs.writeFileString(`${root}/.gitignore`, "node_modules/\n.turbo/\n.cache/\n")
         yield* fs.writeFileString(`${root}/tsconfig.json`, "{}")
@@ -40,7 +40,7 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
           yield* fs.makeDirectory(`${root}/${path}/src`, { recursive: true })
           yield* fs.writeFileString(
             `${root}/${path}/package.json`,
-            `{"name":"${name}","dependencies":${dependencies},"scripts":{"lint":"true","typecheck":"true","build":"true","test":"true","test:integration":"true"}}`,
+            `{"name":"${name}","dependencies":${dependencies},"scripts":{"lint":"true","typecheck":"true","build":"true","test":"mkdir -p .cache && echo execution >> .cache/test-runs","test:integration":"true"}}`,
           )
           yield* fs.writeFileString(`${root}/${path}/src/index.ts`, "export const value = 1")
           yield* fs.writeFileString(`${root}/${path}/README.md`, "Initial docs")
@@ -101,7 +101,18 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
           baseline.tasks.find((task) => task.taskId === "@akter/api#test:integration")
             ?.resolvedTaskDefinition.cache,
         ).toBe(false)
+        run([turbo, "run", "test", "--filter=@akter/api", "--cache=local:rw"])
+        run([turbo, "run", "test", "--filter=@akter/api", "--cache=local:rw"])
+        expect(yield* fs.readFileString(`${root}/apps/api/.cache/test-runs`)).toBe(
+          "execution\nexecution\n",
+        )
+        const rootCheck = () => run([turbo, "run", "format:check", "--cache=local:rw"])
+        rootCheck()
+        rootCheck()
+        expect(yield* fs.readFileString(`${root}/.cache/root-runs`)).toBe("execution\n")
         yield* fs.writeFileString(`${root}/packages/ui/README.md`, "Changed docs")
+        rootCheck()
+        expect(yield* fs.readFileString(`${root}/.cache/root-runs`)).toBe("execution\nexecution\n")
         const docs = yield* report()
         expect(hash(docs, "@akter/web#typecheck")).toBe(hash(baseline, "@akter/web#typecheck"))
         expect(hash(docs, "@akter/ui#build")).toBe(hash(baseline, "@akter/ui#build"))
@@ -112,6 +123,10 @@ it("Turbo selects changed tasks, propagates dependency changes, and keeps integr
         yield* fs.writeFileString(
           `${root}/packages/ui/src/index.ts`,
           'export const value = "breaking"',
+        )
+        rootCheck()
+        expect(yield* fs.readFileString(`${root}/.cache/root-runs`)).toBe(
+          "execution\nexecution\nexecution\n",
         )
         const changed = yield* report()
         expect(hash(changed, "@akter/web#typecheck")).not.toBe(

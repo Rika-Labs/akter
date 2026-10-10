@@ -1,7 +1,8 @@
-import { BunServices } from "@effect/platform-bun"
-import { Console, Effect, FileSystem, ManagedRuntime, Path, Schema } from "effect"
+import { BunRuntime, BunServices } from "@effect/platform-bun"
+import { Console, Effect, FileSystem, Layer, Path, Schema } from "effect"
 import { Manifest } from "./catalogs.ts"
 import { canaryVersion, releaseVersion } from "./release/version.ts"
+import { runChecks } from "./verify.ts"
 import {
   FrameworkManifest,
   publishManifest,
@@ -53,9 +54,6 @@ const stagePackage = Effect.fn("stagePackage")(function* ({
   readonly versions: Readonly<Record<string, string>>
   readonly version: string
 }) {
-  yield* fs.remove(path.join(source, "dist"), { recursive: true, force: true })
-  yield* run(["bun", "run", "build"], source)
-
   const manifest = yield* Schema.decodeEffect(Schema.fromJsonString(FrameworkManifest))(
     yield* fs.readFileString(path.join(source, "package.json")),
   )
@@ -175,6 +173,23 @@ const program = Effect.gen(function* () {
   const versions = { [frameworkManifest.name]: version }
   const catalog = workspace.workspaces?.catalog ?? {}
 
+  for (const source of [framework, cli])
+    yield* fs.remove(path.join(source, "dist"), { recursive: true, force: true })
+  yield* run(
+    [
+      "bun",
+      "run",
+      "turbo",
+      "run",
+      "build",
+      `--filter=${frameworkManifest.name}`,
+      `--filter=${cliManifest.name}`,
+      "--cache=local:w",
+      "--concurrency=100%",
+    ],
+    root,
+  )
+
   yield* stagePackage({
     fs,
     path,
@@ -186,12 +201,24 @@ const program = Effect.gen(function* () {
     version,
   })
   yield* stagePackage({ fs, path, root, source: cli, stage: cliStage, catalog, versions, version })
+
+  if (args.includes("--smoke"))
+    yield* runChecks(
+      ["node", "bun"].map((engine) => ({
+        command: [
+          "bun",
+          path.join(root, ".github/src/release/smoke.ts"),
+          "--package",
+          frameworkStage,
+          "--cli-package",
+          cliStage,
+        ],
+        env: { SMOKE_RUNTIME: engine },
+      })),
+    )
 }).pipe(Effect.scoped)
 
-const runtime = ManagedRuntime.make(BunServices.layer)
-
-try {
-  await runtime.runPromise(program)
-} finally {
-  await runtime.dispose()
-}
+Effect.gen(function* () {
+  const services = yield* Layer.build(BunServices.layer)
+  return yield* program.pipe(Effect.provideContext(services))
+}).pipe(Effect.scoped, BunRuntime.runMain)
