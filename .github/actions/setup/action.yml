@@ -4,8 +4,8 @@ inputs:
   save-cache:
     description: On GitHub-hosted runners, save the Bun package cache when the exact key missed. One job per workflow saves it; the others only restore.
     default: "false"
-  typecheck-cache:
-    description: Restore and save incremental typecheck state for the exact commit.
+  task-cache:
+    description: Restore and save successful Turbo build, lint and typecheck results. Tests always execute.
     default: "false"
 runs:
   using: composite
@@ -32,13 +32,13 @@ runs:
         path: ~/.bun/install/cache
         key: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-${{ hashFiles('bun.lock') }}
         restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-1.4.2-
-    - name: Restore incremental typecheck state
-      if: inputs.typecheck-cache == 'true'
+    - name: Restore and save Turbo task results
+      if: inputs.task-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
-        path: |
-          **/.cache/typecheck.tsbuildinfo
-        key: types-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'tsconfig.json', '**/tsconfig.json') }}-${{ github.sha }}
+        path: .turbo/cache
+        key: turbo-${{ runner.os }}-${{ runner.arch }}-bun-1.4.2-node-26.7.0-${{ hashFiles('bun.lock') }}-${{ env.HEAD_SHA || github.sha }}
+        restore-keys: turbo-${{ runner.os }}-${{ runner.arch }}-bun-1.4.2-node-26.7.0-${{ hashFiles('bun.lock') }}-
     - name: Install dependencies
       shell: bash
       run: |

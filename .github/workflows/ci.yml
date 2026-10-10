@@ -132,7 +132,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           save-cache: "true"
-          typecheck-cache: "true"
+          task-cache: "true"
       - name: Lint, structure, format, typecheck
         run: |
           mkdir -p evidence/static
@@ -204,12 +204,12 @@ jobs:
             shards: |
               framework-postgres-6 postgres --project=postgres:simulation --project=postgres:workflows
               framework-postgres-9 postgres --project=postgres:relay
+              framework-postgres-8 postgres --project=integration
           - name: shards-3
             shards: |
               framework-postgres-5 postgres --project=postgres:replica --project=postgres:properties --project=postgres:subscriptions --project=postgres:transports --project=postgres:connections
               framework-postgres-7 postgres --project=!integration --project=!postgres:effect-control --project=!postgres:heap --project=!postgres:conformance --project=!postgres:capacity --project=!postgres:fleet --project=!postgres:multi-runner --project=!postgres:drain --project=!postgres:cron --project=!postgres:replica --project=!postgres:properties --project=!postgres:subscriptions --project=!postgres:transports --project=!postgres:connections --project=!postgres:simulation --project=!postgres:workflows --project=!postgres:relay
               framework-postgres-3 postgres --project=postgres:fleet --project=postgres:multi-runner --project=postgres:drain --project=postgres:cron
-              framework-postgres-8 postgres --project=integration
           - name: shards-4
             shards: |
               node-conformance-2 node --project=postgres:conformance --project=postgres:capacity
@@ -222,9 +222,7 @@ jobs:
               node-conformance-7 node --project=postgres:relay
           - name: shards-6
             shards: |
-              framework-pglite-1 pglite --project=pglite:conformance --project=pglite:workflows --project=pglite:cron
-              framework-pglite-3 pglite --project=!pglite:conformance --project=!pglite:workflows --project=!pglite:cron --project=!pglite:properties --project=!pglite:capacity --project=!pglite:transports
-              framework-pglite-2 pglite --project=pglite:properties --project=pglite:capacity --project=pglite:transports
+              framework-pglite pglite
           - name: shards-7
             shards: |
               framework-drills drills

@@ -36,6 +36,7 @@
     "test": {
       "dependsOn": ["^build", "transit"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "$TURBO_ROOT$/vitest.config.ts"],
+      "cache": false,
       "outputs": [],
       "env": ["CI"]
     },
@@ -49,6 +50,18 @@
       "dependsOn": ["^build"],
       "cache": false,
       "env": ["CI"]
+    },
+    "//#lint:directives": {
+      "outputs": []
+    },
+    "//#lint:structure": {
+      "outputs": []
+    },
+    "//#format:check": {
+      "outputs": []
+    },
+    "//#typecheck:ci": {
+      "outputs": []
     },
     "//#lint:root": {
       "inputs": [

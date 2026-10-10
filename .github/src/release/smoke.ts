@@ -1,11 +1,10 @@
-import { BunServices } from "@effect/platform-bun"
+import { BunRuntime, BunServices } from "@effect/platform-bun"
 import {
   Config,
   Console,
   Effect,
   FileSystem,
   Layer,
-  ManagedRuntime,
   Option,
   Path,
   Schedule,
@@ -462,10 +461,7 @@ console.log("quickstart retry and rollback passed")
   )
 }).pipe(Effect.scoped)
 
-const runtime = ManagedRuntime.make(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))
-
-try {
-  await runtime.runPromise(program)
-} finally {
-  await runtime.dispose()
-}
+Effect.gen(function* () {
+  const services = yield* Layer.build(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))
+  return yield* program.pipe(Effect.provideContext(services))
+}).pipe(Effect.scoped, BunRuntime.runMain)

@@ -48,8 +48,8 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "check": "bun run lint:directives && bun run lint:structure && bun run format:check && GOMAXPROCS=1 turbo run lint lint:root typecheck test build --concurrency=100% && bun run pack:check",
-    "check:static": "bun run lint:directives && bun run lint:structure && bun run format:check && bun run typecheck:ci && bun --bun node_modules/vitest/vitest.mjs run .github/src",
-    "check:pack": "bun run pack:check && SMOKE_RUNTIME=node bun run pack:smoke && bun run pack:smoke",
+    "check:static": "GOMAXPROCS=1 turbo run lint:directives lint:structure format:check typecheck:ci --concurrency=100% && bun --bun node_modules/vitest/vitest.mjs run .github/src",
+    "check:pack": "bun run pack:check --smoke",
     "check:ci": "bun run check:static && bun run check:pack && REPLICA=$(bun .github/src/replica.ts) && NODE_DATABASE=$(bun .github/src/node-postgres.ts) && NODE_REPLICA=$(TEST_DATABASE_URL=$NODE_DATABASE TEST_REPLICA_CONTAINER=durable-node-replica TEST_REPLICA_PORT=5434 bun .github/src/replica.ts) && TEST_REPLICA_DATABASE_URL=$REPLICA TEST_NODE_REPLICA_DATABASE_URL=$NODE_REPLICA TEST_NODE_DATABASE_URL=$NODE_DATABASE GOMAXPROCS=1 bun .github/src/verify.ts"
   },
   "devDependencies": {

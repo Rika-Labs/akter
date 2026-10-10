@@ -9,8 +9,8 @@ export default defineConfig({
       ".github/src/**/*.test.ts",
     ],
     exclude: ["**/node_modules/**", "**/templates/**"],
-    maxWorkers: 1,
-    fileParallelism: false,
+    maxWorkers: 2,
+    fileParallelism: true,
     testTimeout: 15000,
   },
 })
