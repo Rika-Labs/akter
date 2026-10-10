@@ -10,16 +10,21 @@
   },
   "background": {
     "color": {
-      "light": "#fafaf9"
+      "light": "#fafaf9",
+      "dark": "#0b0d0b"
     }
   },
   "appearance": {
-    "default": "light",
-    "strict": true
+    "default": "system"
+  },
+  "fonts": {
+    "family": "PolySans",
+    "source": "https://akter.dev/fonts/PolySans-variable.woff2",
+    "format": "woff2"
   },
   "logo": {
     "light": "/logo/light.svg",
-    "dark": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
     "href": "https://akter.dev"
   },
   "favicon": "/favicon.svg",
@@ -113,14 +118,6 @@
   },
   "navbar": {
     "links": [
-      {
-        "label": "Blog",
-        "href": "https://akter.dev/blog"
-      },
-      {
-        "label": "Changelog",
-        "href": "https://akter.dev/changelog"
-      },
       {
         "type": "github",
         "label": "GitHub",
