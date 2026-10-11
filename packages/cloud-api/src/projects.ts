@@ -45,7 +45,7 @@ export type UpdateProject = typeof UpdateProject.Type
  * Every environment uses the customer's Postgres through `DATABASE_URL`.
  * `latency` is the deploy probe's p50 in milliseconds from the runner region,
  * null when unmeasured. Above 5 ms, `latencyWarning` warns without refusing.
- * `runnerCap` is floor((max_connections - in_use - 10) / 9), null when unknown;
+ * `runnerCap` is floor((max_connections - in_use - 10) / 4), null when unknown;
  * a non-positive cap means no runner fits the available connection budget.
  * The status carries no URL or URL-derived field.
  */

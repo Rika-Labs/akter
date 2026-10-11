@@ -1,4 +1,4 @@
-import { DateTime, Deferred, Effect, Exit, Fiber, Schema, Layer } from "effect"
+import { DateTime, Deferred, Effect, Exit, Fiber, Schema, Layer, Schedule } from "effect"
 import { SqlClient } from "effect/sql"
 import {
   Actor,
@@ -170,7 +170,11 @@ export const prune = Effect.fnUntraced(function* (id: string, through: number) {
     WHERE tenant_id = ${test.tenant} AND actor_type = 'Feed' AND actor_id = ${id} AND sequence <= ${through}`
 }, Effect.orDie)
 
-/** Event cases: events append only on commit, replay in order after an exclusive cursor, and are discarded on declared failures and defects. */
+/**
+ * Events append only on commit, replay in order and disappear on failed turns.
+ * The lock-order race uses an identity issued before the warm cache was certified,
+ * so its paused handler holds ordinary admission rather than running speculatively.
+ */
 export const eventsConformance: ReadonlyArray<ConformanceCase<EventsFixture>> = [
   {
     name: "appends events only on commit and replays one class in order after an exclusive cursor",
@@ -389,14 +393,20 @@ export const eventsConformance: ReadonlyArray<ConformanceCase<EventsFixture>> = 
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const feed = yield* Feed.get("raced")
+          const heldId = yield* (yield* Actors).mintCommandId
           yield* feed.Post("seed")
           const key = routingKey({ ref: feed.ref, placement: "tenant" })
           const { tenant, actor, id } = feed.ref
 
+          const rivalPid = yield* Deferred.make<number>()
           const rival = (index: number) =>
             sql
               .withTransaction(
                 Effect.gen(function* () {
+                  if (index === 0) {
+                    const [backend] = yield* sql<{ pid: number }>`SELECT pg_backend_pid() AS pid`
+                    yield* Deferred.succeed(rivalPid, backend!.pid)
+                  }
                   yield* sql`SELECT generation FROM actor_generations
                     WHERE routing_key = ${key} AND tenant_id = ${tenant} AND actor_type = ${actor} AND actor_id = ${id}
                     FOR UPDATE`
@@ -426,9 +436,20 @@ export const eventsConformance: ReadonlyArray<ConformanceCase<EventsFixture>> = 
               .pipe(Effect.orDie)
 
           const pause = yield* test.pauseNext("beforeHandler")
-          const held = yield* feed.Post("held").pipe(Effect.forkChild)
+          const held = yield* feed.Post("held").pipe(Actor.commandId(heldId), Effect.forkChild)
           yield* pause.reached
           const blocked = yield* rival(0).pipe(Effect.forkChild)
+          const pid = yield* Deferred.await(rivalPid)
+          const waiting = yield* sql<{ waiting: boolean }>`SELECT EXISTS (
+            SELECT 1 FROM pg_locks WHERE pid = ${pid} AND NOT granted
+          ) AS waiting`.pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("5 millis"),
+              until: (rows) => rows[0]!.waiting,
+            }),
+            Effect.timeout("5 seconds"),
+          )
+          expect(waiting[0]!.waiting).toBe(true)
           yield* pause.release
           const first = yield* Fiber.join(held)
           yield* Fiber.join(blocked)

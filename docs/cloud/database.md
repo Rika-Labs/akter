@@ -57,7 +57,28 @@ The probe also budgets database connections. The database-derived runner cap is:
 runner cap = floor((max_connections - in_use - 10) / 4)
 ```
 
-`max_connections` is the server's connection limit and `in_use` is its current usage. Akter reserves 10 connections and budgets 4 per runner (1 turn, 2 off-turn and 1 query session). For example, a limit of 100 with 17 connections in use leaves a cap of 18 runners. A cap of zero leaves no room for a runner; reduce competing connections or increase your database's capacity.
+`max_connections` is the server's connection limit and `in_use` is the sum of `pg_stat_database.numbackends` across the server, including the probe's measuring connection. Akter budgets 4 sessions per runner: 1 turn, 2 off-turn (including the coordination session) and 1 query. The fixed 10-session reserve retains the original platform sizing allowance: 3 superuser slots, 3 provider-internal slots and 4 maintenance/operator headroom slots. It is conservative, not a measurement of your provider's requirements; those slots are subtracted in addition to measured usage.
+
+### Choose capacity for your expected runner load
+
+A runner is a hosted compute process, not an actor or a fixed requests-per-second tier. The minimum **at one probe** is `in_use + 10 + 4 × total admitted runners`. Measured `in_use` includes existing hosted sessions; their runners also continue to occupy admission claims. Each deploy remeasures before starting replacements, so sizing before the first deploy must account for the sessions those incumbents will add to the next probe.
+
+For pre-first-deploy planning, let **baseline** mean server sessions in use before Akter starts, including the measuring session. Budget **`baseline + 10 + 4 × incumbent runners + 4 × total runners during overlap`**. Assuming other usage stays constant and incumbent pools reach their four-session bound:
+
+| Expected runner load                        | Incumbents / total during overlap | Minimum at this probe | Minimum before first deploy | Example with baseline 7 |
+| ------------------------------------------- | --------------------------------- | --------------------- | --------------------------- | ----------------------: |
+| Development, no rollout overlap             | 0 / 1                             | `in_use + 14`         | `baseline + 14`             |                      21 |
+| One serving runner plus one replacement     | 1 / 2                             | `in_use + 18`         | `baseline + 22`             |                      29 |
+| Four serving runners plus one replacement   | 4 / 5                             | `in_use + 30`         | `baseline + 46`             |                      53 |
+| Eight serving runners plus two replacements | 8 / 10                            | `in_use + 50`         | `baseline + 82`             |                      89 |
+
+For example, baseline 7 and `max_connections = 25` initially give a cap of 2. Once the first runner uses four sessions, the replacement probe sees 11 in use and returns cap 1; the incumbent's claim occupies it, so the replacement cannot start. Use at least **29** instead: the first probe allows 3, and the replacement probe still allows 2. At 28, that replacement cap falls back to 1. The four- and eight-serving examples budget partial replacement overlap; if a release replaces all regions together, include all its new runners, not just one or two.
+
+These are connection minima, not memory/CPU or throughput recommendations. Measure your application's load to choose its runner count and database resources; application-owned pools need additional connections. A limit of 100 with 17 currently in use allows 18 at that probe, not necessarily at the next one. Leave margin for changing usage rather than sizing exactly at the boundary.
+
+Before your first deploy, open **Database → Plan capacity before deploying** in the console. Run `SHOW max_connections` and `SELECT sum(numbackends) FROM pg_stat_database` on your Postgres server and enter the results to estimate the cap without deploying. The console distinguishes this estimate from the regional probe result. After a probe, **Database** and **Deployments** show the latest environment ceiling, not a count of spare runners. Saving or refreshing the connection does not run a new regional probe.
+
+To raise the ceiling, increase `max_connections` within your database provider's supported limit, upgrade to a larger **database provider plan**, or free competing database connections. Check your provider's memory guidance and restart requirements before changing the parameter. Upgrading your Akter plan does not increase your database's connection limit. Deploy again to remeasure; a cap of zero prevents migrations and runner starts.
 
 This is a connection ceiling, not a throughput guarantee. Akter handles runner orchestration, but your Postgres capacity and latency still bound the app's scale.
 
