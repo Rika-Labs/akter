@@ -15,75 +15,88 @@ describe("process death with Postgres", () => {
   it("rolls back partial foundation DDL and safely reruns the migration", () =>
     runtime.runPromise(
       Effect.gen(function* () {
-        const database = new URL(
-          Redacted.value(
-            yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
-          ),
-        )
+        for (const existingHistory of [true, false]) {
+          const database = new URL(
+            Redacted.value(
+              yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }),
+            ),
+          )
 
-        const sqlRuntime = yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            ManagedRuntime.make(Database.postgres({ url: Redacted.make(database.href) })),
-          ),
-          (db) => Effect.promise(() => db.dispose()),
-        )
+          const sqlRuntime = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              ManagedRuntime.make(Database.postgres({ url: Redacted.make(database.href) })),
+            ),
+            (db) => Effect.promise(() => db.dispose()),
+          )
 
-        yield* Effect.promise(() =>
-          sqlRuntime.runPromise(
-            Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient
-              yield* sql`CREATE TABLE actor_state (collision boolean)`
-              const failure = yield* migrate.pipe(Effect.exit)
-              expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
-                "actor_state",
-              )
-              expect(
-                yield* sql`SELECT to_regclass('actor_generations')::text AS generations, to_regclass('actor_deployment')::text AS deployment`,
-              ).toEqual([{ generations: null, deployment: null }])
-              expect(yield* sql`SELECT migration_id FROM actor_migrations`).toEqual([])
-              yield* sql`DROP TABLE actor_state`
-              yield* migrate
-              expect(yield* sql`SELECT migration_id FROM actor_migrations`).toEqual([
-                { migration_id: 1 },
-                { migration_id: 2 },
-                { migration_id: 3 },
-                { migration_id: 4 },
-                { migration_id: 5 },
-                { migration_id: 6 },
-                { migration_id: 8 },
-                { migration_id: 9 },
-                { migration_id: 10 },
-                { migration_id: 11 },
-                { migration_id: 12 },
-                { migration_id: 13 },
-                { migration_id: 14 },
-                { migration_id: 15 },
-                { migration_id: 16 },
-                { migration_id: 17 },
-                { migration_id: 18 },
-                { migration_id: 20 },
-                { migration_id: 21 },
-                { migration_id: 22 },
-                { migration_id: 23 },
-                { migration_id: 24 },
-                { migration_id: 25 },
-                { migration_id: 26 },
-                { migration_id: 27 },
-                { migration_id: 29 },
-                { migration_id: 30 },
-                { migration_id: 31 },
-                { migration_id: 32 },
-                { migration_id: 33 },
-                { migration_id: 34 },
-                { migration_id: 35 },
-              ])
-              expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
-                { receipts: 0 },
-              ])
-              expect(yield* migrate).toEqual([])
-            }),
-          ),
-        )
+          yield* Effect.promise(() =>
+            sqlRuntime.runPromise(
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient
+                if (existingHistory)
+                  yield* sql`CREATE TABLE actor_migrations (
+                    migration_id integer primary key,
+                    created_at timestamp with time zone not null default now(),
+                    name text not null
+                  )`
+                yield* sql`CREATE TABLE actor_state (collision boolean)`
+                const failure = yield* migrate.pipe(Effect.exit)
+                expect(Exit.isFailure(failure) && Cause.pretty(failure.cause)).toContain(
+                  "actor_state",
+                )
+                expect(
+                  yield* sql`SELECT to_regclass('actor_generations')::text AS generations, to_regclass('actor_deployment')::text AS deployment`,
+                ).toEqual([{ generations: null, deployment: null }])
+                if (existingHistory)
+                  expect(yield* sql`SELECT migration_id FROM actor_migrations`).toEqual([])
+                else
+                  expect(
+                    yield* sql`SELECT to_regclass('actor_migrations')::text AS history`,
+                  ).toEqual([{ history: null }])
+                yield* sql`DROP TABLE actor_state`
+                yield* migrate
+                expect(yield* sql`SELECT migration_id FROM actor_migrations`).toEqual([
+                  { migration_id: 1 },
+                  { migration_id: 2 },
+                  { migration_id: 3 },
+                  { migration_id: 4 },
+                  { migration_id: 5 },
+                  { migration_id: 6 },
+                  { migration_id: 8 },
+                  { migration_id: 9 },
+                  { migration_id: 10 },
+                  { migration_id: 11 },
+                  { migration_id: 12 },
+                  { migration_id: 13 },
+                  { migration_id: 14 },
+                  { migration_id: 15 },
+                  { migration_id: 16 },
+                  { migration_id: 17 },
+                  { migration_id: 18 },
+                  { migration_id: 20 },
+                  { migration_id: 21 },
+                  { migration_id: 22 },
+                  { migration_id: 23 },
+                  { migration_id: 24 },
+                  { migration_id: 25 },
+                  { migration_id: 26 },
+                  { migration_id: 27 },
+                  { migration_id: 29 },
+                  { migration_id: 30 },
+                  { migration_id: 31 },
+                  { migration_id: 32 },
+                  { migration_id: 33 },
+                  { migration_id: 34 },
+                  { migration_id: 35 },
+                ])
+                expect(yield* sql`SELECT count(*)::int AS receipts FROM actor_receipts`).toEqual([
+                  { receipts: 0 },
+                ])
+                expect(yield* migrate).toEqual([])
+              }),
+            ),
+          )
+        }
       }).pipe(Effect.scoped),
     ))
 

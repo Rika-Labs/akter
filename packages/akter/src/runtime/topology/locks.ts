@@ -12,8 +12,8 @@ import { Coordination, withMigrationCoordination } from "../database/coordinatio
 /** Creating Cluster's default tables under startup coordination prevents concurrent CREATE races. */
 const prepareRunnerStorage = Effect.gen(function* () {
   const config = yield* ShardingConfig.ShardingConfig
-  yield* withMigrationCoordination(
-    Effect.gen(function* () {
+  yield* withMigrationCoordination({
+    effect: Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       yield* sql`CREATE TABLE IF NOT EXISTS cluster_runners (
         machine_id SERIAL PRIMARY KEY,
@@ -30,7 +30,7 @@ const prepareRunnerStorage = Effect.gen(function* () {
           acquired_at TIMESTAMP NOT NULL
         )`
     }),
-  )
+  })
 })
 
 /**

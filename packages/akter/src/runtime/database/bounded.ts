@@ -1,6 +1,6 @@
 import { PgClient, PgPool } from "@effect/sql-pg"
 import type { PgConnection } from "@effect/sql-pg"
-import { Duration, Effect, Schedule, Schema, Scope } from "effect"
+import { Duration, Effect, Schedule, Schema, Scope, Semaphore, Stream } from "effect"
 import { SqlClient, SqlError, Statement } from "effect/sql"
 import type { SqlConnection } from "effect/sql"
 import { admissionLimit, isOverloaded } from "../admission.ts"
@@ -87,9 +87,35 @@ const boundedSessions = Effect.fnUntraced(function* (options: PgClient.PgPoolCon
   const connection = (session: Effect.Success<typeof pool.get>) =>
     asSqlConnection({ connection: session, send: direct })
 
+  /** A reservation cannot return to the pool while an interrupted statement is still draining its wire response. */
+  const reserve = Effect.gen(function* () {
+    yield* enter
+    const session = yield* pool.reserve
+    const statements = Semaphore.makeUnsafe(1)
+    let closing = false
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        closing = true
+      }).pipe(Effect.andThen(statements.withPermit(Effect.void))),
+    )
+    return asSqlConnection({
+      connection: session,
+      send: (statement) =>
+        statements.withPermit(Effect.suspend(() => (closing ? Effect.interrupt : statement))),
+      sendStream: (stream) =>
+        Stream.unwrap(
+          Effect.acquireRelease(statements.take(1), () => statements.release(1)).pipe(
+            Effect.andThen(
+              Effect.suspend(() => (closing ? Effect.interrupt : Effect.succeed(stream))),
+            ),
+          ),
+        ),
+    })
+  })
+
   return {
     acquire: Effect.andThen(enter, Effect.map(pool.get, connection)),
-    reserve: Effect.andThen(enter, Effect.map(pool.reserve, connection)),
+    reserve,
     borrow: (use) =>
       admission
         .admit(fair.use(pool.use((session) => use(connection(session)))))

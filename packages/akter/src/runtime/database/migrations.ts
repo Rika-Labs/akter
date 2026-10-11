@@ -1403,7 +1403,7 @@ export const migrator = <E>(
   )
   return Effect.gen(function* () {
     return yield* Option.isSome(yield* Effect.serviceOption(PgClient.PgClient))
-      ? withMigrationCoordination(transactional)
+      ? withMigrationCoordination({ effect: transactional, history: "actor_migrations" })
       : transactional
   })
 }
