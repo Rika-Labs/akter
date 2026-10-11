@@ -108,8 +108,30 @@ export const committedReads = ({
       if (reads === undefined) yield* allow(request, "query")
       const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-      const read = (client: SqlClient.SqlClient) =>
+      const read = (
+        client: SqlClient.SqlClient,
+        snapshot?: NonNullable<ActivationCache["committed"]>,
+      ): Effect.Effect<Outcome, ActorError | SqlError.SqlError> =>
         Effect.gen(function* () {
+          const verified =
+            snapshot === undefined
+              ? client.literal("false")
+              : client`generation = ${snapshot.generation} AND created = ${snapshot.created}
+                  AND event_sequence = ${snapshot.head} AND cold_ref IS NULL
+                  AND xmin::text || ':' || xmax::text || ':' ||
+                    floor(pg_snapshot_xmax(pg_current_snapshot())::text::numeric / 4294967296)::text
+                    = ${snapshot.fence}`
+          const generation = client`
+              SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value,
+                cold_ref, cold_digest, cold_state_version, ${verified} AS cached
+              FROM actor_generations
+              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
+          const stateRows = client`
+              SELECT NULL, key, value, NULL, NULL, NULL, false
+              FROM actor_state
+              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`
           const rows = yield* client<{
             head: string | null
             key: string | null
@@ -117,19 +139,30 @@ export const committedReads = ({
             cold_ref: string | null
             cold_digest: string | null
             cold_state_version: number | null
-          }>`
-              SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value,
-                cold_ref, cold_digest, cold_state_version
-              FROM actor_generations
-              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
-              UNION ALL
-              SELECT NULL, key, value, NULL, NULL, NULL
-              FROM actor_state
-              WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`.pipe(
-            withTenant(request.ref.tenant),
-          )
+            cached: boolean
+          }>`${
+            snapshot === undefined
+              ? client`${generation} UNION ALL ${stateRows}`
+              : client`WITH generation AS MATERIALIZED (${generation})
+                  SELECT * FROM generation UNION ALL ${stateRows}
+                  AND NOT EXISTS (SELECT 1 FROM generation WHERE cached)`
+          }`.pipe(withTenant(request.ref.tenant))
+
+          if (snapshot !== undefined && rows.some((row) => row.cached)) {
+            const answer = yield* query.run(
+              request,
+              [...snapshot.state],
+              snapshot.head,
+              () => Effect.die(new ReadRequiresDatabase()),
+              undefined,
+              snapshot.version,
+            )
+
+            if (!(Outcome.guards.Defect(answer) && answer.cause instanceof ReadRequiresDatabase))
+              return answer
+
+            return yield* read(client)
+          }
 
           let head: string | undefined
           const state: Array<readonly [string, string]> = []
@@ -195,22 +228,13 @@ export const committedReads = ({
 
         if (
           snapshot !== undefined &&
+          snapshot.fence !== undefined &&
+          snapshot.certified &&
           snapshot.generation === cache!.generation &&
           snapshot.state === cache!.state &&
-          (minVersion === undefined ||
-            (snapshot.certified && BigInt(snapshot.version) >= BigInt(minVersion)))
+          (minVersion === undefined || BigInt(snapshot.version) >= BigInt(minVersion))
         ) {
-          const answer = yield* query.run(
-            request,
-            [...snapshot.state],
-            snapshot.head,
-            () => Effect.die(new ReadRequiresDatabase()),
-            undefined,
-            snapshot.version,
-          )
-
-          if (!(Outcome.guards.Defect(answer) && answer.cause instanceof ReadRequiresDatabase))
-            return answer
+          return yield* read(local, snapshot)
         }
 
         if (owned || replica === undefined) return yield* read(local)

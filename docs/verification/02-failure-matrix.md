@@ -25,6 +25,7 @@ The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 - successor commit between COMMIT and the version read: the older cached state cannot answer a query carrying the successor's version, even if the older activation reads an equal or higher global LSN;
 - pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and database-dependent queries never mix cached state with live rows.
 - caught read error: event/group capability access forces the entire query onto the database even if its handler catches the cached-read bailout.
+- owner-cache read after a generation change, a same-generation state-only commit, or while a foreign writer holds the generation lock: the primary check refuses cached provenance and returns only committed database state; `owner cache reads:` cases count the single foreground flight.
 
 These tests do not claim exactly-once handler evaluation: only committed consequences and receipt identity are exactly-once. Guard or receipt misses discard speculation before ordinary admission ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)).
 

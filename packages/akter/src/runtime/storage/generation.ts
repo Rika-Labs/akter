@@ -25,6 +25,8 @@ export interface ActivationCache {
     readonly version: string
     /** No missing actor commit has a token at or below this snapshot's version. */
     readonly certified: boolean
+    /** Generation tuple identity after commit; every subsequent writer changes it before writing. */
+    readonly fence?: string | undefined
     readonly now: number
     /** Older identities take receipt-aware admission, including after hint eviction. */
     replayBefore: number
