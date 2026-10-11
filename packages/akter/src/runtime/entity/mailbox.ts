@@ -134,10 +134,13 @@ export const activationMailbox = <W extends Mergeable & { queued: boolean }>(alo
   new ActivationMailbox<W>(alone)
 
 class ActivationMailbox<W extends Mergeable & { queued: boolean }> {
+  private readonly alone: Set<string>
   private readonly waiting: Array<W> = []
   private readonly ready = Latch.makeUnsafe(false)
 
-  constructor(private readonly alone: Set<string>) {}
+  constructor(alone: Set<string>) {
+    this.alone = alone
+  }
 
   offer(entry: W) {
     this.waiting.push(entry)
