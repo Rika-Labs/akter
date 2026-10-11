@@ -1,5 +1,164 @@
 # Akter benchmarks
 
+## Served command CPU and receipt-history probes (2026-10-11)
+
+These local comparisons use `main` `9bbeaa6c0` (alpha.6 plus #749), Bun 1.4.2,
+Effect 4.0.2, and a private Postgres server 18.6-bookworm with
+`synchronous_commit=on`. They run on the Mac's local arm64 Linux VM, not a
+remote VM or a provider deployment. A production `Runner.socket` serves one
+state-only counter through `Actors.serve`; 64 closed-loop HTTP callers either
+share one key or choose among 10,000 acknowledged, pre-created keys. Every
+cohort has a fresh process/database, a three-second warm-up, and a 20-second
+measurement. A kernel-delayed TCP relay adds 1.25 ms on each database direction.
+The runner, database server, relay, and driver have separate logical CPU sets;
+the runner is pinned to CPU 0 with a one-CPU cgroup (`100000 100000`). These are
+guest affinity sets, not exclusive physical Mac cores. Other Mac work and
+generic-plan selection still introduce variation.
+
+The driver checks every HTTP outcome, counts acknowledged commands against new
+receipts, and independently checks durable counter values against three times
+the receipt count. App CPU comes from `process.cpuUsage`, main-thread CPU from
+the Linux thread counters, and database CPU from its container cgroup. Profiles
+and wire-counting runs are separate from timing repeats. The native driver,
+runner fixture, relay, source archives, JSON, profiles, and logs are retained
+outside the repository, following the existing benchmark-artifact convention
+of superseded ADR 0018; no maintained benchmark workspace or CLI is added.
+The local artifact directory is `~/.capy/work/akter-orch/s22/`.
+
+### Profile and batching before changes
+
+The CPU profile is filtered to the measured window. Native frames are assigned
+to their nearest categorized caller; native frames without one remain
+unattributed. Numbers below are sample shares normalized to separately measured
+main-thread CPU, not precise function timers. Inclusive frame times overlap.
+Bun's native HTTP parser and garbage collection are not individually resolved.
+
+| Main-thread self attribution               | One key, µs/command | 10,000 keys, µs/command |
+| ------------------------------------------ | ------------------: | ----------------------: |
+| Effect fibers, contexts and combinators    |       106.7 (48.6%) |           255.8 (54.8%) |
+| SQL driver                                 |         10.0 (4.6%) |            62.8 (13.5%) |
+| Schema codecs, including encoding/decoding |         12.7 (5.8%) |             18.7 (4.0%) |
+| Receipts and hashing                       |          5.4 (2.5%) |             0.0 (<0.1%) |
+| HTTP routing and body adaptation           |         16.6 (7.6%) |             19.4 (4.2%) |
+| Cluster/RPC routing                        |          5.8 (2.6%) |              9.0 (1.9%) |
+| Logging, tracing and metrics               |          2.7 (1.3%) |              9.4 (2.0%) |
+| Native and unattributed                    |        40.7 (18.5%) |             46.4 (9.9%) |
+
+The largest one-key self leaves are Bun's readable-stream start/pull callbacks
+(20.0/16.7 µs), `Map` (12.0), Effect `runLoop` (9.9), and Effect continuation
+dispatch (5.7). Inclusive leaders are Effect `evaluate`/`runLoop`
+(172.5/171.9), async-scope dispatch (147.0), and scheduler tasks (83.6).
+For 10,000 keys, the largest self leaves are `runLoop` (31.7), `Map` (17.3),
+readable-stream start/pull callbacks (16.2/14.6), primitive construction (12.2),
+and continuation lookup (11.5). Inclusive SQL reply decoding/dispatch frames
+account for about 126–137 µs per command. Successful commands emit no log line;
+the harness disables the HTTP request logger, not the framework's failure logs.
+
+The initial hot profile averaged 28.2 commands per receipt transaction, with
+78% of batches at the 32-command cap. A separate diagnostic counted exactly
+seven turn statements per batch and about 1.35 physical writes/flights per
+batch, because following admission chains behind the previous commit. The
+corrected lookup's diagnostic again counted seven statements and 1.35 flights
+per batch. The 10,000-key cohort instead uses alpha.6's warm single-command
+one-flight path, so it does not form cross-actor commit groups.
+
+### Receipt admission must not retain a history scan
+
+The ordinary fenced admission crosses the batch's command values with the
+locked generation and left-joins receipts on the complete actor/command key.
+Its existing receipt primary key already includes all five columns; no new
+index or migration is needed. The join can nevertheless retain a generic
+scan plan selected while receipt history is small. An `EXPLAIN` made only after
+analyzing a large table hides this failure.
+
+The probe prepares at 1,000 receipts, disables automatic analysis only in its
+private fixture, then grows history without replanning. One 32-command
+admission reads 1,000 → 10,000 → 100,000 receipt rows, taking
+0.164 → 1.173 → 10.940 ms. A lateral complete-key lookup with `LIMIT 1` keeps
+32 primary-key probes and 64–96 buffer hits, taking 0.089–0.122 ms. A second
+empty-table control is essential: a lateral lookup alone can retain an empty
+scan and later read 32 × 100,000 rows. The corrected implementation therefore
+uses statement-specific unprepared execution for ordinary admission and the
+warm receipt guard. In the empty-history control at 100,000 receipts, the
+corrected lookup uses 32 index searches/96 buffer hits and takes 0.122 ms,
+against 30.298 ms for the original retained scan and 184.265 ms for the
+lateral-only prototype. This is a local mechanism reproduction, not an
+obtained physical plan from the hosted provider.
+
+The real-database regression captures the runner's actual 32-command SQL,
+checks its unnamed Parse message, and tests retained-plan growth at
+1k/10k/100k. It reads exactly 32 retained receipts at each boundary. The original
+implementation fails by reading 1,033 receipts at the first boundary. A
+separate wire regression checks that repeated warm guards also replan.
+Generation locking, database clocks, caller/command/payload receipt checks,
+transaction boundaries and reply-after-commit remain unchanged.
+
+Cells below are medians of three alternating pairs (before/after,
+after/before, before/after), not pooled percentiles. The candidate's code is
+`d8ef447e8`, branch `refactor/receipt-admission-lookup`.
+
+| Cohort / measurement                  |           Before | Corrected lookup |
+| ------------------------------------- | ---------------: | ---------------: |
+| One key commands/s                    |          1,611.2 |          1,984.1 |
+| One key p50 / p99 ms                  | 31.594 / 104.424 |  30.964 / 57.916 |
+| One key app / main CPU ms/command     |    0.248 / 0.191 |    0.252 / 0.188 |
+| One key database CPU ms/command       |            0.205 |            0.028 |
+| 10,000 keys commands/s                |          2,290.0 |          2,239.1 |
+| 10,000 keys p50 / p99 ms              |  22.824 / 88.846 |  23.834 / 93.827 |
+| 10,000 keys app / main CPU ms/command |    0.435 / 0.402 |    0.443 / 0.415 |
+| 10,000 keys database CPU ms/command   |            0.158 |            0.238 |
+
+The hot median improves 23% in throughput and cuts database CPU 86%, but the
+baseline range is wide (1,555–1,952 commands/s): one baseline repeat picked a
+cheap plan. Replanning has a real cost on the already-indexed many-key cohort:
+about 2% lower median throughput and 50% more database CPU. This tradeoff is
+reported rather than presented as a universal speedup. A provider repeat after
+a framework release remains necessary; this task changes no production system.
+
+### Reuse duplicate canonical hashes within one batch
+
+`refactor/batch-payload-hashes` (`9873ae41b`) hashes each distinct database-
+normalized payload once per admission batch, instead of repeating the digest
+for every member. It retains no cache between batches and still checks every
+member's own receipt, caller and command. A unit test uses independent SHA-256
+vectors and a delegating real crypto service; the Postgres regression proves
+that asymmetric repeated payloads share two digest calls, keep independent
+receipts in one transaction, and hash again in a later admission.
+
+| One-key measurement, median of three alternating pairs |          Before |      Hash reuse |
+| ------------------------------------------------------ | --------------: | --------------: |
+| Commands/s                                             |         1,813.2 |         1,940.3 |
+| p50 / p99 ms                                           | 32.646 / 73.292 | 31.317 / 61.377 |
+| App CPU ms/command                                     |           0.294 |           0.263 |
+| Main-thread CPU ms/command                             |           0.219 |           0.192 |
+
+Main-thread CPU is lower in all three hot pairs. In the separate final CPU
+profile, receipt/hash attribution falls from 5.4 to 0.7 µs per command.
+The many-key cohort has batches of one and takes no memoization branch; its
+timing also improved during this earlier comparison, so that movement is a
+control showing run-to-run variation, not a gain attributable to hash reuse.
+There is no claim for unique-payload workloads or a combined-fix measurement.
+
+### Rejected experiments and verification
+
+A plain web-body reader and a variant preserving Bun's `readMany` passed their
+framing, size, truncation, error and cancellation tests, but did not establish
+a stable CPU gain, so neither ships. Deferring unused speculative admission
+construction passed a real stale-fence fallback regression, but saved only
+about 1.4% many-key main-thread CPU while its one-key repeats selected expensive
+receipt plans and regressed throughput; that isolated prototype remains
+unpublished. Removing schema boundary checks, generation fences, receipt
+access checks, required SQL fibers, or public spans/log attributes is not an
+acceptable performance shortcut. No contract-visible behavior changes.
+
+Both shipped runtime branches passed `bun run typecheck`, `bun run lint`,
+`bun run format:check`, the full `bun run test`, and the real-Postgres
+`test:integration:postgres --project postgres:conformance` suite, including
+turns, batches, groups, receipts and failure paths. The lookup branch passed
+347 Postgres cases and the hash branch 346; each had 11 unavailable
+provider/replica cases, which are unknown rather than support evidence. No PR,
+release, production change or cloud-repository change was made.
+
 ## Partial storage hot-path tuning (#496, 2026-10-10)
 
 Migration `0035_hot_table_foreign_keys` removes only the composite state/receipt references to `actor_generations`. It retains receipt identity uniqueness, RLS, other foreign keys and the `SELECT ... FOR UPDATE` writer fence. The modest ordinary-admission CPU reduction below supports this metadata-only change; the warm measurements do not establish a performance win. Conditional UPDATE is not adopted, and expiry partitioning remains deferred. **#496 is not fully resolved**; its remaining scope is carried by #714.
