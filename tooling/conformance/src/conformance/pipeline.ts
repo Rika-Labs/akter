@@ -1,6 +1,7 @@
 import { createServer, connect, type Socket, type AddressInfo } from "node:net"
 import { pgTable, text } from "drizzle-orm/pg-core"
 import { Pool } from "pg"
+import type { PgPool } from "@effect/sql-pg"
 import {
   Cause,
   Crypto,
@@ -486,6 +487,7 @@ const withProbe = <A, E>(
   environment: ConformanceEnvironment,
   options: {
     readonly prepare?: boolean
+    readonly forceGenericPlan?: boolean
     readonly everyPool?: boolean
     /** Ordinary pipeline cases remain independent of the speculative path. */
     readonly warm?: boolean
@@ -518,6 +520,14 @@ const withProbe = <A, E>(
         const probe: Probe = { flights: 0, statements: 0, sent: [], handled: 0 }
         const relayed = yield* relay(new URL(Redacted.value(database)), probe)
         const stream = () => connect({ host: "127.0.0.1", port: relayed.port, noDelay: true })
+        let turnSettings: Partial<PgPool.Config> = { stream, prepare: options.prepare !== false }
+        if (options.turnSessions !== undefined)
+          turnSettings = { ...turnSettings, maxConnections: options.turnSessions }
+        if (options.forceGenericPlan === true)
+          turnSettings = {
+            ...turnSettings,
+            startupParameters: { plan_cache_mode: "force_generic_plan" },
+          }
 
         const context = yield* Layer.build(
           actorsLive(probe).pipe(
@@ -533,16 +543,7 @@ const withProbe = <A, E>(
             Layer.provide(Layer.succeed(Tracer.Tracer, options.tracer ?? Tracer.nativeTracer)),
             Layer.provide(
               Layer.mergeAll(
-                Layer.succeed(
-                  TurnPoolSettings,
-                  options.turnSessions === undefined
-                    ? { stream, prepare: options.prepare !== false }
-                    : {
-                        stream,
-                        prepare: options.prepare !== false,
-                        maxConnections: options.turnSessions,
-                      },
-                ),
+                Layer.succeed(TurnPoolSettings, turnSettings),
                 Layer.succeed(WarmTurnFastPath, options.warm === true),
                 options.observeStatement === undefined
                   ? Layer.empty
@@ -755,146 +756,201 @@ export const ownerCacheMultiXactConformance: ConformanceCase = {
 
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
-  {
-    name: "pipeline: warm receipt guards replan instead of retaining an empty-history scan",
-    requiresIndependentConnections: true,
-    timeoutMs: 60_000,
-    run: ({ expect, environment }) =>
-      withProbe(environment, { warm: true }, (probe) =>
-        Effect.gen(function* () {
-          const plain = yield* Plain.get("warm-receipt-plan")
-          expect(yield* plain.Add(0)).toBe(0)
-          const first = probe.sent.length
-          expect(yield* plain.Add(3)).toBe(3)
-          expect(yield* plain.Add(17)).toBe(20)
-          const guards = parsedStatements(probe.sent.slice(first)).filter(
-            ({ sql }) =>
-              sql.includes("WITH locked AS MATERIALIZED") &&
-              sql.includes("NOT EXISTS (SELECT 1 FROM actor_receipts"),
+  ...[false, true].map(
+    (warm) =>
+      ({
+        name: `pipeline: a retained empty-history ${warm ? "warm guard" : "batch-admission"} plan keeps full-key receipt probes as history grows`,
+        requiresIndependentConnections: true,
+        timeoutMs: 60_000,
+        run: ({ expect, environment }) => {
+          const observed: Array<RecordedStatement> = []
+          return withProbe(
+            environment,
+            {
+              warm,
+              turnSessions: 1,
+              forceGenericPlan: true,
+              observeStatement: (statement) => observed.push(statement),
+            },
+            (probe, database) =>
+              Effect.gen(function* () {
+                const plain = yield* Plain.get(`receipt-plan-${warm}`)
+                expect(yield* plain.Add(0)).toBe(0)
+                const sent = probe.sent.length
+                if (warm) {
+                  expect(yield* plain.Add(3)).toBe(3)
+                  expect(yield* plain.Add(17)).toBe(20)
+                  expect(probe.handled).toBe(3)
+                } else {
+                  for (const start of [0, 32]) {
+                    const held = yield* holding(plain.Add(0))
+                    const waiting = yield* enqueue(
+                      Array.from({ length: 32 }, () => Effect.orDie(plain.Add(1))),
+                    )
+                    yield* held.release
+                    expect(yield* Fiber.join(held.fiber)).toBe(start)
+                    expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(
+                      Array.from({ length: 32 }, (_, index) => start + index + 1),
+                    )
+                  }
+                }
+                const matches = ({ sql, params }: RecordedStatement) =>
+                  sql.includes("WITH locked AS MATERIALIZED") &&
+                  sql.includes("actor_receipts") &&
+                  (warm ? sql.includes("NOT EXISTS") : params.length === 100)
+                const admissions = observed.filter(matches)
+                expect(admissions.length).toBe(2)
+                const admission = admissions[0]!
+                expect(admissions[1]!.sql).toBe(admission.sql)
+                const parsed = parsedStatements(probe.sent.slice(sent)).filter(
+                  ({ sql }) => sql === admission.sql,
+                )
+                expect(parsed.length).toBe(1)
+                expect(parsed[0]!.name).not.toBe("")
+                const settings = observed.find(
+                  ({ sql }) => sql.startsWith("SELECT") && sql.includes("'durable.turn'"),
+                )
+                if (settings === undefined)
+                  return yield* Effect.die(new Error("The runner did not set turn settings"))
+                const pool = yield* Effect.acquireRelease(
+                  Effect.sync(
+                    () => new Pool({ connectionString: Redacted.value(database), max: 1 }),
+                  ),
+                  (pool) => Effect.promise(() => pool.end()),
+                )
+                const connection = yield* Effect.acquireRelease(
+                  Effect.promise(() => pool.connect()),
+                  (connection) => Effect.sync(() => connection.release()),
+                )
+                const query = (text: string, params?: ReadonlyArray<unknown>) =>
+                  Effect.promise(() =>
+                    connection.query(text, params === undefined ? undefined : [...params]),
+                  )
+                const original = (yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan
+                yield* query("ALTER TABLE actor_receipts SET (autovacuum_enabled = false)")
+                yield* query(
+                  "CREATE TEMP TABLE plan_receipt_fixture AS SELECT * FROM actor_receipts LIMIT 1",
+                )
+                yield* query("TRUNCATE actor_receipts")
+                yield* query("ANALYZE actor_receipts")
+                yield* query("ANALYZE actor_generations")
+                yield* query("SET plan_cache_mode = 'force_generic_plan'")
+                yield* query(`PREPARE bounded_admission AS ${admission.sql}`)
+                const parameters = admission.params
+                  .map((value) => `'${String(value).replaceAll("'", "''")}'`)
+                  .join(",")
+                interface Node {
+                  readonly "Node Type": string
+                  readonly "Relation Name"?: string
+                  readonly "Actual Rows": number
+                  readonly "Actual Loops": number
+                  readonly "Rows Removed by Filter"?: number
+                  readonly "Rows Removed by Index Recheck"?: number
+                  readonly "Index Cond"?: string
+                  readonly "Shared Hit Blocks": number
+                  readonly "Shared Read Blocks": number
+                  readonly Plans?: ReadonlyArray<Node>
+                }
+                for (const phase of ["empty", "grown", "analyzed"] as const) {
+                  if (phase === "grown") {
+                    yield* query(`INSERT INTO actor_receipts
+                      (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash,
+                        caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms)
+                      SELECT routing_key, tenant_id, actor_type, actor_id,
+                        (CASE WHEN n % 2 = 0 THEN 'a-lower-' ELSE 'z-upper-' END) || n, command,
+                        payload_hash, caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms
+                      FROM plan_receipt_fixture CROSS JOIN generate_series(1, 100000) AS history(n)`)
+                    expect(
+                      (yield* query("SELECT count(*)::integer AS count FROM actor_receipts"))
+                        .rows[0]!.count,
+                    ).toBe(100000)
+                  }
+                  if (phase === "analyzed") yield* query("ANALYZE actor_receipts")
+                  yield* query("BEGIN")
+                  yield* query(settings.sql, settings.params)
+                  const plans = (yield* query(
+                    `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE bounded_admission(${parameters})`,
+                  )).rows[0]!["QUERY PLAN"] as ReadonlyArray<{ readonly Plan: Node }>
+                  yield* query("ROLLBACK")
+                  expect((yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan).toBe(
+                    original,
+                  )
+                  const receipts: Array<Node> = []
+                  const visit = (node: Node) => {
+                    if (node["Relation Name"] === "actor_receipts") receipts.push(node)
+                    for (const child of node.Plans ?? []) visit(child)
+                  }
+                  visit(plans[0]!.Plan)
+                  expect(plans[0]!.Plan["Actual Rows"]).toBe(warm ? 1 : 32)
+                  expect(receipts.length).toBe(1)
+                  const receipt = receipts[0]!
+                  expect(["Index Scan", "Index Only Scan"]).toContain(receipt["Node Type"])
+                  expect(receipt["Actual Loops"]).toBe(warm ? 1 : 32)
+                  expect(receipt["Actual Rows"]).toBe(0)
+                  expect(receipt["Rows Removed by Filter"] ?? 0).toBe(0)
+                  expect(receipt["Rows Removed by Index Recheck"] ?? 0).toBe(0)
+                  for (const key of [
+                    "routing_key",
+                    "tenant_id",
+                    "actor_type",
+                    "actor_id",
+                    "command_id",
+                  ])
+                    expect(receipt["Index Cond"]).toContain(key)
+                  expect(
+                    receipt["Shared Hit Blocks"] + receipt["Shared Read Blocks"] <=
+                      (warm ? 8 : 256),
+                  ).toBe(true)
+                }
+                const identities = warm
+                  ? [
+                      admission.params.find(
+                        (value) => Schema.is(Schema.String)(value) && value.startsWith("v1."),
+                      ),
+                    ]
+                  : Array.from({ length: 16 }, (_, index) => admission.params[5 + index * 6])
+                yield* query(
+                  `INSERT INTO actor_receipts
+                  (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash,
+                    caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms)
+                  SELECT routing_key, tenant_id, actor_type, actor_id, identity, command,
+                    payload_hash, caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms
+                  FROM plan_receipt_fixture CROSS JOIN unnest($1::text[]) AS matched(identity)`,
+                  [identities],
+                )
+                yield* query("BEGIN")
+                yield* query(settings.sql, settings.params)
+                if (warm) {
+                  const failed = yield* Effect.tryPromise(() =>
+                    connection.query(`EXECUTE bounded_admission(${parameters})`),
+                  ).pipe(
+                    Effect.flip,
+                    Effect.flatMap((error) =>
+                      Schema.decodeUnknownEffect(Schema.Struct({ code: Schema.String }))(
+                        error.cause,
+                      ),
+                    ),
+                  )
+                  expect(failed.code).toBe("22012")
+                } else {
+                  const rows = (yield* query(`EXECUTE bounded_admission(${parameters})`)).rows
+                  expect(rows.map((row) => row.command !== null)).toEqual(
+                    Array.from({ length: 32 }, (_, index) => index % 2 === 0),
+                  )
+                }
+                yield* query("ROLLBACK")
+                expect((yield* query("SHOW enable_seqscan")).rows[0]!.enable_seqscan).toBe(original)
+                expect(
+                  (yield* query(
+                    "SELECT custom_plans::integer FROM pg_prepared_statements WHERE name = 'bounded_admission'",
+                  )).rows[0]!.custom_plans,
+                ).toBe(0)
+                yield* query("DEALLOCATE bounded_admission")
+              }),
           )
-          expect(guards.map(({ name }) => name)).toEqual(["", ""])
-          expect(probe.handled).toBe(3)
-        }),
-      ),
-  },
-  {
-    name: "pipeline: a retained batch-admission plan probes receipt identities instead of scanning growing history",
-    requiresIndependentConnections: true,
-    timeoutMs: 60_000,
-    run: ({ expect, environment }) => {
-      const observed: Array<RecordedStatement> = []
-      return withProbe(
-        environment,
-        {
-          observeStatement: (statement) => observed.push(statement),
         },
-        (probe, database) =>
-          Effect.gen(function* () {
-            const plain = yield* Plain.get("history-plan")
-            const first = yield* holding(plain.Add(0))
-            const sent = probe.sent.length
-            const waiting = yield* enqueue(
-              Array.from({ length: 32 }, () => Effect.orDie(plain.Add(1))),
-            )
-            yield* first.release
-            expect(yield* Fiber.join(first.fiber)).toBe(0)
-            expect(yield* Effect.forEach(waiting, Fiber.join)).toEqual(
-              Array.from({ length: 32 }, (_, index) => index + 1),
-            )
-            const admissions = parsedStatements(probe.sent.slice(sent)).filter(
-              ({ sql }) =>
-                sql.includes("WITH locked AS MATERIALIZED") && sql.includes("actor_receipts"),
-            )
-            expect(admissions.map(({ name }) => name)).toEqual([""])
-            const admission = observed.find(
-              ({ sql, params }) =>
-                sql.includes("WITH locked AS MATERIALIZED") &&
-                sql.includes("actor_receipts") &&
-                params.length === 100,
-            )
-            if (admission === undefined)
-              return yield* Effect.die(
-                new Error("The runner did not execute a 32-command admission"),
-              )
-            const pool = yield* Effect.acquireRelease(
-              Effect.sync(
-                () =>
-                  new Pool({
-                    connectionString: Redacted.value(database),
-                    max: 1,
-                  }),
-              ),
-              (pool) => Effect.promise(() => pool.end()),
-            )
-            const connection = yield* Effect.acquireRelease(
-              Effect.promise(() => pool.connect()),
-              (connection) => Effect.sync(() => connection.release()),
-            )
-            const query = (text: string, params?: ReadonlyArray<unknown>) =>
-              Effect.promise(() =>
-                connection.query(text, params === undefined ? undefined : [...params]),
-              )
-            yield* query("ALTER TABLE actor_receipts SET (autovacuum_enabled = false)")
-            const seed = (from: number, to: number) =>
-              query(
-                `INSERT INTO actor_receipts
-          (routing_key, tenant_id, actor_type, actor_id, command_id, command, payload_hash,
-            caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms)
-          SELECT routing_key, tenant_id, actor_type, actor_id, 'plan-history-' || n, command,
-            payload_hash, caller_key, outcome, expires_at_ms, started_at_ms, committed_at_ms
-          FROM (SELECT * FROM actor_receipts WHERE actor_type = $1 AND actor_id = $2 AND tenant_id = $3 LIMIT 1) base
-          CROSS JOIN generate_series($4::integer, $5::integer) AS history(n)`,
-                [plain.ref.actor, plain.ref.id, plain.ref.tenant, from, to],
-              )
-            yield* seed(1, 1000)
-            yield* query("ANALYZE actor_receipts")
-            yield* query("ANALYZE actor_generations")
-            yield* query("SET plan_cache_mode = 'force_generic_plan'")
-            yield* query(`PREPARE bounded_admission AS ${admission.sql}`)
-            const parameters = admission.params
-              .map((value) => `'${String(value).replaceAll("'", "''")}'`)
-              .join(",")
-            interface Node {
-              readonly "Relation Name"?: string
-              readonly "Actual Rows": number
-              readonly "Actual Loops": number
-              readonly "Rows Removed by Filter"?: number
-              readonly "Rows Removed by Index Recheck"?: number
-              readonly "Index Cond"?: string
-              readonly Plans?: ReadonlyArray<Node>
-            }
-            for (const history of [1000, 10000, 100000]) {
-              if (history !== 1000) yield* seed(history === 10000 ? 1001 : 10001, history)
-              const plans = (yield* query(
-                `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE bounded_admission(${parameters})`,
-              )).rows[0]!["QUERY PLAN"] as ReadonlyArray<{ readonly Plan: Node }>
-              const receipts: Array<Node> = []
-              const visit = (node: Node) => {
-                if (node["Relation Name"] === "actor_receipts") receipts.push(node)
-                for (const child of node.Plans ?? []) visit(child)
-              }
-              visit(plans[0]!.Plan)
-              expect(plans[0]!.Plan["Actual Rows"]).toBe(32)
-              expect(receipts.length > 0).toBe(true)
-              const read = receipts.reduce(
-                (total, node) =>
-                  total +
-                  node["Actual Loops"] *
-                    (node["Actual Rows"] +
-                      (node["Rows Removed by Filter"] ?? 0) +
-                      (node["Rows Removed by Index Recheck"] ?? 0)),
-                0,
-              )
-              expect(read).toBe(32)
-              expect(receipts.every((node) => node["Index Cond"]?.includes("command_id"))).toBe(
-                true,
-              )
-            }
-            yield* query("DEALLOCATE bounded_admission")
-          }),
-      )
-    },
-  },
+      }) satisfies ConformanceCase,
+  ),
   ...[false, true].map(
     (freezeBeforeCommitVersion) =>
       ({
