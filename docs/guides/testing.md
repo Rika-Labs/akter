@@ -75,7 +75,7 @@ A declared failure rolls back the turn's writes and commits only the failure in 
 
 Intents, timers, and jobs run after the turn commits. In a test they wait for the test clock:
 
-- `test.advance(duration)` moves the outbox clock forward, then waits until every due intent and job has been delivered, including the intents those deliveries stage, and nothing is still running.
+- `test.advance(duration)` extends this runner's running job leases by the same duration under the relay pass lock, then moves the outbox clock forward and waits until every due intent and job has been delivered, including the intents those deliveries stage, and nothing is still running. A claim already in progress registers before the lease snapshot. Use `advance(0)` to drain immediately due work without moving time; a drain still waits for a held executor to finish.
 - `test.now` is that clock, for building `Intent.at` times.
 - `test.actor(X, id?).system` calls any command, including `internal` ones, as a `System` caller.
 

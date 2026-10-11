@@ -1325,6 +1325,35 @@ export const migrations = {
       FROM actor_generations g
       LEFT JOIN actor_placements p ON p.actor_type = g.actor_type`
   }),
+  /** The transaction's generation lock, not a referential trigger, authorizes state and receipt writes. */
+  "0035_hot_table_foreign_keys": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* briefLocks(
+      Effect.gen(function* () {
+        for (const table of ["actor_state", "actor_receipts"]) {
+          const constraints = yield* sql<{ readonly name: string }>`
+            SELECT c.conname AS name FROM pg_constraint c
+            WHERE c.contype = 'f' AND c.conrelid = ${table}::regclass
+              AND c.confrelid = 'actor_generations'::regclass
+              AND c.confupdtype = 'a' AND c.confdeltype = 'a' AND c.confmatchtype = 's'
+              AND c.convalidated AND NOT c.condeferrable AND NOT c.condeferred
+              AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n, ord)
+                JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n
+                ORDER BY k.ord) = ARRAY['routing_key', 'tenant_id', 'actor_type', 'actor_id']
+              AND ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n, ord)
+                JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.n
+                ORDER BY k.ord) = ARRAY['routing_key', 'tenant_id', 'actor_type', 'actor_id']`
+          if (constraints.length !== 1) {
+            return yield* new Migrator.MigrationError({
+              kind: "BadState",
+              message: `Expected exactly one generation foreign key on ${table}; found ${constraints.length}`,
+            })
+          }
+          yield* sql`ALTER TABLE ${sql(table)} DROP CONSTRAINT ${sql(constraints[0]!.name)}`
+        }
+      }),
+    )
+  }),
 }
 
 /**

@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, HashRing, Layer, Option, PrimaryKey } from "effect"
+import { Context, Data, Duration, Effect, HashRing, Layer, Option, PrimaryKey } from "effect"
 import {
   MessageStorage,
   RunnerAddress,
@@ -157,8 +157,23 @@ export interface SocketRunnerOptions<E> {
   readonly shardLockRefreshInterval?: Duration.Input
   /** Default 1 second. */
   readonly refreshAssignmentsInterval?: Duration.Input
-  /** Default 15 seconds, bounding activation shutdown during a shard handoff. */
+  /**
+   * Default 15 seconds, bounding activation shutdown during a shard handoff.
+   * Must not exceed shardLockExpiration minus the smaller of
+   * shardLockRefreshInterval and one third of shardLockExpiration.
+   */
   readonly entityTerminationTimeout?: Duration.Input
+}
+
+/** Synchronous configuration refusal before runner startup when shutdown can outlast its shard lock. */
+export class RunnerConfigurationError extends Data.TaggedError("RunnerConfigurationError")<{
+  readonly entityTerminationTimeoutMs: number
+  readonly shardLockExpirationMs: number
+  readonly effectiveRefreshIntervalMs: number
+}> {
+  override get message() {
+    return `entityTerminationTimeout (${this.entityTerminationTimeoutMs} ms) must not exceed shardLockExpiration minus the effective shardLockRefreshInterval (${this.shardLockExpirationMs - this.effectiveRefreshIntervalMs} ms)`
+  }
 }
 
 const address = (value: { readonly host: string; readonly port: number }, advertise: boolean) => {
@@ -193,6 +208,8 @@ const duration = (value: Duration.Input, name: string, minimum = 1) => {
  * transport unless the network is isolated to this deployment's runners. The
  * transport's own services stay in the runtime, so readiness sees whether a
  * mutual TLS transport can still peer.
+ * Throws RunnerConfigurationError synchronously if activation shutdown can
+ * outlast the shard lock's remaining lifetime after its effective refresh.
  */
 export const socket = <E>(options: SocketRunnerOptions<E>) => {
   const shardsPerGroup = options.shardsPerGroup ?? 256
@@ -200,29 +217,45 @@ export const socket = <E>(options: SocketRunnerOptions<E>) => {
   if (!Number.isSafeInteger(shardsPerGroup) || shardsPerGroup < 1 || shardsPerGroup > 65536)
     throw new Error("shardsPerGroup must be an integer between 1 and 65536")
 
+  const shardLockExpiration = duration(
+    options.shardLockExpiration ?? "35 seconds",
+    "shardLockExpiration",
+    3000,
+  )
+  const shardLockRefreshInterval = duration(
+    options.shardLockRefreshInterval ?? "10 seconds",
+    "shardLockRefreshInterval",
+  )
+  const entityTerminationTimeout = duration(
+    options.entityTerminationTimeout ?? "15 seconds",
+    "entityTerminationTimeout",
+  )
+  const shardLockExpirationMs = Duration.toMillis(shardLockExpiration)
+  const effectiveRefreshIntervalMs = Math.min(
+    Duration.toMillis(shardLockRefreshInterval),
+    shardLockExpirationMs / 3,
+  )
+  const entityTerminationTimeoutMs = Duration.toMillis(entityTerminationTimeout)
+  if (entityTerminationTimeoutMs > shardLockExpirationMs - effectiveRefreshIntervalMs)
+    throw new RunnerConfigurationError({
+      entityTerminationTimeoutMs,
+      shardLockExpirationMs,
+      effectiveRefreshIntervalMs,
+    })
+
   const config: Partial<ShardingConfig.ShardingConfig["Service"]> = {
     runnerAddress: Option.some(address(options.address, true)),
     runnerListenAddress: Option.some(address(options.listenAddress ?? options.address, false)),
     shardsPerGroup,
     shardLockDisableAdvisory: true,
-    shardLockExpiration: duration(
-      options.shardLockExpiration ?? "35 seconds",
-      "shardLockExpiration",
-      3000,
-    ),
-    shardLockRefreshInterval: duration(
-      options.shardLockRefreshInterval ?? "10 seconds",
-      "shardLockRefreshInterval",
-    ),
+    shardLockExpiration,
+    shardLockRefreshInterval,
     refreshAssignmentsInterval: duration(
       options.refreshAssignmentsInterval ?? "1 second",
       "refreshAssignmentsInterval",
     ),
     entityMessagePollInterval: "1 second",
-    entityTerminationTimeout: duration(
-      options.entityTerminationTimeout ?? "15 seconds",
-      "entityTerminationTimeout",
-    ),
+    entityTerminationTimeout,
   }
 
   const sharding = RunnerServer.layer.pipe(

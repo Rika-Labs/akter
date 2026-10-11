@@ -5,6 +5,12 @@ description: "Upgrade an existing database from alpha.1 to the alpha.3 release c
 
 # Alpha upgrade notes
 
+## Unreleased: runner shutdown configuration
+
+`Runner.socket` now synchronously throws `RunnerConfigurationError` for an entity termination timeout above `shardLockExpiration - min(shardLockRefreshInterval, shardLockExpiration / 3)`, including defaulted values. Before upgrading, set an explicit `entityTerminationTimeout` within that bound, or raise `shardLockExpiration` enough to accommodate it. For example, a 3-second expiration with the default refresh requires a timeout at most 2 seconds; omitting the timeout selects 15 seconds and is now refused. The ordinary 35-second expiration, 10-second refresh and 15-second timeout remain valid.
+
+Changing an existing deployment's persisted expiration is not a rolling configuration change: stop every runner and follow the [multi-runner configuration rules](../api/01-server-api.md) before changing its layout. Setting a safe explicit termination timeout avoids changing that persisted expiration. No SQL migration is added by this guard.
+
 ## 0.1.0-alpha.1 → 0.1.0-alpha.3
 
 Alpha.3 is a release candidate until the maintainer tags and publishes it; alpha.2 was an unpublished draft. These instructions do not claim that an upgrade of your deployment or a production restore has been rehearsed. The framework adds these migrations after `0029_runner_configuration` in the alpha.1 tag:

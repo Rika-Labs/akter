@@ -26,6 +26,7 @@ describe("akter", () => {
         "logout",
         "whoami",
         "deploy",
+        "keys",
       ])
         expect(root.stdout).toMatch(new RegExp(`^  ${command} +\\S`, "m"))
 

@@ -503,6 +503,7 @@ export const payloadMigrationsConformance: ReadonlyArray<ConformanceCase> = [
               [32, "authority_placement"],
               [33, "joined_inspection"],
               [34, "cold_tier"],
+              [35, "hot_table_foreign_keys"],
             ])
           }).pipe(Effect.provideContext(client))
         }),

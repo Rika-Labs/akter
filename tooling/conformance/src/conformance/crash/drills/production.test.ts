@@ -42,6 +42,7 @@ describe("public production runner topology on Postgres", () => {
                       transport: Layer.merge(layerSocketServer, layerClientProtocol),
                       shardsPerGroup: shards,
                       shardLockExpiration: expiration,
+                      entityTerminationTimeout: "2 seconds",
                     }),
                   ),
                   Layer.provide(Database.postgres({ url: database })),

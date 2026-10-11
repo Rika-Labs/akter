@@ -1,5 +1,58 @@
 # Akter benchmarks
 
+## Partial storage hot-path tuning (#496, 2026-10-10)
+
+Migration `0035_hot_table_foreign_keys` removes only the composite state/receipt references to `actor_generations`. It retains receipt identity uniqueness, RLS, other foreign keys and the `SELECT ... FOR UPDATE` writer fence. The modest ordinary-admission CPU reduction below supports this metadata-only change; the warm measurements do not establish a performance win. Conditional UPDATE is not adopted, and expiry partitioning remains deferred. **#496 is not fully resolved**; its remaining scope is carried by #714.
+
+The experiment used Bun 1.4.2, Effect 4.0.2 and a Postgres 18.6-bookworm server with logical WAL and `synchronous_commit=on`, on a shared Apple M5 Max Mac. A and B used the same candidate framework source based on `ef1f12e16`, separate disposable databases and actual Effect actor handles. A restored just the two original FKs; B used the migrated schema. A state-only command added 7 to an initial 19 and wrote a second key to 17; every reply, final durable value and receipt count was checked independently. Each mode warmed up for 80 commands. Six warm pairs used 4,000 turns per mode; three ordinary-admission pairs used 2,000, with the internal warm fast path disabled for both modes. Pair order alternated AB/BA. This is one sequential caller on one resident actor, not HTTP, batching, forwarding, contention or scale evidence.
+
+CPU is **foreground database-backend user + system CPU**, read from the tagged persistent turn session's Linux `/proc/<pid>/stat` counters at 100 ticks/s and divided by completed turns. The PID was stable across each interval. It excludes autovacuum, checkpointer, other sessions and runner CPU; it is not total server CPU. The separate `pg_stat_statements` column is the database's top-level **statement execution elapsed time per turn**, including its background statements, not CPU, planning time or handle latency. Statistics were differenced by database id without a server-wide reset.
+
+The first warm pair overlapped an unchanged-baseline conformance control and severe I/O contention. Pair 4 was interrupted by a short coordination pause and is retained but excluded below. The device session later disconnected, but the process completed all cohorts and its databases were removed. The remaining five warm pairs still vary widely; CPU improved in only two and worsened in three. Medians below are medians of per-run values, with min–max ranges, not pooled percentiles or paired differences.
+
+| Measurement                               |          FKs retained |           FKs removed |
+| ----------------------------------------- | --------------------: | --------------------: |
+| Ordinary foreground CPU ms/turn, r1/r2/r3 | 0.940 / 0.790 / 0.675 | 0.855 / 0.775 / 0.640 |
+| Ordinary statement execution ms/turn      |   0.148 [0.147–0.321] |   0.149 [0.131–0.247] |
+| Ordinary turns/s                          |   227.0 [203.8–229.3] |   201.0 [190.2–258.3] |
+| Ordinary p50 / p99 ms                     |         4.007 / 9.207 |         4.166 / 9.337 |
+| Warm foreground CPU ms/turn               |   1.145 [0.663–2.180] |   1.203 [0.943–1.248] |
+| Warm statement execution ms/turn          |   0.233 [0.182–0.326] |   0.256 [0.180–0.264] |
+| Warm turns/s                              |    124.1 [22.3–270.4] |   137.5 [110.5–188.8] |
+| Warm p50 / p99 ms                         |        5.976 / 55.727 |        5.422 / 33.613 |
+
+Ordinary foreground CPU fell in all three pairs, by 9.0%, 1.9% and 5.2%, while median throughput and latency did not improve. That is a small local CPU observation, not a throughput or tail-latency claim. The warm cohort establishes no consistent CPU or execution-time saving. Host scheduling and Docker storage were not isolated; neither cohort establishes a production SLO.
+
+| Sampled table HOT updates / updates |                              Ordinary A / B |                                     Warm A / B |
+| ----------------------------------- | ------------------------------------------: | ---------------------------------------------: |
+| `actor_generations`                 |                     1/1 / 1/1 (100% / 100%) |                        3/3 / 3/3 (100% / 100%) |
+| `actor_state`                       | 11,990/11,990 / 11,816/11,816 (100% / 100%) | 47,918/47,918 / 48,146/48,158 (100% / 99.975%) |
+| `actor_receipts`                    |    0/0 / 0/0 (insert-only; ratio undefined) |       0/0 / 0/0 (insert-only; ratio undefined) |
+
+These are asynchronous `pg_stat_user_tables` snapshots taken before teardown, including warm-up and the interrupted warm pair, not exact final write inventories. The independently checked receipt totals were 6,080 ordinary and 24,080 warm per mode. FK removal did not establish a HOT-ratio improvement.
+
+### Conditional UPDATE fence probe: retained FOR UPDATE
+
+A separate SQL probe compared `SELECT generation ... WHERE generation = 23 FOR UPDATE` with `UPDATE ... SET generation = generation WHERE generation = 23 RETURNING generation`, each followed by the same value update in one transaction. Six alternating AB/BA pairs ran 4,000 transactions per mode after 80 warm-ups. This measures a conditional fence's additional tuple write, not a prototype framework admission protocol or proof of its stale-owner/receipt semantics.
+
+| Measurement                    |             FOR UPDATE |     Conditional UPDATE |
+| ------------------------------ | ---------------------: | ---------------------: |
+| Foreground backend CPU ms/turn |    0.364 [0.283–0.415] |    0.390 [0.295–0.475] |
+| Statement execution ms/turn    | 0.0202 [0.0162–0.0237] | 0.0223 [0.0182–0.0255] |
+| Transactions/s                 |    536.8 [394.6–752.9] |    578.5 [393.6–749.4] |
+| p50 / p99 ms                   |          1.391 / 7.251 |          1.466 / 4.330 |
+| Server-wide WAL bytes/turn     |    203.5 [203.1–212.0] |    246.2 [245.7–254.5] |
+
+Conditional UPDATE used more backend CPU in all six pairs. WAL is a server-wide insertion-LSN difference, not isolated relation WAL; background framework sessions were still alive. The extra tuple update and lack of a consistent latency benefit do not warrant changing the normative writer fence or its admission-clock/receipt proof.
+
+### Retained and deferred guarantees
+
+The populated upgrade tests compare physical tuples, primary/unique keys, other FKs and RLS; renamed target constraints reject guessed or truncated names. A missing second FK rolls back the first drop and the ledger entry. An independently blocked second table exercises two-second lock attempts, release-and-retry and full retry exhaustion without partial maintenance. No actor-row scan or backfill is added.
+
+Receipts remain unpartitioned: range partitioning by `expires_at_ms` cannot preserve the existing global command-identity key without a separate uniqueness mechanism. Adding expiry to that key would allow the same identity in different partitions. Whole-partition drops also cannot respect per-type retention horizons and pending internal outbox obligations; current retention checks each candidate against that outbox. A populated online conversion would need separate deduplication, obligation-aware retirement and bounded upgrade evidence. No retention-throughput or partition benefit is claimed.
+
+Raw samples, backend tick snapshots, table statistics, harness and failed pilot/control logs are retained under `~/.capy/work/akter-orch/s6-storage/` and this worktree's ignored `.amp/in/`. Earlier pilots rejected an incorrect fixture expectation and changing backend PID sets rather than inventing CPU attribution. The broad receipt/fencing filter's expiry-after-restart failure also reproduced on unchanged `origin/main`; unchanged timeout failures are retained separately. These local checks do not resolve #716, #66, provider behavior or the remaining #496 partitioning design.
+
 ## Warm actor fast path (#719, 2026-10-09)
 
 The primary evidence is protocol flights: an eligible warm command uses **1 instead of 2**, and a local state-only, version-qualified query uses **0 instead of 1**. The real-Postgres `warm fast path:` cases in `tooling/conformance/src/conformance/pipeline.ts` require these exact counts, alongside durable state/receipt assertions and stale-fence, receipt-race, expiry, lost-COMMIT-reply and unpublished-state failures. Removing one flight removes one configured 10 ms round-trip delay; it is not a promise about wall-clock tails on a saturated host.
@@ -1325,6 +1378,27 @@ All latency columns are milliseconds. Throughput is successful operations/s; par
 | workflows/sleep-50ms                           | workers=1; steps=0; sleepMs=50                                                     |        200 |  201004 |        1 | 1004.097 / 1092.226 / 1106.124 / 1107.946         |      0 | — / —                           | 287.314 / —                   | lifetimeP50Ms=997; lifetimeP95Ms=1087; lifetimeP99Ms=1100; resumeP50Ms=947; resumeP95Ms=1037; resumeP99Ms=1050                                                                                                                                                                                  |
 
 PGlite's held-turn admission fixture, independent-connection effect-concurrency experiment, multi-runner, singleton-failover, cron, and RLS configurations are inapplicable or unmeasured on this backend. Their empty or aborted results are not throughput zero or proof of support. The applicable final inventory is **240 Postgres and 191 PGlite case rows**, all with zero measured operation errors. Postgres includes the corrected batching pair and three full cron cohorts; original Postgres batching values and aborted cron/PGlite gate attempts are retained outside the selected table.
+
+## Resident-heap follow-up on the Mac
+
+The October 10, 2026 follow-up compares `origin/main` at `ef1f12e16178220016a12662ad3a6ea43091e248` with shared activation-worker and mailbox wiring. These are new same-host measurements, not replacements for the older sandbox's approximately 32 KiB figures. The current-main baseline is approximately 37.5 KiB. The Mac is an Apple M5 Max with 18 logical CPUs and 128 GiB RAM, running Darwin 25.6.0, Bun 1.4.2, Effect 4.0.2, and a local Postgres 18.6 server in Docker with default durability settings.
+
+The retained external bundle's `retained-heap` resident fixture and measurement code were reused with a single-runner adapter for the current public API, registering only its resident and sleepy probes. Each scale creates a fresh database/runtime, warms 1,000 actors, then first-touches 10,000 or 100,000 actors with 64 callers and a pool of 10. `ResidentProbe` retains the original count/string state and one `Add` command, hibernates after one hour, and uses `maxResidentActors = actors + 1000`. Before and after a full `Bun.gc(true)`, heap bytes exclude `extraMemorySize`; RSS is the process's before/after delta divided by measured actors. Each process runs 10k before 100k. The baseline repeat loads an untouched archive of the same main commit; both versions use the same adapted harness. The benchmark remains external rather than being restored as repository tooling.
+
+The first two processes per version ran through the shared machine's heavy-command limiter, in baseline/changed/baseline/changed launch order; the last two overlapped. Two additional changed processes then checked the final Node-erasable constructor source at `0f56c119cc6fc1f15182c19205a983faba6cdbf8`, without replacing the initial observations. Other tests and builds shared the host. Recorded one-minute load averages at process boundaries ranged from 9.4 to 33.8 initially and 15.6 to 53.8 in the final-source checks. Every measured resident case completed all operations with zero errors and `sampleResident = 1`. Values below are the median [minimum–maximum] of two runs in each column; snapshots were taken in separate 1k attribution processes, not in these RSS measurements.
+
+|  Actors | Metric                    |          Main baseline | Shared wiring, initial | Shared wiring, final source |
+| ------: | ------------------------- | ---------------------: | ---------------------: | --------------------------: |
+|  10,000 | `kibPerResidentActor`     | 37.405 [37.302–37.507] | 33.369 [33.294–33.443] |      33.305 [33.298–33.312] |
+| 100,000 | `kibPerResidentActor`     | 37.493 [37.484–37.502] | 33.495 [33.491–33.498] |      33.496 [33.493–33.499] |
+|  10,000 | `objectsPerResidentActor` | 537.90 [536.84–538.95] | 457.17 [456.47–457.86] |      456.60 [456.50–456.69] |
+| 100,000 | `objectsPerResidentActor` | 537.89 [537.83–537.94] | 457.91 [457.88–457.94] |      457.90 [457.87–457.93] |
+|  10,000 | `rssKiBPerResidentActor`  |       71.3 [69.8–72.7] |       74.2 [56.6–91.7] |            50.4 [49.2–51.5] |
+| 100,000 | `rssKiBPerResidentActor`  |       41.0 [39.8–42.2] |       36.4 [35.5–37.3] |            40.0 [37.8–42.2] |
+
+Retained heap falls by approximately 4 KiB per actor, or 10.7–11.0%, at both scales across both changed pairs. RSS does not show the same repeatable saving: the initial 10k median is higher, the final 10k pair is lower, and the final 100k range overlaps the baseline. These observations do not establish a stable process-memory reduction at both scales. RSS includes allocator high-water capacity and non-heap memory; the heap reduction must not be presented as an identical RSS saving or a throughput result.
+
+Bun's V8-format heap snapshots identify one lexical environment per baseline activation holding `start`, `following`, `restart`, `restartActivation`, `resolve`, `publish`, `observed`, `observe`, `run`, `recover`, and `turnBatch`. Its per-activation generator bodies and Effect wrappers retain additional environments. Sharing this wiring once per actor type removes those function bindings; mailbox methods now live on a shared prototype while queues, wake-ups, and retry-isolation sets stay separate. At both measured scales, `Function` counts fall from approximately 123 to 105 per actor, `JSLexicalEnvironment` from 90 to 75, `GeneratorFunction` from 9 to 2, and `FunctionRareData` from 22 to 11. Ordinary command adapters and attributed metric series were already shared. Cluster's entity/RPC resources, scoped fibers/finalizers, owner cache and connection coordination remain per activation; neither their authority checks nor timer, receipt, restart, hibernation or eviction behavior is changed.
 
 ## Repository verification on the Mac
 

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
+import { Effect, Fiber } from "effect"
 import type { Request } from "../request.ts"
-import { ALONE_CAP, BATCH_CAP, markAlone, MERGE_CAP, takeBatch } from "./mailbox.ts"
+import {
+  activationMailbox,
+  ALONE_CAP,
+  BATCH_CAP,
+  markAlone,
+  MERGE_CAP,
+  takeBatch,
+} from "./mailbox.ts"
 
 const waiting = (ids: ReadonlyArray<string>) =>
   ids.map((commandId) => ({
@@ -11,6 +19,56 @@ const waiting = (ids: ReadonlyArray<string>) =>
 
 const idsOf = (batch: ReadonlyArray<{ readonly request: Request }>) =>
   batch.map(({ request }) => request.commandId)
+
+describe("activationMailbox", () => {
+  it("keeps waiting commands and retry isolation local while requeue preserves delivery order", () => {
+    const first = activationMailbox(new Set<string>())
+    const second = activationMailbox(new Set<string>())
+    const [a, b, c] = waiting(["a", "b", "c"])
+
+    first.offer(a!)
+    first.offer(b!)
+    second.offer(c!)
+    first.isolate(["b"])
+
+    expect(idsOf(first.take())).toEqual(["a"])
+    expect(first.size()).toBe(1)
+    expect(second.size()).toBe(1)
+    first.requeue([a!])
+    expect(idsOf(first.take())).toEqual(["a"])
+    expect(idsOf(first.take())).toEqual(["b"])
+    expect(idsOf(second.take())).toEqual(["c"])
+    expect(first.size()).toBe(0)
+    expect(second.size()).toBe(0)
+  })
+
+  it("wakes only its own worker after queued finishes and closes again after taking work", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const first = activationMailbox(new Set<string>())
+        const second = activationMailbox(new Set<string>())
+        const [a, b] = waiting(["a", "b"])
+        a!.queued = false
+        b!.queued = false
+        first.offer(a!)
+        second.offer(b!)
+        const worker = yield* Effect.forkChild(first.await)
+        yield* Effect.yieldNow
+
+        second.queued(b!)
+        yield* Effect.yieldNow
+        expect(worker.pollUnsafe()).toBeUndefined()
+        expect(first.take()).toEqual([])
+
+        first.queued(a!)
+        yield* Fiber.join(worker)
+        expect(idsOf(first.take())).toEqual(["a"])
+        const next = yield* Effect.forkChild(first.await)
+        yield* Effect.yieldNow
+        expect(next.pollUnsafe()).toBeUndefined()
+      }).pipe(Effect.scoped, Effect.timeout("1 second")),
+    ))
+})
 
 describe("takeBatch", () => {
   it("takes every waiting command in delivery order, up to the cap", () => {

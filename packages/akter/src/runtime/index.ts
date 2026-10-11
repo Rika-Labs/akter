@@ -33,7 +33,7 @@ export { App, AppLayerFailed } from "./app.ts"
 
 export type { AppActor, AppServices } from "./app.ts"
 
-export { Runner } from "./runner.ts"
+export { Runner, RunnerConfigurationError } from "./runner.ts"
 
 export type { SocketRunnerOptions } from "./runner.ts"
 

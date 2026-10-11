@@ -6,6 +6,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 import { configDirectory, runCliWith, startCliWith } from "../../testing.ts"
 
+const baseFetch = globalThis.fetch.bind(globalThis)
+
 const line = (id: string, text: string) => ({
   id,
   deploymentId: "deployment-a",
@@ -197,6 +199,15 @@ layer(BunServices.layer, { excludeTestServices: true })("akter logs over real HT
       Effect.gen(function* () {
         const cursors: Array<string | null> = []
         let dropped = false
+        const outstanding = Promise.withResolvers<Response>()
+        const requests: Array<{ signal: AbortSignal | null | undefined; settled: boolean }> = []
+        const fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+          const request = { signal: init?.signal, settled: false }
+          requests.push(request)
+          return baseFetch(input, init).finally(() => {
+            request.settled = true
+          })
+        }) as typeof globalThis.fetch
         const server = yield* serverWith((request, restart) => {
           const cursor = new URL(request.url).searchParams.get("cursor")
           cursors.push(cursor)
@@ -218,14 +229,20 @@ layer(BunServices.layer, { excludeTestServices: true })("akter logs over real HT
               cursor: "resume-two",
               more: false,
             })
-          return Response.json({ lines: [], cursor: "resume-two", more: false })
+          return outstanding.promise
         })
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() =>
+            outstanding.resolve(Response.json({ lines: [], cursor: "resume-two", more: false })),
+          ),
+        )
         const directory = yield* configDirectory({
           apiUrl: `http://127.0.0.1:${server.port}`,
           token: "local-session",
           email: "owner@example.test",
         })
         const { fiber, printed } = yield* startCliWith({
+          fetch,
           env: { AKTER_CONFIG_DIR: directory, AKTER_PROJECT: "project-a" },
         })(["logs", "--follow"])
         yield* Effect.suspend(() =>
@@ -237,10 +254,21 @@ layer(BunServices.layer, { excludeTestServices: true })("akter logs over real HT
         expect(printed.stdout.match(/first-marker/gu)).toHaveLength(1)
         expect(printed.stdout.match(/second-marker/gu)).toHaveLength(1)
         expect(printed.stderr).toContain("reconnecting from the last cursor")
+        yield* Effect.suspend(() =>
+          cursors.length === 4 ? Effect.void : Effect.fail("Waiting for outstanding follow poll"),
+        ).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }))
+        expect(cursors[3]).toBe("resume-two")
+        expect(requests).toHaveLength(4)
+        expect(requests[3]!.settled).toBe(false)
         yield* Fiber.interrupt(fiber)
+        expect(requests[3]!.signal?.aborted).toBe(true)
+        yield* Effect.suspend(() =>
+          requests[3]!.settled ? Effect.void : Effect.fail("Waiting for cancelled fetch to settle"),
+        ).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }))
         const count = cursors.length
         yield* Effect.sleep("1100 millis")
         expect(cursors).toHaveLength(count)
+        expect(requests).toHaveLength(count)
       }),
   )
 
