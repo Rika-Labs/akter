@@ -12,7 +12,7 @@ import {
   Schema,
   Tracer,
 } from "effect"
-import { SqlClient, type SqlError } from "effect/sql"
+import { SqlClient, type SqlError, Statement } from "effect/sql"
 import { Actor, Intent } from "../../../../packages/akter/src/index.ts"
 import type { Request } from "../../../../packages/akter/src/runtime/request.ts"
 import type { JobBinding } from "../../../../packages/akter/src/members/job.ts"
@@ -22,6 +22,7 @@ import {
   type Options as RuntimeOptions,
 } from "../../../../packages/akter/src/runtime/layer.ts"
 import { SpanNames } from "../../../../packages/akter/src/runtime/telemetry/spans.ts"
+import { InternalActors } from "../../../../packages/akter/src/runtime/actors.ts"
 import { TurnHooks } from "../../../../packages/akter/src/runtime/turn/hooks.ts"
 import { WarmTurnFastPath } from "../../../../packages/akter/src/runtime/turn/execute.ts"
 import { claimIntents } from "../../../../packages/akter/src/runtime/turn/relay.ts"
@@ -292,6 +293,8 @@ interface ClusterSettings {
   readonly withoutExecutors?: ReadonlyArray<number>
   /** Receives every span the runners start, in start order. */
   readonly spans?: Array<Tracer.Span>
+  /** Pauses a real statement before execution without replacing its database result. */
+  readonly beforeStatement?: (statement: Statement.Statement<unknown>) => Effect.Effect<void>
 }
 
 /** Builds a fresh database and `runners` runners on it for one case. */
@@ -307,6 +310,7 @@ const withCluster = <A, E>(
       yield* reset(fixture)
       const database = yield* environment.freshDatabase
       const spans = settings.spans
+      const beforeStatement = settings.beforeStatement
 
       const cluster = clusterLayer({
         database,
@@ -319,7 +323,15 @@ const withCluster = <A, E>(
             : (runnerEffects(fixture, runner) as Layer.Layer<never, never, RunnerServices>),
         relay: settings.relay,
         executors: settings.executors,
-      })
+      }).pipe(
+        Layer.provide(
+          beforeStatement === undefined
+            ? Layer.empty
+            : Layer.succeed(Statement.CurrentTransformer, (statement) =>
+                beforeStatement(statement).pipe(Effect.as(statement)),
+              ),
+        ),
+      )
 
       const context = yield* Layer.build(
         spans === undefined
@@ -899,6 +911,92 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
           expect(percentile(blocked, 0.99) <= percentile(baseline, 0.99) + 1000).toBe(true)
         }),
       ),
+  },
+  {
+    name: "extends a claim registered while a clock jump waits for the relay lock",
+    requiresIndependentConnections: true,
+    run: ({ expect, environment, fixture }) => {
+      const claiming = Deferred.makeUnsafe<void>()
+      const claimReleased = Deferred.makeUnsafe<void>()
+      const executing = Deferred.makeUnsafe<void>()
+      const providerReleased = Deferred.makeUnsafe<void>()
+      let armed = false
+
+      return withCluster(
+        environment,
+        fixture,
+        2,
+        {
+          relay: NO_POLL,
+          withoutExecutors: [1],
+          beforeStatement: (statement) =>
+            Effect.suspend(() => {
+              if (!armed || !statement.compile()[0].includes("job_candidates AS"))
+                return Effect.void
+
+              armed = false
+
+              return Deferred.succeed(claiming, undefined).pipe(
+                Effect.andThen(Deferred.await(claimReleased)),
+              )
+            }),
+        },
+        Effect.gen(function* () {
+          const owner = yield* on(0, InternalActors)
+          const other = yield* on(1, ActorTest)
+          fixture.provider = (attempt) =>
+            attempt.attempt === 1
+              ? Deferred.succeed(executing, undefined).pipe(
+                  Effect.andThen(Deferred.await(providerReleased)),
+                  Effect.as(attempt.key),
+                )
+              : Effect.succeed(attempt.key)
+
+          armed = true
+          yield* perform(0, "claim-jump")
+          const draining = yield* owner.drainOutbox.pipe(Effect.forkChild)
+          yield* Deferred.await(claiming)
+          expect(fixture.attempts).toEqual([])
+          const [pending] = yield* query(
+            0,
+            (sql) =>
+              sql<{ intent_id: string }>`SELECT intent_id FROM actor_outbox WHERE kind = 'job'`,
+          )
+          yield* on(1, Layer.build(runnerEffects(fixture, 1)))
+
+          const extension = yield* owner
+            .extendOutboxLeases(60_000, other.advance("1 minute"))
+            .pipe(Effect.forkChild({ startImmediately: true }))
+
+          yield* Deferred.succeed(claimReleased, undefined)
+          yield* Deferred.await(executing)
+          yield* Fiber.join(extension)
+
+          expect(
+            fixture.attempts.map(({ effectId, attempt, runner, endedAt }) => ({
+              effectId,
+              attempt,
+              runner,
+              endedAt,
+            })),
+          ).toEqual([{ effectId: pending!.intent_id, attempt: 1, runner: 0, endedAt: undefined }])
+          const [row] = yield* outboxRows(1)
+          expect(row).toMatchObject({ kind: "job", attempts: 1, ambiguous: true })
+          expect(Number(row!.due) - DateTime.toEpochMillis(yield* other.now) > 30_000).toBe(true)
+
+          yield* Deferred.succeed(providerReleased, undefined)
+          yield* Fiber.join(draining)
+          yield* other.advance(0)
+          expect((yield* callerState(1, "claim-jump")).called).toEqual(["claim-jump"])
+          expect(yield* receipts(1, "Called")).toBe(1)
+          expect(yield* outboxRows(1)).toEqual([])
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(claimReleased, undefined)),
+          Effect.ensuring(Deferred.succeed(providerReleased, undefined)),
+          Effect.scoped,
+        ),
+      )
+    },
   },
   {
     name: "renews an executor lease so a long attempt is not taken over",

@@ -1124,20 +1124,22 @@ export const outboxRelay = Effect.fnUntraced(function* (
   const extendLeases = (millis: number, jump: Effect.Effect<void>) =>
     lock
       .withPermit(
-        Effect.forEach(
-          [...running],
-          ([intentId, { routingKey, kind, attempt: current, lease }]) =>
-            sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
+        Effect.suspend(() =>
+          Effect.forEach(
+            [...running],
+            ([intentId, { routingKey, kind, attempt: current, lease }]) =>
+              sql`UPDATE actor_outbox SET due_at_ms = due_at_ms + ${millis}
             WHERE routing_key = ${routingKey} AND intent_id = ${intentId}
               AND kind = ${kind} AND attempts = ${current}`.pipe(
-              Effect.tap(
-                Effect.sync(() => {
-                  lease.until += millis
-                }),
+                Effect.tap(
+                  Effect.sync(() => {
+                    lease.until += millis
+                  }),
+                ),
               ),
-            ),
-          { discard: true },
-        ).pipe(Effect.andThen(jump)),
+            { discard: true },
+          ).pipe(Effect.andThen(jump)),
+        ),
       )
       .pipe(Effect.orDie, Effect.provideContext(services))
 
