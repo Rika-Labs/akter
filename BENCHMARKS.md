@@ -42,7 +42,21 @@ the earlier absolute 0.17 ms target came from a different session.
 | Replanning `d8ef447e8` | One key     |            1,870.3 |             1,935.5 |         65.311 |          61.717 |                     0.037 |                      0.028 |
 | Replanning `d8ef447e8` | 10,000 keys |            2,046.0 |             1,884.2 |        113.537 |         137.509 |                     0.267 |                      0.207 |
 
-The planner-scope change receives a separate hot/many-key before/after check.
+The planner-scope change `cd595c0f4` has a separate single-pair check against
+the same receipt query with transaction-wide settings: hot runs before/after,
+and many-key runs after/before. All outcomes, receipts and durable state agree.
+
+| Cohort      | Before commands/s | Scoped commands/s | Before p99 ms | Scoped p99 ms | Before DB CPU ms/command | Scoped DB CPU ms/command |
+| ----------- | ----------------: | ----------------: | ------------: | ------------: | -----------------------: | -----------------------: |
+| One key     |           1,839.0 |           1,863.2 |        77.634 |        61.271 |                   0.0345 |                   0.0279 |
+| 10,000 keys |           1,828.7 |           2,076.7 |       144.705 |       112.989 |                   0.2199 |                   0.2013 |
+
+No throughput, tail-latency or database-CPU regression appears in this pair.
+Many-key main-thread CPU is 0.4480 → 0.4565 ms/command; one noisy pair does not
+establish a CPU gain or eliminate small regressions. Full typecheck, lint,
+format, root tests and Postgres conformance pass; the latter has 353 passes
+and 11 unavailable cases.
+
 Hash reuse remains separate at `9873ae41b`: four files, +115/−4, with hot
 main-thread CPU medians of 0.219 → 0.192 ms/command. It is not combined here.
 
