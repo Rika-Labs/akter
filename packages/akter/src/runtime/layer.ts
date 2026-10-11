@@ -487,7 +487,7 @@ export const layer = (options: Options = {}) => {
       const sweepsWorkflows = new Set<string>()
       const queryRegistrations = new Map<string, QueryRegistration>()
       const jobRegistrations = new Map<string, JobRegistration>()
-      const runtimeId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+      const runtimeId = yield* crypto.randomUUIDv4().pipe(Effect.orDie)
       const frameworkClock = yield* FrameworkClock
       const writerDeclarations: Array<PayloadDeclaration> = []
       let refreshedAt: number | undefined
@@ -772,7 +772,7 @@ export const layer = (options: Options = {}) => {
 
       const mintCommandId = Effect.gen(function* () {
         const now = yield* databaseNow
-        const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+        const uuid = yield* crypto.randomUUIDv4().pipe(Effect.orDie)
 
         return `v1.${now}.${now + retryWindowMs}.${uuid}`
       })
@@ -1276,7 +1276,7 @@ export const layer = (options: Options = {}) => {
             : fleetSubscribe(request),
         fleetViews: new Set((options.fleet ?? []).map(({ name }) => name)),
         seed: seeding,
-        mintActorId: crypto.randomUUIDv7.pipe(Effect.orDie),
+        mintActorId: crypto.randomUUIDv7().pipe(Effect.orDie),
         mintChildId: (input) =>
           deriveMintId(input).pipe(Effect.provideService(Crypto.Crypto, crypto)),
         retryWindowMs,

@@ -93,7 +93,7 @@ describe("file-backed PGlite as an embedded production backend", () => {
   const commandId = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis
 
-    return `v1.${now}.${now + 60_000}.${yield* (yield* Crypto.Crypto).randomUUIDv4}`
+    return `v1.${now}.${now + 60_000}.${yield* (yield* Crypto.Crypto).randomUUIDv4()}`
   })
 
   it(

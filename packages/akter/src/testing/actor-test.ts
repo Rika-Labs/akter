@@ -312,7 +312,7 @@ export class ActorTest extends Context.Service<
       Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto
         const member = Option.getOrUndefined(yield* Effect.serviceOption(ClusterMember))
-        const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie))
+        const tenant = member?.tenant ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
 
         const faults = new Map<
           TurnPoint,

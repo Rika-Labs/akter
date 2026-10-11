@@ -177,7 +177,7 @@ export const outboxStatements = Effect.fnUntraced(function* <R>(
   const rows = []
 
   const rowId = (dueAt: number, slackMs = 0) =>
-    crypto.randomUUIDv4.pipe(
+    crypto.randomUUIDv4().pipe(
       Effect.orDie,
       Effect.map((uuid) => `v1.${now}.${Math.max(dueAt, now) + slackMs + retryWindowMs}.${uuid}`),
     )

@@ -26,7 +26,7 @@ export const databaseName = Effect.fnUntraced(function* (
   crypto: Crypto.Crypto,
   prefix: "actors" | "actors_template" | "isolated" | "restored" | "disposable",
 ) {
-  const uuid = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")
+  const uuid = (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "")
 
   return `${prefix}_${yield* Clock.currentTimeMillis}_${uuid}`
 })

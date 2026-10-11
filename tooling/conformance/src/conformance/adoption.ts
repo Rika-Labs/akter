@@ -434,7 +434,9 @@ const loginAs = <A, E>(
 const provisionRoles = (target: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
-    const suffix = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "").slice(0, 12)
+    const suffix = (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
+      .replaceAll("-", "")
+      .slice(0, 12)
 
     const roles: Roles = {
       owner: `adopt_owner_${suffix}`,
@@ -870,7 +872,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
         Effect.gen(function* () {
           const test = yield* ActorTest
           const sql = yield* SqlClient.SqlClient
-          const actor = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const actor = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
 
           yield* sql`INSERT INTO conformance_shipments (id, tenant_uuid, actor_uuid, label)
             VALUES ('legacy', ${test.tenant}::uuid, ${actor}::uuid, 'legacy')`
@@ -948,7 +950,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const crypto = yield* Crypto.Crypto
-          const role = `legacy_${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")}`
+          const role = `legacy_${(yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "")}`
 
           yield* sql.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD 'legacy'`)
           yield* sql.unsafe(
@@ -1056,7 +1058,7 @@ export const adoptionConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           const crypto = yield* Crypto.Crypto
-          const role = `legacy_${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "")}`
+          const role = `legacy_${(yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "")}`
 
           yield* sql.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD 'legacy'`)
           yield* sql.unsafe(

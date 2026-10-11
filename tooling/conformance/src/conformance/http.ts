@@ -406,7 +406,7 @@ export const serveHttp = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         const now = yield* actors.databaseNow
 
-        return `v1.${now + offsetMs}.${now + offsetMs + windowMs}.${yield* crypto.randomUUIDv4}`
+        return `v1.${now + offsetMs}.${now + offsetMs + windowMs}.${yield* crypto.randomUUIDv4()}`
       }).pipe(Effect.orDie),
   }
 })
@@ -481,7 +481,7 @@ const rows = Effect.fnUntraced(function* (table: string) {
 })
 
 export const tenantOf = Effect.gen(function* () {
-  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
 
   return `http-${uuid.slice(0, 8)}`
 })
@@ -833,7 +833,10 @@ export const httpConformance: ReadonlyArray<ConformanceCase> = [
 
           for (const [key, code] of [
             ["v1.not-an-id", "malformed"],
-            [`v2.1.2.${yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)}`, "version"],
+            [
+              `v2.1.2.${yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)}`,
+              "version",
+            ],
             [yield* server.mint(60 * 60_000), "future"],
             [yield* server.mint(0, 1_000), "window"],
           ] as const) {
