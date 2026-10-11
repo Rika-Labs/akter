@@ -40,7 +40,11 @@ Larger runner sizes are coming, not available at launch. Their unit weights are:
 
 WebSocket and SSE connections share one organization-wide concurrency cap; reaching it refuses new connections rather than charging connection overage. These realtime connections are distinct from your database's Postgres connection budget. The [deploy-time database probe](/cloud/database#deploy-time-checks) caps runners at the available Postgres capacity; paying for more compute does not remove that ceiling.
 
-Periods are UTC calendar months. Use organization settings **Usage** to review your compute usage and cap states. For usage response fields and machine-size weights, see the [Cloud usage API reference](/api/08-cloud-usage).
+## Billing periods
+
+Paid plans' included compute, current usage estimates and spend caps follow the subscription's renewal period, not UTC calendar months. The monthly subscription starts at checkout; Stripe's current subscription-period boundaries determine when the next allowance begins. For example, a subscription running from September 17 to October 17 pools its included compute across that window rather than resetting on October 1. Free's allowance follows UTC calendar months and resets at 00:00 UTC on the first day of each month.
+
+Use organization settings **Usage** to review your compute usage and cap states. For usage response fields and machine-size weights, see the [Cloud usage API reference](/api/08-cloud-usage).
 
 ## When Free reaches its compute cap
 
