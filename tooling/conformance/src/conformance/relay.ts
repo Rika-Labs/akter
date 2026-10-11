@@ -991,6 +991,7 @@ export const relayClusterConformance: ReadonlyArray<ConformanceCase<RelayFixture
         }).pipe(
           Effect.ensuring(Deferred.succeed(claimReleased, undefined)),
           Effect.ensuring(Deferred.succeed(providerReleased, undefined)),
+          Effect.scoped,
         ),
       )
     },
