@@ -68,6 +68,36 @@ export type Environment = typeof Environment.Type
 export const CreateEnvironment = Schema.Struct({ name: EnvironmentName })
 export type CreateEnvironment = typeof CreateEnvironment.Type
 
+/** The tenant a deployed application's key acts in. */
+export const EnvironmentApiKeyTenant = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/u),
+)
+export type EnvironmentApiKeyTenant = typeof EnvironmentApiKeyTenant.Type
+
+/** An environment key's metadata; its secret is readable only at creation. */
+export const EnvironmentApiKey = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  tenant: Schema.String,
+  createdAt: Timestamp,
+  revokedAt: Schema.NullOr(Timestamp),
+})
+export type EnvironmentApiKey = typeof EnvironmentApiKey.Type
+
+/** Omitting tenant creates a key for the default tenant. */
+export const CreateEnvironmentApiKey = Schema.Struct({
+  name: Name,
+  tenant: Schema.optional(EnvironmentApiKeyTenant),
+})
+export type CreateEnvironmentApiKey = typeof CreateEnvironmentApiKey.Type
+
+/** The only environment-key response carrying the one-time secret. */
+export const CreatedEnvironmentApiKey = Schema.Struct({
+  key: EnvironmentApiKey,
+  secret: Schema.String,
+})
+export type CreatedEnvironmentApiKey = typeof CreatedEnvironmentApiKey.Type
+
 /** An environment variable as readable: its name and provenance, never its value or any part of it. */
 export const EnvVariable = Schema.Struct({
   name: Schema.String,
@@ -160,6 +190,7 @@ export type AddRegion = typeof AddRegion.Type
 export const SetHomeRegion = Schema.Struct({ region: RegionId })
 export type SetHomeRegion = typeof SetHomeRegion.Type
 
+/** Public environment URLs; OpenAPI and MCP paths are empty when not advertised. */
 export const ProjectEndpoints = Schema.Struct({
   httpBaseUrl: Schema.String,
   webSocketUrl: Schema.String,

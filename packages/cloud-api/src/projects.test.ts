@@ -1,13 +1,17 @@
-import { Effect, Exit, Schema } from "effect"
+import { DateTime, Effect, Exit, Schema } from "effect"
 import { describe, expect, it } from "vitest"
 
 import {
   CreateProject,
+  CreatedEnvironmentApiKey,
+  CreateEnvironmentApiKey,
+  EnvironmentApiKey,
   EnvVariable,
   EnvVariableName,
   Environment,
   Hostname,
   ProjectRegion,
+  ProjectEndpoints,
   SetEnvVariable,
 } from "./projects.ts"
 
@@ -27,6 +31,56 @@ const accepts = <T, E>(schema: Schema.Codec<T, E>, input: Schema.Json) =>
   rejects(schema, input) === false
 
 describe("project models", () => {
+  it("keeps the one-time environment key secret only in creation and decodes nullable revocation timestamps", () => {
+    const row = {
+      id: "key_0123456789abcdef01234567",
+      name: "storefront",
+      tenant: "acme",
+      createdAt: "2026-10-06T12:01:02.000Z",
+      revokedAt: null,
+    }
+    const created = decode(CreatedEnvironmentApiKey, { key: row, secret: "synthetic-key-secret" })
+    expect(created.secret).toBe("synthetic-key-secret")
+    expect(DateTime.formatIso(created.key.createdAt)).toBe(row.createdAt)
+    expect(created.key.revokedAt).toBeNull()
+    expect(
+      Object.keys(decode(EnvironmentApiKey, { ...row, secret: "synthetic-key-secret" })),
+    ).not.toContain("secret")
+    const revoked = decode(EnvironmentApiKey, { ...row, revokedAt: "2026-10-07T01:02:03.000Z" })
+    expect(revoked.revokedAt === null ? null : DateTime.formatIso(revoked.revokedAt)).toBe(
+      "2026-10-07T01:02:03.000Z",
+    )
+  })
+
+  it("accepts an omitted key tenant without inventing it and rejects invalid tenant and name inputs", () => {
+    expect(decode(CreateEnvironmentApiKey, { name: "backend" })).toEqual({ name: "backend" })
+    expect(decode(CreateEnvironmentApiKey, { name: "backend", tenant: "Acme._:-123" })).toEqual({
+      name: "backend",
+      tenant: "Acme._:-123",
+    })
+    const invalid: ReadonlyArray<Schema.Json> = [
+      { name: "" },
+      { name: "backend", tenant: "" },
+      { name: "backend", tenant: "a".repeat(129) },
+      { name: "backend", tenant: "space here" },
+      { name: "backend", tenant: "é" },
+    ]
+    for (const input of invalid) expect(rejects(CreateEnvironmentApiKey, input)).toBe(true)
+    expect(
+      decode(CreateEnvironmentApiKey, { name: "backend", tenant: "a".repeat(128) }).tenant,
+    ).toHaveLength(128)
+  })
+
+  it("accepts the actual getEndpoints answer with unadvertised OpenAPI and MCP paths", () => {
+    const answer = {
+      httpBaseUrl: "https://prj-shop-production.run.akter.test",
+      webSocketUrl: "wss://prj-shop-production.run.akter.test",
+      openApiPath: "",
+      mcpPath: "",
+    }
+    expect(decode(ProjectEndpoints, answer)).toEqual(answer)
+  })
+
   it("reports customer database reachability, nullable probe measurements and no URL-derived metadata", () => {
     const environment = { name: "dev", projectId: "prj_test", currentDeploymentId: null }
     expect(decode(Environment, environment).database).toBeUndefined()
