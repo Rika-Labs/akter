@@ -99,6 +99,8 @@ export {
   AddRegion,
   ConnectIntegration,
   CreateEnvironment,
+  CreateEnvironmentApiKey,
+  CreatedEnvironmentApiKey,
   CreateProject,
   DnsRecord,
   Domain,
@@ -106,6 +108,8 @@ export {
   EnvVariable,
   EnvVariableName,
   Environment,
+  EnvironmentApiKey,
+  EnvironmentApiKeyTenant,
   Hostname,
   ImportEnvVariables,
   ImportEnvVariablesResult,
@@ -234,6 +238,7 @@ export {
 
 export {
   DomainsGroup,
+  EnvironmentApiKeysGroup,
   EnvironmentVariablesGroup,
   IntegrationsGroup,
   ProjectsGroup,

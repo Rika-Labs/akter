@@ -15,6 +15,7 @@ This is the accepted API design, not a claim that every interface is implemented
 - [The `akter` CLI](06-cli.md)
 - [Customer runner logs](07-cloud-logs.md)
 - [Cloud usage and pricing](08-cloud-usage.md)
+- [Environment API keys](09-environment-api-keys.md)
 - [Generated contracts](generated-contracts.md)
 - [Naming](naming.md)
 - [Versioning](versioning.md)

@@ -8,9 +8,12 @@ import {
   AddRegion,
   ConnectIntegration,
   CreateEnvironment,
+  CreateEnvironmentApiKey,
+  CreatedEnvironmentApiKey,
   CreateProject,
   Domain,
   Environment,
+  EnvironmentApiKey,
   EnvVariable,
   EnvVariableName,
   ImportEnvVariables,
@@ -82,6 +85,28 @@ export class ProjectsGroup extends HttpApiGroup.make("projects").add(
     success: ProjectEndpoints,
     error: ReadErrors,
   }),
+) {}
+
+export class EnvironmentApiKeysGroup extends HttpApiGroup.make("environmentApiKeys").add(
+  HttpApiEndpoint.get("list", "/projects/:projectId/environments/:environment/api-keys", {
+    params: environmentParams,
+    success: Schema.Array(EnvironmentApiKey),
+    error: ReadErrors,
+  }),
+  HttpApiEndpoint.post("create", "/projects/:projectId/environments/:environment/api-keys", {
+    params: environmentParams,
+    payload: CreateEnvironmentApiKey,
+    success: CreatedEnvironmentApiKey,
+    error: WriteErrors,
+  }),
+  HttpApiEndpoint.delete(
+    "revoke",
+    "/projects/:projectId/environments/:environment/api-keys/:keyId",
+    {
+      params: { ...environmentParams, keyId: Schema.String },
+      error: WriteErrors,
+    },
+  ),
 ) {}
 
 export class EnvironmentVariablesGroup extends HttpApiGroup.make("environmentVariables").add(
