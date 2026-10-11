@@ -134,9 +134,12 @@ receipts in one transaction, and hash again in a later admission.
 
 Main-thread CPU is lower in all three hot pairs. In the separate final CPU
 profile, receipt/hash attribution falls from 5.4 to 0.7 µs per command.
-The many-key cohort has batches of one and takes no memoization branch; its
-timing also improved during this earlier comparison, so that movement is a
-control showing run-to-run variation, not a gain attributable to hash reuse.
+The many-key cohort is overwhelmingly batches of one, so it does not
+meaningfully exercise the memoization branch. Its timing also improved during
+this earlier comparison, so that movement is a control showing run-to-run
+variation, not a gain attributable to hash reuse. Its third many-key pair was
+repeated without a brief overlap from plan-fixture initialization; the
+overlapped exploratory files are retained but excluded from that control.
 There is no claim for unique-payload workloads or a combined-fix measurement.
 
 ### Rejected experiments and verification
