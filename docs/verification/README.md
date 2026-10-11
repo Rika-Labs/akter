@@ -17,6 +17,7 @@ Startup migration evidence lives in `runtime/database/migrations.test.ts`: six c
 
 - [Failure matrix](02-failure-matrix.md)
 - [Public environment API key contract and CLI evidence](environment-api-keys.md)
+- [Runner shutdown configuration boundaries](runner-configuration.md)
 - [Pipeline performance: repeated local timings, retained coverage and failure controls](pipeline-performance.md)
 - [Docs appearance and font loading: local Mintlify evidence and provider limits](docs-appearance.md)
 - [Cold tier: owner-side fetch, guarded garbage, Postgres crashes and S3-compatible evidence](cold-tier.md)
