@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.6 (2026-10-11)
+
+The CLI and framework release together on the `alpha` and `latest` npm dist-tags. CLI credential storage is unchanged; the matching framework adds `0034_cold_tier`, `0035_hot_table_foreign_keys` and opt-in cold objects. Rolling-upgrade safety from alpha.5 is **not established**; see the [framework changelog](https://github.com/Rika-Labs/akter/blob/main/packages/akter/CHANGELOG.md) and [alpha upgrade notes](https://docs.akter.dev/operations/alpha-upgrades) before upgrading runners.
+
+- Adds the environment application-key contract to `@rikalabs/akter-cli/cloud-api`: `EnvironmentApiKeysGroup`, `EnvironmentApiKeyTenant`, `EnvironmentApiKey`, `CreateEnvironmentApiKey` and `CreatedEnvironmentApiKey`, composed into `CloudApi`. The additive routes create, list and revoke keys under `/api/projects/:projectId/environments/:environment/api-keys`; only creation returns `{ key, secret }`, while list returns metadata including revoked keys and revoke returns 204. These keys authenticate the deployed application, not the control plane; see the [environment API keys contract](https://docs.akter.dev/api/09-environment-api-keys).
+- Adds `akter keys create <name> [--tenant <tenant>]`, `akter keys list` and `akter keys revoke <keyId>`, using stored control-plane credentials, `--project` (default `AKTER_PROJECT`) and `--env` (default `production`). An omitted tenant selects `default`; supplied tenants are validated. Create writes only the one-time secret to stdout and a save-now warning to stderr. List prints tab-separated metadata, never secrets; revoke confirms only server success. Metadata output strips terminal escapes and replaces control, line-separator and bidirectional characters without changing requests. Protect redirected secret output and keep it out of shared logs; see [CLI usage](https://docs.akter.dev/api/06-cli#akter-keys).
+- Clarifies the cloud database report's four-session runner budget and rollout overlap; its wire schema is unchanged. Environment-key contract and CLI tests establish public client encoding, decoding and output, not cloud database authorization or edge authentication. Logs-follow interruption tests now wait for an actual outstanding HTTP poll before checking cancellation; production follow behavior is unchanged.
+
 ## 0.1.0-alpha.5 (2026-10-09)
 
 - Releases with the matching alpha.5 framework, which adds the supported four-session `Database.postgres({ url, preset: "low-connection" })` preset. CLI behavior and the bundled `@rikalabs/akter-cli/cloud-api` contract are unchanged from alpha.4.
