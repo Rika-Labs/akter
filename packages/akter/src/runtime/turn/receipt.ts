@@ -23,6 +23,21 @@ export const hashCanonical = Effect.fnUntraced(function* (canonical: string) {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("hex")
 })
 
+/** A turn batch shares hashes of identical database-normalized payloads without retaining them after admission. */
+export const batchPayloadHashes = () => {
+  const hashes = new Map<string, string>()
+
+  return (canonical: string) =>
+    Effect.suspend(() => {
+      const known = hashes.get(canonical)
+      if (known !== undefined) return Effect.succeed(known)
+      return Effect.map(hashCanonical(canonical), (hash) => {
+        hashes.set(canonical, hash)
+        return hash
+      })
+    })
+}
+
 /** A retained `actor_receipts` row as read back: the admission facts a replay checks and the encoded outcome it returns. */
 export interface StoredReceipt {
   readonly caller_key: string

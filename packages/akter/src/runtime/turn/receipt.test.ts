@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest"
 import { User } from "../../identity/caller.ts"
 import { Outcome } from "../request.ts"
 import { checkProperty } from "../../testing/property.ts"
-import { checkReceipt, encodeOutcome, hashCanonical } from "./receipt.ts"
+import { batchPayloadHashes, checkReceipt, encodeOutcome, hashCanonical } from "./receipt.ts"
 
 const Stored = Schema.Union([
   Schema.TaggedStruct("Success", { value: Schema.String }),
@@ -29,6 +29,38 @@ const runtime = ManagedRuntime.make(BunCrypto.layer)
 const run = <A>(effect: Effect.Effect<A, never, Crypto.Crypto>) => runtime.runPromise(effect)
 
 describe("receipts", () => {
+  it("hashes each distinct canonical payload once within a batch, keeps asymmetric payloads distinct, and does not share hashes across batches", () =>
+    run(
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto
+        const digested: Array<string> = []
+        const observed = Crypto.Crypto.of({
+          ...crypto,
+          digest: (algorithm, bytes) => {
+            digested.push(new TextDecoder().decode(bytes))
+            return crypto.digest(algorithm, bytes)
+          },
+        })
+        const first = batchPayloadHashes()
+        const a = '{"value": {"by": 3}}'
+        const b = '{"value": {"by": 17, "text": "hé𝄞"}}'
+        const values = yield* Effect.forEach([a, b, a, b, a], first).pipe(
+          Effect.provideService(Crypto.Crypto, observed),
+        )
+        expect(values).toEqual([
+          "693e0919ffe0263491b525126e9aeb6dc40b781e1be60fc11b41e80912810868",
+          "7c69406515c663340ef59c77a30f9c606edc9a897165346a640251100b739c08",
+          "693e0919ffe0263491b525126e9aeb6dc40b781e1be60fc11b41e80912810868",
+          "7c69406515c663340ef59c77a30f9c606edc9a897165346a640251100b739c08",
+          "693e0919ffe0263491b525126e9aeb6dc40b781e1be60fc11b41e80912810868",
+        ])
+        expect(digested).toEqual([a, b])
+        const second = batchPayloadHashes()
+        yield* second(a).pipe(Effect.provideService(Crypto.Crypto, observed))
+        expect(digested).toEqual([a, b, a])
+      }),
+    ))
+
   it("hashes a canonical payload stably and distinctly", () =>
     run(
       checkProperty({

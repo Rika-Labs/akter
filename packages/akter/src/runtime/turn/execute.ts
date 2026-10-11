@@ -56,7 +56,13 @@ import {
   TurnConnections,
 } from "./pipeline.ts"
 import { MERGE_CAP, merges } from "../entity/mailbox.ts"
-import { checkReceipt, encodeOutcome, hashCanonical, type StoredReceipt } from "./receipt.ts"
+import {
+  batchPayloadHashes,
+  checkReceipt,
+  encodeOutcome,
+  hashCanonical,
+  type StoredReceipt,
+} from "./receipt.ts"
 
 const isSystem = Schema.is(System)
 
@@ -737,6 +743,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         cursors.set(cursorKey(delivery), applied(delivery, cursorAt(index, delivery)))
 
       const outboxes: Array<OutboxReplies> = []
+      const payloadHash = batch.length === 1 ? hashCanonical : batchPayloadHashes()
 
       /**
        * Admits one command of the batch once its payload hash is known: settles
@@ -856,7 +863,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         const request = batch[index]!.request
         const identityNow =
           Number(admissions[index]!.now) + (request.clockOffset ?? clock.offsetMillis())
-        const hashed = Effect.flatMap(hashCanonical(admissions[index]!.canonical), (hash) =>
+        const hashed = Effect.flatMap(payloadHash(admissions[index]!.canonical), (hash) =>
           admitHashed(index, hash),
         )
 
