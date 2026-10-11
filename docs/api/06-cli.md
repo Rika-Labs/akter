@@ -539,3 +539,5 @@ Manage [environment API keys](09-environment-api-keys.md) with the stored Akter 
 - `akter keys revoke <keyId>` requires project admin access and prints confirmation only after the server returns success. Repeating revocation of an existing key is safe; an absent key is refused.
 
 Refused requests exit 1; invalid arguments, missing credentials and an unreachable API exit 2. Use the secret as `Authorization: Bearer` at the public environment host returned by `projects.getEndpoints`, not at the control-plane API.
+
+Key metadata output strips terminal escape sequences and replaces control characters, Unicode line separators and bidirectional formatting with `�`. Tabs in a key name cannot add columns to `keys list`; stored names and request schemas are unchanged. The one-time secret is printed as returned, not formatted as metadata.

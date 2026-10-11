@@ -1,6 +1,6 @@
 # Public environment API key surface
 
-The contract and command tests reject wrong route methods or scope, missing bearer authentication, an invented default-tenant payload, a secret leaking through list output, false revocation success, and undeployed or denied requests reported as success.
+The contract and command tests reject wrong route methods or scope, missing bearer authentication, an invented default-tenant payload, a secret leaking through list output, false revocation success, and undeployed or denied requests reported as success. Hostile-metadata cases reject tabs adding TSV columns, terminal escape sequences reaching the terminal, and control or bidirectional characters changing rendered metadata; the create requests still accept and preserve those names.
 
 Run the focused evidence from the repository root:
 

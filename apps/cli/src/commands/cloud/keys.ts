@@ -3,6 +3,14 @@ import { Config, Console, DateTime, Effect, Option } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { reportFailures, signedIn } from "./client.ts"
 
+const colourSequence = new RegExp(`${String.fromCodePoint(0x1b)}\\[[0-?]*[ -/]*[@-~]`, "gu")
+
+/** Metadata stays on one terminal line and cannot introduce TSV columns or terminal controls. */
+const metadata = (value: string) =>
+  value
+    .replace(colourSequence, "")
+    .replace(/\p{Cc}|[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, "�")
+
 const scope = {
   project: Flag.String("project").pipe(
     Flag.withFallbackConfig(Config.String("AKTER_PROJECT")),
@@ -37,7 +45,7 @@ const create = Command.make(
         payload: Option.isSome(tenant) ? { name, tenant: tenant.value } : { name },
       })
       yield* Console.error(
-        `Created ${created.key.id} in ${environment} for tenant ${created.key.tenant}. Save the secret printed on stdout now; it cannot be read again.`,
+        `Created ${metadata(created.key.id)} in ${metadata(environment)} for tenant ${metadata(created.key.tenant)}. Save the secret printed on stdout now; it cannot be read again.`,
       )
       yield* Console.log(created.secret)
     }).pipe(reportFailures),
@@ -51,7 +59,15 @@ const list = Command.make("list", scope, ({ project, environment }) =>
     })
     for (const key of keys)
       yield* Console.log(
-        `${key.id}\t${key.name}\t${key.tenant}\t${DateTime.formatIso(key.createdAt)}\t${key.revokedAt === null ? "active" : DateTime.formatIso(key.revokedAt)}`,
+        [
+          key.id,
+          key.name,
+          key.tenant,
+          DateTime.formatIso(key.createdAt),
+          key.revokedAt === null ? "active" : DateTime.formatIso(key.revokedAt),
+        ]
+          .map(metadata)
+          .join("\t"),
       )
   }).pipe(reportFailures),
 ).pipe(Command.withDescription("List key metadata, including revoked keys; never print secrets"))
@@ -68,7 +84,7 @@ const revoke = Command.make(
       yield* client.environmentApiKeys.revoke({
         params: { projectId: project, environment, keyId },
       })
-      yield* Console.log(`Revoked ${keyId} in ${environment}.`)
+      yield* Console.log(`Revoked ${metadata(keyId)} in ${metadata(environment)}.`)
     }).pipe(reportFailures),
 ).pipe(Command.withDescription("Revoke an environment key"))
 

@@ -1,7 +1,7 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
 import * as Cloud from "@akter/cloud-api"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { configDirectory, runCliWith, scriptedFetch } from "../../testing.ts"
 
 const credentials = {
@@ -19,6 +19,67 @@ const key = {
 const secret = "synthetic-one-time-secret"
 
 layer(BunServices.layer)("akter keys", (it) => {
+  it.effect(
+    "keeps hostile metadata in five TSV columns and removes terminal and bidi controls",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* configDirectory(credentials)
+        const hostile = {
+          ...key,
+          id: "\u001b[2Jkey\tone",
+          name: "store\tfront",
+          tenant: "a\u202ecme\nother",
+        }
+        const server = scriptedFetch(({ method }) => {
+          if (method === "DELETE") return new Response(null, { status: 204 })
+          if (method === "POST") return Response.json({ key: hostile, secret })
+          return Response.json([
+            hostile,
+            {
+              ...key,
+              id: "key\rsecond",
+              name: "store\u001b[2Jfront",
+              tenant: "acme\u2066\u0085\u2028\u2029",
+            },
+          ])
+        })
+        const run = runCliWith({
+          fetch: server.fetch,
+          env: { AKTER_CONFIG_DIR: directory, AKTER_PROJECT: "project-a" },
+        })
+        for (const name of ["store\tfront", "store\u001b[2Jfront"]) {
+          const created = yield* run(["keys", "create", name])
+          expect(created.exitCode).toBe(0)
+          expect(created.stdout).toBe(`${secret}\n`)
+          expect(created.stderr).toBe(
+            "Created key�one in production for tenant a�cme�other. Save the secret printed on stdout now; it cannot be read again.\n",
+          )
+        }
+        const payloads = yield* Effect.forEach(server.requests.slice(0, 2), ({ body }) =>
+          Schema.decodeEffect(Schema.fromJsonString(Cloud.CreateEnvironmentApiKey))(body),
+        )
+        expect(payloads).toEqual([{ name: "store\tfront" }, { name: "store\u001b[2Jfront" }])
+        const listed = yield* run(["keys", "list"])
+        expect(listed.exitCode).toBe(0)
+        expect(
+          listed.stdout
+            .trimEnd()
+            .split("\n")
+            .map((line) => line.split("\t")),
+        ).toEqual([
+          ["key�one", "store�front", "a�cme�other", "2026-10-06T12:01:02.000Z", "active"],
+          ["key�second", "storefront", "acme����", "2026-10-06T12:01:02.000Z", "active"],
+        ])
+        const revoked = yield* run(["keys", "revoke", hostile.id])
+        expect(revoked.exitCode).toBe(0)
+        expect(revoked.stdout).toBe("Revoked key�one in production.\n")
+        for (const control of ["\u001b", "\r", "\u202e", "\u2066", "\u0085", "\u2028", "\u2029"])
+          expect(
+            `${listed.stdout}${listed.stderr}${revoked.stdout}${revoked.stderr}`,
+          ).not.toContain(control)
+      }),
+  )
+
   it.effect("uses authenticated scoped routes and prints the secret only from create", () =>
     Effect.gen(function* () {
       const directory = yield* configDirectory(credentials)
