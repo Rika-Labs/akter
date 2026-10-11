@@ -43,10 +43,20 @@ const write = Effect.fnUntraced(function* (directory: string, credentials: Runne
  * mutual TLS with its own certificate for the drill's deployment, unless a
  * spawn passes the credentials to start with.
  */
-export const processTopology = Effect.fnUntraced(function* (authority?: RunnerAuthority) {
-  const database = yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") })
+export const processTopology = Effect.fnUntraced(function* (
+  authority?: RunnerAuthority,
+  pooling?: {
+    readonly url: Redacted.Redacted<string>
+    readonly observer: Redacted.Redacted<string>
+  },
+) {
+  const database =
+    pooling?.url ??
+    (yield* disposableDatabase({ url: yield* Config.Redacted("TEST_DATABASE_URL") }))
   const pool = yield* Effect.acquireRelease(
-    Effect.sync(() => new Pool({ connectionString: Redacted.value(database) })),
+    Effect.sync(
+      () => new Pool({ connectionString: Redacted.value(pooling?.observer ?? database) }),
+    ),
     (db) => Effect.promise(() => db.end()),
   )
   const query = <A>(text: string) =>
@@ -81,10 +91,12 @@ export const processTopology = Effect.fnUntraced(function* (authority?: RunnerAu
           DRILL_BACKGROUND: "true",
           DRILL_BLOCK_CRON: String(blockCron),
           DRILL_TLS_DIR: directory ?? "",
+          DRILL_TRANSACTION_POOLING: String(pooling !== undefined),
         },
         extendEnv: true,
         stdin: { stream: "pipe", endOnDone: false },
         stderr: "inherit",
+        forceKillAfter: pooling === undefined ? undefined : "2 seconds",
       }),
     )
     const runner: RunnerProcess = {

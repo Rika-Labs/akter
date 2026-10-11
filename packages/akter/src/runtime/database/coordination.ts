@@ -1,4 +1,4 @@
-import { PgClient } from "@effect/sql-pg"
+import type { PgClient } from "@effect/sql-pg"
 import { Context, Effect, Layer, type Scope } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { Migrator, SqlClient } from "effect/sql"
@@ -29,28 +29,29 @@ const prepareCoordination = Effect.gen(function* () {
   )`
 })
 
-/** Holds startup coordination before even the history table is created, on one leased session. */
-export const withMigrationCoordination = <A, E>(
-  effect: Effect.Effect<A, E, SqlClient.SqlClient | Scope.Scope>,
-) =>
+/** Holds startup coordination, history creation and migrations in one bounded transaction. */
+export const withMigrationCoordination = <A, E>({
+  effect,
+  history,
+}: {
+  readonly effect: Effect.Effect<A, E, SqlClient.SqlClient | Scope.Scope>
+  readonly history?: "actor_migrations" | "actor_coordination_migrations"
+}) =>
   Effect.scoped(
     Effect.gen(function* () {
       const source = yield* SqlClient.SqlClient
-      const connection = yield* source.reserve
-      yield* Effect.acquireRelease(
-        connection.execute("SELECT pg_advisory_lock(1935764837, 487)", [], undefined),
-        () =>
-          connection
-            .execute("SELECT pg_advisory_unlock(1935764837, 487)", [], undefined)
-            .pipe(Effect.orDie),
+      return yield* source.withTransaction(
+        Effect.gen(function* () {
+          yield* source`SELECT pg_advisory_xact_lock(1935764837, 487)`
+          if (history !== undefined)
+            yield* source`CREATE TABLE IF NOT EXISTS ${source(history)} (
+              migration_id integer primary key,
+              created_at timestamp with time zone not null default now(),
+              name text not null
+            )`
+          return yield* effect
+        }),
       )
-      const reactivity = yield* Reactivity.make
-      const client = yield* SqlClient.make({
-        acquirer: Effect.succeed(connection),
-        compiler: PgClient.makeCompiler(),
-        spanAttributes: [],
-      }).pipe(Effect.provideService(Reactivity.Reactivity, reactivity))
-      return yield* Effect.provideService(effect, SqlClient.SqlClient, client)
     }),
   )
 
@@ -61,12 +62,13 @@ export const coordinationLayer = (options: PgClient.PgPoolConfig | undefined) =>
     Effect.gen(function* () {
       if (options === undefined) return undefined
       const sql = yield* boundedPool(options)
-      yield* withMigrationCoordination(
-        Migrator.make({})({
+      yield* withMigrationCoordination({
+        effect: Migrator.make({})({
           table: "actor_coordination_migrations",
           loader: Migrator.fromRecord({ "0001_coordination": prepareCoordination }),
         }),
-      ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
+        history: "actor_coordination_migrations",
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie)
       return sql
     }),
   ).pipe(Layer.provide(Reactivity.layer))

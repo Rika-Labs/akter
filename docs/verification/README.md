@@ -21,7 +21,7 @@ Startup migration evidence lives in `runtime/database/migrations.test.ts`: six c
 - [Pipeline performance: repeated local timings, retained coverage and failure controls](pipeline-performance.md)
 - [Docs appearance and font loading: local Mintlify evidence and provider limits](docs-appearance.md)
 - [Cold tier: owner-side fetch, guarded garbage, Postgres crashes and S3-compatible evidence](cold-tier.md)
-- [Low-connection Postgres: four-session floor and wait-cycle evidence](low-connection-postgres.md)
+- [Low-connection Postgres: direct four-session floor and explicit transaction-pooler evidence](low-connection-postgres.md)
 - [Performance and capacity](../../BENCHMARKS.md)
 - [Named invariants](invariants.md)
 - Served-command flight accounting: the Postgres pipeline case counts every pool and independently derives seven statements/two flights for a warm dirty-state command and five statements/two flights for a warm replay. Admission cases reject a caller-supplied redelivery flag and an expired result whose receipt committed while its handler was paused; the same result-expiry check runs on PGlite ([ADR 0072](../decisions/0072-served-command-in-two-round-trips.md)).

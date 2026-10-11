@@ -51,6 +51,7 @@ import { schemaChange } from "./database/schema.ts"
 import { queryPoolLayer, ReadReplica, replicaLayer } from "./database/replica.ts"
 import { Coordination, coordinationLayer } from "./database/coordination.ts"
 import { withKeepalives } from "./database/keepalive.ts"
+import { WarmTurnFastPath } from "./turn/execute.ts"
 import { checkRowLevelSecurity, TenantScope } from "./database/tenancy.ts"
 import { retryDelay } from "./retry.ts"
 import { withoutDatabase } from "./jobs/isolation.ts"
@@ -1538,6 +1539,19 @@ export const layer = (options: Options = {}) => {
       const sql = yield* SqlClient.SqlClient
       const coordination = (yield* Coordination) ?? sql
       const wiring = Option.getOrUndefined(yield* Effect.serviceOption(RunnerWiring))
+      const transactionPooling = yield* TransactionPooling
+      if (
+        transactionPooling &&
+        (wiring?.production !== true ||
+          wiring.config?.shardLockDisableAdvisory !== true ||
+          options.coldStorage !== undefined ||
+          (options.fleet?.length ?? 0) > 0)
+      )
+        return yield* Effect.die(
+          new Error(
+            "Transaction pooling requires Runner.socket table leases and does not support coldStorage or fleet",
+          ),
+        )
       yield* migrate
 
       if (
@@ -1644,6 +1658,7 @@ export const layer = (options: Options = {}) => {
           : Layer.empty
 
       return runtime.pipe(
+        Layer.provide(transactionPooling ? Layer.succeed(WarmTurnFastPath, false) : Layer.empty),
         Layer.provide(sharding),
         Layer.provide(lease),
         Layer.provide(
@@ -1660,7 +1675,14 @@ export const layer = (options: Options = {}) => {
   )
 }
 
+/** Explicit pooling mode, independent of endpoint names or URL parameters. */
+const TransactionPooling = Context.Reference<boolean>("akter/TransactionPooling", {
+  defaultValue: () => false,
+})
+
 type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
+  /** Opt-in transaction pooling for socket runners with table leases; session-dependent features are refused. */
+  readonly pooling?: "transaction"
   /** Four primary sessions: one turn, two off-turn (one reserved by Cluster), and one query. Explicit pool sizes take precedence. */
   readonly preset?: "low-connection"
   readonly offTurnConnections?: number
@@ -1693,11 +1715,20 @@ type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
  * need additional off-turn capacity; optional pools add to the budget.
  * Explicit pool sizes override the preset.
  *
+ * `pooling: "transaction"` explicitly selects a transaction-pooled endpoint.
+ * It requires `Runner.socket` table leases, refuses replica, separate
+ * coordination, fleet and cold storage, disables prepared statements and
+ * warm turn speculation, and does not inject server keepalive startup
+ * parameters. Configure both proxy transport legs separately. Cluster's
+ * reservation consumes a logical client, not a backend outside transactions.
+ * Application session state, `listen` and session advisory locks remain
+ * unsupported on this endpoint.
+ *
  * `replica` is this runner's nearest streaming replica of the same primary.
  * Queries read there once it has replayed the commit version their caller
  * last saw, and read the primary when it is behind or fails. Its pool
  * (`maxConnections` default 10) opens connections only as queries need them.
- * Every pool requests server TCP keepalives at 5 seconds idle, 2 seconds
+ * Direct pools request server TCP keepalives at 5 seconds idle, 2 seconds
  * between probes, and 3 probes. `startupParameters` overrides these defaults
  * independently on the primary and replica configurations.
  *
@@ -1707,6 +1738,12 @@ type PostgresOptions = Omit<PgClient.PgPoolConfig, "types"> & {
 function postgres(
   options: PostgresOptions,
 ): Layer.Layer<PgClient.PgClient | SqlClient.SqlClient | TurnConnections, SqlError.SqlError> {
+  if (
+    options.pooling === "transaction" &&
+    (options.replica !== undefined || options.coordination !== undefined)
+  )
+    throw new Error("Transaction pooling does not support replica or separate coordination")
+
   const types = PgTypes.makeRegistry()
   types.register(2205, {
     encode: (value: number) => PgTypes.encode(value, PgTypes.OID.oid),
@@ -1718,12 +1755,21 @@ function postgres(
         : Result.fail(new PgTypes.CodecError({ message: "Invalid regclass value" })),
   })
 
-  const { preset, offTurnConnections, queryConnections, replica, coordination, ...configured } =
-    options
-  const pool = withKeepalives(configured)
+  const {
+    pooling,
+    preset,
+    offTurnConnections,
+    queryConnections,
+    replica,
+    coordination,
+    ...configured
+  } = options
+  const pool =
+    pooling === "transaction" ? { ...configured, prepare: false } : withKeepalives(configured)
   const lowConnection = preset === "low-connection"
 
   return Layer.mergeAll(
+    Layer.succeed(TransactionPooling, pooling === "transaction"),
     boundedLayer({
       ...pool,
       maxConnections: offTurnConnections ?? (lowConnection ? 2 : 10),

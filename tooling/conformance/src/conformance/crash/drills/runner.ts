@@ -110,6 +110,9 @@ const runtime = Layer.unwrap(
     const blockRelay = yield* Config.Boolean("DRILL_BLOCK_RELAY").pipe(Config.withDefault(false))
     const blockCron = yield* Config.Boolean("DRILL_BLOCK_CRON").pipe(Config.withDefault(false))
     const background = yield* Config.Boolean("DRILL_BACKGROUND").pipe(Config.withDefault(false))
+    const transactionPooling = yield* Config.Boolean("DRILL_TRANSACTION_POOLING").pipe(
+      Config.withDefault(false),
+    )
     let blocked = false
 
     const hooks = Layer.succeed(TurnHooks, {
@@ -157,7 +160,11 @@ const runtime = Layer.unwrap(
         }).pipe(Layer.provide(Layer.mergeAll(hooks, wiring))),
       ),
       Layer.provideMerge(
-        Database.postgres({ url: Redacted.make(database), preset: "low-connection" }),
+        Database.postgres({
+          url: Redacted.make(database),
+          preset: "low-connection",
+          pooling: transactionPooling ? "transaction" : undefined,
+        }),
       ),
     )
   }),

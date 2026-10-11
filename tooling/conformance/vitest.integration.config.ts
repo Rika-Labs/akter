@@ -13,6 +13,8 @@ const worker = `${testing}/conformance/postgres/backend.test.ts`
  * so the shard registry, not a file per shard, decides the workers.
  * The Docker drills stay out: they run alone, through the root config, so their
  * timings and the ports and containers they take are theirs.
+ * The transaction-pooler suite owns isolated proxy containers, networks,
+ * ports and databases and runs in the ordinary integration project.
  */
 export default defineConfig({
   test: {

@@ -1,6 +1,6 @@
 # ADR 0117: Pooler-safe Postgres locking
 
-**Status:** proposed (2026-10-09), for #712. No pooler implementation or support claim is made here.
+**Status:** partially implemented by [ADR 0119](0119-transaction-pooling.md) (2026-10-10), for #712. The broader topology and provider gates below remain proposed.
 
 ## Context
 
@@ -10,10 +10,10 @@ Effect 4.0.2's [`SqlRunnerStorage`](https://github.com/Effect-TS/effect/blob/eff
 
 This reservation is also a correctness boundary in advisory mode: a lock belongs to a server backend, not a logical client connection. [PgBouncer's feature matrix](https://www.pgbouncer.org/features.html) explicitly excludes session advisory locks and `LISTEN` from transaction pooling. After COMMIT, a client can receive another backend; closing its client socket does not necessarily release an advisory lock left on the old backend. Reserving a driver connection does not pin that backend through a transaction pooler.
 
-Current session-dependent paths include:
+The original session-dependent paths included:
 
 - Cluster advisory locks for embedded Postgres; public `Runner.socket` already uses table leases, but the pinned storage still reserves a connection in that mode.
-- `withMigrationCoordination`: a session advisory lock covers history-table creation and subsequent transactional migrations on its reserved connection.
+- `withMigrationCoordination`: previously a session advisory lock covered history creation and migrations. ADR 0119 replaces it with one bounded transaction and a transaction advisory lock held before history creation through compatibility checks.
 - Fleet maintenance: a reserved session owns its advisory lock and logical slot operations. With separate coordination, it also reserves a data session.
 - The public `PgClient.listen` surface, application reservations/session state, and driver's prepared-statement cache. Turn tenant settings are transaction-local, but role/reset, cancellation and pipelined transaction behavior must also be verified through a pooler.
 
@@ -23,7 +23,7 @@ Support transaction pooling for **stateless transaction-bound pools only**, with
 
 Before implementation:
 
-1. Give Cluster table-lease storage a statement/transaction-owned acquisition path, preferably upstream, without the lifetime reservation. Keep registrations, refresh, acquired-shard readiness and singleton lease checks on the same authority. Preserve durable generation fencing: lease expiry alone cannot authorize stale writes. Advisory-mode Cluster stays on a direct/session endpoint unless its ownership design changes separately.
+1. Budget Cluster's lifetime reservation as a logical client. In table mode it does not intrinsically pin a backend outside transactions, so removing the reservation is not a prerequisite for the narrow mode. Keep registrations, refresh, acquired-shard readiness and singleton lease checks on the same authority. Preserve durable generation fencing: lease expiry alone cannot authorize stale writes. Advisory-mode Cluster stays on a direct endpoint unless its ownership design changes separately.
 2. Replace the startup session mutex only after proving a transaction-owned lock can serialize **history creation and the complete migration transaction** on one backend. A transaction advisory lock acquired after uncoordinated `CREATE TABLE IF NOT EXISTS` is too late. Keep a direct startup endpoint as the initial alternative; do not release coordination between DDL phases or edit applied migrations.
 3. Keep the fleet lock/slot reader on a direct/session endpoint initially. Moving it requires a fenced ownership token for both derived writes and slot advancement, with stale-owner and lost-acknowledgment recovery; a timed lease alone weakens the current exclusion. Budget its additional sessions explicitly.
 4. Retain transaction-owned coordination rows and authority-before-data local fences from [ADR 0066](0066-authoritative-coordination.md). A separate endpoint is not distributed atomic commit. Probe authority loss, roll back guarded work, and resolve ambiguous commits from durable rows.
@@ -46,4 +46,4 @@ Passing direct-Postgres low-connection tests does not satisfy these gates. Sessi
 
 Increasing Postgres `max_connections` costs server memory and does not remove session dependencies. Sharing every pool would reduce sockets but couples a waiting background claim to the turn that must finish it, and readers to admission; the four-session preset retains those ownership boundaries. A separate direct coordination endpoint is a useful staged design but does not, on its own, make migrations, fleet, application SQL or cancellation pooler-safe.
 
-The current baseline's wait-cycle analysis and direct-Postgres evidence are recorded in [low-connection verification](../verification/low-connection-postgres.md). Pooler-safe implementation belongs in a separate change and this ADR remains proposed.
+The baseline's wait-cycle analysis, independent direct-endpoint evidence and narrow pooled evidence are recorded in [low-connection verification](../verification/low-connection-postgres.md). ADR 0119 implements only explicit socket/table-lease transaction pooling; the remaining paths and broader gates here are not accepted by implication.

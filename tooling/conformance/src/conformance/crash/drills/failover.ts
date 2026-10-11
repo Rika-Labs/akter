@@ -107,8 +107,8 @@ export const query = Effect.fnUntraced(function* <A>(pool: Pool, text: string) {
   return result.rows as Array<A>
 })
 
-export const until = Effect.fnUntraced(function* (
-  condition: Effect.Effect<boolean>,
+export const until = Effect.fnUntraced(function* <E>(
+  condition: Effect.Effect<boolean, E>,
   what: string,
   within: Duration.Input,
 ) {
