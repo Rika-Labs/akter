@@ -103,9 +103,9 @@ Minted children may use a different placement from their parent. The framework r
 
 ## Committed snapshots
 
-A state-only query on a runner with a warm activation may read its last confirmed committed snapshot without SQL. `read.version?: string` is that snapshot's matching WAL commit version; it is undefined when the query uses the ordinary database path. `read.state` and `read.cursor` belong to the same snapshot, never a running handler's staged writes. The snapshot must satisfy the caller's minimum version, preserving read-your-writes ([ADR 0052](../decisions/0052-read-your-writes-commit-versions.md)). This is not a globally latest read or a fresh generation fence: a tokenless caller may see an older committed snapshot.
+A query always reads the database, never a warm activation's memory ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). `read.version?: string` is always undefined. `read.state` and `read.cursor` belong to one database snapshot, never a running handler's staged writes, and the read satisfies the caller's minimum version, preserving read-your-writes ([ADR 0052](../decisions/0052-read-your-writes-commit-versions.md)). This is not a globally latest read or a fresh generation fence.
 
-Missing, cold, invalidated or version-insufficient snapshots, actors with tables/blobs, and watches use the database path. Requesting `read.events` or `read.group` during a cached query reruns the whole query against the database instead of mixing snapshots. Query handlers must be free of external effects because this fallback may evaluate them again. Command handlers can also be evaluated again after discarded speculation or rollback: use `turn.enqueue` and job executors for external effects, never an HTTP call inside a command ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). New jobs, intents and subscriptions retain ordinary admission so their identities use its database clock.
+Command handlers can be evaluated again after discarded speculation or rollback: use `turn.enqueue` and job executors for external effects, never an HTTP call inside a command ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). New jobs, intents and subscriptions retain ordinary admission so their identities use its database clock.
 
 ## Blobs
 

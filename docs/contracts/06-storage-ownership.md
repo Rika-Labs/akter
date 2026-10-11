@@ -5,7 +5,7 @@
 **Owner role:** database/runtime.  
 **Change policy:** Drizzle, Postgres, and each backend adapter must agree on the supported query matrix.
 
-A local query MAY answer from a resident activation's confirmed committed state, event head and matching post-commit WAL version ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). It MUST satisfy the caller's minimum version and recheck authorization, MUST NOT expose staged or commit-unknown state, and MUST use the ordinary database path when no suitable committed snapshot exists or database-dependent capabilities are read. This is a version-qualified committed snapshot, not a fresh generation fence or a globally latest read. `X.Read.version` identifies a cached snapshot; it is undefined on an ordinary database read. A query MUST NOT mix a cached state snapshot with newly read database rows/events.
+A query MUST read the database through the ordinary replica/primary path, satisfying the caller's minimum version and rechecking authorization. It MUST NOT answer from an activation's process memory: memory is not authority, and no durable revision exists to prove a resident snapshot current ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)). `X.Read.version` is always undefined. The read is a committed database snapshot, not a fresh generation fence or a globally latest read.
 
 The framework supports Postgres through `Database.postgres` and embedded PGlite through `Database.pglite`, within the [support matrix](../operations/support-matrix.md). Postgres wire compatibility alone MUST NOT imply backend support. Physical data-shard routing, live provider topology and nontransactional DDL are not framework interfaces ([ADR 0112](../decisions/0112-postgres-and-pglite-only.md)).
 

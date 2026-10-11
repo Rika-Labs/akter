@@ -24,9 +24,9 @@ The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 - receipt committed after the guard's snapshot began waiting: the unique receipt constraint rolls back every speculative consequence and ordinary admission replays the asymmetric stored outcome;
 - expiry during the generation-lock wait or a non-null cold pointer: no speculative state/event/receipt commits; expiry uses the post-lock database clock and cold material stays on ordinary admission;
 - lost COMMIT reply: same-id redelivery resolves one committed receipt with no second handler evaluation;
-- successor commit between COMMIT and the version read: the older cached state cannot answer a query carrying the successor's version, even if the older activation reads an equal or higher global LSN;
-- pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and database-dependent queries never mix cached state with live rows.
-- caught read error: event/group capability access forces the entire query onto the database even if its handler catches the cached-read bailout.
+- successor commit between COMMIT and the version read: a query never answers from the older activation's memory, even if it read an equal or higher global LSN;
+- `VACUUM (FREEZE)` before the post-commit version read, after a public `COMMIT` with the version read held, and a fresh server whose MultiXact xmax equals the committing turn's xid (`owner-cache.test.ts`): the query returns the stored count with an empty `read.version`;
+- pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and every query reads the database.
 
 These tests do not claim exactly-once handler evaluation: only committed consequences and receipt identity are exactly-once. Guard or receipt misses discard speculation before ordinary admission ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)).
 

@@ -172,7 +172,7 @@ export const prune = Effect.fnUntraced(function* (id: string, through: number) {
 
 /**
  * Events append only on commit, replay in order and disappear on failed turns.
- * The lock-order race uses an identity issued before the warm cache was certified,
+ * The lock-order race uses an identity issued before the warm cache was established,
  * so its paused handler holds ordinary admission rather than running speculatively.
  */
 export const eventsConformance: ReadonlyArray<ConformanceCase<EventsFixture>> = [
