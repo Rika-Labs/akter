@@ -101,7 +101,7 @@ describe("Postgres test databases", () => {
           expect(yield* exists(disposed)).toBe(false)
 
           const live = yield* databaseName(yield* Crypto.Crypto, "isolated")
-          const uuid = (yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")
+          const uuid = (yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")
           const stale = `isolated_${(yield* Clock.currentTimeMillis) - 2 * 60 * 60 * 1000}_${uuid}`
 
           yield* Effect.forEach([live, stale], (name) => admin.unsafe(`CREATE DATABASE "${name}"`))

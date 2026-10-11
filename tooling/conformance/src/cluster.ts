@@ -316,7 +316,7 @@ export const clusterLayer = <ROut, E, RIn>(options: ClusterOptions<ROut, E, RIn>
       const expiration = Duration.fromInputUnsafe(options.shardLockExpiration)
       const expirationSeconds = Math.ceil(Duration.toSeconds(expiration))
       const crypto = yield* Crypto.Crypto
-      const tenant = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+      const tenant = yield* crypto.randomUUIDv4().pipe(Effect.orDie)
       const network = yield* makeNetwork
       const services = yield* Effect.context<Crypto.Crypto | Exclude<RIn, RunnerServices>>()
 

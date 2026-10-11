@@ -13,7 +13,7 @@ export type { CronEntry, CronSchedule }
 const tickId = (now: number, dueAt: number, retryWindowMs: number) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto
-    const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+    const uuid = yield* crypto.randomUUIDv4().pipe(Effect.orDie)
 
     return `v1.${now}.${Math.max(dueAt, now) + retryWindowMs}.${uuid}`
   })

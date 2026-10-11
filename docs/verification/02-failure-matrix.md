@@ -20,6 +20,9 @@ Unless a row exercises denial or expiry, external receipt replay assumes the ori
 The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 
 - stale guard: the sent state/event/receipt writes all roll back, then ordinary admission reloads committed state before reevaluation;
+- ambient SQL with no owned tables/blobs: a `DELETE` followed by a failing `INSERT` retains the original asymmetric row and actor state with no failure receipt; a declared failure also retains the row/state and replays its failure receipt without reevaluation. Wire order requires `BEGIN`, the generation fence and a handler savepoint before business SQL, rejecting implicit autocommit and savepoint eligibility based only on declared tables;
+- stale ambient-SQL evaluation: an independent successor changes the generation and state; only the reevaluated, fenced turn can execute the `DELETE`. A nontransactional sequence in a real Postgres delete trigger counts exactly one attempt, rejecting stale business SQL even if a later rollback could hide its writes;
+- remembered ambient SQL: the first warm SQL command evaluates twice, but the next command evaluates once through ordinary admission. An independent SQL-free actor still evaluates once and takes one commit flight, rejecting repeated interception and a global fast-path disable. The activation-local SQL hint skips speculation and shared groups; it is not durable authority;
 - retained duplicate/conflict: the stored result or conflict is returned without another handler; canonical hashing remains PostgreSQL JSONB normalization;
 - receipt committed after the guard's snapshot began waiting: the unique receipt constraint rolls back every speculative consequence and ordinary admission replays the asymmetric stored outcome;
 - expiry during the generation-lock wait or a non-null cold pointer: no speculative state/event/receipt commits; expiry uses the post-lock database clock and cold material stays on ordinary admission;
@@ -29,6 +32,8 @@ The `warm fast path:` cases in `conformance/pipeline.ts` additionally require:
 - pending, declared-failed, defective or SQL-aborted turn: reads never return staged state, and every query reads the database.
 
 These tests do not claim exactly-once handler evaluation: only committed consequences and receipt identity are exactly-once. Guard or receipt misses discard speculation before ordinary admission ([ADR 0115](../decisions/0115-warm-actor-fast-path.md)).
+
+`beforeCommit` is a planning boundary, not proof of an open transaction: SQL-free warm speculation may reach it before `BEGIN`. `warm fast path: beforeCommit SQL reruns planning inside fenced admission` requires two planning-hook evaluations but only one executed SQL observation, with an assigned transaction id and the fence before that statement on the wire. This rejects letting hook SQL bypass speculative interception. Process fixtures that need an admitted transaction must establish that boundary explicitly.
 
 The event-order race pauses an ordinary admitted turn, using a command identity minted before the seed certifies the warm cache. It observes the rival backend waiting in `pg_locks` before releasing that turn; a paused speculative handler would not hold the generation lock. The case retains its exact seed/held/rival prefix, gap-free sequences, unique command IDs and receipt/event counts. On 2026-10-10, the unchanged Node case reproduced the prefix inversion on attempt 4; the synchronized case passed 12 consecutive real-database Node runs plus the focused Bun event scenarios. Warm speculative fencing remains independently covered by the pipeline stale-fence and receipt-race cases.
 

@@ -54,7 +54,7 @@ export const writeAudit = Effect.fnUntraced(function* ({
 }) {
   const sql = yield* SqlClient.SqlClient
   const crypto = yield* Crypto.Crypto
-  const auditId = yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+  const auditId = yield* crypto.randomUUIDv4().pipe(Effect.orDie)
 
   const capability = Option.isNone(entry.capability)
     ? null

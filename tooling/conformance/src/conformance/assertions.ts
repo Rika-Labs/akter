@@ -221,7 +221,7 @@ const serveAsserted = Effect.fnUntraced(function* (
     mint: Effect.gen(function* () {
       const now = yield* actors.databaseNow
 
-      return `v1.${now}.${now + actors.retryWindowMs}.${yield* random.randomUUIDv4}`
+      return `v1.${now}.${now + actors.retryWindowMs}.${yield* random.randomUUIDv4()}`
     }).pipe(Effect.orDie),
   }
 })

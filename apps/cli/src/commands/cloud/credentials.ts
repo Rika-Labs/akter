@@ -114,7 +114,7 @@ export const saveCredentials = (credentials: Credentials) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const { directory, file } = yield* credentialsPath
-    const suffix = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+    const suffix = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
     const pending = `${file}.${suffix}.tmp`
 
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 })
