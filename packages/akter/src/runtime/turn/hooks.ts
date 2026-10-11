@@ -38,6 +38,9 @@ export class RetryTurn extends Schema.TaggedError<RetryTurn>()("RetryTurn", {
  * Called at each `TurnPoint` with the request in flight. The default does
  * nothing; a test hook can wait, fail, or die at that point. A hook that dies
  * with `RetryTurn` simulates a crash the runtime recovers from.
+ * `beforeCommit` follows handler planning, not necessarily `BEGIN`: eligible
+ * warm turns can reach it speculatively and repeat it after ordinary admission.
+ * Ambient turn SQL forces fenced admission before its first statement runs.
  */
 export const TurnHooks = Context.Reference<{
   readonly at: (point: TurnPoint, request: Request) => Effect.Effect<void>
