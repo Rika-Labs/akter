@@ -74,6 +74,8 @@ edoburu/pgbouncer:v1.25.1-p0@sha256:4a8371e79d6627e74f553d0aaa8e4c5ace20e30034fb
 
 The stream-lifetime case additionally closes a reservation while its stream is held: the close and next checkout must wait, the stream returns 17, the next client returns 43, and a late statement on the closed reservation is interrupted. The ownership-fence case kills the backend of a transaction holding generation 1 and staging 91; a waiting takeover reaches generation 2, 91 rolls back, the old cached fence is refused and cleared, and only the new owner's 43 commits. The combined process fault case also requires both surviving processes to exit within five seconds after their clean drain; merely recovering traffic is not sufficient.
 
+The direct foundation-collision case in `crash/turns/main.test.ts` exercises both ledger starting states. A pre-existing ledger remains present and empty after failed DDL; a ledger created by the failed startup is absent. Both paths then retry, assert every expected migration ID and zero receipts, and verify an idempotent restart. Missing history is checked with `to_regclass`, not by swallowing a missing-table error.
+
 Local verification passed all ten pooled cases, the eight focused existing direct driver cases (including nested streaming, cancellation and savepoints), six direct concurrent startups with coordination, the unchanged direct serving scenario, and the sixteen PGlite/lock regressions. Framework and conformance typechecks, framework build, focused type-aware lint, structure and directive checks passed. CI still runs the integration suite on its own platform; local evidence does not stand in for a pending PR check.
 
 Run only this suite with a disposable-capable `TEST_DATABASE_URL` and Docker:
