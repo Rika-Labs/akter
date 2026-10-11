@@ -1398,7 +1398,7 @@ export const inspectorConformance: ReadonlyArray<ConformanceCase> = [
 
           expect(yield* fingerprint).toEqual(before)
 
-          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
           const role = `inspector_${uuid.replaceAll("-", "")}`
 
           const probe = yield* sql

@@ -59,7 +59,7 @@ const policy = {
 /** Three independent databases reject accidental coordination through either runner's data pool. */
 const databases = Effect.gen(function* () {
   const url = new URL(yield* Config.String("TEST_DATABASE_URL"))
-  const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")
+  const suffix = (yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")
   const admin = yield* Effect.acquireRelease(
     Effect.sync(() => new Pool({ connectionString: url.href })),
     (pool) => Effect.promise(() => pool.end()),

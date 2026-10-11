@@ -193,7 +193,7 @@ export const tenantContent = (settings: ContentSettings) => {
         return yield* uploadBytes(tenant, concat(parts, size))
       }
 
-      const pending = `pending:${yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)}`
+      const pending = `pending:${yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)}`
       const hasher = sha256Hasher()
 
       const stored = yield* sql.withTransaction(

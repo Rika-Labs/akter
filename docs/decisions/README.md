@@ -1,5 +1,7 @@
 # Architecture decisions
 
+- [ADR 0121: Adopt Effect 4.0.3 as one dependency cohort](0121-effect-4-0-3.md) raises the peer floor, adopts function-shaped UUID generation, and schedules the singleton keeper's first wake to preserve startup/activation separation.
+
 - [ADR 0067: Due-work scans use the data shard map](0067-due-work-shard-ranges.md) preserves bucket-range scheduling, one-statement default claims and the routing-key uniqueness audit. Its provider-targeting clauses are superseded by [ADR 0112](0112-postgres-and-pglite-only.md).
 
 **Responsibility:** index the architecture decisions and their recorded rationale.  

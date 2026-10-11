@@ -250,8 +250,10 @@ export const connectionEntity = oncePerName(connectionsEntity)
 
 /**
  * Writes a singleton's missing cron ticks, then keeps its default tenant's
- * instance awake: one keeper re-wakes it every `SINGLETON_WAKE_INTERVAL`, or
+ * instance awake: one keeper wakes it after each `SINGLETON_WAKE_INTERVAL`, or
  * half the idle time if shorter, so it moves to a survivor with its shard.
+ * Scheduling the first wake too keeps handler activation out of registration;
+ * a caller can activate it immediately without waiting for the keeper.
  */
 const keepSingletonAwake = Effect.fnUntraced(function* (
   registration: Registration,
@@ -285,7 +287,7 @@ const keepSingletonAwake = Effect.fnUntraced(function* (
     client.Wake().pipe(
       Effect.timeoutOrElse({ duration: wakeInterval, orElse: () => Effect.void }),
       Effect.catchCause((cause) => Effect.logDebug("Singleton wake failed", cause)),
-      Effect.repeat(Schedule.spaced(wakeInterval)),
+      Effect.schedule(Schedule.spaced(wakeInterval)),
     ),
   )
 })
