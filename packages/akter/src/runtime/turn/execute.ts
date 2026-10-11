@@ -406,10 +406,10 @@ const HANDLER_SAVEPOINT = "durable_handler"
  * whole batch and writes nothing. A batch with nothing to commit rolls back.
  * Every command id in a batch must be distinct.
  *
- * `statements` marks an actor whose handler can issue SQL; only its handlers
- * run under a savepoint, so a declared failure discards the handler's rows.
- * The first handler's savepoint goes out with admission and each later one's
- * with that handler's first statement. A handler that issued no statement has
+ * `statements` marks an actor with declared SQL capabilities. Its first
+ * savepoint goes out with admission; otherwise each handler's savepoint goes
+ * with its first statement, including ambient SQL, so a declared failure
+ * discards the handler's rows. A handler that issued no statement has
  * nothing to roll back, so its unsent savepoint is dropped. Rolling back to a
  * savepoint keeps it, so each failed handler leaves one open until commit; a
  * batch never holds more savepoints than its command cap. `parent` is a
@@ -926,7 +926,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         const savepoint = `SAVEPOINT ${HANDLER_SAVEPOINT}`
 
         const restoring = first.cold_ref !== null && !restored
-        const savepoints = statements || restoring
+        const savepoints = !grouped || statements || restoring
 
         if (savepoints && (start > 0 || !statements)) yield* session.defer(savepoint)
 
@@ -1415,10 +1415,10 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           return Effect.asVoid(control("BEGIN"))
         })
 
-        const inTurn = <A, E, R2>(effect: Effect.Effect<A, E, R2>) =>
+        const inTurn = <A, E, R2>(effect: Effect.Effect<A, E, R2>, sender: Send = send) =>
           Effect.suspend(() =>
             Effect.provideService(effect, sql.transactionService, [
-              asSqlConnection({ connection: session(), send }),
+              asSqlConnection({ connection: session(), send: sender }),
               0,
             ]),
           )
@@ -1585,16 +1585,31 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           const { request } = batch[0]!
           const { issuedAt, expiresAt } = commandTimes(request.commandId)
           const identityOffset = request.clockOffset ?? clock.offsetMillis()
-          const ordinary = () => Effect.flatMap(openAlone(batch), (opened) => alone(batch, opened))
+          let attemptedSql = false
+          const speculative: Send = () =>
+            Effect.suspend(() => {
+              attemptedSql = true
+              cache.ambientSql = true
+              return Effect.die(new Error("Speculative SQL requires fenced admission"))
+            })
+          const ordinary = () => {
+            deferred.length = 0
+            return Effect.flatMap(openAlone(batch), (opened) => alone(batch, opened))
+          }
 
-          return admitting.admission.resume().pipe(
+          return inTurn(admitting.admission.resume(), speculative).pipe(
             Effect.catchDefect((defect) =>
               Schema.is(RetryTurn)(defect) || SqlError.isSqlError(defect)
                 ? Effect.die(defect)
                 : Effect.void,
             ),
             Effect.flatMap((plan) => {
-              if (plan === undefined || plan.writes === undefined || plan.needsAdmissionClock)
+              if (
+                attemptedSql ||
+                plan === undefined ||
+                plan.writes === undefined ||
+                plan.needsAdmissionClock
+              )
                 return ordinary()
 
               let missed = false
@@ -1877,6 +1892,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             snapshot.generation === cache.generation &&
             snapshot.state === cache.state &&
             !statements &&
+            cache.ambientSql !== true &&
             waited.size === 0 &&
             connections === undefined &&
             !run.publishesUnderLock(batch) &&
@@ -1993,7 +2009,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
   const turns = yield* Effect.serviceOption(TurnConnections)
 
   const groups =
-    statements || waited.size > 0
+    statements || cache.ambientSql === true || waited.size > 0
       ? undefined
       : Option.getOrUndefined(yield* Effect.serviceOption(TurnGroups))
 

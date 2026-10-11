@@ -191,7 +191,7 @@ export const contentLayer = (fixture: ContentFixture) =>
   Layer.mergeAll(Document.toLayer(handlers(fixture)), Document.toQueryLayer(reads))
 
 const unique = Effect.gen(function* () {
-  return yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+  return yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
 })
 
 /** Distinct bytes per case, so cases sharing a database never share content. */

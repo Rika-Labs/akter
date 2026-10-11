@@ -22,7 +22,9 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase<WorkflowsF
         Effect.gen(function* () {
           yield* reset(fixture)
           const test = yield* ActorTest
-          const other = yield* Crypto.Crypto.use((crypto) => crypto.randomUUIDv4).pipe(Effect.orDie)
+          const other = yield* Crypto.Crypto.use((crypto) => crypto.randomUUIDv4()).pipe(
+            Effect.orDie,
+          )
 
           const start = (tenant: string, id: string, sku: string) =>
             Effect.flatMap(Shipper.get(id), (shipper) =>
@@ -101,7 +103,9 @@ export const workflowAccessConformance: ReadonlyArray<ConformanceCase<WorkflowsF
           yield* reset(fixture)
           const run = yield* (yield* Shipper.get("foreign")).Ship({ orderId: "f1", sku: "a" })
           expect(yield* run.result).toBe("r-a:v2")
-          const other = yield* Crypto.Crypto.use((crypto) => crypto.randomUUIDv4).pipe(Effect.orDie)
+          const other = yield* Crypto.Crypto.use((crypto) => crypto.randomUUIDv4()).pipe(
+            Effect.orDie,
+          )
 
           const foreign = yield* Shipper.run(Ship, run.executionId).pipe(
             Actor.tenant(other),

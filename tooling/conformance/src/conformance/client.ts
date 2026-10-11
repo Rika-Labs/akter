@@ -1050,7 +1050,7 @@ export const clientConformance: ReadonlyArray<ConformanceCase> = [
           const server = yield* serveHttp()
           const tenant = yield* tenantOf
           const actors = yield* InternalActors
-          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
 
           for (const skew of [-10 * 60_000, 10 * 60_000]) {
             const clock = new DatabaseClock(() => monotonic() + skew)

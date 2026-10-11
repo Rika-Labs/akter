@@ -10,7 +10,7 @@ export const POOLER_IMAGE =
 /** Every operation targets this fixture's own container, network or disposable database. */
 export const transactionPooler = Effect.fnUntraced(function* () {
   const base = new URL(Redacted.value(yield* Config.Redacted("TEST_DATABASE_URL")))
-  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4
+  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4()
   const name = `s10pooler_${yield* Clock.currentTimeMillis}_${uuid.replaceAll("-", "")}`
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const fs = yield* FileSystem.FileSystem
