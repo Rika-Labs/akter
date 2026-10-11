@@ -608,6 +608,118 @@ const gathered = Effect.fnUntraced(function* (keys: ReadonlyArray<string>) {
 /** Pipeline cases: round trips per turn, statement grouping and order across admission, handler, and commit, and batching of the pipelined worker. */
 export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
   {
+    name: "owner cache reads: a speculative in-flight turn exposes only a verified committed snapshot",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, everyPool: true }, (probe) =>
+        Effect.gen(function* () {
+          const test = yield* ActorTest
+          const plain = yield* Plain.get("read-in-flight")
+          expect(yield* plain.Add(17)).toBe(17)
+          const id = yield* (yield* Actors).mintCommandId
+          const pause = yield* test.pauseNext("beforeCommit", { commandId: id })
+          const pending = yield* plain
+            .Change({ amount: 26, fail: false, defect: false })
+            .pipe(Actor.commandId(id), Effect.forkChild)
+          yield* pause.reached
+          const during = yield* flightsOf(probe, plain.Snapshot())
+          expect(during.flights).toBe(1)
+          expect(during.value).toMatchObject({ count: 17, cursor: "0" })
+          yield* pause.release
+          expect(yield* Fiber.join(pending)).toBe(43)
+          const after = yield* flightsOf(probe, plain.Snapshot())
+          expect(after.flights).toBe(1)
+          expect(after.value.count).toBe(43)
+          expect(after.value.cursor).toBe("1")
+          expect(BigInt(after.value.version) > BigInt(during.value.version)).toBe(true)
+        }),
+      ),
+  },
+  {
+    name: "owner cache reads: a generation change without a state change refuses cached provenance",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, everyPool: true }, (probe, database) =>
+        Effect.gen(function* () {
+          const plain = yield* Plain.get("read-takeover")
+          expect(yield* plain.Add(17)).toBe(17)
+          yield* plain.Snapshot()
+          const valid = yield* flightsOf(probe, plain.Snapshot())
+          expect(valid.flights).toBe(1)
+          expect(valid.value.count).toBe(17)
+          expect(BigInt(valid.value.version) > 0n).toBe(true)
+          const context = yield* rival(database)
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`UPDATE actor_generations SET generation = generation + 1
+              WHERE tenant_id = ${plain.ref.tenant} AND actor_type = 'Plain'
+                AND actor_id = ${plain.ref.id}`
+          }).pipe(Effect.provideContext(context))
+          const stale = yield* flightsOf(probe, plain.Snapshot())
+          expect(stale.flights).toBe(1)
+          expect(stale.value).toEqual({ count: 17, cursor: "0", version: "" })
+        }),
+      ),
+  },
+  {
+    name: "owner cache reads: a foreign writer invalidates the tuple before commit even without a new event head",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withProbe(environment, { warm: true, everyPool: true }, (probe, database) =>
+        Effect.gen(function* () {
+          const plain = yield* Plain.get("read-revision")
+          expect(yield* plain.Add(17)).toBe(17)
+          const context = yield* rival(database)
+          const locked = yield* Deferred.make<void>()
+          const release = yield* Deferred.make<void>()
+          const pending = yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT 1 FROM actor_generations
+                  WHERE tenant_id = ${plain.ref.tenant} AND actor_type = 'Plain'
+                    AND actor_id = ${plain.ref.id} FOR UPDATE`
+                yield* sql`UPDATE actor_state SET value = ${compress("43")}
+                  WHERE tenant_id = ${plain.ref.tenant} AND actor_type = 'Plain'
+                    AND actor_id = ${plain.ref.id} AND key = 'count'`
+                yield* Deferred.succeed(locked, undefined)
+                yield* Deferred.await(release)
+              }),
+            )
+          }).pipe(Effect.provideContext(context), Effect.forkChild)
+          yield* Deferred.await(locked)
+          const during = yield* flightsOf(probe, plain.Snapshot())
+          expect(during.flights).toBe(1)
+          expect(during.value).toEqual({ count: 17, cursor: "0", version: "" })
+          yield* Deferred.succeed(release, undefined)
+          yield* Fiber.join(pending)
+          const after = yield* flightsOf(probe, plain.Snapshot())
+          expect(after.flights).toBe(1)
+          expect(after.value).toEqual({ count: 43, cursor: "0", version: "" })
+          yield* (yield* ActorTest).invalidate(plain.ref)
+          expect(yield* plain.Add(11)).toBe(54)
+          expect((yield* plain.Snapshot()).version).not.toBe("")
+          yield* Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE actor_generations SET created = created
+                  WHERE tenant_id = ${plain.ref.tenant} AND actor_type = 'Plain'
+                    AND actor_id = ${plain.ref.id}`
+                yield* sql`UPDATE actor_state SET value = ${compress("71")}
+                  WHERE tenant_id = ${plain.ref.tenant} AND actor_type = 'Plain'
+                    AND actor_id = ${plain.ref.id} AND key = 'count'`
+              }),
+            )
+          }).pipe(Effect.provideContext(context))
+          expect(yield* plain.Snapshot()).toEqual({ count: 71, cursor: "0", version: "" })
+        }),
+      ),
+  },
+  {
     name: "warm fast path: one commit flight, zero-flight versioned reads, and duplicate/conflict replay without another handler",
     requiresIndependentConnections: true,
     timeoutMs: 60_000,
@@ -624,7 +736,7 @@ export const pipelineConformance: ReadonlyArray<ConformanceCase> = [
           const warm = yield* flightsOf(probe, plain.Add(7).pipe(Actor.commandId(id)))
           expect(warm).toMatchObject({ value: 10, flights: 1 })
           const read = yield* flightsOf(probe, plain.Snapshot())
-          expect(read.flights).toBe(0)
+          expect(read.flights).toBe(1)
           expect(read.value.count).toBe(10)
           expect(BigInt(read.value.version) > 0n).toBe(true)
           expect(yield* plain.Add(7).pipe(Actor.commandId(id))).toBe(10)

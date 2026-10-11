@@ -334,6 +334,7 @@ interface Ended<W extends Delivery, P> {
   readonly version: string
   readonly endedAtMs: number
   readonly certified?: boolean
+  readonly fence?: string | undefined
   readonly following?: ReadonlyArray<W> | undefined
   readonly chained?: P | undefined
 }
@@ -1202,6 +1203,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
     version: string,
     endedAtMs: number,
     certified = false,
+    fence?: string,
   ) =>
     Effect.suspend(() => {
       if (plan.writes !== undefined) {
@@ -1234,6 +1236,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
             head: plan.head,
             version,
             certified,
+            fence,
             now: endedAtMs,
             replayBefore,
             receipts,
@@ -1321,7 +1324,14 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
         Effect.flatMap((admitted) =>
           transact(admitting, admitted).pipe(
             Effect.tap((ended) =>
-              finish(admitting, ended.plan, ended.version, ended.endedAtMs, ended.certified),
+              finish(
+                admitting,
+                ended.plan,
+                ended.version,
+                ended.endedAtMs,
+                ended.certified,
+                ended.fence,
+              ),
             ),
             run.observe(admitting),
           ),
@@ -1457,13 +1467,19 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
          * Such a writer changes the generation row's xmax before its commit;
          * a plain snapshot-only metadata check would miss that interval.
          */
-        const certify = (plan: Plan) => sql<{ certified: boolean }>`SELECT EXISTS (
-          SELECT 1 FROM actor_generations g
+        const certify = (plan: Plan) => sql<{ certified: boolean; fence: string | null }>`
+          WITH held AS MATERIALIZED (
+          SELECT g.generation, g.created, g.event_sequence, to_jsonb(g)->>'cold_ref' AS cold_ref,
+            g.xmin::text AS xmin, g.xmax::text AS xmax FROM actor_generations g
           WHERE ${rowOf({ sql, actor: { key: routingKey, ref }, alias: "g" })}
-            AND g.generation = ${plan.generation} AND g.created = ${plan.created}
-            AND g.event_sequence = ${plan.head} AND to_jsonb(g)->>'cold_ref' IS NULL
-            AND g.xmax::text IN ('0', (current_setting('durable.turn_xid')::bigint % 4294967296)::text)
-        ) AS certified`
+          ) SELECT EXISTS (SELECT 1 FROM held g
+            WHERE g.generation = ${plan.generation} AND g.created = ${plan.created}
+            AND g.event_sequence = ${plan.head} AND g.cold_ref IS NULL
+            AND g.xmax IN ('0', (current_setting('durable.turn_xid')::bigint % 4294967296)::text)
+        ) AS certified,
+          (SELECT g.xmin || ':' || g.xmax || ':' ||
+            floor(pg_snapshot_xmax(pg_current_snapshot())::text::numeric / 4294967296)::text
+            FROM held g) AS fence`
 
         /**
          * Queues a batch's commit group, and the next batch's admission behind
@@ -1489,6 +1505,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
           let version = ""
           let endedAtMs = 0
           let certified = false
+          let fence: string | undefined
 
           const commit: ReadonlyArray<Statement> = [
             ...(plan.writes === undefined ? [] : [...flush(), ...plan.writes]),
@@ -1506,6 +1523,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               ? [
                   Effect.map(certify(plan), (rows) => {
                     certified = rows[0]!.certified
+                    fence = rows[0]!.fence ?? undefined
                   }),
                 ]
               : []),
@@ -1533,6 +1551,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 version,
                 endedAtMs,
                 certified,
+                fence,
                 ending,
                 tag,
                 following,
@@ -1636,6 +1655,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
               let endedAtMs = 0
               let startedAtMs = 0
               let certified = false
+              let fence: string | undefined
 
               const guard = sql<{ now: string }>`
                 WITH locked AS MATERIALIZED (
@@ -1688,6 +1708,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                 }),
                 Effect.map(certify(plan), (rows) => {
                   certified = rows[0]!.certified
+                  fence = rows[0]!.fence ?? undefined
                 }),
               ]
 
@@ -1727,6 +1748,7 @@ export const executeBatches = Effect.fnUntraced(function* <W extends Delivery, R
                       version,
                       endedAtMs,
                       certified,
+                      fence,
                     } satisfies Ended<W, Admitting>)
                   },
                 ),

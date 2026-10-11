@@ -58,6 +58,8 @@ Batches, commutative folding, same-flight successor admission and cross-actor gr
 
 ### Warm `X.Read`: committed snapshot, no SQL
 
+The read path below is superseded by [ADR 0118](0118-owner-cache-read-fencing.md), which requires one fresh primary-database probe before reusing cached state. Its zero-flight measurements remain historical evidence, not the current read protocol. The command fast path is unchanged.
+
 A query on a runner that already has the activation may use its immutable committed snapshot: encoded state, event head and matching post-commit WAL version. `read.version` identifies that snapshot. No activation, fence, receipt or command id is created. Authorization runs before and after the handler as before. This answers a state-only query in zero database flights; application authorization/services or configured usage accounting can still issue their own SQL.
 
 The cache may answer a version-qualified query only when its version is at least `durable-min-version` **and its provenance is certified**. Otherwise the entire query follows the existing replica catch-up/primary path. A cold/missing/invalidated snapshot also follows that path. Database-dependent reads (`events`, `rows`, `group`, blobs) use the ordinary database query path, never a mixture of speculative state and stored rows. Query-only runners and another runner that does not hold the activation read the database normally.

@@ -108,7 +108,10 @@ export const committedReads = ({
       if (reads === undefined) yield* allow(request, "query")
       const key = routingKey({ ref: request.ref, placement: registration.placement })
 
-      const read = (client: SqlClient.SqlClient) =>
+      const read = (
+        client: SqlClient.SqlClient,
+        snapshot?: NonNullable<ActivationCache["committed"]>,
+      ): Effect.Effect<Outcome, ActorError | SqlError.SqlError> =>
         Effect.gen(function* () {
           const rows = yield* client<{
             head: string | null
@@ -117,19 +120,45 @@ export const committedReads = ({
             cold_ref: string | null
             cold_digest: string | null
             cold_state_version: number | null
+            cached: boolean
           }>`
+              WITH generation AS MATERIALIZED (
               SELECT event_sequence::text AS head, NULL AS key, NULL::bytea AS value,
-                cold_ref, cold_digest, cold_state_version
+                cold_ref, cold_digest, cold_state_version,
+                ${snapshot !== undefined} AND generation = ${snapshot?.generation ?? "0"}
+                  AND created = ${snapshot?.created ?? false}
+                  AND event_sequence = ${snapshot?.head ?? "0"} AND cold_ref IS NULL
+                  AND xmin::text || ':' || xmax::text || ':' ||
+                    floor(pg_snapshot_xmax(pg_current_snapshot())::text::numeric / 4294967296)::text
+                    = ${snapshot?.fence ?? ""} AS cached
               FROM actor_generations
               WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id})
+              SELECT * FROM generation
               UNION ALL
-              SELECT NULL, key, value, NULL, NULL, NULL
+              SELECT NULL, key, value, NULL, NULL, NULL, false
               FROM actor_state
               WHERE routing_key = ${key} AND tenant_id = ${request.ref.tenant}
-                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}`.pipe(
+                AND actor_type = ${request.ref.actor} AND actor_id = ${request.ref.id}
+                AND NOT EXISTS (SELECT 1 FROM generation WHERE cached)`.pipe(
             withTenant(request.ref.tenant),
           )
+
+          if (snapshot !== undefined && rows.some((row) => row.cached)) {
+            const answer = yield* query.run(
+              request,
+              [...snapshot.state],
+              snapshot.head,
+              () => Effect.die(new ReadRequiresDatabase()),
+              undefined,
+              snapshot.version,
+            )
+
+            if (!(Outcome.guards.Defect(answer) && answer.cause instanceof ReadRequiresDatabase))
+              return answer
+
+            return yield* read(client)
+          }
 
           let head: string | undefined
           const state: Array<readonly [string, string]> = []
@@ -195,22 +224,13 @@ export const committedReads = ({
 
         if (
           snapshot !== undefined &&
+          snapshot.fence !== undefined &&
+          snapshot.certified &&
           snapshot.generation === cache!.generation &&
           snapshot.state === cache!.state &&
-          (minVersion === undefined ||
-            (snapshot.certified && BigInt(snapshot.version) >= BigInt(minVersion)))
+          (minVersion === undefined || BigInt(snapshot.version) >= BigInt(minVersion))
         ) {
-          const answer = yield* query.run(
-            request,
-            [...snapshot.state],
-            snapshot.head,
-            () => Effect.die(new ReadRequiresDatabase()),
-            undefined,
-            snapshot.version,
-          )
-
-          if (!(Outcome.guards.Defect(answer) && answer.cause instanceof ReadRequiresDatabase))
-            return answer
+          return yield* read(primary, snapshot)
         }
 
         if (owned || replica === undefined) return yield* read(local)

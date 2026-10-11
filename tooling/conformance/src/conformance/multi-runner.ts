@@ -13,6 +13,8 @@ const Add = Actor.command("Add", { payload: Schema.Finite, success: Schema.Finit
 
 const Whoami = Actor.command("Whoami", { success: Schema.String })
 
+const Count = Actor.query("Count", { success: Schema.Finite })
+
 const Log = Actor.query("Log", {
   success: Schema.Array(Schema.Struct({ cursor: Schema.String, commandId: Schema.String })),
 })
@@ -42,7 +44,7 @@ const Tally = Actor.make("Tally", {
   key: Schema.String,
   state: TallyState,
   events: [Tallied],
-  api: { Add, Whoami, Log, Tick },
+  api: { Add, Whoami, Count, Log, Tick },
 })
 
 const TallyLive = Layer.mergeAll(
@@ -65,6 +67,9 @@ const TallyLive = Layer.mergeAll(
   ),
   Tally.toQueryLayer(
     Effect.succeed({
+      Count: Effect.fnUntraced(function* () {
+        return (yield* Tally.Read).state.count
+      }),
       Log: Effect.fnUntraced(function* () {
         const entries = yield* (yield* Tally.Read).events(Tallied)
 
@@ -316,6 +321,37 @@ const killWhileReplying = (expect: ConformanceExpect) =>
 
 /** Multi-runner cases on three runners: placement on exactly one runner, merging of commutative calls into one turn, and retry on the next owner after a kill. */
 export const multiRunnerConformance: ReadonlyArray<ConformanceCase> = [
+  {
+    name: "owner cache reads preserve read-your-writes from another runner and after ownership changes",
+    requiresIndependentConnections: true,
+    timeoutMs: 60_000,
+    run: ({ expect, environment }) =>
+      withCluster(
+        environment,
+        2,
+        Effect.gen(function* () {
+          const cluster = yield* ActorCluster
+          const id = "owner-cache-read-your-writes"
+          const ref = yield* refOf(id)
+          expect(yield* add(0, id, 17)).toBe(17)
+          const owner = (yield* cluster.owner(ref))!
+          const other = (owner + 1) % 2
+          const read = (runner: number) =>
+            cluster.on(runner)(Tally.get(id).pipe(Effect.flatMap((tally) => tally.Count())))
+          expect(yield* read(owner)).toBe(17)
+          expect(yield* add(other, id, 26)).toBe(43)
+          expect(yield* read(owner)).toBe(43)
+          expect(yield* read(other)).toBe(43)
+          yield* cluster.shutdown(owner)
+          expect(yield* awaitOwner(ref, (next) => next === other)).toBe(other)
+          expect(yield* add(other, id, 11)).toBe(54)
+          expect(yield* read(other)).toBe(54)
+          yield* cluster.restart(owner)
+          expect(yield* read(owner)).toBe(54)
+          expect(yield* inspect(other, ref)).toMatchObject({ state: { count: 54 }, receipts: 3 })
+        }),
+      ),
+  },
   {
     name: "merges commutative calls from three runners on the owner into one turn with one receipt per command id",
     requiresIndependentConnections: true,
