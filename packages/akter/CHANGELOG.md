@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixes `ActorTest.advance` missing an attempt claimed while its lease extension waits for the relay pass lock. The running-attempt snapshot now happens under that lock, preventing a synthetic clock jump from manufacturing lease loss and duplicate same-ID attempts. Production claim, renewal, retry and fencing semantics are unchanged; see [verification](https://docs.akter.dev/verification/relay-clock-jumps).
+
 ## 0.1.0-alpha.5 (2026-10-09)
 
 The framework and CLI release together on the `alpha` and `latest` npm dist-tags. Stored formats and the default Postgres pool sizes are unchanged from alpha.4.
