@@ -306,7 +306,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           const test = yield* ActorTest
           yield* (yield* Specimen.get("frozen")).Record("kept")
           const before = yield* counts(test.tenant, "frozen")
-          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
           const owner = `owner_${uuid.replaceAll("-", "")}`
           const views = [...INSPECTION_VIEWS.map((view) => `durable.${view}`), "durable.views"]
 
@@ -386,7 +386,7 @@ export const inspectionViewsConformance: ReadonlyArray<ConformanceCase> = [
           const sql = yield* SqlClient.SqlClient
           const test = yield* ActorTest
           yield* (yield* Specimen.get("granted")).Record("visible")
-          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+          const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
           const role = `inspector_${uuid.replaceAll("-", "")}`
 
           const probe = yield* sql

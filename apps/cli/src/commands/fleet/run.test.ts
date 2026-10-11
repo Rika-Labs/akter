@@ -47,7 +47,7 @@ describe.skipIf(!postgres)("akter fleet setup on Postgres", () => {
         Effect.scoped(
           Effect.gen(function* () {
             const base = new URL(yield* Config.String("TEST_DATABASE_URL"))
-            const name = `fleet_cli_${(yield* (yield* Crypto.Crypto).randomUUIDv4).replaceAll("-", "")}`
+            const name = `fleet_cli_${(yield* (yield* Crypto.Crypto).randomUUIDv4()).replaceAll("-", "")}`
 
             const admin = yield* Effect.acquireRelease(
               Effect.sync(() => new Pool({ connectionString: base.href })),

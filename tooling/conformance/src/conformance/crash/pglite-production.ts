@@ -191,7 +191,7 @@ const outcome = <A, R>(effect: Effect.Effect<A, ActorError, R>) =>
 
 /** A command id minted now whose expiry is `inMs` away under the deployment's window. */
 const expiringId = Effect.fnUntraced(function* (inMs: number) {
-  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie)
+  const uuid = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie)
   const expiresAt = (yield* databaseTime) + inMs
 
   return `v1.${expiresAt - RETRY_WINDOW_MS}.${expiresAt}.${uuid}`
