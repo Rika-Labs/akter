@@ -1,5 +1,58 @@
 # Akter benchmarks
 
+## Partial storage hot-path tuning (#496, 2026-10-10)
+
+Migration `0035_hot_table_foreign_keys` removes only the composite state/receipt references to `actor_generations`. It retains receipt identity uniqueness, RLS, other foreign keys and the `SELECT ... FOR UPDATE` writer fence. The modest ordinary-admission CPU reduction below supports this metadata-only change; the warm measurements do not establish a performance win. Conditional UPDATE is not adopted, and expiry partitioning remains deferred. **#496 is not fully resolved**; its remaining scope is carried by #714.
+
+The experiment used Bun 1.4.2, Effect 4.0.2 and a Postgres 18.6-bookworm server with logical WAL and `synchronous_commit=on`, on a shared Apple M5 Max Mac. A and B used the same candidate framework source based on `ef1f12e16`, separate disposable databases and actual Effect actor handles. A restored just the two original FKs; B used the migrated schema. A state-only command added 7 to an initial 19 and wrote a second key to 17; every reply, final durable value and receipt count was checked independently. Each mode warmed up for 80 commands. Six warm pairs used 4,000 turns per mode; three ordinary-admission pairs used 2,000, with the internal warm fast path disabled for both modes. Pair order alternated AB/BA. This is one sequential caller on one resident actor, not HTTP, batching, forwarding, contention or scale evidence.
+
+CPU is **foreground database-backend user + system CPU**, read from the tagged persistent turn session's Linux `/proc/<pid>/stat` counters at 100 ticks/s and divided by completed turns. The PID was stable across each interval. It excludes autovacuum, checkpointer, other sessions and runner CPU; it is not total server CPU. The separate `pg_stat_statements` column is the database's top-level **statement execution elapsed time per turn**, including its background statements, not CPU, planning time or handle latency. Statistics were differenced by database id without a server-wide reset.
+
+The first warm pair overlapped an unchanged-baseline conformance control and severe I/O contention. Pair 4 was interrupted by a short coordination pause and is retained but excluded below. The device session later disconnected, but the process completed all cohorts and its databases were removed. The remaining five warm pairs still vary widely; CPU improved in only two and worsened in three. Medians below are medians of per-run values, with min–max ranges, not pooled percentiles or paired differences.
+
+| Measurement                               |          FKs retained |           FKs removed |
+| ----------------------------------------- | --------------------: | --------------------: |
+| Ordinary foreground CPU ms/turn, r1/r2/r3 | 0.940 / 0.790 / 0.675 | 0.855 / 0.775 / 0.640 |
+| Ordinary statement execution ms/turn      |   0.148 [0.147–0.321] |   0.149 [0.131–0.247] |
+| Ordinary turns/s                          |   227.0 [203.8–229.3] |   201.0 [190.2–258.3] |
+| Ordinary p50 / p99 ms                     |         4.007 / 9.207 |         4.166 / 9.337 |
+| Warm foreground CPU ms/turn               |   1.145 [0.663–2.180] |   1.203 [0.943–1.248] |
+| Warm statement execution ms/turn          |   0.233 [0.182–0.326] |   0.256 [0.180–0.264] |
+| Warm turns/s                              |    124.1 [22.3–270.4] |   137.5 [110.5–188.8] |
+| Warm p50 / p99 ms                         |        5.976 / 55.727 |        5.422 / 33.613 |
+
+Ordinary foreground CPU fell in all three pairs, by 9.0%, 1.9% and 5.2%, while median throughput and latency did not improve. That is a small local CPU observation, not a throughput or tail-latency claim. The warm cohort establishes no consistent CPU or execution-time saving. Host scheduling and Docker storage were not isolated; neither cohort establishes a production SLO.
+
+| Sampled table HOT updates / updates |                              Ordinary A / B |                                     Warm A / B |
+| ----------------------------------- | ------------------------------------------: | ---------------------------------------------: |
+| `actor_generations`                 |                     1/1 / 1/1 (100% / 100%) |                        3/3 / 3/3 (100% / 100%) |
+| `actor_state`                       | 11,990/11,990 / 11,816/11,816 (100% / 100%) | 47,918/47,918 / 48,146/48,158 (100% / 99.975%) |
+| `actor_receipts`                    |    0/0 / 0/0 (insert-only; ratio undefined) |       0/0 / 0/0 (insert-only; ratio undefined) |
+
+These are asynchronous `pg_stat_user_tables` snapshots taken before teardown, including warm-up and the interrupted warm pair, not exact final write inventories. The independently checked receipt totals were 6,080 ordinary and 24,080 warm per mode. FK removal did not establish a HOT-ratio improvement.
+
+### Conditional UPDATE fence probe: retained FOR UPDATE
+
+A separate SQL probe compared `SELECT generation ... WHERE generation = 23 FOR UPDATE` with `UPDATE ... SET generation = generation WHERE generation = 23 RETURNING generation`, each followed by the same value update in one transaction. Six alternating AB/BA pairs ran 4,000 transactions per mode after 80 warm-ups. This measures a conditional fence's additional tuple write, not a prototype framework admission protocol or proof of its stale-owner/receipt semantics.
+
+| Measurement                    |             FOR UPDATE |     Conditional UPDATE |
+| ------------------------------ | ---------------------: | ---------------------: |
+| Foreground backend CPU ms/turn |    0.364 [0.283–0.415] |    0.390 [0.295–0.475] |
+| Statement execution ms/turn    | 0.0202 [0.0162–0.0237] | 0.0223 [0.0182–0.0255] |
+| Transactions/s                 |    536.8 [394.6–752.9] |    578.5 [393.6–749.4] |
+| p50 / p99 ms                   |          1.391 / 7.251 |          1.466 / 4.330 |
+| Server-wide WAL bytes/turn     |    203.5 [203.1–212.0] |    246.2 [245.7–254.5] |
+
+Conditional UPDATE used more backend CPU in all six pairs. WAL is a server-wide insertion-LSN difference, not isolated relation WAL; background framework sessions were still alive. The extra tuple update and lack of a consistent latency benefit do not warrant changing the normative writer fence or its admission-clock/receipt proof.
+
+### Retained and deferred guarantees
+
+The populated upgrade tests compare physical tuples, primary/unique keys, other FKs and RLS; renamed target constraints reject guessed or truncated names. A missing second FK rolls back the first drop and the ledger entry. An independently blocked second table exercises two-second lock attempts, release-and-retry and full retry exhaustion without partial maintenance. No actor-row scan or backfill is added.
+
+Receipts remain unpartitioned: range partitioning by `expires_at_ms` cannot preserve the existing global command-identity key without a separate uniqueness mechanism. Adding expiry to that key would allow the same identity in different partitions. Whole-partition drops also cannot respect per-type retention horizons and pending internal outbox obligations; current retention checks each candidate against that outbox. A populated online conversion would need separate deduplication, obligation-aware retirement and bounded upgrade evidence. No retention-throughput or partition benefit is claimed.
+
+Raw samples, backend tick snapshots, table statistics, harness and failed pilot/control logs are retained under `~/.capy/work/akter-orch/s6-storage/` and this worktree's ignored `.amp/in/`. Earlier pilots rejected an incorrect fixture expectation and changing backend PID sets rather than inventing CPU attribution. The broad receipt/fencing filter's expiry-after-restart failure also reproduced on unchanged `origin/main`; unchanged timeout failures are retained separately. These local checks do not resolve #716, #66, provider behavior or the remaining #496 partitioning design.
+
 ## Warm actor fast path (#719, 2026-10-09)
 
 The primary evidence is protocol flights: an eligible warm command uses **1 instead of 2**, and a local state-only, version-qualified query uses **0 instead of 1**. The real-Postgres `warm fast path:` cases in `tooling/conformance/src/conformance/pipeline.ts` require these exact counts, alongside durable state/receipt assertions and stale-fence, receipt-race, expiry, lost-COMMIT-reply and unpublished-state failures. Removing one flight removes one configured 10 ms round-trip delay; it is not a promise about wall-clock tails on a saturated host.

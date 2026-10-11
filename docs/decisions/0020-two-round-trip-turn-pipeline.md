@@ -281,6 +281,10 @@ The clarifications apply only to a runtime that pipelines, which none does yet. 
 - **Handler statements.** A turn's latency still grows by one round trip for each handler statement it awaits. The two-round-trip figure is for turns that issue none.
 - **Transaction time.** Postgres holds each transaction for about one round trip plus handler time, instead of one round trip per statement. The generation row lock is held for about the same span.
 
+## Amendment: metadata-only hot-table maintenance (2026-10-10)
+
+Migration `0035_hot_table_foreign_keys` removes the state and receipt composite foreign keys to `actor_generations`, not their keys or the generation lock. A foreign-key check proves only that an actor identity exists, not that the writer owns its current generation. The existing fenced transaction remains the authority for state and receipts, and the receipt primary key still prevents a duplicate committed identity. Catalog-resolved, bounded-lock DDL upgrades populated databases without scans or backfills; both drops roll back on failure. [Storage layout](../architecture/03-storage-layout.md) records the retained constraints and why expiry partitioning remains deferred; [benchmarks](../../BENCHMARKS.md) records the measured alternatives and limits. This amendment does not permit a conditional-update fence or alter receipt retention.
+
 ## Revisit when
 
 - `@effect/sql-pg` lets a reserved connection pipeline; the turn pool then merges into the client pool.
